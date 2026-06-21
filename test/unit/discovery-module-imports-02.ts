@@ -33,15 +33,21 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "conflict.js",
         `
-  import { defineWorkflow } from "@bastani/workflows";
-  export default defineWorkflow("conflict-alpha")
-    .description("conflict-alpha")
-    .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-    .compile();
-  export const named = defineWorkflow("conflict-alpha")
-    .description("Alpha Named")
-    .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-    .compile();
+  import { workflow } from "@bastani/workflows";
+  export default workflow({
+    name: "conflict-alpha",
+    description: "conflict-alpha",
+    inputs: {},
+    outputs: {},
+    run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+  });
+  export const named = workflow({
+    name: "conflict-alpha",
+    description: "Alpha Named",
+    inputs: {},
+    outputs: {},
+    run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -74,10 +80,14 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "mixed-validity.js",
         `
-  import { defineWorkflow } from "@bastani/workflows";
-  export default defineWorkflow("Valid Default")
-    .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-    .compile();
+  import { workflow } from "@bastani/workflows";
+  export default workflow({
+    name: "Valid Default",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+  });
   export const bad = { notAWorkflow: true };
   `,
       );
@@ -135,11 +145,15 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "removed-api.js",
         `
-  import { defineWorkflow, runWorkflow } from "@bastani/workflows";
+  import { workflow, runWorkflow } from "@bastani/workflows";
   runWorkflow();
-  export default defineWorkflow("removed-api-import")
-    .run(async () => ({}))
-    .compile();
+  export default workflow({
+    name: "removed-api-import",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -159,9 +173,13 @@ export function registerDiscoveryModuleImportsSuite2(): void {
         `
   import * as workflows from "@bastani/workflows";
   workflows.runWorkflow();
-  export default workflows.defineWorkflow("removed-namespace-import")
-    .run(async () => ({}))
-    .compile();
+  export default workflows.workflow({
+    name: "removed-namespace-import",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -179,11 +197,15 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "removed-require.cjs",
         `
-  const { defineWorkflow, runWorkflow } = require("@bastani/workflows");
+  const { workflow, runWorkflow } = require("@bastani/workflows");
   runWorkflow();
-  exports.default = defineWorkflow("removed-require-destructured")
-    .run(async () => ({}))
-    .compile();
+  exports.default = workflow({
+    name: "removed-require-destructured",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -203,9 +225,13 @@ export function registerDiscoveryModuleImportsSuite2(): void {
         `
   const workflows = require("@bastani/workflows");
   workflows.runWorkflow();
-  exports.default = workflows.defineWorkflow("removed-require-namespace")
-    .run(async () => ({}))
-    .compile();
+  exports.default = workflows.workflow({
+    name: "removed-require-namespace",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -223,14 +249,18 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "removed-reference-only.ts",
         `
-  import { defineWorkflow, runWorkflow } from "@bastani/workflows";
+  import { workflow, runWorkflow } from "@bastani/workflows";
   const pattern = /runWorkflow/;
   const identity = <T,>(value: T): T => value;
   void pattern;
   void identity(runWorkflow);
-  export default defineWorkflow("removed-reference-only")
-    .run(async () => ({}))
-    .compile();
+  export default workflow({
+    name: "removed-reference-only",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({
@@ -247,16 +277,20 @@ export function registerDiscoveryModuleImportsSuite2(): void {
       await createProjectWorkflowFile(
         "removed-comment-string.js",
         `
-  import { defineWorkflow } from "@bastani/workflows";
+  import { workflow } from "@bastani/workflows";
   // import { runWorkflow } from "@bastani/workflows"; removed migration note only
   const docs = [
     'import { runWorkflow } from "@bastani/workflows";',
     "const workflows = await import('@bastani/workflows'); workflows.runWorkflow();",
   ].join("\\n");
   void docs;
-  export default defineWorkflow("removed-comment-string")
-    .run(async () => ({}))
-    .compile();
+  export default workflow({
+    name: "removed-comment-string",
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
       const result = await discoverWorkflows({

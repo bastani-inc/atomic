@@ -12,7 +12,7 @@ import {
   createCancellationRegistry,
   createJobTracker,
   createStore,
-  defineWorkflow,
+  workflow,
   delay,
   factory,
   runDetached,
@@ -26,7 +26,7 @@ import {
   waitForRunEnded,
   waitForStagePendingPrompt,
 } from "./overlay-entrypoints-helpers.js";
-void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, defineWorkflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
+void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
 
 
 describe("/workflow resume — overlay integration", () => {

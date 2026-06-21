@@ -9,7 +9,7 @@ import type { WorkflowChildResult } from "../../packages/workflows/src/shared/ty
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 
 function expectString(value: string): void {
@@ -95,9 +95,14 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const def = defineWorkflow("exit-invalid-output-kill-race")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-invalid-output-kill-race",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         await Promise.all([
           ctx.task("cleanup-pending", { prompt: "wait for cleanup" }),
           (async () => {
@@ -110,8 +115,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return { count: 1 };
-      })
-      .compile();
+      },
+    });
 
     let runId = "";
     const runPromise = run(def, {}, {
@@ -174,11 +179,15 @@ describe("ctx.exit", () => {
   test("finalizes ordinary failures when control-signal probing sees throwing accessors", async () => {
     const store = createStore();
     const thrown = errorWithThrowingControlProbeAccessors("ordinary control-probe failure");
-    const def = defineWorkflow("exit-safe-probe-ordinary-failure")
-      .run(async () => {
+    const def = workflow({
+      name: "exit-safe-probe-ordinary-failure",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => {
         throw thrown;
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
 
@@ -202,11 +211,15 @@ describe("ctx.exit", () => {
         throw new Error("aggregate errors accessor should not escape control-signal probing");
       },
     });
-    const def = defineWorkflow("exit-safe-probe-aggregate-errors")
-      .run(async () => {
+    const def = workflow({
+      name: "exit-safe-probe-aggregate-errors",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => {
         throw aggregateLike;
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
 
@@ -221,9 +234,13 @@ describe("ctx.exit", () => {
     const store = createStore();
     const controller = new AbortController();
     controller.abort(errorWithThrowingControlProbeAccessors("external abort should stay killed"));
-    const def = defineWorkflow("exit-safe-probe-abort-reason")
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "exit-safe-probe-abort-reason",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
 
     const result = await run(def, {}, { store, signal: controller.signal });
 
@@ -246,19 +263,29 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const child = defineWorkflow("exit-child-completed-partial")
-      .output("requiredNote", Type.String())
-      .output("optionalCount", Type.Optional(Type.Number()))
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-child-completed-partial",
+      description: "",
+      inputs: {},
+      outputs: {
+        requiredNote: Type.String(),
+        optionalCount: Type.Optional(Type.Number()),
+      },
+      run: async (ctx) => {
         return ctx.exit({ status: "completed", outputs: { optionalCount: 7 } });
-      })
-      .compile();
-    const parent = defineWorkflow("exit-parent-completed-child")
-      .output("childExited", Type.Boolean())
-      .output("childStatus", Type.String())
-      .output("requiredPresent", Type.Boolean())
-      .output("optionalCount", Type.Number())
-      .run(async (ctx) => {
+      },
+    });
+    const parent = workflow({
+      name: "exit-parent-completed-child",
+      description: "",
+      inputs: {},
+      outputs: {
+        childExited: Type.Boolean(),
+        childStatus: Type.String(),
+        requiredPresent: Type.Boolean(),
+        optionalCount: Type.Number(),
+      },
+      run: async (ctx) => {
         const childResult = await ctx.workflow(child);
         if (childResult.exited === true) {
           return {
@@ -274,8 +301,8 @@ describe("ctx.exit", () => {
           requiredPresent: childResult.outputs.requiredNote.length > 0,
           optionalCount: childResult.outputs.optionalCount ?? -1,
         };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(parent, {}, { store, persistence });
 
@@ -344,12 +371,17 @@ describe("ctx.exit", () => {
   test("non-interactive dispatch returns ctx.exit status, reason, and marker", async () => {
     const store = createStore();
     const jobs = createJobTracker();
-    const def = defineWorkflow("headless-exit")
-      .output("note", Type.String())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "headless-exit",
+      description: "",
+      inputs: {},
+      outputs: {
+        note: Type.String(),
+      },
+      run: async (ctx) => {
         return ctx.exit({ status: "skipped", reason: "headless guard", outputs: { note: "ok" } });
-      })
-      .compile();
+      },
+    });
     const registry = createRegistry([def]);
 
     const result = await dispatch(

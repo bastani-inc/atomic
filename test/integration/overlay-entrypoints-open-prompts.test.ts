@@ -12,7 +12,7 @@ import {
   createCancellationRegistry,
   createJobTracker,
   createStore,
-  defineWorkflow,
+  workflow,
   delay,
   factory,
   runDetached,
@@ -26,7 +26,7 @@ import {
   waitForRunEnded,
   waitForStagePendingPrompt,
 } from "./overlay-entrypoints-helpers.js";
-void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, defineWorkflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
+void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
 
 describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
   test("close unsubscribes from host custom UI state changes (#1353)", () => {
@@ -174,16 +174,21 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
       releaseWorkflow = resolve;
     });
 
-    const def = defineWorkflow("hil-focus-dummy")
-      .output("edited", Type.Optional(Type.Any()))
-      .output("approved", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-focus-dummy",
+      description: "",
+      inputs: {},
+      outputs: {
+        edited: Type.Optional(Type.Any()),
+        approved: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor("draft approval json");
         const approved = await ctx.ui.confirm(`Approve ${edited.length} chars?`);
         return { edited, approved };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     adapter.open(accepted.runId);
@@ -240,14 +245,19 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
       "SECTION 8 bottom of the long approval prompt.",
     ].join("\n\n");
 
-    const def = defineWorkflow("hil-long-confirm-dummy")
-      .output("approved", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-long-confirm-dummy",
+      description: "",
+      inputs: {},
+      outputs: {
+        approved: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await workflowGate;
         const approved = await ctx.ui.confirm(longMessage);
         return { approved };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     adapter.open(accepted.runId);
@@ -289,14 +299,19 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
       (_, index) => `JSON LINE ${index + 1}: approval payload entry with enough text to render in the editor`,
     ).join("\n");
 
-    const def = defineWorkflow("hil-long-editor-dummy")
-      .output("editedLength", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-long-editor-dummy",
+      description: "",
+      inputs: {},
+      outputs: {
+        editedLength: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await workflowGate;
         const edited = await ctx.ui.editor(longDocument);
         return { editedLength: edited.length };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     adapter.open(accepted.runId);

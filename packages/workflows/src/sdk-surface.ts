@@ -5,10 +5,10 @@
  * discovery. The package root re-exports this module directly.
  */
 
-export { defineWorkflow } from "./workflows/define-workflow.js";
+export { workflow } from "./authoring/workflow.js";
 
 const REMOVED_RUN_WORKFLOW_MESSAGE =
-  "@bastani/workflows no longer exports runWorkflow; author workflows with defineWorkflow(...).compile()";
+  "@bastani/workflows no longer exports runWorkflow; author workflows with workflow({...})";
 
 /**
  * @deprecated Removed imperative workflow API. Kept as a runtime migration
@@ -18,15 +18,11 @@ export const runWorkflow: never = (() => {
   throw new Error(REMOVED_RUN_WORKFLOW_MESSAGE);
 }) as never;
 
-// TypeBox authoring surface so jiti-loaded workflows can `import { Type } from
-// "@bastani/workflows"` (the virtual module is built from this file).
-export { Type } from "typebox";
-export type { Static, TSchema } from "typebox";
 export { createRegistry } from "./workflows/registry.js";
 export { normalizeWorkflowName, workflowNamesEqual } from "./workflows/identity.js";
 export type * from "./shared/types.js";
 export { INTERACTIVE_WORKFLOW_POLICY, NON_INTERACTIVE_WORKFLOW_POLICY } from "./shared/types.js";
-export type { WorkflowBuilder, CompletedWorkflowBuilder } from "./workflows/define-workflow.js";
+export type { AuthoredWorkflowDefinition, AuthoredWorkflowSpec, WorkflowInputsFromSchemas, WorkflowOutputsFromSchemas, WorkflowProvidedInputsFromSchemas } from "./authoring/workflow.js";
 export type { WorkflowRegistry } from "./workflows/registry.js";
 
 export { run, runTask, runParallel, runChain, resolveInputs } from "./runs/foreground/executor.js";

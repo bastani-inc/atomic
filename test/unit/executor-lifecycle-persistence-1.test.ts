@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test, Type,
+    assert, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";
 
 describe("executor.run — lifecycle persistence", () => {
@@ -23,13 +23,18 @@ describe("executor.run — lifecycle persistence", () => {
     test("appends ordered run.start → stage.start → stage.end → run.end on success", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("persist-wf")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "persist-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("s1").prompt("go");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -55,13 +60,18 @@ describe("executor.run — lifecycle persistence", () => {
     test("run.start payload contains runId, name, inputs, ts", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("payload-wf")
-            .input("x", Type.Optional(Type.Number()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "payload-wf",
+          description: "",
+          inputs: {
+            x: Type.Optional(Type.Number()),
+          },
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.task("payload-smoke", { prompt: "go" });
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -84,12 +94,11 @@ describe("executor.run — lifecycle persistence", () => {
     test("stage.start payload contains runId, stageId, name, parentIds", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("stage-payload-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "stage-payload-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("my-stage").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -111,12 +120,11 @@ describe("executor.run — lifecycle persistence", () => {
     test("stage.end payload contains status completed on success", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("stage-end-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "stage-end-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("s").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,
@@ -135,13 +143,18 @@ describe("executor.run — lifecycle persistence", () => {
     test("run.end payload contains status completed on success", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("run-end-wf")
-            .output("x", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "run-end-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            x: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.task("run-end-smoke", { prompt: "go" });
                 return { x: 1 };
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,
@@ -161,10 +174,15 @@ describe("executor.run — lifecycle persistence", () => {
     test("empty graph validation appends failed run.end without stage entries", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("empty-persist-wf")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async () => ({ ok: true }))
-            .compile();
+        const def = workflow({
+          name: "empty-persist-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async () => ({ ok: true }),
+        });
 
         const wfResult = await run(
             def,
@@ -195,12 +213,11 @@ describe("executor.run — lifecycle persistence", () => {
     test("failed stage: stage.end status=failed, run.end status=failed", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("fail-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fail-persist-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("bad").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -242,12 +259,11 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
         const st = createStore();
 
-        const def = defineWorkflow("blocked-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "blocked-persist-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("limited").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -304,8 +320,7 @@ describe("executor.run — lifecycle persistence", () => {
         const { persistence, calls } = makePersistence();
         const st = createStore();
 
-        const def = defineWorkflow("parallel-blocked-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "parallel-blocked-persist-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "limited", prompt: "limited" },
@@ -314,8 +329,8 @@ describe("executor.run — lifecycle persistence", () => {
                     { concurrency: 2, failFast: false },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -360,8 +375,7 @@ describe("executor.run — lifecycle persistence", () => {
         const st = createStore();
         const promptCalls: string[] = [];
 
-        const def = defineWorkflow("fail-fast-pending-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fail-fast-pending-persist-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "first", prompt: "fail" },
@@ -371,8 +385,8 @@ describe("executor.run — lifecycle persistence", () => {
                     { concurrency: 3 },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -442,12 +456,11 @@ describe("executor.run — lifecycle persistence", () => {
 
     test("no appendEntry calls when persistence not provided", async () => {
         // Ensure no crash and no global side effects
-        const def = defineWorkflow("no-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "no-persist-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("s").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,

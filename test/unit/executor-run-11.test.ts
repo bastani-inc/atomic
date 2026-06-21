@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, deferred, defineWorkflow, mockSession, run, sleep, test, Type,
+    assert, createStore, deferred, workflow, mockSession, run, sleep, test, Type,
     WORKFLOW_UNKNOWN_MODEL_MESSAGE, type AgentSession, type CreateAgentSessionOptions,
     type StageSnapshot,
 } from "./executor-shared.js";
@@ -10,15 +10,20 @@ describe("executor.run", () => {
         const st = createStore();
         let createdModel: string | undefined;
         let createdContextWindow: number | undefined = -1;
-        const def = defineWorkflow("context-window-token-smoke")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "context-window-token-smoke",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx
                     .stage("opus", { model: "github-copilot/claude-opus-4.8 (1m):xhigh" })
                     .prompt("hello");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -68,15 +73,20 @@ describe("executor.run", () => {
     test("bare explicit model stage publishes running fast-mode metadata after catalog resolution", async () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
-        const def = defineWorkflow("bare-explicit-model-running-fast-metadata")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "bare-explicit-model-running-fast-metadata",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx
                     .stage("scout", { model: "gpt-5.1-codex" })
                     .prompt("inspect");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -149,13 +159,18 @@ describe("executor.run", () => {
 
     test("prompt adapter stages do not eagerly create SDK sessions for fast metadata", async () => {
         const st = createStore();
-        const def = defineWorkflow("prompt-adapter-no-eager-session")
-            .output("text", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "prompt-adapter-no-eager-session",
+          description: "",
+          inputs: {},
+          outputs: {
+            text: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const text = await ctx.stage("scout").prompt("inspect");
                 return { text };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -184,9 +199,14 @@ describe("executor.run", () => {
     test("workflow fallback refreshes running fast metadata when switching to an eligible model", async () => {
         const fallbackGate = deferred<string | void>();
         const st = createStore();
-        const def = defineWorkflow("fallback-running-fast-metadata")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "fallback-running-fast-metadata",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx
                     .stage("scout", {
                         model: "anthropic/primary",
@@ -194,8 +214,8 @@ describe("executor.run", () => {
                     })
                     .prompt("inspect");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -271,9 +291,14 @@ describe("executor.run", () => {
 
     test("workflow fallback clears fast metadata when final model is not eligible", async () => {
         const st = createStore();
-        const def = defineWorkflow("fallback-clears-fast-metadata")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "fallback-clears-fast-metadata",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx
                     .stage("scout", {
                         model: "openai/gpt-5.1-codex",
@@ -281,8 +306,8 @@ describe("executor.run", () => {
                     })
                     .prompt("inspect");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -342,16 +367,21 @@ describe("executor.run", () => {
         // A bare id that cannot be resolved against the catalog is still a hard
         // configuration error (it is neither provider-qualified nor uniquely
         // matched), so the run must fail before any SDK session is created.
-        const def = defineWorkflow("invalid-stage-model")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "invalid-stage-model",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx.task("scout", {
                     prompt: "inspect",
                     model: "missing-model",
                 });
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -393,16 +423,21 @@ describe("executor.run", () => {
         // what actually drives the stage session.
         let createdModel: unknown;
         let creates = 0;
-        const def = defineWorkflow("trusted-stage-model")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "trusted-stage-model",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx.task("scout", {
                     prompt: "inspect",
                     model: "some-provider/brand-new:high",
                 });
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -433,12 +468,11 @@ describe("executor.run", () => {
     });
 
     test("stage snapshot records failed status when stage throws", async () => {
-        const def = defineWorkflow("fail-stage-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fail-stage-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.stage("bad-stage").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,

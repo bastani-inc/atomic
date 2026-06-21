@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { WorkflowExitOptions } from "../../packages/workflows/src/shared/types.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -65,9 +65,14 @@ function fakeAgentSession(): Record<string, unknown> {
 
 describe("ctx.exit", () => {
   test("snapshots exit outputs before finally mutations can change validation", async () => {
-    const valid = defineWorkflow("exit-output-snapshot-valid")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const valid = workflow({
+      name: "exit-output-snapshot-valid",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         const outputs = { count: 1 } as { count: number | string; extra?: string };
         try {
           return ctx.exit({ outputs: outputs as never });
@@ -75,40 +80,50 @@ describe("ctx.exit", () => {
           outputs.count = "not-a-number";
           outputs.extra = "late-extra";
         }
-      })
-      .compile();
+      },
+    });
 
     const validResult = await run(valid, {}, { store: createStore() });
     assert.equal(validResult.status, "completed");
     assert.deepEqual(validResult.result, { count: 1 });
 
-    const undeclared = defineWorkflow("exit-output-snapshot-undeclared")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const undeclared = workflow({
+      name: "exit-output-snapshot-undeclared",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         const outputs = { count: 1, extra: "bad" } as { count: number; extra?: string };
         try {
           return ctx.exit({ outputs: outputs as never });
         } finally {
           delete outputs.extra;
         }
-      })
-      .compile();
+      },
+    });
 
     const undeclaredResult = await run(undeclared, {}, { store: createStore() });
     assert.equal(undeclaredResult.status, "failed");
     assert.match(undeclaredResult.error ?? "", /provided undeclared output "extra"/);
 
-    const invalidValue = defineWorkflow("exit-output-snapshot-invalid-value")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const invalidValue = workflow({
+      name: "exit-output-snapshot-invalid-value",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         const outputs = { count: "bad" as number | string };
         try {
           return ctx.exit({ outputs: outputs as never });
         } finally {
           outputs.count = 1;
         }
-      })
-      .compile();
+      },
+    });
 
     const invalidValueResult = await run(invalidValue, {}, { store: createStore() });
     assert.equal(invalidValueResult.status, "failed");
@@ -119,10 +134,15 @@ describe("ctx.exit", () => {
     let signalFrozen: boolean | undefined;
     let snapshotValueFrozen: boolean | undefined;
     let nestedValueFrozen: boolean | undefined;
-    const def = defineWorkflow("exit-signal-immutable")
-      .output("count", Type.Number())
-      .output("nested", Type.Object({ value: Type.Number() }))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-signal-immutable",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+        nested: Type.Object({ value: Type.Number() }),
+      },
+      run: async (ctx) => {
         try {
           return ctx.exit({
             status: "skipped",
@@ -148,8 +168,8 @@ describe("ctx.exit", () => {
           try { if (tamper.outputSnapshot?.value?.nested) tamper.outputSnapshot.value.nested.value = 999; } catch { /* frozen */ }
           throw signal;
         }
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store: createStore() });
 
@@ -171,9 +191,14 @@ describe("ctx.exit", () => {
         throw new Error("output getter boom");
       },
     });
-    const def = defineWorkflow("exit-output-snapshot-capture-error")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-output-snapshot-capture-error",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         await Promise.all([
           ctx.task("slow-before-capture-failure", { prompt: "wait" }),
           (async () => {
@@ -182,8 +207,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return { count: 1 };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,
@@ -221,8 +246,12 @@ describe("ctx.exit", () => {
         throw new Error("status getter boom");
       },
     });
-    const def = defineWorkflow("exit-option-getter-error")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-option-getter-error",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.task("slow-before-option-failure", { prompt: "wait" }),
           (async () => {
@@ -231,8 +260,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,
@@ -270,9 +299,14 @@ describe("ctx.exit", () => {
           return `entry-${entries.length}`;
         },
       };
-      const def = defineWorkflow(`exit-replay-stage-${action}`)
-        .input("mode", Type.String())
-        .run(async (ctx) => {
+      const def = workflow({
+        name: `exit-replay-stage-${action}`,
+        description: "",
+        inputs: {
+          mode: Type.String(),
+        },
+        outputs: {},
+        run: async (ctx) => {
           if (ctx.inputs.mode === "exit") {
             const stage = ctx.stage("first");
             await Promise.all([
@@ -284,8 +318,8 @@ describe("ctx.exit", () => {
           const first = await ctx.stage("first").prompt("first");
           await ctx.stage("second").prompt(`second:${first}`);
           return {};
-        })
-        .compile();
+        },
+      });
 
       const sourceResult = await run(def, { mode: "source" }, {
         store,
@@ -340,9 +374,14 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const def = defineWorkflow("exit-replay-prompt-node")
-      .input("mode", Type.String())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-replay-prompt-node",
+      description: "",
+      inputs: {
+        mode: Type.String(),
+      },
+      outputs: {},
+      run: async (ctx) => {
         const exitPromise = ctx.inputs.mode === "exit"
           ? Promise.resolve().then(() => ctx.exit({ status: "skipped", reason: "prompt-node replay gate" }))
           : undefined;
@@ -354,8 +393,8 @@ describe("ctx.exit", () => {
         const proceed = await proceedPromise;
         await ctx.stage("after").prompt(proceed ? "after yes" : "after no");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const sourcePromise = run(def, { mode: "source" }, {
       store,

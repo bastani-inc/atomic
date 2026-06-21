@@ -5,7 +5,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { inspectRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageContext } from "../../packages/workflows/src/shared/types.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,11 +60,15 @@ function fakeAgentSession(): Record<string, unknown> {
 describe("ctx.exit", () => {
   test("exits a top-level workflow before any stage without failing empty graph validation", async () => {
     const store = createStore();
-    const def = defineWorkflow("exit-top-level")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-top-level",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         return ctx.exit();
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
 
@@ -80,18 +84,23 @@ describe("ctx.exit", () => {
 
   test("exits from a nested helper with status, reason, and partial outputs", async () => {
     const store = createStore();
-    const def = defineWorkflow("exit-helper")
-      .output("count", Type.Number())
-      .output("note", Type.String())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-helper",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+        note: Type.String(),
+      },
+      run: async (ctx) => {
         const helper = (): never => ctx.exit({
           status: "skipped",
           reason: "nothing to process",
           outputs: { count: 0 },
         });
         return helper();
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
 
@@ -110,8 +119,12 @@ describe("ctx.exit", () => {
 
   test("aborts and skips in-flight parallel siblings", async () => {
     const store = createStore();
-    const def = defineWorkflow("exit-during-parallel")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-during-parallel",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.parallel([
             { name: "slow-a", prompt: "slow-a" },
@@ -123,8 +136,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,
@@ -149,8 +162,12 @@ describe("ctx.exit", () => {
 
   test("stops queued parallel work after exit with failFast false and limited concurrency", async () => {
     const store = createStore();
-    const def = defineWorkflow("exit-parallel-queue-halt")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-parallel-queue-halt",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.parallel([
             { name: "started", prompt: "started" },
@@ -163,8 +180,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,
@@ -188,11 +205,19 @@ describe("ctx.exit", () => {
     const store = createStore();
     const lateStageDone = deferred();
     const lateWorkflowDone = deferred();
-    const child = defineWorkflow("exit-delayed-child")
-      .run(async () => ({}))
-      .compile();
-    const def = defineWorkflow("exit-delayed-spawn-guards")
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-delayed-child",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
+    const def = workflow({
+      name: "exit-delayed-spawn-guards",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         void (async () => {
           await delay(20);
           try {
@@ -214,8 +239,8 @@ describe("ctx.exit", () => {
           }
         })();
         return ctx.exit({ status: "skipped", reason: "delayed guard" });
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
     await Promise.all([lateStageDone.promise, lateWorkflowDone.promise]);
@@ -230,12 +255,16 @@ describe("ctx.exit", () => {
     const store = createStore();
     let retainedStage: StageContext | undefined;
     let sessionCreateCount = 0;
-    const def = defineWorkflow("exit-retained-stage-gate")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-retained-stage-gate",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         retainedStage = ctx.stage("retained");
         return ctx.exit({ status: "skipped", reason: "retained gate" });
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,
@@ -272,15 +301,24 @@ describe("ctx.exit", () => {
   test("skips a workflow boundary without launching the child when exit is selected before launch", async () => {
     const store = createStore();
     let inputGetterCalls = 0;
-    const child = defineWorkflow("exit-boundary-child")
-      .input("trigger", Type.String())
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-boundary-child",
+      description: "",
+      inputs: {
+        trigger: Type.String(),
+      },
+      outputs: {},
+      run: async (ctx) => {
         await ctx.task("should-not-run", { prompt: "should not run" });
         return {};
-      })
-      .compile();
-    const def = defineWorkflow("exit-boundary-before-launch")
-      .run(async (ctx) => {
+      },
+    });
+    const def = workflow({
+      name: "exit-boundary-before-launch",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const childInputs = {} as { trigger: string };
         Object.defineProperty(childInputs, "trigger", {
           enumerable: true,
@@ -291,8 +329,8 @@ describe("ctx.exit", () => {
         });
         await ctx.workflow(child, { inputs: childInputs });
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store });
 
@@ -317,14 +355,22 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const child = defineWorkflow("exit-inflight-child")
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-inflight-child",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.task("child-slow", { prompt: "child slow" });
         return {};
-      })
-      .compile();
-    const parent = defineWorkflow("exit-parent-cancels-child")
-      .run(async (ctx) => {
+      },
+    });
+    const parent = workflow({
+      name: "exit-parent-cancels-child",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.workflow(child),
           (async () => {
@@ -333,8 +379,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(parent, {}, {
       store,

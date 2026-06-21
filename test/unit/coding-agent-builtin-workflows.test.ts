@@ -83,7 +83,7 @@ describe("coding-agent builtin resources", () => {
     );
     writeFileSync(
       workflowPath,
-      "import { defineWorkflow, Type } from '@bastani/workflows';\nexport default defineWorkflow('Custom').input('prompt', Type.String({ default: 'validation smoke' })).run(async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; }).compile();\n",
+      "import { workflow } from '@bastani/workflows';\nimport { Type } from 'typebox';\nexport default workflow({ name: 'Custom', description: '', inputs: { prompt: Type.String({ default: 'validation smoke' }) }, outputs: {}, run: async (ctx) => { await ctx.task('validation-smoke', { prompt: ctx.inputs.prompt }); return {}; } });\n",
       "utf-8",
     );
     writeFileSync(
@@ -127,15 +127,18 @@ describe("coding-agent builtin resources", () => {
     writeFileSync(
       join(workflowsDir, "package-command.ts"),
       [
-        `import { defineWorkflow } from "@bastani/workflows";`,
+        `import { workflow } from "@bastani/workflows";`,
         ``,
-        `export default defineWorkflow("package-command")`,
-        `  .description("Package command workflow")`,
-        `  .run(async (ctx) => {`,
+        `export default workflow({`,
+        `  name: "package-command",`,
+        `  description: "Package command workflow",`,
+        `  inputs: {},`,
+        `  outputs: {},`,
+        `  run: async (ctx) => {`,
         `    await ctx.task("validation-smoke", { prompt: "validation smoke" });`,
         `    return {};`,
-        `  })`,
-        `  .compile();`,
+        `  },`,
+        `});`,
       ].join("\n"),
       "utf-8",
     );

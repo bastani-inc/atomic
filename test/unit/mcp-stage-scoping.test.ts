@@ -10,7 +10,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { WorkflowMcpPort } from "../../packages/workflows/src/shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -52,14 +52,17 @@ describe("MCP stage scoping — call order", () => {
   test("set fires before adapter, clear fires after adapter in finally", async () => {
     const order: OrderEvent[] = [];
 
-    const wf = defineWorkflow("mcp-order-wf")
-      .description("order test")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-order-wf",
+      description: "order test",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const s = ctx.stage("work", { mcp: { allow: ["github"] } });
         await s.prompt("go");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, {
       store: createStore(),
@@ -86,14 +89,17 @@ describe("MCP stage scoping — call order", () => {
   test("clear fires in finally even when adapter throws", async () => {
     const order: OrderEvent[] = [];
 
-    const wf = defineWorkflow("mcp-order-fail-wf")
-      .description("order fail test")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-order-fail-wf",
+      description: "order fail test",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const s = ctx.stage("work", { mcp: { deny: ["filesystem"] } });
         await s.prompt("go");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, {
       store: createStore(),
@@ -124,13 +130,16 @@ describe("MCP stage scoping — call order", () => {
   test("no MCP calls when stage has no mcp options", async () => {
     const order: OrderEvent[] = [];
 
-    const wf = defineWorkflow("mcp-no-opts-wf")
-      .description("no mcp opts")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-no-opts-wf",
+      description: "no mcp opts",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("plain").prompt("go");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, {
       store: createStore(),
@@ -155,16 +164,19 @@ describe("MCP stage scoping — call order", () => {
       clearScope(stageId) { clearCalls.push(stageId); },
     };
 
-    const wf = defineWorkflow("mcp-concurrent-wf")
-      .description("concurrent stages")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-concurrent-wf",
+      description: "concurrent stages",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.stage("stage-a", { mcp: { allow: ["server-a"] } }).prompt("a"),
           ctx.stage("stage-b", { mcp: { allow: ["server-b"] } }).prompt("b"),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, {
       store: createStore(),
@@ -195,13 +207,16 @@ describe("MCP stage scoping — call order", () => {
 
 describe("MCP stage scoping — StageSnapshot.mcpScope", () => {
   test("mcpScope stored with allow and deny from StageOptions", async () => {
-    const wf = defineWorkflow("mcp-snap-wf")
-      .description("snapshot test")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-snap-wf",
+      description: "snapshot test",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s", { mcp: { allow: ["github", "fetch"], deny: ["filesystem"] } }).prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(wf, {}, {
       store: createStore(),
@@ -216,13 +231,16 @@ describe("MCP stage scoping — StageSnapshot.mcpScope", () => {
   });
 
   test("mcpScope.allow is null when only deny provided", async () => {
-    const wf = defineWorkflow("mcp-snap-deny-only-wf")
-      .description("deny only")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-snap-deny-only-wf",
+      description: "deny only",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s", { mcp: { deny: ["bad-server"] } }).prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(wf, {}, {
       store: createStore(),
@@ -235,13 +253,16 @@ describe("MCP stage scoping — StageSnapshot.mcpScope", () => {
   });
 
   test("mcpScope.deny is null when only allow provided", async () => {
-    const wf = defineWorkflow("mcp-snap-allow-only-wf")
-      .description("allow only")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-snap-allow-only-wf",
+      description: "allow only",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s", { mcp: { allow: ["safe-server"] } }).prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(wf, {}, {
       store: createStore(),
@@ -254,13 +275,16 @@ describe("MCP stage scoping — StageSnapshot.mcpScope", () => {
   });
 
   test("mcpScope absent when no mcp options passed", async () => {
-    const wf = defineWorkflow("mcp-snap-none-wf")
-      .description("no options")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-snap-none-wf",
+      description: "no options",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("plain").prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(wf, {}, {
       store: createStore(),
@@ -273,13 +297,16 @@ describe("MCP stage scoping — StageSnapshot.mcpScope", () => {
 
   test("mcpScope stored even when no mcp port configured", async () => {
     // Snapshot stores options regardless of port availability
-    const wf = defineWorkflow("mcp-snap-no-port-wf")
-      .description("no port")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-snap-no-port-wf",
+      description: "no port",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s", { mcp: { allow: ["x"] } }).prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(wf, {}, {
       store: createStore(),

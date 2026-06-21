@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, callThroughStack, createStore, defineWorkflow, resolveExecutorCustomPrompt, run,
+    assert, callThroughStack, createStore, workflow, resolveExecutorCustomPrompt, run,
     test, Type, waitForExecutorCustomPromptStage, waitForExecutorStagePendingPrompt,
     waitForExecutorStagePendingPrompts,
 } from "./executor-shared.js";
@@ -9,9 +9,14 @@ describe("executor.run", () => {
     test("custom prompt replay identity changes when replayIdentity changes", async () => {
         const st = createStore();
         const makeDef = (replayIdentity: string) =>
-            defineWorkflow("custom-prompt-identity-change-reprompt-wf")
-                .output("choice", Type.Optional(Type.Any()))
-                .run(async (ctx) => {
+            workflow({
+              name: "custom-prompt-identity-change-reprompt-wf",
+              description: "",
+              inputs: {},
+              outputs: {
+                choice: Type.Optional(Type.Any()),
+              },
+              run: async (ctx) => {
                     const choice = await ctx.ui.custom<string>(
                         () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
                         {
@@ -21,8 +26,8 @@ describe("executor.run", () => {
                     );
                     await ctx.stage("after").prompt(`after:${choice}`);
                     return { choice };
-                })
-                .compile();
+                },
+            });
 
         const firstRunPromise = run(
             makeDef("approval-widget:v1"),
@@ -76,9 +81,14 @@ describe("executor.run", () => {
     test("ctx.ui.custom prompt signal cancellation rejects with the abort reason and stores no answer", async () => {
         const st = createStore();
         const promptController = new AbortController();
-        const def = defineWorkflow("custom-prompt-node-signal-abort-wf")
-            .output("error", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "custom-prompt-node-signal-abort-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            error: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 try {
                     await ctx.ui.custom<string>(
                         () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
@@ -93,8 +103,8 @@ describe("executor.run", () => {
                         error: error instanceof Error ? error.message : String(error),
                     };
                 }
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(def, {}, { store: st, usePromptNodesForUi: true });
         const custom = await waitForExecutorCustomPromptStage(st);
@@ -115,12 +125,16 @@ describe("executor.run", () => {
 
     test("ctx.ui.custom rejects clearly when no UI adapter is available", async () => {
         const st = createStore();
-        const def = defineWorkflow("custom-prompt-node-headless-unavailable-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "custom-prompt-node-headless-unavailable-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.ui.custom<string>(() => ({ render: () => ["custom prompt"], invalidate: () => undefined }));
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(def, {}, { store: st });
 
@@ -134,17 +148,22 @@ describe("executor.run", () => {
 
     test("continuation maps replayed ctx.ui prompt nodes before downstream stages", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-prompt-node-parent-wf")
-            .output("proceed", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-prompt-node-parent-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            proceed: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("before").prompt("before");
                 const proceed = await ctx.ui.confirm("continue?");
                 await ctx
                     .stage("after")
                     .prompt(proceed ? "after yes" : "after no");
                 return { proceed };
-            })
-            .compile();
+            },
+        });
 
         const firstRunPromise = run(
             def,
@@ -225,17 +244,22 @@ describe("executor.run", () => {
 
     test("continuation re-prompts completed ctx.ui prompt nodes when prior answer is unavailable", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-prompt-node-missing-answer-wf")
-            .output("proceed", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-prompt-node-missing-answer-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            proceed: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("before").prompt("before");
                 const proceed = await ctx.ui.confirm("continue?");
                 await ctx
                     .stage("after")
                     .prompt(proceed ? "after yes" : "after no");
                 return { proceed };
-            })
-            .compile();
+            },
+        });
 
         const firstRunPromise = run(
             def,
@@ -314,9 +338,14 @@ describe("executor.run", () => {
 
     test("deep prompt call stacks still preserve distinct replay keys", async () => {
         const st = createStore();
-        const def = defineWorkflow("deep-prompt-callsite-wf")
-            .output("answers", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "deep-prompt-callsite-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            answers: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const left = callThroughStack(14, () =>
                     ctx.ui.confirm("same?"),
                 );
@@ -325,8 +354,8 @@ describe("executor.run", () => {
                 );
                 const answers = await Promise.all([left, right]);
                 return { answers };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -360,10 +389,15 @@ describe("executor.run", () => {
 
     test("continuation disambiguates parallel ctx.ui prompt nodes by replayKey", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-parallel-prompt-replay-key-wf")
-            .output("left", Type.Optional(Type.Any()))
-            .output("right", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-parallel-prompt-replay-key-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            left: Type.Optional(Type.Any()),
+            right: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const [left, right] = await Promise.all([
                     ctx.ui.confirm("left branch?"),
                     ctx.ui.confirm("right branch?"),
@@ -372,8 +406,8 @@ describe("executor.run", () => {
                     .stage("after")
                     .prompt(`after left:${left} right:${right}`);
                 return { left, right };
-            })
-            .compile();
+            },
+        });
 
         const firstRunPromise = run(
             def,

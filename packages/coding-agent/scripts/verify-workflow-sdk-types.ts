@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /*
  * Issue #1208 acceptance test: prove that an installed third-party package can
- * type-check `import { defineWorkflow, Type } from "@bastani/workflows"` (and the
+ * type-check `import { workflow } from "@bastani/workflows"` plus `Type` from `typebox` (and the
  * `@bastani/workflows/builtin/*` composition imports) under `tsc` (NodeNext) with
  * NO hand-authored .d.ts, NO `declare module` shim, and NO tsconfig `paths` alias —
  * using only the externally-resolvable types shipped through @bastani/atomic.
@@ -39,23 +39,26 @@ type Variant = {
 const TARBALL_DEP = "__TARBALL__";
 
 // Workflow file exercising the documented authoring import + a builtin composition import.
-const WORKFLOW_FILE = `import { defineWorkflow, Type, type Static } from "@bastani/workflows";
+const WORKFLOW_FILE = `import { workflow } from "@bastani/workflows";
+import { Type, type Static } from "typebox";
 import goal from "@bastani/workflows/builtin/goal";
 import { ralph } from "@bastani/workflows/builtin";
 
 const NameSchema = Type.String({ default: "world" });
 type Name = Static<typeof NameSchema>;
 
-export default defineWorkflow("hello")
-  .input("name", NameSchema)
-  .output("greeting", Type.String())
-  .run(async (ctx) => {
+export default workflow({
+  name: "hello",
+  description: "Type-check workflow package imports.",
+  inputs: { name: NameSchema },
+  outputs: { greeting: Type.String() },
+  run: async (ctx) => {
     const who: Name = ctx.inputs.name;
     await ctx.workflow(goal, { inputs: { objective: \`greet \${who}\` }, stageName: "goal" });
     await ctx.workflow(ralph, { inputs: { prompt: "noop" } });
     return { greeting: \`hello \${who}\` };
-  })
-  .compile();
+  },
+});
 `;
 
 function consumerPackageJson(name: string, atomic: object): string {

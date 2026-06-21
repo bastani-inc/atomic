@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStageControlRegistry, createStore, deferred, defineWorkflow, mockSession,
+    assert, createStageControlRegistry, createStore, deferred, workflow, mockSession,
     RESUME_CONTINUATION_PROMPT, run, test, waitForMicrotasks, waitForPromptCall,
     type StageSessionRuntime,
 } from "./executor-shared.js";
@@ -78,12 +78,16 @@ describe("executor — stage-control registry integration", () => {
                 return "assistant";
             },
         };
-        const def = defineWorkflow("resume-continuation-repeat-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-continuation-repeat-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("resumable").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -165,8 +169,12 @@ describe("executor — stage-control registry integration", () => {
                 },
             };
         };
-        const def = defineWorkflow("resume-continuation-fail-fast-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-continuation-fail-fast-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "slow", prompt: "slow" },
@@ -175,8 +183,8 @@ describe("executor — stage-control registry integration", () => {
                     { concurrency: 2, failFast: true },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -248,12 +256,16 @@ describe("executor — stage-control registry integration", () => {
                 promptReject?.(new Error("AbortError"));
             },
         };
-        const def = defineWorkflow("manual-pause-run-status-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "manual-pause-run-status-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("live").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -329,8 +341,12 @@ describe("executor — stage-control registry integration", () => {
                 },
             };
         };
-        const def = defineWorkflow("manual-pause-parallel-run-status-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "manual-pause-parallel-run-status-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "a", prompt: "a" },
@@ -339,8 +355,8 @@ describe("executor — stage-control registry integration", () => {
                     { concurrency: 2 },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,

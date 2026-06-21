@@ -22,7 +22,7 @@ import type {
     WorkflowToolArgs,
 } from "../../packages/workflows/src/extension/index.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import type {
     WorkflowDefinition,
@@ -69,7 +69,7 @@ export {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -132,10 +132,14 @@ export async function writeWorkflowFixture(
     const encodedName = JSON.stringify(name);
     await writeFile(
         filePath,
-        `import { defineWorkflow } from "@bastani/workflows";
-export default defineWorkflow(${encodedName})
-  .run(async () => ({}))
-  .compile();
+        `import { workflow } from "@bastani/workflows";
+export default workflow({
+  name: ${encodedName},
+  description: "",
+  inputs: {},
+  outputs: {},
+  run: async () => ({}),
+});
 `,
         "utf8",
     );

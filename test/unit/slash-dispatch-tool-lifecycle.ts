@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -122,13 +122,18 @@ describe("tool run-control actions", () => {
         );
     }
     test.serial("workflow tool answers ctx.ui.input prompts on running workflows", async () => {
-        const def = defineWorkflow("tool-answers-ctx-ui-input")
-            .output("answer", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "tool-answers-ctx-ui-input",
+          description: "",
+          inputs: {},
+          outputs: {
+            answer: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const answer = await ctx.ui.input("Value?");
                 return { answer };
-            })
-            .compile();
+            },
+        });
         const runtime = createExtensionRuntime({
             registry: createRegistry([def]),
         });

@@ -17,7 +17,7 @@ import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { Type } from "typebox";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 import type { PromptAdapter } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 
@@ -50,21 +50,30 @@ function makeDeferredAdapter(): DeferredAdapter {
 }
 
 function makeDelayedWorkflow(name: string): WorkflowDefinition {
-  return defineWorkflow(name)
-    .output("done", Type.Boolean())
-    .run(async (ctx) => {
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {
+      done: Type.Boolean(),
+    },
+    run: async (ctx) => {
       await ctx.stage("delayed-stage").prompt("waiting for input");
       return { done: true };
-    })
-    .compile() as WorkflowDefinition;
+    },
+  }) as WorkflowDefinition;
 }
 
 function makeThrowingWorkflow(name: string): WorkflowDefinition {
-  return defineWorkflow(name)
-    .run(async (_ctx) => {
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async (_ctx) => {
       throw new Error(`${name} internal error`);
-    })
-    .compile() as WorkflowDefinition;
+    },
+  }) as WorkflowDefinition;
 }
 
 function busyWait(ms: number): void {
@@ -117,9 +126,13 @@ describe("runDetached — returns immediately", () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
-    const def = defineWorkflow("named-wf-result")
-      .run(async () => ({}))
-      .compile() as WorkflowDefinition;
+    const def = workflow({
+      name: "named-wf-result",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    }) as WorkflowDefinition;
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     assert.ok(accepted.message.includes("named-wf-result"));
@@ -131,14 +144,19 @@ describe("runDetached — returns immediately", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
     let bodyStarted = false;
-    const def = defineWorkflow("sync-prefix-wf")
-      .output("done", Type.Boolean())
-      .run(async () => {
+    const def = workflow({
+      name: "sync-prefix-wf",
+      description: "",
+      inputs: {},
+      outputs: {
+        done: Type.Boolean(),
+      },
+      run: async () => {
         bodyStarted = true;
         busyWait(100);
         return { done: true };
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
 
     async function dispatchLike(): Promise<ReturnType<typeof runDetached>> {
       return runDetached(def, {}, { store, cancellation, jobs });
@@ -162,13 +180,18 @@ describe("runDetached — returns immediately", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
     let bodyStarted = false;
-    const def = defineWorkflow("killed-before-start-wf")
-      .output("unreached", Type.Boolean())
-      .run(async () => {
+    const def = workflow({
+      name: "killed-before-start-wf",
+      description: "",
+      inputs: {},
+      outputs: {
+        unreached: Type.Boolean(),
+      },
+      run: async () => {
         bodyStarted = true;
         return { unreached: true };
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     const killed = killRun(accepted.runId, { store, cancellation });
@@ -221,10 +244,15 @@ describe("statusRuns — lists detached run during active stage", () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
-    const def = defineWorkflow("completes-quickly-wf")
-      .output("done", Type.Boolean())
-      .run(async () => ({ done: true }))
-      .compile() as WorkflowDefinition;
+    const def = workflow({
+      name: "completes-quickly-wf",
+      description: "",
+      inputs: {},
+      outputs: {
+        done: Type.Boolean(),
+      },
+      run: async () => ({ done: true }),
+    }) as WorkflowDefinition;
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     const job = jobs.get(accepted.runId);
@@ -244,9 +272,13 @@ describe("statusRuns — lists detached run during active stage", () => {
     const store = createStore();
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
-    const def = defineWorkflow("completes-all-flag-wf")
-      .run(async () => ({}))
-      .compile() as WorkflowDefinition;
+    const def = workflow({
+      name: "completes-all-flag-wf",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    }) as WorkflowDefinition;
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     const job = jobs.get(accepted.runId);

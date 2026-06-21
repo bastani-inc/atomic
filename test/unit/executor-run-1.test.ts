@@ -1,20 +1,25 @@
 import { describe } from "bun:test";
 import {
-    assert, createCancellationRegistry, createRegistry, createStore, defineWorkflow, killRun,
+    assert, createCancellationRegistry, createRegistry, createStore, workflow, killRun,
     run, test, Type, type StageSnapshot, type WorkflowDefinition,
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("runs single-stage workflow with prompt adapter", async () => {
-        const def = defineWorkflow("test-wf")
-            .output("result", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "test-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            result: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const result = await ctx
                     .stage("stage-one")
                     .prompt("do the thing");
                 return { result };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -37,14 +42,19 @@ describe("executor.run", () => {
     test("validates input types before run starts", async () => {
         const st = createStore();
         let started = false;
-        const def = defineWorkflow("typed-input-wf")
-            .input("count", Type.Number())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "typed-input-wf",
+          description: "",
+          inputs: {
+            count: Type.Number(),
+          },
+          outputs: {},
+          run: async (ctx) => {
                 started = true;
                 await ctx.stage("stage").prompt(String(ctx.inputs.count));
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await assert.rejects(
             run(def, { count: "3" }, { store: st }),
@@ -63,13 +73,18 @@ describe("executor.run", () => {
     });
 
     test("validates declared output types before completing", async () => {
-        const def = defineWorkflow("typed-output-wf")
-            .output("count", Type.Number())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "typed-output-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            count: Type.Number(),
+          },
+          run: async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return { count: "not-a-number" } as never;
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -89,15 +104,20 @@ describe("executor.run", () => {
     });
 
     test("validates declared output values are JSON-serializable", async () => {
-        const def = defineWorkflow("serializable-output-wf")
-            .output("payload", Type.Record(Type.String(), Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "serializable-output-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            payload: Type.Record(Type.String(), Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return {
                     payload: { ok: true, bad: undefined },
                 } as never;
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -114,13 +134,18 @@ describe("executor.run", () => {
     });
 
     test("rejects Date output values before completing", async () => {
-        const def = defineWorkflow("date-output-wf")
-            .output("result", Type.Any())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "date-output-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            result: Type.Any(),
+          },
+          run: async (ctx) => {
                 await ctx.stage("stage").prompt("stage");
                 return { result: new Date() } as never;
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -137,10 +162,15 @@ describe("executor.run", () => {
     });
 
     test("fails completed workflows that create no stages", async () => {
-        const def = defineWorkflow("empty-graph-wf")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async () => ({ ok: true }))
-            .compile();
+        const def = workflow({
+          name: "empty-graph-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async () => ({ ok: true }),
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
 
@@ -154,18 +184,23 @@ describe("executor.run", () => {
 
     test("ctx.task creates a tracked stage and returns reusable previous output", async () => {
         const seenPrompts: string[] = [];
-        const def = defineWorkflow("task-wf")
-            .output("scout", Type.Optional(Type.Any()))
-            .output("planner", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "task-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            scout: Type.Optional(Type.Any()),
+            planner: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const scout = await ctx.task("scout", { prompt: "scout repo" });
                 const planner = await ctx.task("planner", {
                     prompt: "plan from {previous}",
                     previous: scout,
                 });
                 return { scout: scout.text, planner: planner.text };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -200,17 +235,22 @@ describe("executor.run", () => {
 
     test("ctx.task appends named previous output when no placeholder is present", async () => {
         const seenPrompts: string[] = [];
-        const def = defineWorkflow("task-context-wf")
-            .output("done", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "task-context-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            done: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = await ctx.task("first", { prompt: "first" });
                 await ctx.task("second", {
                     prompt: "second",
                     previous: [first, { name: "notes", text: "manual notes" }],
                 });
                 return { done: true };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -239,22 +279,34 @@ describe("executor.run", () => {
     test("ctx.workflow executes a compiled child with input and declared outputs", async () => {
         const seenPrompts: string[] = [];
         const st = createStore();
-        const child = defineWorkflow("research-child")
-            .input("topic", Type.String())
-            .output("summary", Type.String())
-            .output("extra", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const child = workflow({
+          name: "research-child",
+          description: "",
+          inputs: {
+            topic: Type.String(),
+          },
+          outputs: {
+            summary: Type.String(),
+            extra: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const result = await ctx.task("child-research", {
                     prompt: `child:${String(ctx.inputs.topic)}`,
                 });
                 return { summary: result.text, extra: "ignored" };
-            })
-            .compile();
-        const parent = defineWorkflow("research-parent")
-            .input("topic", Type.String())
-            .output("final", Type.Optional(Type.Any()))
-            .output("childRunId", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+            },
+        });
+        const parent = workflow({
+          name: "research-parent",
+          description: "",
+          inputs: {
+            topic: Type.String(),
+          },
+          outputs: {
+            final: Type.Optional(Type.Any()),
+            childRunId: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const childResult = await ctx.workflow(child, {
                     inputs: { topic: ctx.inputs.topic },
                 });
@@ -262,8 +314,8 @@ describe("executor.run", () => {
                     prompt: `final:${String(childResult.outputs.summary)}`,
                 });
                 return { final: final.text, childRunId: childResult.runId };
-            })
-            .compile();
+            },
+        });
         // Erase the precise input/output contracts to store the heterogeneous
         // definitions together (the run member is contravariant, so a specific
         // definition is not directly assignable to the erased registry type).
@@ -309,20 +361,30 @@ describe("executor.run", () => {
     test("ctx.workflow links the boundary to the live child run before completion", async () => {
         const st = createStore();
         const gate = Promise.withResolvers<string>();
-        const child = defineWorkflow("live-link-child")
-            .output("summary", Type.String())
-            .run(async (ctx) => {
+        const child = workflow({
+          name: "live-link-child",
+          description: "",
+          inputs: {},
+          outputs: {
+            summary: Type.String(),
+          },
+          run: async (ctx) => {
                 const result = await ctx.stage("child-wait").prompt("child-wait");
                 return { summary: result };
-            })
-            .compile();
-        const parent = defineWorkflow("live-link-parent")
-            .output("result", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+            },
+        });
+        const parent = workflow({
+          name: "live-link-parent",
+          description: "",
+          inputs: {},
+          outputs: {
+            result: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 return { result: childResult.outputs.summary };
-            })
-            .compile();
+            },
+        });
 
         const running = run(parent, {}, {
             store: st,
@@ -366,22 +428,32 @@ describe("executor.run", () => {
     test("ctx.workflow child runs can be killed directly through their live child run id", async () => {
         const st = createStore();
         const cancellation = createCancellationRegistry();
-        const child = defineWorkflow("killable-child")
-            .output("summary", Type.String())
-            .run(async (ctx) => {
+        const child = workflow({
+          name: "killable-child",
+          description: "",
+          inputs: {},
+          outputs: {
+            summary: Type.String(),
+          },
+          run: async (ctx) => {
                 await ctx.stage("child-marker").prompt("child-marker");
                 await new Promise((resolve) => setTimeout(resolve, 200));
                 return { summary: "should-not-complete" };
-            })
-            .compile();
-        const parent = defineWorkflow("killable-parent")
-            .output("result", Type.String())
-            .run(async (ctx) => {
+            },
+        });
+        const parent = workflow({
+          name: "killable-parent",
+          description: "",
+          inputs: {},
+          outputs: {
+            result: Type.String(),
+          },
+          run: async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 if (childResult.exited === true) throw new Error("child exited unexpectedly");
                 return { result: childResult.outputs.summary };
-            })
-            .compile();
+            },
+        });
 
         const running = run(parent, {}, {
             store: st,

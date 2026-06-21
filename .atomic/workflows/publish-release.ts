@@ -1,4 +1,5 @@
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import {
   commandSummary,
   runCommand,
@@ -25,37 +26,36 @@ import { runEphemeralRelease } from "./lib/publish-release-ephemeral.js";
 const releaseKindSchema = Type.Union([Type.Literal("release"), Type.Literal("prerelease")]);
 const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]);
 
-export default defineWorkflow("publish-release")
-  .description("Automate Atomic release/prerelease branch, PR, merge, tag, and publish monitoring.")
-  .input("target_version", Type.String({ description: "Version to publish, without a leading v." }))
-  .input("release_kind", Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
+export default workflow({
+  name: "publish-release",
+  description: "Automate Atomic release/prerelease branch, PR, merge, tag, and publish monitoring.",
+  inputs: {
+    target_version: Type.String({ description: "Version to publish, without a leading v." }),
+    release_kind: Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
     description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
-  }))
-  .input(
-    "base_ref",
-    Type.String({
+  }),
+    base_ref: Type.String({
       default: "main",
       description:
         "Branch to release from: the release-notes PR merges into it and the tag is cut from it. Defaults to main. Ignored when from_ref is set.",
     }),
-  )
-  .input(
-    "from_ref",
-    Type.Optional(
+    from_ref: Type.Optional(
       Type.String({
         description:
           "Optional: cut an ephemeral release from any commit/tag/branch. Auto-creates release/<version> (or prerelease/<version>) from this ref, gates on that branch's CI, cuts and publishes the tag, then deletes the branch. The changelog lives on the tag only; main is untouched.",
       }),
     ),
-  )
-  .output("status", statusSchema)
-  .output("target_version", Type.String({ description: "Validated version supplied to the release workflow." }))
-  .output("release_kind", releaseKindSchema)
-  .output("branch", Type.String({ description: "Release branch created by the workflow." }))
-  .output("pr_url", Type.Optional(Type.String({ description: "Best-effort PR URL detected from the PR stage output." })))
-  .output("tag", Type.Optional(Type.String({ description: "Version tag pushed to trigger publishing." })))
-  .output("summary", Type.String({ description: "Compact release execution summary." }))
-  .run(async (ctx) => {
+  },
+  outputs: {
+    status: statusSchema,
+    target_version: Type.String({ description: "Validated version supplied to the release workflow." }),
+    release_kind: releaseKindSchema,
+    branch: Type.String({ description: "Release branch created by the workflow." }),
+    pr_url: Type.Optional(Type.String({ description: "Best-effort PR URL detected from the PR stage output." })),
+    tag: Type.Optional(Type.String({ description: "Version tag pushed to trigger publishing." })),
+    summary: Type.String({ description: "Compact release execution summary." }),
+  },
+  run: async (ctx) => {
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
     const baseRef = ctx.inputs.base_ref.trim() || "main";
     const baseInstructions = releaseInstructions(release, baseRef);
@@ -352,5 +352,5 @@ export default defineWorkflow("publish-release")
     }
 
     return result;
-  })
-  .compile();
+  },
+});

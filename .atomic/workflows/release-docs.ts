@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import deepResearchCodebase from "@bastani/workflows/builtin/deep-research-codebase";
 import {
   currentBranchName,
@@ -46,23 +47,24 @@ const writeJson = (path: string, value: object): void => {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 };
 
-export default defineWorkflow("release-docs")
-  .description("Prepare Atomic release docs updates from the current branch, validate Mintlify docs, and open a PR.")
-  .output("result", Type.String({ description: "Human-readable release docs workflow summary." }))
-  .output(
-    "status",
-    Type.Union([Type.Literal("pr_created"), Type.Literal("no_changes"), Type.Literal("needs_investigation")], {
+export default workflow({
+  name: "release-docs",
+  description: "Prepare Atomic release docs updates from the current branch, validate Mintlify docs, and open a PR.",
+  inputs: {},
+  outputs: {
+    result: Type.String({ description: "Human-readable release docs workflow summary." }),
+    status: Type.Union([Type.Literal("pr_created"), Type.Literal("no_changes"), Type.Literal("needs_investigation")], {
       description: "Final workflow status.",
     }),
-  )
-  .output("current_branch", Type.String({ description: "Current git branch the workflow ran on." }))
-  .output("artifact_root", Type.String({ description: "Workflow artifact directory for this run." }))
-  .output("research_doc_path", Type.String({ description: "Research artifact path from the codebase research child workflow." }))
-  .output("stale_doc_task_count", Type.Number({ description: "Number of grouped stale-doc update tasks found." }))
-  .output("stale_doc_tasks", Type.Array(staleDocTaskSchema, { description: "Grouped stale-doc update tasks." }))
-  .output("validation_report_path", Type.String({ description: "Validation report artifact path." }))
-  .output("pr_summary", Type.Optional(Type.String({ description: "PR creation summary or no-op explanation." })))
-  .run(async (ctx) => {
+    current_branch: Type.String({ description: "Current git branch the workflow ran on." }),
+    artifact_root: Type.String({ description: "Workflow artifact directory for this run." }),
+    research_doc_path: Type.String({ description: "Research artifact path from the codebase research child workflow." }),
+    stale_doc_task_count: Type.Number({ description: "Number of grouped stale-doc update tasks found." }),
+    stale_doc_tasks: Type.Array(staleDocTaskSchema, { description: "Grouped stale-doc update tasks." }),
+    validation_report_path: Type.String({ description: "Validation report artifact path." }),
+    pr_summary: Type.Optional(Type.String({ description: "PR creation summary or no-op explanation." })),
+  },
+  run: async (ctx) => {
     ensureCleanWorkingTree();
     const prBase = DEFAULT_RELEASE_DOCS_BASE_BRANCH;
     const currentBranch = requireNonBaseBranch(currentBranchName(), prBase);
@@ -330,7 +332,7 @@ export default defineWorkflow("release-docs")
     const prSummary = readFileSync(prPath, "utf8").trim() || pr.text;
     const prVerification = verifyReleaseDocsPr(currentBranch, prBase);
     const status = runGit(["status", "--porcelain=v1", "packages/coding-agent/docs"]);
-    const finalStatus = status.length > 0 || !prVerification.ok ? "needs_investigation" : "pr_created";
+    const finalStatus: "needs_investigation" | "pr_created" = status.length > 0 || !prVerification.ok ? "needs_investigation" : "pr_created";
     const combinedPrSummary = [
       prSummary,
       "",
@@ -361,5 +363,5 @@ export default defineWorkflow("release-docs")
       validation_report_path: validationPath,
       pr_summary: combinedPrSummary,
     };
-  })
-  .compile();
+  },
+});

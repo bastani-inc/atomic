@@ -15,7 +15,7 @@ import type {
   WorkflowTaskResult,
   WorkflowTaskStep,
 } from "../../shared/types.js";
-import { stampWorkflowDefinition } from "../../workflows/define-workflow.js";
+import { stampWorkflowDefinition } from "../../authoring/workflow.js";
 import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { buildModelCandidatesFromCatalog, validateWorkflowModels, workflowModelId } from "../shared/model-fallback.js";
 import {

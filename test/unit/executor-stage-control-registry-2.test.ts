@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStageControlRegistry, createStore, defineWorkflow, mockSession, run, test,
+    assert, createStageControlRegistry, createStore, workflow, mockSession, run, test,
     waitForMicrotasks, type StageSessionRuntime,
 } from "./executor-shared.js";
 
@@ -20,12 +20,16 @@ describe("executor — stage-control registry integration", () => {
                 disposeCalls += 1;
             },
         };
-        const def = defineWorkflow("complete-chat-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "complete-chat-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("only").prompt("workflow prompt");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,
@@ -88,12 +92,16 @@ describe("executor — stage-control registry integration", () => {
                 disposeCalls += 1;
             },
         };
-        const def = defineWorkflow("attached-complete-chat-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "attached-complete-chat-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("only").prompt("workflow prompt");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,
@@ -176,12 +184,16 @@ describe("executor — stage-control registry integration", () => {
                 disposeCalls += 1;
             },
         };
-        const def = defineWorkflow("queued-complete-chat-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "queued-complete-chat-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("only").prompt("workflow prompt");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -230,12 +242,16 @@ describe("executor — stage-control registry integration", () => {
 
     test("ask_user_question tool execution without call ids ignores unrelated anonymous tool ends", async () => {
         const store = createStore();
-        const def = defineWorkflow("stage-hil-anonymous-callid-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "stage-hil-anonymous-callid-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("ask").prompt("ask the user");
                 return {};
-            })
-            .compile();
+            },
+        });
         const listeners = new Set<
             (event: { type: string; [key: string]: unknown }) => void
         >();
@@ -314,12 +330,16 @@ describe("executor — stage-control registry integration", () => {
     });
 
     test("ask_user_question tool execution marks the stage awaiting input transiently", async () => {
-        const def = defineWorkflow("stage-hil-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "stage-hil-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("ask").prompt("ask the user");
                 return {};
-            })
-            .compile();
+            },
+        });
         const listeners = new Set<
             (event: { type: string; [key: string]: unknown }) => void
         >();

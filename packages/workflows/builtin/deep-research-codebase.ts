@@ -8,37 +8,40 @@
  * ctx.parallel(), and ctx.chain().
  */
 
-import { defineWorkflow } from "../src/workflows/define-workflow.js";
 import { Type } from "typebox";
+import { workflow } from "../src/authoring/workflow.js";
 import {
   DEFAULT_MAX_CONCURRENCY,
   DEFAULT_MAX_PARTITIONS,
 } from "./deep-research-codebase-utils.js";
 import { runDeepResearchCodebase } from "./deep-research-codebase-runner.js";
 
-export default defineWorkflow("deep-research-codebase")
-  .description(
-    "Scout + research-history chain → parallel specialist waves → aggregator for deep codebase research.",
-  )
-  .input("prompt", Type.String({ description: "Research question or investigation focus for the codebase." }))
-  .input("max_partitions", Type.Number({
-    default: DEFAULT_MAX_PARTITIONS,
-    description:
-      "Maximum number of codebase partitions to explore in parallel. Actual partitions scale by one per 10K LoC, capped by this value.",
-  }))
-  .input("max_concurrency", Type.Number({
-    default: DEFAULT_MAX_CONCURRENCY,
-    description: "Maximum number of workflow stages to run concurrently during deep research.",
-  }))
-  .output("result", Type.Optional(Type.String({ description: "Final Markdown research report text, matching findings." })))
-  .output("findings", Type.Optional(Type.String({ description: "Final Markdown research report text." })))
-  .output("research_doc_path", Type.Optional(Type.String({ description: "Public report path under research/<date>-<topic>.md." })))
-  .output("artifact_dir", Type.Optional(Type.String({ description: "Hidden per-run handoff directory containing deep-research artifacts." })))
-  .output("manifest_path", Type.Optional(Type.String({ description: "Manifest JSON path inside the hidden artifact directory." })))
-  .output("partitions", Type.Optional(Type.Array(Type.String(), { description: "Codebase partitions the specialists explored." })))
-  .output("explorer_count", Type.Optional(Type.Number({ description: "Number of partition explorer groups used." })))
-  .output("specialist_count", Type.Optional(Type.Number({ description: "Number of specialist stages run across the research waves." })))
-  .output("max_concurrency", Type.Optional(Type.Number({ description: "Concurrency limit used for the run." })))
-  .output("history", Type.Optional(Type.String({ description: "Prior-research/history overview included in the final synthesis." })))
-  .run(runDeepResearchCodebase)
-  .compile();
+export default workflow({
+  name: "deep-research-codebase",
+  description: "Scout + research-history chain → parallel specialist waves → aggregator for deep codebase research.",
+  inputs: {
+    prompt: Type.String({ description: "Research question or investigation focus for the codebase." }),
+    max_partitions: Type.Number({
+      default: DEFAULT_MAX_PARTITIONS,
+      description:
+        "Maximum number of codebase partitions to explore in parallel. Actual partitions scale by one per 10K LoC, capped by this value.",
+    }),
+    max_concurrency: Type.Number({
+      default: DEFAULT_MAX_CONCURRENCY,
+      description: "Maximum number of workflow stages to run concurrently during deep research.",
+    }),
+  },
+  outputs: {
+    result: Type.Optional(Type.String({ description: "Final Markdown research report text, matching findings." })),
+    findings: Type.Optional(Type.String({ description: "Final Markdown research report text." })),
+    research_doc_path: Type.Optional(Type.String({ description: "Public report path under research/<date>-<topic>.md." })),
+    artifact_dir: Type.Optional(Type.String({ description: "Hidden per-run handoff directory containing deep-research artifacts." })),
+    manifest_path: Type.Optional(Type.String({ description: "Manifest JSON path inside the hidden artifact directory." })),
+    partitions: Type.Optional(Type.Array(Type.String(), { description: "Codebase partitions the specialists explored." })),
+    explorer_count: Type.Optional(Type.Number({ description: "Number of partition explorer groups used." })),
+    specialist_count: Type.Optional(Type.Number({ description: "Number of specialist stages run across the research waves." })),
+    max_concurrency: Type.Optional(Type.Number({ description: "Concurrency limit used for the run." })),
+    history: Type.Optional(Type.String({ description: "Prior-research/history overview included in the final synthesis." })),
+  },
+  run: async (ctx) => await runDeepResearchCodebase(ctx as never) as never,
+});

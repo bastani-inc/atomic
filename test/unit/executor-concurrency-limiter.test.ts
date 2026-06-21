@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test, Type,
+    assert, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";
 
 describe("executor.run — concurrency limiter", () => {
@@ -10,17 +10,22 @@ describe("executor.run — concurrency limiter", () => {
         let active = 0;
         let maxActive = 0;
 
-        const def = defineWorkflow("conc-serial-wf")
-            .output("a", Type.Optional(Type.Any()))
-            .output("b", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "conc-serial-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            a: Type.Optional(Type.Any()),
+            b: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const task = async (name: string): Promise<string> => {
                     return ctx.stage(name).prompt(name);
                 };
                 const [a, b] = await Promise.all([task("s1"), task("s2")]);
                 return { a, b };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -57,19 +62,24 @@ describe("executor.run — concurrency limiter", () => {
         let active = 0;
         let maxActive = 0;
 
-        const def = defineWorkflow("conc-2-wf")
-            .output("a", Type.Optional(Type.Any()))
-            .output("b", Type.Optional(Type.Any()))
-            .output("c", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "conc-2-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            a: Type.Optional(Type.Any()),
+            b: Type.Optional(Type.Any()),
+            c: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const [a, b, c] = await Promise.all([
                     ctx.stage("s1").prompt("s1"),
                     ctx.stage("s2").prompt("s2"),
                     ctx.stage("s3").prompt("s3"),
                 ]);
                 return { a, b, c };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -106,16 +116,20 @@ describe("executor.run — concurrency limiter", () => {
         let active = 0;
         let maxActive = 0;
 
-        const def = defineWorkflow("conc-default-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "conc-default-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await Promise.all(
                     ["s1", "s2", "s3", "s4", "s5", "s6"].map((n) =>
                         ctx.stage(n).prompt(n),
                     ),
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -144,16 +158,20 @@ describe("executor.run — concurrency limiter", () => {
     test("concurrency limiter releases on stage failure", async () => {
         let completedCount = 0;
 
-        const def = defineWorkflow("conc-fail-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "conc-fail-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const [, b] = await Promise.allSettled([
                     ctx.stage("fail").prompt("fail-me"),
                     ctx.stage("ok").prompt("succeed"),
                 ]);
                 if (b.status === "fulfilled") completedCount++;
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,

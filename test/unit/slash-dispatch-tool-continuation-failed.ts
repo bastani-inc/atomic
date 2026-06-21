@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -123,17 +123,22 @@ describe("tool run-control actions", () => {
     }
     test("makeExecuteWorkflowTool resume starts linked continuation for failed resumable workflow", async () => {
         const sourceRunId = `resume-tool-source-${Date.now()}`;
-        const def = defineWorkflow("tool-resume-wf")
-            .output("first", Type.Optional(Type.Any()))
-            .output("second", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "tool-resume-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            first: Type.Optional(Type.Any()),
+            second: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
                     .stage("second")
                     .prompt(`second:${first}`);
                 return { first, second };
-            })
-            .compile();
+            },
+        });
 
         store.recordRunStart({
             id: sourceRunId,

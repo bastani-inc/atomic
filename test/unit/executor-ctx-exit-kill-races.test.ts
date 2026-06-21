@@ -4,7 +4,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { killRun } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (reason?: unknown) => void } {
   let resolve!: () => void;
@@ -62,8 +62,12 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const def = defineWorkflow("exit-kill-race")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-kill-race",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.task("cleanup-pending", { prompt: "wait for cleanup" }),
           (async () => {
@@ -72,8 +76,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     let runId = "";
     const runPromise = run(def, {}, {

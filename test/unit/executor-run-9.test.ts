@@ -1,15 +1,20 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test, Type,
+    assert, createStore, workflow, run, test, Type,
     waitForExecutorStagePendingPrompts
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("continuation preserves concurrent prompt topology before settlement", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-concurrent-prompt-topology-wf")
-            .output("answers", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-concurrent-prompt-topology-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            answers: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = ctx.ui.confirm("same?");
                 await new Promise((resolve) => setTimeout(resolve, 10));
                 const second = ctx.ui.confirm("same?");
@@ -18,8 +23,8 @@ describe("executor.run", () => {
                     .stage("after")
                     .prompt(`after ${answers[0]}/${answers[1]}`);
                 return { answers };
-            })
-            .compile();
+            },
+        });
 
         const firstRunPromise = run(
             def,
@@ -100,18 +105,23 @@ describe("executor.run", () => {
 
     test("continuation re-prompts ambiguous duplicate same-callsite prompts", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-ambiguous-same-callsite-prompt-wf")
-            .output("left", Type.Optional(Type.Any()))
-            .output("right", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-ambiguous-same-callsite-prompt-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            left: Type.Optional(Type.Any()),
+            right: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const askSame = () => ctx.ui.confirm("same?");
                 const [left, right] = await Promise.all(
                     [0, 1].map(() => askSame()),
                 );
                 await ctx.stage("after").prompt(`after ${left}/${right}`);
                 return { left, right };
-            })
-            .compile();
+            },
+        });
 
         const firstRunPromise = run(
             def,
@@ -213,13 +223,17 @@ describe("executor.run", () => {
 
     test("continuation rejects replay when stage topology changes", async () => {
         const st = createStore();
-        const sourceDef = defineWorkflow("resume-topology-source-wf")
-            .run(async (ctx) => {
+        const sourceDef = workflow({
+          name: "resume-topology-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 await ctx.stage("second").prompt(`second:${first}`);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             sourceDef,
@@ -243,12 +257,16 @@ describe("executor.run", () => {
             .find((candidate) => candidate.id === firstRun.runId)!;
         const failedStageId = source.failedStageId!;
 
-        const changedDef = defineWorkflow("resume-topology-source-wf")
-            .run(async (ctx) => {
+        const changedDef = workflow({
+          name: "resume-topology-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("second").prompt("second-without-parent");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const calls: string[] = [];
         const continued = await run(
@@ -278,14 +296,18 @@ describe("executor.run", () => {
 
     test("continuation rejects single-candidate replay when a parent stage is inserted", async () => {
         const st = createStore();
-        const sourceDef = defineWorkflow("resume-inserted-parent-source-wf")
-            .run(async (ctx) => {
+        const sourceDef = workflow({
+          name: "resume-inserted-parent-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const a = await ctx.stage("A").prompt("A");
                 const b = await ctx.stage("B").prompt(`B:${a}`);
                 await ctx.stage("after").prompt(`after:${b}`);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             sourceDef,
@@ -309,14 +331,18 @@ describe("executor.run", () => {
             .find((candidate) => candidate.id === firstRun.runId)!;
         const failedStageId = source.failedStageId!;
 
-        const changedDef = defineWorkflow("resume-inserted-parent-source-wf")
-            .run(async (ctx) => {
+        const changedDef = workflow({
+          name: "resume-inserted-parent-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const a = await ctx.stage("A").prompt("A");
                 const x = await ctx.stage("X").prompt(`X:${a}`);
                 await ctx.stage("B").prompt(`B:${x}`);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const calls: string[] = [];
         const continued = await run(
@@ -346,10 +372,12 @@ describe("executor.run", () => {
 
     test("continuation rejects replay when parallel roots become sequential", async () => {
         const st = createStore();
-        const sourceDef = defineWorkflow(
-            "resume-parallel-to-sequential-source-wf",
-        )
-            .run(async (ctx) => {
+        const sourceDef = workflow({
+          name: "resume-parallel-to-sequential-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const results = await ctx.parallel(
                     [
                         { name: "a", prompt: "a" },
@@ -361,8 +389,8 @@ describe("executor.run", () => {
                     .stage("after")
                     .prompt(results.map((result) => result.text).join(","));
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             sourceDef,
@@ -388,15 +416,17 @@ describe("executor.run", () => {
             .find((candidate) => candidate.id === firstRun.runId)!;
         const failedStageId = source.failedStageId!;
 
-        const changedDef = defineWorkflow(
-            "resume-parallel-to-sequential-source-wf",
-        )
-            .run(async (ctx) => {
+        const changedDef = workflow({
+          name: "resume-parallel-to-sequential-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const a = await ctx.stage("a").prompt("a");
                 await ctx.stage("b").prompt(`b after ${a}`);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const calls: string[] = [];
         const continued = await run(

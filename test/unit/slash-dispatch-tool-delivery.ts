@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,

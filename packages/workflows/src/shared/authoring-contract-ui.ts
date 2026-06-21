@@ -2,7 +2,7 @@
 
 import type { KeybindingsManager, Theme } from "@bastani/atomic";
 import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
-import type { Static, TOptional, TSchema } from "typebox";
+import type { TSchema } from "typebox";
 import type {
   RunStatus,
   StageAdapters,
@@ -143,84 +143,8 @@ export interface WorkflowDefinition<
   run(ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>): Promise<TOutputs> | TOutputs;
 }
 
-type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
-  ? { readonly [P in K]?: Static<S> }
-  : { readonly [P in K]: Static<S> };
-
-type DeclaredProvidedEntry<K extends string, S extends TSchema> =
-  S extends TOptional<TSchema> | { readonly default: WorkflowSerializableValue }
-    ? { readonly [P in K]?: Static<S> }
-    : { readonly [P in K]: Static<S> };
-
-type Simplify<T> = { [K in keyof T]: T[K] } & {};
 export type NoExtraOutputs<TDeclared extends WorkflowOutputValues, TActual extends TDeclared> = TActual &
   Record<Exclude<keyof TActual, keyof TDeclared>, never>;
-
-export interface WorkflowBuilder<
-  TInputs extends WorkflowInputValues = {},
-  TOutputs extends WorkflowOutputValues = {},
-  TRunInputs extends WorkflowInputValues = TInputs,
-  TDefinitionBrand extends object = {},
-  TCompiledDefinition extends WorkflowDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand> = WorkflowDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand>,
-> {
-  description(text: string): WorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
-  input<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): WorkflowBuilder<
-    Simplify<TInputs & DeclaredResolvedEntry<K, S>>,
-    TOutputs,
-    Simplify<TRunInputs & DeclaredProvidedEntry<K, S>>,
-    TDefinitionBrand,
-    WorkflowDefinition<Simplify<TInputs & DeclaredResolvedEntry<K, S>>, TOutputs, Simplify<TRunInputs & DeclaredProvidedEntry<K, S>>, TDefinitionBrand> & TDefinitionBrand
-  >;
-  output<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): WorkflowBuilder<
-    TInputs,
-    Simplify<TOutputs & (DeclaredResolvedEntry<K, S> & WorkflowOutputValues)>,
-    TRunInputs,
-    TDefinitionBrand,
-    WorkflowDefinition<TInputs, Simplify<TOutputs & (DeclaredResolvedEntry<K, S> & WorkflowOutputValues)>, TRunInputs, TDefinitionBrand> & TDefinitionBrand
-  >;
-  worktreeFromInputs(binding: WorkflowWorktreeInputBinding): WorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
-  run<TActualOutputs extends TOutputs>(
-    fn: (ctx: WorkflowRunContext<TInputs, TDefinitionBrand, TOutputs>) => Promise<NoExtraOutputs<TOutputs, TActualOutputs>> | NoExtraOutputs<TOutputs, TActualOutputs>,
-  ): CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
-}
-
-export interface CompletedWorkflowBuilder<
-  TInputs extends WorkflowInputValues = {},
-  TOutputs extends WorkflowOutputValues = {},
-  TRunInputs extends WorkflowInputValues = TInputs,
-  TDefinitionBrand extends object = {},
-  TCompiledDefinition extends WorkflowDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand> = WorkflowDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand>,
-> extends WorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition> {
-  description(text: string): CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
-  input<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): CompletedWorkflowBuilder<
-    Simplify<TInputs & DeclaredResolvedEntry<K, S>>,
-    TOutputs,
-    Simplify<TRunInputs & DeclaredProvidedEntry<K, S>>,
-    TDefinitionBrand,
-    WorkflowDefinition<Simplify<TInputs & DeclaredResolvedEntry<K, S>>, TOutputs, Simplify<TRunInputs & DeclaredProvidedEntry<K, S>>, TDefinitionBrand> & TDefinitionBrand
-  >;
-  output<K extends string, S extends TSchema>(
-    key: K,
-    schema: S,
-  ): CompletedWorkflowBuilder<
-    TInputs,
-    Simplify<TOutputs & (DeclaredResolvedEntry<K, S> & WorkflowOutputValues)>,
-    TRunInputs,
-    TDefinitionBrand,
-    WorkflowDefinition<TInputs, Simplify<TOutputs & (DeclaredResolvedEntry<K, S> & WorkflowOutputValues)>, TRunInputs, TDefinitionBrand> & TDefinitionBrand
-  >;
-  worktreeFromInputs(binding: WorkflowWorktreeInputBinding): CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, TDefinitionBrand, TCompiledDefinition>;
-  compile(): TCompiledDefinition;
-}
 
 export interface WorkflowOverlayAdapter extends WorkflowSerializableObject {}
 export interface RunSnapshot extends WorkflowSerializableObject {}

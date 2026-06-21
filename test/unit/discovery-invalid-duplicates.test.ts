@@ -35,10 +35,10 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
     assert.ok(inv.length > 0);
     assert.match(inv[0]!.message, /missing or incorrect __piWorkflow sentinel/);
-    assert.match(inv[0]!.message, /defineWorkflow\(\.\.\.\)\.compile\(\)/);
+    assert.match(inv[0]!.message, /workflow\(\{\.\.\.\}\)/);
   });
 
-  test("forged __piWorkflow object emits defineWorkflow compile diagnostic", async () => {
+  test("forged __piWorkflow object emits workflow diagnostic", async () => {
     const cwd = makeTempDir("forged-sentinel");
     const wfDir = join(cwd, ".atomic", "workflows");
     mkdirSync(wfDir, { recursive: true });
@@ -61,7 +61,7 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     assert.equal(registry.has("forged"), false);
     const inv = errors.filter((e) => e.code === "INVALID_DEFINITION");
     assert.ok(inv.length > 0);
-    assert.match(inv[0]!.message, /not produced by defineWorkflow\(\.\.\.\)\.compile\(\)/);
+    assert.match(inv[0]!.message, /not produced by workflow\(\{\.\.\.\}\)/);
     assert.match(inv[0]!.message, /hand-rolled __piWorkflow objects are not supported/);
   });
 
@@ -96,11 +96,14 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
       join(wfDir, "side-effect.js"),
       [
         `import { writeFileSync } from "node:fs";`,
-        `import { defineWorkflow } from "@bastani/workflows";`,
-        `export default defineWorkflow("Side Effect Workflow")`,
-        `  .description("Would write during run if discovery invoked it")`,
-        `  .run(async () => { writeFileSync(new URL("../../side-effect.txt", import.meta.url), "ran"); return {}; })`,
-        `  .compile();`,
+        `import { workflow } from "@bastani/workflows";`,
+        `export default workflow({`,
+        `  name: "Side Effect Workflow",`,
+        `  description: "Would write during run if discovery invoked it",`,
+        `  inputs: {},`,
+        `  outputs: {},`,
+        `  run: async () => { writeFileSync(new URL("../../side-effect.txt", import.meta.url), "ran"); return {}; },`,
+        `});`,
       ].join("\n"),
       "utf-8",
     );
@@ -119,11 +122,14 @@ describe("discoverWorkflows — INVALID_DEFINITION diagnostics", () => {
     writeFileSync(
       join(wfDir, "aliased.js"),
       [
-        `import { defineWorkflow } from "@bastani/workflows";`,
-        `export default defineWorkflow("Aliased Stage Workflow")`,
-        `  .description("Uses an aliased task primitive")`,
-        `  .run(async (ctx) => { const { task } = ctx; await task("validation-smoke", { prompt: "validation smoke" }); return {}; })`,
-        `  .compile();`,
+        `import { workflow } from "@bastani/workflows";`,
+        `export default workflow({`,
+        `  name: "Aliased Stage Workflow",`,
+        `  description: "Uses an aliased task primitive",`,
+        `  inputs: {},`,
+        `  outputs: {},`,
+        `  run: async (ctx) => { const { task } = ctx; await task("validation-smoke", { prompt: "validation smoke" }); return {}; },`,
+        `});`,
       ].join("\n"),
       "utf-8",
     );

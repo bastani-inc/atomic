@@ -39,11 +39,14 @@ afterEach(async () => {
 /** Canonical valid workflow JS source (default export). */
 export function validDefaultExportSrc(name: string, normalizedName: string): string {
   return `
-import { defineWorkflow } from "@bastani/workflows";
-const wf = defineWorkflow(${JSON.stringify(normalizedName)})
-  .description(${JSON.stringify(name)} + " test workflow")
-  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-  .compile();
+import { workflow } from "@bastani/workflows";
+const wf = workflow({
+  name: ${JSON.stringify(normalizedName)},
+  description: ${JSON.stringify(name)} + " test workflow",
+  inputs: {},
+  outputs: {},
+  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+});
 if (wf.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");
 export default wf;
 `;
@@ -52,11 +55,14 @@ export default wf;
 /** Valid workflow JS source as named export. */
 export function validNamedExportSrc(name: string, normalizedName: string, exportName = "workflow"): string {
   return `
-import { defineWorkflow } from "@bastani/workflows";
-export const ${exportName} = defineWorkflow(${JSON.stringify(normalizedName)})
-  .description(${JSON.stringify(name)} + " test workflow")
-  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-  .compile();
+import { workflow as defineWorkflow } from "@bastani/workflows";
+export const ${exportName} = defineWorkflow({
+  name: ${JSON.stringify(normalizedName)},
+  description: ${JSON.stringify(name)} + " test workflow",
+  inputs: {},
+  outputs: {},
+  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+});
 if (${exportName}.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");
 `;
 }
@@ -69,18 +75,24 @@ export function validDefaultAndNamedExportSrc(
   namedNorm: string,
 ): string {
   return `
-import { defineWorkflow } from "@bastani/workflows";
-const first = defineWorkflow(${JSON.stringify(defaultNorm)})
-  .description(${JSON.stringify(defaultName)} + " default export workflow")
-  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-  .compile();
+import { workflow } from "@bastani/workflows";
+const first = workflow({
+  name: ${JSON.stringify(defaultNorm)},
+  description: ${JSON.stringify(defaultName)} + " default export workflow",
+  inputs: {},
+  outputs: {},
+  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+});
 if (first.normalizedName !== ${JSON.stringify(defaultNorm)}) throw new Error("unexpected normalized name");
 export default first;
 
-export const second = defineWorkflow(${JSON.stringify(namedNorm)})
-  .description(${JSON.stringify(namedName)} + " named export workflow")
-  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-  .compile();
+export const second = workflow({
+  name: ${JSON.stringify(namedNorm)},
+  description: ${JSON.stringify(namedName)} + " named export workflow",
+  inputs: {},
+  outputs: {},
+  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+});
 if (second.normalizedName !== ${JSON.stringify(namedNorm)}) throw new Error("unexpected normalized name");
 `;
 }

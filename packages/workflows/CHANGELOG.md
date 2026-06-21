@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the removed `defineWorkflow(...).run(...).compile()` builder with the single `workflow({ name?, description, inputs, outputs, run })` authoring door. Authored workflows must import `workflow` from `@bastani/workflows`, import `Type` from `typebox`, provide an `outputs` map, and export the returned definition directly; `.compile()` and the builder types are no longer exported.
+
 ## [0.9.0-alpha.1] - 2026-06-20
 
 ### Breaking Changes

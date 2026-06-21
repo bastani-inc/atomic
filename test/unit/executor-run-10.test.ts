@@ -1,14 +1,18 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, deferred, defineWorkflow, mockSession, run, sleep, test, Type,
+    assert, createStore, deferred, workflow, mockSession, run, sleep, test, Type,
     type AgentSession, type StageSnapshot
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("continuation replays multiple completed parallel siblings without topology drift", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-parallel-roots-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-parallel-roots-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const results = await ctx.parallel(
                     [
                         { name: "alpha", prompt: "alpha" },
@@ -20,8 +24,8 @@ describe("executor.run", () => {
                     .stage("fail-after-parallel")
                     .prompt(results.map((result) => result.text).join(","));
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             def,
@@ -77,8 +81,12 @@ describe("executor.run", () => {
 
     test("continuation rejects ambiguous duplicate-name replay topology", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-ambiguous-duplicate-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-ambiguous-duplicate-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "duplicate", prompt: "one" },
@@ -88,8 +96,8 @@ describe("executor.run", () => {
                 );
                 await ctx.stage("fail-after-duplicates").prompt("fail");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             def,
@@ -113,14 +121,16 @@ describe("executor.run", () => {
             .find((candidate) => candidate.id === firstRun.runId)!;
         const failedStageId = source.failedStageId!;
 
-        const ambiguousReplayDef = defineWorkflow(
-            "resume-ambiguous-duplicate-wf",
-        )
-            .run(async (ctx) => {
+        const ambiguousReplayDef = workflow({
+          name: "resume-ambiguous-duplicate-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("duplicate").prompt("one-of-two-roots");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const continued = await run(
             ambiguousReplayDef,
@@ -145,13 +155,17 @@ describe("executor.run", () => {
 
     test("replayed stage contexts reject mutation methods", async () => {
         const st = createStore();
-        const sourceDef = defineWorkflow("resume-replay-mutation-source-wf")
-            .run(async (ctx) => {
+        const sourceDef = workflow({
+          name: "resume-replay-mutation-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 await ctx.stage("second").prompt(`second:${first}`);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const firstRun = await run(
             sourceDef,
@@ -175,12 +189,16 @@ describe("executor.run", () => {
             .find((candidate) => candidate.id === firstRun.runId)!;
         const failedStageId = source.failedStageId!;
 
-        const mutationDef = defineWorkflow("resume-replay-mutation-source-wf")
-            .run(async (ctx) => {
+        const mutationDef = workflow({
+          name: "resume-replay-mutation-source-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("first").setModel("openai/example" as never);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const continued = await run(
             mutationDef,
@@ -210,9 +228,14 @@ describe("executor.run", () => {
     test("continuation replays completed parallel sibling after failed source stage", async () => {
         const st = createStore();
         let failOnce = true;
-        const def = defineWorkflow("resume-parallel-sibling-wf")
-            .output("results", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-parallel-sibling-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            results: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const results = await ctx.parallel(
                     [
                         { name: "failed-first", prompt: "fail-once" },
@@ -223,8 +246,8 @@ describe("executor.run", () => {
                 return {
                     results: results.map((result) => result.text).join(","),
                 };
-            })
-            .compile();
+            },
+        });
 
         const firstRunCalls: string[] = [];
         const firstRun = await run(
@@ -293,17 +316,22 @@ describe("executor.run", () => {
     });
 
     test("rate-limited fallback attempts are recorded on the active-blocked stage snapshot", async () => {
-        const def = defineWorkflow("failed-fallback-metadata")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "failed-fallback-metadata",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx.task("scout", {
                     prompt: "inspect",
                     model: "anthropic/primary",
                     fallbackModels: ["openai/fallback"],
                 });
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -351,15 +379,20 @@ describe("executor.run", () => {
     test("explicit model stage publishes running fast-mode metadata before prompt resolves", async () => {
         const promptGate = deferred<string | void>();
         const st = createStore();
-        const def = defineWorkflow("explicit-model-running-fast-metadata")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "explicit-model-running-fast-metadata",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx
                     .stage("scout", { model: "openai/gpt-5.1-codex" })
                     .prompt("inspect");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,

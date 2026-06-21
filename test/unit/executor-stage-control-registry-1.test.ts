@@ -1,7 +1,7 @@
 import { describe } from "bun:test";
 import {
     assert, createCancellationRegistry, createStageControlRegistry, createStore, deferred,
-    defineWorkflow, killRun, mockSession, pauseRun, resumeRun, run, sleep, test, Type,
+    workflow, killRun, mockSession, pauseRun, resumeRun, run, sleep, test, Type,
     waitForMicrotasks, type StageSessionRuntime,
 } from "./executor-shared.js";
 
@@ -9,9 +9,14 @@ describe("executor — stage-control registry integration", () => {
     test("stage handle is registered after ctx.stage() before prompt", async () => {
         const registry = createStageControlRegistry();
         let observedHandleCount = 0;
-        const def = defineWorkflow("handle-wf")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "handle-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 const stage = ctx.stage("first");
                 // The handle is registered at ctx.stage() time, before prompt().
                 observedHandleCount = registry.forRun(
@@ -23,8 +28,8 @@ describe("executor — stage-control registry integration", () => {
                 ).length;
                 await stage.prompt("hi");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
         const adapters = {
             agentSession: {
                 async create() {
@@ -60,15 +65,20 @@ describe("executor — stage-control registry integration", () => {
         const sawStage = deferred<{ runId: string; stageId: string }>();
         let sawStageResolved = false;
         const promptCalls: string[] = [];
-        const def = defineWorkflow("pending-pause-wf")
-            .output("text", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "pending-pause-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            text: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const stage = ctx.stage("pending-before-prompt");
                 await releasePrompt.promise;
                 const text = await stage.prompt("go");
                 return { text };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -157,15 +167,20 @@ describe("executor — stage-control registry integration", () => {
                 promptReject?.(new Error("AbortError"));
             },
         };
-        const def = defineWorkflow("pending-attached-stream-pause-wf")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "pending-attached-stream-pause-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 const stage = ctx.stage("pending-live");
                 await releaseWorkflowPrompt.promise;
                 await stage.prompt("workflow prompt");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const unhandled: string[] = [];
         const onUnhandled = (reason: Error | string): void => {
@@ -230,15 +245,20 @@ describe("executor — stage-control registry integration", () => {
         const releasePrompt = deferred();
         const sawStage = deferred<{ runId: string; stageId: string }>();
         let sawStageResolved = false;
-        const def = defineWorkflow("pending-pause-kill-wf")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "pending-pause-kill-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 const stage = ctx.stage("pending-before-kill");
                 await releasePrompt.promise;
                 await stage.prompt("go");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -285,12 +305,16 @@ describe("executor — stage-control registry integration", () => {
     });
 
     test("session metadata lands in stage snapshot after lazy attach", async () => {
-        const def = defineWorkflow("session-meta-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "session-meta-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("a").prompt("hello");
                 return {};
-            })
-            .compile();
+            },
+        });
         const adapters = {
             agentSession: {
                 async create() {
@@ -317,14 +341,18 @@ describe("executor — stage-control registry integration", () => {
     });
 
     test("failed schema-backed stage retains session metadata", async () => {
-        const def = defineWorkflow("failed-session-meta-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "failed-session-meta-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("review", {
                     schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
                 }).prompt("review");
                 return {};
-            })
-            .compile();
+            },
+        });
         const store = createStore();
         const result = await run(
             def,
@@ -351,14 +379,18 @@ describe("executor — stage-control registry integration", () => {
 
     test("failed schema-backed stage persists session metadata", async () => {
         const calls: Array<{ type: string; payload: Record<string, unknown> }> = [];
-        const def = defineWorkflow("failed-session-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "failed-session-persist-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("review", {
                     schema: Type.Object({ ok: Type.Boolean() }, { additionalProperties: false }),
                 }).prompt("review");
                 return {};
-            })
-            .compile();
+            },
+        });
         await run(
             def,
             {},
@@ -387,12 +419,16 @@ describe("executor — stage-control registry integration", () => {
     });
 
     test("attachable flag is cleared once the stage settles", async () => {
-        const def = defineWorkflow("attachable-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "attachable-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("only").prompt("hi");
                 return {};
-            })
-            .compile();
+            },
+        });
         const adapters = {
             agentSession: {
                 async create() {

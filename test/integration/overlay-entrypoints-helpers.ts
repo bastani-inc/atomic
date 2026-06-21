@@ -57,7 +57,7 @@ export {
 export { runDetached } from "../../packages/workflows/src/runs/background/runner.js";
 export { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 export { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-export { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+export { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 export { Type } from "typebox";
 export { default as factory } from "../../packages/workflows/src/extension/index.js";
 import type {

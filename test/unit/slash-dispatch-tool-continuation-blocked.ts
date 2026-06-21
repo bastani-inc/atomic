@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -123,17 +123,22 @@ describe("tool run-control actions", () => {
     }
     test("makeExecuteWorkflowTool resume starts linked continuation for active blocked recoverable workflow", async () => {
         const sourceRunId = `resume-tool-blocked-${Date.now()}`;
-        const def = defineWorkflow("tool-resume-blocked-wf")
-            .output("first", Type.Optional(Type.Any()))
-            .output("second", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "tool-resume-blocked-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            first: Type.Optional(Type.Any()),
+            second: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
                     .stage("second")
                     .prompt(`second:${first}`);
                 return { first, second };
-            })
-            .compile();
+            },
+        });
 
         store.recordRunStart({
             id: sourceRunId,
@@ -271,17 +276,22 @@ describe("tool run-control actions", () => {
 
     test("makeExecuteWorkflowTool resume finalizes restored blocked source run", async () => {
         const sourceRunId = `resume-tool-restored-blocked-${Date.now()}`;
-        const def = defineWorkflow("tool-resume-restored-blocked-wf")
-            .output("first", Type.Optional(Type.Any()))
-            .output("second", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "tool-resume-restored-blocked-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            first: Type.Optional(Type.Any()),
+            second: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
                     .stage("second")
                     .prompt(`second:${first}`);
                 return { first, second };
-            })
-            .compile();
+            },
+        });
         const entries: SessionEntry[] = [
             {
                 id: "e1",

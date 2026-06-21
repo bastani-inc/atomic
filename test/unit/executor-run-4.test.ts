@@ -1,23 +1,28 @@
 import { describe } from "bun:test";
 import {
-    assert, createRegistry, createStore, defineWorkflow, run, test, Type,
+    assert, createRegistry, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("runs parallel stages", async () => {
-        const def = defineWorkflow("parallel-wf")
-            .output("a", Type.Optional(Type.Any()))
-            .output("b", Type.Optional(Type.Any()))
-            .output("c", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            a: Type.Optional(Type.Any()),
+            b: Type.Optional(Type.Any()),
+            c: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const [a, b] = await Promise.all([
                     ctx.stage("stage-a").prompt("a"),
                     ctx.stage("stage-b").prompt("b"),
                 ]);
                 const c = await ctx.stage("stage-c").prompt("c");
                 return { a, b, c };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -38,8 +43,12 @@ describe("executor.run", () => {
     });
 
     test("ctx.parallel queued stages share the same parent frontier after sibling failures", async () => {
-        const def = defineWorkflow("parallel-parent-frontier-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-parent-frontier-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.task("seed", { prompt: "seed" });
                 try {
                     await ctx.parallel(
@@ -54,8 +63,8 @@ describe("executor.run", () => {
                     assert.ok(err instanceof AggregateError);
                 }
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -84,13 +93,18 @@ describe("executor.run", () => {
     });
 
     test("records lifecycle callbacks", async () => {
-        const def = defineWorkflow("lifecycle-wf")
-            .output("done", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "lifecycle-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            done: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("my-stage").prompt("x");
                 return { done: true };
-            })
-            .compile();
+            },
+        });
 
         const events: string[] = [];
         const testStore = createStore();
@@ -116,12 +130,16 @@ describe("executor.run", () => {
     });
 
     test("returns failed status when stage throws", async () => {
-        const def = defineWorkflow("fail-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "fail-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("bad").prompt("x");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -144,11 +162,16 @@ describe("executor.run", () => {
 
     test("continuation replays completed stages and resumes at failed stage", async () => {
         const st = createStore();
-        const def = defineWorkflow("resume-failed-wf")
-            .output("first", Type.Optional(Type.Any()))
-            .output("second", Type.Optional(Type.Any()))
-            .output("third", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-failed-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            first: Type.Optional(Type.Any()),
+            second: Type.Optional(Type.Any()),
+            third: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const first = await ctx.stage("first").prompt("first");
                 const second = await ctx
                     .stage("second")
@@ -157,8 +180,8 @@ describe("executor.run", () => {
                     .stage("third")
                     .prompt(`third:${second}`);
                 return { first, second, third };
-            })
-            .compile();
+            },
+        });
 
         const firstRunCalls: string[] = [];
         const firstRun = await run(
@@ -230,23 +253,33 @@ describe("executor.run", () => {
 
     test("continuation replays completed ctx.workflow boundary without rerunning child", async () => {
         const st = createStore();
-        const child = defineWorkflow("resume-import-child")
-            .output("value", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const child = workflow({
+          name: "resume-import-child",
+          description: "",
+          inputs: {},
+          outputs: {
+            value: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const value = await ctx.stage("child").prompt("child");
                 return { value };
-            })
-            .compile();
-        const parent = defineWorkflow("resume-import-parent")
-            .output("after", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+            },
+        });
+        const parent = workflow({
+          name: "resume-import-parent",
+          description: "",
+          inputs: {},
+          outputs: {
+            after: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const after = await ctx
                     .stage("after")
                     .prompt(`after:${String(childResult.outputs["value"])}`);
                 return { after };
-            })
-            .compile();
+            },
+        });
         const registry = createRegistry([parent, child]);
 
         const firstRunCalls: string[] = [];
@@ -317,16 +350,26 @@ describe("executor.run", () => {
 
     test("continuation deep-clones replayed ctx.workflow metadata", async () => {
         const st = createStore();
-        const child = defineWorkflow("resume-import-clone-child")
-            .output("value", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const child = workflow({
+          name: "resume-import-clone-child",
+          description: "",
+          inputs: {},
+          outputs: {
+            value: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("child").prompt("child");
                 return { value: { nested: "child-ok" } };
-            })
-            .compile();
-        const parent = defineWorkflow("resume-import-clone-parent")
-            .output("after", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+            },
+        });
+        const parent = workflow({
+          name: "resume-import-clone-parent",
+          description: "",
+          inputs: {},
+          outputs: {
+            after: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const childResult = await ctx.workflow(child);
                 const value = childResult.outputs["value"] as {
                     nested: string;
@@ -335,8 +378,8 @@ describe("executor.run", () => {
                     .stage("after")
                     .prompt(`after:${value.nested}`);
                 return { after };
-            })
-            .compile();
+            },
+        });
         const registry = createRegistry([parent, child]);
 
         const firstRun = await run(

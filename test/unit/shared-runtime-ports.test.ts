@@ -16,7 +16,7 @@ import type { WorkflowOverlayAdapter, WorkflowNotice } from "../../packages/work
 import type { RunOpts } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { CancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 
 // ---------------------------------------------------------------------------
@@ -192,15 +192,19 @@ describe("RunOpts port fields", () => {
 
 describe("ctx.stage with StageOptions", () => {
   test("stage() with no options creates a default stage", async () => {
-    const wf = defineWorkflow("default-stage-options-test")
-      .description("d")
-      .output("result", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "default-stage-options-test",
+      description: "d",
+      inputs: {},
+      outputs: {
+        result: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         const s = ctx.stage("step");
         const result = await s.prompt("hello");
         return { result };
-      })
-      .compile();
+      },
+    });
 
     const res = await run(wf, {}, {
       adapters: { prompt: { prompt: async (text) => `ok:${text}` } },
@@ -221,14 +225,17 @@ describe("ctx.stage with StageOptions", () => {
       },
     };
 
-    const wf = defineWorkflow("mcp-opts-test")
-      .description("d")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-opts-test",
+      description: "d",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const s = ctx.stage("restricted", { mcp: { allow: ["github"], deny: ["filesystem"] } });
         await s.prompt("do work");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, { mcp: mcpPort });
 
@@ -242,14 +249,17 @@ describe("ctx.stage with StageOptions", () => {
   });
 
   test("stage with mcp options but no mcp port is a no-op (no throw)", async () => {
-    const wf = defineWorkflow("mcp-noop-test")
-      .description("d")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-noop-test",
+      description: "d",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const s = ctx.stage("step", { mcp: { allow: ["a"] } });
         await s.prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const res = await run(wf, {}, {
       adapters: { prompt: { prompt: async (text) => `ok:${text}` } },
@@ -264,14 +274,17 @@ describe("ctx.stage with StageOptions", () => {
       clearScope(stageId) { scopeCalls.push("clearScope:" + stageId); },
     };
 
-    const wf = defineWorkflow("mcp-empty-test")
-      .description("d")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "mcp-empty-test",
+      description: "d",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         const s = ctx.stage("step", { mcp: {} }); // no allow, no deny
         await s.prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(wf, {}, { mcp: mcpPort });
     // No allow/deny → null/null → should NOT call setScope/clearScope

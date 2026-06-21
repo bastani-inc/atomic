@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test,
+    assert, createStore, workflow, run, test,
 } from "./executor-shared.js";
 
 describe("executor.run — lifecycle persistence", () => {
@@ -33,12 +33,16 @@ describe("executor.run — lifecycle persistence", () => {
             },
         };
 
-        const def = defineWorkflow("guard-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "guard-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.task("guard-smoke", { prompt: "go" });
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,
@@ -57,13 +61,17 @@ describe("executor.run — lifecycle persistence", () => {
     test("multi-stage: correct order run.start, stage.start×2, stage.end×2, run.end", async () => {
         const { persistence, calls } = makePersistence();
 
-        const def = defineWorkflow("multi-persist-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "multi-persist-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("s1").prompt("a");
                 await ctx.stage("s2").prompt("b");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         await run(
             def,

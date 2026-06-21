@@ -10,7 +10,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { run, resolveInputs } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
 
@@ -79,13 +79,18 @@ describe("resolveInputs — Phase C", () => {
 
 describe("executor single-stage — Phase C", () => {
   test("returns completed status and stage output", async () => {
-    const def = defineWorkflow("phaseC-single")
-      .output("out", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-single",
+      description: "",
+      inputs: {},
+      outputs: {
+        out: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         const out = await ctx.stage("main-stage").prompt("do work");
         return { out };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       adapters: promptAdapter((t) => `result:${t}`),
@@ -97,12 +102,16 @@ describe("executor single-stage — Phase C", () => {
   });
 
   test("returned stages array has length 1 with correct name", async () => {
-    const def = defineWorkflow("phaseC-stages-len")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-stages-len",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("the-stage").prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
     assert.equal(result.stages.length, 1);
@@ -110,12 +119,16 @@ describe("executor single-stage — Phase C", () => {
   });
 
   test("stage status is completed after successful run", async () => {
-    const def = defineWorkflow("phaseC-stage-status")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-stage-status",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s").prompt("go");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
     assert.equal(result.stages[0]?.status, "completed");
@@ -123,13 +136,18 @@ describe("executor single-stage — Phase C", () => {
 
   test("store records run snapshot as completed", async () => {
     const store = createStore();
-    const def = defineWorkflow("phaseC-store-run")
-      .output("done", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-store-run",
+      description: "",
+      inputs: {},
+      outputs: {
+        done: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.stage("step").prompt("task");
         return { done: true };
-      })
-      .compile();
+      },
+    });
 
     await run(def, {}, { adapters: promptAdapter(), store });
 
@@ -141,12 +159,16 @@ describe("executor single-stage — Phase C", () => {
 
   test("store records stage snapshot with completed status", async () => {
     const store = createStore();
-    const def = defineWorkflow("phaseC-store-stage")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-store-stage",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("my-step").prompt("something");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(def, {}, { adapters: promptAdapter(), store });
 
@@ -158,12 +180,16 @@ describe("executor single-stage — Phase C", () => {
 
   test("onRunStart + onRunEnd callbacks fire", async () => {
     const events: string[] = [];
-    const def = defineWorkflow("phaseC-callbacks")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-callbacks",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s").prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(def, {}, {
       adapters: promptAdapter(),
@@ -178,12 +204,16 @@ describe("executor single-stage — Phase C", () => {
 
   test("onStageStart + onStageEnd callbacks fire", async () => {
     const events: string[] = [];
-    const def = defineWorkflow("phaseC-stage-callbacks")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-stage-callbacks",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s").prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(def, {}, {
       adapters: promptAdapter(),
@@ -197,12 +227,16 @@ describe("executor single-stage — Phase C", () => {
   });
 
   test("runId is a non-empty string", async () => {
-    const def = defineWorkflow("phaseC-runid")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-runid",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s").prompt("x");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
     assert.equal(typeof result.runId, "string");
@@ -216,14 +250,20 @@ describe("executor single-stage — Phase C", () => {
 
 describe("executor input resolution — Phase C", () => {
   test("schema default flows into ctx.inputs", async () => {
-    const def = defineWorkflow("phaseC-defaults")
-      .input("greeting", Type.String({ default: "hi" }))
-      .output("greeting", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-defaults",
+      description: "",
+      inputs: {
+        greeting: Type.String({ default: "hi" }),
+      },
+      outputs: {
+        greeting: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.stage("read-default").prompt("x");
         return { greeting: ctx.inputs["greeting"] };
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
 
     const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
     assert.equal(result.status, "completed");
@@ -231,14 +271,20 @@ describe("executor input resolution — Phase C", () => {
   });
 
   test("caller-provided value takes precedence over default", async () => {
-    const def = defineWorkflow("phaseC-override")
-      .input("name", Type.String({ default: "default-name" }))
-      .output("name", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-override",
+      description: "",
+      inputs: {
+        name: Type.String({ default: "default-name" }),
+      },
+      outputs: {
+        name: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.stage("read-override").prompt("x");
         return { name: ctx.inputs["name"] };
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
 
     const result = await run(def, { name: "custom" }, {
       adapters: promptAdapter(),
@@ -249,10 +295,15 @@ describe("executor input resolution — Phase C", () => {
   });
 
   test("missing required input rejects before run starts", async () => {
-    const def = defineWorkflow("phaseC-required")
-      .input("query", Type.String())
-      .run(async (_ctx) => ({}))
-      .compile() as WorkflowDefinition;
+    const def = workflow({
+      name: "phaseC-required",
+      description: "",
+      inputs: {
+        query: Type.String(),
+      },
+      outputs: {},
+      run: async (_ctx) => ({}),
+    }) as WorkflowDefinition;
 
     await assert.rejects(run(def, {}, { store: createStore() }), { message: 'atomic-workflows: required input "query" not provided', });
   });
@@ -270,7 +321,7 @@ describe("executor input resolution — Phase C", () => {
 
     await assert.rejects(
       run(forged, {}, { store: createStore() }),
-      /run\(definition, inputs\) requires a compiled workflow definition produced by defineWorkflow\(\.\.\.\)\.compile\(\); hand-rolled __piWorkflow objects are not supported/,
+      /run\(definition, inputs\) requires a workflow definition produced by workflow\(\{\.\.\.\}\); hand-rolled __piWorkflow objects are not supported/,
     );
   });
 
@@ -284,18 +335,22 @@ describe("executor input resolution — Phase C", () => {
       outputs: {},
       run: async () => ({}),
     } as unknown as WorkflowDefinition;
-    const parent = defineWorkflow("phaseC-forged-child")
-      .run(async (ctx) => {
+    const parent = workflow({
+      name: "phaseC-forged-child",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.workflow(forgedChild);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(parent, {}, { store: createStore() });
     assert.equal(result.status, "failed");
     assert.match(
       result.error ?? "",
-      /ctx\.workflow\(definition\) requires a compiled workflow definition produced by defineWorkflow\(\.\.\.\)\.compile\(\); hand-rolled __piWorkflow objects are not supported/,
+      /ctx\.workflow\(definition\) requires a workflow definition produced by workflow\(\{\.\.\.\}\); hand-rolled __piWorkflow objects are not supported/,
     );
   });
 });
@@ -306,12 +361,16 @@ describe("executor input resolution — Phase C", () => {
 
 describe("executor adapter errors — Phase C", () => {
   test("complete adapters absent — stage fails with complete-specific error message", async () => {
-    const def = defineWorkflow("phaseC-no-complete")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-no-complete",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("s").complete("summarize");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { adapters: {}, store: createStore() });
     assert.equal(result.status, "failed");
@@ -324,12 +383,16 @@ describe("executor adapter errors — Phase C", () => {
 
 
   test("stage snapshot has failed status when adapter is absent", async () => {
-    const def = defineWorkflow("phaseC-stage-fail-snap")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-stage-fail-snap",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("bad-stage").complete("go");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { adapters: {}, store: createStore() });
     const bad = result.stages.find((s) => s.name === "bad-stage");
@@ -344,13 +407,18 @@ describe("executor adapter errors — Phase C", () => {
 
 describe("stage result propagation — Phase C", () => {
   test("adapter response is returned as stage result", async () => {
-    const def = defineWorkflow("phaseC-result-prop")
-      .output("answer", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-result-prop",
+      description: "",
+      inputs: {},
+      outputs: {
+        answer: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         const answer = await ctx.stage("qa").prompt("what is 2+2?");
         return { answer };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       adapters: promptAdapter(() => "4"),
@@ -361,12 +429,16 @@ describe("stage result propagation — Phase C", () => {
   });
 
   test("stage snapshot result field matches adapter response", async () => {
-    const def = defineWorkflow("phaseC-snap-result")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "phaseC-snap-result",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("compute").prompt("input");
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       adapters: promptAdapter(() => "computed-value"),

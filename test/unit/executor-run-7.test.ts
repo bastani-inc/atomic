@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, resolveExecutorCustomPrompt, run, stageUiBroker, test,
+    assert, createStore, workflow, resolveExecutorCustomPrompt, run, stageUiBroker, test,
     Type, waitForExecutorCustomPromptStage, waitForExecutorStagePendingPrompt,
     type StageCustomUiRequest,
 } from "./executor-shared.js";
@@ -8,9 +8,14 @@ import {
 describe("executor.run", () => {
     test("caught parallel fail-fast failure does not skip later normal task", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-fail-fast-catch-then-task-wf")
-            .output("after", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-fail-fast-catch-then-task-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            after: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 try {
                     await ctx.parallel(
                         [
@@ -25,8 +30,8 @@ describe("executor.run", () => {
 
                 const after = await ctx.task("after", { prompt: "after" });
                 return { after: after.text };
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -66,8 +71,12 @@ describe("executor.run", () => {
 
     test("parallel fail-fast fails without waiting for a hung sibling", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-fail-fast-hung-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-fail-fast-hung-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "fast", prompt: "fail" },
@@ -76,8 +85,8 @@ describe("executor.run", () => {
                     { concurrency: 2 },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await Promise.race([
             run(
@@ -118,17 +127,22 @@ describe("executor.run", () => {
 
     test("ctx.ui prompt node settles into the graph before the stage that consumes its answer", async () => {
         const st = createStore();
-        const def = defineWorkflow("prompt-node-answer-flow-wf")
-            .output("color", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "prompt-node-answer-flow-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            color: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const capture = ctx.stage("capture favorite color");
                 const color = await ctx.ui.input(
                     "What is your favorite color?",
                 );
                 await capture.prompt(`Favorite color captured: ${color}`);
                 return { color };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
@@ -180,12 +194,16 @@ describe("executor.run", () => {
         };
         try {
             const st = createStore();
-            const def = defineWorkflow("prompt-node-ui-precedence-wf")
-                .run(async (ctx) => {
+            const def = workflow({
+              name: "prompt-node-ui-precedence-wf",
+              description: "",
+              inputs: {},
+              outputs: {},
+              run: async (ctx) => {
                     await ctx.task("warning-smoke", { prompt: "go" });
                     return {};
-                })
-                .compile();
+                },
+            });
 
             const result = await run(
                 def,
@@ -215,12 +233,16 @@ describe("executor.run", () => {
 
     test("ctx.ui.select with empty options fails without creating a prompt node", async () => {
         const st = createStore();
-        const def = defineWorkflow("prompt-node-empty-select-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "prompt-node-empty-select-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.ui.select("Pick one", [] as readonly string[]);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,
@@ -246,12 +268,16 @@ describe("executor.run", () => {
     test("aborting a pending ctx.ui prompt node does not keep a replayable answer", async () => {
         const st = createStore();
         const controller = new AbortController();
-        const def = defineWorkflow("prompt-node-abort-answer-ledger-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "prompt-node-abort-answer-ledger-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.ui.input("Secret token?");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const observedPromptAnswerStates: Array<unknown> = [];
         const unsubscribe = st.subscribe((snapshot) => {
@@ -293,9 +319,14 @@ describe("executor.run", () => {
 
     test("ctx.ui.custom creates a replay-keyed brokered prompt node and records a live-only answer", async () => {
         const st = createStore();
-        const def = defineWorkflow("custom-prompt-node-wf")
-            .output("choice", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "custom-prompt-node-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            choice: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const choice = await ctx.ui.custom<string>(
                     () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
                     {
@@ -304,8 +335,8 @@ describe("executor.run", () => {
                     },
                 );
                 return { choice };
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(def, {}, { store: st, usePromptNodesForUi: true });
         const custom = await waitForExecutorCustomPromptStage(st);
@@ -348,17 +379,22 @@ describe("executor.run", () => {
     test("custom prompt replay identity ignores label-only changes", async () => {
         const st = createStore();
         const makeDef = (label: string, replayIdentity: string) =>
-            defineWorkflow("custom-prompt-label-neutral-replay-wf")
-                .output("choice", Type.Optional(Type.Any()))
-                .run(async (ctx) => {
+            workflow({
+              name: "custom-prompt-label-neutral-replay-wf",
+              description: "",
+              inputs: {},
+              outputs: {
+                choice: Type.Optional(Type.Any()),
+              },
+              run: async (ctx) => {
                     const choice = await ctx.ui.custom<string>(
                         () => ({ render: () => ["custom prompt"], invalidate: () => undefined }),
                         { label, replayIdentity },
                     );
                     await ctx.stage("after").prompt(`after:${choice}`);
                     return { choice };
-                })
-                .compile();
+                },
+            });
 
         const firstRunPromise = run(
             makeDef("Approve production deploy", "approval-widget:v1"),

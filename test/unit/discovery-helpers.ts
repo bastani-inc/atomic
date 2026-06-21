@@ -4,17 +4,20 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 export function makeValidDef(
   name: string,
   normalizedName: string,
   overrides: Partial<WorkflowDefinition> = {},
 ): WorkflowDefinition {
-  const definition = defineWorkflow(name)
-    .description(`${name} description`)
-    .run(async () => ({}))
-    .compile();
+  const definition = workflow({
+    name: name,
+    description: `${name} description`,
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   assert.equal(definition.normalizedName, normalizedName);
   assert.deepEqual(overrides, {});
   return definition;
@@ -39,13 +42,16 @@ export function writeWorkflowJs(
   writeFileSync(
     filePath,
     [
-      `import { defineWorkflow } from "@bastani/workflows";`,
-      `const workflow = defineWorkflow(${JSON.stringify(normalizedName)})`,
-      `  .description(${JSON.stringify(`${name} description`)})`,
-      `  .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })`,
-      `  .compile();`,
-      `if (workflow.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");`,
-      `export default workflow;`,
+      `import { workflow } from "@bastani/workflows";`,
+      `const definition = workflow({`,
+      `  name: ${JSON.stringify(normalizedName)},`,
+      `  description: ${JSON.stringify(`${name} description`)},`,
+      `  inputs: {},`,
+      `  outputs: {},`,
+      `  run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },`,
+      `});`,
+      `if (definition.normalizedName !== ${JSON.stringify(normalizedName)}) throw new Error("unexpected normalized name");`,
+      `export default definition;`,
     ].join("\n"),
     "utf-8",
   );
@@ -63,11 +69,14 @@ export function writeNoStageWorkflowJs(dir: string, filename: string): string {
   writeFileSync(
     filePath,
     [
-      `import { defineWorkflow } from "@bastani/workflows";`,
-      `export default defineWorkflow("No Stage Workflow")`,
-      `  .description("Discovery rejects this because it creates no stages")`,
-      `  .run(async () => ({}))`,
-      `  .compile();`,
+      `import { workflow } from "@bastani/workflows";`,
+      `export default workflow({`,
+      `  name: "No Stage Workflow",`,
+      `  description: "Discovery rejects this because it creates no stages",`,
+      `  inputs: {},`,
+      `  outputs: {},`,
+      `  run: async () => ({}),`,
+      `});`,
     ].join("\n"),
     "utf-8",
   );

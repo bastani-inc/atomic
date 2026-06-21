@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -65,11 +65,17 @@ import type {
 
 describe("slash /workflow <name> dispatch", () => {
     test.serial("/workflow <known-name> dispatches run, not unknown subcommand", async () => {
-        const wf = defineWorkflow("test-wf")
-            .input("prompt", Type.Optional(Type.String()))
-            .output("done", Type.Optional(Type.Any()))
-            .run(async (_ctx) => ({ done: true }))
-            .compile() as WorkflowDefinition;
+        const wf = workflow({
+          name: "test-wf",
+          description: "",
+          inputs: {
+            prompt: Type.Optional(Type.String()),
+          },
+          outputs: {
+            done: Type.Optional(Type.Any()),
+          },
+          run: async (_ctx) => ({ done: true }),
+        }) as WorkflowDefinition;
 
         const registry = createRegistry([wf]);
         const runtime = createExtensionRuntime({ registry });

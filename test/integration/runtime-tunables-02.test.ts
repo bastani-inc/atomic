@@ -26,7 +26,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createStatusWriter } from "../../packages/workflows/src/extension/status-writer.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import type { WorkflowRuntimeConfig } from "../../packages/workflows/src/shared/types.js";
 

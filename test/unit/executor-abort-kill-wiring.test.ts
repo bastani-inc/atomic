@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test
+    assert, createStore, workflow, run, test
 } from "./executor-shared.js";
 
 describe("executor.run — abort/kill wiring", () => {
@@ -10,12 +10,16 @@ describe("executor.run — abort/kill wiring", () => {
         const registry = createCancellationRegistry();
         const controller = new AbortController();
 
-        const def = defineWorkflow("abort-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "abort-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("slow").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         let adapterResolve!: (value: string) => void;
         const adapterPromise = new Promise<string>((resolve) => {
@@ -69,12 +73,16 @@ describe("executor.run — abort/kill wiring", () => {
             },
         };
 
-        const def = defineWorkflow("no-dup-kill-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "no-dup-kill-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("slow").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         let capturedRunId!: string;
         let adapterResolve!: (value: string) => void;
@@ -131,12 +139,16 @@ describe("executor.run — abort/kill wiring", () => {
         const testStore = createStore();
         const registry = createCancellationRegistry();
 
-        const def = defineWorkflow("abort-guard-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "abort-guard-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("slow").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         let adapterResolve!: (value: string) => void;
         const adapterPromise = new Promise<string>((resolve) => {
@@ -185,14 +197,18 @@ describe("executor.run — abort/kill wiring", () => {
             releaseWorkflow = resolve;
         });
 
-        const def = defineWorkflow("post-stage-abort-race-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "post-stage-abort-race-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("final").prompt("go");
                 // Stage has settled here. Suspend so the test can abort before we return.
                 await holdWorkflow;
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const onRunEndCalls: Array<{ status: string }> = [];
         const persistenceCalls: Array<{

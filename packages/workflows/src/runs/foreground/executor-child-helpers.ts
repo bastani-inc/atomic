@@ -1,4 +1,4 @@
-import { isBrandedWorkflowDefinition } from "../../workflows/define-workflow.js";
+import { isBrandedWorkflowDefinition } from "../../authoring/workflow.js";
 import type {
   WorkflowChildResult,
   WorkflowDefinition,
@@ -16,7 +16,7 @@ function workflowChildSerializationMessage(err: unknown): string {
 }
 
 export function isWorkflowDefinition(value: unknown): value is WorkflowDefinition {
-  if (!isBrandedWorkflowDefinition(value)) return false;
+  if (value === null || typeof value !== "object" || !isBrandedWorkflowDefinition(value)) return false;
   const record = value as Partial<WorkflowDefinition>;
   return record.__piWorkflow === true &&
     typeof record.name === "string" && record.name.trim().length > 0 &&
@@ -27,9 +27,9 @@ export function isWorkflowDefinition(value: unknown): value is WorkflowDefinitio
 
 export function workflowDefinitionRequirementMessage(callSite: string, value: unknown): string {
   if (value !== null && typeof value === "object" && (value as { __piWorkflow?: unknown }).__piWorkflow === true) {
-    return `atomic-workflows: ${callSite} requires a compiled workflow definition produced by defineWorkflow(...).compile(); hand-rolled __piWorkflow objects are not supported`;
+    return `atomic-workflows: ${callSite} requires a workflow definition produced by workflow({...}); hand-rolled __piWorkflow objects are not supported`;
   }
-  return `atomic-workflows: ${callSite} requires a compiled workflow definition`;
+  return `atomic-workflows: ${callSite} requires a workflow definition`;
 }
 
 export function cloneWorkflowChildReplaySnapshot(snapshot: WorkflowChildReplaySnapshot): WorkflowChildReplaySnapshot {

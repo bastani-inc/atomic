@@ -138,7 +138,7 @@ Where to next:
 
 const WORKFLOWS = `# Workflows primer
 
-A workflow is a TypeScript-defined pipeline exported from \`defineWorkflow(...).compile()\`. It can run tasks, chains, parallel fan-out, human-in-the-loop prompts, background status, and model fallback chains.
+A workflow is a TypeScript-defined pipeline exported from \`workflow({...})\`. It can run tasks, chains, parallel fan-out, human-in-the-loop prompts, background status, and model fallback chains.
 
 You do not have to write TypeScript to add one. Describe the workflow you want in plain chat — goal, inputs, stages, which steps are parallel or sequential, handoff/output shape, and any model or thinking-level preferences — and Atomic will use the workflow docs to scaffold a reusable definition under \`.atomic/workflows/\` and reload it for you. Hand-edit the TypeScript afterward when you want precise control.
 

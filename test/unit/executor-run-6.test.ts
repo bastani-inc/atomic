@@ -1,14 +1,18 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test,
+    assert, createStore, workflow, run, test,
     WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("outer invalid credentials after a caught rate-limited stage kill the run", async () => {
         const st = createStore();
-        const def = defineWorkflow("caught-rate-limit-outer-401-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "caught-rate-limit-outer-401-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 try {
                     await ctx.stage("limited").prompt("limited");
                 } catch {
@@ -16,8 +20,8 @@ describe("executor.run", () => {
                     // must still participate in run-level disposition selection.
                 }
                 throw { status: 401, message: "Unauthorized" };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -64,8 +68,12 @@ describe("executor.run", () => {
             setLabel(_entryId: string, _label: string): void {},
         };
         const rawSecret = "sk-testsecret1234567890";
-        const def = defineWorkflow("caught-rate-limit-aggregate-invalid-key-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "caught-rate-limit-aggregate-invalid-key-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 try {
                     await ctx.stage("limited").prompt("limited");
                 } catch {
@@ -74,8 +82,8 @@ describe("executor.run", () => {
                 throw new AggregateError([
                     { status: 401, message: `Incorrect API key provided: ${rawSecret}` },
                 ], "atomic-workflows: 1 parallel step failed");
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -119,8 +127,12 @@ describe("executor.run", () => {
 
     test("aggregate ordinary errors after a caught rate-limited stage do not inherit stale rate-limit metadata", async () => {
         const st = createStore();
-        const def = defineWorkflow("caught-rate-limit-aggregate-error-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "caught-rate-limit-aggregate-error-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 try {
                     await ctx.stage("limited").prompt("limited");
                 } catch {
@@ -129,8 +141,8 @@ describe("executor.run", () => {
                 throw new AggregateError([
                     new Error("aggregate domain terminal"),
                 ], "atomic-workflows: 1 parallel step failed");
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -168,16 +180,20 @@ describe("executor.run", () => {
 
     test("outer ordinary errors after a caught rate-limited stage fail with outer error text", async () => {
         const st = createStore();
-        const def = defineWorkflow("caught-rate-limit-outer-error-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "caught-rate-limit-outer-error-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 try {
                     await ctx.stage("limited").prompt("limited");
                 } catch {
                     // Continue to the workflow-level validation failure.
                 }
                 throw new Error("outer domain validation failed");
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -216,16 +232,20 @@ describe("executor.run", () => {
 
     test("outer rate limits after a caught rate-limited stage keep the run active-blocked", async () => {
         const st = createStore();
-        const def = defineWorkflow("caught-rate-limit-outer-429-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "caught-rate-limit-outer-429-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 try {
                     await ctx.stage("limited").prompt("limited");
                 } catch {
                     // Both observed failures are recoverable rate limits.
                 }
                 throw { status: 429, message: "outer rate limited" };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -262,8 +282,12 @@ describe("executor.run", () => {
 
     test("non-fail-fast parallel invalid provider credentials kill the run", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-invalid-key-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-invalid-key-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "ok", prompt: "ok" },
@@ -272,8 +296,8 @@ describe("executor.run", () => {
                     { concurrency: 2, failFast: false },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -309,8 +333,12 @@ describe("executor.run", () => {
 
     test("non-fail-fast parallel terminal failures beat recoverable blocked failures", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-mixed-provider-failures-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-mixed-provider-failures-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "limited", prompt: "limited" },
@@ -319,8 +347,8 @@ describe("executor.run", () => {
                     { concurrency: 2, failFast: false },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -353,8 +381,12 @@ describe("executor.run", () => {
 
     test("non-fail-fast parallel ordinary failures beat recoverable blocked failures", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-mixed-ordinary-failures-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-mixed-ordinary-failures-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "limited", prompt: "limited" },
@@ -363,8 +395,8 @@ describe("executor.run", () => {
                     { concurrency: 2, failFast: false },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -406,8 +438,12 @@ describe("executor.run", () => {
 
     test("parallel fail-fast marks slow sibling skipped instead of completed", async () => {
         const st = createStore();
-        const def = defineWorkflow("parallel-fail-fast-skip-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "parallel-fail-fast-skip-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.parallel(
                     [
                         { name: "fast", prompt: "fail" },
@@ -416,8 +452,8 @@ describe("executor.run", () => {
                     { concurrency: 2 },
                 );
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const result = await run(
             def,

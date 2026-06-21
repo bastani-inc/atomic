@@ -20,7 +20,7 @@ import assert from "node:assert/strict";
 import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
@@ -33,10 +33,15 @@ import type { DispatcherOpts } from "../../packages/workflows/src/extension/disp
 // ---------------------------------------------------------------------------
 
 function makeWorkflow(name: string): WorkflowDefinition {
-  return defineWorkflow(name)
-    .output("ok", Type.Optional(Type.Any()))
-    .run(async (_ctx) => ({ ok: true }))
-    .compile() as WorkflowDefinition;
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {
+      ok: Type.Optional(Type.Any()),
+    },
+    run: async (_ctx) => ({ ok: true }),
+  }) as WorkflowDefinition;
 }
 
 function freshDeps() {
@@ -124,13 +129,17 @@ describe("dispatch run (always background)", () => {
 
   test("returns before the workflow body settles", async () => {
     let settled = false;
-    const slowWf = defineWorkflow("slow-bg-wf")
-      .run(async (_ctx) => {
+    const slowWf = workflow({
+      name: "slow-bg-wf",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (_ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 200));
         settled = true;
         return {};
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
 
     const registry = createRegistry([slowWf]);
     const t0 = Date.now();
@@ -162,15 +171,20 @@ describe("dispatch run (always background)", () => {
   test("non-interactive policy awaits terminal snapshot", async () => {
     const deps = freshDeps();
     let settled = false;
-    const wf = defineWorkflow("headless-bg-wait")
-      .output("ok", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "headless-bg-wait",
+      description: "",
+      inputs: {},
+      outputs: {
+        ok: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await new Promise((resolve) => setTimeout(resolve, 25));
         const text = await ctx.stage("done").prompt("finish");
         settled = true;
         return { ok: text };
-      })
-      .compile() as WorkflowDefinition;
+      },
+    }) as WorkflowDefinition;
     const registry = createRegistry([wf]);
 
     const seenExecutionModes: Array<string | undefined> = [];
@@ -197,11 +211,17 @@ describe("dispatch run (always background)", () => {
 
   test("missing required inputs fail before non-interactive dispatch starts a job", async () => {
     const deps = freshDeps();
-    const wf = defineWorkflow("requires-input")
-      .input("prompt", Type.String())
-      .output("ok", Type.Optional(Type.Any()))
-      .run(async () => ({ ok: true }))
-      .compile() as WorkflowDefinition;
+    const wf = workflow({
+      name: "requires-input",
+      description: "",
+      inputs: {
+        prompt: Type.String(),
+      },
+      outputs: {
+        ok: Type.Optional(Type.Any()),
+      },
+      run: async () => ({ ok: true }),
+    }) as WorkflowDefinition;
     const registry = createRegistry([wf]);
 
     const result = await dispatch(
@@ -248,13 +268,18 @@ describe("dispatch run forwards persistence", () => {
     return { persistence, calls };
   }
 
-  const stageWorkflow = defineWorkflow("dispatch-persist-test")
-    .output("ok", Type.Optional(Type.Any()))
-    .run(async (ctx) => {
+  const stageWorkflow = workflow({
+    name: "dispatch-persist-test",
+    description: "",
+    inputs: {},
+    outputs: {
+      ok: Type.Optional(Type.Any()),
+    },
+    run: async (ctx) => {
       await ctx.stage("s1").prompt("go");
       return { ok: true };
-    })
-    .compile() as WorkflowDefinition;
+    },
+  }) as WorkflowDefinition;
 
   const noopAdapters = { prompt: { prompt: async () => "done" } };
 

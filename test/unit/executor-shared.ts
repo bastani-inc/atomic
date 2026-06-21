@@ -20,7 +20,7 @@ import {
     WORKFLOW_MISSING_API_KEY_FAILURE_MESSAGE,
     WORKFLOW_UNKNOWN_MODEL_MESSAGE,
 } from "../../packages/workflows/src/shared/workflow-failures.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import type { AgentSession, CreateAgentSessionOptions, ToolDefinition } from "@bastani/atomic";
 import type {
@@ -337,7 +337,7 @@ export {
     createStageControlRegistry,
     createStore,
     deferred,
-    defineWorkflow,
+    workflow,
     join,
     killRun,
     mkdtempSync,

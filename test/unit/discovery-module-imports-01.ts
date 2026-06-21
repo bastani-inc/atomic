@@ -51,11 +51,14 @@ export function registerDiscoveryModuleImportsSuite1(): void {
       await writeFile(
         cjsPath,
         `
-  const { defineWorkflow } = require("@bastani/workflows");
-  module.exports = defineWorkflow("Gamma")
-    .description("cjs workflow")
-    .run(async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; })
-    .compile();
+  const { workflow } = require("@bastani/workflows");
+  module.exports = workflow({
+    name: "Gamma",
+    description: "cjs workflow",
+    inputs: {},
+    outputs: {},
+    run: async (ctx) => { await ctx.task("validation-smoke", { prompt: "validation smoke" }); return {}; },
+  });
   `,
         "utf8",
       );

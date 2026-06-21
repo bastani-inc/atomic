@@ -15,7 +15,7 @@ import {
 } from "../../packages/coding-agent/src/core/tools/bash-policy.ts";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSessionCreateOptions, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function assertAllowed(decision: BashCommandPolicyDecision): asserts decision is Extract<BashCommandPolicyDecision, { readonly allowed: true }> {
   if (!decision.allowed) {
@@ -322,19 +322,22 @@ describe("workflow bash policy wiring", () => {
     } satisfies BashCommandPolicy;
     const seen: Array<{ readonly name: string; readonly options: StageSessionCreateOptions }> = [];
 
-    const workflow = defineWorkflow("bash-policy-wiring")
-      .description("bash policy wiring")
-      .run(async (ctx) => {
+    const wf = workflow({
+      name: "bash-policy-wiring",
+      description: "bash policy wiring",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("manual", { tools: ["bash"], bashPolicy }).prompt("manual");
         await ctx.task("task", { prompt: "task", tools: ["bash"], bashPolicy });
         await ctx.parallel([
           { name: "parallel-child", prompt: "parallel" },
         ], { tools: ["bash"], bashPolicy });
         return {};
-      })
-      .compile();
+      },
+    });
 
-    const result = await run(workflow, {}, {
+    const result = await run(wf, {}, {
       adapters: {
         agentSession: {
           async create(options, meta) {

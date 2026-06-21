@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Type } from "typebox";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -29,19 +29,28 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const child = defineWorkflow("exit-failed-boundary-child")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-failed-boundary-child",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         await ctx.stage("child-ready").prompt("child ready");
         return { count: "not-a-number" as never };
-      })
-      .compile();
-    const parent = defineWorkflow("exit-failed-boundary-parent")
-      .run(async (ctx) => {
+      },
+    });
+    const parent = workflow({
+      name: "exit-failed-boundary-parent",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.workflow(child);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(parent, {}, {
       store,
@@ -72,16 +81,26 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const child = defineWorkflow("exit-replay-child")
-      .output("value", Type.String())
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-replay-child",
+      description: "",
+      inputs: {},
+      outputs: {
+        value: Type.String(),
+      },
+      run: async (ctx) => {
         const value = await ctx.stage("child").prompt("child");
         return { value };
-      })
-      .compile();
-    const parent = defineWorkflow("exit-replay-parent")
-      .input("mode", Type.String())
-      .run(async (ctx) => {
+      },
+    });
+    const parent = workflow({
+      name: "exit-replay-parent",
+      description: "",
+      inputs: {
+        mode: Type.String(),
+      },
+      outputs: {},
+      run: async (ctx) => {
         if (ctx.inputs.mode === "exit") {
           await Promise.all([
             Promise.resolve().then(() => ctx.exit({ status: "skipped", reason: "replay gate" })),
@@ -93,8 +112,8 @@ describe("ctx.exit", () => {
         if (childResult.exited === true) throw new Error("source child exited unexpectedly");
         await ctx.stage("after").prompt(`after:${childResult.outputs.value}`);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const sourceResult = await run(parent, { mode: "source" }, {
       store,
@@ -145,8 +164,12 @@ describe("ctx.exit", () => {
     const store = createStore();
     const lateUiDone = deferred();
     let lateUiAttempted = false;
-    const def = defineWorkflow("exit-delayed-ui-guard")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-delayed-ui-guard",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         void (async () => {
           await delay(20);
           lateUiAttempted = true;
@@ -159,8 +182,8 @@ describe("ctx.exit", () => {
           }
         })();
         return ctx.exit({ status: "cancelled", reason: "ui gate" });
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store, usePromptNodesForUi: true });
     await lateUiDone.promise;
@@ -180,8 +203,12 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const def = defineWorkflow("exit-prompt-node-reason")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-prompt-node-reason",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await Promise.all([
           ctx.ui.input("wait for exit"),
           (async () => {
@@ -190,8 +217,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return {};
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store, persistence, usePromptNodesForUi: true });
     await delay(20);
@@ -212,16 +239,21 @@ describe("ctx.exit", () => {
   });
 
   test("keeps the first exit when a later exit is thrown during unwind", async () => {
-    const def = defineWorkflow("exit-first-wins")
-      .output("winner", Type.String())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-first-wins",
+      description: "",
+      inputs: {},
+      outputs: {
+        winner: Type.String(),
+      },
+      run: async (ctx) => {
         try {
           return ctx.exit({ status: "skipped", reason: "first", outputs: { winner: "first" } });
         } finally {
           ctx.exit({ status: "cancelled", reason: "second", outputs: { winner: "second" } });
         }
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store: createStore() });
 
@@ -231,12 +263,17 @@ describe("ctx.exit", () => {
   });
 
   test("fails the run when exit outputs violate declared schemas", async () => {
-    const def = defineWorkflow("exit-invalid-output")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-invalid-output",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         return ctx.exit({ outputs: { count: "not-a-number" as never } });
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, { store: createStore() });
 
@@ -249,17 +286,27 @@ describe("ctx.exit", () => {
 
   test("scopes child workflow exits to the child result", async () => {
     const store = createStore();
-    const child = defineWorkflow("exit-child")
-      .output("note", Type.String())
-      .run(async (ctx) => {
+    const child = workflow({
+      name: "exit-child",
+      description: "",
+      inputs: {},
+      outputs: {
+        note: Type.String(),
+      },
+      run: async (ctx) => {
         return ctx.exit({ status: "skipped", reason: "child guard", outputs: { note: "child-note" } });
-      })
-      .compile();
-    const parent = defineWorkflow("exit-parent")
-      .output("childStatus", Type.String())
-      .output("childNote", Type.String())
-      .output("childReason", Type.String())
-      .run(async (ctx) => {
+      },
+    });
+    const parent = workflow({
+      name: "exit-parent",
+      description: "",
+      inputs: {},
+      outputs: {
+        childStatus: Type.String(),
+        childNote: Type.String(),
+        childReason: Type.String(),
+      },
+      run: async (ctx) => {
         const childResult = await ctx.workflow(child);
         if (childResult.exited === true) {
           return {
@@ -273,8 +320,8 @@ describe("ctx.exit", () => {
           childNote: childResult.outputs.note,
           childReason: "",
         };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(parent, {}, { store });
 
@@ -303,9 +350,14 @@ describe("ctx.exit", () => {
         return `entry-${entries.length}`;
       },
     };
-    const def = defineWorkflow("exit-invalid-output-cleanup")
-      .output("count", Type.Number())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "exit-invalid-output-cleanup",
+      description: "",
+      inputs: {},
+      outputs: {
+        count: Type.Number(),
+      },
+      run: async (ctx) => {
         await Promise.all([
           ctx.parallel([
             { name: "slow-cleanup-a", prompt: "slow-cleanup-a" },
@@ -317,8 +369,8 @@ describe("ctx.exit", () => {
           })(),
         ]);
         return { count: 1 };
-      })
-      .compile();
+      },
+    });
 
     const result = await run(def, {}, {
       store,

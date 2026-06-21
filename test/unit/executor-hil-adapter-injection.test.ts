@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test, Type, type WorkflowCustomUiFactory,
+    assert, createStore, workflow, run, test, Type, type WorkflowCustomUiFactory,
     type WorkflowCustomUiOptions, type WorkflowUIAdapter,
 } from "./executor-shared.js";
 
@@ -20,14 +20,19 @@ describe("executor.run — HIL adapter injection", () => {
             editor: async (_initial?: string) => "",
         };
 
-        const def = defineWorkflow("hil-input-wf")
-            .output("value", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-input-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            value: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const value = await ctx.ui.input("What is your name?");
                 await ctx.task("after-input", { prompt: "record input" });
                 return { value };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -55,14 +60,19 @@ describe("executor.run — HIL adapter injection", () => {
             editor: async (_initial?: string) => "",
         };
 
-        const def = defineWorkflow("hil-confirm-wf")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-confirm-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const ok = await ctx.ui.confirm("Continue?");
                 await ctx.task("after-confirm", { prompt: "record confirm" });
                 return { ok };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -89,9 +99,14 @@ describe("executor.run — HIL adapter injection", () => {
             editor: async (_initial?: string) => "",
         };
 
-        const def = defineWorkflow("hil-select-wf")
-            .output("choice", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-select-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            choice: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const choice = await ctx.ui.select("Pick one", [
                     "a",
                     "b",
@@ -99,8 +114,8 @@ describe("executor.run — HIL adapter injection", () => {
                 ] as const);
                 await ctx.task("after-select", { prompt: "record select" });
                 return { choice };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -127,14 +142,19 @@ describe("executor.run — HIL adapter injection", () => {
             editor: async (initial?: string) => `edited: ${initial ?? ""}`,
         };
 
-        const def = defineWorkflow("hil-editor-wf")
-            .output("content", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-editor-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            content: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const content = await ctx.ui.editor("draft");
                 await ctx.task("after-editor", { prompt: "record editor" });
                 return { content };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -169,17 +189,22 @@ describe("executor.run — HIL adapter injection", () => {
             },
         };
 
-        const def = defineWorkflow("hil-custom-adapter-wf")
-            .output("value", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-custom-adapter-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            value: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const value = await ctx.ui.custom<string>(
                     () => ({ render: () => ["custom"], invalidate: () => undefined }),
                     { label: "Adapter custom" },
                 );
                 await ctx.task("after-custom", { prompt: "record custom" });
                 return { value };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -225,9 +250,14 @@ describe("executor.run — HIL adapter injection", () => {
             },
         } satisfies WorkflowUIAdapter & { readonly prefix: string };
 
-        const def = defineWorkflow("hil-method-syntax-adapter-this-wf")
-            .output("values", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-method-syntax-adapter-this-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            values: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const values = {
                     input: await ctx.ui.input("hello"),
                     confirm: await ctx.ui.confirm("object-method:confirm"),
@@ -240,8 +270,8 @@ describe("executor.run — HIL adapter injection", () => {
                 };
                 await ctx.task("after-ui", { prompt: "record ui adapter" });
                 return { values };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, {
             adapters: { prompt: { prompt: async () => "ok" } },
@@ -291,9 +321,14 @@ describe("executor.run — HIL adapter injection", () => {
             }
         }
 
-        const def = defineWorkflow("hil-class-adapter-this-wf")
-            .output("values", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "hil-class-adapter-this-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            values: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const values = {
                     input: await ctx.ui.input("hello"),
                     confirm: await ctx.ui.confirm("class-adapter:confirm"),
@@ -306,8 +341,8 @@ describe("executor.run — HIL adapter injection", () => {
                 };
                 await ctx.task("after-ui", { prompt: "record ui adapter" });
                 return { values };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, {
             adapters: { prompt: { prompt: async () => "ok" } },
@@ -338,12 +373,11 @@ describe("executor.run — HIL adapter injection", () => {
             ) => options[0] as T,
             editor: async (_initial?: string) => "",
         };
-        const def = defineWorkflow("hil-custom-adapter-missing-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "hil-custom-adapter-missing-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.ui.custom<string>(() => ({ render: () => ["custom"], invalidate: () => undefined }));
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { ui: uiAdapter, store: createStore() });
 
@@ -355,12 +389,11 @@ describe("executor.run — HIL adapter injection", () => {
     });
 
     test("fallback rejects ctx.ui.input with precise missing-adapter error", async () => {
-        const def = defineWorkflow("fallback-input-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fallback-input-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.ui.input("hello");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
 
@@ -372,12 +405,11 @@ describe("executor.run — HIL adapter injection", () => {
     });
 
     test("fallback rejects ctx.ui.confirm with precise missing-adapter error", async () => {
-        const def = defineWorkflow("fallback-confirm-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fallback-confirm-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.ui.confirm("sure?");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
 
@@ -389,12 +421,11 @@ describe("executor.run — HIL adapter injection", () => {
     });
 
     test("fallback rejects ctx.ui.select with precise missing-adapter error", async () => {
-        const def = defineWorkflow("fallback-select-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fallback-select-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.ui.select("pick", ["x"] as const);
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
 
@@ -406,12 +437,11 @@ describe("executor.run — HIL adapter injection", () => {
     });
 
     test("fallback rejects ctx.ui.editor with precise missing-adapter error", async () => {
-        const def = defineWorkflow("fallback-editor-wf")
-            .run(async (ctx) => {
+        const def = workflow({ name: "fallback-editor-wf", description: "", inputs: {}, outputs: {}, run: async (ctx) => {
                 await ctx.ui.editor();
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
 
@@ -423,13 +453,18 @@ describe("executor.run — HIL adapter injection", () => {
     });
 
     test("no HIL: existing run behavior unchanged when no HIL used", async () => {
-        const def = defineWorkflow("no-hil-wf")
-            .output("r", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "no-hil-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            r: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const r = await ctx.stage("s").prompt("go");
                 return { r };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,

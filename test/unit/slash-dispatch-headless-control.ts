@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -311,14 +311,17 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
     test.serial("issue #1156: headless terminal workflow failure throws a command-visible error", async () => {
         const resource = await registerWorkflowCommandWithResource(
             "terminal-failure.ts",
-            `import { defineWorkflow } from "@bastani/workflows";
+            `import { workflow } from "@bastani/workflows";
 
-export default defineWorkflow("terminal-failure")
-  .description("Fails after dispatch")
-  .run(async () => {
+export default workflow({
+  name: "terminal-failure",
+  description: "Fails after dispatch",
+  inputs: {},
+  outputs: {},
+  run: async () => {
     throw new Error("terminal boom");
-  })
-  .compile();
+  },
+});
 `,
         );
 
@@ -335,17 +338,22 @@ export default defineWorkflow("terminal-failure")
     test.serial("issue #1156: headless /workflow success emits a printable terminal detail summary", async () => {
         const resource = await registerWorkflowCommandWithResource(
             "headless-terminal-success.ts",
-            `import { defineWorkflow, Type } from "@bastani/workflows";
+            `import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("headless-terminal-success")
-  .description("Completes without user input")
-  .output("ok", Type.Optional(Type.Any()))
-  .output("value", Type.Optional(Type.Any()))
-  .run(async (ctx) => {
+export default workflow({
+  name: "headless-terminal-success",
+  description: "Completes without user input",
+  inputs: {},
+  outputs: {
+    ok: Type.Optional(Type.Any()),
+    value: Type.Optional(Type.Any()),
+  },
+  run: async (ctx) => {
     await ctx.stage("terminal-stage").prompt("finish");
     return { ok: true, value: "terminal" };
-  })
-  .compile();
+  },
+});
 `,
         );
 

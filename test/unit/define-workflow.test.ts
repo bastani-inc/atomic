@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import {
   deriveInputField,
@@ -9,18 +9,23 @@ import {
   schemaIsRequired,
 } from "../../packages/workflows/src/shared/schema-introspection.js";
 
-describe("defineWorkflow builder", () => {
-  test("compiles a valid workflow definition", () => {
-    const def = defineWorkflow("my-workflow")
-      .description("test workflow")
-      .input("prompt", Type.String({ description: "task" }))
-      .output("result", Type.String())
-      .run(async (ctx) => {
+describe("workflow authoring door", () => {
+  test("emits a valid workflow definition", () => {
+    const def = workflow({
+      name: "my-workflow",
+      description: "test workflow",
+      inputs: {
+        prompt: Type.String({ description: "task" }),
+      },
+      outputs: {
+        result: Type.String(),
+      },
+      run: async (ctx) => {
         const prompt: string = ctx.inputs.prompt;
         const result = await ctx.stage("step1").prompt(prompt);
         return { result };
-      })
-      .compile();
+      },
+    });
 
     assert.equal(def.__piWorkflow, true);
     assert.equal(def.name, "my-workflow");
@@ -35,33 +40,49 @@ describe("defineWorkflow builder", () => {
   });
 
   test("rejects undeclared outputs after an output contract is declared", () => {
-    defineWorkflow("strict-output-contract")
-      .output("summary", Type.String())
-      // @ts-expect-error run outputs must be declared on the runtime source surface.
-      .run(() => ({ summary: "ok", extra: "not declared" }))
-      .compile();
+    workflow({
+      name: "strict-output-contract",
+      description: "",
+      inputs: {},
+      outputs: {
+        summary: Type.String(),
+      },
+      run: () => ({ summary: "ok", extra: "not declared" }),
+    });
   });
 
   test("rejects outputs when no output contract is declared", () => {
-    defineWorkflow("strict-no-output-contract")
-      // @ts-expect-error workflows with no .output(...) declarations must return no outputs.
-      .run(() => ({ summary: "not declared" }))
-      .compile();
+    workflow({
+      name: "strict-no-output-contract",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: () => ({ summary: "not declared" }),
+    });
   });
 
-  test("compile throws if .run() not called", () => {
-    assert.throws(() =>
-      (defineWorkflow("broken") as unknown as ReturnType<typeof defineWorkflow> & { compile(): unknown }).compile(), { message: /\.run\(fn\) must be called before \.compile\(\)/ });
+  test("workflow throws if run is missing at runtime", () => {
+    assert.throws(
+      () => workflow({ name: "broken", description: "", inputs: {}, outputs: {} } as never),
+      { message: /run must be a function/ },
+    );
   });
 
-  test("defineWorkflow throws on empty name", () => {
-    assert.throws(() => defineWorkflow(""), { message: /name must be a non-empty string/ });
+  test("workflow throws on empty name", () => {
+    assert.throws(
+      () => workflow({ name: "", description: "", inputs: {}, outputs: {}, run: () => ({}) }),
+      { message: /name must be a non-empty string/ },
+    );
   });
 
   test("definition is frozen", () => {
-    const def = defineWorkflow("frozen-test")
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "frozen-test",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.throws(() => {
       // @ts-expect-error intentionally mutating frozen object
@@ -70,17 +91,23 @@ describe("defineWorkflow builder", () => {
   });
 
   test("multiple inputs accumulate with inferred serializable input types", () => {
-    const def = defineWorkflow("multi-input")
-      .input("a", Type.Optional(Type.String()))
-      .input("b", Type.Number({ default: 4 }))
-      .output("a", Type.String())
-      .output("b", Type.Number())
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "multi-input",
+      description: "",
+      inputs: {
+        a: Type.Optional(Type.String()),
+        b: Type.Number({ default: 4 }),
+      },
+      outputs: {
+        a: Type.String(),
+        b: Type.Number(),
+      },
+      run: async (ctx) => {
         const a: string | undefined = ctx.inputs.a;
         const b: number = ctx.inputs.b;
         return { a: a ?? "", b };
-      })
-      .compile();
+      },
+    });
 
     assert.deepEqual(Object.keys(def.inputs), ["a", "b"]);
     // A defaulted input is a required KEY at the type level (always present
@@ -95,12 +122,17 @@ describe("defineWorkflow builder", () => {
   });
 
   test("worktreeFromInputs stores workflow input bindings", () => {
-    const def = defineWorkflow("worktree-inputs")
-      .input("git_worktree_dir", Type.String({ default: "" }))
-      .input("base_branch", Type.String({ default: "main" }))
-      .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "worktree-inputs",
+      description: "",
+      inputs: {
+        git_worktree_dir: Type.String({ default: "" }),
+        base_branch: Type.String({ default: "main" }),
+      },
+      outputs: {},
+      worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" },
+      run: async () => ({}),
+    });
 
     assert.deepEqual(def.inputBindings?.worktree, {
       gitWorktreeDir: "git_worktree_dir",
@@ -109,10 +141,15 @@ describe("defineWorkflow builder", () => {
   });
 
   test("input() records immutable workflow input metadata", () => {
-    const def = defineWorkflow("child")
-      .input("topic", Type.String({ description: "Topic" }))
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "child",
+      description: "",
+      inputs: {
+        topic: Type.String({ description: "Topic" }),
+      },
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.equal(Object.isFrozen(def.inputs), true);
     assert.deepEqual(deriveInputField("topic", def.inputs["topic"]), {
@@ -124,10 +161,15 @@ describe("defineWorkflow builder", () => {
   });
 
   test("output() records immutable workflow output metadata", () => {
-    const def = defineWorkflow("child")
-      .output("summary", Type.String({ description: "Summary" }))
-      .run(async () => ({ summary: "ok" }))
-      .compile();
+    const def = workflow({
+      name: "child",
+      description: "",
+      inputs: {},
+      outputs: {
+        summary: Type.String({ description: "Summary" }),
+      },
+      run: async () => ({ summary: "ok" }),
+    });
 
     const summarySchema = def.outputs!["summary"];
     assert.equal(schemaFieldKind(summarySchema), "text");

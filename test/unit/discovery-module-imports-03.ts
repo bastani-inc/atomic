@@ -296,13 +296,16 @@ export function registerDiscoveryModuleImportsSuite3(): void {
       const workflowPath = await createProjectWorkflowFile(
         "removed-run-workflow-later-declarator.cjs",
         `
-  const { defineWorkflow } = require("@bastani/workflows");
+  const { workflow } = require("@bastani/workflows");
   const ignored = 1, workflows = require("@bastani/workflows");
   workflows.runWorkflow();
-  module.exports = defineWorkflow("later-cjs-run-workflow")
-    .description("removed API diagnostic")
-    .run(async () => ({}))
-    .compile();
+  module.exports = workflow({
+    name: "later-cjs-run-workflow",
+    description: "removed API diagnostic",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
   `,
       );
 

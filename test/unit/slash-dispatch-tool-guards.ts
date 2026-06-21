@@ -9,7 +9,7 @@ import {
     WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE,
     renderResult,
     createRegistry,
-    defineWorkflow,
+    workflow,
     Type,
     createExtensionRuntime,
     store,
@@ -165,17 +165,22 @@ describe("tool run-control actions", () => {
     test.serial("registered workflow tool suppresses lifecycle notices while awaiting a headless run", async () => {
         const resource = await makeRegisteredWorkflowToolWithResource(
             "tool-headless-lifecycle.ts",
-            `import { defineWorkflow, Type } from "@bastani/workflows";
+            `import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("tool-headless-lifecycle")
-  .description("Completes under the registered workflow tool")
-  .output("ok", Type.Optional(Type.Any()))
-  .output("source", Type.Optional(Type.Any()))
-  .run(async (ctx) => {
+export default workflow({
+  name: "tool-headless-lifecycle",
+  description: "Completes under the registered workflow tool",
+  inputs: {},
+  outputs: {
+    ok: Type.Optional(Type.Any()),
+    source: Type.Optional(Type.Any()),
+  },
+  run: async (ctx) => {
     await ctx.stage("terminal-stage").prompt("finish");
     return { ok: true, source: "tool" };
-  })
-  .compile();
+  },
+});
 `,
         );
 

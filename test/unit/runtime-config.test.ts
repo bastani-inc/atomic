@@ -20,7 +20,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { Type } from "typebox";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { WORKFLOW_CONFIG_DEFAULTS } from "../../packages/workflows/src/extension/config-loader.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -68,10 +68,15 @@ void _runtimeOpts; void _dispatcherOpts; void _runOpts; void _detachedOpts;
 // ---------------------------------------------------------------------------
 
 function makeWorkflow(name: string): WorkflowDefinition {
-  return defineWorkflow(name)
-    .output("ok", Type.Boolean())
-    .run(async (_ctx) => ({ ok: true }))
-    .compile() as WorkflowDefinition;
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {
+      ok: Type.Boolean(),
+    },
+    run: async (_ctx) => ({ ok: true }),
+  }) as WorkflowDefinition;
 }
 
 const sampleConfig: WorkflowRuntimeConfig = {

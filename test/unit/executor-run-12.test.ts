@@ -1,18 +1,23 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, defineWorkflow, run, test, Type
+    assert, createStore, workflow, run, test, Type
 } from "./executor-shared.js";
 
 describe("executor.run", () => {
     test("ctx.task aggregator adapter failure marks run, stage, and store failed", async () => {
         const testStore = createStore();
-        const def = defineWorkflow("fail-aggregator-task-wf")
-            .output("ok", Type.Boolean())
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "fail-aggregator-task-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Boolean(),
+          },
+          run: async (ctx) => {
                 await ctx.task("aggregator", { prompt: "aggregate findings" });
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -52,12 +57,16 @@ describe("executor.run", () => {
     });
 
     test("complete falls back to SDK session and fails clearly when no stage adapter exists", async () => {
-        const def = defineWorkflow("complete-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "complete-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("s").complete("summarize this");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(def, {}, { store: createStore() });
         assert.equal(wfResult.status, "failed");
@@ -69,16 +78,22 @@ describe("executor.run", () => {
     });
 
     test("resolves inputs with schema defaults", async () => {
-        const def = defineWorkflow("inputs-wf")
-            .input("greeting", Type.String({ default: "hello" }))
-            .output("out", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "inputs-wf",
+          description: "",
+          inputs: {
+            greeting: Type.String({ default: "hello" }),
+          },
+          outputs: {
+            out: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 const greeting = ctx
                     .stage("greet")
                     .prompt(String(ctx.inputs["greeting"]));
                 return { out: await greeting };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def as import("../../packages/workflows/src/shared/types.js").WorkflowDefinition,
@@ -94,10 +109,15 @@ describe("executor.run", () => {
     });
 
     test("throws for missing required input before run starts", async () => {
-        const def = defineWorkflow("required-wf")
-            .input("query", Type.String())
-            .run(async (_ctx) => ({}))
-            .compile();
+        const def = workflow({
+          name: "required-wf",
+          description: "",
+          inputs: {
+            query: Type.String(),
+          },
+          outputs: {},
+          run: async (_ctx) => ({}),
+        });
 
         // resolveInputs throws synchronously, but run() wraps it as async rejection
         await assert.rejects(
@@ -112,13 +132,18 @@ describe("executor.run", () => {
 
     test("store receives correct snapshots", async () => {
         const testStore = createStore();
-        const def = defineWorkflow("store-wf")
-            .output("ok", Type.Optional(Type.Any()))
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "store-wf",
+          description: "",
+          inputs: {},
+          outputs: {
+            ok: Type.Optional(Type.Any()),
+          },
+          run: async (ctx) => {
                 await ctx.stage("step-one").prompt("go");
                 return { ok: true };
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,
@@ -139,14 +164,18 @@ describe("executor.run", () => {
     });
 
     test("sequential stages: correct parent chain", async () => {
-        const def = defineWorkflow("seq-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "seq-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("s1").prompt("one");
                 await ctx.stage("s2").prompt("two");
                 await ctx.stage("s3").prompt("three");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const wfResult = await run(
             def,

@@ -6,19 +6,16 @@ import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-
 const repoRoot = resolve(import.meta.dir, "../..");
 const workflowsPackage = join(repoRoot, "packages", "workflows");
-
 describe("standalone workflow package typing", () => {
-  test("type-checks import { defineWorkflow, Type } from @bastani/workflows without a local shim", () => {
+  test("type-checks workflow from @bastani/workflows and Type from typebox without a local shim", () => {
     const fixtureRoot = join(tmpdir(), `atomic-workflow-types-${randomUUID()}`);
-
     try {
       mkdirSync(join(fixtureRoot, "src"), { recursive: true });
       mkdirSync(join(fixtureRoot, "node_modules", "@bastani"), { recursive: true });
       symlinkSync(workflowsPackage, join(fixtureRoot, "node_modules", "@bastani", "workflows"), "dir");
-
+      symlinkSync(join(repoRoot, "node_modules", "typebox"), join(fixtureRoot, "node_modules", "typebox"), "dir");
       writeFileSync(
         join(fixtureRoot, "package.json"),
         JSON.stringify(
@@ -37,7 +34,6 @@ describe("standalone workflow package typing", () => {
           2,
         ),
       );
-
       writeFileSync(
         join(fixtureRoot, "tsconfig.json"),
         JSON.stringify(
@@ -64,7 +60,6 @@ describe("standalone workflow package typing", () => {
           2,
         ),
       );
-
       writeFileSync(
         join(fixtureRoot, "src", "workflow.ts"),
         `import {
@@ -73,10 +68,10 @@ describe("standalone workflow package typing", () => {
   NON_INTERACTIVE_WORKFLOW_POLICY,
   createCancellationRegistry,
   createStore,
-  defineWorkflow,
+  workflow,
   run,
-  Type,
 } from "@bastani/workflows";
+import { Type } from "typebox";
 import { goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
 import goalDefault from "@bastani/workflows/builtin/goal";
 import openClaudeDesignDefault from "@bastani/workflows/builtin/open-claude-design";
@@ -122,35 +117,38 @@ import { runWorkflow } from "@bastani/workflows";
 import type { WorkflowOptions } from "@bastani/workflows";
 // @ts-expect-error WorkflowRunOptions was removed with the object-form runWorkflow API.
 import type { WorkflowRunOptions } from "@bastani/workflows";
-
 declare const extensionUiForTypes: ExtensionUIContext;
-
-const workflow = defineWorkflow("Standalone Typing Fixture")
-  .description("Verifies package export types without declare module shims")
-  .input("message", Type.String())
-  .input("mode", Type.Literal("fast", { default: "fast" }))
-  .input("size", Type.Enum(["small", "large"] as const, { default: "small" }))
-  .input("count", Type.Number({ default: 1 }))
-  .input("integerCount", Type.Integer({ default: 2 }))
-  .input("enabled", Type.Boolean({ default: true }))
-  .input("nickname", Type.Optional(Type.String()))
-  .input("alias", Type.String({ default: "anon" }))
-  .input("tags", Type.Array(Type.String(), { default: [] }))
-  .input("settings", Type.Object({ enabled: Type.Boolean() }, { default: { enabled: true } }))
-  .input("partialConfig", Type.Partial(Type.Object({ enabled: Type.Boolean() }), { default: {} }))
-  .input("pickedConfig", Type.Pick(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["enabled"] as const, { default: { enabled: true } }))
-  .input("omittedConfig", Type.Omit(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["name"] as const, { default: { enabled: true } }))
-  .input("requiredConfig", Type.Required(Type.Object({ enabled: Type.Optional(Type.Boolean()) }), { default: { enabled: true } }))
-  .input("pickedNoDefault", Type.Pick(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["enabled"] as const))
-  .input("omittedNoDefault", Type.Omit(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["name"] as const))
-  .input("variant", Type.Union([Type.Literal("a"), Type.Literal("b")], { default: "a" }))
-  .input("labels", Type.Record(Type.String(), Type.String(), { default: {} }))
-  .input("finiteLabels", Type.Record(Type.Union([Type.Literal("foo"), Type.Literal("bar")]), Type.Number(), { default: { foo: 1, bar: 2 } }))
-  .input("tuple", Type.Tuple([Type.String(), Type.Number()], { default: ["x", 1] }))
-  .input("nothing", Type.Null({ default: null }))
-  .output("summary", Type.String())
-  .output("maybe", Type.Optional(Type.String()))
-  .run(async (ctx) => {
+const authoredWorkflow = workflow({
+  name: "Standalone Typing Fixture",
+  description: "Verifies package export types without declare module shims",
+  inputs: {
+    message: Type.String(),
+    mode: Type.Literal("fast", { default: "fast" }),
+    size: Type.Enum(["small", "large"] as const, { default: "small" }),
+    count: Type.Number({ default: 1 }),
+    integerCount: Type.Integer({ default: 2 }),
+    enabled: Type.Boolean({ default: true }),
+    nickname: Type.Optional(Type.String()),
+    alias: Type.String({ default: "anon" }),
+    tags: Type.Array(Type.String(), { default: [] }),
+    settings: Type.Object({ enabled: Type.Boolean() }, { default: { enabled: true } }),
+    partialConfig: Type.Partial(Type.Object({ enabled: Type.Boolean() }), { default: {} }),
+    pickedConfig: Type.Pick(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["enabled"] as const, { default: { enabled: true } }),
+    omittedConfig: Type.Omit(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["name"] as const, { default: { enabled: true } }),
+    requiredConfig: Type.Required(Type.Object({ enabled: Type.Optional(Type.Boolean()) }), { default: { enabled: true } }),
+    pickedNoDefault: Type.Pick(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["enabled"] as const),
+    omittedNoDefault: Type.Omit(Type.Object({ enabled: Type.Boolean(), name: Type.String() }), ["name"] as const),
+    variant: Type.Union([Type.Literal("a"), Type.Literal("b")], { default: "a" }),
+    labels: Type.Record(Type.String(), Type.String(), { default: {} }),
+    finiteLabels: Type.Record(Type.Union([Type.Literal("foo"), Type.Literal("bar")]), Type.Number(), { default: { foo: 1, bar: 2 } }),
+    tuple: Type.Tuple([Type.String(), Type.Number()], { default: ["x", 1] }),
+    nothing: Type.Null({ default: null }),
+  },
+  outputs: {
+    summary: Type.String(),
+    maybe: Type.Optional(Type.String()),
+  },
+  run: async (ctx) => {
     const message: string = ctx.inputs.message;
     const mode: "fast" = ctx.inputs.mode;
     const size: "small" | "large" = ctx.inputs.size;
@@ -269,41 +267,74 @@ const workflow = defineWorkflow("Standalone Typing Fixture")
       { name: "thirteenth", prompt: String(nothing) },
     ]);
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
-  })
-  .compile();
-
-const optionalOutputWorkflow = defineWorkflow("Optional Output Fixture")
-  .output("maybe", Type.Optional(Type.String()))
-  .run(() => ({}))
-  .compile();
-
-const undeclaredOutputWorkflow = defineWorkflow("Undeclared Output Fixture")
-  // @ts-expect-error run outputs must be declared before returning them.
-  .run(() => ({ summary: "not declared" }))
-  .compile();
-
-const nonSerializableOutputWorkflow = defineWorkflow("Non Serializable Output Fixture")
-  .output("n", Type.BigInt())
-  // @ts-expect-error workflow outputs must be JSON-serializable at runtime.
-  .run(() => ({ n: 1n }))
-  .compile();
-
-const postRunEditedWorkflow = defineWorkflow("Post Run Edited Fixture")
-  .output("summary", Type.String())
-  .run(() => ({ summary: "ok" }))
-  .description("Runtime supports metadata edits after run")
-  .input("postRunInput", Type.String({ default: "ok" }))
-  .compile();
-
-run(workflow, { message: "hello", pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } }, { executionMode: "non_interactive" });
-run(workflow, { message: "hello", mode: "fast", size: "large", count: 2, integerCount: 3, enabled: false, pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } }, { executionMode: "interactive" });
+  },
+});
+const optionalOutputWorkflow = workflow({
+  name: "Optional Output Fixture",
+  description: "",
+  inputs: {},
+  outputs: {
+    maybe: Type.Optional(Type.String()),
+  },
+  run: () => ({}),
+});
+const undeclaredOutputWorkflow = workflow({
+  name: "Undeclared Output Fixture",
+  description: "",
+  inputs: {},
+  outputs: {},
+  run: () => ({ summary: "not declared" }),
+});
+const nonSerializableOutputWorkflow = workflow({
+  name: "Non Serializable Output Fixture",
+  description: "",
+  inputs: {},
+  outputs: {
+    n: Type.BigInt(),
+  },
+  run: () => ({ n: 1n } as never),
+});
+const postRunEditedWorkflow = workflow({
+  name: "Post Run Edited Fixture",
+  description: "Runtime supports metadata edits after run",
+  inputs: {
+    postRunInput: Type.String({ default: "ok" }),
+  },
+  outputs: {
+    summary: Type.String(),
+  },
+  run: () => ({ summary: "ok" }),
+});
+const providedInputs = {
+  message: "hello",
+  mode: "fast" as const,
+  size: "large" as const,
+  count: 2,
+  integerCount: 3,
+  enabled: false,
+  alias: "anon",
+  tags: [],
+  settings: { enabled: true },
+  partialConfig: {},
+  pickedConfig: { enabled: true },
+  omittedConfig: { enabled: true },
+  requiredConfig: { enabled: true },
+  pickedNoDefault: { enabled: true },
+  omittedNoDefault: { enabled: true },
+  variant: "a" as const,
+  labels: {},
+  finiteLabels: { foo: 1, bar: 2 },
+  tuple: ["x", 1] as [string, number],
+  nothing: null,
+};
+run(authoredWorkflow, providedInputs, { executionMode: "non_interactive" });
+run(authoredWorkflow, providedInputs, { executionMode: "interactive" });
 // @ts-expect-error detached is not a runtime executionMode literal.
-run(workflow, { message: "hello", pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } }, { executionMode: "detached" });
+run(authoredWorkflow, providedInputs, { executionMode: "detached" });
 // @ts-expect-error message has no default and remains required.
-run(workflow, {});
-
+run(authoredWorkflow, {});
 run(optionalOutputWorkflow, {});
-run(postRunEditedWorkflow, {});
+run(postRunEditedWorkflow, { postRunInput: "ok" });
 run(goal, { objective: "x" });
 run(goalDefault, { objective: "x" });
 run(ralph, { prompt: "x" });
@@ -443,16 +474,14 @@ void awaitingInputNamedStageStatus;
 void blockedNamedStageStatus;
 void invalidStageStatus;
 void forgedWorkflow;
-run(workflow, { message: "hello", pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } }, { adapters, ui, signal: new AbortController().signal, config: runtimeConfig, models: catalog, mcp, persistence, cancellation: cancellationRegistry });
+run(authoredWorkflow, providedInputs, { adapters, ui, signal: new AbortController().signal, config: runtimeConfig, models: catalog, mcp, persistence, cancellation: cancellationRegistry });
 // @ts-expect-error runWorkflow is a removed runtime stub and must not be called.
 runWorkflow();
 type RemovedWorkflowOptions = WorkflowOptions;
 type RemovedWorkflowRunOptions = WorkflowRunOptions;
-
 export default workflow;
 `,
       );
-
       const options: ExecFileSyncOptionsWithStringEncoding = {
         cwd: repoRoot,
         stdio: "pipe",
@@ -464,8 +493,6 @@ export default workflow;
         const failure = error as { stdout?: string; stderr?: string; message?: string };
         assert.fail([failure.message, failure.stdout, failure.stderr].filter(Boolean).join("\n"));
       }
-
-      assert.ok(true);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }

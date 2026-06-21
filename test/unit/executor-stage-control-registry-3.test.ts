@@ -1,6 +1,6 @@
 import { describe } from "bun:test";
 import {
-    assert, createStageControlRegistry, createStore, deferred, defineWorkflow,
+    assert, createStageControlRegistry, createStore, deferred, workflow,
     makeSmartSession, mockSession, RESUME_CONTINUATION_PROMPT, run, test, waitForPromptCall,
     type StageSessionRuntime,
 } from "./executor-shared.js";
@@ -9,13 +9,17 @@ describe("executor — stage-control registry integration", () => {
     test("readiness gate auto-advances a turn with no question and gates a turn that asked", async () => {
         const events: string[] = [];
         const gateStages: string[] = [];
-        const def = defineWorkflow("readiness-gate-advance-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "readiness-gate-advance-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("first").prompt("ask the user");
                 await ctx.stage("second").prompt("do work");
                 return {};
-            })
-            .compile();
+            },
+        });
         const store = createStore();
         const result = await run(
             def,
@@ -58,13 +62,17 @@ describe("executor — stage-control registry integration", () => {
         const registry = createStageControlRegistry();
         const store = createStore();
         let activeStage: { runId: string; stageId: string } | undefined;
-        const def = defineWorkflow("readiness-gate-chat-bypass-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "readiness-gate-chat-bypass-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("first").prompt("ask the user");
                 await ctx.stage("second").prompt("second work");
                 return {};
-            })
-            .compile();
+            },
+        });
         const session = (): StageSessionRuntime => {
             const listeners = new Set<
                 (e: { type: string; [k: string]: unknown }) => void
@@ -167,13 +175,17 @@ describe("executor — stage-control registry integration", () => {
         const events: string[] = [];
         const gateStages: string[] = [];
         const registry = createStageControlRegistry();
-        const def = defineWorkflow("readiness-gate-stay-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "readiness-gate-stay-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("first").prompt("ask the user");
                 await ctx.stage("second").prompt("second work");
                 return {};
-            })
-            .compile();
+            },
+        });
         const store = createStore();
         const decisions = [false]; // first gate: stay
         let gi = 0;
@@ -232,13 +244,17 @@ describe("executor — stage-control registry integration", () => {
         const events: string[] = [];
         const gateStages: string[] = [];
         const registry = createStageControlRegistry();
-        const def = defineWorkflow("readiness-gate-regate-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "readiness-gate-regate-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("first").prompt("ask the user");
                 await ctx.stage("second").prompt("second work");
                 return {};
-            })
-            .compile();
+            },
+        });
         const store = createStore();
         const decisions = [false, true]; // stay, then advance
         let gi = 0;
@@ -335,8 +351,12 @@ describe("executor — stage-control registry integration", () => {
                 },
             };
         };
-        const def = defineWorkflow("readiness-gate-parallel-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "readiness-gate-parallel-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 const results = await ctx.parallel(
                     [
                         { name: "ask", prompt: "ask the user" },
@@ -349,8 +369,8 @@ describe("executor — stage-control registry integration", () => {
                     previous: results,
                 });
                 return {};
-            })
-            .compile();
+            },
+        });
         const store = createStore();
         const result = await run(
             def,
@@ -420,12 +440,16 @@ describe("executor — stage-control registry integration", () => {
                 return "assistant";
             },
         };
-        const def = defineWorkflow("resume-continuation-empty-resume-wf")
-            .run(async (ctx) => {
+        const def = workflow({
+          name: "resume-continuation-empty-resume-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
                 await ctx.stage("resumable").prompt("go");
                 return {};
-            })
-            .compile();
+            },
+        });
 
         const runPromise = run(
             def,
