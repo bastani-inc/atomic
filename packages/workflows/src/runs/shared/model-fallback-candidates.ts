@@ -14,11 +14,13 @@ export interface WorkflowResolvedModelCandidate {
   /**
    * Resolved context-window token budget for this candidate's session, parsed
    * from a parenthesized authoring token in the model string (e.g.
-   * `github-copilot/claude-opus-4.8 (1m):xhigh`). Resolved against the
-   * candidate model's advertised windows: an exact match wins, otherwise the
-   * largest supported window <= the request (so `(1m)` selects a model's ~936K
-   * long-context tier). Left `undefined` when the model exposes no matching
-   * window, so the session keeps the model's default (short) window.
+   * `github-copilot/claude-opus-4.8 (1m):xhigh` or `...:xhigh (1m)`). Resolved
+   * against the candidate model's advertised windows: a request above the
+   * model's default selects the long tier (exact match wins, otherwise the
+   * smallest window >= the request, rounding UP so `(1m)` selects a long tier
+   * even when it sits slightly above 1m). Left `undefined` when the model
+   * exposes no long tier, so the session keeps the model's default (short)
+   * window.
    */
   readonly contextWindow?: number;
 }
@@ -72,12 +74,15 @@ function extractContextWindowToken(
 
 /**
  * Resolve a requested context-window budget against a candidate model's
- * advertised windows. Returns the exact value when supported, otherwise the
- * largest supported window that does not exceed the request (so `(1m)` lands on
- * a ~936K long-context tier), or `undefined` when nothing fits — in which case
- * the session keeps the model's default window. Model values that are plain
- * strings (not resolved against the live catalog) cannot be introspected and
- * yield `undefined`.
+ * advertised windows. A request at or below the model's default window keeps
+ * the default (no upgrade). A request above the default selects the long tier:
+ * the exact value when supported, otherwise the smallest advertised window that
+ * meets the request, rounding UP so a `(1m)` token lands on a long tier even
+ * when it sits slightly above 1m (e.g. gpt-5.5's 1.05m full-context tier). When
+ * no advertised window meets the request, the largest window is chosen so the
+ * token always selects the long tier when one exists. Returns `undefined` when
+ * the resolution lands back on the model's default (no upgrade) or the model
+ * value is a plain string (not resolved against the live catalog).
  */
 function resolveRequestedContextWindow(
   value: WorkflowModelValue,
@@ -86,16 +91,16 @@ function resolveRequestedContextWindow(
   if (typeof value === "string") return undefined;
   const supported = getSupportedContextWindows(value);
   if (supported.length === 0) return undefined;
-  const chosen = supported.includes(requested)
-    ? requested
-    : (() => {
-        const atOrBelow = supported.filter((window) => window <= requested);
-        return atOrBelow.length > 0 ? Math.max(...atOrBelow) : undefined;
-      })();
-  if (chosen === undefined) return undefined;
-  // Only override when the request actually upgrades past the model's default
-  // window; otherwise leave it unset so the session simply keeps its default.
-  return chosen === getModelDefaultContextWindow(value) ? undefined : chosen;
+  const defaultContextWindow = getModelDefaultContextWindow(value);
+  // A request at or below the default window keeps the default (no upgrade).
+  if (requested <= defaultContextWindow) return undefined;
+  if (supported.includes(requested)) return requested;
+  // Round UP to the smallest advertised window that meets the request; when no
+  // window meets it, fall back to the largest window (the long tier) so the
+  // token still selects the long tier. `supported` is sorted ascending.
+  const atOrAbove = supported.filter((window) => window >= requested);
+  const longTier = atOrAbove.length > 0 ? Math.min(...atOrAbove) : supported[supported.length - 1]!;
+  return longTier === defaultContextWindow ? undefined : longTier;
 }
 
 const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly WorkflowThinkingLevel[];
@@ -177,8 +182,20 @@ function resolveStringModel(
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
-  const { baseModel: afterReasoning, level } = splitReasoningSuffix(input);
-  const { baseModel, requestedContextWindow } = extractContextWindowToken(afterReasoning);
+  // Extract the trailing context-window token, split the reasoning suffix, then
+  // extract the token once more. This handles both `model (1m):level` (token
+  // before the suffix) and `model:level (1m)` (token after the suffix) without
+  // letting the token collide with the `:off|minimal|low|medium|high|xhigh`
+  // reasoning suffix.
+  const tokenFirst = extractContextWindowToken(input);
+  const { baseModel: afterReasoning, level } = splitReasoningSuffix(tokenFirst.baseModel);
+  let baseModel = afterReasoning;
+  let requestedContextWindow = tokenFirst.requestedContextWindow;
+  if (requestedContextWindow === undefined) {
+    const retry = extractContextWindowToken(afterReasoning);
+    baseModel = retry.baseModel;
+    requestedContextWindow = retry.requestedContextWindow;
+  }
 
   const candidate = (id: string, value: WorkflowModelValue): WorkflowResolvedModelCandidate =>
     makeCandidate(

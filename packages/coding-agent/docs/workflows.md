@@ -1565,7 +1565,7 @@ This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`
 
 ### Context windows
 
-A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
+A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before or after* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
 
 ```ts
 await ctx.task("review", {
@@ -1578,11 +1578,11 @@ await ctx.task("review", {
 
 The token accepts the same compact sizes as the `--context-window` flag (`1m`, `936k`, `400k`, or a raw token count) and is resolved against that specific candidate model's advertised windows:
 
-- an exact supported window is used as-is;
-- otherwise the largest supported window not exceeding the request is selected, so `(1m)` lands on a model's ~936K long-context tier;
+- a request at or below the model's default window keeps the default;
+- a request above the default selects the long tier — an exact supported window is used as-is, otherwise the smallest supported window at or above the request is selected, rounding **up** so `(1m)` lands on a long tier even when it sits slightly above 1m (e.g. gpt-5.5's 1.05M full-context tier);
 - when the model exposes no larger tier (or is unavailable), the request is dropped and the session keeps the model's default (short) window — a non-strict, automatic fallback.
 
-The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
+The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. Without the token, a tiered model **pins its natural default (short) window** in a workflow stage, so a persisted interactive long-context preference does not leak into workflow runs — use the `(1m)` token or the `contextWindow` stage option to opt into long context. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## Programmatic Usage
 

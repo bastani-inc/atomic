@@ -41,6 +41,9 @@ describe("context-window authoring token", () => {
 
   // Copilot opus today: 200K default tier + ~936K long-context tier.
   const tieredOpus = [copilotOpus({ defaultWindow: 200_000, contextWindowOptions: [200_000, 936_000] })];
+  // Copilot gpt-5.5 today: 272K default tier + 1.05M full-context long tier (the
+  // long tier sits ABOVE 1m, so a `(1m)` request must round up to reach it).
+  const tieredGpt55 = [copilotOpus({ defaultWindow: 272_000, contextWindowOptions: [272_000, 1_050_000] })];
 
   test("(1m) selects the largest advertised window <= request and keeps the reasoning suffix", () => {
     const [candidate] = buildModelCandidates({
@@ -128,5 +131,62 @@ describe("context-window authoring token", () => {
       }),
       ["github-copilot/claude-opus-4.8"],
     );
+  });
+
+  test("(1m) rounds UP to a long tier that sits above 1m (gpt-5.5 1.05M)", () => {
+    // The long tier (1_050_000) exceeds the 1_000_000 request, so the old
+    // "largest window <= request" rule collapsed back to the 272K default.
+    // Rounding up selects the long tier so `(1m)` actually opts into long context.
+    const [candidate] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (1m):xhigh",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(candidate?.id, "github-copilot/claude-opus-4.8");
+    assert.equal(candidate?.contextWindow, 1_050_000);
+  });
+
+  test("a sub-long request still rounds up to the long tier", () => {
+    // 500K and 922K both sit above the 272K default and below the 1.05M long
+    // tier; either request opts into long context.
+    for (const token of ["(500k)", "(922k)", "(1050k)"]) {
+      const [candidate] = buildModelCandidates({
+        primaryModel: `github-copilot/claude-opus-4.8 ${token}:xhigh`,
+        availableModels: tieredGpt55,
+      });
+      assert.equal(candidate?.contextWindow, 1_050_000, `token ${token}`);
+    }
+  });
+
+  test("a request at or below the default keeps the default (no upgrade)", () => {
+    const [exact] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (272k):xhigh",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(exact?.contextWindow, undefined);
+    const [below] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (100k):xhigh",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(below?.contextWindow, undefined);
+  });
+
+  test("the (1m) token is honored whether it precedes or follows the reasoning suffix", () => {
+    // Standard order: token before the suffix.
+    const [before] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (1m):medium",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(before?.id, "github-copilot/claude-opus-4.8");
+    assert.equal(before?.reasoningLevel, "medium");
+    assert.equal(before?.contextWindow, 1_050_000);
+    // Reversed order: token after the suffix (kept benign — the token must not
+    // collide with the `:medium` reasoning suffix).
+    const [after] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8:medium (1m)",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(after?.id, "github-copilot/claude-opus-4.8");
+    assert.equal(after?.reasoningLevel, "medium");
+    assert.equal(after?.contextWindow, 1_050_000);
   });
 });

@@ -1,4 +1,4 @@
-import { SessionManager, shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
+import { getModelDefaultContextWindow, getSupportedContextWindows, SessionManager, shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
 import type { StageContext, StageExecutionMeta, StageOptions, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
 import { buildModelCandidatesFromCatalog, errorMessage, isRetryableModelFailure, workflowModelId, type WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
 import { WorkflowPromptModelFailure, lastAssistantTextFromSession, latestTerminalAssistantFailureSince } from "./stage-runner-messages.js";
@@ -242,6 +242,24 @@ export class StageSessionController {
           fallbackThinkingLevels: undefined,
         };
     if (resumeOptions?.restoreSavedModel) delete optionsForCandidate.model;
+    // Pin a tiered model's natural default (short) context window when neither
+    // the `(1m)` model-string token nor an explicit stage-level contextWindow
+    // selects one for a fresh (non-resumed) stage session. This prevents a
+    // persisted interactive context-window preference (e.g. a previously
+    // selected long tier) from leaking into workflow stages, so a tiered model
+    // uses its short tier unless the author explicitly opts into the long tier
+    // via the `(1m)` token or the numeric contextWindow option. Single-window
+    // models carry no selectable long tier, so they are left untouched.
+    if (
+      resumeOptions?.restoreSavedModel !== true &&
+      this.reattachSessionFile === undefined &&
+      optionsForCandidate.contextWindow === undefined &&
+      candidate !== undefined &&
+      typeof candidate.value !== "string" &&
+      getSupportedContextWindows(candidate.value).length > 1
+    ) {
+      optionsForCandidate.contextWindow = getModelDefaultContextWindow(candidate.value);
+    }
     if (this.reattachSessionFile !== undefined && optionsForCandidate.sessionManager === undefined) {
       const cwd = optionsForCandidate.cwd ?? process.cwd();
       optionsForCandidate.sessionManager = SessionManager.open(

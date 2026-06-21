@@ -118,6 +118,70 @@ describe("createStageContext — model fallback", () => {
         ]);
     });
 
+    test("a tiered copilot model with no (1m) token pins its short (default) context window", async () => {
+        // Without an explicit `(1m)` token (or numeric contextWindow), a tiered
+        // model must resolve to its default short tier rather than inherit a
+        // persisted interactive long-context preference.
+        const seen: Array<{ model: string; contextWindow: number | undefined }> = [];
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                const model =
+                    typeof options.model === "string"
+                        ? options.model
+                        : `${String(options.model?.provider)}/${options.model?.id}`;
+                seen.push({ model, contextWindow: options.contextWindow });
+                return makeMockSession().session;
+            },
+        };
+
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: { model: "github-copilot/claude-opus-4.8:xhigh" },
+                models: { listModels: async () => [copilotOpusInfo()] },
+            }),
+        ) as InternalStageContext;
+
+        await ctx.__ensureSession();
+
+        assert.deepEqual(seen, [
+            { model: "github-copilot/claude-opus-4.8", contextWindow: 200_000 },
+        ]);
+    });
+
+    test("an explicit stage-level contextWindow overrides the tiered-model short-tier pin", async () => {
+        // A numeric contextWindow on the stage opts into long context even
+        // without the `(1m)` model-string token.
+        const seen: Array<{ model: string; contextWindow: number | undefined }> = [];
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                const model =
+                    typeof options.model === "string"
+                        ? options.model
+                        : `${String(options.model?.provider)}/${options.model?.id}`;
+                seen.push({ model, contextWindow: options.contextWindow });
+                return makeMockSession().session;
+            },
+        };
+
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: {
+                    model: "github-copilot/claude-opus-4.8:xhigh",
+                    contextWindow: 936_000,
+                },
+                models: { listModels: async () => [copilotOpusInfo()] },
+            }),
+        ) as InternalStageContext;
+
+        await ctx.__ensureSession();
+
+        assert.deepEqual(seen, [
+            { model: "github-copilot/claude-opus-4.8", contextWindow: 936_000 },
+        ]);
+    });
+
     test("primary retryable failure tries fallback and records metadata", async () => {
         const calls: string[] = [];
         const disposed: string[] = [];
