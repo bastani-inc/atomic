@@ -53,6 +53,21 @@ describe("workflow config object semantics", () => {
     assert.notEqual(def.run, fn);
     assert.deepEqual(await def.run({ inputs: {} } as Parameters<typeof def.run>[0]), { from: "fn1" });
   });
+
+  test("run captures the current function value before spec mutations", async () => {
+    const spec = {
+      name: "stable-run-capture",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: () => ({ result: "original" }),
+    };
+    const def = workflow(spec);
+
+    spec.run = () => ({ result: "mutated" });
+
+    assert.deepEqual(await def.run({ inputs: {} } as Parameters<typeof def.run>[0]), { result: "original" });
+  });
 });
 
 describe("workflow inferred names", () => {

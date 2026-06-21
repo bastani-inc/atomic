@@ -79,6 +79,20 @@ describe("workflow authoring door", () => {
     );
   });
 
+  test("workflow throws when explicit name normalizes to empty", () => {
+    assert.throws(
+      () => workflow({ name: "!!!", description: "", inputs: {}, outputs: {}, run: () => ({}) }),
+      { message: /normalized name must be a non-empty string/ },
+    );
+  });
+
+  test("workflow throws when explicit punctuation name normalizes to empty", () => {
+    assert.throws(
+      () => workflow({ name: " - !!! - ", description: "", inputs: {}, outputs: {}, run: () => ({}) }),
+      { message: /normalized name must be a non-empty string/ },
+    );
+  });
+
   test("definition is frozen", () => {
     const def = workflow({
       name: "frozen-test",

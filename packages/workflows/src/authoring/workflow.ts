@@ -180,10 +180,11 @@ export function workflow<
 >(
   spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,
 ): AuthoredWorkflowDefinition<TInputs, TOutputs> {
+  const specRun = spec.run;
   if (typeof spec.description !== "string") {
     throw new TypeError("workflow: description must be a string");
   }
-  if (typeof spec.run !== "function") {
+  if (typeof specRun !== "function") {
     throw new TypeError("workflow: run must be a function");
   }
   if (spec.outputs === undefined || spec.outputs === null || typeof spec.outputs !== "object" || Array.isArray(spec.outputs)) {
@@ -195,10 +196,11 @@ export function workflow<
 
   const name = resolveWorkflowName(spec.name);
   const normalizedName = normalizeWorkflowName(name);
+  requireNonEmptyString(normalizedName, "normalized name");
   const frozenInputs = freezeSchemaMap(spec.inputs ?? {} as TInputs);
   const frozenOutputs = freezeSchemaMap(spec.outputs);
   const inputBindings = freezeInputBindings(spec.worktreeFromInputs);
-  const run: WorkflowRunFn<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>> = async (ctx) => spec.run(ctx);
+  const run: WorkflowRunFn<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>> = async (ctx) => specRun(ctx);
 
   const definition = {
     __piWorkflow: true,
