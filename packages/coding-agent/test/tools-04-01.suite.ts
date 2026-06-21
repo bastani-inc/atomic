@@ -146,6 +146,56 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow("Custom shell path not found: /custom/bash");
 			expect(getShellConfigSpy).toHaveBeenCalledWith("/custom/bash");
 		});
+		it("should send commands over stdin when shell resolution requires it", async () => {
+			vi.spyOn(shellModule, "getShellConfig").mockReturnValueOnce({
+				shell: process.execPath,
+				args: [
+					"-e",
+					'let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (chunk) => { input += chunk; }); process.stdin.on("end", () => { process.stdout.write(input); });',
+				],
+				commandTransport: "stdin",
+			});
+			const chunks: Buffer[] = [];
+			const ops = createLocalBashOperations({ shellPath: "C:\\Windows\\System32\\bash.exe" });
+			const nameExpansion = "$" + "{name}";
+			const countExpansion = "$" + "{count}";
+			const iExpansion = "$" + "{i}";
+			const command = `name='World'; echo "Hello, ${nameExpansion}!"; count=3; for i in $(seq 1 ${countExpansion}); do echo "Iteration ${iExpansion} of ${countExpansion}"; done`;
+
+			const result = await ops.exec(command, testDir, {
+				onData: (data) => chunks.push(data),
+			});
+
+			expect(result.exitCode).toBe(0);
+			expect(Buffer.concat(chunks).toString("utf-8")).toBe(command);
+		});
+
+		it("should resolve legacy WSL bash.exe to stdin command transport", () => {
+			if (process.platform === "win32") return;
+			const originalCwd = process.cwd();
+			const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+			const shellPath = "C:\\Windows\\System32\\bash.exe";
+			writeFileSync(join(testDir, shellPath), "");
+			try {
+				process.chdir(testDir);
+				Object.defineProperty(process, "platform", {
+					configurable: true,
+					value: "win32",
+				});
+
+				expect(shellModule.getShellConfig(shellPath)).toEqual({
+					shell: shellPath,
+					args: ["-s"],
+					commandTransport: "stdin",
+				});
+			} finally {
+				process.chdir(originalCwd);
+				if (platformDescriptor) {
+					Object.defineProperty(process, "platform", platformDescriptor);
+				}
+			}
+		});
+
 		it("should prepend command prefix when configured", async () => {
 			const bashWithPrefix = createBashTool(testDir, {
 				commandPrefix: "export TEST_VAR=hello",

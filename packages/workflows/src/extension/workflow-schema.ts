@@ -43,23 +43,6 @@ const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
   description: "Plain JSON Schema used as final-answer tool arguments for this workflow item.",
 });
 
-const BashCommandRuleSchema = Type.Union([
-  Type.String(),
-  Type.Object({ prefix: Type.String() }, { additionalProperties: false }),
-  Type.Object({ glob: Type.String() }, { additionalProperties: false }),
-  Type.Object({
-    regex: Type.String(),
-    flags: Type.Optional(Type.String()),
-  }, { additionalProperties: false }),
-]);
-
-const BashCommandPolicySchema = Type.Object({
-  default: Type.Optional(Type.Union([Type.Literal("allow"), Type.Literal("deny")])),
-  allow: Type.Optional(Type.Array(BashCommandRuleSchema)),
-  deny: Type.Optional(Type.Array(BashCommandRuleSchema)),
-  match: Type.Optional(Type.Union([Type.Literal("whole"), Type.Literal("segments")])),
-}, { additionalProperties: false });
-
 const StageSessionOptionProperties = {
   schema: Type.Optional(JsonSchemaObject),
   cwd: Type.Optional(Type.String()),
@@ -76,7 +59,6 @@ const StageSessionOptionProperties = {
   })),
   tools: Type.Optional(Type.Array(Type.String())),
   customTools: Type.Optional(Type.Array(SdkSessionOptionArrayElementSchema("customTools"))),
-  bashPolicy: Type.Optional(BashCommandPolicySchema),
   resourceLoader: Type.Optional(SdkSessionOptionSchema("resourceLoader")),
   sessionManager: Type.Optional(SdkSessionOptionSchema("sessionManager")),
   settingsManager: Type.Optional(SdkSessionOptionSchema("settingsManager")),

@@ -146,8 +146,6 @@ export function _buildRuntime(this: AgentSession, options: {
 				bash: {
 					commandPrefix: shellCommandPrefix,
 					shellPath,
-					policy: this._bashPolicy,
-					policyLabel: "session bash policy",
 				},
 			});
 

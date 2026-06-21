@@ -193,6 +193,50 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
+	it("should compact but not retry successful responses that report overflow-sized usage", async () => {
+		const model = session.model!;
+		const successfulOverflow: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "completed despite a reported overflow-sized prompt" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: model.contextWindow + 1,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: model.contextWindow + 11,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
+			successfulOverflow,
+		];
+		const runAutoCompactionSpy = vi
+			.spyOn(
+				session as unknown as {
+					_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+				},
+				"_runAutoCompaction",
+			)
+			.mockResolvedValue();
+
+		const checkCompaction = (
+			session as unknown as {
+				_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<void>;
+			}
+		)._checkCompaction.bind(session);
+
+		await checkCompaction(successfulOverflow);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", false);
+		expect(session.agent.state.messages.at(-1)).toBe(successfulOverflow);
+	});
+
 	it("should not trigger threshold compaction for error messages when no prior usage exists", async () => {
 		const model = session.model!;
 

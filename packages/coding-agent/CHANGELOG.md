@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Removed the Atomic-specific `bashPolicy` command-level allow/deny API from `createAgentSession()`, `AgentSession` internals, SDK exports, and the built-in `bash` tool so shell execution matches upstream pi behavior. Use `tools`/`excludedTools`/`noTools` to expose or hide `bash`, and use a sandbox or custom tool for command allowlisting.
+
+### Added
+
+- Added upstream Pi v0.79.9 chat-template thinking compatibility to Atomic custom-model/provider configuration, including `compat.thinkingFormat: "chat-template"` and `compat.chatTemplateKwargs` schema/merge support for OpenAI-compatible vLLM/Hugging Face chat templates.
+
+### Changed
+
+- Aligned Atomic's bundled upstream Pi runtime libraries (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) with `^0.79.9`, picking up dependency-covered GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt caching, selective base entry points, OpenRouter Fusion, Markdown streaming code-fence stability, and runtime dependency fixes.
+
+### Fixed
+
+- Fixed same-directory session/resource reloads to reuse imported extension modules while still creating fresh extension instances and lifecycle events, reducing avoidable reload work without making extension contexts stale.
+- Fixed deep session branch path/context traversal to build paths linearly instead of using repeated front-insertion on long branches.
+- Fixed fuzzy `edit` replacements to preserve untouched original line blocks and produce patches that apply to the original file instead of rewriting the entire file through normalized text.
+- Fixed legacy WSL `C:\Windows\System32\bash.exe`/`Sysnative\bash.exe` command execution to send scripts over stdin with `bash -s`, preserving shell-variable expansion in the target bash.
+- Fixed `/model` selector search ranking so exact provider-prefixed queries (for example `openai/gpt`) rank ahead of proxy-provider model IDs such as `openrouter/openai/gpt-*`, while autocomplete keeps the broader inherited search behavior.
+- Fixed successful overflow-sized assistant responses to trigger compaction without retrying or dropping the completed assistant message.
+
 ## [0.9.0-alpha.1] - 2026-06-20
 
 ### Added

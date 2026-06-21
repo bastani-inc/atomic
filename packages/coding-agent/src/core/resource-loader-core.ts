@@ -82,6 +82,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	private extensionThemeSourceInfos: Map<string, SourceInfo>;
 	private lastPromptPaths: string[];
 	private lastThemePaths: string[];
+	private loaded: boolean;
 
 	constructor(options: DefaultResourceLoaderOptions) {
 		const inheritanceSnapshot = options.resourceLoaderInheritanceSnapshot;
@@ -152,6 +153,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.extensionThemeSourceInfos = new Map();
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
+		this.loaded = false;
 		this.touchInternalFieldsForSplit();
 	}
 
@@ -262,5 +264,6 @@ export class DefaultResourceLoader implements ResourceLoader {
 		void this.extensionSkillSourceInfos;
 		void this.extensionPromptSourceInfos;
 		void this.extensionThemeSourceInfos;
+		void this.loaded;
 	}
 }

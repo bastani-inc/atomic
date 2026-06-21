@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.9` so MCP-backed Atomic sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming code-fence stability, and shared provider/TUI compatibility fixes; no MCP extension source changes were needed for this dependency-covered sync.
+
 ## [0.9.0-alpha.1] - 2026-06-20
 
 ### Fixed

@@ -69,6 +69,13 @@ export function mergeCompat(
 		};
 	}
 
+	if (baseCompletions?.chatTemplateKwargs || overrideCompletions.chatTemplateKwargs) {
+		mergedCompletions.chatTemplateKwargs = {
+			...baseCompletions?.chatTemplateKwargs,
+			...overrideCompletions.chatTemplateKwargs,
+		};
+	}
+
 	return merged as Model<Api>["compat"];
 }
 

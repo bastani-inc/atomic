@@ -11,6 +11,7 @@ import * as _bundledTypebox from "typebox";
 import * as _bundledTypeboxCompile from "typebox/compile";
 import * as _bundledTypeboxValue from "typebox/value";
 import { isBunBinary } from "../../config.ts";
+import { resolvePath } from "../../utils/paths.ts";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from the Atomic package
 // name (or upstream-compatible pi package names).
@@ -38,6 +39,38 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 
 const require = createRequire(import.meta.url);
 let _aliases: Record<string, string> | null = null;
+
+let extensionCacheCwd: string | undefined;
+let extensionCacheGeneration = 0;
+const extensionCache = new Map<string, ExtensionFactory>();
+
+export interface ExtensionCacheToken {
+  cwd: string;
+  generation: number;
+}
+
+export function clearExtensionCache(): void {
+  extensionCache.clear();
+  extensionCacheCwd = undefined;
+  extensionCacheGeneration++;
+}
+
+export function useExtensionCacheCwd(cwd: string): ExtensionCacheToken {
+  const resolvedCwd = resolvePath(cwd);
+  if (extensionCacheCwd !== undefined && extensionCacheCwd !== resolvedCwd) {
+    clearExtensionCache();
+  }
+  extensionCacheCwd = resolvedCwd;
+  return { cwd: resolvedCwd, generation: extensionCacheGeneration };
+}
+
+function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cacheToken is ExtensionCacheToken {
+  return (
+    cacheToken !== undefined &&
+    extensionCacheCwd === cacheToken.cwd &&
+    extensionCacheGeneration === cacheToken.generation
+  );
+}
 
 /**
  * Get aliases for jiti (used in Node.js/development mode).
@@ -90,7 +123,15 @@ function getAliases(): Record<string, string> {
   return _aliases;
 }
 
-export async function loadExtensionModule(extensionPath: string): Promise<ExtensionFactory | undefined> {
+export async function loadExtensionModule(
+  extensionPath: string,
+  cacheToken?: ExtensionCacheToken,
+): Promise<ExtensionFactory | undefined> {
+  if (isCurrentCacheToken(cacheToken)) {
+    const cachedFactory = extensionCache.get(extensionPath);
+    if (cachedFactory) return cachedFactory;
+  }
+
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
     ...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
@@ -98,5 +139,9 @@ export async function loadExtensionModule(extensionPath: string): Promise<Extens
 
   const module = await jiti.import(extensionPath, { default: true });
   const factory = module as ExtensionFactory;
-  return typeof factory !== "function" ? undefined : factory;
+  if (typeof factory !== "function") return undefined;
+  if (isCurrentCacheToken(cacheToken)) {
+    extensionCache.set(extensionPath, factory);
+  }
+  return factory;
 }

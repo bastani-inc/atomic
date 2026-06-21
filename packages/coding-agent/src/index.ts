@@ -156,15 +156,6 @@ export {
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
-	type BashCommandParseError,
-	type BashCommandParseResult,
-	type BashCommandPolicy,
-	type BashCommandPolicyDecision,
-	type BashCommandPolicyMatchMode,
-	type BashCommandPolicyRejection,
-	type BashCommandRule,
-	type BashCommandSegment,
-	type BashCommandSegmentSource,
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -243,9 +234,6 @@ export {
 export { createSyntheticSourceInfo } from "./core/source-info.ts";
 // Tools
 export {
-	evaluateBashCommandPolicy,
-	formatBashCommandPolicyRejection,
-	parseBashCommandSegments,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
@@ -289,7 +277,6 @@ export {
 	truncateHead,
 	truncateLine,
 	truncateTail,
-	validateBashCommandPolicy,
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,

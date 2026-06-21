@@ -149,6 +149,53 @@ describe("Coding Agent Tools", () => {
 			expect(diff).not.toContain("line 250");
 			expect(diff.split("\n").length).toBeLessThan(50);
 		});
+		it("should preserve the correct occurrence when fuzzy replacement equals a nearby line", async () => {
+			const testFile = join(testDir, "fuzzy-preserve-duplicate-line.txt");
+			writeFileSync(testFile, "const keep = ‘same’;   \nconst target = ‘same’;   \n");
+
+			const result = await editTool.execute("test-fuzzy-preserve-duplicate-line", {
+				path: testFile,
+				edits: [{ oldText: "const target = 'same';", newText: "const target = 'changed';" }],
+			});
+
+			expect(readFileSync(testFile, "utf-8")).toBe("const keep = ‘same’;   \nconst target = 'changed';\n");
+			expect(applyPatch("const keep = ‘same’;   \nconst target = ‘same’;   \n", result.details.patch)).toBe(
+				"const keep = ‘same’;   \nconst target = 'changed';\n",
+			);
+		});
+
+		it("should preserve untouched lines and produce an applicable patch for fuzzy multi-edits", async () => {
+			const testFile = join(testDir, "fuzzy-preserve-multi.txt");
+			const originalContent = [
+				"header with trailing spaces   ",
+				"alpha = ‘one’;   ",
+				"middle with em dash — and spaces   ",
+				"beta = ‘two’;   ",
+				"footer with non-breaking space\u00A0",
+				"",
+			].join("\n");
+			writeFileSync(testFile, originalContent);
+
+			const result = await editTool.execute("test-fuzzy-preserve-multi", {
+				path: testFile,
+				edits: [
+					{ oldText: "alpha = 'one';", newText: "alpha = 'ONE';" },
+					{ oldText: "beta = 'two';", newText: "beta = 'TWO';" },
+				],
+			});
+
+			const expected = [
+				"header with trailing spaces   ",
+				"alpha = 'ONE';",
+				"middle with em dash — and spaces   ",
+				"beta = 'TWO';",
+				"footer with non-breaking space\u00A0",
+				"",
+			].join("\n");
+			expect(readFileSync(testFile, "utf-8")).toBe(expected);
+			expect(applyPatch(originalContent, result.details.patch)).toBe(expected);
+		});
+
 		it("should match edits against the original file, not incrementally", async () => {
 			const testFile = join(testDir, "edit-multi-original.txt");
 			writeFileSync(testFile, "foo\nbar\nbaz\n");

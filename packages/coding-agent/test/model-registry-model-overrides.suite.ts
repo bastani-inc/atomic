@@ -4,8 +4,6 @@ import { getSupportedContextWindows } from "../src/core/context-window.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
 describeModelRegistry((context) => {
 	const {
 		providerConfig,
@@ -81,6 +79,37 @@ describeModelRegistry((context) => {
 			// Should have both the new routing AND preserve other compat settings
 			const compat = sonnet?.compat as OpenAICompletionsCompat | undefined;
 			expect(compat?.openRouterRouting).toEqual({ order: ["anthropic", "together"] });
+		});
+
+		test("model override deep merges chatTemplateKwargs", () => {
+			writeRawModelsJson({
+				openrouter: {
+					compat: {
+						thinkingFormat: "chat-template",
+						chatTemplateKwargs: {
+							preserve_thinking: true,
+							thinking: { $var: "thinking.enabled" },
+						},
+					},
+					modelOverrides: {
+						"anthropic/claude-sonnet-4": {
+							compat: {
+								chatTemplateKwargs: { effort: { $var: "thinking.effort", omitWhenOff: true } },
+							},
+						},
+					},
+				},
+			});
+
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const sonnet = getModelsForProvider(registry, "openrouter").find((m) => m.id === "anthropic/claude-sonnet-4");
+			const compat = sonnet?.compat as OpenAICompletionsCompat | undefined;
+
+			expect(compat?.chatTemplateKwargs).toEqual({
+				preserve_thinking: true,
+				thinking: { $var: "thinking.enabled" },
+				effort: { $var: "thinking.effort", omitWhenOff: true },
+			});
 		});
 
 		test("multiple model overrides on same provider", () => {

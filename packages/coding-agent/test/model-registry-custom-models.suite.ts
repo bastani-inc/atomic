@@ -236,6 +236,43 @@ describeModelRegistry((context) => {
 			expect(compat?.cacheControlFormat).toBe("anthropic");
 		});
 
+		test("compat schema accepts chat template thinking configuration", () => {
+			writeRawModelsJson({
+				demo: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "DEMO_KEY",
+					api: "openai-completions",
+					models: [
+						{
+							id: "demo-model",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1000,
+							maxTokens: 100,
+							compat: {
+								thinkingFormat: "chat-template",
+								chatTemplateKwargs: {
+									preserve_thinking: true,
+									thinking: { $var: "thinking.enabled" },
+								},
+							},
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const compat = registry.find("demo", "demo-model")?.compat as OpenAICompletionsCompat | undefined;
+
+			expect(registry.getError()).toBeUndefined();
+			expect(compat?.thinkingFormat).toBe("chat-template");
+			expect(compat?.chatTemplateKwargs).toEqual({
+				preserve_thinking: true,
+				thinking: { $var: "thinking.enabled" },
+			});
+		});
+
 		test("compat schema accepts Anthropic eager tool input streaming flag", () => {
 			writeRawModelsJson({
 				demo: {

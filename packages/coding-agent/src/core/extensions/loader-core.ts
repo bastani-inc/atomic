@@ -10,7 +10,11 @@ import {
   type WorkflowResourceProviderInput,
 } from "./loader-resources.ts";
 import { createExtensionRuntime } from "./loader-runtime.ts";
-import { loadExtensionModule } from "./loader-virtual-modules.ts";
+import {
+  loadExtensionModule,
+  type ExtensionCacheToken,
+  useExtensionCacheCwd,
+} from "./loader-virtual-modules.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
 /**
@@ -42,12 +46,13 @@ async function loadExtension(
   runtime: ExtensionRuntime,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
   resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+  cacheToken?: ExtensionCacheToken,
 ): Promise<{ extension: Extension | null; error: string | null }> {
   const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
   try {
     const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`);
-    const factory = await loadExtensionModule(resolvedPath);
+    const factory = await loadExtensionModule(resolvedPath, cacheToken);
     endTimingSpan(moduleSpan);
     if (!factory) {
       return {
@@ -105,17 +110,19 @@ export async function loadExtensionFromFactory(
 /**
  * Load extensions from paths.
  */
-export async function loadExtensions(
+async function loadExtensionsInternal(
   paths: string[],
   cwd: string,
   eventBus?: EventBus,
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
   runtime?: ExtensionRuntime,
   resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+  useCache = false,
 ): Promise<LoadExtensionsResult> {
   const extensions: Extension[] = [];
   const errors: Array<{ path: string; error: string }> = [];
-  const resolvedCwd = resolvePath(cwd);
+  const cacheToken = useCache ? useExtensionCacheCwd(cwd) : undefined;
+  const resolvedCwd = cacheToken?.cwd ?? resolvePath(cwd);
   const resolvedEventBus = eventBus ?? createEventBus();
   const resolvedRuntime = runtime ?? createExtensionRuntime();
 
@@ -128,6 +135,7 @@ export async function loadExtensions(
       resolvedRuntime,
       workflowResourceProvider,
       resourceLoaderInheritanceSnapshotProvider,
+      cacheToken,
     );
     endTimingSpan(extensionSpan);
 
@@ -146,4 +154,41 @@ export async function loadExtensions(
     errors,
     runtime: resolvedRuntime,
   };
+}
+
+export async function loadExtensions(
+  paths: string[],
+  cwd: string,
+  eventBus?: EventBus,
+  workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  runtime?: ExtensionRuntime,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+): Promise<LoadExtensionsResult> {
+  return loadExtensionsInternal(
+    paths,
+    cwd,
+    eventBus,
+    workflowResourceProvider,
+    runtime,
+    resourceLoaderInheritanceSnapshotProvider,
+  );
+}
+
+export async function loadExtensionsCached(
+  paths: string[],
+  cwd: string,
+  eventBus?: EventBus,
+  workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
+  runtime?: ExtensionRuntime,
+  resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
+): Promise<LoadExtensionsResult> {
+  return loadExtensionsInternal(
+    paths,
+    cwd,
+    eventBus,
+    workflowResourceProvider,
+    runtime,
+    resourceLoaderInheritanceSnapshotProvider,
+    true,
+  );
 }

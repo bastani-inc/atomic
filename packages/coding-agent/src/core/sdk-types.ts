@@ -7,7 +7,6 @@ import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { LoadExtensionsResult, OrchestrationContext, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import type { BashCommandPolicy } from "./tools/index.ts";
 
 export interface CreateAgentSessionOptions {
   /** Working directory for project-local discovery. Default: process.cwd() */
@@ -58,8 +57,6 @@ export interface CreateAgentSessionOptions {
   excludedTools?: string[];
   /** Custom tools to register (in addition to built-in tools). */
   customTools?: ToolDefinition[];
-  /** Optional command-level policy for the built-in bash tool. Does not expose bash by itself. */
-  bashPolicy?: BashCommandPolicy;
 
   /** Resource loader. When omitted, DefaultResourceLoader is used. */
   resourceLoader?: ResourceLoader;

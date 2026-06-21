@@ -1,6 +1,5 @@
 /** Workflow authoring primitives, stage/session contracts, and task option types. */
 
-import type { BashCommandPolicy } from "@bastani/atomic";
 import type { Static, TSchema } from "typebox";
 
 export type { Static, TSchema };
@@ -160,7 +159,6 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   readonly noTools?: "all" | "builtin";
   readonly excludedTools?: readonly string[];
   readonly customTools?: readonly WorkflowCustomToolDefinition[];
-  readonly bashPolicy?: BashCommandPolicy;
   readonly cwd?: string;
   readonly agentDir?: string;
   readonly scopedModels?: readonly WorkflowScopedModel[];

@@ -65,6 +65,7 @@ export interface ResourceLoaderInternals {
 	extensionThemeSourceInfos: Map<string, SourceInfo>;
 	lastPromptPaths: string[];
 	lastThemePaths: string[];
+	loaded: boolean;
 	getInheritanceSnapshot(): DefaultResourceLoaderInheritanceSnapshot;
 	refreshWorkflowResources(): Promise<ResolvedResource[]>;
 }

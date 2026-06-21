@@ -24,7 +24,6 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SourceInfo } from "./source-info.ts";
-import type { BashCommandPolicy } from "./tools/bash-policy.ts";
 import type { ContextCompactionResult } from "./compaction/index.ts";
 
 export type AgentSessionEvent =
@@ -146,7 +145,6 @@ export interface AgentSessionConfig {
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	resourceLoader: ResourceLoader;
 	customTools?: ToolDefinition[];
-	bashPolicy?: BashCommandPolicy;
 	modelRegistry: ModelRegistry;
 	initialActiveToolNames?: string[];
 	allowedToolNames?: string[];

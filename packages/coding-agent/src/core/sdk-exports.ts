@@ -11,15 +11,6 @@ export type {
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type {
-  BashCommandParseError,
-  BashCommandParseResult,
-  BashCommandPolicy,
-  BashCommandPolicyDecision,
-  BashCommandPolicyMatchMode,
-  BashCommandPolicyRejection,
-  BashCommandRule,
-  BashCommandSegment,
-  BashCommandSegmentSource,
   JsonObject,
   JsonPrimitive,
   JsonValue,

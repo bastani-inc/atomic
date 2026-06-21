@@ -26,7 +26,6 @@ import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
 import type { BashOperations } from "./tools/bash.ts";
-import type { BashCommandPolicy } from "./tools/bash-policy.ts";
 import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
@@ -348,7 +347,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_turnIndex: number;
 	_resourceLoader: ResourceLoader;
 	_customTools: ToolDefinition[];
-	_bashPolicy: BashCommandPolicy | undefined;
 	_baseToolDefinitions: Map<string, ToolDefinition>;
 	_cwd: string;
 	_extensionRunnerRef?: { current?: ExtensionRunner };

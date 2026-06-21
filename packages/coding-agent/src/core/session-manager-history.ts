@@ -376,9 +376,10 @@ export function getBranchPath(fromId: string | null | undefined, byId: Map<strin
 	const path: SessionEntry[] = [];
 	let current = fromId ? byId.get(fromId) : undefined;
 	while (current) {
-		path.unshift(current);
+		path.push(current);
 		current = current.parentId ? byId.get(current.parentId) : undefined;
 	}
+	path.reverse();
 	return path;
 }
 

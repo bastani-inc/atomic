@@ -458,7 +458,6 @@ export async function createAgentSession(
     scopedModels: options.scopedModels,
     resourceLoader,
     customTools: options.customTools,
-    bashPolicy: options.bashPolicy,
     modelRegistry,
     initialActiveToolNames,
     allowedToolNames,

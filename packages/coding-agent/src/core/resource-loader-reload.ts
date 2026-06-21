@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isLocalPath } from "../utils/paths.ts";
-import { loadExtensions } from "./extensions/loader.ts";
+import { clearExtensionCache, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import { startTimingSpan, endTimingSpan } from "./timings.ts";
@@ -99,7 +99,7 @@ export async function loadProjectTrustExtensions(loader: DefaultResourceLoader):
 	const extensionPaths = state.noExtensions
 		? cliEnabledExtensions
 		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
-	const extensionsResult = await loadExtensions(
+	const extensionsResult = await loadExtensionsCached(
 		extensionPaths,
 		state.cwd,
 		state.eventBus,
@@ -124,6 +124,9 @@ export async function reloadDefaultResourceLoader(
 	options?: ResourceLoaderReloadOptions,
 ): Promise<void> {
 	const state = resourceInternals(loader);
+	if (state.loaded) {
+		clearExtensionCache();
+	}
 	let preTrustExtensions: LoadExtensionsResult | undefined;
 	const initialProjectTrusted = state.settingsManager.isProjectTrusted();
 	if (options?.resolveProjectTrust || options?.resolveBorrowedProjectTrust) {
@@ -290,5 +293,6 @@ export async function reloadDefaultResourceLoader(
 	state.appendSystemPrompt = state.appendSystemPromptOverride
 		? state.appendSystemPromptOverride(baseAppend)
 		: baseAppend;
+	state.loaded = true;
 	endTimingSpan(promptFilesSpan);
 }

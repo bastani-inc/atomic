@@ -2,7 +2,7 @@ import { resolvePath } from "../utils/paths.ts";
 import { startTimingSpan, endTimingSpan } from "./timings.ts";
 import {
 	loadExtensionFromFactory,
-	loadExtensions,
+	loadExtensionsCached,
 	type WorkflowResourceProvider,
 } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, LoadExtensionsResult } from "./extensions/types.ts";
@@ -24,7 +24,7 @@ export async function loadFinalExtensionSet(
 	const state = resourceInternals(loader);
 	if (!preTrustExtensions) {
 		const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
-		const extensionsResult = await loadExtensions(
+		const extensionsResult = await loadExtensionsCached(
 			extensionPaths,
 			state.cwd,
 			state.eventBus,
@@ -60,7 +60,7 @@ export async function loadFinalExtensionSet(
 		return !preloadedByPath.has(resolvedPath) && !failedPreloadPaths.has(resolvedPath);
 	});
 	const loadExtensionsSpan = startTimingSpan("DefaultResourceLoader.reload.loadExtensions");
-	const remainingExtensions = await loadExtensions(
+	const remainingExtensions = await loadExtensionsCached(
 		remainingPaths,
 		state.cwd,
 		state.eventBus,

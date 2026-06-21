@@ -9,10 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Breaking Changes
 
 - Replaced the removed `defineWorkflow(...).run(...).compile()` builder with the single `workflow({ name?, description, inputs, outputs, run })` authoring door. Authored workflows must import `workflow` from `@bastani/workflows`, import `Type` from `typebox`, provide an `outputs` map, and export the returned definition directly; `.compile()` and the builder types are no longer exported.
+- Removed the workflow stage/task/direct-mode `bashPolicy` option and schema so workflow-launched `bash` tools match upstream pi behavior. Use `tools`/`noTools` to expose or hide `bash`, custom tools for narrow operations, and an OS/container sandbox for command allowlisting.
 
 ### Changed
 
 - Decomposed the foreground workflow executor behind an internal, host-injected `EngineRuntime.spawnStage(...)` chokepoint. Agent stages, task/chain/parallel primitives, nested workflow boundary stages, MCP stage scope setup/cleanup, continuation replay wiring, and graph-frontier tracking now live under the engine seams while preserving the existing run, resume, kill, HIL, worktree, and model-fallback behavior.
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.9` so workflow graph, custom UI, prompt-broker, and streamed Markdown surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during streaming; no workflows extension source changes were needed for this dependency-covered sync.
 
 ## [0.9.0-alpha.1] - 2026-06-20
 

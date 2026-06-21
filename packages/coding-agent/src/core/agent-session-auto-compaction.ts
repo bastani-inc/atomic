@@ -41,6 +41,12 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 		return;
 	}
 	if (sameModel && isContextOverflow(assistantMessage, contextWindow)) {
+		const willRetry = assistantMessage.stopReason !== "stop";
+		if (!willRetry) {
+			await this._runAutoCompaction("overflow", false);
+			return;
+		}
+
 		if (this._overflowRecoveryAttempted) {
 			this._emit({
 				type: "compaction_end",
@@ -61,7 +67,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 		if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
 			this.agent.state.messages = messages.slice(0, -1);
 		}
-		await this._runAutoCompaction("overflow", true);
+		await this._runAutoCompaction("overflow", willRetry);
 		return;
 	}
 

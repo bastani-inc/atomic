@@ -18,7 +18,6 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
-import type { BashCommandPolicy } from "./tools/bash-policy.ts";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
@@ -94,7 +93,6 @@ export class AgentSession {
 	protected _turnIndex = 0;
 	protected _resourceLoader: ResourceLoader;
 	protected _customTools: ToolDefinition[];
-	protected _bashPolicy: BashCommandPolicy | undefined;
 	protected _baseToolDefinitions: Map<string, ToolDefinition> = new Map();
 	protected _cwd: string;
 	protected _extensionRunnerRef?: { current?: ExtensionRunner };
@@ -126,7 +124,6 @@ export class AgentSession {
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
-		this._bashPolicy = config.bashPolicy;
 		this._cwd = config.cwd;
 		this._modelRegistry = config.modelRegistry;
 		this._extensionRunnerRef = config.extensionRunnerRef;
