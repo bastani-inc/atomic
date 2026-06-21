@@ -66,7 +66,9 @@ export async function runOpenClaudeDesignWorkflow(ctx: unknown): Promise<object>
       fallbackModels: [
           "github-copilot/claude-opus-4.8 (1m):xhigh",
           "anthropic/claude-opus-4-8:xhigh",
-          "github-copilot/claude-sonnet-4.6:high",
+          "zai/glm-5.2:xhigh",
+          "zai-coding-cn/glm-5.2:xhigh",
+          "github-copilot/claude-sonnet-4.6 (1m):high",
           "anthropic/claude-sonnet-4-6:high",
       ],
     };
