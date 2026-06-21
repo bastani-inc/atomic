@@ -89,18 +89,21 @@ function packageManifestPaths(): readonly string[] {
   return paths;
 }
 
+// main is versionless: it carries this placeholder and the real version is
+// stamped only onto an off-main tag by scripts/cut-release.ts. The release-notes
+// PR this workflow opens against the base branch must therefore touch CHANGELOGs
+// only — never package manifests, lockfiles, or generated version files.
+const PLACEHOLDER_VERSION = "0.0.0";
+
 function releaseChangedFileAllowed(path: string): boolean {
-  return path === "package.json"
-    || path === "bun.lock"
-    || path === "Cargo.toml"
-    || path === "Cargo.lock"
-    || path === "packages/natives/native/index.js"
-    || /^packages\/[^/]+\/(?:package\.json|README\.md|CHANGELOG\.md)$/u.test(path);
+  return path === "CHANGELOG.md"
+    || /^packages\/[^/]+\/CHANGELOG\.md$/u.test(path);
 }
 
 export async function verifyReleasePreparation(
   release: ValidatedRelease,
   sourceHeadOid: string,
+  checkManifestVersions = true,
 ): Promise<PreparationVerification> {
   const branch = runCommand(["git", "branch", "--show-current"]);
   const head = runCommand(["git", "rev-parse", "HEAD"]);
@@ -135,8 +138,10 @@ export async function verifyReleasePreparation(
       continue;
     }
 
-    if (typeof manifest.version === "string" && manifest.version !== release.version) {
-      failures.push(`${manifestPath} version was ${manifest.version}, expected ${release.version}`);
+    if (checkManifestVersions && typeof manifest.version === "string" && manifest.version !== PLACEHOLDER_VERSION) {
+      failures.push(
+        `${manifestPath} version was ${manifest.version}, expected the ${PLACEHOLDER_VERSION} placeholder. main is versionless; do not run bump-version in this flow (the release version is stamped onto the tag by scripts/cut-release.ts).`,
+      );
     }
 
     if (manifestPath === "packages/coding-agent/package.json" && manifest.name !== "@bastani/atomic") {
@@ -207,16 +212,18 @@ export function runLocalReleaseChecks(release: ValidatedRelease): GateVerificati
   };
 }
 
-export function releaseInstructions(release: ValidatedRelease): string {
+export function releaseInstructions(release: ValidatedRelease, baseRef: string): string {
   return [
     `Release kind: ${release.kind}`,
     `Target version: ${release.version}`,
-    `Release branch to create from current HEAD: ${release.branch}`,
+    `Base branch (release-notes PR target and tag base): ${baseRef}`,
+    `Release-notes branch to create from current HEAD: ${release.branch}`,
     "Repository rules:",
     "- Use Bun commands, not npm/yarn/pnpm/npx, for local development steps.",
     "- Never include a leading v in the version or tag.",
+    `- ${baseRef} is versionless: every packages/*/package.json stays at the 0.0.0 placeholder. Do NOT run scripts/bump-version.ts and do NOT change any package version in this flow.`,
+    `- The real version is materialized only on a throwaway off-${baseRef} tag commit produced by \`scripts/cut-release.ts\`; it is never merged into ${baseRef}.`,
     "- Do not modify already released changelog sections; add entries only under each package CHANGELOG.md `## [Unreleased]` section.",
-    `- Use \`bun run scripts/bump-version.ts ${release.version}\` and then \`bun install\` for version bumps.`,
     "- If credentials, git state, CI, or publish checks block safe progress, report the blocker clearly and stop rather than fabricating success.",
   ].join("\n");
 }

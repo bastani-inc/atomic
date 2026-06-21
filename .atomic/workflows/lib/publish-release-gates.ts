@@ -49,6 +49,7 @@ type TagPublicationVerification =
 export function captureReleasePrReference(
   release: ValidatedRelease,
   expectedHeadRefOid: string,
+  baseRef: string,
 ): PullRequestReferenceVerification {
   const prView = runCommand([
     "gh",
@@ -72,7 +73,7 @@ export function captureReleasePrReference(
   const referenceVerification = verifyReleasePullRequestReferenceJson(
     parsed.value,
     release.branch,
-    "main",
+    baseRef,
     expectedHeadRefOid,
     "OPEN",
   );
@@ -120,6 +121,7 @@ export function captureReleasePrReference(
 export function verifyReleasePrChecksPassed(
   release: ValidatedRelease,
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
+  baseRef: string,
 ): GateVerification {
   const prView = runCommand([
     "gh",
@@ -140,7 +142,7 @@ export function verifyReleasePrChecksPassed(
   const refreshedReference = verifyReleasePullRequestReferenceJson(
     parsedPr.value,
     release.branch,
-    "main",
+    baseRef,
     prReference.headRefOid,
     "OPEN",
   );
@@ -180,6 +182,7 @@ export function verifyReleasePrMerged(
   release: ValidatedRelease,
   prSelector: string,
   expectedHeadRefOid: string | undefined,
+  baseRef: string,
 ): PullRequestMergeVerification {
   const prView = runCommand([
     "gh",
@@ -200,7 +203,7 @@ export function verifyReleasePrMerged(
   const parsed = parseJsonCommand(prView, "GitHub PR merge verification returned invalid JSON.");
   if (!parsed.ok) return { ok: false, summary: parsed.summary };
 
-  const mergeVerification = verifyPullRequestMergedJson(parsed.value, release.branch, "main", expectedHeadRefOid);
+  const mergeVerification = verifyPullRequestMergedJson(parsed.value, release.branch, baseRef, expectedHeadRefOid);
   if (!mergeVerification.ok) {
     return {
       ok: false,
@@ -236,30 +239,30 @@ export function verifyReleasePrMerged(
   };
 }
 
-export function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid: string): MainReadyVerification {
+export function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid: string, baseRef: string): MainReadyVerification {
   const branch = runCommand(["git", "branch", "--show-current"]);
   const head = runCommand(["git", "rev-parse", "HEAD"]);
-  const originMain = runCommand(["git", "rev-parse", "origin/main"]);
+  const originMain = runCommand(["git", "rev-parse", `origin/${baseRef}`]);
   const status = runCommand(["git", "status", "--short"]);
   const mergeBase = runCommand(["git", "merge-base", "--is-ancestor", mergeCommitOid, "HEAD"]);
   const localTag = runCommand(["git", "rev-parse", "--verify", `refs/tags/${release.version}`]);
   const remoteTag = runCommand(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const failures: string[] = [];
 
-  if (branch.exitCode !== 0 || branch.stdout !== "main") failures.push(`current branch was ${branch.stdout || "missing"}, expected main`);
-  if (head.exitCode !== 0 || head.stdout.length === 0) failures.push("local main HEAD could not be resolved");
-  if (originMain.exitCode !== 0 || originMain.stdout.length === 0) failures.push("origin/main could not be resolved");
+  if (branch.exitCode !== 0 || branch.stdout !== baseRef) failures.push(`current branch was ${branch.stdout || "missing"}, expected ${baseRef}`);
+  if (head.exitCode !== 0 || head.stdout.length === 0) failures.push(`local ${baseRef} HEAD could not be resolved`);
+  if (originMain.exitCode !== 0 || originMain.stdout.length === 0) failures.push(`origin/${baseRef} could not be resolved`);
   if (head.stdout.length > 0 && originMain.stdout.length > 0 && head.stdout !== originMain.stdout) {
-    failures.push(`local main HEAD ${head.stdout} did not match origin/main ${originMain.stdout}`);
+    failures.push(`local ${baseRef} HEAD ${head.stdout} did not match origin/${baseRef} ${originMain.stdout}`);
   }
   if (status.exitCode !== 0 || status.stdout.length > 0) failures.push("worktree is not clean before tagging");
-  if (mergeBase.exitCode !== 0) failures.push(`merge commit ${mergeCommitOid} is not an ancestor of local main HEAD`);
+  if (mergeBase.exitCode !== 0) failures.push(`merge commit ${mergeCommitOid} is not an ancestor of local ${baseRef} HEAD`);
   if (localTag.exitCode === 0) failures.push(`local tag ${release.version} already exists`);
   if (remoteTag.exitCode !== 0) failures.push(`remote tag lookup for ${release.version} failed`);
   if (remoteTag.stdout.length > 0) failures.push(`remote tag ${release.version} already exists`);
 
   const summary = [
-    failures.length === 0 ? "Main is ready for release tagging." : "Main is not ready for release tagging.",
+    failures.length === 0 ? `${baseRef} is ready for release tagging.` : `${baseRef} is not ready for release tagging.`,
     failures.length === 0 ? undefined : failures.map((failure) => `- ${failure}`).join("\n"),
     commandSummary(branch),
     commandSummary(head),
@@ -274,34 +277,64 @@ export function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid:
   return { ok: true, summary, mainOid: head.stdout };
 }
 
-export function verifyReleaseTagPublished(release: ValidatedRelease, expectedTagTargetOid: string): TagPublicationVerification {
-  const localTag = runCommand(["git", "rev-parse", `${release.version}^{}`]);
+export function verifyReleaseTagPublished(release: ValidatedRelease, expectedParentOid: string): TagPublicationVerification {
+  // The tag does not point at a commit on the base branch. cut-release.ts stamps
+  // the real version onto a throwaway "Release" commit whose parent is the verified
+  // base HEAD, then tags that commit. Verify: (1) local + remote tag resolve to the
+  // same release commit, (2) its parent is the verified base commit, and (3) the
+  // tagged @bastani/atomic manifest carries the target version (proving the stamp).
+  const localTag = runCommand(["git", "rev-parse", `${release.version}^{commit}`]);
+  const releaseCommitOid = localTag.stdout;
+  const tagParent = runCommand(["git", "rev-parse", `${release.version}^{commit}^`]);
+  const taggedManifest = runCommand(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
   const remoteTag = runCommand(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const remoteTagTargetOid = remoteTag.stdout.split(/\s+/u)[0] ?? "";
   const failures: string[] = [];
 
-  if (localTag.exitCode !== 0 || localTag.stdout !== expectedTagTargetOid) {
-    failures.push(`local tag target was ${localTag.stdout || "missing"}, expected ${expectedTagTargetOid}`);
+  if (localTag.exitCode !== 0 || releaseCommitOid.length === 0) {
+    failures.push("local release tag commit could not be resolved");
   }
-  if (remoteTag.exitCode !== 0 || remoteTagTargetOid !== expectedTagTargetOid) {
-    failures.push(`remote tag target was ${remoteTagTargetOid || "missing"}, expected ${expectedTagTargetOid}`);
+  if (tagParent.exitCode !== 0 || tagParent.stdout !== expectedParentOid) {
+    failures.push(`release commit parent was ${tagParent.stdout || "missing"}, expected the verified base commit ${expectedParentOid}`);
+  }
+
+  let stampedVersion: string | undefined;
+  if (taggedManifest.exitCode === 0) {
+    try {
+      stampedVersion = (JSON.parse(taggedManifest.stdout) as { version?: string }).version;
+    } catch {
+      stampedVersion = undefined;
+    }
+  }
+  if (stampedVersion !== release.version) {
+    failures.push(`tagged @bastani/atomic version was ${stampedVersion ?? "unparseable"}, expected ${release.version}`);
+  }
+
+  if (remoteTag.exitCode !== 0 || remoteTagTargetOid.length === 0) {
+    failures.push(`remote tag ${release.version} was missing on origin`);
+  } else if (releaseCommitOid.length > 0 && remoteTagTargetOid !== releaseCommitOid) {
+    failures.push(`remote tag target was ${remoteTagTargetOid}, expected the release commit ${releaseCommitOid}`);
   }
 
   const summary = [
     failures.length === 0 ? "Release tag publication is deterministically verified." : "Release tag publication is not verified.",
+    releaseCommitOid.length === 0 ? undefined : `releaseCommitOid: ${releaseCommitOid}`,
+    `expectedParentOid: ${expectedParentOid}`,
     failures.length === 0 ? undefined : failures.map((failure) => `- ${failure}`).join("\n"),
     commandSummary(localTag),
+    commandSummary(tagParent),
     commandSummary(remoteTag),
   ].filter((line): line is string => line !== undefined).join("\n\n");
 
-  if (failures.length > 0) return { ok: false, summary };
-  return { ok: true, summary, tagTargetOid: expectedTagTargetOid };
+  if (failures.length > 0 || releaseCommitOid.length === 0) return { ok: false, summary };
+  return { ok: true, summary, tagTargetOid: releaseCommitOid };
 }
 
-export async function verifyPublishWorkflowSucceeded(
-  release: ValidatedRelease,
+async function verifyWorkflowRunSucceeded(
   expectedHeadSha: string,
+  options: { readonly workflowFile: string; readonly expectedHeadBranch: string },
 ): Promise<PublishWorkflowRunVerification> {
+  const { workflowFile, expectedHeadBranch } = options;
   let runList: CommandResult | undefined;
   let selectedRun: ReturnType<typeof selectPublishWorkflowRunJson> | undefined;
 
@@ -311,7 +344,7 @@ export async function verifyPublishWorkflowSucceeded(
       "run",
       "list",
       "--workflow",
-      "publish.yml",
+      workflowFile,
       "--event",
       "push",
       "--json",
@@ -330,7 +363,7 @@ export async function verifyPublishWorkflowSucceeded(
     const parsedList = parseJsonCommand(runList, "GitHub Actions publish run lookup returned invalid JSON.");
     if (!parsedList.ok) return { ok: false, summary: parsedList.summary };
 
-    selectedRun = selectPublishWorkflowRunJson(parsedList.value, release.version);
+    selectedRun = selectPublishWorkflowRunJson(parsedList.value, expectedHeadBranch);
     if (selectedRun.ok) break;
     if (attempt < 6) await Bun.sleep(10_000);
   }
@@ -391,7 +424,7 @@ export async function verifyPublishWorkflowSucceeded(
     };
   }
 
-  const publishVerification = verifyPublishWorkflowRunJson(parsedView.value, release.version, expectedHeadSha);
+  const publishVerification = verifyPublishWorkflowRunJson(parsedView.value, expectedHeadBranch, expectedHeadSha);
   if (!publishVerification.ok) {
     return {
       ok: false,
@@ -415,5 +448,25 @@ export async function verifyPublishWorkflowSucceeded(
       commandSummary(runView),
     ].filter((line): line is string => line !== undefined).join("\n\n"),
   };
+}
+
+export function verifyPublishWorkflowSucceeded(
+  release: ValidatedRelease,
+  expectedHeadSha: string,
+): Promise<PublishWorkflowRunVerification> {
+  return verifyWorkflowRunSucceeded(expectedHeadSha, {
+    workflowFile: "publish.yml",
+    expectedHeadBranch: release.version,
+  });
+}
+
+export function verifyReleaseBranchCiSucceeded(
+  release: ValidatedRelease,
+  branchHeadSha: string,
+): Promise<PublishWorkflowRunVerification> {
+  return verifyWorkflowRunSucceeded(branchHeadSha, {
+    workflowFile: "test.yml",
+    expectedHeadBranch: release.branch,
+  });
 }
 

@@ -133,19 +133,18 @@ The publish pipeline (`publish.yml`) runs when:
 | `<major>.<minor>.<patch>` (e.g. `0.8.0`)                  | `latest` | normal release, marked latest |
 | `<major>.<minor>.<patch>-<prerelease>` (e.g. `0.8.0-alpha.1`) | `next`   | prerelease, not marked latest |
 
-The tag must match `packages/coding-agent/package.json` exactly (no leading `v`). All `packages/*` package versions stay in sync via `scripts/bump-version.ts`.
+`main` is **versionless**: every `packages/*/package.json` on `main` sits at the `0.0.0` placeholder. The real version exists only on the tagged, off-`main` `Release <version>` commit produced by `scripts/cut-release.ts`, where the tag matches `packages/coding-agent/package.json` exactly (no leading `v`) and all `packages/*` versions are stamped in sync. publish.yml checks out that tagged commit, so its `validate tag matches package.json` gate sees the real version, not the placeholder. The pipeline also refuses to publish the `0.0.0` placeholder if it is ever tagged directly.
 
-### Version Bump
+### Cutting a release (versionless main)
 
-Use the top-level script:
+`main` never carries a real version, so releasing does not bump `main`. Instead, `scripts/cut-release.ts` materializes the version on a throwaway, off-`main` `Release <version>` commit and tags it:
 
 ```sh
-bun run scripts/bump-version.ts 0.8.0
-bun run scripts/bump-version.ts 0.8.0-alpha.1
-bun install
+bun run scripts/cut-release.ts 0.8.0 --base main --push
+bun run scripts/cut-release.ts 0.8.0-alpha.1 --base main --push
 ```
 
-The script updates every `packages/*/package.json` version and any package README version badge. Run `bun install` afterward so `bun.lock` records the same workspace versions.
+Internally the script validates a clean tree, creates a detached `git worktree` at the base commit, stamps every versioned manifest with `scripts/bump-version.ts` (all `packages/*/package.json`, the `@bastani/atomic-natives` pin, `packages/natives/native/index.js`, and the Cargo manifests/lock), commits `Release <version>`, tags it, removes the worktree, and pushes only the tag. `main` is never advanced and the tag's commit is the only place the real version lives. `bun.lock` keeps `main`'s `0.0.0` workspace placeholders — it is not shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the version-string mismatch.
 
 ### Publish Flow
 
@@ -284,16 +283,9 @@ The meaningful pre-publish checks are:
 
 ## Release Checklist
 
-1. Bump versions on `main` (or a short-lived PR branch):
+1. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to `## [0.8.0] - <YYYY-MM-DD>` and land it on `main` like any normal change. The publish workflow uses this section as the GitHub Release body. **Do not bump any `package.json` version — `main` is versionless.**
 
-    ```sh
-    bun run scripts/bump-version.ts 0.8.0
-    bun install
-    ```
-
-2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to `## [0.8.0] - <YYYY-MM-DD>`. The publish workflow uses this section as the GitHub Release body.
-
-3. Run local validation:
+2. Run local validation (optional; CI repeats it from the tagged commit):
 
     ```sh
     bun run typecheck
@@ -324,19 +316,16 @@ The meaningful pre-publish checks are:
     rm -rf "$tmpdir"
     ```
 
-    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke.
+    On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke. (A `main` build reports the `0.0.0` placeholder for `--version`; a release build from the tag reports the real version.)
 
-4. Commit and tag:
+3. From a clean `main`, cut and push the release tag. This stamps the version onto an off-`main` `Release 0.8.0` commit, tags it, and pushes only the tag (the publish trigger):
 
     ```sh
-    git add packages/*/package.json packages/coding-agent/CHANGELOG.md bun.lock
-    git add packages/*/README.md # only if the version bump script changed README badges
-    git commit -m "chore(release): bump to 0.8.0"
-    git tag 0.8.0
-    git push origin main
-    git push origin 0.8.0
+    bun run scripts/cut-release.ts 0.8.0 --base main --push
     ```
 
-5. Confirm `publish.yml` runs docs link validation plus Mintlify syntax and broken-link checks, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+    Omit `--push` to inspect the tag locally first (`git show 0.8.0`, `git log --oneline -1 0.8.0`), then `git push origin 0.8.0`. `main` is never advanced.
 
-For prereleases, substitute `0.8.0-alpha.1` and tag `0.8.0-alpha.1`.
+4. Confirm `publish.yml` checks out the tag, runs docs link validation plus Mintlify syntax and broken-link checks, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+
+For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow.

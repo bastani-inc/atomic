@@ -240,21 +240,19 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a tag-driven release flow: push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) and CI cross-compiles binaries, publishes to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+Atomic uses a **versionless `main`** release flow: `main` stays at the `0.0.0` placeholder and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) makes CI cross-compile binaries, publish to npm with OIDC provenance, and create the GitHub Release with binaries attached.
 
 ### Workflow
 
-1. Run `bun run scripts/bump-version.ts <version>` (e.g. `0.8.0` or `0.8.0-alpha.1`), then `bun install`.
-2. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to a new `## [<version>] - <YYYY-MM-DD>` section. CI extracts release notes from this section.
-3. Run `bun run typecheck`, `cd packages/coding-agent && bun run build`, and `bun run test:all`.
-4. Commit `packages/*/package.json`, `packages/*/README.md`, `packages/coding-agent/CHANGELOG.md`, and `bun.lock` with `chore(release): bump to <version>`.
-5. Tag and push:
+1. Land the CHANGELOG move on `main` like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI extracts release notes from it). **Do not bump any `package.json` version** — `main` is versionless.
+2. From a clean `main`, cut the release. This stamps the version onto an off-`main` `Release <version>` commit, tags it, and pushes only the tag:
     ```sh
-    git tag <version>
-    git push origin main
-    git push origin <version>
+    bun run scripts/cut-release.ts <version> --base main --push
     ```
-6. The tag push triggers `.github/workflows/publish.yml`, which publishes `@bastani/atomic` to npm with OIDC provenance and creates the GitHub Release with six binary archives attached (darwin/linux/windows × arm64/x64).
+    `main` is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`.
+3. The tag push triggers `.github/workflows/publish.yml`, which builds from the tagged (real-version) commit and publishes `@bastani/atomic` to npm with OIDC provenance — stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next` — and creates the GitHub Release with six binary archives attached (darwin/linux/windows × arm64/x64).
+
+To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
 
 Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. Provenance is enabled in CI; no `NPM_TOKEN` is needed.
 

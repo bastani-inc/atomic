@@ -20,6 +20,7 @@ import {
   verifyReleasePrMerged,
   verifyReleaseTagPublished,
 } from "./lib/publish-release-gates.js";
+import { runEphemeralRelease } from "./lib/publish-release-ephemeral.js";
 
 const releaseKindSchema = Type.Union([Type.Literal("release"), Type.Literal("prerelease")]);
 const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]);
@@ -30,6 +31,23 @@ export default defineWorkflow("publish-release")
   .input("release_kind", Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
     description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
   }))
+  .input(
+    "base_ref",
+    Type.String({
+      default: "main",
+      description:
+        "Branch to release from: the release-notes PR merges into it and the tag is cut from it. Defaults to main. Ignored when from_ref is set.",
+    }),
+  )
+  .input(
+    "from_ref",
+    Type.Optional(
+      Type.String({
+        description:
+          "Optional: cut an ephemeral release from any commit/tag/branch. Auto-creates release/<version> (or prerelease/<version>) from this ref, gates on that branch's CI, cuts and publishes the tag, then deletes the branch. The changelog lives on the tag only; main is untouched.",
+      }),
+    ),
+  )
   .output("status", statusSchema)
   .output("target_version", Type.String({ description: "Validated version supplied to the release workflow." }))
   .output("release_kind", releaseKindSchema)
@@ -39,7 +57,14 @@ export default defineWorkflow("publish-release")
   .output("summary", Type.String({ description: "Compact release execution summary." }))
   .run(async (ctx) => {
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
-    const baseInstructions = releaseInstructions(release);
+    const baseRef = ctx.inputs.base_ref.trim() || "main";
+    const baseInstructions = releaseInstructions(release, baseRef);
+
+    const fromRef = ctx.inputs.from_ref?.trim();
+    if (fromRef) {
+      return await runEphemeralRelease((name, options) => ctx.task(name, options), release, fromRef);
+    }
+
     const sourceHead = runCommand(["git", "rev-parse", "HEAD"]);
 
     if (sourceHead.exitCode !== 0 || sourceHead.stdout.length === 0) {
@@ -60,11 +85,11 @@ export default defineWorkflow("publish-release")
         "Required actions:",
         "1. Inspect `git status --short`, `git branch --show-current`, `git rev-parse HEAD`, `git log -1 --oneline`, and `git remote -v` to record the source branch and exact source commit.",
         "2. Ensure you are starting from a safe state for a release. If unrelated uncommitted changes already exist before your release edits, stop and report BLOCKED with the exact files.",
-        `3. Create and switch to branch \`${release.branch}\` from the recorded source commit \`${sourceHead.stdout}\` if it does not already exist; if it exists, verify it is the intended same-version release branch before continuing.`,
-        "4. Read package changelogs, especially `packages/*/CHANGELOG.md`, and update only `## [Unreleased]` sections according to AGENTS.md Changelog guidance.",
-        `5. Run \`bun run scripts/bump-version.ts ${release.version}\` and then \`bun install\`.`,
-        "6. Inspect the resulting diff and ensure it contains only release metadata/changelog/version/lockfile changes.",
-        `7. Commit all release changes on \`${release.branch}\` with a concise conventional message such as \`chore: release ${release.version}\`.`,
+        `3. Create and switch to branch \`${release.branch}\` from the recorded source commit \`${sourceHead.stdout}\` if it does not already exist; if it exists, verify it is the intended same-version release-notes branch before continuing.`,
+        `4. Read package changelogs, especially \`packages/*/CHANGELOG.md\`, and move the \`## [Unreleased]\` entries into a new \`## [${release.version}]\` section dated today, per AGENTS.md Changelog guidance.`,
+        "5. Do NOT bump versions: main is versionless and every package manifest must stay at the 0.0.0 placeholder. Do not run scripts/bump-version.ts and do not touch package.json, bun.lock, Cargo.*, or generated version files.",
+        "6. Inspect the resulting diff and ensure it contains only CHANGELOG.md changes.",
+        `7. Commit the changelog changes on \`${release.branch}\` with a concise conventional message such as \`docs: release notes for ${release.version}\`.`,
         "",
         "Final response format:",
         "- Summarize source branch, source HEAD, created/current release branch, release commit hash, `git status --short`, changed files, commands run, and any blockers.",
@@ -106,7 +131,7 @@ export default defineWorkflow("publish-release")
         `1. Use \`git branch --show-current\` plus \`git rev-parse HEAD\` to verify the current branch is \`${release.branch}\` at commit \`${preparationVerification.releaseCommitOid}\`.`,
         `2. Push branch with \`git push -u origin ${release.branch}\`.`,
         "3. Use `gh auth status` and `gh repo view` or equivalent non-destructive checks to confirm GitHub access.",
-        `4. Create a PR from \`${release.branch}\` to \`main\` with title \`Release ${release.version}\` if one does not already exist. If a PR already exists for the branch, reuse it.`,
+        `4. Create a PR from \`${release.branch}\` to \`${baseRef}\` with title \`Release ${release.version}\` if one does not already exist. If a PR already exists for the branch, reuse it.`,
         "5. Include release kind, version, changelog/version bump summary, and validation commands in the PR body.",
         "",
         "Final response format:",
@@ -116,7 +141,7 @@ export default defineWorkflow("publish-release")
       ].join("\n"),
     });
 
-    const prReference = captureReleasePrReference(release, preparationVerification.releaseCommitOid);
+    const prReference = captureReleasePrReference(release, preparationVerification.releaseCommitOid, baseRef);
     if (!prReference.ok) {
       return blockedOutput(
         release,
@@ -147,7 +172,7 @@ export default defineWorkflow("publish-release")
       ].join("\n"),
     });
 
-    const ciVerification = verifyReleasePrChecksPassed(release, prReference);
+    const ciVerification = verifyReleasePrChecksPassed(release, prReference, baseRef);
     if (!ciVerification.ok) {
       return blockedOutput(
         release,
@@ -178,7 +203,7 @@ export default defineWorkflow("publish-release")
       ].join("\n"),
     });
 
-    const mergeVerification = verifyReleasePrMerged(release, prReference.prUrl, prReference.headRefOid);
+    const mergeVerification = verifyReleasePrMerged(release, prReference.prUrl, prReference.headRefOid, baseRef);
     if (!mergeVerification.ok) {
       return blockedOutput(
         release,
@@ -190,7 +215,7 @@ export default defineWorkflow("publish-release")
 
     const syncMain = await ctx.task("sync-main-after-merge", {
       prompt: [
-        "Sync local main after the release PR merge. Do not create or push a tag.",
+        `Sync local ${baseRef} after the release PR merge. Do not create or push a tag.`,
         "",
         baseInstructions,
         "",
@@ -198,29 +223,29 @@ export default defineWorkflow("publish-release")
         excerpt(mergeVerification.summary),
         "",
         "Required actions:",
-        "1. Switch to `main` and run `git pull origin main`.",
-        `2. Confirm the merged release commit for ${release.version} is present on local main with command-backed evidence such as \`git rev-parse HEAD\` and \`git merge-base --is-ancestor ${mergeVerification.mergeCommitOid} HEAD\`.`,
+        `1. Switch to \`${baseRef}\` and run \`git pull origin ${baseRef}\`.`,
+        `2. Confirm the merged release commit for ${release.version} is present on local ${baseRef} with command-backed evidence such as \`git rev-parse HEAD\` and \`git merge-base --is-ancestor ${mergeVerification.mergeCommitOid} HEAD\`.`,
         `3. Confirm tag \`${release.version}\` does not already exist locally or on origin. Do not create the tag in this stage.`,
         "",
         "Final response format:",
-        "- Include local main HEAD, origin/main evidence, worktree status, tag existence checks, commands run, and any blockers.",
-        "- The workflow body performs a deterministic main/tag-readiness gate after this stage.",
+        `- Include local ${baseRef} HEAD, origin/${baseRef} evidence, worktree status, tag existence checks, commands run, and any blockers.`,
+        "- The workflow body performs a deterministic base-branch/tag-readiness gate after this stage.",
       ].join("\n"),
     });
 
-    const mainReady = verifyMainReadyForTag(release, mergeVerification.mergeCommitOid);
+    const mainReady = verifyMainReadyForTag(release, mergeVerification.mergeCommitOid, baseRef);
     if (!mainReady.ok) {
       return blockedOutput(
         release,
         "verify-main-ready-for-tag",
-        "local main is clean, matches origin/main, contains the merge commit, and the release tag does not already exist",
+        `local ${baseRef} is clean, matches origin/${baseRef}, contains the merge commit, and the release tag does not already exist`,
         [mainReady.summary, "", "Sync-main stage output:", excerpt(syncMain.text, 2_000)].join("\n"),
       );
     }
 
-    const pushTag = await ctx.task("push-release-tag", {
+    const pushTag = await ctx.task("cut-release-tag", {
       prompt: [
-        "Create and push the release tag. This is the sole publish trigger stage.",
+        `Cut the release tag off ${baseRef}. This is the sole publish trigger stage. ${baseRef} is never bumped.`,
         "",
         baseInstructions,
         "",
@@ -228,13 +253,13 @@ export default defineWorkflow("publish-release")
         excerpt(mainReady.summary),
         "",
         "Required actions:",
-        `1. Verify you are still on clean local \`main\` at commit \`${mainReady.mainOid}\`.`,
-        `2. Run \`git tag ${release.version}\` and \`git push origin ${release.version}\`.`,
-        "3. Do not force-push or overwrite an existing tag.",
+        `1. Verify you are on clean local \`${baseRef}\` at commit \`${mainReady.mainOid}\`.`,
+        `2. Run \`bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes\`. This stamps the real version onto a throwaway off-${baseRef} "Release ${release.version}" commit (parent = the current ${baseRef} commit), tags it, and pushes ONLY the tag.`,
+        `3. Do not push ${baseRef}. Do not force-push or overwrite an existing tag. Do not run scripts/bump-version.ts.`,
         "4. You may start monitoring the publish workflow, but the workflow body will verify the tag and publish run deterministically after this stage.",
         "",
         "Final response format:",
-        "- Include pushed tag, local/remote tag SHA evidence, GitHub Actions run URL/status if available, commands run, and any observed blockers.",
+        `- Include the pushed tag, the off-${baseRef} release commit SHA and its parent (which must equal the ${baseRef} commit above), local/remote tag SHA evidence, GitHub Actions run URL/status if available, commands run, and any observed blockers.`,
       ].join("\n"),
     });
 
@@ -243,8 +268,8 @@ export default defineWorkflow("publish-release")
       return blockedOutput(
         release,
         "verify-release-tag-published",
-        "local and remote release tag exist and point to the verified main commit",
-        [tagVerification.summary, "", "Push-tag stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
+        `local and remote release tag exist, the release commit parent is the verified ${baseRef} commit, and the tagged @bastani/atomic manifest carries the target version`,
+        [tagVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
         "failed",
       );
     }
@@ -255,7 +280,7 @@ export default defineWorkflow("publish-release")
         release,
         "verify-publish-workflow-succeeded",
         "GitHub Actions Publish run for the release tag has matching headSha, status completed, and conclusion success",
-        [publishVerification.summary, "", "Push-tag stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
+        [publishVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
         "failed",
       );
     }

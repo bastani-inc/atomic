@@ -12,12 +12,12 @@
     },
     "packages/coding-agent": {
       "name": "@bastani/atomic",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "bin": {
         "atomic": "dist/cli.js",
       },
       "dependencies": {
-        "@bastani/atomic-natives": "0.8.31-alpha.1",
+        "@bastani/atomic-natives": "0.0.0",
         "@bufbuild/protobuf": "^2.0.0",
         "@earendil-works/pi-agent-core": "^0.79.7",
         "@earendil-works/pi-ai": "^0.79.7",
@@ -66,9 +66,9 @@
     },
     "packages/cursor": {
       "name": "@bastani/cursor",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
-        "@bastani/atomic-natives": "0.8.31-alpha.5",
+        "@bastani/atomic-natives": "0.0.0",
         "@bufbuild/protobuf": "^2.0.0",
       },
       "peerDependencies": {
@@ -80,7 +80,7 @@
     },
     "packages/intercom": {
       "name": "@bastani/intercom",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
         "typebox": "^1.1.24",
       },
@@ -95,7 +95,7 @@
     },
     "packages/mcp": {
       "name": "@bastani/mcp",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
         "@modelcontextprotocol/ext-apps": "^1.7.2",
         "@modelcontextprotocol/sdk": "^1.25.1",
@@ -117,14 +117,14 @@
     },
     "packages/natives": {
       "name": "@bastani/atomic-natives",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "devDependencies": {
         "@napi-rs/cli": "3.7.0",
       },
     },
     "packages/subagents": {
       "name": "@bastani/subagents",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
@@ -144,7 +144,7 @@
     },
     "packages/web-access": {
       "name": "@bastani/web-access",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
         "@mozilla/readability": "^0.6.0",
         "linkedom": "^0.18.12",
@@ -163,7 +163,7 @@
     },
     "packages/workflows": {
       "name": "@bastani/workflows",
-      "version": "0.8.31-alpha.5",
+      "version": "0.0.0",
       "dependencies": {
         "jiti": "^2.7.0",
         "typebox": "^1.1.24",
