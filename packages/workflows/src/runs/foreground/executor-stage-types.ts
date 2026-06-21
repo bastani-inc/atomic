@@ -3,10 +3,16 @@ import type { Store } from "../../shared/store.js";
 import type { StageContext } from "../../shared/types.js";
 import type { InternalStageContext } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import type { RunOpts, ParallelFailFastScope } from "./executor-types.js";
+import type { ParallelFailFastScope } from "./executor-types.js";
 import type { StageScheduler } from "./executor-scheduler.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
+import type { EngineStageRuntimeOptions } from "../../engine/options.js";
+
+export interface StageMcpScope {
+  apply(): void;
+  clear(): void;
+}
 
 export interface LiveStageMutableState {
   activeAskUserQuestionAnonymousCalls: number;
@@ -27,12 +33,13 @@ export interface LiveStageRuntime {
   readonly stageSnapshot: StageSnapshot;
   readonly innerCtx: InternalStageContext;
   readonly activeStore: Store;
-  readonly opts: RunOpts;
+  readonly opts: EngineStageRuntimeOptions;
   readonly stageRegistry: StageControlRegistry;
   readonly scheduler: StageScheduler;
   readonly signal: AbortSignal;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
+  readonly mcpScope: StageMcpScope;
   readonly stageFailFastScope?: ParallelFailFastScope;
   readonly state: LiveStageMutableState;
   unregisterStageHandle: () => void;

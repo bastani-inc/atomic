@@ -47,6 +47,7 @@ describe("workflow authoring door", () => {
       outputs: {
         summary: Type.String(),
       },
+      // @ts-expect-error run must not return keys missing from outputs.
       run: () => ({ summary: "ok", extra: "not declared" }),
     });
   });
@@ -57,6 +58,7 @@ describe("workflow authoring door", () => {
       description: "",
       inputs: {},
       outputs: {},
+      // @ts-expect-error run must not return keys when outputs is empty.
       run: () => ({ summary: "not declared" }),
     });
   });

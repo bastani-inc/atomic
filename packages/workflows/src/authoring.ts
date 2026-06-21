@@ -181,17 +181,27 @@ export type WorkflowProvidedInputsFromSchemas<TSchemas extends WorkflowInputSche
     }[SchemaKeys<TSchemas>]>>
 ) & WorkflowInputValues;
 
-export type WorkflowOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> = (
-  [SchemaKeys<TSchemas>] extends [never]
-    ? {}
-    : Simplify<UnionToIntersection<{
-      readonly [K in SchemaKeys<TSchemas>]: DeclaredOutputEntry<K, TSchemas[K]>;
-    }[SchemaKeys<TSchemas>]>>
-) & WorkflowOutputValues;
+type WorkflowDeclaredOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> = [SchemaKeys<TSchemas>] extends [never]
+  ? {}
+  : Simplify<UnionToIntersection<{
+    readonly [K in SchemaKeys<TSchemas>]: DeclaredOutputEntry<K, TSchemas[K]>;
+  }[SchemaKeys<TSchemas>]>>;
+
+export type WorkflowOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> =
+  WorkflowDeclaredOutputsFromSchemas<TSchemas> & WorkflowOutputValues;
+
+type NoExtraWorkflowOutputs<TDeclared, TActual extends TDeclared> = TActual &
+  Record<Exclude<keyof TActual, keyof TDeclared>, never>;
+
+type WorkflowRunOutputResult<
+  TOutputs extends WorkflowOutputSchemaMap,
+  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs>,
+> = NoExtraWorkflowOutputs<WorkflowDeclaredOutputsFromSchemas<TOutputs>, TActualOutputs>;
 
 export interface AuthoredWorkflowSpec<
   TInputs extends WorkflowInputSchemaMap,
   TOutputs extends WorkflowOutputSchemaMap,
+  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 > {
   readonly name?: string;
   readonly description: string;
@@ -200,7 +210,7 @@ export interface AuthoredWorkflowSpec<
   readonly worktreeFromInputs?: WorkflowWorktreeInputBinding;
   readonly run: (
     ctx: WorkflowRunContext<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>>,
-  ) => Promise<WorkflowOutputsFromSchemas<TOutputs>> | WorkflowOutputsFromSchemas<TOutputs>;
+  ) => Promise<WorkflowRunOutputResult<TOutputs, TActualOutputs>> | WorkflowRunOutputResult<TOutputs, TActualOutputs>;
 }
 
 export type AnyWorkflowDefinition = WorkflowDefinition<WorkflowInputValues, WorkflowOutputValues, WorkflowInputValues>;
@@ -244,10 +254,11 @@ export interface WorkflowRegistry {
  */
 export declare const runWorkflow: never;
 export declare function workflow<
-  TInputs extends WorkflowInputSchemaMap,
-  TOutputs extends WorkflowOutputSchemaMap,
+  const TInputs extends WorkflowInputSchemaMap,
+  const TOutputs extends WorkflowOutputSchemaMap,
+  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 >(
-  spec: AuthoredWorkflowSpec<TInputs, TOutputs>,
+  spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,
 ): WorkflowDefinition<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>, WorkflowProvidedInputsFromSchemas<TInputs>>;
 export declare function createRegistry<TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[]>(
   initial?: TDefinitions,

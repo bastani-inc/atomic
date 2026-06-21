@@ -5,7 +5,7 @@ import { stageUiBroker } from "../../shared/stage-ui-broker.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { elapsedStageMs } from "../../shared/timing.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
-import type { GraphFrontierTracker } from "../shared/graph-inference.js";
+import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { RunOpts, WorkflowExitCleanup } from "./executor-types.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { getPromptAnswerState, sameStringSet } from "./executor-continuation.js";

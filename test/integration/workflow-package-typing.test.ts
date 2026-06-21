@@ -281,8 +281,8 @@ const optionalOutputWorkflow = workflow({
 const undeclaredOutputWorkflow = workflow({
   name: "Undeclared Output Fixture",
   description: "",
-  inputs: {},
   outputs: {},
+  // @ts-expect-error run must not return keys when outputs is empty.
   run: () => ({ summary: "not declared" }),
 });
 const nonSerializableOutputWorkflow = workflow({
@@ -368,10 +368,10 @@ run(ralph, { prompt: "x", create_pr: "true" });
 run(goal, {});
 // @ts-expect-error builtin goal default export requires an objective input.
 run(goalDefault, {});
-// @ts-expect-error WorkflowDefinition is non-structural; only compile() can produce it.
+// @ts-expect-error WorkflowDefinition is non-structural; only workflow({...}) can produce it.
 const forgedWorkflow: WorkflowDefinition = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) };
 const forgedRunnable = { __piWorkflow: true, name: "forged", normalizedName: "forged", description: "forged", inputs: {}, run: () => ({}) } as const;
-// @ts-expect-error run requires a branded compiled WorkflowDefinition, not a structural object.
+// @ts-expect-error run requires a branded workflow({...}) definition, not a structural object.
 run(forgedRunnable, {});
 const frontier = new GraphFrontierTracker();
 const store = createStore();

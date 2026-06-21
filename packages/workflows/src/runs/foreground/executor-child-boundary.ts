@@ -4,12 +4,12 @@ import type { WorkflowChildResult } from "../../shared/types.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { elapsedStageMs } from "../../shared/timing.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
-import type { RunOpts } from "./executor-types.js";
+import type { EngineWorkflowBoundaryOptions } from "../../engine/options.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
 import { applyFailureToStage, stageReplayFields } from "./executor-lifecycle.js";
 import { cloneWorkflowChildReplaySnapshot, cloneWorkflowChildValue } from "./executor-child-helpers.js";
-import type { GraphFrontierTracker } from "../shared/graph-inference.js";
+import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { WorkflowExitCleanup } from "./executor-types.js";
 import { makeParentWorkflowExitAbortReason } from "./executor-abort.js";
 
@@ -71,7 +71,7 @@ export function createWorkflowBoundaryFactory(input: {
   readonly runId: string;
   readonly runSnapshot: RunSnapshot;
   readonly activeStore: Store;
-  readonly opts: RunOpts;
+  readonly opts: EngineWorkflowBoundaryOptions;
   readonly tracker: GraphFrontierTracker;
   readonly replayIndex: ContinuationReplayIndex;
   readonly registerWorkflowExitCleanup: (stageId: string, cleanup: WorkflowExitCleanup) => () => void;

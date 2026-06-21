@@ -2,9 +2,10 @@ import type { StageSnapshot } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
 import { appendStageEnd, appendStageStart } from "../../shared/persistence-session-entries.js";
 import { elapsedStageMs } from "../../shared/timing.js";
-import type { GraphFrontierTracker } from "../shared/graph-inference.js";
+import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
+import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import type { InternalStageContext } from "./stage-runner.js";
-import type { RunOpts, WorkflowExitCleanup } from "./executor-types.js";
+import type { WorkflowExitCleanup } from "./executor-types.js";
 import { stageReplayFields } from "./executor-lifecycle.js";
 
 export function createReplayStageContext(input: {
@@ -14,7 +15,7 @@ export function createReplayStageContext(input: {
   readonly stageSnapshot: StageSnapshot;
   readonly replaySource: StageSnapshot;
   readonly activeStore: Store;
-  readonly opts: RunOpts;
+  readonly opts: EngineStageRuntimeOptions;
   readonly tracker: GraphFrontierTracker;
   readonly registerWorkflowExitCleanup: (stageId: string, cleanup: WorkflowExitCleanup) => () => void;
   readonly workflowExitSkippedReason: (reason?: string) => string;

@@ -1,6 +1,6 @@
 import type { RunSnapshot, StageSnapshot } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
-import type { GraphFrontierTracker } from "../shared/graph-inference.js";
+import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
 
 interface ReleaseBarrier {

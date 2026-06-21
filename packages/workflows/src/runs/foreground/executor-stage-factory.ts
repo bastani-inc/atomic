@@ -7,10 +7,11 @@ import { appendStageEnd, appendStageStart } from "../../shared/persistence-sessi
 import { elapsedStageMs } from "../../shared/timing.js";
 import type { WorkflowFailure } from "../../shared/workflow-failures.js";
 import type { ConcurrencyLimiter } from "../shared/concurrency.js";
-import type { GraphFrontierTracker } from "../shared/graph-inference.js";
+import type { GraphFrontierTracker } from "../../engine/graph-inference.js";
+import type { EngineStageRuntimeOptions } from "../../engine/options.js";
 import { createStageContext as createInnerStageContext, type InternalStageContext, type StageAdapters } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
-import type { RunOpts, ParallelFailFastScope } from "./executor-types.js";
+import type { ParallelFailFastScope } from "./executor-types.js";
 import type { WorkflowExitManager } from "./executor-exit-manager.js";
 import type { ContinuationReplayIndex } from "./executor-continuation.js";
 import { sameStringSet } from "./executor-continuation.js";
@@ -19,7 +20,7 @@ import { isTerminalStage } from "./executor-scheduler.js";
 import { stageReplayFields } from "./executor-lifecycle.js";
 import { askUserQuestionToolEvent, toolResultHasChatAnswer } from "./executor-hil.js";
 import { createReplayStageContext } from "./executor-stage-replay.js";
-import type { LiveStageMutableState, LiveStageRuntime, StageContextWithMeta } from "./executor-stage-types.js";
+import type { LiveStageMutableState, LiveStageRuntime, StageContextWithMeta, StageMcpScope } from "./executor-stage-types.js";
 import { createStageControlHandle } from "./executor-stage-control.js";
 import { createTrackedStageCaller } from "./executor-stage-call.js";
 import { createStageContext } from "./executor-stage-context.js";
@@ -28,7 +29,7 @@ import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults } from "./ex
 export function createWorkflowStageFactory(input: {
   readonly runId: string;
   readonly activeStore: Store;
-  readonly opts: RunOpts;
+  readonly opts: EngineStageRuntimeOptions;
   readonly adapters: StageAdapters;
   readonly signal: AbortSignal;
   readonly tracker: GraphFrontierTracker;
@@ -40,6 +41,7 @@ export function createWorkflowStageFactory(input: {
   readonly stageRegistry: StageControlRegistry;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
+  readonly createMcpScope: (stageId: string, options: StageOptions | undefined) => StageMcpScope;
 }): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
   return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
     input.exit.throwIfWorkflowExitSelected();
@@ -287,6 +289,7 @@ export function createWorkflowStageFactory(input: {
       signal: input.signal,
       exit: input.exit,
       classifyExecutorFailure: input.classifyExecutorFailure,
+      mcpScope: input.createMcpScope(stageId, options),
       ...(stageFailFastScope !== undefined ? { stageFailFastScope } : {}),
       state,
       unregisterStageHandle: () => {},

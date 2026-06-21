@@ -112,10 +112,7 @@ export function createTrackedStageCaller(input: {
     runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
     runtime.appendStageStartOnce();
 
-    const mcpAllow = input.options?.mcp?.allow ?? null;
-    const mcpDeny = input.options?.mcp?.deny ?? null;
-    const hasMcpScope = mcpAllow !== null || mcpDeny !== null;
-    if (runtime.opts.mcp && hasMcpScope) runtime.opts.mcp.setScope(runtime.stageId, mcpAllow, mcpDeny);
+    runtime.mcpScope.apply();
 
     try {
       const abortSession = (): void => {
@@ -183,7 +180,7 @@ export function createTrackedStageCaller(input: {
       }
       throw err;
     } finally {
-      if (runtime.opts.mcp && hasMcpScope) runtime.opts.mcp.clearScope(runtime.stageId);
+      runtime.mcpScope.clear();
       runtime.captureStageSessionMeta();
       runtime.finalizeStageSnapshot();
       if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
