@@ -75,8 +75,8 @@ type WorkflowRunOutputResult<
 > = NoExtraWorkflowOutputs<WorkflowDeclaredOutputsFromSchemas<TOutputs>, TActualOutputs>;
 
 export interface AuthoredWorkflowSpec<
-  TInputs extends WorkflowInputSchemaMap,
-  TOutputs extends WorkflowOutputSchemaMap,
+  TInputs extends WorkflowInputSchemaMap = {},
+  TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 > {
   readonly name?: string;
@@ -174,8 +174,8 @@ function freezeInputBindings(
 }
 
 export function workflow<
-  const TInputs extends WorkflowInputSchemaMap,
-  const TOutputs extends WorkflowOutputSchemaMap,
+  const TInputs extends WorkflowInputSchemaMap = {},
+  const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 >(
   spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,

@@ -70,12 +70,26 @@ const closedInputWorkflow = workflow({
   },
 });
 
+const noInputWorkflow = workflow({
+  name: "No Input Fixture",
+  description: "",
+  outputs: {},
+  run: (ctx) => {
+    // @ts-expect-error ctx.inputs is closed when inputs is omitted.
+    ctx.inputs.extra;
+    return {};
+  },
+});
+
 run(closedInputWorkflow, { message: "ok" });
 run(closedInputWorkflow, { message: "ok", nickname: "nick" });
 // @ts-expect-error run inputs reject undeclared object-literal keys.
 run(closedInputWorkflow, { message: "ok", extra: "nope" });
 // @ts-expect-error required input remains required.
 run(closedInputWorkflow, {});
+run(noInputWorkflow, {});
+// @ts-expect-error omitted inputs reject arbitrary object-literal keys.
+run(noInputWorkflow, { extra: "nope" });
 export default closedInputWorkflow;
 `,
       );

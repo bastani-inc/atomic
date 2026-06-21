@@ -1582,7 +1582,7 @@ A command such as `playwright-cli snapshot | grep title` passes only when both s
 
 `gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 
-To bind user inputs to a workflow-wide worktree default, use the builder method:
+To bind user inputs to a workflow-wide worktree default, set `worktreeFromInputs` in `workflow({...})`:
 
 ```ts
 export default workflow({

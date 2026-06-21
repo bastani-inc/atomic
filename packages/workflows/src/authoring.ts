@@ -201,9 +201,13 @@ type WorkflowRunOutputResult<
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 > = NoExtraWorkflowOutputs<WorkflowDeclaredOutputsFromSchemas<TOutputs>, TActualOutputs>;
 
+type WorkflowRunInputArgument<TInputs extends WorkflowInputValues> = [keyof TInputs] extends [never]
+  ? Readonly<Record<string, never>>
+  : TInputs;
+
 export interface AuthoredWorkflowSpec<
-  TInputs extends WorkflowInputSchemaMap,
-  TOutputs extends WorkflowOutputSchemaMap,
+  TInputs extends WorkflowInputSchemaMap = {},
+  TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 > {
   readonly name?: string;
@@ -226,7 +230,7 @@ export declare const INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
 export declare const NON_INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
 export declare function run<TInputs extends WorkflowInputValues, TOutputs extends WorkflowOutputValues, TRunInputs extends WorkflowInputValues = TInputs>(
   definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>,
-  inputs: Readonly<NoInfer<TRunInputs>>,
+  inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
   opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export declare function runTask(task: WorkflowDirectTaskItem, runOptions?: RunOpts): Promise<WorkflowDetails>;
@@ -257,8 +261,8 @@ export interface WorkflowRegistry {
  */
 export declare const runWorkflow: never;
 export declare function workflow<
-  const TInputs extends WorkflowInputSchemaMap,
-  const TOutputs extends WorkflowOutputSchemaMap,
+  const TInputs extends WorkflowInputSchemaMap = {},
+  const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 >(
   spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,

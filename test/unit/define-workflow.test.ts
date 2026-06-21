@@ -41,6 +41,21 @@ describe("workflow authoring door", () => {
     assert.equal(typeof def.run, "function");
   });
 
+  test("omitted inputs infer a closed empty input shape", () => {
+    const def = workflow({
+      name: "omitted-inputs",
+      description: "",
+      outputs: {},
+      run: (ctx) => {
+        // @ts-expect-error ctx.inputs is closed when inputs is omitted.
+        ctx.inputs.extra;
+        return {};
+      },
+    });
+
+    assert.deepEqual(Object.keys(def.inputs), []);
+  });
+
   test("rejects undeclared outputs after an output contract is declared", () => {
     workflow({
       name: "strict-output-contract",
