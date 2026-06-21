@@ -221,7 +221,7 @@ describe("dispatch run (always background)", () => {
         ok: Type.Optional(Type.Any()),
       },
       run: async () => ({ ok: true }),
-    }) as WorkflowDefinition;
+    }) as never as WorkflowDefinition;
     const registry = createRegistry([wf]);
 
     const result = await dispatch(

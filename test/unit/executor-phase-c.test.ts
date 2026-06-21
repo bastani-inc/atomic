@@ -263,7 +263,7 @@ describe("executor input resolution — Phase C", () => {
         await ctx.stage("read-default").prompt("x");
         return { greeting: ctx.inputs["greeting"] };
       },
-    }) as WorkflowDefinition;
+    }) as never as WorkflowDefinition;
 
     const result = await run(def, {}, { adapters: promptAdapter(), store: createStore() });
     assert.equal(result.status, "completed");
@@ -284,7 +284,7 @@ describe("executor input resolution — Phase C", () => {
         await ctx.stage("read-override").prompt("x");
         return { name: ctx.inputs["name"] };
       },
-    }) as WorkflowDefinition;
+    }) as never as WorkflowDefinition;
 
     const result = await run(def, { name: "custom" }, {
       adapters: promptAdapter(),

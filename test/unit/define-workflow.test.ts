@@ -207,7 +207,7 @@ describe("workflow authoring door", () => {
       run: async () => ({ summary: "ok" }),
     });
 
-    const summarySchema = def.outputs!["summary"];
+    const summarySchema = def.outputs["summary"];
     assert.equal(schemaFieldKind(summarySchema), "text");
     assert.equal(schemaIsRequired(summarySchema), true);
     assert.equal(schemaDescription(summarySchema), "Summary");

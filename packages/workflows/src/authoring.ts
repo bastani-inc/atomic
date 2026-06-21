@@ -136,6 +136,17 @@ export interface WorkflowDefinition<
   TDefinitionBrand extends object = WorkflowDefinitionBrand,
 > extends WorkflowContractDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand>, WorkflowDefinitionBrand {}
 
+export type AuthoredWorkflowDefinition<
+  TInputs extends WorkflowInputSchemaMap,
+  TOutputs extends WorkflowOutputSchemaMap,
+> = WorkflowDefinition<
+  WorkflowInputsFromSchemas<TInputs>,
+  WorkflowOutputsFromSchemas<TOutputs>,
+  WorkflowProvidedInputsFromSchemas<TInputs>
+> & {
+  readonly outputs: Readonly<TOutputs>;
+};
+
 export type WorkflowRunContext<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
@@ -271,7 +282,7 @@ export declare function workflow<
   TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
 >(
   spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,
-): WorkflowDefinition<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>, WorkflowProvidedInputsFromSchemas<TInputs>>;
+): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 export declare function createRegistry<TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[]>(
   initial?: TDefinitions,
 ): WorkflowRegistry;

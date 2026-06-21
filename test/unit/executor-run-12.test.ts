@@ -96,7 +96,7 @@ describe("executor.run", () => {
         });
 
         const wfResult = await run(
-            def as import("../../packages/workflows/src/shared/types.js").WorkflowDefinition,
+            def as never as import("../../packages/workflows/src/shared/types.js").WorkflowDefinition,
             {},
             {
                 adapters: { prompt: { prompt: async (text) => text } },

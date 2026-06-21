@@ -97,7 +97,9 @@ export type AuthoredWorkflowDefinition<
   WorkflowInputsFromSchemas<TInputs>,
   WorkflowOutputsFromSchemas<TOutputs>,
   WorkflowProvidedInputsFromSchemas<TInputs>
->;
+> & {
+  readonly outputs: Readonly<TOutputs>;
+};
 
 // Package-internal runtime brand. It deliberately is not exported through the
 // public SDK surface; workflow({...}) and executor-created direct workflows are

@@ -202,7 +202,7 @@ describe("executor.run", () => {
             {
                 registry: createRegistry([
                     parent as WorkflowDefinition,
-                    child as WorkflowDefinition,
+                    child as never as WorkflowDefinition,
                 ]),
                 store: st,
                 adapters: {

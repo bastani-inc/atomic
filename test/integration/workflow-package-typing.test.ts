@@ -124,7 +124,7 @@ const authoredWorkflow = workflow({
   inputs: {
     message: Type.String(),
     mode: Type.Literal("fast", { default: "fast" }),
-    size: Type.Enum(["small", "large"] as const, { default: "small" }),
+    size: Type.Enum(["small", "large"] as const, { default: "small" }), objectMode: Type.Enum({ Fast: "fast", Slow: "slow" } as const, { default: "fast" }),
     count: Type.Number({ default: 1 }),
     integerCount: Type.Integer({ default: 2 }),
     enabled: Type.Boolean({ default: true }),
@@ -151,7 +151,7 @@ const authoredWorkflow = workflow({
   run: async (ctx) => {
     const message: string = ctx.inputs.message;
     const mode: "fast" = ctx.inputs.mode;
-    const size: "small" | "large" = ctx.inputs.size;
+    const size: "small" | "large" = ctx.inputs.size; const objectMode: "fast" | "slow" = ctx.inputs.objectMode;
     const count: number = ctx.inputs.count;
     const integerCount: number = ctx.inputs.integerCount;
     const enabled: boolean = ctx.inputs.enabled;
@@ -249,7 +249,7 @@ const authoredWorkflow = workflow({
       { name: "second", prompt: String(count) },
       { name: "third", prompt: mode },
       { name: "fourth", prompt: String(enabled) },
-      { name: "fifth", prompt: size },
+      { name: "fifth", prompt: size }, { name: "object-mode", prompt: objectMode },
       { name: "sixth", prompt: String(integerCount) },
       { name: "seventh", prompt: alias },
       { name: "eighth", prompt: tags.join(",") },
@@ -268,7 +268,7 @@ const authoredWorkflow = workflow({
     ]);
     return { summary: chained.at(-1)?.text ?? "", maybe: nickname };
   },
-});
+}); const summarySchema = authoredWorkflow.outputs.summary; void summarySchema;
 const optionalOutputWorkflow = workflow({
   name: "Optional Output Fixture",
   description: "",
@@ -308,7 +308,7 @@ const postRunEditedWorkflow = workflow({
 const providedInputs = {
   message: "hello",
   mode: "fast" as const,
-  size: "large" as const,
+  size: "large" as const, objectMode: "slow" as const,
   count: 2,
   integerCount: 3,
   enabled: false,

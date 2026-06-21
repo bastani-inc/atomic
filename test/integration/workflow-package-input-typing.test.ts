@@ -87,15 +87,46 @@ const defaultOnlyWorkflow = workflow({
   },
 });
 
+const enumDefaultWorkflow = workflow({
+  name: "Enum Default Fixture",
+  description: "",
+  inputs: {
+    mode: Type.Enum({ Fast: "fast", Slow: "slow" } as const, { default: "fast" }),
+  },
+  outputs: {},
+  run: (ctx) => {
+    const mode: "fast" | "slow" = ctx.inputs.mode;
+    void mode;
+    return {};
+  },
+});
+
+const enumRequiredWorkflow = workflow({
+  name: "Enum Required Fixture",
+  description: "",
+  inputs: {
+    mode: Type.Enum({ Fast: "fast", Slow: "slow" } as const),
+  },
+  outputs: {},
+  run: (ctx) => {
+    const mode: "fast" | "slow" = ctx.inputs.mode;
+    void mode;
+    return {};
+  },
+});
+
 const parentWorkflow = workflow({
   name: "Parent Input Fixture",
   description: "",
   outputs: {},
   run: async (ctx) => {
     await ctx.workflow(defaultOnlyWorkflow, { inputs: {} });
+    await ctx.workflow(enumDefaultWorkflow, { inputs: {} });
     await ctx.workflow(closedInputWorkflow, { inputs: { message: "ok" } });
     // @ts-expect-error required child input remains required.
     await ctx.workflow(closedInputWorkflow, { inputs: {} });
+    // @ts-expect-error required enum child input remains required.
+    await ctx.workflow(enumRequiredWorkflow, { inputs: {} });
     return {};
   },
 });
@@ -115,9 +146,16 @@ run(closedInputWorkflow, { message: "ok" });
 run(closedInputWorkflow, { message: "ok", nickname: "nick" });
 run(closedInputWorkflow, { message: "ok", defaulted: "custom" });
 run(defaultOnlyWorkflow, {});
+run(enumDefaultWorkflow, {});
+run(enumDefaultWorkflow, { mode: "slow" });
+run(enumRequiredWorkflow, { mode: "fast" });
 run(parentWorkflow, {});
 // @ts-expect-error defaulted input still rejects the wrong provided value type.
 run(defaultOnlyWorkflow, { defaulted: 1 });
+// @ts-expect-error enum default input still rejects the wrong provided value.
+run(enumDefaultWorkflow, { mode: "medium" });
+// @ts-expect-error enum input without default remains required.
+run(enumRequiredWorkflow, {});
 // @ts-expect-error run inputs reject undeclared object-literal keys.
 run(closedInputWorkflow, { message: "ok", extra: "nope" });
 // @ts-expect-error required input remains required.

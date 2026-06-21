@@ -24,6 +24,8 @@ import type {
   TStringOptions,
   TTuple,
   TTupleOptions,
+  TTypeScriptEnumLike,
+  TTypeScriptEnumToEnumValues,
   TUnion,
 } from "typebox";
 import type { WorkflowSerializableValue } from "../shared/authoring-contract.js";
@@ -82,6 +84,13 @@ declare module "typebox" {
       values: readonly [...TValues],
       options: TOptions,
     ): TEnum<TValues> & TypeBoxDefaulted<TOptions>;
+    export function Enum<
+      const TEnumLike extends TTypeScriptEnumLike,
+      const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>,
+    >(
+      value: TEnumLike,
+      options: TOptions,
+    ): TEnum<TTypeScriptEnumToEnumValues<TEnumLike>> & TypeBoxDefaulted<TOptions>;
 
     export function Array<
       const TItem extends TSchema,
