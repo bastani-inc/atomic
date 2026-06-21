@@ -323,18 +323,18 @@ const providedInputs = {
   omittedNoDefault: { enabled: true },
   variant: "a" as const,
   labels: {},
-  finiteLabels: { foo: 1, bar: 2 },
-  tuple: ["x", 1] as [string, number],
-  nothing: null,
+  finiteLabels: { foo: 1, bar: 2 }, tuple: ["x", 1] as [string, number], nothing: null,
 };
-run(authoredWorkflow, providedInputs, { executionMode: "non_interactive" });
+const minimalProvidedInputs = { message: "hello", pickedNoDefault: { enabled: true }, omittedNoDefault: { enabled: true } };
+run(authoredWorkflow, minimalProvidedInputs); run(authoredWorkflow, providedInputs, { executionMode: "non_interactive" });
 run(authoredWorkflow, providedInputs, { executionMode: "interactive" });
 // @ts-expect-error detached is not a runtime executionMode literal.
 run(authoredWorkflow, providedInputs, { executionMode: "detached" });
 // @ts-expect-error message has no default and remains required.
 run(authoredWorkflow, {});
-run(optionalOutputWorkflow, {});
-run(postRunEditedWorkflow, { postRunInput: "ok" });
+// @ts-expect-error pickedNoDefault has no default and remains required.
+run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } });
+run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
 run(goal, { objective: "x" });
 run(goalDefault, { objective: "x" });
 run(ralph, { prompt: "x" });

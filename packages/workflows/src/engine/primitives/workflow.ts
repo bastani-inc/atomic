@@ -21,18 +21,29 @@ export function createChildWorkflowRunner(input: {
   readonly runtime: EngineRuntime;
   readonly resolveWorkflowCwd: () => string;
   readonly nextWorkflowBoundaryReplayKey: (name: string) => string;
-  readonly runWorkflow: <TInputs extends WorkflowInputValues>(
-    def: WorkflowDefinition<TInputs>,
+  readonly runWorkflow: <
+    TInputs extends WorkflowInputValues,
+    TRunInputs extends WorkflowInputValues = TInputs,
+  >(
+    def: WorkflowDefinition<TInputs, WorkflowOutputValues, TRunInputs>,
     inputs: ResolvedInputs,
     opts?: RunOpts,
   ) => Promise<RunResult>;
-}): <TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
-  child: WorkflowDefinition<TChildInputs, TChildOutputs>,
-  options?: WorkflowRunChildOptions<TChildInputs>,
+}): <
+  TChildInputs extends WorkflowInputValues,
+  TChildOutputs extends WorkflowOutputValues,
+  TChildRunInputs extends WorkflowInputValues = TChildInputs,
+>(
+  child: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
+  options?: WorkflowRunChildOptions<TChildRunInputs>,
 ) => Promise<WorkflowChildResult<TChildOutputs>> {
-  return async <TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
-    child: WorkflowDefinition<TChildInputs, TChildOutputs>,
-    options: WorkflowRunChildOptions<TChildInputs> = {},
+  return async <
+    TChildInputs extends WorkflowInputValues,
+    TChildOutputs extends WorkflowOutputValues,
+    TChildRunInputs extends WorkflowInputValues = TChildInputs,
+  >(
+    child: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
+    options: WorkflowRunChildOptions<TChildRunInputs> = {},
   ): Promise<WorkflowChildResult<TChildOutputs>> => {
     const { runtime } = input;
     runtime.exit.throwIfWorkflowExitSelected();

@@ -2,6 +2,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 import type {
   WorkflowDefinition,
   WorkflowInputValues,
+  WorkflowOutputValues,
   WorkflowRunContext,
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
@@ -41,8 +42,11 @@ function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-export async function run<TInputs extends WorkflowInputValues>(
-  def: WorkflowDefinition<TInputs>,
+export async function run<
+  TInputs extends WorkflowInputValues,
+  TRunInputs extends WorkflowInputValues = TInputs,
+>(
+  def: WorkflowDefinition<TInputs, WorkflowOutputValues, TRunInputs>,
   inputs: Readonly<Record<string, unknown>>,
   opts: RunOpts = {},
 ): Promise<RunResult> {

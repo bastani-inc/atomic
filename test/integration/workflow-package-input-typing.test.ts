@@ -57,15 +57,45 @@ const closedInputWorkflow = workflow({
   inputs: {
     message: Type.String(),
     nickname: Type.Optional(Type.String()),
+    defaulted: Type.String({ default: "filled" }),
   },
   outputs: {},
   run: (ctx) => {
     const message: string = ctx.inputs.message;
     const nickname: string | undefined = ctx.inputs.nickname;
+    const defaulted: string = ctx.inputs.defaulted;
     // @ts-expect-error ctx.inputs is closed over declared keys.
     ctx.inputs.extra;
     void message;
     void nickname;
+    void defaulted;
+    return {};
+  },
+});
+
+const defaultOnlyWorkflow = workflow({
+  name: "Default Only Fixture",
+  description: "",
+  inputs: {
+    defaulted: Type.String({ default: "filled" }),
+  },
+  outputs: {},
+  run: (ctx) => {
+    const defaulted: string = ctx.inputs.defaulted;
+    void defaulted;
+    return {};
+  },
+});
+
+const parentWorkflow = workflow({
+  name: "Parent Input Fixture",
+  description: "",
+  outputs: {},
+  run: async (ctx) => {
+    await ctx.workflow(defaultOnlyWorkflow, { inputs: {} });
+    await ctx.workflow(closedInputWorkflow, { inputs: { message: "ok" } });
+    // @ts-expect-error required child input remains required.
+    await ctx.workflow(closedInputWorkflow, { inputs: {} });
     return {};
   },
 });
@@ -83,6 +113,11 @@ const noInputWorkflow = workflow({
 
 run(closedInputWorkflow, { message: "ok" });
 run(closedInputWorkflow, { message: "ok", nickname: "nick" });
+run(closedInputWorkflow, { message: "ok", defaulted: "custom" });
+run(defaultOnlyWorkflow, {});
+run(parentWorkflow, {});
+// @ts-expect-error defaulted input still rejects the wrong provided value type.
+run(defaultOnlyWorkflow, { defaulted: 1 });
 // @ts-expect-error run inputs reject undeclared object-literal keys.
 run(closedInputWorkflow, { message: "ok", extra: "nope" });
 // @ts-expect-error required input remains required.

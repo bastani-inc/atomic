@@ -95,9 +95,13 @@ export interface WorkflowRunContext<
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   chain(steps: readonly WorkflowTaskStep[], options?: WorkflowChainOptions): Promise<WorkflowTaskResult[]>;
   parallel(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
-  workflow<TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
-    definition: WorkflowDefinition<TChildInputs, TChildOutputs> & TDefinitionBrand,
-    options?: WorkflowRunChildOptions<TChildInputs>,
+  workflow<
+    TChildInputs extends WorkflowInputValues,
+    TChildOutputs extends WorkflowOutputValues,
+    TChildRunInputs extends WorkflowInputValues = TChildInputs,
+  >(
+    definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs> & TDefinitionBrand,
+    options?: WorkflowRunChildOptions<TChildRunInputs>,
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   readonly ui: WorkflowUIContext;
 }

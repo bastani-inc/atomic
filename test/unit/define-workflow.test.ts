@@ -124,12 +124,13 @@ describe("workflow authoring door", () => {
   });
 
   test("multiple inputs accumulate with inferred serializable input types", () => {
+    const defaultedNumber = Type.Number({ default: 4 });
     const def = workflow({
       name: "multi-input",
       description: "",
       inputs: {
         a: Type.Optional(Type.String()),
-        b: Type.Number({ default: 4 }),
+        b: defaultedNumber,
       },
       outputs: {
         a: Type.String(),
@@ -143,6 +144,8 @@ describe("workflow authoring door", () => {
     });
 
     assert.deepEqual(Object.keys(def.inputs), ["a", "b"]);
+    assert.equal(def.inputs["b"], defaultedNumber);
+    assert.deepEqual(defaultedNumber, Type.Number({ default: 4 }));
     // A defaulted input is a required KEY at the type level (always present
     // after defaults are applied) but the picker/validation descriptor reports
     // required:false because the caller need not supply it.

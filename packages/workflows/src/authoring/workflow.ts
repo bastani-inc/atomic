@@ -1,5 +1,6 @@
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import type {} from "./typebox-defaults.js";
 import type { Static, TOptional, TSchema } from "typebox";
 import type {
   WorkflowDefinition,
@@ -92,7 +93,11 @@ export interface AuthoredWorkflowSpec<
 export type AuthoredWorkflowDefinition<
   TInputs extends WorkflowInputSchemaMap,
   TOutputs extends WorkflowOutputSchemaMap,
-> = WorkflowDefinition<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>>;
+> = WorkflowDefinition<
+  WorkflowInputsFromSchemas<TInputs>,
+  WorkflowOutputsFromSchemas<TOutputs>,
+  WorkflowProvidedInputsFromSchemas<TInputs>
+>;
 
 // Package-internal runtime brand. It deliberately is not exported through the
 // public SDK surface; workflow({...}) and executor-created direct workflows are
@@ -100,11 +105,12 @@ export type AuthoredWorkflowDefinition<
 export function stampWorkflowDefinition<
   TInputs extends WorkflowInputValues,
   TOutputs extends WorkflowOutputValues,
+  TRunInputs extends WorkflowInputValues = TInputs,
 >(
   definition: object,
-): WorkflowDefinition<TInputs, TOutputs> {
+): WorkflowDefinition<TInputs, TOutputs, TRunInputs> {
   BRANDED_WORKFLOW_DEFINITIONS.add(definition);
-  return definition as never as WorkflowDefinition<TInputs, TOutputs>;
+  return definition as never as WorkflowDefinition<TInputs, TOutputs, TRunInputs>;
 }
 
 export function isBrandedWorkflowDefinition(value: object): value is WorkflowDefinition {
@@ -213,6 +219,10 @@ export function workflow<
     run,
   };
 
-  const branded = stampWorkflowDefinition<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>>(definition);
+  const branded = stampWorkflowDefinition<
+    WorkflowInputsFromSchemas<TInputs>,
+    WorkflowOutputsFromSchemas<TOutputs>,
+    WorkflowProvidedInputsFromSchemas<TInputs>
+  >(definition);
   return Object.freeze(branded) as AuthoredWorkflowDefinition<TInputs, TOutputs>;
 }

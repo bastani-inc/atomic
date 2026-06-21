@@ -359,9 +359,13 @@ export interface WorkflowRunContext<
   /** Run tasks in parallel. Missing step tasks use the first available task as a fallback. */
   parallel(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
   /** Execute a reusable child workflow by compiled workflow definition. */
-  workflow<TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
-    definition: WorkflowDefinition<TChildInputs, TChildOutputs>,
-    options?: WorkflowRunChildOptions<TChildInputs>,
+  workflow<
+    TChildInputs extends WorkflowInputValues,
+    TChildOutputs extends WorkflowOutputValues,
+    TChildRunInputs extends WorkflowInputValues = TChildInputs,
+  >(
+    definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
+    options?: WorkflowRunChildOptions<TChildRunInputs>,
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
@@ -403,6 +407,7 @@ export type WorkflowDefinitionBrand = { readonly [workflowDefinitionBrand]: true
 export interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-> extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TInputs, WorkflowDefinitionBrand>, "run" | "__runInputs">, WorkflowDefinitionBrand {
+  TRunInputs extends WorkflowInputValues = TInputs,
+> extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand>, "run">, WorkflowDefinitionBrand {
   readonly run: WorkflowRunFn<TInputs, TOutputs>;
 }

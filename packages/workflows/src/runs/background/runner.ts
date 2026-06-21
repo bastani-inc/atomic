@@ -14,7 +14,7 @@
  * cross-ref: spec detached-runner
  */
 
-import type { WorkflowDefinition, WorkflowExecutionMode, WorkflowInputValues } from "../../shared/types.js";
+import type { WorkflowDefinition, WorkflowExecutionMode, WorkflowInputValues, WorkflowOutputValues } from "../../shared/types.js";
 import type { RunOpts, RunResult } from "../foreground/executor.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import type { JobTracker } from "./job-tracker.js";
@@ -85,8 +85,11 @@ export function buildDetachedAccepted(
  * the store remains source of truth for run status. Cancellation is wired
  * through the provided (or default) CancellationRegistry.
  */
-export function runDetached<TInputs extends WorkflowInputValues>(
-  def: WorkflowDefinition<TInputs>,
+export function runDetached<
+  TInputs extends WorkflowInputValues,
+  TRunInputs extends WorkflowInputValues = TInputs,
+>(
+  def: WorkflowDefinition<TInputs, WorkflowOutputValues, TRunInputs>,
   inputs: Readonly<Record<string, unknown>>,
   opts: DetachedRunOpts = {},
 ): DetachedAccepted {

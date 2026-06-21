@@ -17,7 +17,11 @@ export interface WorkflowRegistry {
    * Keyed by the definition's normalizedName; replaces any prior entry with
    * the same key.  Returns a NEW registry — this one is unchanged.
    */
-  register<TInputs extends WorkflowInputValues, TOutputs extends WorkflowOutputValues>(definition: WorkflowDefinition<TInputs, TOutputs>): WorkflowRegistry;
+  register<
+    TInputs extends WorkflowInputValues,
+    TOutputs extends WorkflowOutputValues,
+    TRunInputs extends WorkflowInputValues = TInputs,
+  >(definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>): WorkflowRegistry;
   /**
    * Return a new registry with all definitions from another registry merged
    * in (other's entries win on collision).

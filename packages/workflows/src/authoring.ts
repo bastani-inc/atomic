@@ -7,6 +7,7 @@
  * typebox directly.
  */
 
+import type {} from "./authoring/typebox-defaults.js";
 import type { Static, TOptional, TSchema } from "typebox";
 export type { Static, TSchema } from "typebox";
 
@@ -244,8 +245,12 @@ export declare function resolveInputs<TInputs extends WorkflowInputValues>(
 export declare function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
 
 export interface WorkflowRegistry {
-  register<TInputs extends WorkflowInputValues, TOutputs extends WorkflowOutputValues>(
-    definition: WorkflowDefinition<TInputs, TOutputs>,
+  register<
+    TInputs extends WorkflowInputValues,
+    TOutputs extends WorkflowOutputValues,
+    TRunInputs extends WorkflowInputValues = TInputs,
+  >(
+    definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>,
   ): WorkflowRegistry;
   merge(other: WorkflowRegistry): WorkflowRegistry;
   get(name: string): AnyWorkflowDefinition | undefined;

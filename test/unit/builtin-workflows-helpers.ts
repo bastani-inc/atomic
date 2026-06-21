@@ -12,6 +12,7 @@ import type {
     WorkflowChainOptions,
     WorkflowDefinition,
     WorkflowInputValues,
+    WorkflowOutputValues,
     WorkflowParallelOptions,
     WorkflowRunContext,
     WorkflowTaskOptions,
@@ -235,8 +236,12 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
                           !omitted.has(result.name),
                   );
         },
-        workflow: async <TChildInputs extends WorkflowInputValues>(
-            target: WorkflowDefinition<TChildInputs>,
+        workflow: async <
+            TChildInputs extends WorkflowInputValues,
+            TChildOutputs extends WorkflowOutputValues,
+            TChildRunInputs extends WorkflowInputValues = TChildInputs,
+        >(
+            target: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
         ) => {
             throw new Error(
                 `ctx.workflow should not be used by builtin workflow ${target.normalizedName}`,
