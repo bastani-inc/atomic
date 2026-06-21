@@ -21,7 +21,7 @@ export type PromptSection = readonly [tag: string, content: string];
  * inferred from the raw request.
  */
 export const PROMPT_REFINEMENT_CRITERIA = [
-  "Apply the workflow best practices documented in the `## Workflow Best Practices` section of `docs/workflows.md` (in the `packages/coding-agent/docs` user-facing docs). Treat that section as the authoritative prompt-anatomy rubric: use its Objective, Context, Scope, Non-goals, Done criteria, Validation command, Reporting requirements, and Stop conditions when refining the request.",
+  "Apply the workflow best practices documented in the `## Workflow Best Practices` section of `docs/workflows.md`. Treat that section as the authoritative prompt-anatomy rubric: use its Objective, Context, Scope, Non-goals, Done criteria, Validation command, Reporting requirements, and Stop conditions when refining the request.",
   "Objective — state what should be true when the work is complete.",
   "Context — note why it matters and where the relevant code or area likely lives.",
   "Scope — state what is allowed to change (the smallest correct change).",
