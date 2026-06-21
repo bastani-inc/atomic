@@ -38,10 +38,14 @@ export type WorkflowDetailsMode = "named" | "single" | "parallel" | "chain" | "i
 export type WorkflowDetailsStatus = "accepted" | "running" | WorkflowExitStatus | "failed" | "killed" | "noop";
 export type WorkflowAction = "list" | "get" | "inputs" | "run" | "status" | "interrupt" | "resume";
 
+type WorkflowExitOutputValues<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = [keyof TOutputs] extends [never]
+  ? Readonly<Record<string, never>>
+  : Partial<TOutputs>;
+
 export interface WorkflowExitOptions<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
   readonly status?: WorkflowExitStatus;
   readonly reason?: string;
-  readonly outputs?: Partial<TOutputs>;
+  readonly outputs?: WorkflowExitOutputValues<TOutputs>;
 }
 
 export interface WorkflowModelFallbackFields {

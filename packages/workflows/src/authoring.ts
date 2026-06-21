@@ -166,6 +166,7 @@ type UnionToIntersection<T> = (
   ? TIntersection
   : never;
 type WorkflowInputShape<T> = T extends WorkflowInputValues ? T : never;
+type WorkflowOutputShape<T> = T extends WorkflowOutputValues ? T : never;
 
 type DeclaredResolvedEntry<K extends string, S extends TSchema> = S extends TOptional<TSchema>
   ? { readonly [P in K]?: Static<S> & WorkflowSerializableValue }
@@ -205,15 +206,15 @@ type WorkflowDeclaredOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap
   }[SchemaKeys<TSchemas>]>>;
 
 export type WorkflowOutputsFromSchemas<TSchemas extends WorkflowOutputSchemaMap> =
-  WorkflowDeclaredOutputsFromSchemas<TSchemas> & WorkflowOutputValues;
+  WorkflowOutputShape<WorkflowDeclaredOutputsFromSchemas<TSchemas>>;
 
 type NoExtraWorkflowOutputs<TDeclared, TActual extends TDeclared> = TActual &
   Record<Exclude<keyof TActual, keyof TDeclared>, never>;
 
 type WorkflowRunOutputResult<
   TOutputs extends WorkflowOutputSchemaMap,
-  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs>,
-> = NoExtraWorkflowOutputs<WorkflowDeclaredOutputsFromSchemas<TOutputs>, TActualOutputs>;
+  TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs>,
+> = NoExtraWorkflowOutputs<WorkflowOutputsFromSchemas<TOutputs>, TActualOutputs>;
 
 type WorkflowRunInputArgument<TInputs extends WorkflowInputValues> = [keyof TInputs] extends [never]
   ? Readonly<Record<string, never>>
@@ -222,7 +223,7 @@ type WorkflowRunInputArgument<TInputs extends WorkflowInputValues> = [keyof TInp
 export interface AuthoredWorkflowSpec<
   TInputs extends WorkflowInputSchemaMap = {},
   TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
-  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
+  TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 > {
   readonly name?: string;
   readonly description: string;
@@ -281,7 +282,7 @@ export declare const runWorkflow: never;
 export declare function workflow<
   const TInputs extends WorkflowInputSchemaMap = {},
   const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
-  TActualOutputs extends WorkflowDeclaredOutputsFromSchemas<TOutputs> = WorkflowDeclaredOutputsFromSchemas<TOutputs>,
+  TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
 >(
   spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,
 ): AuthoredWorkflowDefinition<TInputs, TOutputs>;

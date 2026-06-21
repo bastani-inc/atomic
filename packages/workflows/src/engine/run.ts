@@ -42,12 +42,23 @@ function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
+
+export function run<
+  TInputs extends WorkflowInputValues,
+  TOutputs extends WorkflowOutputValues,
+  TRunInputs extends WorkflowInputValues = TInputs,
+>(
+  def: WorkflowDefinition<TInputs, TOutputs, TRunInputs>,
+  inputs: WorkflowRunInputArgument,
+  opts?: RunOpts,
+): Promise<RunResult<TOutputs>>;
 export async function run<
   TInputs extends WorkflowInputValues,
   TRunInputs extends WorkflowInputValues = TInputs,
 >(
   def: WorkflowDefinition<TInputs, WorkflowOutputValues, TRunInputs>,
-  inputs: Readonly<Record<string, unknown>>,
+  inputs: WorkflowRunInputArgument,
   opts: RunOpts = {},
 ): Promise<RunResult> {
   if (!isWorkflowDefinition(def)) throw new Error(workflowDefinitionRequirementMessage("run(definition, inputs)", def));

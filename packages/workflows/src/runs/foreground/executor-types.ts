@@ -82,10 +82,10 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 
-export interface RunResult {
+export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> {
   readonly runId: string;
   readonly status: RunStatus;
-  readonly result?: WorkflowOutputValues;
+  readonly result?: Partial<TOutputs>;
   readonly error?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;
