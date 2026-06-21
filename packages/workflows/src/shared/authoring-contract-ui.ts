@@ -25,7 +25,7 @@ import type {
   WorkflowOutputValues,
   WorkflowParallelOptions,
   WorkflowPersistencePort,
-  WorkflowRunChildOptions,
+  WorkflowRunChildArgs,
   WorkflowSerializableObject,
   WorkflowSerializableValue,
   WorkflowTaskOptions,
@@ -101,7 +101,7 @@ export interface WorkflowRunContext<
     TChildRunInputs extends WorkflowInputValues = TChildInputs,
   >(
     definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs> & TDefinitionBrand,
-    options?: WorkflowRunChildOptions<TChildRunInputs>,
+    ...args: WorkflowRunChildArgs<TChildRunInputs>
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   readonly ui: WorkflowUIContext;
 }

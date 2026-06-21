@@ -14,6 +14,7 @@ import type {
     WorkflowInputValues,
     WorkflowOutputValues,
     WorkflowParallelOptions,
+    WorkflowRunChildArgs,
     WorkflowRunContext,
     WorkflowTaskOptions,
     WorkflowTaskResult,
@@ -242,6 +243,7 @@ export function makeMockCtx<TInputs extends WorkflowInputValues>(
             TChildRunInputs extends WorkflowInputValues = TChildInputs,
         >(
             target: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
+            ..._args: WorkflowRunChildArgs<TChildRunInputs>
         ) => {
             throw new Error(
                 `ctx.workflow should not be used by builtin workflow ${target.normalizedName}`,

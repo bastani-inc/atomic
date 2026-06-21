@@ -47,5 +47,5 @@ export default workflow({
     review_report: Type.Optional(Type.String({ description: "Compact report pointing to the latest reviewer decision artifacts used by the reducer." })),
     review_report_path: Type.Optional(Type.String({ description: "JSON artifact path for the latest reviewer decision round." })),
   },
-  run: async (ctx) => await runGoalWorkflow(ctx as never),
+  run: async (ctx) => await runGoalWorkflow(ctx),
 });

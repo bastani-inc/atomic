@@ -402,6 +402,18 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
   readonly stageName?: string;
 }
 
+type WorkflowRequiredKeys<T extends object> = {
+  [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+}[keyof T];
+
+export type WorkflowRunChildOptionsArgument<TInputs extends WorkflowInputValues = WorkflowInputValues> = [WorkflowRequiredKeys<TInputs>] extends [never]
+  ? WorkflowRunChildOptions<TInputs>
+  : WorkflowRunChildOptions<TInputs> & { readonly inputs: TInputs };
+
+export type WorkflowRunChildArgs<TInputs extends WorkflowInputValues = WorkflowInputValues> = [WorkflowRequiredKeys<TInputs>] extends [never]
+  ? readonly [options?: WorkflowRunChildOptionsArgument<NoInfer<TInputs>>]
+  : readonly [options: WorkflowRunChildOptionsArgument<NoInfer<TInputs>>];
+
 export interface WorkflowCompletedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> extends WorkflowSerializableObject {
   readonly workflow: string;
   readonly runId: string;

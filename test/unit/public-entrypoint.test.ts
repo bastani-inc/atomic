@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import * as workflows from "../../packages/workflows/src/index.js";
 import { Type } from "typebox";
+import type { Static, TSchema } from "@bastani/workflows";
 import {
   GraphFrontierTracker,
   createRegistry,
@@ -20,6 +21,14 @@ describe("public entrypoint", () => {
     );
     assert.equal("WorkflowOptions" in workflows, false);
     assert.equal("WorkflowRunOptions" in workflows, false);
+  });
+
+  test("exports TypeBox schema types through the source entrypoint", () => {
+    const schema = Type.Object({ ok: Type.Boolean() });
+    const value: Static<typeof schema> = { ok: true };
+    const typedSchema: TSchema = schema;
+    assert.equal(value.ok, true);
+    assert.equal(typedSchema, schema);
   });
 
   test("supports authoring and registry lookup through exported APIs", async () => {

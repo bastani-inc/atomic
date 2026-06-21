@@ -1,4 +1,4 @@
-import type { WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import {
   ANTI_SLOP_RULES,
   DEFAULT_MAX_REFINEMENTS,
@@ -18,24 +18,22 @@ import {
 } from "./open-claude-design-utils.js";
 import { exportOpenClaudeDesign, refineOpenClaudeDesign } from "./open-claude-design-phases.js";
 
-type OpenClaudeDesignContext = {
-  readonly cwd: string;
-  readonly inputs: {
-    readonly prompt: string;
-    readonly reference?: string;
-    readonly output_type?: string;
-    readonly design_system?: string;
-    readonly max_refinements?: number;
-  };
-  task(name: string, options: object): Promise<WorkflowTaskResult>;
-  parallel(
-    steps: readonly WorkflowTaskStep[],
-    options: { readonly task: string },
-  ): Promise<WorkflowTaskResult[]>;
+type OpenClaudeDesignOutputs = {
+  readonly output_type?: string; readonly design_system?: string; readonly artifact?: string; readonly handoff?: string;
+  readonly approved_for_export?: boolean; readonly refinements_completed?: number; readonly import_context?: string; readonly run_id?: string;
+  readonly artifact_dir?: string; readonly preview_path?: string; readonly preview_file_url?: string; readonly spec_path?: string; readonly spec_file_url?: string;
+  readonly playwright_cli_status?: string;
 };
 
-export async function runOpenClaudeDesignWorkflow(ctx: unknown): Promise<object> {
-  const designContext = ctx as OpenClaudeDesignContext;
+type OpenClaudeDesignContext = {
+  readonly cwd?: string;
+  readonly inputs: { readonly prompt: string; readonly reference?: string; readonly output_type?: string; readonly design_system?: string; readonly max_refinements?: number };
+  task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
+  parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
+};
+
+export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext): Promise<OpenClaudeDesignOutputs> {
+  const designContext = ctx;
 
     // Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
     // `playwright-cli` command is installed before any design stage runs. Best-effort —
@@ -55,8 +53,9 @@ export async function runOpenClaudeDesignWorkflow(ctx: unknown): Promise<object>
       DEFAULT_MAX_REFINEMENTS,
     );
 
+    const workflowCwd = designContext.cwd ?? process.cwd();
     const { runId, artifactDir, previewPath, specPath } = prepareArtifactDir(
-      designContext.cwd,
+      workflowCwd,
     );
     const previewFileUrl = `file://${previewPath}`;
     const specFileUrl = `file://${specPath}`;

@@ -115,18 +115,49 @@ const enumRequiredWorkflow = workflow({
   },
 });
 
+const dynamicDefaultWorkflow = workflow({
+  name: "Dynamic Default Fixture",
+  description: "",
+  inputs: {
+    anyPayload: Type.Any({ default: {} }),
+    unknownPayload: Type.Unknown({ default: {} }),
+    intersectPayload: Type.Intersect(
+      [Type.Object({ a: Type.String() }), Type.Object({ b: Type.Number() })],
+      { default: { a: "x", b: 1 } },
+    ),
+  },
+  outputs: {},
+  run: (ctx) => {
+    const intersectPayload: { a: string; b: number } = ctx.inputs.intersectPayload;
+    void ctx.inputs.anyPayload;
+    void ctx.inputs.unknownPayload;
+    void intersectPayload;
+    return {};
+  },
+});
+
 const parentWorkflow = workflow({
   name: "Parent Input Fixture",
   description: "",
   outputs: {},
   run: async (ctx) => {
+    await ctx.workflow(defaultOnlyWorkflow);
+    await ctx.workflow(defaultOnlyWorkflow, {});
     await ctx.workflow(defaultOnlyWorkflow, { inputs: {} });
     await ctx.workflow(enumDefaultWorkflow, { inputs: {} });
+    await ctx.workflow(dynamicDefaultWorkflow);
+    await ctx.workflow(dynamicDefaultWorkflow, { inputs: {} });
     await ctx.workflow(closedInputWorkflow, { inputs: { message: "ok" } });
+    // @ts-expect-error required child inputs require an options argument.
+    await ctx.workflow(closedInputWorkflow);
+    // @ts-expect-error required child inputs require options.inputs.
+    await ctx.workflow(closedInputWorkflow, {});
     // @ts-expect-error required child input remains required.
     await ctx.workflow(closedInputWorkflow, { inputs: {} });
     // @ts-expect-error required enum child input remains required.
     await ctx.workflow(enumRequiredWorkflow, { inputs: {} });
+    // @ts-expect-error defaulted intersect input still rejects wrong provided value.
+    await ctx.workflow(dynamicDefaultWorkflow, { inputs: { intersectPayload: { a: "x" } } });
     return {};
   },
 });
@@ -142,6 +173,17 @@ const noInputWorkflow = workflow({
   },
 });
 
+const noInputParentWorkflow = workflow({
+  name: "No Input Parent Fixture",
+  description: "",
+  outputs: {},
+  run: async (ctx) => {
+    await ctx.workflow(noInputWorkflow);
+    await ctx.workflow(noInputWorkflow, {});
+    return {};
+  },
+});
+
 run(closedInputWorkflow, { message: "ok" });
 run(closedInputWorkflow, { message: "ok", nickname: "nick" });
 run(closedInputWorkflow, { message: "ok", defaulted: "custom" });
@@ -149,13 +191,18 @@ run(defaultOnlyWorkflow, {});
 run(enumDefaultWorkflow, {});
 run(enumDefaultWorkflow, { mode: "slow" });
 run(enumRequiredWorkflow, { mode: "fast" });
+run(dynamicDefaultWorkflow, {});
+run(dynamicDefaultWorkflow, { intersectPayload: { a: "y", b: 2 } });
 run(parentWorkflow, {});
+run(noInputParentWorkflow, {});
 // @ts-expect-error defaulted input still rejects the wrong provided value type.
 run(defaultOnlyWorkflow, { defaulted: 1 });
 // @ts-expect-error enum default input still rejects the wrong provided value.
 run(enumDefaultWorkflow, { mode: "medium" });
 // @ts-expect-error enum input without default remains required.
 run(enumRequiredWorkflow, {});
+// @ts-expect-error defaulted intersect input still rejects wrong provided value.
+run(dynamicDefaultWorkflow, { intersectPayload: { a: "x" } });
 // @ts-expect-error run inputs reject undeclared object-literal keys.
 run(closedInputWorkflow, { message: "ok", extra: "nope" });
 // @ts-expect-error required input remains required.

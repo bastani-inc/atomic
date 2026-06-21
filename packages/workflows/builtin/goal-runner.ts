@@ -1,10 +1,11 @@
 import { join } from "node:path";
-import type { WorkflowTaskResult } from "../src/shared/types.js";
+import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { reviewDecisionSchema } from "./goal-schemas.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
   DEFAULT_REVIEW_QUORUM,
+  type GoalWorkflowInputs,
   type GoalWorkflowOutputs,
   type ReviewRecord,
 } from "./goal-types.js";
@@ -63,22 +64,14 @@ function normalizeBranchInput(
     );
   return looksLikeSafeGitRef ? trimmed : fallback;
 }
-  type GoalRunnerContext = {
-  readonly inputs: {
-    readonly objective: string;
-    readonly max_turns?: number;
-    readonly base_branch?: string;
-  };
-  task(name: string, options: object): Promise<WorkflowTaskResult>;
-  parallel(
-    steps: readonly object[],
-    options: { readonly task: string; readonly failFast: false },
-  ): Promise<WorkflowTaskResult[]>;
+type GoalRunnerContext = {
+  readonly inputs: GoalWorkflowInputs;
+  task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
+  parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
 
-export async function runGoalWorkflow(ctx: unknown): Promise<GoalWorkflowOutputs> {
-  const goalContext = ctx as GoalRunnerContext;
-    const inputs = goalContext.inputs;
+export async function runGoalWorkflow(ctx: GoalRunnerContext): Promise<GoalWorkflowOutputs> {
+    const inputs = ctx.inputs;
     const objective = inputs.objective.trim();
     if (!objective) {
       throw new Error("goal requires an objective input.");
@@ -169,7 +162,7 @@ export async function runGoalWorkflow(ctx: unknown): Promise<GoalWorkflowOutputs
 
       let worker: WorkflowTaskResult;
       try {
-        worker = await goalContext.task(`work-turn-${turn}`, {
+        worker = await ctx.task(`work-turn-${turn}`, {
           prompt: workerPrompt,
           reads: [ledgerPath, ...latestReviewArtifactPaths],
           output: workTurnPath,
@@ -249,7 +242,7 @@ export async function runGoalWorkflow(ctx: unknown): Promise<GoalWorkflowOutputs
 
       let reviewResults: WorkflowTaskResult[];
       try {
-        reviewResults = await goalContext.parallel(reviewerSteps, {
+        reviewResults = await ctx.parallel(reviewerSteps, {
           task: objective,
           failFast: false,
         });

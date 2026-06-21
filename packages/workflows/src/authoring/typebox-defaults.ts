@@ -1,11 +1,14 @@
 import type * as TypeBox from "typebox";
 import type {
+  TAny,
   TArray,
   TArrayOptions,
   TBoolean,
   TEnum,
   TEnumValue,
   TInteger,
+  TIntersect,
+  TIntersectOptions,
   TLiteral,
   TLiteralValue,
   TNull,
@@ -27,6 +30,7 @@ import type {
   TTypeScriptEnumLike,
   TTypeScriptEnumToEnumValues,
   TUnion,
+  TUnknown,
 } from "typebox";
 import type { WorkflowSerializableValue } from "../shared/authoring-contract.js";
 
@@ -53,6 +57,14 @@ type TypeBoxRecord<TKey extends TSchema, TValue extends TSchema> = ReturnType<ty
 
 declare module "typebox" {
   export namespace Type {
+    export function Any<const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>>(
+      options: TOptions,
+    ): TAny & TypeBoxDefaulted<TOptions>;
+
+    export function Unknown<const TOptions extends TypeBoxDefaultOptions<TSchemaOptions>>(
+      options: TOptions,
+    ): TUnknown & TypeBoxDefaulted<TOptions>;
+
     export function String<const TOptions extends TypeBoxDefaultOptions<TStringOptions>>(
       options: TOptions,
     ): TString & TypeBoxDefaulted<TOptions>;
@@ -169,6 +181,14 @@ declare module "typebox" {
       anyOf: [...TTypes],
       options: TOptions,
     ): TUnion<TTypes> & TypeBoxDefaulted<TOptions>;
+
+    export function Intersect<
+      const TTypes extends TSchema[],
+      const TOptions extends TypeBoxDefaultOptions<TIntersectOptions>,
+    >(
+      types: [...TTypes],
+      options: TOptions,
+    ): TIntersect<TTypes> & TypeBoxDefaulted<TOptions>;
 
     export function Record<
       const TKey extends TSchema,

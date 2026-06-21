@@ -43,5 +43,5 @@ export default workflow({
     max_concurrency: Type.Optional(Type.Number({ description: "Concurrency limit used for the run." })),
     history: Type.Optional(Type.String({ description: "Prior-research/history overview included in the final synthesis." })),
   },
-  run: async (ctx) => await runDeepResearchCodebase(ctx as never) as never,
+  run: async (ctx) => await runDeepResearchCodebase(ctx),
 });

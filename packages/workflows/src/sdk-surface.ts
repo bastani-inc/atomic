@@ -6,6 +6,7 @@
  */
 
 export { workflow } from "./authoring/workflow.js";
+export type { Static, TSchema } from "typebox";
 
 const REMOVED_RUN_WORKFLOW_MESSAGE =
   "@bastani/workflows no longer exports runWorkflow; author workflows with workflow({...})";

@@ -3,6 +3,7 @@ import type {
   WorkflowDefinition,
   WorkflowInputValues,
   WorkflowOutputValues,
+  WorkflowRunChildArgs,
   WorkflowRunChildOptions,
 } from "../../shared/types.js";
 import type { WorkflowChildRunRef } from "../../shared/store-types.js";
@@ -35,7 +36,7 @@ export function createChildWorkflowRunner(input: {
   TChildRunInputs extends WorkflowInputValues = TChildInputs,
 >(
   child: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
-  options?: WorkflowRunChildOptions<TChildRunInputs>,
+  ...args: WorkflowRunChildArgs<TChildRunInputs>
 ) => Promise<WorkflowChildResult<TChildOutputs>> {
   return async <
     TChildInputs extends WorkflowInputValues,
@@ -43,8 +44,9 @@ export function createChildWorkflowRunner(input: {
     TChildRunInputs extends WorkflowInputValues = TChildInputs,
   >(
     child: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
-    options: WorkflowRunChildOptions<TChildRunInputs> = {},
+    ...args: WorkflowRunChildArgs<TChildRunInputs>
   ): Promise<WorkflowChildResult<TChildOutputs>> => {
+    const options: WorkflowRunChildOptions<TChildRunInputs> = args[0] ?? {};
     const { runtime } = input;
     runtime.exit.throwIfWorkflowExitSelected();
     if (!isWorkflowDefinition(child)) throw new Error(workflowDefinitionRequirementMessage("ctx.workflow(definition)", child));

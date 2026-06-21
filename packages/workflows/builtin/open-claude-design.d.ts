@@ -32,6 +32,7 @@ export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly preview_file_url?: string;
   readonly spec_path?: string;
   readonly spec_file_url?: string;
+  readonly playwright_cli_status?: string;
 };
 
 export type OpenClaudeDesignWorkflowDefinition = WorkflowDefinition<
