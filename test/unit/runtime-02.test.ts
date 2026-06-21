@@ -22,14 +22,11 @@ import { join } from "node:path";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
-import { Type } from "typebox";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { renderResult } from "../../packages/workflows/src/extension/render-result.js";
 import { WORKFLOW_UNKNOWN_MODEL_MESSAGE } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
 import type {
-    WorkflowDefinition,
     WorkflowPersistencePort,
 } from "../../packages/workflows/src/shared/types.js";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
@@ -129,36 +126,6 @@ function fakeStageSession(): StageSessionRuntime {
         },
     };
 }
-
-const helloWorkflow = workflow({
-  name: "hello-world",
-  description: "Simple greeting",
-  inputs: {
-    name: Type.String(),
-  },
-  outputs: {
-    greeting: Type.Optional(Type.Any()),
-  },
-  run: async (ctx) => {
-        const stage = ctx.stage("greet");
-        const out = await stage.prompt(`Hello ${String(ctx.inputs["name"])}`);
-        return { greeting: out };
-    },
-}) as WorkflowDefinition;
-
-const schemaWorkflow = workflow({
-  name: "schema-test",
-  description: "Multi-input schema",
-  inputs: {
-    text: Type.String({ default: "hi" }),
-    count: Type.Optional(Type.Number()),
-    flag: Type.Boolean(),
-  },
-  outputs: {
-    ok: Type.Optional(Type.Any()),
-  },
-  run: async (_ctx) => ({ ok: true }),
-}) as WorkflowDefinition;
 
 // ---------------------------------------------------------------------------
 // dispatch: list

@@ -1,5 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import {
@@ -151,7 +153,9 @@ describe("workflow authoring door", () => {
   });
 
   test("infers omitted workflow names from file URL and Windows stack paths", () => {
-    const fileUrlDef = workflowFromStack("Error\n    at workflow (file:///tmp/project/node_modules/@bastani/workflows/authoring/workflow.ts:10:2)\n    at Object.<anonymous> (file:///tmp/project/file-url-flow.ts:5:1)");
+    const fileUrlImplementation = pathToFileURL(join(process.cwd(), "node_modules", "@bastani", "workflows", "authoring", "workflow.ts")).href;
+    const fileUrlCaller = pathToFileURL(join(process.cwd(), "file-url-flow.ts")).href;
+    const fileUrlDef = workflowFromStack(`Error\n    at workflow (${fileUrlImplementation}:10:2)\n    at Object.<anonymous> (${fileUrlCaller}:5:1)`);
     assert.equal(fileUrlDef.name, "file-url-flow");
 
     const windowsDef = workflowFromStack("Error\n    at workflow (C:\\Users\\test\\.pi\\agent\\extensions\\workflows\\authoring\\workflow.ts:10:2)\n    at Object.<anonymous> (C:\\Users\\test\\project\\windows-flow.ts:5:1)");

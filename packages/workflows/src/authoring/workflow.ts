@@ -80,10 +80,16 @@ function freezeSchemaMap<TSchemas extends WorkflowInputSchemaMap | WorkflowOutpu
 }
 
 function stackFilePath(line: string): string | undefined {
-  const match = line.match(/\(?((?:file:\/\/)?(?:\/|[A-Za-z]:[\\/])[^():]+?\.[cm]?[jt]sx?):\d+:\d+\)?/);
-  const rawPath = match?.[1];
+  const fileUrlMatch = line.match(/\(?((?:file:\/\/)[^\s)]+?\.[cm]?[jt]sx?):\d+:\d+\)?/);
+  const rawPath = fileUrlMatch?.[1]
+    ?? line.match(/\(?((?:\/|[A-Za-z]:[\\/])[^():]+?\.[cm]?[jt]sx?):\d+:\d+\)?/)?.[1];
   if (rawPath === undefined) return undefined;
-  return rawPath.startsWith("file://") ? fileURLToPath(rawPath) : rawPath;
+  if (!rawPath.startsWith("file://")) return rawPath;
+  try {
+    return fileURLToPath(rawPath);
+  } catch {
+    return undefined;
+  }
 }
 
 function isWorkflowAuthoringImplementationFrame(filePath: string): boolean {

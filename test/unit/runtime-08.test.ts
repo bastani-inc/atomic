@@ -130,36 +130,6 @@ function fakeStageSession(): StageSessionRuntime {
     };
 }
 
-const helloWorkflow = workflow({
-  name: "hello-world",
-  description: "Simple greeting",
-  inputs: {
-    name: Type.String(),
-  },
-  outputs: {
-    greeting: Type.Optional(Type.Any()),
-  },
-  run: async (ctx) => {
-        const stage = ctx.stage("greet");
-        const out = await stage.prompt(`Hello ${String(ctx.inputs["name"])}`);
-        return { greeting: out };
-    },
-}) as WorkflowDefinition;
-
-const schemaWorkflow = workflow({
-  name: "schema-test",
-  description: "Multi-input schema",
-  inputs: {
-    text: Type.String({ default: "hi" }),
-    count: Type.Optional(Type.Number()),
-    flag: Type.Boolean(),
-  },
-  outputs: {
-    ok: Type.Optional(Type.Any()),
-  },
-  run: async (_ctx) => ({ ok: true }),
-}) as WorkflowDefinition;
-
 // ---------------------------------------------------------------------------
 // dispatch: list
 // ---------------------------------------------------------------------------
