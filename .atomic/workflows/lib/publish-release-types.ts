@@ -82,6 +82,7 @@ export type PublishWorkflowRunVerification =
       readonly summary: string;
       readonly runId?: number;
       readonly runUrl?: string;
+      readonly pending?: boolean;
     };
 
 export type PublishWorkflowRunReference =

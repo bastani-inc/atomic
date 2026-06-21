@@ -328,4 +328,4 @@ The meaningful pre-publish checks are:
 
 4. Confirm `publish.yml` checks out the tag, runs docs link validation plus Mintlify syntax and broken-link checks, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
 
-For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow.
+For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow. Its final publish gate polls the matching `publish.yml` run until GitHub reports a terminal conclusion, so a long-running `in_progress` publish run is not treated as a release failure.

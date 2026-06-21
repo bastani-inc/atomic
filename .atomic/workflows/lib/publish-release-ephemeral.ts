@@ -111,7 +111,7 @@ export async function runEphemeralRelease(
       "verify-release-branch-ci",
       `the Tests workflow run for ${release.branch} has headSha ${preparationVerification.releaseCommitOid}, status completed, and conclusion success`,
       [branchCi.summary, "", "CI wait stage output:", excerpt(ciWait.text, 2_000)].join("\n"),
-      "failed",
+      branchCi.pending === true ? "blocked" : "failed",
     );
   }
 
@@ -152,7 +152,7 @@ export async function runEphemeralRelease(
       "verify-publish-workflow-succeeded",
       "GitHub Actions Publish run for the release tag has matching headSha, status completed, and conclusion success",
       [publishVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
-      "failed",
+      publishVerification.pending === true ? "blocked" : "failed",
     );
   }
 

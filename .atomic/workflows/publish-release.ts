@@ -281,7 +281,7 @@ export default workflow({
         "verify-publish-workflow-succeeded",
         "GitHub Actions Publish run for the release tag has matching headSha, status completed, and conclusion success",
         [publishVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
-        "failed",
+        publishVerification.pending === true ? "blocked" : "failed",
       );
     }
 

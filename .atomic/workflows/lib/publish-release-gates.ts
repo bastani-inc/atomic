@@ -2,17 +2,15 @@ import {
   commandSummary,
   parseJsonCommand,
   runCommand,
-  selectPublishWorkflowRunJson,
-  verifyPublishWorkflowRunJson,
   verifyPullRequestChecksJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
-  type CommandResult,
   type PublishWorkflowRunVerification,
   type PullRequestMergeVerification,
   type PullRequestReferenceVerification,
   type ValidatedRelease,
 } from "./publish-release.js";
+import { waitForWorkflowRunSucceeded } from "./publish-release-run-wait.js";
 
 type GateVerification =
   | {
@@ -330,131 +328,11 @@ export function verifyReleaseTagPublished(release: ValidatedRelease, expectedPar
   return { ok: true, summary, tagTargetOid: releaseCommitOid };
 }
 
-async function verifyWorkflowRunSucceeded(
-  expectedHeadSha: string,
-  options: { readonly workflowFile: string; readonly expectedHeadBranch: string },
-): Promise<PublishWorkflowRunVerification> {
-  const { workflowFile, expectedHeadBranch } = options;
-  let runList: CommandResult | undefined;
-  let selectedRun: ReturnType<typeof selectPublishWorkflowRunJson> | undefined;
-
-  for (let attempt = 1; attempt <= 6; attempt += 1) {
-    runList = runCommand([
-      "gh",
-      "run",
-      "list",
-      "--workflow",
-      workflowFile,
-      "--event",
-      "push",
-      "--json",
-      "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt,headSha",
-      "--limit",
-      "50",
-    ]);
-
-    if (runList.exitCode !== 0) {
-      return {
-        ok: false,
-        summary: ["GitHub Actions publish run lookup command failed.", commandSummary(runList)].join("\n\n"),
-      };
-    }
-
-    const parsedList = parseJsonCommand(runList, "GitHub Actions publish run lookup returned invalid JSON.");
-    if (!parsedList.ok) return { ok: false, summary: parsedList.summary };
-
-    selectedRun = selectPublishWorkflowRunJson(parsedList.value, expectedHeadBranch);
-    if (selectedRun.ok) break;
-    if (attempt < 6) await Bun.sleep(10_000);
-  }
-
-  if (runList === undefined || selectedRun === undefined || !selectedRun.ok) {
-    return {
-      ok: false,
-      summary: [
-        selectedRun?.summary ?? "GitHub Actions publish run lookup did not execute.",
-        runList === undefined ? undefined : commandSummary(runList),
-      ].filter((line): line is string => line !== undefined).join("\n\n"),
-    };
-  }
-
-  const watch = selectedRun.status === "completed"
-    ? undefined
-    : runCommand(["gh", "run", "watch", String(selectedRun.runId), "--exit-status"]);
-
-  if (watch !== undefined && watch.exitCode !== 0) {
-    return {
-      ok: false,
-      runId: selectedRun.runId,
-      runUrl: selectedRun.runUrl,
-      summary: [
-        "GitHub Actions publish run did not complete successfully while watching.",
-        selectedRun.summary,
-        commandSummary(runList),
-        commandSummary(watch),
-      ].join("\n\n"),
-    };
-  }
-
-  const runView = runCommand([
-    "gh",
-    "run",
-    "view",
-    String(selectedRun.runId),
-    "--json",
-    "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt,headSha",
-  ]);
-
-  if (runView.exitCode !== 0) {
-    return {
-      ok: false,
-      runId: selectedRun.runId,
-      runUrl: selectedRun.runUrl,
-      summary: ["GitHub Actions publish run verification command failed.", commandSummary(runView)].join("\n\n"),
-    };
-  }
-
-  const parsedView = parseJsonCommand(runView, "GitHub Actions publish run verification returned invalid JSON.");
-  if (!parsedView.ok) {
-    return {
-      ok: false,
-      runId: selectedRun.runId,
-      runUrl: selectedRun.runUrl,
-      summary: parsedView.summary,
-    };
-  }
-
-  const publishVerification = verifyPublishWorkflowRunJson(parsedView.value, expectedHeadBranch, expectedHeadSha);
-  if (!publishVerification.ok) {
-    return {
-      ok: false,
-      runId: publishVerification.runId ?? selectedRun.runId,
-      runUrl: publishVerification.runUrl ?? selectedRun.runUrl,
-      summary: [publishVerification.summary, commandSummary(runList), commandSummary(runView)].join("\n\n"),
-    };
-  }
-
-  return {
-    ok: true,
-    runId: publishVerification.runId,
-    runUrl: publishVerification.runUrl,
-    status: publishVerification.status,
-    conclusion: publishVerification.conclusion,
-    headSha: publishVerification.headSha,
-    summary: [
-      publishVerification.summary,
-      commandSummary(runList),
-      watch === undefined ? undefined : commandSummary(watch),
-      commandSummary(runView),
-    ].filter((line): line is string => line !== undefined).join("\n\n"),
-  };
-}
-
 export function verifyPublishWorkflowSucceeded(
   release: ValidatedRelease,
   expectedHeadSha: string,
 ): Promise<PublishWorkflowRunVerification> {
-  return verifyWorkflowRunSucceeded(expectedHeadSha, {
+  return waitForWorkflowRunSucceeded(expectedHeadSha, {
     workflowFile: "publish.yml",
     expectedHeadBranch: release.version,
   });
@@ -464,7 +342,7 @@ export function verifyReleaseBranchCiSucceeded(
   release: ValidatedRelease,
   branchHeadSha: string,
 ): Promise<PublishWorkflowRunVerification> {
-  return verifyWorkflowRunSucceeded(branchHeadSha, {
+  return waitForWorkflowRunSucceeded(branchHeadSha, {
     workflowFile: "test.yml",
     expectedHeadBranch: release.branch,
   });
