@@ -4,6 +4,7 @@ import {
 	comparePackageVersions,
 	getLatestPiRelease,
 	getLatestPiVersion,
+	isDevVersion,
 	isNewerPackageVersion,
 } from "../src/utils/version-check.ts";
 
@@ -70,6 +71,21 @@ describe("version checks", () => {
 		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
 
 		await expect(getLatestPiVersion()).resolves.toBeUndefined();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("treats the versionless placeholder as a dev build", () => {
+		expect(isDevVersion("0.0.0")).toBe(true);
+		expect(isDevVersion(" 0.0.0 ")).toBe(true);
+		expect(isDevVersion("1.2.3")).toBe(false);
+		expect(isDevVersion("0.0.1")).toBe(false);
+	});
+
+	it("does not nag dev builds (0.0.0) for updates", async () => {
+		const fetchMock = vi.fn(async () => Response.json({ version: "1.2.3" }));
+		vi.spyOn(globalThis, "fetch").mockImplementation(fetchMock);
+
+		await expect(checkForNewPiVersion("0.0.0")).resolves.toBeUndefined();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 });
