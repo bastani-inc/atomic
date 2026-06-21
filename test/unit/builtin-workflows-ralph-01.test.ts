@@ -26,6 +26,7 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
+    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -78,8 +79,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
     }): readonly { readonly label: string; readonly text: string }[] {
         return [
             {
-                label: "prompt-engineer prompt",
-                text: ctx.calls.prompts["prompt-engineer-1"]?.[0] ?? "",
+                label: "research-prompt-refinement prompt",
+                text: ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "",
             },
             {
                 label: "orchestrator prompt",
@@ -175,10 +176,12 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             approved: "boolean",
             implementation_notes_path: "text",
             iterations_completed: "number",
+            original_prompt: "text",
             plan: "text",
             plan_path: "text",
             pr_report: "text",
             qa_video_path: "text",
+            refined_prompt: "text",
             research: "text",
             research_path: "text",
             result: "text",
@@ -189,31 +192,36 @@ describe("ralph", () => {    let tempCwd: string | undefined;
 
     test("starts Ralph with prompt-engineering and research prompts", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const ctx = makeMockCtx({
-            prompt: "Add a small feature",
-            max_loops: 1,
-            base_branch: "main",
-            git_worktree_dir: "",
-            create_pr: false,
-        });
+        const ctx = makeMockCtx(
+            {
+                prompt: "Add a small feature",
+                max_loops: 1,
+                base_branch: "main",
+                git_worktree_dir: "",
+                create_pr: false,
+            },
+            {
+                task: promptRefinementPassthroughTaskResponder(),
+            },
+        );
 
         await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
 
-        const promptEngineerPrompt = ctx.calls.prompts["prompt-engineer-1"]?.[0] ?? "";
+        const promptEngineerPrompt = ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "";
         assert.equal(
             promptEngineerPrompt.startsWith(
-                "/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: Add a small feature",
+                "/skill:prompt-engineer Transform the following refined user request into a codebase and online research question which can be thoroughly explored: Add a small feature",
             ),
             true,
         );
         const researchPrompt = ctx.calls.prompts["research-1"]?.[0] ?? "";
         assert.equal(researchPrompt.startsWith("/skill:research-codebase "), true);
-        assert.match(researchPrompt, /mock-task:prompt-engineer-1/);
+        assert.match(researchPrompt, /mock-task:research-prompt-refinement-1/);
         assert.equal(ctx.calls.task.includes("planner-1"), false);
         assert.doesNotMatch(promptEngineerPrompt, /Technical Design Document|RFC Template/);
-        assert.equal(ctx.calls.taskOptions["prompt-engineer-1"]?.[0]?.noTools, "all");
+        assert.equal(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.noTools, "all");
         assert.equal(
-            ctx.calls.taskOptions["prompt-engineer-1"]?.[0]?.excludedTools,
+            ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.excludedTools,
             undefined,
         );
     });
@@ -247,7 +255,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         await mod.default.run({ ...ctx, cwd });
 
         const prompts = [
-            ["prompt-engineer-1", ctx.calls.prompts["prompt-engineer-1"]?.[0] ?? ""],
+            ["prompt-refinement", ctx.calls.prompts["prompt-refinement"]?.[0] ?? ""],
+            ["research-prompt-refinement-1", ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? ""],
             ["research-1", ctx.calls.prompts["research-1"]?.[0] ?? ""],
             ["orchestrator-1", ctx.calls.prompts["orchestrator-1"]?.[0] ?? ""],
             ["reviewer-a", ctx.calls.prompts["reviewer-a"]?.[0] ?? ""],

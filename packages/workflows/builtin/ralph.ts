@@ -11,7 +11,7 @@ import { runRalphWorkflow } from "./ralph-runner.js";
 
 export default workflow({
   name: "ralph",
-  description: "Prompt-engineer → research → orchestrate → multi-model parallel review loop with bounded iteration.",
+  description: "Prompt-refinement → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration.",
   inputs: {
     prompt: Type.String({ description: "The task or goal to research, execute, and refine." }),
     max_loops: Type.Number({
@@ -46,6 +46,8 @@ export default workflow({
     iterations_completed: Type.Optional(Type.Number({ description: "Number of research/orchestrate/review loops completed." })),
     review_report: Type.Optional(Type.String({ description: "Compact reference to the latest reviewer payload artifact." })),
     review_report_path: Type.Optional(Type.String({ description: "JSON artifact path for the latest review round." })),
+    original_prompt: Type.Optional(Type.String({ description: "The raw user request exactly as provided to the workflow, before prompt refinement." })),
+    refined_prompt: Type.Optional(Type.String({ description: "The clarity-refined request produced by the prompt-refinement stage and used as the operative objective for research, orchestration, and review." })),
   },
   worktreeFromInputs: {
     gitWorktreeDir: "git_worktree_dir",

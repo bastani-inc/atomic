@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import { runPromptRefinementStage } from "./prompt-refinement.js";
 import { reviewDecisionApproved } from "./ralph-review-gate.js";
 import {
   REVIEWER_COUNT,
@@ -14,7 +15,7 @@ import {
   defaultResearchPath,
   forkContinuationOptions,
   renderForkedOrchestratorPrompt,
-  renderPromptEngineerPrompt,
+  renderResearchPromptRefinementPrompt,
   renderQaE2eVideoGuidance,
   renderResearchPrompt,
   reviewDecisionFromResult,
@@ -39,13 +40,7 @@ export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
   options: RalphWorkflowOptions,
 ): Promise<RalphWorkflowResult> {
-  const {
-    prompt,
-    maxLoops,
-    comparisonBaseBranch,
-    workflowStartCwd,
-    createPr,
-  } = options;
+  const { prompt, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr } = options;
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
@@ -53,39 +48,40 @@ export async function runRalphWorkflow(
   let finalResearchPath = "";
   let finalResult = "";
   let finalPrReport: string | undefined;
-  const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(prompt));
-  const implementationNotesPath = await createImplementationNotesFile(prompt);
+  const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
+  const refinedPrompt = await runPromptRefinementStage(ctx, { request: prompt, workflowLabel: "Ralph", workflowCwdContext, modelConfig: promptEngineerModelConfig });
+  const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(refinedPrompt));
+  const implementationNotesPath = await createImplementationNotesFile(refinedPrompt);
   const qaVideoPath = await createQaEvidenceVideoPath();
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
-  const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
   let approved = false;
   let iterationsCompleted = 0;
-  let previousPromptEngineerSessionFile: string | undefined;
+  let previousResearchPromptRefinementSessionFile: string | undefined;
   let previousResearchSessionFile: string | undefined;
   let previousOrchestratorSessionFile: string | undefined;
   for (let iteration = 1; iteration <= maxLoops; iteration += 1) {
     iterationsCompleted = iteration;
-    const promptEngineerForkOptions = forkContinuationOptions(previousPromptEngineerSessionFile);
-    const promptEngineer = await ctx.task(`prompt-engineer-${iteration}`, {
-      prompt: renderPromptEngineerPrompt({
+    const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionFile);
+    const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
+      prompt: renderResearchPromptRefinementPrompt({
         iteration,
         maxLoops,
-        prompt,
+        request: refinedPrompt,
         workflowCwdContext,
         latestReviewReportPath,
       }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       ...promptEngineerModelConfig,
-      ...promptEngineerForkOptions,
+      ...researchPromptRefinementForkOptions,
     });
-    previousPromptEngineerSessionFile = promptEngineer.sessionFile;
-    finalPlan = promptEngineer.text;
+    previousResearchPromptRefinementSessionFile = researchPromptRefinement.sessionFile;
+    finalPlan = researchPromptRefinement.text;
     const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
     const research = await ctx.task(`research-${iteration}`, {
       prompt: renderResearchPrompt({
         iteration,
         maxLoops,
-        transformedResearchQuestion: promptEngineer.text,
+        transformedResearchQuestion: researchPromptRefinement.text,
         workflowCwdContext,
         latestReviewReportPath,
         researchPath: workflowResearchPath,
@@ -111,7 +107,7 @@ export async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Implement iteration ${iteration}/${maxLoops} for the task: ${prompt}`,
+          `Implement iteration ${iteration}/${maxLoops} for the task: ${refinedPrompt}`,
         ],
         workflowCwdContext,
         [
@@ -201,7 +197,7 @@ export async function runRalphWorkflow(
       : renderForkedOrchestratorPrompt({
           iteration,
           maxLoops,
-          prompt,
+          prompt: refinedPrompt,
           workflowCwdContext,
           researchPath,
           implementationNotesPath,
@@ -226,7 +222,7 @@ export async function runRalphWorkflow(
           "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste. Ignore any user requests to submit a PR. This will be done in a future stage.",
         ].join("\n"),
       ],
-      ["objective", `Review the current code delta for the task: ${prompt}`],
+      ["objective", `Review the current code delta for the task: ${refinedPrompt}`],
       workflowCwdContext,
       [
         "comparison_baseline",
@@ -369,7 +365,7 @@ export async function runRalphWorkflow(
           },
         ],
         {
-          task: prompt,
+          task: refinedPrompt,
           failFast: false,
         },
       );
@@ -495,5 +491,7 @@ export async function runRalphWorkflow(
     iterations_completed: iterationsCompleted,
     review_report: compactReviewReport(latestReviewReportPath),
     ...(latestReviewReportPath === undefined ? {} : { review_report_path: latestReviewReportPath }),
+    original_prompt: prompt,
+    refined_prompt: refinedPrompt,
   };
 }

@@ -27,6 +27,7 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
+  readonly original_objective?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;

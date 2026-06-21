@@ -29,6 +29,8 @@ import {
   renderGoalContinuationPrompt,
   renderReviewerPrompt,
 } from "./goal-prompts.js";
+import { promptEngineerModelConfig } from "./ralph-models.js";
+import { runPromptRefinementStage } from "./prompt-refinement.js";
 
 function positiveInteger(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -72,16 +74,17 @@ type GoalRunnerContext = {
 
 export async function runGoalWorkflow(ctx: GoalRunnerContext): Promise<GoalWorkflowOutputs> {
     const inputs = ctx.inputs;
-    const objective = inputs.objective.trim();
-    if (!objective) {
+    const rawObjective = inputs.objective.trim();
+    if (!rawObjective) {
       throw new Error("goal requires an objective input.");
     }
+    const objective = await runPromptRefinementStage(ctx, { request: rawObjective, workflowLabel: "Goal", modelConfig: promptEngineerModelConfig });
 
     const maxTurns = positiveInteger(inputs.max_turns, DEFAULT_MAX_TURNS);
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
     const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
-    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
+    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, rawObjective);
 
     const workerModelConfig = {
       model: "openai-codex/gpt-5.5:medium",
@@ -325,6 +328,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext): Promise<GoalWorkf
       approved: ledger.status === "complete",
       goal_id: ledger.goal_id,
       objective: ledger.objective,
+      ...(ledger.original_objective === undefined ? {} : { original_objective: ledger.original_objective }),
       ledger_path: ledgerPath,
       turns_completed: ledger.turns,
       iterations_completed: ledger.turns,

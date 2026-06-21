@@ -258,18 +258,18 @@ export function forkContinuationOptions(
     : { context: "fork", forkFromSessionFile: sessionFile };
 }
 
-export function renderPromptEngineerPrompt(args: {
+export function renderResearchPromptRefinementPrompt(args: {
   readonly iteration: number;
   readonly maxLoops: number;
-  readonly prompt: string;
+  readonly request: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
 }): string {
-  const basePrompt = `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ${args.prompt}`;
+  const basePrompt = `/skill:prompt-engineer Transform the following refined user request into a codebase and online research question which can be thoroughly explored: ${args.request}`;
   return [
     basePrompt,
     taggedPrompt([
-      ["iteration", `Prompt engineering iteration ${args.iteration}/${args.maxLoops}.`],
+      ["iteration", `Research prompt refinement iteration ${args.iteration}/${args.maxLoops}.`],
       args.workflowCwdContext,
       [
         "review_findings",
@@ -404,5 +404,7 @@ export type RalphWorkflowResult = {
   readonly iterations_completed: number;
   readonly review_report: string;
   readonly review_report_path?: string;
+  readonly original_prompt: string;
+  readonly refined_prompt: string;
 };
 

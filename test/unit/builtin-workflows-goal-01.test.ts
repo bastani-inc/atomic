@@ -26,6 +26,7 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
+    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -158,6 +159,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             iterations_completed: "number",
             ledger_path: "text",
             objective: "text",
+            original_objective: "text",
             receipts: "array",
             remaining_work: "text",
             result: "text",
@@ -283,7 +285,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         const ctx = makeMockCtx(
             { objective: "Refactor tests" },
             {
-                task: (name) => {
+                task: promptRefinementPassthroughTaskResponder((name) => {
                     if (
                         name.startsWith("completion-reviewer-") ||
                         name.startsWith("evidence-reviewer-")
@@ -298,7 +300,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         });
                     }
                     return undefined;
-                },
+                }),
             },
         );
 

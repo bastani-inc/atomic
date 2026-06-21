@@ -26,6 +26,7 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
+    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -78,8 +79,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
     }): readonly { readonly label: string; readonly text: string }[] {
         return [
             {
-                label: "prompt-engineer prompt",
-                text: ctx.calls.prompts["prompt-engineer-1"]?.[0] ?? "",
+                label: "research-prompt-refinement prompt",
+                text: ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "",
             },
             {
                 label: "orchestrator prompt",
@@ -141,13 +142,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                 create_pr: false,
             },
             {
-                task: (name) => {
-                    if (name === "prompt-engineer-1") return "first question";
+                task: promptRefinementPassthroughTaskResponder((name) => {
+                    if (name === "research-prompt-refinement-1") return "first question";
                     if (name === "research-1") return "first research";
-                    if (name === "prompt-engineer-2") return "second question";
+                    if (name === "research-prompt-refinement-2") return "second question";
                     if (name === "research-2") return "second research";
                     return undefined;
-                },
+                }),
             },
         );
 
@@ -160,11 +161,11 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             "second research",
         );
         assert.deepEqual(
-            readPaths(ctx.calls.taskOptions["prompt-engineer-1"]?.[0]),
+            readPaths(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]),
             [],
         );
         const secondPromptEngineerReads = readPaths(
-            ctx.calls.taskOptions["prompt-engineer-2"]?.[0],
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0],
         );
         assert.equal(
             secondPromptEngineerReads.some((path) =>
@@ -182,7 +183,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             true,
         );
         assert.match(
-            ctx.calls.prompts["prompt-engineer-2"]?.[0] ?? "",
+            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "",
             /unresolved reviewer findings in the transformed research question/,
         );
         assert.match(
@@ -214,20 +215,20 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         await mod.default.run({ ...ctx, cwd });
 
         assert.equal(
-            ctx.calls.taskOptions["prompt-engineer-1"]?.[0]?.context,
+            ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.context,
             undefined,
         );
         assert.equal(
-            ctx.calls.taskOptions["prompt-engineer-2"]?.[0]?.context,
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.context,
             "fork",
         );
         assert.equal(
-            ctx.calls.taskOptions["prompt-engineer-2"]?.[0]?.forkFromSessionFile,
-            "/tmp/ralph-prompt-engineer-1.jsonl",
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.forkFromSessionFile,
+            "/tmp/ralph-research-prompt-refinement-1.jsonl",
         );
         assert.equal(
-            (ctx.calls.prompts["prompt-engineer-2"]?.[0] ?? "").startsWith(
-                "/skill:prompt-engineer Transform the following user prompt",
+            (ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "").startsWith(
+                "/skill:prompt-engineer Transform the following refined user request",
             ),
             true,
         );
@@ -369,7 +370,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         const result = await mod.default.run({ ...ctx, cwd });
 
         const promptEngineerTwoPrompt =
-            ctx.calls.prompts["prompt-engineer-2"]?.[0] ?? "";
+            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
         assert.match(
             promptEngineerTwoPrompt,
             /Latest review round artifact:/,
@@ -379,11 +380,11 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             /unresolved reviewer findings/,
         );
         assert.equal(
-            ctx.calls.taskOptions["prompt-engineer-2"]?.[0]?.previous,
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.previous,
             undefined,
         );
         const promptEngineerTwoReads = readPaths(
-            ctx.calls.taskOptions["prompt-engineer-2"]?.[0],
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0],
         );
         assert.equal(
             promptEngineerTwoReads.some((path) =>

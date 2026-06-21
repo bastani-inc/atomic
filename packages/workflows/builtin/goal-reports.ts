@@ -35,6 +35,11 @@ export function renderFinalReport(
     "## Objective",
     ledger.objective,
     "",
+    ...(ledger.original_objective === undefined ? [] : [
+      "## Original objective (before prompt refinement)",
+      ledger.original_objective,
+      "",
+    ]),
     "## Final status",
     ledger.status,
     "",
