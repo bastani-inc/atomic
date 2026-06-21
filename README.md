@@ -34,6 +34,10 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
+<p align="center">
+  If you like Atomic and want to support it, the easiest way is to star our repo ⭐
+</p>
+
 ---
 
 ## Get started
