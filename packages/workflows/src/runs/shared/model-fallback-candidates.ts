@@ -15,12 +15,12 @@ export interface WorkflowResolvedModelCandidate {
    * Resolved context-window token budget for this candidate's session, parsed
    * from a parenthesized authoring token in the model string (e.g.
    * `github-copilot/claude-opus-4.8 (1m):xhigh` or `...:xhigh (1m)`). Resolved
-   * against the candidate model's advertised windows: a request above the
-   * model's default selects the long tier (exact match wins, otherwise the
-   * smallest window >= the request, rounding UP so `(1m)` selects a long tier
-   * even when it sits slightly above 1m). Left `undefined` when the model
-   * exposes no long tier, so the session keeps the model's default (short)
-   * window.
+   * against the candidate model's advertised windows: a `(long)` marker or a
+   * request above the model's default selects the long tier (exact match wins,
+   * otherwise the smallest window >= the request, rounding UP so `(1m)`/`(1.1m)`
+   * select a long tier even when it sits slightly above the marker size). Left
+   * `undefined` when the model exposes no long tier, so the session keeps the
+   * model's default (short) window.
    */
   readonly contextWindow?: number;
 }
@@ -40,19 +40,36 @@ function makeCandidate(
 }
 
 /**
+ * Result of extracting a trailing parenthesized context-window authoring token.
+ * - `requestedContextWindow`: a numeric size token (e.g. `1m`, `1.1m`, `272k`).
+ * - `requestedLongContext`: the generic `(long)` marker, which selects the
+ *   model's advertised long tier regardless of its exact size.
+ */
+interface ExtractedContextWindowToken {
+  readonly baseModel: string;
+  readonly requestedContextWindow?: number;
+  readonly requestedLongContext?: boolean;
+}
+
+/**
  * Extract a trailing parenthesized context-window authoring token, e.g. the
  * `(1m)` in `github-copilot/claude-opus-4.8 (1m)`. Mirrors GitHub Copilot's
  * model-name convention (`Claude Opus 4.8 (1M context)`) and intentionally
  * lives in the model-name portion — *not* a `:` suffix — so it never collides
  * with the `:off|minimal|low|medium|high|xhigh` reasoning-level suffix.
  *
+ * Accepted token forms, all selecting the model's long tier when one exists:
+ *   - `(long)` — a generic, size-agnostic long-context marker (case-insensitive);
+ *   - a rounded size matching the model's long tier, e.g. `(1m)` for a ~1M tier
+ *     (claude-opus-4.8) or `(1.1m)` for a ~1.05M tier (gpt-5.5), resolved by
+ *     rounding UP to the long tier (see `resolveRequestedContextWindow`);
+ *   - any exact/partial size (e.g. `(272k)` keeps the short tier).
+ *
  * Parsed with plain string scanning rather than a regular expression so that
  * adversarial model strings (e.g. `(` followed by long whitespace runs) cannot
  * trigger super-linear backtracking (CodeQL js/polynomial-redos).
  */
-function extractContextWindowToken(
-  model: string,
-): { readonly baseModel: string; readonly requestedContextWindow?: number } {
+function extractContextWindowToken(model: string): ExtractedContextWindowToken {
   const trimmedEnd = model.trimEnd();
   if (!trimmedEnd.endsWith(")")) return { baseModel: model };
   const open = trimmedEnd.lastIndexOf("(");
@@ -64,6 +81,10 @@ function extractContextWindowToken(
   const token = inner.trim();
   const baseModel = trimmedEnd.slice(0, open).trim();
   if (token.length === 0 || baseModel.length === 0) return { baseModel: model };
+  // `(long)` is a generic long-context marker: select the model's advertised
+  // long tier regardless of its exact size, so the same token works across
+  // models with different long tiers (e.g. claude-opus-4.8 1m vs gpt-5.5 1.1m).
+  if (token.toLowerCase() === "long") return { baseModel, requestedLongContext: true };
   const parsed = parseContextWindowValue(token);
   // A parenthesized token that does not parse as a context size (e.g. an
   // accidental `(preview)`) is left attached to the model id so the normal
@@ -101,6 +122,22 @@ function resolveRequestedContextWindow(
   const atOrAbove = supported.filter((window) => window >= requested);
   const longTier = atOrAbove.length > 0 ? Math.min(...atOrAbove) : supported[supported.length - 1]!;
   return longTier === defaultContextWindow ? undefined : longTier;
+}
+
+/**
+ * Resolve the generic `(long)` long-context marker against a candidate model's
+ * advertised windows: select the largest advertised window that exceeds the
+ * model's default (the long tier). Returns `undefined` for single-window models
+ * or plain string values, so the session keeps the model's default window.
+ */
+function resolveLongContextWindow(value: WorkflowModelValue): number | undefined {
+  if (typeof value === "string") return undefined;
+  const supported = getSupportedContextWindows(value);
+  if (supported.length <= 1) return undefined;
+  const defaultContextWindow = getModelDefaultContextWindow(value);
+  // `supported` is sorted ascending; the largest window is the long tier.
+  const longTier = supported[supported.length - 1]!;
+  return longTier > defaultContextWindow ? longTier : undefined;
 }
 
 const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const satisfies readonly WorkflowThinkingLevel[];
@@ -191,10 +228,12 @@ function resolveStringModel(
   const { baseModel: afterReasoning, level } = splitReasoningSuffix(tokenFirst.baseModel);
   let baseModel = afterReasoning;
   let requestedContextWindow = tokenFirst.requestedContextWindow;
-  if (requestedContextWindow === undefined) {
+  let requestedLongContext = tokenFirst.requestedLongContext;
+  if (requestedContextWindow === undefined && requestedLongContext === undefined) {
     const retry = extractContextWindowToken(afterReasoning);
     baseModel = retry.baseModel;
     requestedContextWindow = retry.requestedContextWindow;
+    requestedLongContext = retry.requestedLongContext;
   }
 
   const candidate = (id: string, value: WorkflowModelValue): WorkflowResolvedModelCandidate =>
@@ -202,7 +241,11 @@ function resolveStringModel(
       id,
       value,
       level,
-      requestedContextWindow === undefined ? undefined : resolveRequestedContextWindow(value, requestedContextWindow),
+      requestedLongContext
+        ? resolveLongContextWindow(value)
+        : requestedContextWindow === undefined
+          ? undefined
+          : resolveRequestedContextWindow(value, requestedContextWindow),
     );
 
   if (availableModels === undefined) {

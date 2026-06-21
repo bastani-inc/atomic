@@ -89,6 +89,34 @@ describe("createStageContext — model fallback", () => {
         ]);
     });
 
+    test("(long) context-window marker resolves the copilot opus session to its long-context window", async () => {
+        const seen: Array<{ model: string; contextWindow: number | undefined }> = [];
+        const agentSession: AgentSessionAdapter = {
+            async create(options) {
+                const model =
+                    typeof options.model === "string"
+                        ? options.model
+                        : `${String(options.model?.provider)}/${options.model?.id}`;
+                seen.push({ model, contextWindow: options.contextWindow });
+                return makeMockSession().session;
+            },
+        };
+
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: { agentSession },
+                stageOptions: { model: "github-copilot/claude-opus-4.8 (long):xhigh" },
+                models: { listModels: async () => [copilotOpusInfo()] },
+            }),
+        ) as InternalStageContext;
+
+        await ctx.__ensureSession();
+
+        assert.deepEqual(seen, [
+            { model: "github-copilot/claude-opus-4.8", contextWindow: 936_000 },
+        ]);
+    });
+
     test("(1m) on a single-window copilot opus keeps the default short window (no override)", async () => {
         const seen: Array<{ model: string; contextWindow: number | undefined }> = [];
         const agentSession: AgentSessionAdapter = {

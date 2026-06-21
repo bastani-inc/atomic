@@ -66,7 +66,7 @@ const StageSessionOptionProperties = {
   agentDir: Type.Optional(Type.String()),
   authStorage: Type.Optional(SdkSessionOptionSchema("authStorage")),
   modelRegistry: Type.Optional(SdkSessionOptionSchema("modelRegistry")),
-  model: Type.Optional(Type.Unsafe<WorkflowModelValue>({ description: "Primary model id or SDK model object. String ids may include a reasoning suffix, e.g. openai/gpt-5:high; valid levels: off|minimal|low|medium|high|xhigh. A parenthesized context-window token may precede or follow the suffix, e.g. github-copilot/claude-opus-4.8 (1m):high or github-copilot/claude-opus-4.8:high (1m)." })),
+  model: Type.Optional(Type.Unsafe<WorkflowModelValue>({ description: "Primary model id or SDK model object. String ids may include a reasoning suffix, e.g. openai/gpt-5:high; valid levels: off|minimal|low|medium|high|xhigh. A parenthesized context-window token may precede or follow the suffix, e.g. github-copilot/claude-opus-4.8 (1m):high or github-copilot/claude-opus-4.8:high (1m). Use (long) for a generic long-context marker, or a rounded size matching the model's long tier (e.g. (1m) or (1.1m)); both select the model's advertised long tier." })),
   contextWindow: Type.Optional(Type.Number({ description: "Context-window token budget for the stage session (e.g. 1000000). Non-strict by default: an unsupported value keeps the model's default window. Prefer the per-model `(1m)` token in a model/fallbackModels entry when only specific models should use a larger window." })),
   contextWindowStrict: Type.Optional(Type.Boolean({ description: "Treat an unsupported contextWindow as an error instead of falling back to the model's default window." })),
   thinkingLevel: Type.Optional(SdkSessionOptionSchema("thinkingLevel")),

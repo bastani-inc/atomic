@@ -189,4 +189,79 @@ describe("context-window authoring token", () => {
     assert.equal(after?.reasoningLevel, "medium");
     assert.equal(after?.contextWindow, 1_050_000);
   });
+
+  test("(long) is a generic long-context marker that selects each model's long tier", () => {
+    // `(long)` is size-agnostic, so the same token selects the long tier for
+    // models with DIFFERENT long tiers (opus 936K vs gpt-5.5 1.05M) — proving
+    // the marker is catalog-driven, not hardcoded to a single value.
+    const [opus] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (long):xhigh",
+      availableModels: tieredOpus,
+    });
+    assert.equal(opus?.contextWindow, 936_000);
+    const [gpt55] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (long):xhigh",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(gpt55?.contextWindow, 1_050_000);
+  });
+
+  test("(long) is case-insensitive", () => {
+    for (const token of ["(long)", "(LONG)", "( Long )"]) {
+      const [candidate] = buildModelCandidates({
+        primaryModel: `github-copilot/claude-opus-4.8 ${token}:xhigh`,
+        availableModels: tieredOpus,
+      });
+      assert.equal(candidate?.contextWindow, 936_000, `token ${token}`);
+    }
+  });
+
+  test("(1.1m) — the rounded long-tier label for gpt-5.5 — selects its long tier", () => {
+    // gpt-5.5's long tier is 1_050_000, whose rounded display is "1.1m". The
+    // marker should select that long tier (rounding UP past it), matching the
+    // natural label a user reads off the chat footer.
+    const [candidate] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (1.1m):xhigh",
+      availableModels: tieredGpt55,
+    });
+    assert.equal(candidate?.id, "github-copilot/claude-opus-4.8");
+    assert.equal(candidate?.contextWindow, 1_050_000);
+    // The same 1.1m marker also reaches opus's lower 1M long tier.
+    const [opus] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (1.1m):xhigh",
+      availableModels: tieredOpus,
+    });
+    assert.equal(opus?.contextWindow, 936_000);
+  });
+
+  test("(long) keeps the default short window when no long tier is advertised", () => {
+    const [candidate] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (long):xhigh",
+      availableModels: [copilotOpus({ defaultWindow: 200_000 })],
+    });
+    assert.equal(candidate?.id, "github-copilot/claude-opus-4.8");
+    assert.equal(candidate?.contextWindow, undefined);
+  });
+
+  test("(long) is honored in both token orders and stripped from the cleaned id", () => {
+    const [before] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8 (long):medium",
+      availableModels: tieredOpus,
+    });
+    assert.equal(before?.reasoningLevel, "medium");
+    assert.equal(before?.contextWindow, 936_000);
+    const [after] = buildModelCandidates({
+      primaryModel: "github-copilot/claude-opus-4.8:medium (long)",
+      availableModels: tieredOpus,
+    });
+    assert.equal(after?.reasoningLevel, "medium");
+    assert.equal(after?.contextWindow, 936_000);
+    assert.deepEqual(
+      buildModelCandidateIds({
+        primaryModel: "github-copilot/claude-opus-4.8 (long):xhigh",
+        availableModels: tieredOpus,
+      }),
+      ["github-copilot/claude-opus-4.8"],
+    );
+  });
 });
