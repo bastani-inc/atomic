@@ -191,7 +191,7 @@ jobs:
                     - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-arm64, target: aarch64-pc-windows-msvc }
 
         steps:
-            - uses: actions/checkout@v6.0.3
+            - uses: actions/checkout@v7.0.0
               with:
                   ref: ${{ github.event.inputs.tag || github.ref_name }}
                   persist-credentials: false
@@ -286,7 +286,7 @@ jobs:
                   fi
                   echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
-            - uses: actions/checkout@v6.0.3
+            - uses: actions/checkout@v7.0.0
               with:
                   ref: ${{ steps.checkout_ref.outputs.ref }}
                   fetch-depth: 0
