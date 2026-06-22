@@ -252,7 +252,7 @@ export function buildLivePreviewDisplayPrompt(args: {
   return taggedPrompt([
     [
       "role",
-      "You are an opinionated staff design engineer running impeccable's interactive `live` QA so the user can iterate on the design in a real browser.",
+      "You are an opinionated staff design engineer running interactive `live` QA so the user can iterate on the design in a real browser.",
     ],
     ["objective", objective],
     ["preview_path", args.previewPath],
