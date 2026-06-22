@@ -310,7 +310,6 @@ The agent should insert variant HTML at insertLine.`);
   ];
 
   let outputFile = targetFile;
-  let outputLines;
   let outputStartLine = startLine + 1;
   let outputEndLine = startLine + wrapperLines.length + (originalLines.length - 1);
   let insertLine;
@@ -569,14 +568,6 @@ function buildSearchQueries(elementId, classes, tag, query) {
 
 function splitClassList(classes) {
   return String(classes).split(/[,\s]+/).map(c => c.trim()).filter(Boolean);
-}
-
-function attrEscapeDouble(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/"/g, '&quot;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 }
 
 function detectCommentSyntax(filePath) {
