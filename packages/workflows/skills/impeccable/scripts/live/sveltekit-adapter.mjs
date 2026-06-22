@@ -132,7 +132,7 @@ export function unpatchSvelteLayout(content) {
   );
   out = out.replace(blockRe, '$1');
   out = out.replace(new RegExp('^\\s*' + escapeRegExp(SVELTE_ROOT_IMPORT) + '\\s*\\n?', 'gm'), '');
-  out = out.replace(/<script\b[^>]*>\s*<\/script[^>]*>\s*\n?/g, '');
+  out = out.replace(/<script>\s*<\/script>\s*\n?/g, '');
   return out.replace(/\n{3,}/g, '\n\n');
 }
 
