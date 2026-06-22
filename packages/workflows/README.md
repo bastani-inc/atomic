@@ -658,21 +658,23 @@ Child workflow outputs: `result`, `findings`, `research_doc_path`, `artifact_dir
 
 ### `goal`
 
-Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id and lifecycle events, render goal-continuation context, run bounded worker LM turns, append receipts, run three independent reviewers, and let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. Token budget behavior is intentionally excluded.
+Goal Runner workflow: initialize a persisted goal ledger with a per-run goal id and lifecycle events, render goal-continuation context, run bounded worker LM turns, append receipts, run three independent reviewers, let a TypeScript reducer decide `complete`, `continue`, `blocked`, or `needs_human`, and optionally run a final-stage PR handoff after approval. Workers and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. Token budget behavior is intentionally excluded. Goal skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation after Goal reaches `complete` within the turn budget.
 
 ```text
 /workflow goal objective="Migrate the database layer to Drizzle ORM" base_branch=develop
+/workflow goal objective="Migrate the database layer to Drizzle ORM and open a PR when complete" base_branch=develop create_pr=true
 ```
 
 | Input         | Type     | Required | Default       | Description                                                   |
 | ------------- | -------- | -------- | ------------- | ------------------------------------------------------------- |
 | `objective`   | `text`   | ✓        | —             | Goal-runner objective.                                        |
 | `max_turns`   | `number` | —        | `10`          | Maximum worker/review turns before human follow-up is needed. |
-| `base_branch` | `string` | —        | `origin/main` | Branch reviewers compare the current delta with.              |
+| `base_branch` | `string` | —        | `origin/main` | Branch reviewers and the optional final stage compare the current delta with. |
+| `create_pr`    | `boolean` | —        | `false`       | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
 
 `goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
 
-Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, `ledger_path`, `turns_completed`, `iterations_completed`, `receipts`, `remaining_work`, `review_report`, and `review_report_path`.
+Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, `ledger_path`, `turns_completed`, `iterations_completed`, `receipts`, `remaining_work`, `review_report`, and `review_report_path`. `pr_report` is included only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs.
 
 ### `ralph`
 

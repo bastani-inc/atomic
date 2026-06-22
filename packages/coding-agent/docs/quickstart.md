@@ -91,13 +91,13 @@ Atomic ships with four workflows you can run immediately. Use `/workflow list` t
 | Workflow | When to use | Example |
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
-| `goal` | Bounded one-off changes when you already know the work surface, exact outcome, and validation — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run focused with a goal ledger, reviewer gates, and final status `complete`, `blocked`, or `needs_human`. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when the build passes"` |
+| `goal` | Bounded one-off changes when you already know the work surface, exact outcome, and validation — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run focused with a goal ledger, reviewer gates, final status `complete`, `blocked`, or `needs_human`, and optional final-stage PR creation with `create_pr=true` after approval. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when the build passes"` |
 | `ralph` | Planned or broad implementation work from a spec file, GitHub issue, or crisp ticket description. Ralph refines the prompt, researches as needed, delegates implementation through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, iterates, and optionally lets only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic returns 429"` |
 | `open-claude-design` | UI and design-system work with generation, critique, and refinement loops; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy" output_type=page` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
-Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. Ralph skips PR creation by default; prompt text alone does not opt in. Add `create_pr=true` only when you want its final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
+Inputs are bare `key=value` tokens. Values are JSON-parsed when possible, so `count=5`, `flag=true`, and `objective="multi word value"` preserve useful types. Some workflows expose reusable worktree inputs; for example, add `git_worktree_dir=../atomic-ralph-wt` to `ralph` to run its stages in a created/reused Git worktree while preserving your current repo-relative cwd. Goal and Ralph skip PR creation by default; prompt text alone does not opt in. Add `create_pr=true` only when you want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation after the workflow's review gate approves, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; the PR-creation instructions live in that final stage. If you call `/workflow <name>` without required inputs, the TUI opens an inline picker; pass `--no-picker` to skip it.
 
 You can also launch workflows with **natural language** — just describe the task in chat and ask Atomic to run the matching workflow:
 
@@ -111,9 +111,9 @@ Use the goal workflow to update the CLI docs for --json, include one example, ru
 
 Atomic picks the workflow, fills in inputs from the request, and confirms before launch.
 
-For planned work, make `ralph` the default implementation loop after research or spec creation. Give it a spec file, GitHub issue, or crisp ticket description; it refines the prompt, researches as needed, delegates implementation, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. If you want a PR too, ask Ralph to create one at the end.
+For planned work, make `ralph` the default implementation loop after research or spec creation. Give it a spec file, GitHub issue, or crisp ticket description; it refines the prompt, researches as needed, delegates implementation, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. Add `create_pr=true` only when you want the final PR handoff after the review gate approves.
 
-For smaller one-off tasks, use `goal` with a concrete task description that names the work surface, desired outcome, and validation. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human`.
+For smaller one-off tasks, use `goal` with a concrete task description that names the work surface, desired outcome, and validation. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run only the final PR handoff with `create_pr=true` after approval.
 
 ### Monitor and steer a run
 
@@ -146,7 +146,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
 | `effective-liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:effective-liteparse` |
 
-Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph` with the spec path, a GitHub issue, or a crisp ticket description. For smaller one-off tasks, use `/workflow goal` with a concrete objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done.
+Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when the answer spans the whole repo. A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph` with the spec path, a GitHub issue, or a crisp ticket description. For smaller one-off tasks, use `/workflow goal` with a concrete objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done; add `create_pr=true` only when you want Goal's final `pull-request` stage after approval.
 
 ### Create your own workflow in natural language
 

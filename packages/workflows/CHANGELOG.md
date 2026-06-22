@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a safe-by-default `create_pr` toggle to the builtin `goal` workflow, matching Ralph's final-stage PR handoff behavior. Goal now skips PR/MR/review creation unless `create_pr=true` **and** reviewer quorum plus the reducer mark the run `complete` within the turn budget, omits `pr_report` when disabled or not approved, and runs a provider-aware `pull-request` stage only at the end when explicitly authorized. The final stage reads the goal ledger, worker receipts, latest review artifact, final report, and sanitized `base_branch` before attempting GitHub, Azure Repos, GitLab, Bitbucket, Sapling, or Phabricator handoff tooling. Goal worker/reviewer prompts now include an intermediate-stage guardrail telling them to ignore PR-creation requests because only the final `pull-request` stage may attempt that handoff.
+
 ## [0.9.0-alpha.3] - 2026-06-21
 
 ### Added

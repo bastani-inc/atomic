@@ -24,6 +24,11 @@ export default workflow({
       default: "origin/main",
       description: "Optional branch reviewers compare the current code delta against (default origin/main).",
     }),
+    create_pr: Type.Boolean({
+      default: false,
+      description:
+        "Whether to run the final pull-request creation stage after reviewer/reducer approval. Defaults to false; prompt text alone does not opt in. Set true to allow only the final stage to attempt provider-appropriate PR/MR/review creation after Goal completes."
+    }),
   },
   outputs: {
     result: Type.Optional(Type.String({ description: "Final report with objective, status, receipts, turns, and remaining work." })),
@@ -47,6 +52,12 @@ export default workflow({
     remaining_work: Type.Optional(Type.String({ description: "Remaining gaps or blockers when incomplete, or none." })),
     review_report: Type.Optional(Type.String({ description: "Compact report pointing to the latest reviewer decision artifacts used by the reducer." })),
     review_report_path: Type.Optional(Type.String({ description: "JSON artifact path for the latest reviewer decision round." })),
+    pr_report: Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true, Goal reaches complete, and the final pull-request stage runs." })),
   },
-  run: async (ctx) => await runGoalWorkflow(ctx),
+  run: async (ctx) => {
+    const workflowCtx = ctx;
+    const workflowStartCwd = workflowCtx.cwd ?? process.cwd();
+    const createPr = workflowCtx.inputs.create_pr === true;
+    return await runGoalWorkflow(workflowCtx, { createPr, workflowStartCwd });
+  },
 });

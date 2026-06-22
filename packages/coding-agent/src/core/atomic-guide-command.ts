@@ -27,7 +27,7 @@ Atomic turns one-off prompts into developer workflows: on-call debugging, repo r
 | Goal | How to use |
 |---|---|
 | On-call / broken behavior | Run \`/run debugger "Reproduce the failure, patch the root cause, and validate it"\` for a focused fix loop, or ask Atomic in chat to build a reusable workflow that does the same |
-| Research → spec → implementation | Chain \`/skill:research-codebase\` → \`/skill:create-spec\` → \`/workflow goal objective="..."\` for bounded scoped work with explicit validation; use \`/workflow ralph ...\` when the work needs research-first broad refactoring or final-stage PR prep with \`create_pr=true\` |
+| Research → spec → implementation | Chain \`/skill:research-codebase\` → \`/skill:create-spec\` → \`/workflow goal objective="..."\` for bounded scoped work with explicit validation; add \`create_pr=true\` for Goal's final PR handoff after approval, or use \`/workflow ralph ...\` when the work needs research-first broad refactoring |
 | Testing / regression hardening | Run \`/skill:tdd\` for test-first work, then \`/parallel-review current diff\`, then land the change |
 | Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or \`/workflow deep-research-codebase\` for whole-repo synthesis |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
@@ -37,7 +37,7 @@ Atomic turns one-off prompts into developer workflows: on-call debugging, repo r
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | small-to-medium scoped changes when you can name the work surface, outcome, and validation; keeps receipts in a ledger and stops as \`complete\`, \`blocked\`, or \`needs_human\` | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
+| \`goal\` | small-to-medium scoped changes when you can name the work surface, outcome, and validation; keeps receipts in a ledger, stops as \`complete\`, \`blocked\`, or \`needs_human\`, and can run a final PR handoff with \`create_pr=true\` after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
 | \`ralph\` | larger migrations, broad refactors, and multi-package changes where you want Atomic to research first, delegate, review, and iterate; add \`create_pr=true\` only when you want the final pull-request stage and report | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | UI and design-system work that benefits from generation and refinement loops | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
@@ -115,11 +115,11 @@ For larger migrations, broad refactors, or multi-package changes that need resea
 
 \`/workflow ralph prompt="Migrate the database layer to Drizzle"\`
 
-Add \`create_pr=true\` only when you want Ralph's final pull-request stage and report.
+Add \`create_pr=true\` only when you want the final pull-request stage and report after the review gate approves.
 
 ## 4. Decide and land
 
-If you used \`goal\`, the workflow already persisted receipts in a goal ledger and reviewer-gated completion. Use its final status — \`complete\`, \`blocked\`, or \`needs_human\` — plus the remaining-work report to decide whether to ship, unblock, or clarify.
+If you used \`goal\`, the workflow already persisted receipts in a goal ledger and reviewer-gated completion. Use its final status — \`complete\`, \`blocked\`, or \`needs_human\` — plus the remaining-work report to decide whether to ship, unblock, or clarify. If you enabled \`create_pr=true\`, use its final pull-request report to decide whether to ship or iterate again.
 
 If you used \`ralph\`, the workflow transformed the prompt into a research question, researched the codebase, delegated implementation through sub-agents, reviewed, and iterated. If you enabled \`create_pr=true\`, use its final pull-request report to decide whether to ship or iterate again.
 
@@ -147,7 +147,7 @@ You do not have to write TypeScript to add one. Describe the workflow you want i
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | small-to-medium scoped changes with a clear outcome and named validation | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
+| \`goal\` | small-to-medium scoped changes with a clear outcome and named validation; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
 | \`ralph\` | larger migrations, broad refactors, and multi-package research-first implementation work | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | frontend and product design work | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 

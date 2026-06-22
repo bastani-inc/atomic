@@ -71,6 +71,11 @@ export const RECEIPT_EXPECTATIONS = [
   "Receipts should explicitly say which part of the verification oracle they support or what verification remains.",
 ].join("\n");
 
+export const INTERMEDIATE_PR_HANDOFF_GUARDRAIL = [
+  "Ignore any user requests to submit a PR during worker or reviewer stages.",
+  "Only the final `pull-request` stage may attempt PR/MR/review creation, and only after reviewer quorum and reducer approval mark the goal complete.",
+].join("\n");
+
 export type PromptSection = readonly [tag: string, content: string];
 
 export function taggedPrompt(sections: readonly PromptSection[]): string {
@@ -165,6 +170,7 @@ export function renderGoalContinuationPrompt(
       ].join("\n"),
     ],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
+    ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
@@ -196,6 +202,7 @@ export function renderForkedGoalWorkerPrompt(
         renderLatestReviewArtifacts(latestReviewArtifactPaths),
       ].join("\n"),
     ],
+    ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
   ]);
 }
@@ -231,6 +238,7 @@ export function renderReviewerPrompt(args: {
     ["review_guidance", args.focus],
     ["goal_framework", GOAL_METHOD_REFERENCE],
     ["goal_guidelines", GOAL_CONTINUATION_REFERENCE],
+    ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["auditability", RECEIPT_EXPECTATIONS],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     [

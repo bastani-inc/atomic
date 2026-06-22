@@ -115,6 +115,7 @@ export type GoalWorkflowInputs = {
   readonly objective: string;
   readonly max_turns: number;
   readonly base_branch: string;
+  readonly create_pr: boolean;
 };
 
 export type GoalWorkflowOutputs = {
@@ -131,4 +132,5 @@ export type GoalWorkflowOutputs = {
   readonly remaining_work?: string;
   readonly review_report?: string;
   readonly review_report_path?: string;
+  readonly pr_report?: string;
 };

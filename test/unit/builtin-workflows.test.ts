@@ -3,6 +3,7 @@ import "./builtin-workflows-deep_research_codebase-02.test.js";
 import "./builtin-workflows-goal-01.test.js";
 import "./builtin-workflows-goal-02.test.js";
 import "./builtin-workflows-goal-03.test.js";
+import "./builtin-workflows-goal-pr.test.js";
 import "./builtin-workflows-ralph-01.test.js";
 import "./builtin-workflows-ralph-02.test.js";
 import "./builtin-workflows-open_claude_design-01.test.js";

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added the bundled builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage. Goal now mirrors Ralph's PR handoff behavior: omitted or `false` skips PR/MR/review creation and omits `pr_report`, while strict `create_pr=true` authorizes only the final stage after reviewer quorum plus reducer approval to inspect the goal ledger, worker receipts, reviewer artifacts, final report, repository state, and provider credentials before attempting a provider-appropriate PR/MR/review request. Intermediate Goal worker/reviewer prompts now tell stages to ignore PR-creation requests so PR handoff stays confined to the final stage. Updated the bundled workflow docs, quickstart, README, and `/atomic` guide copy to describe the opt-in behavior.
+
 ## [0.9.0-alpha.3] - 2026-06-21
 
 ### Fixed

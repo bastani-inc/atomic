@@ -79,6 +79,7 @@ import ralphDefault from "@bastani/workflows/builtin/ralph";
 import type {
   DeepResearchCodebaseWorkflowOutputs,
   GoalWorkflowOutputs,
+  GoalWorkflowRunInputs,
   GoalWorkflowStatus,
   OpenClaudeDesignWorkflowOutputs,
   RalphWorkflowOutputs,
@@ -335,8 +336,8 @@ run(authoredWorkflow, {});
 // @ts-expect-error pickedNoDefault has no default and remains required.
 run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } });
 run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
-run(goal, { objective: "x" });
-run(goalDefault, { objective: "x" });
+run(goal, { objective: "x" }); run(goal, { objective: "x", create_pr: true });
+run(goalDefault, { objective: "x", create_pr: false });
 run(ralph, { prompt: "x" });
 run(ralph, { prompt: "x", create_pr: true });
 run(ralphDefault, { prompt: "x", create_pr: false });
@@ -352,16 +353,15 @@ const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: tr
 const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = { approved_for_export: true, preview_path: "preview.html", refinements_completed: 1 };
 const typedDeepResearchOutputs: DeepResearchCodebaseWorkflowOutputs = { partitions: ["core"], explorer_count: 1, research_doc_path: "research.md" };
 const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, research_path: "research.md" };
+const typedGoalRunInputs: GoalWorkflowRunInputs = { objective: "x", create_pr: true };
 const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true };
-void typedGoalOutputs;
-void typedDesignOutputs;
-void typedDeepResearchOutputs;
-void typedRalphOutputs;
-void typedRalphRunInputs;
+void typedGoalOutputs; void typedGoalRunInputs; void typedDesignOutputs; void typedDeepResearchOutputs; void typedRalphOutputs; void typedRalphRunInputs;
 // @ts-expect-error builtin goal status is a declared literal union.
 const invalidGoalOutputs: GoalWorkflowOutputs = { status: "done" };
 // @ts-expect-error builtin open-claude-design only accepts runtime-declared output_type values.
 run(openClaudeDesign, { prompt: "x", output_type: "flow" });
+// @ts-expect-error builtin goal create_pr must be boolean.
+run(goal, { objective: "x", create_pr: "true" });
 // @ts-expect-error builtin ralph create_pr must be boolean.
 run(ralph, { prompt: "x", create_pr: "true" });
 // @ts-expect-error builtin goal requires an objective input.

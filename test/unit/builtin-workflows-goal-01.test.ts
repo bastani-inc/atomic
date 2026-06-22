@@ -1,35 +1,19 @@
 // @ts-nocheck
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import {
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    readdirSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import {
     assertOutputTypes,
-    assertStringOutput,
     assertWorkflowDefinition,
-    expectedDeepResearchAggregatorReadCount,
-    fieldChoices,
     fieldDefault,
     fieldDescription,
     fieldKind,
     fieldRequired,
     makeMockCtx,
-    makeTaskResult,
     normalizePathSeparators,
     promptRefinementPassthroughTaskResponder,
-    promptText,
-    readPathEndsWith,
-    readPaths,
 } from "./builtin-workflows-helpers.js";
 
 describe("goal", () => {    type ReviewJsonFinding = {
@@ -133,7 +117,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(mod.default.name, "goal");
     });
 
-    test("declares objective, max_turns, and base_branch inputs", async () => {
+    test("declares objective, max_turns, base_branch, and create_pr inputs", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         assert.equal(fieldKind(mod.default.inputs["objective"]), "text");
         assert.equal(fieldRequired(mod.default.inputs["objective"]), true);
@@ -144,8 +128,17 @@ describe("goal", () => {    type ReviewJsonFinding = {
             fieldDefault(mod.default.inputs["base_branch"]),
             "origin/main",
         );
+        assert.equal(fieldKind(mod.default.inputs["create_pr"]), "boolean");
+        assert.equal(fieldDefault(mod.default.inputs["create_pr"]), false);
+        assert.equal(fieldRequired(mod.default.inputs["create_pr"]), false);
+        const createPrDescription = fieldDescription(mod.default.inputs["create_pr"]);
+        assert.match(createPrDescription, /pull-request creation stage/);
+        assert.match(createPrDescription, /Defaults to false/);
+        assert.match(createPrDescription, /after reviewer\/reducer approval/);
+        assert.match(createPrDescription, /provider-appropriate PR\/MR\/review creation/);
         assert.deepEqual(Object.keys(mod.default.inputs).sort(), [
             "base_branch",
+            "create_pr",
             "max_turns",
             "objective",
         ]);
@@ -160,6 +153,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             ledger_path: "text",
             objective: "text",
             original_objective: "text",
+            pr_report: "text",
             receipts: "array",
             remaining_work: "text",
             result: "text",

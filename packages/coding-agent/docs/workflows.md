@@ -158,7 +158,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 | Workflow | What it does | When to use |
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
-| `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
+| `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, name the validation that proves it is done, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
 | `ralph` | Prompt-refinement → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to refine the prompt for clarity, transform it into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
 | `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
 
@@ -214,7 +214,8 @@ Inputs:
 |---|---|---|---|---|
 | `objective` | text | yes | — | Goal-runner objective. Include the desired end state, expected outcome, testing/validation instructions, and any explicit done criteria. |
 | `max_turns` | number | no | `10` | Maximum worker/review turns before human follow-up is needed. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers compare the current code delta against. |
+| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
 
 `goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
 
@@ -224,9 +225,10 @@ Run examples:
 /workflow goal objective="Implement specs/2026-03-rate-limit.md, add the requested regression tests, run bun test packages/api/rate-limit.test.ts, and finish only when burst traffic returns 429 with Retry-After"
 /workflow goal objective="Update the CLI docs to describe the new --json flag, include one usage example, and verify the docs build still passes" max_turns=3
 /workflow goal objective="Fix the settings form validation bug; add/adjust the focused test and consider it done when invalid emails show the inline error without submitting"
+/workflow goal objective="Implement the focused docs fix, run the docs validation command, and open a PR when complete" create_pr=true
 ```
 
-`goal` starts with a single `prompt-refinement` stage that invokes the `prompt-engineer` skill (`/skill:prompt-engineer`) to sharpen the raw objective into a clearer, more actionable form using the Workflow Best Practices prompt anatomy documented later in this guide; the refined objective becomes the operative one recorded in the ledger (the original is preserved as `original_objective` and shown in the final report when it differs). `goal` then creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each worker turn, writes each worker receipt to `work-turn-N.md`, and appends receipts, reviewer decisions, blockers, reducer decisions, and lifecycle events to the ledger. The objective is treated as user-provided data, not higher-priority instructions.
+`goal` starts with a single `prompt-refinement` stage that invokes the `prompt-engineer` skill (`/skill:prompt-engineer`) to sharpen the raw objective into a clearer, more actionable form using the Workflow Best Practices prompt anatomy documented later in this guide; the refined objective becomes the operative one recorded in the ledger (the original is preserved as `original_objective` and shown in the final report when it differs). `goal` then creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each worker turn, writes each worker receipt to `work-turn-N.md`, and appends receipts, reviewer decisions, blockers, reducer decisions, and lifecycle events to the ledger. The objective is treated as user-provided data, not higher-priority instructions. By default `goal` does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling, after Goal reaches `complete` within `max_turns`. Goal worker and reviewer prompts explicitly tell intermediate stages to ignore PR-creation requests; only the final `pull-request` stage may attempt that handoff.
 
 Write the `objective` like a compact acceptance spec. Say what should exist when the run is done, how you want testing handled, which command(s) or manual checks matter, and what outcome proves completion. The workflow is intentionally lean: it does not first generate an RFC or migration plan, so the developer-supplied objective is where scope, validation, and completion criteria belong.
 
@@ -248,6 +250,8 @@ Result fields:
 | `receipts` | Ledger receipt summaries and worker artifact paths. |
 | `remaining_work` | Remaining gaps/blockers when incomplete, or `none`. |
 | `review_report` | Markdown report containing the last structured reviewer decision payloads used by the reducer. |
+| `review_report_path` | JSON artifact path for the latest Goal review round. |
+| `pr_report` | Pull-request report emitted only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs. |
 
 ### `ralph`
 
@@ -292,7 +296,7 @@ Result fields:
 | `original_prompt` | The raw user prompt exactly as provided, before the `prompt-refinement` stage. |
 | `refined_prompt` | The clarity-refined prompt produced by the `prompt-refinement` stage and used as the operative objective for research, orchestration, and review. |
 
-A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the documented burst behavior"`. Ralph can start from a spec path, GitHub issue, or crisp ticket description, then refines the prompt, researches as needed, delegates through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. For smaller one-off tasks, use `/workflow goal` with a concrete objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done.
+A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the documented burst behavior"`. Ralph can start from a spec path, GitHub issue, or crisp ticket description, then refines the prompt, researches as needed, delegates through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. For smaller one-off tasks, use `/workflow goal` with a concrete objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done; add `create_pr=true` only when you want Goal's final `pull-request` stage after approval.
 
 ### `open-claude-design`
 
@@ -395,7 +399,7 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 | User goal | Use |
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
-| Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
+| Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final PR handoff with `create_pr=true` after approval |
 | Research and execute a larger migration, broad refactor, or multi-package change | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `workflow({...})` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
@@ -1369,7 +1373,7 @@ Common builtin import targets:
 | Workflow name | TypeScript export | Individual module path | Typical use inside another workflow |
 |---|---|---|---|
 | `deep-research-codebase` | `deepResearchCodebase` | `@bastani/workflows/builtin/deep-research-codebase` | Gather broad repo research before planning, synthesis, or implementation. |
-| `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion. |
+| `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion; pass `create_pr=true` to authorize only the final PR-creation stage after approval. |
 | `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor effort to Ralph's research/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
 | `open-claude-design` | `openClaudeDesign` | `@bastani/workflows/builtin/open-claude-design` | Generate and refine a UI/design artifact and handoff spec. |
 
