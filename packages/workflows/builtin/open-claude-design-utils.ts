@@ -60,6 +60,19 @@ export function isFileLike(value: string): boolean {
   return trimmed.length > 0 && !isUrl(trimmed);
 }
 
+/**
+ * Whether the browser-centric workflow should exit early instead of generating
+ * artifacts no one can review interactively. True only when the playwright-cli
+ * browser is unavailable AND we are not under the test harness (`NODE_ENV=test`,
+ * which always skips the global install and runs headlessly to completion).
+ */
+export function shouldEarlyExitForBrowser(
+  browserAvailable: boolean,
+  nodeEnv: string | undefined,
+): boolean {
+  return !browserAvailable && nodeEnv !== "test";
+}
+
 export type RefinementDecision = {
   readonly ready_for_export: boolean;
   readonly rationale: string;

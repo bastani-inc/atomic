@@ -13,6 +13,7 @@ import {
     persistReferencesBrief,
     runDiscovery,
 } from "../../packages/workflows/builtin/open-claude-design-setup.js";
+import { shouldEarlyExitForBrowser } from "../../packages/workflows/builtin/open-claude-design-utils.js";
 
 function makeRecorder(taskText) {
     const calls = { tasks: [], prompts: {} };
@@ -219,6 +220,29 @@ describe("open-claude-design setup", () => {
                 maxRefinements: 3,
             });
             assert.match(prompt, /iteration 2\/3/);
+        });
+
+        test("final-mode prompt is read-only: it does not solicit actionable feedback", () => {
+            const prompt = buildLivePreviewDisplayPrompt({
+                previewPath: "/tmp/run/preview.html",
+                previewFileUrl: "file:///tmp/run/preview.html",
+                browserBootstrapRules: "rules",
+                iteration: 3,
+                maxRefinements: 3,
+                final: true,
+            });
+            assert.match(prompt, /FINAL refinement pass/);
+            assert.match(prompt, /re-run/i);
+            assert.match(prompt, /do NOT (solicit|collect)/i);
+        });
+    });
+
+    describe("shouldEarlyExitForBrowser", () => {
+        test("exits only when the browser is unavailable outside the test harness", () => {
+            assert.equal(shouldEarlyExitForBrowser(false, "production"), true);
+            assert.equal(shouldEarlyExitForBrowser(false, undefined), true);
+            assert.equal(shouldEarlyExitForBrowser(true, "production"), false);
+            assert.equal(shouldEarlyExitForBrowser(false, "test"), false);
         });
     });
 });

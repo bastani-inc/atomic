@@ -12,7 +12,7 @@
  */
 
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, dirname, join, resolve, sep } from "node:path";
 
 /** A single captured preview-display feedback round. */
 export type PreviewFeedback = {
@@ -307,6 +307,13 @@ export function assertUserAnnotationsThreaded(
   }
 }
 
+/** Whether `childPath` resolves to `parentDir` itself or somewhere beneath it. */
+function isWithin(childPath: string, parentDir: string): boolean {
+  const child = resolve(childPath);
+  const parent = resolve(parentDir);
+  return child === parent || child.startsWith(parent + sep);
+}
+
 function copyAnnotationArtifacts(
   feedbackDir: string,
   slug: string,
@@ -317,6 +324,11 @@ function copyAnnotationArtifacts(
   const raw = feedback.annotatedSnapshot.trim();
   if (raw.length === 0) return;
   const source = isAbsolute(raw) ? raw : resolve(workflowCwd, raw);
+  // Constrain the model-supplied path to within the project or the run's
+  // artifact dir before copying, so an absolute path outside the project (e.g.
+  // an arbitrary file the model emitted) is never copied in.
+  const artifactDir = dirname(feedbackDir);
+  if (!isWithin(source, workflowCwd) && !isWithin(source, artifactDir)) return;
   try {
     if (!existsSync(source) || !statSync(source).isFile()) return;
   } catch {

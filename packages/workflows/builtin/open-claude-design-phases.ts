@@ -266,8 +266,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     // Every captured annotation just went through an apply pass; nothing pending.
     unappliedMeaningfulFeedback = false;
 
-    // Re-display the freshly revised preview with interactive `live` QA so the
-    // user can keep iterating element-by-element in the browser.
+    // Re-display the freshly revised preview. On non-final iterations this runs
+    // interactive `live` QA and captures annotations for the NEXT iteration; on
+    // the FINAL iteration it is a read-only review that solicits no actionable
+    // feedback, so terminal annotations are never captured-then-orphaned. #1464
+    const isFinalIteration = iteration === maxRefinements;
     const revisedPreviewResult = await designContext
       .task(`preview-display-${iteration}`, {
         prompt: buildLivePreviewDisplayPrompt({
@@ -276,22 +279,23 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
           browserBootstrapRules,
           iteration,
           maxRefinements,
+          final: isFinalIteration,
         }),
         ...designModelConfig,
       })
       .catch(() => undefined);
 
-    // Capture the revised preview's annotation feedback so the NEXT iteration's
-    // user-feedback/apply-changes stages honor it too. #1464
-    const revisedFeedback = toPreviewFeedback({
-      iteration,
-      stageName: `preview-display-${iteration}`,
-      result: revisedPreviewResult,
-    });
-    persistPreviewFeedback({ artifactDir, workflowCwd, feedback: revisedFeedback });
-    previewFeedbackHistory.push(revisedFeedback);
-    if (hasMeaningfulFeedback(revisedFeedback)) {
-      unappliedMeaningfulFeedback = true;
+    if (!isFinalIteration) {
+      const revisedFeedback = toPreviewFeedback({
+        iteration,
+        stageName: `preview-display-${iteration}`,
+        result: revisedPreviewResult,
+      });
+      persistPreviewFeedback({ artifactDir, workflowCwd, feedback: revisedFeedback });
+      previewFeedbackHistory.push(revisedFeedback);
+      if (hasMeaningfulFeedback(revisedFeedback)) {
+        unappliedMeaningfulFeedback = true;
+      }
     }
     }
 
@@ -451,7 +455,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           ],
           [
             "objective",
-            "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. Degrade gracefully if browser automation is unavailable.",
+            "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. This is post-export — do NOT solicit change requests; if the user wants more changes, tell them to re-run the workflow. Degrade gracefully if browser automation is unavailable.",
           ],
           ["spec_path", specPath],
           ["spec_file_url", specFileUrl],
@@ -462,15 +466,15 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
             "instructions",
             [
               "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
-              `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-              "3. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate` so the user can capture any final notes.",
+              `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once, then \`playwright-cli snapshot\`.`,
+              "3. Do NOT run `show --annotate` or otherwise invite change requests: export is done and there is no further refinement pass. If the user wants changes, tell them to re-run `/workflow open-claude-design`.",
               `4. Always print, prominently, the absolute paths so the user can open them manually:\n   - Final spec: ${specPath}\n   - Approved preview: ${previewPath}`,
               "5. Do not block the workflow; return a structured summary even if no tooling worked.",
             ].join("\n"),
           ],
           [
             "output_format",
-            "Markdown with: `display_method` | `spec_path` | `preview_path` | `annotated_snapshot` (if any) | `user_notes` (if any) | `manual_open_instructions`.",
+            "Markdown with: `display_method` | `spec_path` | `preview_path` | `manual_open_instructions` | `next_action_hint` (how to re-run the workflow for further changes).",
           ],
         ]),
         ...designModelConfig,

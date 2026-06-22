@@ -266,4 +266,30 @@ describe("open-claude-design feedback threading (#1464)", () => {
         assert.ok(existsSync(join(dir, "feedback", "iteration-0-annotations.png")));
         assert.ok(existsSync(join(dir, "feedback", "iteration-0-annotations.yaml")));
     });
+
+    test("persistPreviewFeedback does not copy a snapshot outside the project/artifact dir", () => {
+        const dir = mkdtempSync(join(tmpdir(), "ocd-feedback-"));
+        const outside = mkdtempSync(join(tmpdir(), "ocd-outside-"));
+        tempDirs.push(dir, outside);
+        const snapshot = join(outside, "evil.png");
+        writeFileSync(snapshot, "fake-png-bytes");
+        const feedback = toPreviewFeedback({
+            iteration: 0,
+            stageName: "preview-display-initial",
+            result: {
+                text: [
+                    "user_notes: simplify the hero",
+                    `annotated_snapshot: ${snapshot}`,
+                ].join("\n"),
+            },
+        });
+        persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback });
+        // The out-of-tree snapshot must NOT be copied into the feedback dir...
+        assert.equal(
+            existsSync(join(dir, "feedback", "iteration-0-annotations.png")),
+            false,
+        );
+        // ...but the notes themselves are still persisted.
+        assert.ok(existsSync(join(dir, "feedback", "iteration-0.md")));
+    });
 });

@@ -13,6 +13,7 @@ import {
   positiveInteger,
   prepareArtifactDir,
   refinementDecisionSchema,
+  shouldEarlyExitForBrowser,
   taggedPrompt,
   ensurePlaywrightCli,
   REFERENCE_PRECEDENCE,
@@ -38,6 +39,7 @@ type OpenClaudeDesignOutputs = {
 type OpenClaudeDesignContext = {
   readonly cwd?: string;
   readonly inputs: { readonly prompt: string; readonly discover_references?: boolean; readonly max_refinements?: number };
+  exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
@@ -64,6 +66,23 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     );
     const previewFileUrl = `file://${previewPath}`;
     const specFileUrl = `file://${specPath}`;
+
+    // Browser-centric workflow: the discovery/preview review and the interactive
+    // `live` QA loop need the playwright-cli browser. If it is unavailable, exit
+    // cleanly up front (surfacing artifact paths) rather than generating a design
+    // no one can review. Gated off under NODE_ENV=test / runtimes without ctx.exit.
+    if (
+      shouldEarlyExitForBrowser(playwrightCli.available, process.env.NODE_ENV) &&
+      typeof designContext.exit === "function"
+    ) {
+      designContext.exit({
+        reason: `open-claude-design needs the playwright-cli skill's browser for interactive design review, which is unavailable (${playwrightCli.error ?? playwrightCli.summary}). No design was generated. Install it (\`npm install -g @playwright/cli@latest\` + \`npx playwright install chromium\`) and re-run.`,
+        outputs: {
+          playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
+          preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
+        },
+      });
+    }
 
     const designModelConfig = {
       model: "anthropic/claude-fable-5:xhigh",
@@ -149,7 +168,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
             ["role", "You are an opinionated staff design engineer."],
             [
               "objective",
-              `Audit the project UI constraints that must shape: ${designBrief}. Apply the impeccable \`audit\` sub-skill to evaluate the located design-system evidence against impeccable's six dimensions of design quality and produce a detailed report with actionable insights for generation.`,
+              `Audit the project UI constraints that must shape: ${designBrief}. Independently scan the repository and evaluate the design-system evidence you find against impeccable's six dimensions of design quality, then produce a detailed report with actionable insights for generation. This pass runs in PARALLEL with the locator and pattern passes, so do your own scan rather than relying on their output.`,
             ],
             [
               "impeccable_skill",
@@ -186,7 +205,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
             ["role", "You are an opinionated staff design engineer."],
             [
               "objective",
-              `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns that should be reused and anti-patterns that must be avoided in generation.`,
+              `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns that should be reused and anti-patterns that must be avoided in generation. This pass runs in PARALLEL with the locator and auditor passes, so scan the codebase yourself rather than depending on their output.`,
             ],
             [
               "instructions",

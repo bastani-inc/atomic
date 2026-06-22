@@ -353,43 +353,33 @@ export function buildLivePreviewDisplayPrompt(args: {
   readonly browserBootstrapRules: string;
   readonly iteration?: number;
   readonly maxRefinements?: number;
+  readonly final?: boolean;
 }): string {
   const isInitial = args.iteration === undefined;
+  const isFinal = args.final === true;
   const label = isInitial
     ? "the just-generated HTML artifact"
     : `the revised preview after iteration ${args.iteration}/${args.maxRefinements}`;
-  return taggedPrompt([
-    [
-      "role",
-      "You are an opinionated staff design engineer running impeccable's interactive `live` QA so the user can iterate on the design in a real browser.",
-    ],
-    [
-      "objective",
-      `Make ${label} visible to the user, run an interactive design-QA session against it, then capture the user's feedback for the refinement loop. Drive \`/skill:impeccable live\` against the static preview when possible; degrade gracefully when browser automation is unavailable.`,
-    ],
-    ["preview_path", args.previewPath],
-    ["preview_file_url", args.previewFileUrl],
-    ["browser_use_guidelines", args.browserBootstrapRules],
-    [
-      "interactive_live_qa",
-      [
+  const objective = isFinal
+    ? `Show the user ${label} as the FINAL refinement pass and let them review it in the browser. This is the last automated iteration, so do NOT solicit change requests this run cannot apply — if the user wants further changes, tell them to re-run \`/workflow open-claude-design\`. Drive \`/skill:impeccable live\` for viewing/QA when possible; degrade gracefully.`
+    : `Make ${label} visible to the user, run an interactive design-QA session against it, then capture the user's feedback for the refinement loop. Drive \`/skill:impeccable live\` against the static preview when possible; degrade gracefully when browser automation is unavailable.`;
+  const interactiveQa = isFinal
+    ? [
+        `1. Open the preview for a final review: run \`/skill:impeccable live\` (or \`playwright-cli open ${args.previewFileUrl}\`) so the user can inspect ${label} in the browser.`,
+        "2. Make clear this is the final automated refinement pass. Do NOT promise to apply further annotations; instead, tell the user exactly how to re-run the workflow to iterate again.",
+      ].join("\n")
+    : [
         `1. Run \`/skill:impeccable live\` targeted at the preview file so the user can pick elements in the browser, annotate them, and compare on-brand variants. The preview is a single static HTML file at ${args.previewPath}; point live at it (configure \`.impeccable/live/config.json\` for that file or pass \`--target ${args.previewPath}\` per the live reference) and open ${args.previewFileUrl} in the browser.`,
         "2. For each element the user picks, follow the live contract: read any annotation screenshot, extract the page identity FIRST, then generate three DISTINCT on-brand variants and let the user accept one. Accepted variants are written into the preview HTML in place; do NOT branch the artifact.",
         "3. Also handle the live `steer` path for page-level direction the user types/speaks, and treat any freeform prompt as the ceiling on direction.",
         "4. Keep iterating until the user signals they are done with this round.",
-      ].join("\n"),
-    ],
-    [
-      "graceful_degradation",
-      [
-        `If \`/skill:impeccable live\` cannot boot (no dev server/HMR for the static file, missing config, or sandbox limits), fall back to opening the preview directly: \`playwright-cli open ${args.previewFileUrl}\`, then \`playwright-cli snapshot\` and \`playwright-cli show --annotate\` so the user can draw/type notes on the page. If a \`playwright-cli\` command reports a missing browser executable, follow the bootstrap rules and retry once.`,
-        `If \`playwright-cli\` is also unavailable, print a clear instruction block telling the user to open the file manually at ${args.previewPath} (or ${args.previewFileUrl}) and provide notes inline.`,
-        "Never block the workflow on unavailable tooling; always exit with a non-empty status string.",
-      ].join("\n"),
-    ],
-    [
-      "output_format",
-      [
+      ].join("\n");
+  const outputFormat = isFinal
+    ? [
+        "Markdown with: `display_method` (live | playwright-annotate | manual), `preview_path`, and `next_action_hint` (how to re-run the workflow for further changes).",
+        "Do NOT collect `user_notes` or `live_changes`: this final pass cannot apply them, so don't invite feedback that would go nowhere.",
+      ].join("\n")
+    : [
         "Markdown with these exact labels so the refinement loop can parse the captured feedback:",
         "`display_method` (live | playwright-annotate | manual)",
         "`preview_path`",
@@ -397,7 +387,25 @@ export function buildLivePreviewDisplayPrompt(args: {
         "`annotated_snapshot` (path to any annotated screenshot, if captured)",
         "`user_notes` (the user's verbatim notes/annotations for the next iteration; `none` when the user gave no notes)",
         "`next_action_hint`",
+      ].join("\n");
+  return taggedPrompt([
+    [
+      "role",
+      "You are an opinionated staff design engineer running impeccable's interactive `live` QA so the user can iterate on the design in a real browser.",
+    ],
+    ["objective", objective],
+    ["preview_path", args.previewPath],
+    ["preview_file_url", args.previewFileUrl],
+    ["browser_use_guidelines", args.browserBootstrapRules],
+    ["interactive_live_qa", interactiveQa],
+    [
+      "graceful_degradation",
+      [
+        `If \`/skill:impeccable live\` cannot boot (no dev server/HMR for the static file, missing config, or sandbox limits), fall back to opening the preview directly: \`playwright-cli open ${args.previewFileUrl}\`, then \`playwright-cli snapshot\`${isFinal ? "" : " and `playwright-cli show --annotate` so the user can draw/type notes on the page"}. If a \`playwright-cli\` command reports a missing browser executable, follow the bootstrap rules and retry once.`,
+        `If \`playwright-cli\` is also unavailable, print a clear instruction block telling the user to open the file manually at ${args.previewPath} (or ${args.previewFileUrl}).`,
+        "Never block the workflow on unavailable tooling; always exit with a non-empty status string.",
       ].join("\n"),
     ],
+    ["output_format", outputFormat],
   ]);
 }
