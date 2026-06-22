@@ -1,4 +1,5 @@
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import { installCopilotGeminiReasoningInterceptor } from "./copilot-gemini-reasoning.ts";
 
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000;
 
@@ -47,4 +48,9 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			headersTimeout: normalizedTimeoutMs,
 		}),
 	);
+
+	// Bridge CAPI Gemini thought signatures (`reasoning_opaque`) on the inbound
+	// SSE stream so multi-turn Copilot Gemini tool use does not stall on empty
+	// completions. Idempotent and scoped to `*.githubcopilot.com` event streams.
+	installCopilotGeminiReasoningInterceptor();
 }

@@ -2,9 +2,9 @@
 
 # Workflows
 
-Workflows let Atomic run reusable multi-stage automation with tracked stages, parallel branches, artifacts, human input, live status, and resumable background execution.
+Workflows are how Atomic runs executable engineering loops: reusable multi-stage automation with tracked stages, parallel branches, artifacts, human input, live status, checkpoints, and resumable background execution.
 
-Use a workflow when a task should be repeatable, inspectable, resumable, or split across multiple model sessions. For one-off work, the `workflow` tool can also run a tracked single task, parallel fan-out, or chain without creating a saved workflow file.
+Use a workflow when a task should be repeatable, inspectable, resumable, or split across multiple model sessions. Markdown prompts can describe a loop; Atomic workflows run the loop with scoped context, tools, artifacts, verification, subagents, review gates, and human approvals. For one-off work, the `workflow` tool can also run a tracked single task, parallel fan-out, or chain without creating a saved workflow file.
 
 **Key capabilities:**
 - **Tracked stages** - Name each step and inspect it in workflow status and graph views
@@ -13,6 +13,7 @@ Use a workflow when a task should be repeatable, inspectable, resumable, or spli
 - **Human input** - Pause for `ctx.ui.input`, `confirm`, `select`, `editor`, or custom TUI widget decisions during a run
 - **Resumable control** - Interrupt, pause, resume, attach to, or kill workflow runs
 - **Artifacts** - Save large outputs to files instead of pushing everything through model context
+- **Verification and gates** - Preserve evidence, run checks, and stop for human approval where reliability matters
 - **Model fallback chains** - Retry important stages on fallback models when providers fail
 - **Package distribution** - Ship workflows through Atomic packages, settings, or conventional directories
 
@@ -43,12 +44,14 @@ Use a workflow when a task should be repeatable, inspectable, resumable, or spli
 - [Direct One-Off Runs](#direct-one-off-runs)
 - [Fast Inference for Workflow Stages](#fast-inference-for-workflow-stages)
 - [Writing a Workflow](#writing-a-workflow)
+- [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api)
 - [Workflow Primitives](#workflow-primitives)
 - [Task and Stage Options](#task-and-stage-options)
 - [Programmatic Usage](#programmatic-usage)
 - [Context Engineering](#context-engineering)
 - [Design Checklist](#design-checklist)
 - [Common Mistakes](#common-mistakes)
+- [Workflow Best Practices](#workflow-best-practices)
 
 ## Quick Start
 
@@ -86,7 +89,7 @@ Return structured output with `consolidated_review` and `decision` fields.
 Atomic will:
 
 - ask clarifying questions when stage purpose, inputs, models, or handoffs are ambiguous,
-- write a `.atomic/workflows/<name>.ts` file using `defineWorkflow(...).input(...).run(...).compile()`,
+- write a `.atomic/workflows/<name>.ts` file using `workflow({...})`,
 - pick `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.ui` per the [primitives](#workflow-primitives) and [task options](#task-and-stage-options) reference, and
 - run `/workflow reload` so Atomic rediscovers the workflow resource and you can launch it immediately.
 
@@ -109,26 +112,29 @@ Named workflow runs are background-oriented. After launch, expect a run id and m
 Workflow files are plain TypeScript modules. Create `.atomic/workflows/explain-file.ts`:
 
 ```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("explain-file")
-  .description("Explain a file with tracked workflow stages.")
-  .input("path", Type.String({ description: "File path to explain." }))
-  .output(
-    "explanation",
-    Type.String({
+export default workflow({
+  name: "explain-file",
+  description: "Explain a file with tracked workflow stages.",
+  inputs: {
+    path: Type.String({ description: "File path to explain." }),
+  },
+  outputs: {
+    explanation: Type.String({
       description: "Explanation of the file's purpose, risks, and key symbols.",
     }),
-  )
-  .run(async (ctx) => {
+  },
+  run: async (ctx) => {
     const explanation = await ctx.task("explain", {
       prompt: `Read ${String(ctx.inputs.path)} and explain purpose, risks, and key symbols.`,
       context: "fresh",
     });
 
     return { explanation: explanation.text };
-  })
-  .compile();
+  },
+});
 ```
 
 Run `/workflow reload` or restart Atomic, then list and run it:
@@ -139,22 +145,22 @@ Run `/workflow reload` or restart Atomic, then list and run it:
 /workflow explain-file path="src/index.ts"
 ```
 
-See [Writing a Workflow](#writing-a-workflow) for the full builder API and [Workflow Primitives](#workflow-primitives) for `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.stage` / `ctx.ui`.
+See [Writing a Workflow](#writing-a-workflow) for the full `workflow({...})` API and [Workflow Primitives](#workflow-primitives) for `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.stage` / `ctx.ui`.
 
 ## Built-in Workflows
 
 Atomic bundles four workflows that cover the most common multi-stage jobs. They are available in every session — no install step required. Use `/workflow list` to confirm they are loaded, and `/workflow inputs <name>` to see the exact inputs in your environment.
 
-These same builtin workflows are also available to workflow authors as compiled definitions. Import them from `@bastani/workflows/builtin` and pass the definition directly to `ctx.workflow(...)` when one workflow should call `deep-research-codebase`, `goal`, `ralph`, `open-claude-design`, or another builtin as a nested child workflow. See [Workflow Composition](#workflow-composition) for full examples alongside user-defined child workflows.
+These same builtin workflows are also available to workflow authors as workflow definitions. Import them from `@bastani/workflows/builtin` and pass the definition directly to `ctx.workflow(...)` when one workflow should call `deep-research-codebase`, `goal`, `ralph`, `open-claude-design`, or another builtin as a nested child workflow. See [Workflow Composition](#workflow-composition) for full examples alongside user-defined child workflows.
 
-For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralph` explicitly declare `.output("result", Type.String(...))` and return a `result` key from `.run()`, so `result` is part of their declared output contract. Every output a workflow exposes — including `result` — must be both declared with `.output(...)` and returned from `.run()`; Atomic no longer adds any automatic `result` output.
+For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralph` explicitly declare `outputs: { result: Type.String(...) }` and return a `result` key from `run`, so `result` is part of their declared output contract. Every output a workflow exposes — including `result` — must be declared in `outputs` and returned from `run` or supplied to `ctx.exit({ outputs })`; Atomic no longer adds any automatic `result` output.
 
 | Workflow | What it does | When to use |
 |---|---|---|
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
-| `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, and name the validation that proves it is done — for example tests, lint/typecheck, docs builds, or observable behavior. |
-| `ralph` | Prompt-engineering → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to transform the prompt into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
-| `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
+| `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, name the validation that proves it is done, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
+| `ralph` | Prompt-refinement → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to refine the prompt for clarity, transform it into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
+| `open-claude-design` | Discovery interview (`/skill:impeccable shape`) → project-context setup (`/skill:impeccable init`, always — creates missing `PRODUCT.md`/`DESIGN.md`, reconciles existing) → a combined context phase (design-system onboarding + curated gallery reference-discovery + user-reference import, run concurrently) → HTML generation → impeccable `live`-driven interactive refinement → quality gate → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate (references take precedence over `DESIGN.md`/`PRODUCT.md`). Renders a live `preview.html` you can iterate against in the browser (opens through impeccable `live` / the `playwright-cli` skill when available). | UI, page, component, theme, or design-token work that benefits from a guided brief, beautiful references, and generation + critique loops. |
 
 ### `deep-research-codebase`
 
@@ -208,7 +214,8 @@ Inputs:
 |---|---|---|---|---|
 | `objective` | text | yes | — | Goal-runner objective. Include the desired end state, expected outcome, testing/validation instructions, and any explicit done criteria. |
 | `max_turns` | number | no | `10` | Maximum worker/review turns before human follow-up is needed. |
-| `base_branch` | string | no | `origin/main` | Branch reviewers compare the current code delta against. |
+| `base_branch` | string | no | `origin/main` | Branch reviewers and the optional final stage compare the current code delta against. |
+| `create_pr` | boolean | no | `false` | Safe-by-default PR creation flag. Omitted or `false` skips the final `pull-request` stage and omits `pr_report`; prompt text alone does not opt in, and only strict `true` authorizes the final `pull-request` stage to attempt provider-appropriate PR/MR/review creation after Goal reaches `complete`. |
 
 `goal` defaults to 10 worker/review turns. Reviewer quorum is fixed internally at 2 reviewer `complete` votes. The repeated-blocker threshold defaults to 3 consecutive same-blocker turns and is clamped to `max_turns` when you run fewer than 3 turns.
 
@@ -218,9 +225,10 @@ Run examples:
 /workflow goal objective="Implement specs/2026-03-rate-limit.md, add the requested regression tests, run bun test packages/api/rate-limit.test.ts, and finish only when burst traffic returns 429 with Retry-After"
 /workflow goal objective="Update the CLI docs to describe the new --json flag, include one usage example, and verify the docs build still passes" max_turns=3
 /workflow goal objective="Fix the settings form validation bug; add/adjust the focused test and consider it done when invalid emails show the inline error without submitting"
+/workflow goal objective="Implement the focused docs fix, run the docs validation command, and open a PR when complete" create_pr=true
 ```
 
-`goal` creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each worker turn, writes each worker receipt to `work-turn-N.md`, and appends receipts, reviewer decisions, blockers, reducer decisions, and lifecycle events to the ledger. The objective is treated as user-provided data, not higher-priority instructions.
+`goal` starts with a single `prompt-refinement` stage that invokes the `prompt-engineer` skill (`/skill:prompt-engineer`) to sharpen the raw objective into a clearer, more actionable form using the Workflow Best Practices prompt anatomy documented later in this guide; the refined objective becomes the operative one recorded in the ledger (the original is preserved as `original_objective` and shown in the final report when it differs). `goal` then creates an OS-temp `goal-ledger.json` artifact, renders goal-continuation context for each worker turn, writes each worker receipt to `work-turn-N.md`, and appends receipts, reviewer decisions, blockers, reducer decisions, and lifecycle events to the ledger. The objective is treated as user-provided data, not higher-priority instructions. By default `goal` does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling, after Goal reaches `complete` within `max_turns`. Goal worker and reviewer prompts explicitly tell intermediate stages to ignore PR-creation requests; only the final `pull-request` stage may attempt that handoff.
 
 Write the `objective` like a compact acceptance spec. Say what should exist when the run is done, how you want testing handled, which command(s) or manual checks matter, and what outcome proves completion. The workflow is intentionally lean: it does not first generate an RFC or migration plan, so the developer-supplied objective is where scope, validation, and completion criteria belong.
 
@@ -234,13 +242,16 @@ Result fields:
 | `status` | Final reducer status: `complete`, `blocked`, or `needs_human` (or `active` only if externally interrupted). |
 | `approved` | Whether the reducer reached `complete`. |
 | `goal_id` | Per-run goal identifier stored in the ledger. |
-| `objective` | Normalized goal objective used by the run. |
+| `objective` | Normalized goal objective used by the run (after the `prompt-refinement` stage refines the raw objective). |
+| `original_objective` | The raw user-provided objective exactly as given, before `prompt-refinement`. Omitted when refinement left it unchanged. |
 | `ledger_path` | OS-temp path to `goal-ledger.json`, including receipts, reviewer decisions, reducer decisions, blockers, and lifecycle events. |
 | `turns_completed` | Worker/review turns completed. |
 | `iterations_completed` | Same value as `turns_completed`, retained for status summaries. |
 | `receipts` | Ledger receipt summaries and worker artifact paths. |
 | `remaining_work` | Remaining gaps/blockers when incomplete, or `none`. |
 | `review_report` | Markdown report containing the last structured reviewer decision payloads used by the reducer. |
+| `review_report_path` | JSON artifact path for the latest Goal review round. |
+| `pr_report` | Pull-request report emitted only when `create_pr=true`, Goal reaches `complete`, and the final `pull-request` stage runs. |
 
 ### `ralph`
 
@@ -262,7 +273,7 @@ Run examples:
 /workflow ralph prompt="Safely implement the API refactor" git_worktree_dir=../atomic-ralph-api-wt base_branch=main
 ```
 
-Each `ralph` iteration starts by prompt-engineering the user prompt with `/skill:prompt-engineer Transform the following user prompt to a codebase and online research question which can be thoroughly explored: ...`, then researches that transformed question with `/skill:research-codebase ...` and writes the findings under `research/`. The orchestrator treats that research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file while generating verifiable evidence for any claims it records in the notes and reviewer artifacts, delegates implementation through sub-agents, and asks three independent reviewers to inspect the patch directly against `base_branch`. The reviewer fan-out runs each reviewer on a different primary model family (with shared fallbacks) so the adversarial review gets cross-model coverage instead of three passes from one model. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video (referenced in the implementation notes and surfaced as `qa_video_path`); when `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. If reviewers find issues, the next prompt-engineering and research stages receive the review artifact path so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops only when all three reviewers independently approve (each finds no issues) or `max_loops` is reached, so a P0–P3 finding from any single reviewer keeps Ralph iterating instead of being out-voted by a majority quorum. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
+Each `ralph` run starts with a single `prompt-refinement` stage that invokes the `prompt-engineer` skill (`/skill:prompt-engineer`) to sharpen the raw user prompt into a clearer, more actionable objective using the Workflow Best Practices prompt anatomy documented later in this guide; that refined prompt becomes the operative objective for research, orchestration, and review, while the original is surfaced as `original_prompt`. Each iteration then transforms the refined prompt with `/skill:prompt-engineer Transform the following refined user request into a codebase and online research question which can be thoroughly explored: ...` (`research-prompt-refinement`), researches that transformed question with `/skill:research-codebase ...`, and writes the findings under `research/`. The orchestrator treats that research artifact as its primary implementation context, initializes/updates an OS-temp implementation notes file while generating verifiable evidence for any claims it records in the notes and reviewer artifacts, delegates implementation through sub-agents, and asks three independent reviewers to inspect the patch directly against `base_branch`. The reviewer fan-out runs each reviewer on a different primary model family (with shared fallbacks) so the adversarial review gets cross-model coverage instead of three passes from one model. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical, using `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video (referenced in the implementation notes and surfaced as `qa_video_path`); when `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. If reviewers find issues, the next `research-prompt-refinement` and research stages receive the review artifact path so follow-up research can address unresolved findings, and research stages fork from prior research session data when available. The loop stops only when all three reviewers independently approve (each finds no issues) or `max_loops` is reached, so a P0–P3 finding from any single reviewer keeps Ralph iterating instead of being out-voted by a majority quorum. By default Ralph does not start the final `pull-request` stage, and `pr_report` is omitted. Prompt text alone does not opt in. Pass `create_pr=true` only when you explicitly want the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation, such as GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling; Ralph's own PR-creation instructions live in that final stage.
 
 Set `git_worktree_dir` when you want Ralph's worker stages isolated in a reusable Git worktree. Relative paths resolve from the invoking repository root, existing same-repository worktree roots are reused, and missing paths are created from `base_branch`. Ralph preserves the invoking repo-relative cwd inside the worktree, so launching from `repo/packages/api` with `git_worktree_dir=../repo-wt` runs stages from `../repo-wt/packages/api`.
 
@@ -282,8 +293,10 @@ Result fields:
 | `iterations_completed` | Number of research/orchestrate/review loops completed. |
 | `review_report` | Compact reference to the latest reviewer payload artifact. |
 | `review_report_path` | JSON artifact path for the latest Ralph review round. |
+| `original_prompt` | The raw user prompt exactly as provided, before the `prompt-refinement` stage. |
+| `refined_prompt` | The clarity-refined prompt produced by the `prompt-refinement` stage and used as the operative objective for research, orchestration, and review. |
 
-A typical end-to-end flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow goal objective="Implement the researched rate-limit behavior, run the focused tests, and finish when the documented burst behavior is validated"` when you can identify the work surface, state the exact outcome, and name the validation that proves it is done. Keep using `/workflow ralph` for larger migrations, broad refactors, and multi-package changes where you want Atomic to research first, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`.
+A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate the documented burst behavior"`. Ralph can start from a spec path, GitHub issue, or crisp ticket description, then refines the prompt, researches as needed, delegates through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. For smaller one-off tasks, use `/workflow goal` with a concrete objective that identifies the work surface, states the exact outcome, and names the validation that proves it is done; add `create_pr=true` only when you want Goal's final `pull-request` stage after approval.
 
 ### `open-claude-design`
 
@@ -291,18 +304,18 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | What to design (dashboard, page, component, prototype, …). |
-| `reference` | text | no | — | URL, file path, screenshot path, or design doc to import as a reference. |
-| `output_type` | select | no | `prototype` | One of `prototype`, `wireframe`, `page`, `component`, `theme`, `tokens`. |
-| `design_system` | text | no | — | Path(s) or description of an existing design system (e.g. `DESIGN.md`, `PRODUCT.md`). Skips onboarding when provided. |
+| `prompt` | text | yes | — | What to design (dashboard, page, component, prototype, …). The discovery stage refines this into a confirmed brief and asks for the output type and references. |
+| `discover_references` | boolean | no | `true` | Discover beautiful, current reference designs (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set `false` to skip the network/browser reference pass. |
 | `max_refinements` | number | no | `3` | Maximum critique/apply refinement iterations. |
+
+The output type (`prototype`, `wireframe`, `page`, `component`, `theme`, `tokens`) and any reference designs are **not** inputs — the discovery stage asks for them. There is no `design_system` input; the project's `DESIGN.md`/`PRODUCT.md` are established/loaded automatically.
 
 Result fields:
 
 | Field | Meaning |
 |---|---|
-| `output_type` | Kind of design artifact produced. |
-| `design_system` | Design system source used for generation: supplied input or project-derived design system. |
+| `output_type` | Kind of design artifact produced (chosen during the discovery interview). |
+| `design_system` | Design system source used for generation: the project-derived design system. |
 | `artifact` | Latest final design summary from the approved preview artifact. |
 | `handoff` | Final rich HTML spec and implementation handoff summary. |
 | `approved_for_export` | Whether refinement completed before the final export gate. |
@@ -318,13 +331,30 @@ Result fields:
 
 `open-claude-design` has no `result` output; it exposes only the declared fields listed above. Use the declared `artifact` and `handoff` fields for generated content.
 
+**Discovery interview.** The workflow's first stage runs `/skill:impeccable shape` to interview you (via the structured question tool) about what you want to build, the **output type** (`prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`), and which **references** to emulate (URLs, local file paths, screenshots, or design docs). It produces a confirmed design brief; the references you name take **precedence over `DESIGN.md`/`PRODUCT.md`** during generation (the design system fills gaps the references don't cover, and `PRODUCT.md` still governs strategic register/voice). Headless runs infer a defensible brief, output type, and references rather than blocking.
+
+**Project design context (init).** After discovery, the workflow **always** runs an `init` stage that invokes `/skill:impeccable init` (reusing the discovery answers so it doesn't re-ask). It deterministically detects whether `PRODUCT.md` and `DESIGN.md` exist (project root, `.agents/context/`, or `docs/`, case-insensitive): it **creates** whichever is missing (capturing register, users/purpose, brand personality, anti-references, and accessibility needs) and **reconciles** any that already exist against the discovery brief, refreshing only genuine gaps and never clobbering them. This step is best-effort and never blocks the run.
+
+**Combined context phase.** Onboarding, gallery reference discovery, and user-reference import all run **concurrently in a single fan-out**, then the design-system synthesis closes it out:
+
+- *Design-system onboarding* — three parallel passes (`ds-locator` / `ds-analyzer` / `ds-patterns`) extract the project's design-system evidence, which `design-system-builder` synthesizes into the working design system.
+- *Reference discovery* (gated by `discover_references=true`, the default) — the `reference-discovery` stage uses the `playwright-cli` skill to browse five curated galleries — [Awwwards](https://www.awwwards.com/websites/), [recent.design](https://recent.design/), [Dribbble recents](https://dribbble.com/shots/recent), [Monet](https://www.monet.design/c), and [Motionsites](https://motionsites.ai/) — then **clicks into the standout work** and, ideally, **records a scroll-through video of each real design page so its animations are captured** (with a full-page screenshot as a supplement/fallback) plus the real destination URL (it does not just screenshot the gallery thumbnails; web-search fallback when the browser is unavailable), persists the curated **references brief** to `<artifact_dir>/references.md`, and threads it into the generator (`reference_inspiration`) and refinement. Set `discover_references=false` to skip it.
+- *Reference import* — each reference the discovery interview collected is imported (`web-capture-<n>` for URLs, `file-parser-<n>` for files/screenshots); the extracted requirements feed the generator and **take precedence over `DESIGN.md`/`PRODUCT.md`**.
+
+**Interactive live QA.** The `preview-display-*` stages drive `/skill:impeccable live` against the static `preview.html`: you pick elements in the browser, annotate them, and compare three on-brand variants, accepting one that is written into the preview in place. Accepted variants and your notes are captured (`live_changes` / `user_notes` / `annotated_snapshot`) and threaded through the refinement loop as the **primary** signal: the `user-feedback-*` stage receives them in a dedicated `user_annotations` block (and will not approve export while honest feedback is unaddressed), and the `apply-changes-*` stage consumes a merged refinement brief that orders your annotations and accepted live edits **above** the internal critique and screenshot/visual-QA findings. The export gate is guarded too: an immediate `ready_for_export` is refused while the latest preview holds unaddressed annotations, forcing one apply pass first. The **final** refinement iteration shows a read-only review (and the post-export `final-display`) that no longer solicits change requests it cannot apply — it tells you how to re-run for further changes — so terminal annotations are never captured-then-dropped. When `/skill:impeccable live` cannot boot, the stage degrades to `playwright-cli show --annotate`, then to a manual file path. Captured feedback is persisted as durable artifacts under `<artifact_dir>/feedback/iteration-<n>.md` / `.json` (plus a best-effort copy of the annotated snapshot, constrained to files within the project/artifact dir). If a preview captured notes but they fail to thread into the apply stage, the run fails loudly rather than silently refining from internal critique alone.
+
+**Browser requirement.** open-claude-design is browser-centric (the discovery/preview review and the `live` QA loop need the `playwright-cli` skill's browser). If the browser cannot be made available, the workflow exits cleanly up front — surfacing the would-be artifact paths and install instructions — rather than generating a design you could not review interactively. (This early exit is skipped under the test harness so headless test runs still complete.)
+
 Run examples:
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"
-/workflow open-claude-design prompt="Design a billing page" reference=https://stripe.com/billing output_type=page
-/workflow open-claude-design prompt="Generate spacing and color tokens" output_type=tokens design_system=./DESIGN.md
+/workflow open-claude-design prompt="Design a billing page like Stripe's"
+/workflow open-claude-design prompt="Generate spacing and color tokens"
+/workflow open-claude-design prompt="Design a marketing landing page" discover_references=false
 ```
+
+The discovery interview asks for the output type and any reference URLs/files, so you no longer pass `output_type`, `reference`, or `design_system` on the command line.
 
 ### Launching with natural language
 
@@ -361,6 +391,8 @@ Named runs go to the background. Common controls:
 /workflow kill <run-id>                # abort and retain for inspection
 ```
 
+When a paused stage is resumed with a message, Atomic lets the stage answer that resume message, then (if the stage has not already finalized) injects `Continue where you left off.` into the same stage session before normal stage completion/readiness handling. This keeps interrupted work moving without asking you to manually type a second continuation prompt.
+
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
 
 `ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Inline connected rendering is supported; `overlay: true` is rejected clearly because nested workflow graph overlays are not safely supported yet.
@@ -384,9 +416,9 @@ If the task is only deterministic TypeScript with no LLM/session stage, use a sc
 | User goal | Use |
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
-| Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, and stops as `complete`, `blocked`, or `needs_human` |
+| Implement a small-to-medium scope change with an identifiable work surface, exact outcome, and named validation | `/workflow goal objective="..."` so Atomic keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final PR handoff with `create_pr=true` after approval |
 | Research and execute a larger migration, broad refactor, or multi-package change | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
-| Create or edit reusable automation | a TypeScript workflow definition exported from `defineWorkflow(...).compile()` |
+| Create or edit reusable automation | a TypeScript workflow definition exported from `workflow({...})` |
 | Track one-off work without saving a workflow file | direct `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` calls |
 | Make a workflow robust | design the stage graph, context handoffs, artifacts, validation gates, model fallbacks, and human approval points before coding |
 
@@ -565,13 +597,13 @@ Record the selected pattern in your spec or workflow README, then adapt the diag
 
 Claude Code Dynamic Workflows and Atomic are trying to solve a similar class of problem: important software engineering work is too large for one agent pass, so the system should split the job into stages, run agents in parallel, verify the result, and keep enough state to finish long-running work.
 
-The difference is where control lives.
+Atomic's category is broader and more explicit: it is the loop engine for engineering work. The difference is where control lives and how much of the loop you can inspect, version, extend, and connect to your stack.
 
 | Dimension | Atomic | Claude Code Dynamic Workflows |
 | --- | --- | --- |
-| Core idea | Open-source, repo-native workflow automation for coding agents. You can run built-ins, tell the coding agent to use a workflow for a task, describe new workflows in natural language for Atomic to scaffold dynamically, or version them as explicit TypeScript files. | Claude dynamically creates orchestration scripts for a task and fans work out to many parallel Claude subagents. |
-| Best fit | Teams that want repeatable software engineering workflows they can inspect, version, extend, and run across providers. | Claude Code users who want Claude to decide when a task needs a larger dynamic workflow and orchestrate it automatically. |
-| Workflow control | The process is explicit: stages, inputs, handoffs, retries, artifacts, model choices, and human gates are part of the workflow definition. | The process is generated dynamically by Claude for the current task, with confirmation before the first workflow run. |
+| Core idea | Open-source, repo-native loop engine for coding agents. You can run built-ins, tell the coding agent to use a workflow for a task, describe new loops in natural language for Atomic to scaffold dynamically, or version them as explicit TypeScript files. | Claude dynamically creates orchestration scripts for a task and fans work out to many parallel Claude subagents. |
+| Best fit | Teams that want repeatable software engineering loops they can inspect, version, extend, connect to tools, and run across providers. | Claude Code users who want Claude to decide when a task needs a larger dynamic workflow and orchestrate it automatically. |
+| Workflow control | The process is explicit: stages, inputs, handoffs, retries, artifacts, model choices, checkpoints, and human gates are part of the workflow definition. | The process is generated dynamically by Claude for the current task, with confirmation before the first workflow run. |
 | Models | Model-agnostic. Atomic connects directly to supported API-key and subscription providers, and workflows can use model fallback chains. | Claude-first. Availability is tied to Claude Code, Claude plans, and Anthropic-supported API/cloud channels. |
 | Extensibility | Built on Pi extensions: add tools, TUI, MCP, web access, intercom, skills, prompt templates, themes, custom providers, and packaged workflows. | Optimized for Claude Code's built-in dynamic orchestration experience rather than an open extension SDK you own in-repo. |
 | Artifacts and auditability | Research docs, specs, logs, transcripts, reviewer notes, check output, and final summaries can live in the repo or workflow run directory. | Progress is saved and resumable, but the orchestration is primarily a Claude Code runtime behavior. |
@@ -592,20 +624,21 @@ Atomic discovers workflow definitions in this order:
 
 A workflow module may export one default workflow definition and/or named workflow definitions. Discovery checks the default export first, then named exports.
 
-Every runtime export of a discovered workflow file is validated as a workflow definition. A named export that is not a compiled definition — a widget factory, shared constant, or utility function — is rejected with an `INVALID_DEFINITION` discovery diagnostic (`export is not an object`), even when the module also has a valid default export (the valid workflow still loads; the diagnostic flags the extra export as skipped). Type-only exports (`export type` / `export interface`) are erased at runtime and never flagged.
+Every runtime export of a discovered workflow file is validated as a workflow definition. A named export that is not a workflow definition — a widget factory, shared constant, or utility function — is rejected with an `INVALID_DEFINITION` discovery diagnostic (`export is not an object`), even when the module also has a valid default export (the valid workflow still loads; the diagnostic flags the extra export as skipped). Type-only exports (`export type` / `export interface`) are erased at runtime and never flagged.
 
 To co-locate reusable helpers with your workflows — for example a `ctx.ui.custom<T>` widget factory you want to import in tests without running the workflow — put them in a subdirectory and import them from the workflow file. Discovery scans only the top level of each workflow directory, so subdirectories such as `.atomic/workflows/lib/` are never treated as workflow modules:
 
 ```text
 .atomic/workflows/
-  release-picker.ts      # only runtime export: defineWorkflow(...).compile()
+  release-picker.ts      # only runtime export: workflow({...})
   lib/
     table-selector.ts    # widget factory + helpers; not scanned by discovery
 ```
 
 ```ts
 // .atomic/workflows/release-picker.ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import { tableSelectorFactory } from "./lib/table-selector.js";
 ```
 
@@ -881,7 +914,7 @@ Control behavior:
 - `pause`, `interrupt`, and `kill` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped controls can target a visible nested child stage from the expanded graph; Atomic routes the operation to the owning nested run internally.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
-- `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work.
+- `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work. After the stage answers a non-empty resume message, Atomic automatically injects `Continue where you left off.` in that same session before normal readiness-gate completion when the stage has not already finalized, including when the resume-answer turn used `ask_user_question`.
 - `kill` aborts in-flight work, marks the run `killed`, and retains it in live history/status for inspection.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
@@ -971,7 +1004,7 @@ workflow({
 })
 ```
 
-Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `bashPolicy`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
+Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
 For large fan-outs, prefer `outputMode: "file-only"` so the parent result contains compact file references instead of full output. Treat intercom payloads from async direct runs as user-visible workflow output.
 
@@ -989,17 +1022,23 @@ Enable workflow fast mode deliberately for broad workflows: parallel fan-out and
 
 ## Writing a Workflow
 
-Workflow files are TypeScript modules that export a compiled definition:
+Workflow files are TypeScript modules that export a workflow definition:
 
 ```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("my-workflow")
-  .description("Short description shown in workflow listings.")
-  .input("prompt", Type.String({ description: "Task or question for the workflow." }))
-  .output("summary", Type.String({ description: "Synthesized findings and recommended next steps." }))
-  .output("reviewer_count", Type.Number({ description: "Number of parallel reviewers that ran." }))
-  .run(async (ctx) => {
+export default workflow({
+  name: "my-workflow",
+  description: "Short description shown in workflow listings.",
+  inputs: {
+    prompt: Type.String({ description: "Task or question for the workflow." }),
+  },
+  outputs: {
+    summary: Type.String({ description: "Synthesized findings and recommended next steps." }),
+    reviewer_count: Type.Number({ description: "Number of parallel reviewers that ran." }),
+  },
+  run: async (ctx) => {
     const prompt = String(ctx.inputs.prompt);
 
     const scoutPath = ".atomic/workflows/runs/my-workflow/scout.md";
@@ -1045,20 +1084,21 @@ export default defineWorkflow("my-workflow")
     });
 
     return { summary: final.text, reviewer_count: reviews.length };
-  })
-  .compile();
+  },
+});
 ```
 
-Builder basics:
+Authoring basics:
 
-- `defineWorkflow("name")` starts a builder; the name must be non-empty.
+- `workflow({ ... })` returns the workflow definition directly for discovery; there is no builder terminal step.
 - Workflow names normalize for lookup: trim, lowercase, convert whitespace/underscore to hyphen, remove other punctuation, and collapse hyphens.
-- `.description(text)` sets the listing text.
-- `.input(key, schema)` declares typed user inputs.
-- `.worktreeFromInputs({ gitWorktreeDir, baseBranch })` optionally maps input names to workflow-wide reusable Git worktree defaults.
-- `.output(key, schema)` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
-- `.run(async (ctx) => { ... })` defines the workflow body.
-- `.compile()` returns the workflow definition for discovery.
+- `description` sets the listing text.
+- `inputs` declares typed user inputs.
+- `worktreeFromInputs` optionally maps input names to workflow-wide reusable Git worktree defaults.
+- `outputs` declares typed outputs that parent workflows receive from `ctx.workflow(childWorkflow, ...)`.
+- `run: async (ctx) => { ... }` defines the workflow body.
+
+Migrating an existing file from the removed `defineWorkflow(...).compile()` builder? See [Migrating from the `defineWorkflow()` Builder API](#migrating-from-the-defineworkflow-builder-api) for the full method-to-key mapping, a before/after walkthrough, and a conversion checklist.
 
 `prompt` and `task` are aliases for task text. Prefer `prompt` inside authored workflow files because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in direct tool calls and chain examples.
 
@@ -1066,12 +1106,17 @@ Author workflows to create at least one tracked stage by calling `ctx.task()`, `
 
 ### Early exit with `ctx.exit()`
 
-Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `.run()` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
+Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
 
 ```ts
-export default defineWorkflow("guarded-import")
-  .output("scanned", Type.Number())
-  .run(async (ctx) => {
+export default workflow({
+  name: "guarded-import",
+  description: "",
+  inputs: {},
+  outputs: {
+    scanned: Type.Number(),
+  },
+  run: async (ctx) => {
     const files = await findCandidateFiles(ctx.cwd);
     if (files.length === 0) {
       return ctx.exit({
@@ -1083,11 +1128,11 @@ export default defineWorkflow("guarded-import")
 
     const review = await ctx.task("review", { prompt: `Review ${files.join(", ")}` });
     return { scanned: files.length };
-  })
-  .compile();
+  },
+});
 ```
 
-`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and external run-control keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared with `.output(...)`, match their TypeBox schema, and be JSON-serializable. Missing required outputs are allowed only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; external `kill`, `pause`, and `interrupt` keep their existing behavior.
+`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and external run-control keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. Missing required outputs are allowed only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; external `kill`, `pause`, and `interrupt` keep their existing behavior.
 
 The first selected `ctx.exit({ outputs })` snapshots its output payload synchronously by value before JavaScript `finally` blocks or cleanup callbacks can mutate the caller-owned object. The snapshot preserves undeclared keys and invalid values until post-cleanup validation, so deleting an undeclared key or changing an invalid value after `ctx.exit(...)` does not change the terminal validation result. If reading `status`, `reason`, or `outputs` options, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
 
@@ -1120,7 +1165,7 @@ Workflow guidance should also cover the context passed between stages:
 
 ### Inputs
 
-Inputs are declared with TypeBox `Type.*` schemas passed to `.input(key, schema)`. `Type` is re-exported from `@bastani/workflows` (along with the `Static` and `TSchema` type helpers), so you do not import from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so the SDK's shipped types resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
+Inputs are declared with TypeBox `Type.*` schemas in the `inputs` object. Import `Type` from `typebox` directly in workflow files. Workflow packages still declare `typebox` as a peer dependency so TypeBox schemas resolve under `tsc` — see [Programmatic Usage](#programmatic-usage). Common input schemas map to picker kinds and accepted runtime values:
 
 | TypeBox schema | Picker kind | Accepted runtime value |
 |---|---|---|
@@ -1134,21 +1179,26 @@ A `Type.Union([Type.Literal(...)])` of string literals is how a 'select' is expr
 
 Prefer explicit descriptions because `/workflow inputs <name>`, `/workflow <name> --help`, and the input picker show them to the user. Runtime validation uses TypeBox `Value` and is strict for both top-level named runs and `ctx.workflow(...)` child calls: Atomic rejects unknown keys, missing required values, type mismatches, non-JSON-serializable values, and union/literal values outside the declared choices before the workflow body starts. It does not coerce strings like `"3"` to numbers; pass `count=3` or JSON numbers when a schema declares `Type.Number()`.
 
-In TypeScript workflow files, `.input(...)` also narrows `ctx.inputs` for better intellisense: required/defaulted `Type.String()` inputs are `string`, `Type.Number()` is `number`, `Type.Boolean()` is `boolean`, a `Type.Union([Type.Literal(...)])` select is the literal string union, and `Type.Optional(...)` inputs include `undefined`. Use `Static<typeof schema>` when you need the inferred TypeScript type of a schema directly.
+In TypeScript workflow files, entries in `inputs` also narrow `ctx.inputs` for better intellisense: required/defaulted `Type.String()` inputs are `string`, `Type.Number()` is `number`, `Type.Boolean()` is `boolean`, a `Type.Union([Type.Literal(...)])` select is the literal string union, and `Type.Optional(...)` inputs include `undefined`. Use `Static<typeof schema>` when you need the inferred TypeScript type of a schema directly.
 
 ### Outputs
 
-Workflow outputs are runtime contracts for completed workflow runs and for parent workflows that call a child with `ctx.workflow(childWorkflow, ...)`. A workflow normally returns a JSON-serializable object from `.run()`, and `.output(key, schema)` documents, validates, and exposes keys from that returned object. `ctx.exit({ outputs })` can expose a partial subset of the same declared output contract when the run intentionally stops early. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation.
+Workflow outputs are runtime contracts for completed workflow runs and for parent workflows that call a child with `ctx.workflow(childWorkflow, ...)`. A workflow normally returns a JSON-serializable object from `run`, and entries in the `outputs` object document, validate, and expose keys from that returned object. `ctx.exit({ outputs })` can expose a partial subset of the same declared output contract when the run intentionally stops early. Primitives, arrays, `null`, functions, symbols, `undefined` properties, `NaN`, and infinite numbers fail validation.
 
-**Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `.run()` must both declare `.output("foo", schema)` and return `{ foo: value }`. `result` is not special and is never added for you: to expose `result`, declare `.output("result", schema)` and return `{ result }` exactly like any other output. Returning a key that is not declared with `.output(...)` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return`.
+**Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `run` must both declare `outputs: { foo: schema }` and return `{ foo: value }`. `result` is not special and is never added for you: to expose `result`, declare it in `outputs` and return `{ result }` exactly like any other output. Returning a key that is not declared in `outputs` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return`.
 
-`.output(...)` is a schema contract, not an automatic stage selector. To expose values from any stage, capture the stage/task/child result in normal TypeScript and return it from `.run()` under the desired key:
+The `outputs` object is a schema contract, not an automatic stage selector. To expose values from any stage, capture the stage/task/child result in normal TypeScript and return it from `run` under the desired key:
 
 ```ts
-export default defineWorkflow("review-with-summary")
-  .output("research_artifact", Type.String())
-  .output("review", Type.String())
-  .run(async (ctx) => {
+export default workflow({
+  name: "review-with-summary",
+  description: "Review with returned artifacts.",
+  inputs: {},
+  outputs: {
+    research_artifact: Type.String(),
+    review: Type.String(),
+  },
+  run: async (ctx) => {
     const researchPath = ".atomic/workflows/runs/review-with-summary/research.md";
     await ctx.task("research", {
       prompt: "Research the target.",
@@ -1164,13 +1214,13 @@ export default defineWorkflow("review-with-summary")
       research_artifact: researchPath,
       review: review.text,
     };
-  })
-  .compile();
+  },
+});
 ```
 
-There is no automatic `result` output. A workflow exposes exactly the keys it declares with `.output(...)` and returns from `.run()` — nothing more. To expose `result`, declare `.output("result", schema)` and return `{ result }` like any other output. If `.run()` returns a key that was never declared with `.output(...)`, the run fails with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return` (for a child workflow call, `<name>` is the child's own name, and the parent surfaces the failure through the child-failure wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`).
+There is no automatic `result` output. A workflow exposes exactly the keys it declares in `outputs` and returns from `run` — nothing more. To expose `result`, declare `outputs: { result: schema }` and return `{ result }` like any other output. If `run` returns a key that was never declared in `outputs`, the run fails with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return` (for a child workflow call, `<name>` is the child's own name, and the parent surfaces the failure through the child-failure wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`).
 
-Outputs are declared with TypeBox `Type.*` schemas passed to `.output(key, schema)`. **Prefer precise schemas.** A precise schema gives a precise `Static<>` type for the `.run()` return and for any parent reading `child.outputs`, and it makes runtime validation enforce the real shape instead of waving values through. Reach for `Type.Unknown()`, `Type.Any()`, `Type.Array(Type.Unknown())`, or `Type.Object({}, { additionalProperties: true })` only for genuinely dynamic data whose shape you cannot know ahead of time.
+Outputs are declared with TypeBox `Type.*` schemas in the `outputs` object. **Prefer precise schemas.** A precise schema gives a precise `Static<>` type for the `run` return and for any parent reading `child.outputs`, and it makes runtime validation enforce the real shape instead of waving values through. Reach for `Type.Unknown()`, `Type.Any()`, `Type.Array(Type.Unknown())`, or `Type.Object({}, { additionalProperties: true })` only for genuinely dynamic data whose shape you cannot know ahead of time.
 
 | TypeBox schema | Static type | Accepted runtime value |
 |---|---|---|
@@ -1186,36 +1236,38 @@ Outputs are declared with TypeBox `Type.*` schemas passed to `.output(key, schem
 | `Type.Object({}, { additionalProperties: true })` | `Record<string, unknown>` | any JSON object (last resort, dynamic only) |
 | `Type.Unknown()` / `Type.Any()` | `unknown` / `any` | any JSON-serializable value (last resort) |
 
-Output schemas carry `description` in their options object. A declared output is required when its schema is **not** wrapped in `Type.Optional(...)`; wrap outputs that may be absent in `Type.Optional(...)`. A required output means the workflow `.run()` return object must contain that output before the run can complete; a missing required output fails with `missing output "<key>"`, and a declared value whose runtime type does not match the schema fails with `output "<key>" expected <type>, got <actual>`. For child workflow calls, the parent boundary fails before the parent continues. Declared outputs are validated against the declared schema with TypeBox `Value` on completion, and every returned/exposed value is recursively validated as JSON-serializable. Child output replay still performs a structured-clone safety check after JSON validation so continuation can restore completed child workflow boundaries.
+Output schemas carry `description` in their options object. A declared output is required when its schema is **not** wrapped in `Type.Optional(...)`; wrap outputs that may be absent in `Type.Optional(...)`. A required output means the workflow `run` return object must contain that output before the run can complete; a missing required output fails with `missing output "<key>"`, and a declared value whose runtime type does not match the schema fails with `output "<key>" expected <type>, got <actual>`. For child workflow calls, the parent boundary fails before the parent continues. Declared outputs are validated against the declared schema with TypeBox `Value` on completion, and every returned/exposed value is recursively validated as JSON-serializable. Child output replay still performs a structured-clone safety check after JSON validation so continuation can restore completed child workflow boundaries.
 
 #### Prefer precise schemas
 
-A loose output like `Type.Unknown()` or `Type.Object({}, { additionalProperties: true })` types the `.run()` return and `child.outputs.x` as `unknown`/`Record<string, unknown>`, so every consumer must cast or guard before using the value, and runtime validation only checks "is this JSON?" instead of the real shape. Declaring the shape fixes both at once:
+A loose output like `Type.Unknown()` or `Type.Object({}, { additionalProperties: true })` types the `run` return and `child.outputs.x` as `unknown`/`Record<string, unknown>`, so every consumer must cast or guard before using the value, and runtime validation only checks "is this JSON?" instead of the real shape. Declaring the shape fixes both at once:
 
 ```ts
 // ❌ Loose: child.outputs.report is `unknown`; nothing checks the shape at runtime.
-.output("report", Type.Unknown())
+outputs: {
+  report: Type.Unknown(),
+}
 
 // ✅ Precise: child.outputs.report is `{ topic: string; score: number; tags: string[] }`,
 //    and TypeBox rejects a returned value missing `score` or with a non-number `score`.
-.output(
-  "report",
-  Type.Object({
+outputs: {
+  report: Type.Object({
     topic: Type.String(),
     score: Type.Number(),
     tags: Type.Array(Type.String()),
   }),
-)
+}
 ```
 
-The same rule applies to inputs: `.input("counts", Type.Array(Type.Number()))` makes `ctx.inputs.counts` a `number[]`, while `Type.Array(Type.Unknown())` only gives you `unknown[]`.
+The same rule applies to inputs: `inputs: { counts: Type.Array(Type.Number()) }` makes `ctx.inputs.counts` a `number[]`, while `Type.Array(Type.Unknown())` only gives you `unknown[]`.
 
 #### `Type.Unsafe<T>()` escape hatch for deeply-nested values
 
-When you already have a precise TypeScript type for a deeply-nested serializable value and don't want to hand-write the equivalent TypeBox schema, wrap a permissive runtime schema with `Type.Unsafe<MyType>(...)`. The **static** type becomes exactly `MyType` (so `ctx.inputs`, the `.run()` return, and `child.outputs` stay precise), while the **runtime** check stays as lenient as the wrapped schema. Use a `type` alias rather than an `interface` for the wrapped type — an `interface` has no implicit index signature, so it does not satisfy the serializable-output constraint:
+When you already have a precise TypeScript type for a deeply-nested serializable value and don't want to hand-write the equivalent TypeBox schema, wrap a permissive runtime schema with `Type.Unsafe<MyType>(...)`. The **static** type becomes exactly `MyType` (so `ctx.inputs`, the `run` return, and `child.outputs` stay precise), while the **runtime** check stays as lenient as the wrapped schema. Use a `type` alias rather than an `interface` for the wrapped type — an `interface` has no implicit index signature, so it does not satisfy the serializable-output constraint:
 
 ```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
 type ResearchPacket = {
   readonly topic: string;
@@ -1223,65 +1275,83 @@ type ResearchPacket = {
   readonly sections: readonly { readonly heading: string; readonly body: string }[];
 };
 
-export default defineWorkflow("research-packet")
-  .input("topic", Type.String())
-  // Static type = ResearchPacket; runtime only checks "is a JSON object".
-  .output("packet", Type.Unsafe<ResearchPacket>(Type.Object({}, { additionalProperties: true })))
-  .run(async (ctx) => {
+export default workflow({
+  name: "research-packet",
+  description: "",
+  inputs: {
+    topic: Type.String(),
+  },
+  outputs: {
+    packet: Type.Unsafe<ResearchPacket>(Type.Object({}, { additionalProperties: true })),
+  },
+  run: async (ctx) => {
     const packet: ResearchPacket = {
       topic: ctx.inputs.topic,
       score: 1,
       sections: [{ heading: "overview", body: "…" }],
     };
     return { packet }; // statically checked against ResearchPacket
-  })
-  .compile();
+  },
+});
 ```
 
 Tradeoff: `Type.Unsafe<T>()` does not deeply validate at runtime — it trusts that the produced value matches `T`. Use it when the producing code already guarantees the shape (the `contract-complex-leaf` contract workflow does exactly this, wrapping `Type.Unsafe<ComplexPacket>(...)` and `Type.Unsafe<readonly ComplexRecord[]>(...)` around permissive runtime schemas). When you can express the shape directly, prefer a real `Type.Object(...)`/`Type.Array(...)` so runtime validation also catches drift. Keep bare `Type.Unknown()` and `Type.Object({}, { additionalProperties: true })` for the rare cases where the value is genuinely dynamic.
 
 #### How types flow
 
-- `ctx.inputs.x` is `Static<inputSchema>` for the input you declared with `.input("x", schema)` — required and defaulted schemas are always present, and `Type.Optional(...)` adds `| undefined`.
-- The `.run()` return is checked against your declared outputs at **compile time** (a missing required output or a wrong value type is a TypeScript error) and at **runtime** via TypeBox `Value` (undeclared keys are rejected and the declared shape is enforced recursively).
-- `ctx.workflow(child)` returns a discriminated child result. When `child.exited === false`, `child.outputs` is the child's full declared `.output(...)` contract; when `child.exited === true`, `child.outputs` is `Partial<TOutputs>` because child `ctx.exit({ outputs })` may intentionally provide only a subset.
+- `ctx.inputs.x` is `Static<inputSchema>` for the input you declared as `inputs: { x: schema }` — required and defaulted schemas are always present, and `Type.Optional(...)` adds `| undefined`.
+- The `run` return is checked against your declared outputs at **compile time** (a missing required output or a wrong value type is a TypeScript error) and at **runtime** via TypeBox `Value` (undeclared keys are rejected and the declared shape is enforced recursively).
+- `ctx.workflow(child)` returns a discriminated child result. When `child.exited === false`, `child.outputs` is the child's full declared `outputs` contract; when `child.exited === true`, `child.outputs` is `Partial<TOutputs>` because child `ctx.exit({ outputs })` may intentionally provide only a subset.
 
 Use `Static<typeof schema>` (both `Static` and `TSchema` are re-exported from `@bastani/workflows`) when you need the inferred TypeScript type of a schema directly — for example to type a helper that builds an output value.
 
 ### Workflow Composition
 
-Use workflow composition when one workflow should call another reusable workflow and consume its outputs as a tracked boundary stage. The child can be a user-defined workflow from your project/package or a bundled builtin workflow. In both cases, use normal TypeScript imports: import the compiled child workflow definition, then pass that definition directly to `ctx.workflow(workflowDefinition, options)`. Registry names, path objects, and string aliases are not accepted by `ctx.workflow(...)`.
+Use workflow composition when one workflow should call another reusable workflow and consume its outputs as a tracked boundary stage. The child can be a user-defined workflow from your project/package or a bundled builtin workflow. In both cases, use normal TypeScript imports: import the child workflow definition, then pass that definition directly to `ctx.workflow(workflowDefinition, options)`. Registry names, path objects, and string aliases are not accepted by `ctx.workflow(...)`.
 
-For workflows intended to be called by parent workflows, declare `.output(...)` for every field a parent should rely on, including `result`. No output exists without declaration: a child exposes exactly its declared outputs, and returning an undeclared key fails the child call.
+For workflows intended to be called by parent workflows, declare every field a parent should rely on in the child workflow's `outputs` object, including `result`. No output exists without declaration: a child exposes exactly its declared outputs, and returning an undeclared key fails the child call.
 
 #### Compose with a user-defined workflow
 
-User-defined workflows are ordinary TypeScript modules. Import the compiled definition with a relative module specifier and call it directly from the parent workflow:
+User-defined workflows are ordinary TypeScript modules. Import the workflow definition with a relative module specifier and call it directly from the parent workflow:
 
 ```ts
 // .atomic/workflows/shared-research.ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("shared-research")
-  .input("topic", Type.String())
-  .output("summary", Type.String({ description: "Research summary markdown." }))
-  // Precise element type: child.outputs.sources is `string[] | undefined`, not `unknown[]`.
-  .output("sources", Type.Optional(Type.Array(Type.String(), { description: "Source URLs and file references." })))
-  .run(async (ctx) => {
+export default workflow({
+  name: "shared-research",
+  description: "",
+  inputs: {
+    topic: Type.String(),
+  },
+  outputs: {
+    summary: Type.String({ description: "Research summary markdown." }),
+    sources: Type.Optional(Type.Array(Type.String(), { description: "Source URLs and file references." })),
+  },
+  run: async (ctx) => {
     const result = await ctx.task("research", { prompt: `Research ${String(ctx.inputs.topic)}` });
     return { summary: result.text, sources: [] };
-  })
-  .compile();
+  },
+});
 
 // .atomic/workflows/research-and-synthesize.ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import sharedResearch from "./shared-research.js";
 
-export default defineWorkflow("research-and-synthesize")
-  .input("topic", Type.String())
-  .output("final", Type.String({ description: "Synthesis built from the child research summary." }))
-  .output("child_run_id", Type.String({ description: "Run id of the nested shared-research child." }))
-  .run(async (ctx) => {
+export default workflow({
+  name: "research-and-synthesize",
+  description: "Run shared research and synthesize it.",
+  inputs: {
+    topic: Type.String(),
+  },
+  outputs: {
+    final: Type.String({ description: "Synthesis built from the child research summary." }),
+    child_run_id: Type.String({ description: "Run id of the nested shared-research child." }),
+  },
+  run: async (ctx) => {
     const child = await ctx.workflow(sharedResearch, {
       inputs: { topic: ctx.inputs.topic },
       stageName: "run shared research",
@@ -1294,13 +1364,13 @@ export default defineWorkflow("research-and-synthesize")
       prompt: `Synthesize:\n\n${String(child.outputs.summary)}`,
     });
     return { final: final.text, child_run_id: child.runId };
-  })
-  .compile();
+  },
+});
 ```
 
 #### Compose with builtin workflows
 
-Builtin workflows are also exported as compiled workflow definitions, so parent workflows can call them exactly like user-defined workflows. Use the barrel export when you want several builtins:
+Builtin workflows are also exported as workflow definitions, so parent workflows can call them exactly like user-defined workflows. Use the barrel export when you want several builtins:
 
 ```ts
 import { deepResearchCodebase, goal, openClaudeDesign, ralph } from "@bastani/workflows/builtin";
@@ -1320,32 +1390,36 @@ Common builtin import targets:
 | Workflow name | TypeScript export | Individual module path | Typical use inside another workflow |
 |---|---|---|---|
 | `deep-research-codebase` | `deepResearchCodebase` | `@bastani/workflows/builtin/deep-research-codebase` | Gather broad repo research before planning, synthesis, or implementation. |
-| `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion. |
+| `goal` | `goal` | `@bastani/workflows/builtin/goal` | Run a bounded implementation/check loop with receipts and reviewer-gated completion; pass `create_pr=true` to authorize only the final PR-creation stage after approval. |
 | `ralph` | `ralph` | `@bastani/workflows/builtin/ralph` | Delegate a larger migration/refactor effort to Ralph's research/orchestrate/review loop; pass `create_pr=true` to authorize only the final PR-creation stage. |
 | `open-claude-design` | `openClaudeDesign` | `@bastani/workflows/builtin/open-claude-design` | Generate and refine a UI/design artifact and handoff spec. |
 
 Example parent workflow that runs builtin deep research, then chooses either `goal` or `ralph` as the nested implementation runner:
 
 ```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 import { deepResearchCodebase, goal, ralph } from "@bastani/workflows/builtin";
 
-export default defineWorkflow("research-then-implement")
-  .input("topic", Type.String())
-  .input(
-    "runner",
-    Type.Union([Type.Literal("goal"), Type.Literal("ralph")], {
+export default workflow({
+  name: "research-then-implement",
+  description: "Run deep research, then dispatch to goal or Ralph.",
+  inputs: {
+    topic: Type.String(),
+    runner: Type.Union([Type.Literal("goal"), Type.Literal("ralph")], {
       default: "goal",
       description: "Use goal for bounded changes or Ralph for broad research-first implementation work.",
     }),
-  )
-  .output("research_doc_path", Type.Optional(Type.String({ description: "Path to the deep-research document used for implementation." })))
-  .output("runner", Type.String({ description: "Which nested runner executed: \"goal\" or \"ralph\"." }))
-  // Genuinely dynamic: the nested runner (goal vs ralph) is chosen at runtime and
-  // each exposes a different declared output shape, so a loose object is appropriate here.
-  // When a child's outputs are known and fixed, declare the precise shape instead.
-  .output("implementation", Type.Object({}, { additionalProperties: true, description: "Declared outputs from the nested implementation workflow." }))
-  .run(async (ctx) => {
+  },
+  outputs: {
+    research_doc_path: Type.Optional(Type.String({ description: "Path to the deep-research document used for implementation." })),
+    runner: Type.String({ description: "Which nested runner executed: \"goal\" or \"ralph\"." }),
+    // Genuinely dynamic: the nested runner (goal vs ralph) is chosen at runtime and
+    // each exposes a different declared output shape, so a loose object is appropriate here.
+    // When a child's outputs are known and fixed, declare the precise shape instead.
+    implementation: Type.Object({}, { additionalProperties: true, description: "Declared outputs from the nested implementation workflow." }),
+  },
+  run: async (ctx) => {
     const topic = String(ctx.inputs.topic);
     const research = await ctx.workflow(deepResearchCodebase, {
       inputs: { prompt: topic, max_concurrency: 4 },
@@ -1390,11 +1464,11 @@ export default defineWorkflow("research-then-implement")
       runner: "goal",
       implementation: implementation.outputs,
     };
-  })
-  .compile();
+  },
+});
 ```
 
-Passing a compiled definition directly to `ctx.workflow(...)` uses the child workflow's normalized name for replay metadata and default boundary labels (`shared-research` for the user-defined example above, or builtin names such as `deep-research-codebase`, `goal`, and `ralph`).
+Passing a workflow definition directly to `ctx.workflow(...)` uses the child workflow's normalized name for replay metadata and default boundary labels (`shared-research` for the user-defined example above, or builtin names such as `deep-research-codebase`, `goal`, and `ralph`).
 
 `ctx.workflow(workflowDefinition)` starts a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default. User-facing status and graph views flatten that child into the parent run, so composition behaves like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported workflows appear in one expanded graph. The nested run id remains available internally for routing attach/pause/interrupt/resume/kill to the correct live stage, but it is not shown as a separate top-level `/workflow status` entry. The returned child result has:
 
@@ -1411,7 +1485,7 @@ Passing a compiled definition directly to `ctx.workflow(...)` uses the child wor
 
 | Option | Meaning |
 |---|---|
-| `inputs` | Values validated against the child workflow's `.input()` schema before the child starts. |
+| `inputs` | Values validated against the child workflow's `inputs` schema map before the child starts. |
 | `stageName` | Parent boundary stage label. Defaults to `workflow:<workflow-name>`. |
 
 Output exposure rules:
@@ -1426,15 +1500,130 @@ if (child.exited === true) {
 }
 ```
 
-A child exposes exactly its declared outputs — the keys it declared with `.output(...)` and returned from `.run()` or supplied to `ctx.exit({ outputs })`. There are no implicit outputs and no raw return-object passthrough. If `.run()` returns a key that was not declared with `.output(...)`, the child run fails with `atomic-workflows: workflow "<childName>" returned undeclared output "<key>"; declare it with .output("<key>", Type....) or remove it from the .run() return`, and the parent surfaces that failure through the wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`. A child with no declared outputs therefore exposes no outputs. Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail normal child completion before the parent continues; child `ctx.exit({ outputs })` allows missing required outputs but still validates every provided key and sets `child.exited === true` so parent code must handle the partial shape.
+A child exposes exactly its declared outputs — the keys declared in `outputs` and returned from `run` or supplied to `ctx.exit({ outputs })`. There are no implicit outputs and no raw return-object passthrough. If `run` returns a key that was not declared in `outputs`, the child run fails with `atomic-workflows: workflow "<childName>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return`, and the parent surfaces that failure through the wrapper `atomic-workflows: child workflow "<childName>" (<displayName>) failed with status failed: ...`. A child with no declared outputs therefore exposes no outputs. Missing required outputs, schema type mismatches, and non-JSON-serializable returned values fail normal child completion before the parent continues; child `ctx.exit({ outputs })` allows missing required outputs but still validates every provided key and sets `child.exited === true` so parent code must handle the partial shape.
 
-Only compiled workflow definitions can be passed to `ctx.workflow(...)`. Import reusable workflows with TypeScript `import` statements first; use `/workflow` names such as `goal` only for launching named runs, not as `ctx.workflow(...)` arguments. If a module is missing or does not export a compiled workflow definition, workflow discovery fails when loading that module. Nested child workflows count against `maxDepth` (default `4` total workflow levels).
+Only workflow definitions can be passed to `ctx.workflow(...)`. Import reusable workflows with TypeScript `import` statements first; use `/workflow` names such as `goal` only for launching named runs, not as `ctx.workflow(...)` arguments. If a module is missing or does not export a workflow definition, workflow discovery fails when loading that module. Nested child workflows count against `maxDepth` (default `4` total workflow levels).
 
 The graph includes both the parent boundary node and the imported child workflow's own stages while the child is loading/running, so the user can observe progress and interrupt sub-workflows before they complete. Completed boundaries still retain the child workflow name, child run id prefix, and exposed output count for replay/debugging. Skipped or failed boundaries do not retain child-edge metadata (`workflowChild` / `workflowChildRun`), and graph expansion ignores any stale non-completed boundary metadata from older persisted sessions instead of flattening an unrelated child run. Use `stageName` when the parent needs a more specific label, but keep it concise so the child summary remains readable in the graph.
 
 If a parent workflow exits through `ctx.exit(...)` while a child workflow is in flight, the parent executor only skips the parent boundary and sends the child a typed parent-exit abort reason. The hidden child executor owns child cleanup: active child stages and prompt nodes are skipped for `workflow-exit`, live child stage handles/sessions are disposed, and the child run is finalized as terminal `cancelled` (not `killed`) and non-resumable. The child executor writes each skipped child `workflow.stage.end` exactly once before its child `workflow.run.end`, and parent exit finalization waits for that child cleanup before writing the parent `workflow.run.end`, so restored sessions do not reconstruct the child as interrupted or failed. The skipped parent boundary clears any live child-run edge before store or persistence updates, so status/graph views do not display stale child stages from a boundary that did not complete. A delayed parent branch that calls `ctx.workflow(...)` after the exit gate is selected does not create a boundary or child run.
 
 Continuation replay treats the parent child-workflow boundary as the durable checkpoint: a previously completed child boundary replays with the original exposed outputs and without re-running the child, while a child that failed or was interrupted before completion starts again from the beginning on continuation. If `ctx.exit(...)` wins while a completed boundary is being replayed but before replay finalization, the boundary is finalized as skipped and its preloaded child metadata is omitted from store, persistence, restore, and expanded graph views.
+
+## Migrating from the `defineWorkflow()` Builder API
+
+The chained builder API — `defineWorkflow(name).description(...).input(...).output(...).worktreeFromInputs(...).run(...).compile()` — was removed in [#1457](https://github.com/bastani-inc/atomic/pull/1457). The single `workflow({ name?, description, inputs, outputs, run })` object form is now the only authoring door. There is no shim and no deprecation period: workflow files that still call `defineWorkflow(...).compile()` fail discovery with a module-load error until they are migrated.
+
+This section is for workflow files written against the previous API. If you are authoring a new workflow, skip it and start from [Writing a Workflow](#writing-a-workflow).
+
+### What changed
+
+- `import { defineWorkflow, Type } from "@bastani/workflows"` → `workflow` now comes from `@bastani/workflows`, and `Type` comes from the `typebox` package directly. `@bastani/workflows` no longer re-exports `Type`. The `Static` and `TSchema` *type* exports are still re-exported from `@bastani/workflows`, so `import type { Static } from "@bastani/workflows"` keeps working — only the runtime `Type` builder moved.
+- The fluent builder chain became one object literal passed to `workflow({ ... })`.
+- `name` moved from the `defineWorkflow(name)` argument into the object. It is now **optional** — omit it and discovery derives the name from the filename (the recommended style used by the builtins and most examples), or keep it when you want the name to differ from the file's basename.
+- `outputs` is now **required**. Workflows that declared no outputs before must now pass `outputs: {}`.
+- `.compile()` is gone. `workflow({ ... })` returns the frozen, branded definition directly; `export default` it.
+- The imperative object-form `runWorkflow(...)` runner is also removed (it is a `never` placeholder that throws on access). Programmatic execution uses the exported `run(def, inputs)` helper or a registry — see [Programmatic Usage](#programmatic-usage).
+
+### Builder method → object key
+
+| Removed builder API | New `workflow({ ... })` key |
+| --- | --- |
+| `defineWorkflow("name")` argument | `name: "name"` (optional; derived from the filename when omitted) |
+| `.description(text)` | `description: text` |
+| `.input(key, schema)` (repeatable) | `inputs: { key: schema, ... }` |
+| `.output(key, schema)` (repeatable) | `outputs: { key: schema, ... }` (required, even if `{}`) |
+| `.worktreeFromInputs(binding)` | `worktreeFromInputs: binding` (binding shape unchanged) |
+| `.run(fn)` callback | `run: fn` |
+| `.compile()` terminal | delete — `workflow({ ... })` returns the definition |
+
+`ctx` and every primitive (`ctx.task`, `ctx.chain`, `ctx.parallel`, `ctx.stage`, `ctx.workflow`, `ctx.exit`, `ctx.ui`) are unchanged, so workflow **bodies do not need rewriting** — only the authoring wrapper changes.
+
+### Full before / after
+
+Before (removed API):
+
+```ts
+import { defineWorkflow, Type } from "@bastani/workflows";
+
+export default defineWorkflow("review-changes")
+  .description("Run two reviewers in parallel and synthesize a decision.")
+  .input("target", Type.String({ description: "Path or change target to review." }))
+  .input("base_branch", Type.String({ default: "origin/main" }))
+  .output("decision", Type.String())
+  .output("concerns", Type.Optional(Type.Array(Type.String())))
+  .worktreeFromInputs({ baseBranch: "base_branch" })
+  .run(async (ctx) => {
+    const target = String(ctx.inputs.target);
+    const [quality, runtime] = await ctx.parallel(
+      [
+        { name: "quality", prompt: `Review quality of ${target}` },
+        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
+      ],
+      { concurrency: 2 },
+    );
+    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
+  })
+  .compile();
+```
+
+After (current API):
+
+```ts
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
+
+export default workflow({
+  name: "review-changes", // optional — omit to derive from filename
+  description: "Run two reviewers in parallel and synthesize a decision.",
+  inputs: {
+    target: Type.String({ description: "Path or change target to review." }),
+    base_branch: Type.String({ default: "origin/main" }),
+  },
+  outputs: {
+    decision: Type.String(),
+    concerns: Type.Optional(Type.Array(Type.String())),
+  },
+  worktreeFromInputs: { baseBranch: "base_branch" },
+  run: async (ctx) => {
+    const target = String(ctx.inputs.target);
+    const [quality, runtime] = await ctx.parallel(
+      [
+        { name: "quality", prompt: `Review quality of ${target}` },
+        { name: "runtime", prompt: `Review runtime behavior of ${target}` },
+      ],
+      { concurrency: 2 },
+    );
+    return { decision: `${quality.text}\n${runtime.text}`, concerns: [] };
+  },
+});
+```
+
+### Conversion checklist
+
+For each `.atomic/workflows/*.ts` (or workflow-package) file:
+
+1. Swap the import to `import { workflow } from "@bastani/workflows"` and add `import { Type } from "typebox"`. Drop `defineWorkflow` from the `@bastani/workflows` import. `import type { Static, TSchema }` can stay on the `@bastani/workflows` import if you use those types.
+2. Replace `defineWorkflow("<name>")` with `workflow({`. You may keep `name: "<name>"` or drop the key entirely to derive the name from the filename.
+3. Move `.description("<text>")` to a `description: "<text>",` property.
+4. Collect every `.input(key, schema)` into one `inputs: { key: schema, ... },` map.
+5. Collect every `.output(key, schema)` into one `outputs: { key: schema, ... },` map. If there were no `.output(...)` calls, add `outputs: {},` — it is now required.
+6. Move `.worktreeFromInputs(binding)` to a `worktreeFromInputs: binding,` property (same binding shape, unchanged).
+7. Move the `.run(fn)` callback to a `run: fn,` property; the body stays byte-for-byte the same.
+8. Delete the trailing `.compile()`, close the object with `})`, and keep `export default`.
+9. Run `/workflow reload` (or restart Atomic) and `/workflow list` to confirm the file loads. Because `ctx` and its primitives are unchanged, stage behavior, graph layout, resume/kill, and human-input prompts are unaffected.
+
+### Gotchas
+
+- **`outputs` is required.** The old `.output(...)` calls were optional, and a workflow with none compiled fine. The new object form throws `workflow: outputs must be a schema map` when `outputs` is missing, so declare `outputs: {}` for outputless workflows.
+- **`Type` is no longer re-exported.** `import { Type } from "@bastani/workflows"` fails type-checking; import it from `typebox` instead. (`Static` and `TSchema` *types* are still re-exported from `@bastani/workflows`, so those imports do not need to change.)
+- **`.compile()` does not exist.** Leaving it produces a runtime `TypeError`; `workflow({ ... })` already returns the frozen, branded definition.
+- **`name` is derived from the filename when omitted.** `review-changes.ts` becomes the `review-changes` workflow, so an explicit `name` is only needed when it should differ from the basename.
+- **No hand-rolled definitions.** Objects carrying `__piWorkflow: true` that you construct by hand are rejected by discovery and by `ctx.workflow(...)`. Only definitions minted by `workflow({ ... })` are accepted.
+- **The imperative `runWorkflow` runner is gone.** It is now a `never` placeholder that throws on access; use the exported `run(def, inputs)` helper or a registry for programmatic execution.
+- **Keep `outputs` inline for the strictest type checking.** The old builder enforced no-extra-output keys through a `NoExtraOutputs` generic on `.run(fn)`; the object form re-creates that check for inline `outputs` maps, but cannot recover output keys when a schema map is widened or built up before being passed to `workflow({ ... })`. Keep the `outputs` literal inline so the declared-key check stays exact.
+
+Everything else — stage primitives, `ctx.inputs` typing, runtime validation, DAG inference, MCP scoping, resume/kill, worktree binding, model fallback, and the `/workflow` tool contract — is unchanged.
 
 ## Workflow Primitives
 
@@ -1447,7 +1636,7 @@ Prefer high-level primitives because they create tracked graph nodes, provide co
 | Independent concurrent branches | `ctx.parallel(steps, options?)` |
 | Reusable child workflow | Call `ctx.workflow(workflowDefinition, options?)` |
 | Human input during a workflow run | `ctx.ui.input/confirm/select/editor/custom` |
-| Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `.run()` or helpers |
+| Pure deterministic computation, parsing, or file I/O | Plain TypeScript in `run` or helpers |
 | Fine-grained session control | `ctx.stage(name, options?)` |
 
 Use `previous` and `{previous}` for compact handoffs only. If no placeholder is present, the runtime appends context, so a large `previous` payload can silently bloat the next model prompt. Chain defaults are:
@@ -1481,57 +1670,48 @@ Common task/stage options include:
 - `context: "fresh" | "fork"`, `forkFromSessionFile`
 - `model`, `fallbackModels`, `thinkingLevel`, `scopedModels`, `modelRegistry` — `model` and each `fallbackModels` entry accept a `model_name:thinking_effort` reasoning suffix and an optional parenthesized context-window token such as `model (1m)` (see [Reasoning levels](#reasoning-levels) and [Context windows](#context-windows)); the standalone `thinkingLevel` is deprecated
 - `contextWindow`, `contextWindowStrict` — stage-wide context-window budget mapped to the SDK `createAgentSession` options of the same name (non-strict by default)
-- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`, `bashPolicy`
+- `tools`, `noTools`, `customTools`, `mcp: { allow?: string[], deny?: string[] }`
 - `schema` for a structured final answer from this workflow item
 - `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, `agentDir`
 - advanced host-supplied SDK seams: `authStorage`, `resourceLoader`, `sessionManager`, `settingsManager`, `sessionStartEvent`
+
+Workflow stages inherit the active host session directory only when the host is using a non-default session location. For example, headless runs launched with `atomic --mode json --session-dir <dir> -p '/workflow <name> ...'` write the main chat transcript and every stage transcript under `<dir>`; the same applies when the non-default directory comes from `ATOMIC_CODING_AGENT_SESSION_DIR` or settings. If no non-default host session directory is configured, stage sessions keep using Atomic's normal global session store. A per-stage `sessionDir` option always overrides the inherited host directory, including for forked stages (`context: "fork"`, `forkFromSessionFile`).
 
 `schema` is opt-in. When a `ctx.stage` call, `ctx.task` call, `ctx.chain` item, or `ctx.parallel` item includes a TypeBox schema or plain JSON Schema descriptor object, Atomic registers a schema-specific final-answer tool for that item only. The schema may describe object, array, or primitive final values; the captured value is the JSON value passed to the tool. The prompt result is the captured structured value for `ctx.stage(..., { schema }).prompt(...)`; task/chain/parallel results also include `result.structured` and keep `result.text` as formatted JSON for handoffs. Because the result contract is single-use, a schema-backed `StageContext` supports one `prompt()` call; create a new `ctx.stage(..., { schema })` for each additional structured prompt. If a turn finishes without calling `structured_output`, or the tool call fails schema validation, Atomic sends up to three corrective follow-up prompts that quote the concrete contract/validation error and remind the model to call `structured_output` instead of replying with plain JSON. If the item also uses an explicit `tools` allowlist, Atomic automatically adds the final-answer tool to that allowlist. Items without `schema` do not receive it from the normal tool registry.
 
 `subagent` is available as a default workflow-stage tool, with the same default two-hop nesting budget as main chat: a workflow stage can launch a subagent, and that subagent can launch one nested subagent before the guard blocks further delegation. `tools` remains an allowlist across built-in tools and bundled extension tools; if you set `tools`, list every tool the stage should see. Explicitly listing tools such as `subagent`, `web_search`, `fetch_content`, or `intercom` exposes those tools to the stage, while `excludedTools` and `noTools: "all"` still win. The bundled subagent definitions from `@bastani/subagents` are available to the `subagent` tool in workflow stages; when a workflow is itself running inside a subagent child process, Atomic isolates stage resource discovery from the parent child-process flags so `subagent` remains available while workflow-stage nested-depth guards remain in force.
 
-`bashPolicy` scopes the built-in `bash` tool for one stage or task. `tools` must still include `"bash"` (or leave it available by default); the policy only narrows command text after the shell tool is exposed. It supports exact strings, `{ prefix }`, command-string `{ glob }`, and `{ regex, flags? }` rules, `default: "allow" | "deny"` (default `"allow"`), `deny` precedence, and `match: "segments" | "whole"` (default `"segments"`). Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules (including empty arrays or match-only default-allow policies) preserves legacy behavior and does not parse commands; malformed policy shapes such as unknown top-level keys (`denny`, `extra`), non-array `allow`/`deny`, invalid rule objects, invalid regexes, invalid glob bracket ranges, or stateful `g`/`y` regex flags fail closed as `invalid-policy`. Segment mode checks each command in pipelines/chains/substitutions before execution, treats unquoted LF, CRLF, and bare CR as command separators, keeps non-leading Bash `>|` noclobber redirections inside the current command segment, and rejects reserved/compound shell heads, leading redirections, attached command-head redirections, and command heads that are not literal words.
-
-```ts
-await ctx.task("browser-preview", {
-  tools: ["bash"],
-  bashPolicy: {
-    default: "deny",
-    allow: [
-      "which playwright-cli",
-      { prefix: "playwright-cli open " },
-      { prefix: "playwright-cli snapshot" },
-      { prefix: "grep " },
-    ],
-    deny: [{ regex: "\\brm\\b" }],
-  },
-  prompt: "Open the preview with playwright-cli, then summarize the visible state.",
-});
-```
-
-A command such as `playwright-cli snapshot | grep title` passes only when both segments are allowed, and `playwright-cli snapshot\nrm -rf /tmp/proof` cannot be hidden behind a `{ prefix: "playwright-cli " }` rule because the newline starts a new segment. Glob rules match command strings rather than filesystem path segments: `*` and `?` may span `/`, so `{ glob: "playwright-cli *" }` matches URLs and slash-bearing paths such as `playwright-cli http://localhost:3000`, `playwright-cli docs/index.html`, and `playwright-cli ./preview/output.html` while still matching the whole target rather than `echo playwright-cli ...`; escaped bracket-class metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal, while malformed glob ranges such as `{ glob: "echo [z-a]" }` become `invalid-policy` denials. Segment mode accepts literal heads such as `grep`, `./script`, `/usr/bin/env`, `bun`, and `playwright-cli`, and treats non-leading `>|` as redirection syntax so `echo ok >|/tmp/out` stays one segment, but conservatively rejects reserved or compound heads (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirections (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `&>>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirections attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignments (`PATH=/tmp:$PATH playwright-cli snapshot`, `LD_PRELOAD=/tmp/x playwright-cli snapshot`, `FOO=bar`), dynamic heads such as `$cmd`, `${cmd}`, `r''m`, `r\m`, `~/bin/rm`, `r*m`, `{rm,echo}`, `r$(printf m)`, or backtick-built command names. A single denied, redirection-prefixed, attached-redirection, assignment-prefixed, dynamic, or unrecognized segment blocks the whole command with a model-readable tool error and no UI prompt, so the behavior works in headless workflow runs. Use `match: "whole"` only when raw-command matching is intentional.
+Workflow stages use the same upstream-compatible `bash` tool as normal Atomic sessions. If `bash` is enabled for a stage, commands run through the configured shell with the stage process permissions; workflow options no longer include a command-level allow/deny field for shell text. Use `tools`/`noTools` to expose or hide shell access, prefer narrower custom tools for repeatable operations, and run workflows inside a container, VM, or other sandbox when command allowlisting or stronger isolation is required.
 
 `gitWorktreeDir` selects a reusable Git worktree root for `ctx.stage`, `ctx.task`, `ctx.chain`, and `ctx.parallel`. If the path is missing, Atomic creates it with `git worktree add --detach <path> <baseBranch>`; if it exists, it must be a same-repository worktree root. The default stage cwd becomes the matching cwd inside the worktree and preserves the invoking repo-relative subdirectory. Explicit `cwd` still wins; relative `cwd` values resolve from the worktree cwd, while absolute `cwd` values are used as provided. `gitWorktreeDir` is mutually exclusive with `worktree: true`: use `gitWorktreeDir` for named/reusable worktrees and `worktree: true` for temporary direct-mode worktrees that are cleaned up after the run.
 
-To bind user inputs to a workflow-wide worktree default, use the builder method:
+To bind user inputs to a workflow-wide worktree default, set `worktreeFromInputs` in `workflow({...})`:
 
 ```ts
-export default defineWorkflow("safe-implementation")
-  .input("task", Type.String())
-  .input("git_worktree_dir", Type.String({ default: "" }))
-  .input("base_branch", Type.String({ default: "origin/main" }))
-  .worktreeFromInputs({ gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" })
-  .output("result", Type.String({ description: "Implementation result text." }))
-  .run(async (ctx) => {
+export default workflow({
+  name: "safe-implementation",
+  description: "",
+  inputs: {
+    task: Type.String(),
+    git_worktree_dir: Type.String({ default: "" }),
+    base_branch: Type.String({ default: "origin/main" }),
+  },
+  outputs: {
+    result: Type.String({ description: "Implementation result text." }),
+  },
+  worktreeFromInputs: { gitWorktreeDir: "git_worktree_dir", baseBranch: "base_branch" },
+  run: async (ctx) => {
     const result = await ctx.task("implement", { task: String(ctx.inputs.task) });
     return { result: result.text };
-  })
-  .compile();
+  },
+});
 ```
 
 For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktree({ gitWorktreeDir, baseBranch, cwd })`, returning `{ worktreeRoot, cwd, repositoryRoot, created }` with the same validation, symlink-preserving path handling, and cwd-preservation behavior used by workflow stages.
 
 `fallbackModels` retries transient provider/model failures with the primary `model` first, then each fallback, then the current Atomic-selected model when available. It is for rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — not workflow-code errors, tool failures, validation failures, or cancellations.
+
+When a finished stage's session is reattached for a follow-up (for example a post-completion follow-up, or after the CLI is reloaded), the stage resumes on the model the session last settled on — the one that actually worked — instead of replaying the chain from the primary. If that model fails again with a transient/retryable error, the full chain is retried from the primary.
 
 ### Reasoning levels
 
@@ -1559,24 +1739,26 @@ This applies everywhere a stage accepts a model: direct `ctx.task`/`ctx.chain`/`
 
 ### Context windows
 
-A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
+A `model`/`fallbackModels` entry may also request a context-window budget with a parenthesized size token in the model-name portion — placed *before or after* the optional `:reasoning` suffix so it never collides with the reasoning level. This mirrors GitHub Copilot's `Claude Opus 4.8 (1M context)` model-name convention:
 
 ```ts
 await ctx.task("review", {
   task: "Review the diff",
   model: "anthropic/claude-fable-5:xhigh",
   // The copilot opus fallback runs at its largest advertised (long-context) window.
-  fallbackModels: ["github-copilot/claude-opus-4.8 (1m):xhigh", "anthropic/claude-opus-4-8:xhigh"],
+  // Use (long) for a size-agnostic marker, or a rounded long-tier label like (1m).
+  fallbackModels: ["github-copilot/claude-opus-4.8 (long):xhigh", "anthropic/claude-opus-4-8:xhigh"],
 });
 ```
 
-The token accepts the same compact sizes as the `--context-window` flag (`1m`, `936k`, `400k`, or a raw token count) and is resolved against that specific candidate model's advertised windows:
+The token accepts the same compact sizes as the `--context-window` flag (`1m`, `1.1m`, `936k`, `400k`, or a raw token count), plus a generic `(long)` marker, and is resolved against that specific candidate model's advertised windows:
 
-- an exact supported window is used as-is;
-- otherwise the largest supported window not exceeding the request is selected, so `(1m)` lands on a model's ~936K long-context tier;
+- `(long)` — a size-agnostic long-context marker that selects the model's advertised long tier regardless of its exact size, so the same token works across models with different long tiers;
+- a request at or below the model's default window keeps the default;
+- a request above the default selects the long tier — an exact supported window is used as-is, otherwise the smallest supported window at or above the request is selected, rounding **up** so a rounded marker like `(1m)` or `(1.1m)` lands on the long tier even when it sits slightly above or below the marker size (e.g. `(1m)` selects claude-opus-4.8's 1M tier and gpt-5.5's 1.05M tier; `(1.1m)` matches gpt-5.5's rounded long-tier label);
 - when the model exposes no larger tier (or is unavailable), the request is dropped and the session keeps the model's default (short) window — a non-strict, automatic fallback.
 
-The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
+The budget applies only to the candidate that carries the token; other primary and fallback models in the same chain are unaffected. A parenthesized token that is not a valid size (for example `(preview)`) is left attached to the model id rather than being treated as a context window. Without the token, a tiered model **pins its natural default (short) window** in a workflow stage, so a persisted interactive long-context preference does not leak into workflow runs — use the `(1m)` token or the `contextWindow` stage option to opt into long context. For stage-wide selection you can instead set the `contextWindow` (and `contextWindowStrict`) stage option, which maps to the SDK `createAgentSession` options of the same name.
 
 ## Programmatic Usage
 
@@ -1585,20 +1767,26 @@ The budget applies only to the candidate that carries the token; other primary a
 - `/workflow <name> key=value ...` for interactive named runs
 - `/workflow connect|attach|pause|interrupt|resume|status|inputs|reload` for live control, inspection, and rediscovery
 - the `workflow` tool for agent-initiated orchestration and direct one-off runs
-Workflow definition files must export definitions produced by `defineWorkflow(...).compile()`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
+Workflow definition files must export definitions produced by `workflow({...})`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
 
 Standalone TypeScript workflow packages type-check the SDK import with no hand-authored `.d.ts`, no `declare module` shim, and no `tsconfig` `paths` alias. The SDK types ship with `@bastani/atomic`, so a workflow package depends only on `@bastani/atomic` (plus a `typebox` peer):
 
 ```ts
-import { defineWorkflow, Type } from "@bastani/workflows";
+import { workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-export default defineWorkflow("map-workflow-sdk")
-  .input("prompt", Type.String({ default: "map workflow sdk" }))
-  .run(async (ctx) => {
+export default workflow({
+  name: "map-workflow-sdk",
+  description: "Map the workflow SDK.",
+  inputs: {
+    prompt: Type.String({ default: "map workflow sdk" }),
+  },
+  outputs: {},
+  run: async (ctx) => {
     await ctx.task("map", { prompt: ctx.inputs.prompt });
     return {};
-  })
-  .compile();
+  },
+});
 ```
 
 How those types resolve depends on what else the package imports:
@@ -1622,22 +1810,29 @@ How those types resolve depends on what else the package imports:
   /// <reference types="@bastani/atomic/workflows/ambient" />
   ```
 
-Either form makes `import { defineWorkflow, Type } from "@bastani/workflows"` and the `@bastani/workflows/builtin/*` composition imports resolve under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias. `@bastani/workflows` is not a separate npm package — its types ship with `@bastani/atomic` — so list both `@bastani/atomic` and `typebox` (the SDK's emitted types reference TypeBox) in `peerDependencies`. Runtime discovery and loading via `atomic.workflows` are unchanged: Atomic's loader still supplies the SDK when workflow files execute.
+Either form makes `import { workflow } from "@bastani/workflows"
+import { Type } from "typebox"` and the `@bastani/workflows/builtin/*` composition imports resolve under `tsc` (`moduleResolution: NodeNext`) with no hand-authored `.d.ts`, no `declare module` shim, and no `paths` alias. `@bastani/workflows` is not a separate npm package — its types ship with `@bastani/atomic` — so list both `@bastani/atomic` and `typebox` (workflow files import `Type` from `typebox`) in `peerDependencies`. Runtime discovery and loading via `atomic.workflows` are unchanged: Atomic's loader still supplies the SDK when workflow files execute.
 
 The `workflow` tool still supports direct one-off `task`, `tasks`, and `chain` modes. Direct chains support `chainName` for status/artifact grouping and `chainDir` as a shared directory for relative reads, outputs, and worktree diffs.
 
 Use `createRegistry()` when code needs to group definitions explicitly:
 
 ```ts
-import { createRegistry, defineWorkflow, Type } from "@bastani/workflows";
+import { createRegistry, workflow } from "@bastani/workflows";
+import { Type } from "typebox";
 
-const alpha = defineWorkflow("alpha")
-  .output("text", Type.String({ description: "Alpha task output text." }))
-  .run(async (ctx) => {
+const alpha = workflow({
+  name: "alpha",
+  description: "",
+  inputs: {},
+  outputs: {
+    text: Type.String({ description: "Alpha task output text." }),
+  },
+  run: async (ctx) => {
     const result = await ctx.task("alpha", { prompt: "Run alpha." });
     return { text: result.text };
-  })
-  .compile();
+  },
+});
 
 const registry = createRegistry().register(alpha);
 registry.names();
@@ -1808,7 +2003,7 @@ Before implementing or shipping a non-trivial workflow, answer these questions:
 - **Stage decomposition:** For each stage, what question does it answer, what context does it need, what output should it return, and what model/tool/MCP requirements does it have?
 - **Local stage contract:** Can this stage prompt stand alone with its current objective, inputs/artifacts, expected outputs, tools/checks, and success criteria, without unexplained workflow internals or future-stage assumptions?
 - **Information flow:** For every edge between stages, is `previous` enough, or should the handoff use structured returns, files, `reads`, `output`, or `outputMode`?
-- **Output contract:** Which outputs should be declared with `.output(...)`, which stage/task/child results should `.run()` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
+- **Output contract:** Which outputs should be declared in `outputs`, which stage/task/child results should `run` return for those keys, and what runtime type must each value have? If another workflow may call this workflow as a child, which non-default outputs should the parent rely on?
 - **Context size:** Can downstream stages succeed from the handoff alone? Should large transcripts, logs, or research bundles be summarized or saved as artifacts?
 - **Control flow:** Should the workflow use `ctx.chain`, `ctx.parallel`, `ctx.ui`, bounded loops, `failFast`, or `fallbackModels`?
 - **User experience:** Are stage names readable in status and graph views? Is the final output compact? Are important artifacts saved with stable paths?
@@ -1822,8 +2017,8 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not guess input keys; inspect with `inputs` or `get` first.
 - Do not call `create`, `update`, or `delete` on the workflow tool; definitions are code-authored.
 - Do not use legacy workflow tool fields like `agent`, `stage`, or run-control `name`.
-- Do not pass strings such as `"goal"` or path objects to `ctx.workflow(...)`; import the compiled workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
-- Do not rely on undeclared child outputs; returning a key that is not declared with `.output(...)` fails the run. Declare `.output(...)` for every child-workflow field you expose — including `result` — and return values matching those schemas from `.run()`.
+- Do not pass strings such as `"goal"` or path objects to `ctx.workflow(...)`; import the workflow definition from `@bastani/workflows/builtin` or another TypeScript module first.
+- Do not rely on undeclared child outputs; returning a key that is not declared in `outputs` fails the run. Declare every child-workflow field you expose in `outputs` — including `result` — and return values matching those schemas from `run`.
 - Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
 - Do not call `kill` when the user asks to interrupt or pause resumably.
@@ -1831,3 +2026,653 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described.
 - Do not parse model gate decisions from ad-hoc prose with regular expressions; configure `schema` on a focused workflow item and consume `result.structured`.
 - Return compact structured decisions and save large artifacts to files; artifact handoffs should still use files when the next stage does not need the whole payload in context.
+
+## Workflow Best Practices
+
+This is the playbook I use to get consistently better results from coding agents and workflow systems.
+
+The core idea is simple: do not treat an agent like a magic box. Treat it like a capable engineering partner that needs a clear objective, tight scope, explicit validation, and occasional steering.
+
+Most weak agent runs fail for predictable reasons: the goal is vague, the scope is too broad, validation is missing, or the agent keeps following the wrong signal. This playbook is about avoiding those failure modes.
+
+The examples below are synthetic and intentionally generic. Replace placeholders like `[component]`, `[test command]`, and `[workflow]` with your own project details.
+
+---
+
+### The core loop
+
+The workflow pattern I rely on most often is:
+
+```text
+Objective -> Scope -> Done criteria -> Run -> Inspect -> Steer -> Validate -> Summarize
+```
+
+In practice, that means:
+
+1. Define the end state.
+2. Constrain the blast radius.
+3. State what counts as done.
+4. Let the agent or workflow work.
+5. Inspect status before reading details.
+6. Steer only when the run is off track, blocked, or missing criteria.
+7. Require evidence before accepting the result.
+8. Ask for a summary, handoff, or next-step plan.
+
+A good workflow prompt does not just say what to try. It says what success looks like.
+
+---
+
+### Prompt anatomy
+
+A strong workflow prompt usually has these parts:
+
+#### Objective
+
+What should be true when the work is complete?
+
+```text
+Implement `[specific behavior]` in `[component]`.
+```
+
+#### Context
+
+What does the agent need to know before acting?
+
+```text
+This is needed because `[reason]`. The relevant code likely lives near `[area]`.
+```
+
+#### Scope
+
+What is the agent allowed to change?
+
+```text
+Only touch files directly required for `[behavior]`.
+```
+
+#### Non-goals
+
+What should the agent avoid?
+
+```text
+Do not redesign `[subsystem]`, refactor unrelated code, or change public behavior outside `[case]`.
+```
+
+#### Done criteria
+
+How will we know the work is complete?
+
+```text
+Done means:
+- `[new behavior]` works.
+- `[existing behavior]` is unchanged.
+- `[test command]` passes.
+- The final response includes changed files, validation results, and remaining risks.
+```
+
+#### Stop conditions
+
+When should the agent stop and ask instead of guessing?
+
+```text
+If this requires changing `[public API/security behavior/data migration]`, stop and ask first.
+```
+
+---
+
+### Core principles
+
+#### 1. Start with the end state
+
+I try to describe what should be true at the end, not just what the agent should investigate.
+
+Bad:
+
+```text
+Look into the login issue.
+```
+
+Better:
+
+```text
+Fix the login redirect regression. Done means users who sign in from `[page]` return to `[expected destination]`, and `[test command]` passes.
+```
+
+#### 2. Keep scope tight
+
+Agents are often tempted to clean up nearby code. Sometimes that is useful, but most workflow runs should be bounded.
+
+Use phrases like:
+
+- `Only touch files required for this behavior.`
+- `Do not refactor unrelated code.`
+- `Preserve existing behavior for [case].`
+- `Make the smallest correct change.`
+
+#### 3. Separate implementation from validation
+
+A change is not done because the agent says it is done. It is done when the relevant evidence supports it.
+
+That evidence can be:
+
+- a targeted test,
+- a broader regression test,
+- a smoke command,
+- a typecheck or lint command,
+- a structured output contract check,
+- or a clear manual verification step.
+
+#### 4. Prefer evidence over speculation
+
+When something fails, I steer the agent back to the observable signal: the error, failing test, log line, user behavior, or broken contract.
+
+```text
+Treat the failing assertion as the source of truth. Do not guess from nearby code alone.
+```
+
+#### 5. Use staged thinking
+
+For ambiguous work, I usually separate the flow into stages:
+
+```text
+Investigate -> identify root cause -> propose fix -> implement -> validate -> summarize
+```
+
+If the cause is not clear, I do not want the agent making broad changes just to see what happens.
+
+#### 6. Steer, do not micromanage
+
+The best steering messages are short and corrective. They add constraints, redirect attention, or provide a decision.
+
+You usually do not need to rewrite the whole prompt. You need to say what changed.
+
+#### 7. Treat failed validation as the next task
+
+A failed test is not a footnote. It becomes the next objective.
+
+```text
+Validation failed on `[command]`. Treat that as the source of truth. Fix the root cause only, rerun the failing check, then report the result.
+```
+
+#### 8. Interrupt stale or wrong work
+
+If a run is solving the wrong problem, based on outdated assumptions, or duplicating another run, stop it. Letting it continue usually creates more cleanup later.
+
+#### 9. Inspect at the right level
+
+For long-running workflows, I do not start by reading every log. I check:
+
+1. overall status,
+2. current stage,
+3. blocker or failure reason,
+4. relevant stage details only if needed.
+
+#### 10. Ask for synthesis before handoff
+
+Before switching from investigation to implementation, or from implementation to review, I often ask for a concise synthesis:
+
+```text
+Summarize root cause, proposed fix, files involved, validation plan, and remaining risks.
+```
+
+---
+
+### Common workflow patterns
+
+#### Scoped implementation sprint
+
+**Use when:** You have a clear feature, bug fix, or issue to delegate.
+
+**Prompt shape:**
+
+```text
+Implement `[feature]` in `[component]`. Only touch files directly needed for this behavior. Done means the new behavior works, existing behavior is unchanged, and `[test command]` passes.
+```
+
+**Why it works:** The agent gets autonomy, but the objective and blast radius are bounded.
+
+**Validation:** Run the most relevant targeted check first, then a broader nearby check if the change is risky.
+
+---
+
+#### Regression repair loop
+
+**Use when:** CI, tests, typecheck, lint, or smoke validation fails.
+
+**Prompt shape:**
+
+```text
+Fix the failing `[test suite]` regression. Treat the failure output as the source of truth. Do not refactor unrelated code. Done means the failing test passes and no nearby tests regress.
+```
+
+**Why it works:** It anchors the run to observable evidence instead of speculation.
+
+**Validation:** Reproduce the failure, fix the root cause, rerun the failing check, then run a nearby or broader check.
+
+---
+
+#### Workflow or tooling smoke test
+
+**Use when:** You changed a workflow definition, prompt contract, structured output, CLI behavior, or developer tool.
+
+**Prompt shape:**
+
+```text
+Validate `[workflow/tool]` after the change. Run a minimal smoke case, confirm required outputs are present, and report whether it can be invoked with expected inputs.
+```
+
+**Why it works:** Workflow and tooling changes often fail at integration boundaries. A small smoke case catches those failures early.
+
+**Validation:** Reload or rerun the tool, check the output shape, and report contract mismatches.
+
+---
+
+#### Human-in-the-loop checkpoint
+
+**Use when:** The workflow might need a product decision, API decision, migration choice, or risky approval.
+
+**Prompt shape:**
+
+```text
+If blocked, ask before changing public API behavior. Otherwise proceed with the smallest compatible fix.
+```
+
+**Why it works:** The agent keeps moving where it can, but does not guess on high-impact decisions.
+
+**Validation:** Confirm the decision is reflected in the final behavior and summary.
+
+---
+
+#### Release gate
+
+**Use when:** Preparing a release, version bump, changelog, publish step, migration, or deployment-adjacent task.
+
+**Prompt shape:**
+
+```text
+Prepare a `[release kind]` release for `[version]`. Do not publish unless validation passes. Report the exact checks performed and any unresolved blockers.
+```
+
+**Why it works:** Release work needs explicit gates and stop conditions.
+
+**Validation:** Require changelog review, tests, build/package checks, and a clear publish/no-publish decision.
+
+---
+
+#### Monitor-and-steer long run
+
+**Use when:** A workflow runs asynchronously, has multiple stages, or may need supervision.
+
+**Prompt shape:**
+
+```text
+Show the current stage and blocker. If implementation is complete, summarize validation status and remaining risks.
+```
+
+**Why it works:** It avoids both blind trust and excessive log-reading.
+
+**Validation:** Inspect status first, then stages, then only the relevant details.
+
+---
+
+#### Investigate before implementing
+
+**Use when:** A bug or request is ambiguous.
+
+**Prompt shape:**
+
+```text
+Investigate `[bug]`, identify root cause, and propose the smallest fix. Do not implement until the cause is clear.
+```
+
+**Why it works:** It prevents the agent from making changes before it understands the failure mode.
+
+**Validation:** Ask for a reproduction, root-cause explanation, proposed fix, and test plan before implementation.
+
+---
+
+### Steering patterns
+
+#### Tighten scope
+
+**Signal:** The agent starts expanding into adjacent cleanup, unrelated files, or broad refactors.
+
+**Steer:**
+
+```text
+Narrow this to `[specific behavior]` in `[component]`. Do not refactor unrelated code or change `[adjacent area]`. Done means `[specific acceptance criteria]`.
+```
+
+**Why:** Prevents risky changes and keeps the run reviewable.
+
+---
+
+#### Add missing done criteria
+
+**Signal:** The agent has a plan, but no clear finish line.
+
+**Steer:**
+
+```text
+Use these done criteria:
+1. `[behavior]` works.
+2. `[regression]` remains unchanged.
+3. `[test command]` passes.
+4. Report files changed and validation results.
+```
+
+**Why:** Makes completion verifiable.
+
+---
+
+#### Redirect an off-track stage
+
+**Signal:** The workflow is investigating the wrong area or solving the wrong problem.
+
+**Steer:**
+
+```text
+Stop pursuing `[wrong direction]`. The relevant signal is `[error/test/user behavior]`. Re-focus on `[target area]` and continue from there.
+```
+
+**Why:** Saves time and prevents wrong assumptions from compounding.
+
+---
+
+#### Respond to a blocked prompt
+
+**Signal:** The workflow asks for approval, a choice, or clarification.
+
+**Steer:**
+
+```text
+Choose `[option]`. Continue only if `[condition]`; otherwise stop and report the blocker.
+```
+
+**Why:** Keeps the workflow unblocked without adding ambiguity.
+
+---
+
+#### Turn failed validation into the next task
+
+**Signal:** Tests, typecheck, lint, build, or smoke checks fail.
+
+**Steer:**
+
+```text
+Validation failed on `[command]`. Treat that as the source of truth. Fix the root cause only, rerun the failing check, then report the result.
+```
+
+**Why:** Prevents accepting partially working output.
+
+---
+
+#### Ask for synthesis
+
+**Signal:** The workflow has gathered information, but the next action is unclear.
+
+**Steer:**
+
+```text
+Synthesize the current findings into: root cause, proposed fix, files likely involved, validation plan, and remaining risks.
+```
+
+**Why:** Converts exploration into a usable plan.
+
+---
+
+#### Pause, kill, or rerun
+
+**Signal:** A run is stale, duplicated, superseded, or based on outdated assumptions.
+
+**Steer:**
+
+```text
+Pause this run; it has been superseded by `[new context]`. Resume only with `[updated objective]`, or stop and summarize current state.
+```
+
+**Why:** Avoids conflicting changes and wasted work.
+
+---
+
+### Copy-paste templates
+
+#### Start a workflow
+
+```text
+Objective:
+Implement/fix `[specific behavior]` in `[component]`.
+
+Context:
+`[short context about why this matters or where to look]`
+
+Scope:
+- Only touch files required for `[behavior]`.
+- Do not refactor unrelated code.
+- Preserve existing behavior for `[existing case]`.
+
+Done criteria:
+- `[new behavior]` works.
+- `[regression case]` still works.
+- `[test command]` passes.
+- Report changed files, validation results, and any risks.
+
+Stop conditions:
+- If this requires `[risky decision]`, stop and ask first.
+```
+
+#### Tighten scope
+
+```text
+Tighten scope to `[specific target]`.
+
+Do not work on:
+- `[excluded area 1]`
+- `[excluded area 2]`
+- broad cleanup or unrelated refactors
+
+Continue only on the path needed to satisfy:
+`[acceptance criterion]`.
+```
+
+#### Add acceptance criteria
+
+```text
+Add these acceptance criteria before continuing:
+
+1. User can `[action]`.
+2. System handles `[edge case]`.
+3. Existing behavior `[existing behavior]` is unchanged.
+4. `[test command]` passes.
+5. Final response includes validation evidence.
+```
+
+#### Redirect a stage
+
+```text
+This stage is off track.
+
+Stop investigating `[wrong area]`.
+The relevant signal is `[error/output/requirement]`.
+Refocus on `[correct area]`.
+
+Next:
+1. Reproduce or inspect `[signal]`.
+2. Identify root cause.
+3. Make the smallest fix.
+4. Run `[validation command]`.
+```
+
+#### Handle failed validation
+
+```text
+Validation failed:
+
+Command:
+`[command]`
+
+Failure:
+`[short sanitized failure summary]`
+
+Treat this as the source of truth.
+Fix only the root cause.
+Rerun the failing command.
+If it still fails, summarize the blocker and stop.
+```
+
+#### Ask for synthesis
+
+```text
+Synthesize current progress into:
+
+- What was attempted
+- What changed
+- What evidence supports the result
+- What remains uncertain
+- Recommended next steps
+- Exact validation commands run
+```
+
+#### Turn findings into implementation steps
+
+```text
+Convert the findings into an implementation plan:
+
+1. Files/components to change
+2. Order of changes
+3. Tests to add or update
+4. Validation commands
+5. Risks or edge cases
+6. Stop conditions
+```
+
+#### Prepare a release gate
+
+```text
+Prepare `[version]` as a `[release kind]` release.
+
+Requirements:
+- Verify changelog entries are complete.
+- Run `[test command]`.
+- Run `[build/package command]`.
+- Do not publish unless all validation passes.
+- If any gate fails, stop and report blockers.
+
+Final response should include:
+- Version
+- Checks run
+- Results
+- Files changed
+- Publish readiness
+```
+
+---
+
+### Concrete examples
+
+#### Example 1: Fixing a failing test
+
+**Scenario:** A package has one failing unit test after a recent change.
+
+**Initial objective:**
+
+```text
+Fix the failing `[unit test]`. Do not rewrite the module. Done means the test passes and nearby tests still pass.
+```
+
+**Steering message:**
+
+```text
+Stop exploring unrelated failures. Focus only on the assertion mismatch in `[test file]`.
+```
+
+**Validation:** Run `[targeted test command]`, then `[nearby test command]`.
+
+**Outcome:** Small fix applied, regression test passes, and the workflow reports exact commands and results.
+
+---
+
+#### Example 2: Repairing a workflow definition
+
+**Scenario:** A custom workflow no longer returns the expected structured output.
+
+**Initial objective:**
+
+```text
+Validate `[workflow]` and fix its output contract. Done means the smoke run returns `[required fields]`.
+```
+
+**Steering message:**
+
+```text
+Treat the missing output field as the root issue. Do not change unrelated stage prompts.
+```
+
+**Validation:** Reload workflow, run minimal smoke input, inspect structured result.
+
+**Outcome:** Contract fixed, smoke test passes, and the workflow can be reused safely.
+
+---
+
+#### Example 3: Investigating before implementing
+
+**Scenario:** A user-reported bug is ambiguous.
+
+**Initial objective:**
+
+```text
+Investigate `[bug]`, identify root cause, and propose the smallest fix. Do not implement until the cause is clear.
+```
+
+**Steering message:**
+
+```text
+Synthesize findings first: root cause, affected path, proposed fix, and validation plan.
+```
+
+**Validation:** Add or run a reproduction test before changing code.
+
+**Outcome:** Clear implementation plan produced, then delegated as a scoped fix.
+
+---
+
+### Anti-patterns
+
+| Anti-pattern | Better approach |
+| --- | --- |
+| `Fix this.` | `Fix [specific failure]; done means [test command] passes.` |
+| No validation step | Require tests, smoke checks, typecheck, or explicit manual verification. |
+| Broad refactors | Constrain the run to the files needed for the objective. |
+| Letting a wrong stage continue | Redirect or interrupt as soon as the agent follows the wrong signal. |
+| Accepting unverified summaries | Ask for changed files, commands run, results, and remaining risks. |
+| Mixing investigation and implementation too early | Ask for root cause and proposed fix before code changes. |
+| Ignoring blocked stages | Answer directly with one decision and any constraints. |
+| Continuing stale runs | Pause, kill, or rerun with updated context. |
+| Reading every log | Inspect status, then stages, then only relevant details. |
+| Publishing without gates | Require release validation and explicit stop conditions. |
+
+---
+
+### Quick reference
+
+Before starting a workflow, include:
+
+- [ ] Objective
+- [ ] Context
+- [ ] Scope
+- [ ] Non-goals
+- [ ] Done criteria
+- [ ] Validation command
+- [ ] Reporting requirements
+- [ ] Stop conditions
+
+Before accepting a workflow result, ask:
+
+- [ ] What changed?
+- [ ] Why was this the right fix?
+- [ ] What evidence supports it?
+- [ ] Which commands were run?
+- [ ] What still might be risky?
+- [ ] Is anything blocked or unresolved?
+
+The better the prompt defines the game, the better the agent can play it.

@@ -59,7 +59,7 @@ import {
   wordLeft,
   wordRight,
 } from "./keybindings-adapter.js";
-import { decodePrintableKey, Key, matchesKey, visibleWidth } from "./text-helpers.js";
+import { decodePrintableKey, Key, matchesKey } from "./text-helpers.js";
 
 export type FormEditorOutcome = "submit" | "cancel";
 
@@ -78,125 +78,16 @@ export interface InlineFormEditorOpts {
   keybindings?: KeybindingsLike;
 }
 
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-function graphemes(text: string): string[] {
-  return Array.from(graphemeSegmenter.segment(text), (s) => s.segment);
-}
-
-function previousGraphemeOffset(text: string, caret: number): number {
-  const c = Math.max(0, Math.min(caret, text.length));
-  let prev = 0;
-  for (const s of graphemeSegmenter.segment(text)) {
-    if (s.index >= c) break;
-    prev = s.index;
-  }
-  return prev;
-}
-
-function nextGraphemeOffset(text: string, caret: number): number {
-  const c = Math.max(0, Math.min(caret, text.length));
-  for (const s of graphemeSegmenter.segment(text)) {
-    if (s.index >= c) return Math.min(text.length, s.index + s.segment.length);
-    if (s.index + s.segment.length > c) return s.index + s.segment.length;
-  }
-  return text.length;
-}
-
-function clampGraphemeOffset(text: string, caret: number): number {
-  const c = Math.max(0, Math.min(caret, text.length));
-  if (c === text.length) return c;
-  for (const s of graphemeSegmenter.segment(text)) {
-    if (s.index === c) return c;
-    if (s.index > c) break;
-  }
-  return previousGraphemeOffset(text, c);
-}
-
-function visualColumn(text: string, caret: number): number {
-  return visibleWidth(text.slice(0, clampGraphemeOffset(text, caret)));
-}
-
-function offsetAtVisualColumn(text: string, targetCol: number): number {
-  let col = 0;
-  for (const s of graphemeSegmenter.segment(text)) {
-    const w = visibleWidth(s.segment);
-    if (col + w > targetCol) return s.index;
-    col += w;
-  }
-  return text.length;
-}
-
-function isPrintableGrapheme(data: string): boolean {
-  if (data.length === 0 || data.includes("\x1b")) return false;
-  for (const ch of data) {
-    const code = ch.codePointAt(0);
-    if (code === undefined || code < 0x20 || code === 0x7f) return false;
-  }
-  return graphemes(data).length === 1;
-}
-
-/**
- * Move the caret one logical line up inside a multi-line text field.
- * Returns the new caret offset, or `null` when the caret is already on
- * the first logical line — that's the boundary signal the caller uses to
- * fall through to focus-prev. The visual cell column is preserved across
- * lines, matching pi-tui Editor behaviour for CJK/emoji-width text.
- */
-function caretLineUp(raw: string, caret: number): number | null {
-  const safe = clampGraphemeOffset(raw, caret);
-  const lineStart = raw.lastIndexOf("\n", safe - 1) + 1;
-  if (lineStart === 0) return null; // first logical line — boundary
-  const prevLineEnd = lineStart - 1;
-  const prevLineStart = raw.lastIndexOf("\n", prevLineEnd - 1) + 1;
-  const colInLine = visualColumn(raw.slice(lineStart, safe), safe - lineStart);
-  const prevLine = raw.slice(prevLineStart, prevLineEnd);
-  return prevLineStart + offsetAtVisualColumn(prevLine, colInLine);
-}
-
-/**
- * Move the caret one logical line down inside a multi-line text field.
- * Returns the new caret offset, or `null` when the caret is already on
- * the last logical line.
- */
-function caretLineDown(raw: string, caret: number): number | null {
-  const safe = clampGraphemeOffset(raw, caret);
-  const nextNl = raw.indexOf("\n", safe);
-  if (nextNl === -1) return null; // last logical line — boundary
-  const lineStart = raw.lastIndexOf("\n", safe - 1) + 1;
-  const colInLine = visualColumn(raw.slice(lineStart, safe), safe - lineStart);
-  const nextLineStart = nextNl + 1;
-  const nextNlAfter = raw.indexOf("\n", nextLineStart);
-  const nextLineEnd = nextNlAfter === -1 ? raw.length : nextNlAfter;
-  const nextLine = raw.slice(nextLineStart, nextLineEnd);
-  return nextLineStart + offsetAtVisualColumn(nextLine, colInLine);
-}
-
-// ── Bracketed paste handling ─────────────────────────────────────────────
-// Pi's host terminal enables bracketed paste mode and forwards the wrap
-// markers verbatim to our editor. Wrappers from xterm-compatible
-// terminals — same constants pi-tui's Editor uses.
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
-
-/**
- * `true` when `data` is a multi-character chunk that looks like raw
- * pasted text (no escape sequences, only printable + LF/TAB). Used as a
- * fallback for hosts that don't enable bracketed paste — bursts of
- * printable input are still treated as paste rather than ignored, while
- * single keystrokes continue to flow through the normal key router.
- */
-function isPrintableTextChunk(data: string): boolean {
-  if (data.includes("\x1b")) return false;
-  for (const ch of data) {
-    const code = ch.codePointAt(0);
-    if (code === undefined) return false;
-    if (code === 0x09 || code === 0x0a) continue;
-    if (code < 0x20 || code === 0x7f) return false;
-  }
-  return true;
-}
-
+import {
+  PASTE_END,
+  PASTE_START,
+  caretLineDown,
+  caretLineUp,
+  isPrintableGrapheme,
+  isPrintableTextChunk,
+  nextGraphemeOffset,
+  previousGraphemeOffset,
+} from "./inline-form-editor-text.js";
 /**
  * Minimal `PiEditorComponent` implementation. The pi-tui interface requires
  * `getText` / `setText` / `handleInput` / `render` / `invalidate`. We satisfy
@@ -296,53 +187,30 @@ export class InlineFormEditor implements PiEditorComponent {
   setCustomKeyHandler(key: string, handler: () => void): void {
     this.customKeyHandlers.set(key, handler);
   }
-
   removeCustomKeyHandler(key: string): void {
     this.customKeyHandlers.delete(key);
   }
-
   clearCustomKeyHandlers(): void {
     this.customKeyHandlers.clear();
   }
-
   setAutocompleteProvider(_provider: object): void {
-    // Autocomplete belongs to the default chat editor, not the field router.
   }
-
   addToHistory(_text: string): void {
-    // Field editing is transient and should not pollute prompt history.
   }
-
   insertTextAtCursor(text: string): void {
     this.handleInput(text);
   }
-
   getExpandedText(): string {
     return this.getText();
   }
-
   dispose?(): void {
-    // No resources to release; present for host symmetry with visible editors.
   }
-
   render(_width: number): string[] {
-    // Keep the replacement editor mounted only to receive keyboard input.
-    // The inline chat card above is the canonical visual surface for field
-    // focus, values, validation, and submission hints. Rendering zero rows
-    // removes the duplicate bottom argument box shown by the old editor body.
     return [];
   }
-
   handleInput(data: string): void {
     const state = getForm(this.opts.formId);
     if (!state || state.status !== "editing") return;
-
-    // Bracketed-paste handling. Pi enables bracketed paste mode on the
-    // host terminal, so paste content arrives wrapped in
-    // `\x1b[200~…\x1b[201~` and may span multiple `handleInput` calls
-    // when large. Mirror pi-tui Editor's strategy: buffer until we see
-    // the close marker, then apply the accumulated content as a single
-    // edit. cross-ref: pi-tui dist/components/editor.js handleInput.
     if (data.includes(PASTE_START)) {
       this.isInPaste = true;
       this.pasteBuffer = "";
@@ -363,11 +231,6 @@ export class InlineFormEditor implements PiEditorComponent {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
-
-    // Fallback for hosts without bracketed paste: a multi-character
-    // chunk of printable text (no escape bytes) is treated as paste.
-    // Single-char input still flows through the routeKey path so the
-    // existing keystroke handlers (arrows, paste, etc.) keep working.
     if (data.length > 1 && isPrintableTextChunk(data)) {
       if (this.applyPaste(data, state)) {
         touch(state);
@@ -375,37 +238,19 @@ export class InlineFormEditor implements PiEditorComponent {
       }
       return;
     }
-
     const consumed = this.routeKey(data, state);
     if (consumed) {
       touch(state);
       this.tui.requestRender?.();
     }
   }
-
-  /**
-   * Insert `content` at the focused field's caret, normalising line
-   * endings and respecting per-field-type rules. Returns `true` when the
-   * field's raw text actually changed so the caller can flush a render.
-   *
-   *   - `text`        : multi-line accepted as-is.
-   *   - `string` / `number` / `integer` : first logical line only.
-   *   - `select` / `boolean`            : ignored (pasting onto a radio /
-   *     toggle has no meaningful semantics).
-   */
   private applyPaste(content: string, state: InlineFormState): boolean {
     const field = state.fields[state.focusedIdx];
     if (!field) return false;
     if (field.type === "select" || field.type === "boolean") return false;
-    // Normalise CR / CRLF to LF, then strip non-printable control bytes.
-    // We keep `\n` (LF) and `\t` (TAB) since prompt-style content uses
-    // both; everything else (NUL, BEL, ESC residues, DEL, etc.) is
-    // dropped to avoid breaking the rendered card.
-    // eslint-disable-next-line no-control-regex
     let text = content
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
-      // eslint-disable-next-line no-control-regex
       .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
     if (field.type !== "text") {
       const nl = text.indexOf("\n");
@@ -420,23 +265,7 @@ export class InlineFormEditor implements PiEditorComponent {
     state.caret = caret + text.length;
     return true;
   }
-
-  // ── Key routing ───────────────────────────────────────────────────────
-
-  /**
-   * Returns true when the key was meaningful (consumed) and the host
-   * should re-render. False for unknown keys that we silently drop —
-   * pi-tui has no parent editor to forward to, and the heavy default
-   * editor's behaviours (autocomplete, kill-rings) aren't appropriate
-   * for a typed-field form.
-   */
   private routeKey(data: string, state: InlineFormState): boolean {
-    // Globals first. Workflow form contract — these are NOT Pi-configurable
-    // editor actions, so they stay as raw byte checks:
-    //   esc        (\x1b)        — cancel form
-    //   ctrl+c     (\x03)        — cancel form
-    //   tab        (\t)          — focus next field / final Submit action
-    //   shift+tab  (\x1b[Z)      — focus previous field / final Submit action
     if (matchesKey(data, Key.ctrl("c")) || matchesKey(data, Key.escape)) {
       this.opts.onExit("cancel");
       return true;
@@ -449,17 +278,13 @@ export class InlineFormEditor implements PiEditorComponent {
       this.moveFocus(state, -1);
       return true;
     }
-
     if (state.focusedIdx === state.fields.length) return this.handleSubmit(data, state);
-
     const field = state.fields[state.focusedIdx];
     if (!field) return false;
-
     if (field.type === "select") return this.handleSelect(data, field, state);
     if (field.type === "boolean") return this.handleBoolean(data, field, state);
     return this.handleText(data, field, state);
   }
-
   private handleSubmit(data: string, state: InlineFormState): boolean {
     if (matchesAction(this.kb, data, TUI_ACTION.selectUp) || matchesAction(this.kb, data, TUI_ACTION.editorCursorUp)) {
       this.moveFocus(state, -1);
@@ -478,13 +303,11 @@ export class InlineFormEditor implements PiEditorComponent {
     }
     return false;
   }
-
   private submitOrFocusInvalid(state: InlineFormState): boolean {
     if (this.allValid(state)) this.opts.onExit("submit");
     else this.focusFirstInvalid(state);
     return true;
   }
-
   private handleSelect(
     data: string,
     field: WorkflowInputEntry,
@@ -512,7 +335,6 @@ export class InlineFormEditor implements PiEditorComponent {
     }
     return false;
   }
-
   private handleBoolean(
     data: string,
     field: WorkflowInputEntry,
@@ -534,7 +356,6 @@ export class InlineFormEditor implements PiEditorComponent {
     }
     return false;
   }
-
   private handleText(
     data: string,
     field: WorkflowInputEntry,
@@ -543,9 +364,6 @@ export class InlineFormEditor implements PiEditorComponent {
     const name = field.name;
     const cur = state.rawText[name] ?? "";
     const caret = Math.max(0, Math.min(state.caret, cur.length));
-
-    // Vertical navigation — text fields walk between logical lines first,
-    // single-line scalars advance focus immediately.
     if (matchesAction(this.kb, data, TUI_ACTION.editorCursorUp)) {
       if (field.type === "text") {
         const newCaret = caretLineUp(cur, caret);
@@ -568,12 +386,6 @@ export class InlineFormEditor implements PiEditorComponent {
       this.moveFocus(state, +1);
       return true;
     }
-
-    // Word movement. cursorWordLeft / cursorWordRight come BEFORE the
-    // single-char left/right checks because Pi's default bindings include
-    // overlapping prefixes — e.g. ctrl+b is bound to both `cursorLeft`
-    // (char) and `cursorWordLeft` is `alt+b` / `alt+left` / `ctrl+left`,
-    // so order matters only when bindings get remapped to the same key.
     if (matchesAction(this.kb, data, "tui.editor.cursorWordLeft")) {
       state.caret = wordLeft(cur, caret);
       return true;
@@ -582,8 +394,6 @@ export class InlineFormEditor implements PiEditorComponent {
       state.caret = wordRight(cur, caret);
       return true;
     }
-
-    // Line jumps.
     if (matchesAction(this.kb, data, "tui.editor.cursorLineStart")) {
       state.caret = lineStart(cur, caret);
       return true;
@@ -592,8 +402,6 @@ export class InlineFormEditor implements PiEditorComponent {
       state.caret = lineEnd(cur, caret);
       return true;
     }
-
-    // Character cursor movement.
     if (matchesAction(this.kb, data, TUI_ACTION.editorCursorLeft)) {
       state.caret = previousGraphemeOffset(cur, caret);
       return true;
@@ -602,11 +410,6 @@ export class InlineFormEditor implements PiEditorComponent {
       state.caret = nextGraphemeOffset(cur, caret);
       return true;
     }
-
-    // Deletion. Word/line variants come before plain char deletion because
-    // their key sequences (ctrl+w, alt+backspace, ctrl+u, ctrl+k) are
-    // distinct from raw backspace; the order is defensive against user
-    // remaps that collapse them.
     if (matchesAction(this.kb, data, "tui.editor.deleteWordBackward")) {
       const start = wordLeft(cur, caret);
       const r = deleteRange(cur, start, caret, caret);
@@ -651,11 +454,6 @@ export class InlineFormEditor implements PiEditorComponent {
       }
       return true;
     }
-
-    // Enter — text fields insert a real `\n` at the caret; non-text scalars
-    // treat it as "advance focus". `tui.input.newLine` (shift+enter) is
-    // explicitly equivalent to plain Enter in our form contract; both
-    // insert a newline in text fields and advance focus elsewhere.
     if (
       matchesAction(this.kb, data, TUI_ACTION.inputSubmit) ||
       matchesAction(this.kb, data, "tui.input.newLine")
@@ -668,12 +466,6 @@ export class InlineFormEditor implements PiEditorComponent {
       }
       return true;
     }
-
-    // Printable insertion — accept raw graphemes and terminal-encoded
-    // printable keys (CSI-u / Kitty). VSCode's integrated terminal can emit
-    // printable keys as escape sequences when modifyOtherKeys is active.
-    // Numeric fields accept the same printable range as text; per-field
-    // validation catches non-numeric content at submit time.
     const printable = decodePrintableKey(data) ?? data;
     if (isPrintableGrapheme(printable)) {
       state.rawText[name] = cur.slice(0, caret) + printable + cur.slice(caret);
@@ -682,7 +474,6 @@ export class InlineFormEditor implements PiEditorComponent {
     }
     return false;
   }
-
   private moveFocus(state: InlineFormState, delta: number): void {
     const n = state.fields.length + 1;
     if (n <= 1) return;
@@ -695,7 +486,6 @@ export class InlineFormEditor implements PiEditorComponent {
     const next = state.fields[state.focusedIdx]!;
     state.caret = (state.rawText[next.name] ?? "").length;
   }
-
   private focusFirstInvalid(state: InlineFormState): void {
     const [idx] = computeInvalid(state.fields, state.rawText);
     if (idx === undefined) return;
@@ -703,9 +493,7 @@ export class InlineFormEditor implements PiEditorComponent {
     state.focusedIdx = idx;
     state.caret = (state.rawText[state.fields[idx]!.name] ?? "").length;
   }
-
   private allValid(state: InlineFormState): boolean {
     return computeInvalid(state.fields, state.rawText).length === 0;
   }
 }
-

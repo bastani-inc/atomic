@@ -1,5 +1,8 @@
 import { GENERIC_FONTS } from '../../shared/constants.mjs';
+import { isNeutralColor } from '../../shared/color.mjs';
+import { checkSourceDesignSystem } from '../../design-system.mjs';
 import { isFullPage } from '../../shared/page.mjs';
+import { applyInlineIgnores } from '../../shared/inline-ignores.mjs';
 import { finding } from '../../findings.mjs';
 import { filterByProviders } from '../../registry/antipatterns.mjs';
 import { profileFindings, profileStep } from '../../profile/profiler.mjs';
@@ -16,18 +19,31 @@ const isSafeElement = (line) => /<(?:blockquote|nav[\s>]|pre[\s>]|code[\s>]|a\s|
  *  content-text analyzers don't false-positive on code or CSS. */
 function stripHtmlToText(html) {
   return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ');
 }
 
+const PAGE_ANALYZER_EXTS = new Set(['.html', '.htm', '.astro', '.vue', '.svelte']);
+
+function extFromFilePath(filePath) {
+  return filePath ? (filePath.match(/\.\w+$/)?.[0] || '').toLowerCase() : '';
+}
+
+function shouldRunPageAnalyzers(content, filePath) {
+  if (!isFullPage(content)) return false;
+  const ext = extFromFilePath(filePath);
+  return !ext || PAGE_ANALYZER_EXTS.has(ext);
+}
+
 function isNeutralBorderColor(str) {
-  const m = str.match(/solid\s+(#[0-9a-f]{3,8}|rgba?\([^)]+\)|\w+)/i);
+  const m = str.match(/solid\s+((?:rgba?|hsla?|oklch|oklab|lab|lch|hwb|color)\([^)]*\)|#[0-9a-f]{3,8}\b|[a-z]+)/i);
   if (!m) return false;
   const c = m[1].toLowerCase();
   if (['gray', 'grey', 'silver', 'white', 'black', 'transparent', 'currentcolor'].includes(c)) return true;
+  if (/^(?:rgba?|hsla?|oklch|oklab|lab|lch|hwb)\(/i.test(c)) return isNeutralColor(c);
   const hex = c.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/);
   if (hex) {
     const [r, g, b] = [parseInt(hex[1], 16), parseInt(hex[2], 16), parseInt(hex[3], 16)];
@@ -44,10 +60,10 @@ function isNeutralBorderColor(str) {
 const REGEX_MATCHERS = [
   // --- Side-tab ---
   { id: 'side-tab', regex: /\bborder-[lrse]-(\d+)\b/g,
-    test: (m, line) => { const n = +m[1]; return hasRounded(line) ? n >= 1 : n >= 4; },
+    test: (m, line) => { const n = +m[1]; return hasRounded(line) ? n >= 2 : n >= 4; },
     fmt: (m) => m[0] },
   { id: 'side-tab', regex: /border-(?:left|right)\s*:\s*(\d+)px\s+solid[^;]*/gi,
-    test: (m, line) => { if (isSafeElement(line)) return false; if (isNeutralBorderColor(m[0])) return false; const n = +m[1]; return hasBorderRadius(line) ? n >= 1 : n >= 3; },
+    test: (m, line) => { if (isSafeElement(line)) return false; if (isNeutralBorderColor(m[0])) return false; const n = +m[1]; return hasBorderRadius(line) ? n >= 2 : n >= 3; },
     fmt: (m) => m[0].replace(/\s*;?\s*$/, '') },
   { id: 'side-tab', regex: /border-(?:left|right)-width\s*:\s*(\d+)px/gi,
     test: (m, line) => !isSafeElement(line) && +m[1] >= 3,
@@ -98,9 +114,14 @@ const REGEX_MATCHERS = [
   { id: 'bounce-easing', regex: /\banimate-bounce\b/g,
     test: () => true,
     fmt: () => 'animate-bounce (Tailwind)' },
-  { id: 'bounce-easing', regex: /animation(?:-name)?\s*:\s*[^;]*\b(bounce|elastic|wobble|jiggle|spring)\b/gi,
+  { id: 'bounce-easing', regex: /animation(?:-name)?\s*:\s*([^;{}]*(?:bounce|elastic|wobble|jiggle|spring)[^;{}]*)/gi,
     test: () => true,
-    fmt: (m) => m[0] },
+    fmt: (m) => {
+      const token = m[1]
+        .split(/[,\s]+/)
+        .find((part) => /bounce|elastic|wobble|jiggle|spring/i.test(part));
+      return `animation: ${token || m[1].trim()}`;
+    } },
   { id: 'bounce-easing', regex: /cubic-bezier\(\s*([\d.-]+)\s*,\s*([\d.-]+)\s*,\s*([\d.-]+)\s*,\s*([\d.-]+)\s*\)/g,
     test: (m) => {
       const y1 = parseFloat(m[2]), y2 = parseFloat(m[4]);
@@ -326,7 +347,7 @@ function extractStyleBlocks(content, ext) {
   ext = ext.toLowerCase();
   if (ext !== '.vue' && ext !== '.svelte') return [];
   const blocks = [];
-  const re = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+  const re = /<style[^>]*>([\s\S]*?)<\/style[^>]*>/gi;
   let m;
   while ((m = re.exec(content)) !== null) {
     const before = content.substring(0, m.index);
@@ -422,7 +443,7 @@ const TEXT_CONTENT_ANALYZER_IDS = [
 
 function runTextContentAnalyzers(content, filePath, options = {}) {
   const profile = options?.profile;
-  if (!isFullPage(content)) return [];
+  if (!shouldRunPageAnalyzers(content, filePath)) return [];
   // The 4 text-content analyzers are at indices 3-6 in REGEX_ANALYZERS.
   const findings = [];
   for (let i = 0; i < TEXT_CONTENT_ANALYZER_IDS.length; i++) {
@@ -442,11 +463,11 @@ function detectText(content, filePath, options = {}) {
   const profile = options?.profile;
   const findings = [];
   const lines = content.split('\n');
-  const ext = filePath ? (filePath.match(/\.\w+$/)?.[0] || '').toLowerCase() : '';
+  const ext = extFromFilePath(filePath);
 
   // Run regex matchers on the full file content (catches Tailwind classes, inline styles)
   // Enable block context for CSS files where related properties span multiple lines
-  const cssLike = new Set(['.css', '.scss', '.less']);
+  const cssLike = new Set(['.css', '.scss', '.sass', '.less']);
   findings.push(...runRegexMatchers(lines, filePath, 0, cssLike.has(ext) || null, {
     profile,
     phase: 'source',
@@ -486,6 +507,15 @@ function detectText(content, filePath, options = {}) {
     }));
   }
 
+  if (options?.designSystem) {
+    findings.push(...profileFindings(profile, {
+      engine: 'regex',
+      phase: 'source',
+      ruleId: 'design-system',
+      target: filePath,
+    }, () => checkSourceDesignSystem(content, filePath, { designSystem: options.designSystem })));
+  }
+
   // Deduplicate findings (same antipattern + similar snippet, within 2 lines)
   const deduped = [];
   for (const f of findings) {
@@ -498,7 +528,7 @@ function detectText(content, filePath, options = {}) {
   }
 
   // Page-level analyzers only run on full pages
-  if (isFullPage(content)) {
+  if (shouldRunPageAnalyzers(content, filePath)) {
     const analyzerIds = [
       'single-font',
       'flat-type-hierarchy',
@@ -520,7 +550,10 @@ function detectText(content, filePath, options = {}) {
     }
   }
 
-  return filterByProviders(deduped, options?.providers);
+  const byProvider = filterByProviders(deduped, options?.providers);
+  // Inline `impeccable-disable*` waivers travel with the file; honor them unless
+  // explicitly bypassed (`--no-config` / `--no-inline-ignores`).
+  return options?.inlineIgnores === false ? byProvider : applyInlineIgnores(byProvider, content);
 }
 
 export {

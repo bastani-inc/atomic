@@ -315,4 +315,168 @@ describe("AgentSession retry", () => {
 		await session.prompt("Follow-up");
 		expect(callCount).toBe(4);
 	});
+
+	it("retries bare provider finish_reason: error failures", async () => {
+		// github-copilot Gemini models surface MALFORMED_FUNCTION_CALL / OTHER /
+		// UNEXPECTED_TOOL_CALL as a bare finish_reason "error" (CAPI mapping), which
+		// pi-ai reports as "Provider finish_reason: error". This must be retryable.
+		let callCount = 0;
+		const streamFn = () => {
+			callCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callCount === 1) {
+					const msg = createAssistantMessage("", {
+						stopReason: "error",
+						errorMessage: "Provider finish_reason: error",
+					});
+					stream.push({ type: "start", partial: msg });
+					stream.push({ type: "error", reason: "error", error: msg });
+					return;
+				}
+				const msg = createAssistantMessage("Recovered after retry");
+				stream.push({ type: "start", partial: msg });
+				stream.push({ type: "done", reason: "stop", message: msg });
+			});
+			return stream;
+		};
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn,
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const events: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await session.prompt("Test");
+
+		expect(callCount).toBe(2);
+		expect(events).toEqual(["start:1", "end:success=true"]);
+	});
+
+	it("retries degenerate empty completions and bounds them by maxRetries", async () => {
+		// github-copilot Gemini models intermittently end the stream with finish_reason
+		// "stop", an empty content array, and 0 output tokens. That degenerate turn must
+		// be retried (not silently accepted), and the empty "stop" must NOT reset the
+		// retry counter, so repeated empties still honor maxRetries.
+		let callCount = 0;
+		const streamFn = () => {
+			callCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callCount <= 2) {
+					const msg = createAssistantMessage("", { content: [], stopReason: "stop" });
+					stream.push({ type: "start", partial: msg });
+					stream.push({ type: "done", reason: "stop", message: msg });
+					return;
+				}
+				const msg = createAssistantMessage("Recovered after empty completions");
+				stream.push({ type: "start", partial: msg });
+				stream.push({ type: "done", reason: "stop", message: msg });
+			});
+			return stream;
+		};
+
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: "Test", tools: [] },
+			streamFn,
+		});
+		const sessionManager = SessionManager.inMemory();
+		const settingsManager = SettingsManager.create(tempDir, tempDir);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const modelRegistry = ModelRegistry.create(authStorage, tempDir);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		settingsManager.applyOverrides({ retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } });
+
+		session = new AgentSession({
+			agent,
+			sessionManager,
+			settingsManager,
+			cwd: tempDir,
+			modelRegistry,
+			resourceLoader: createTestResourceLoader(),
+		});
+
+		const events: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "auto_retry_start") events.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") events.push(`end:success=${event.success}`);
+		});
+
+		await session.prompt("Test");
+
+		// Two empty completions -> two retries -> third call succeeds.
+		expect(callCount).toBe(3);
+		expect(events).toEqual(["start:1", "start:2", "end:success=true"]);
+		expect(session.isRetrying).toBe(false);
+	});
+
+	it("retries content_filter only for Copilot Gemini, not other providers", () => {
+		const created = createSession({ failCount: 0 });
+		const probe = created.session as unknown as {
+			_isRetryableError(message: AssistantMessage): boolean;
+		};
+
+		const anthropicBlocked = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+		});
+		expect(probe._isRetryableError(anthropicBlocked)).toBe(false);
+
+		const geminiBlocked = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Provider finish_reason: content_filter",
+			provider: "github-copilot",
+			api: "openai-completions",
+			model: "gemini-3.1-pro-preview",
+		});
+		expect(probe._isRetryableError(geminiBlocked)).toBe(true);
+	});
+
+	it("does not treat a reasoning-only turn (output > 0) as an empty completion", () => {
+		const created = createSession({ failCount: 0 });
+		const probe = created.session as unknown as {
+			_isEmptyCompletion(message: AssistantMessage): boolean;
+		};
+
+		const emptyZeroOutput = createAssistantMessage("", { stopReason: "stop", content: [] });
+		expect(probe._isEmptyCompletion(emptyZeroOutput)).toBe(true);
+
+		const reasoningOnly = createAssistantMessage("", {
+			stopReason: "stop",
+			content: [],
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		});
+		expect(probe._isEmptyCompletion(reasoningOnly)).toBe(false);
+	});
 });

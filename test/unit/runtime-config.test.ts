@@ -20,7 +20,7 @@ import { createExtensionRuntime } from "../../packages/workflows/src/extension/r
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { Type } from "typebox";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { WORKFLOW_CONFIG_DEFAULTS } from "../../packages/workflows/src/extension/config-loader.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -50,8 +50,15 @@ const _withPath: WorkflowRuntimeConfig = {
 void _withPath;
 
 // Verify config? is accepted on all four option types (type-level compile check)
-const _runtimeOpts: ExtensionRuntimeOpts = { config: _shapeCheck };
-const _dispatcherOpts: DispatcherOpts = { registry: createRegistry([]), config: _shapeCheck };
+const _runtimeOpts: ExtensionRuntimeOpts = {
+  config: _shapeCheck,
+  resolveDefaultStageSessionDir: () => "/tmp/atomic-sessions",
+};
+const _dispatcherOpts: DispatcherOpts = {
+  registry: createRegistry([]),
+  config: _shapeCheck,
+  defaultSessionDir: "/tmp/atomic-sessions",
+};
 const _runOpts: RunOpts = { config: _shapeCheck };
 const _detachedOpts: DetachedRunOpts = { config: _shapeCheck };
 void _runtimeOpts; void _dispatcherOpts; void _runOpts; void _detachedOpts;
@@ -61,10 +68,15 @@ void _runtimeOpts; void _dispatcherOpts; void _runOpts; void _detachedOpts;
 // ---------------------------------------------------------------------------
 
 function makeWorkflow(name: string): WorkflowDefinition {
-  return defineWorkflow(name)
-    .output("ok", Type.Boolean())
-    .run(async (_ctx) => ({ ok: true }))
-    .compile() as WorkflowDefinition;
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {
+      ok: Type.Boolean(),
+    },
+    run: async (_ctx) => ({ ok: true }),
+  }) as WorkflowDefinition;
 }
 
 const sampleConfig: WorkflowRuntimeConfig = {
@@ -80,6 +92,15 @@ describe("WorkflowRuntimeConfig — ExtensionRuntimeOpts", () => {
     const registry = createRegistry([makeWorkflow("wf-a")]);
     const runtime = createExtensionRuntime({ registry, config: sampleConfig });
     assert.ok(runtime.registry.names().includes("wf-a"));
+  });
+
+  test("createExtensionRuntime accepts a default stage session dir resolver", () => {
+    const registry = createRegistry([makeWorkflow("wf-session-dir")]);
+    const runtime = createExtensionRuntime({
+      registry,
+      resolveDefaultStageSessionDir: () => "/tmp/atomic-sessions",
+    });
+    assert.ok(runtime.registry.names().includes("wf-session-dir"));
   });
 
   test("createExtensionRuntime without config remains valid (config is optional)", () => {

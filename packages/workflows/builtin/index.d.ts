@@ -39,11 +39,13 @@ export type GoalWorkflowInputs = WorkflowInputValues & {
   readonly objective: string;
   readonly max_turns: number;
   readonly base_branch: string;
+  readonly create_pr: boolean;
 };
 export type GoalWorkflowRunInputs = WorkflowInputValues & {
   readonly objective: string;
   readonly max_turns?: number;
   readonly base_branch?: string;
+  readonly create_pr?: boolean;
 };
 export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly result?: string;
@@ -51,6 +53,7 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
+  readonly original_objective?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;
@@ -58,6 +61,7 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly remaining_work?: string;
   readonly review_report?: string;
   readonly review_report_path?: string;
+  readonly pr_report?: string;
 };
 export type GoalWorkflowDefinition = WorkflowDefinition<
   GoalWorkflowInputs,
@@ -127,6 +131,7 @@ export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly preview_file_url?: string;
   readonly spec_path?: string;
   readonly spec_file_url?: string;
+  readonly playwright_cli_status?: string;
 };
 export type OpenClaudeDesignWorkflowDefinition = WorkflowDefinition<
   OpenClaudeDesignWorkflowInputs,

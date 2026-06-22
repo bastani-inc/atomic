@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.31-alpha.3",
+  "version": "0.0.0",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -58,8 +58,8 @@
     "dev": "tsgo -p tsconfig.build.json --watch --preserveWatchOutput",
     "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js && bun run copy-assets",
     "build:binary": "bun --cwd ../tui run build && bun --cwd ../ai run build && bun --cwd ../agent run build && bun run build && bun build --compile ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile dist/atomic && bun run copy-binary-assets",
-    "copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
-    "copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor && shx cp src/core/export-html/template.html dist/export-html/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
+    "copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor dist/core/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/template-js/*.js dist/core/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
+    "copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor dist/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/export-html/ && shx cp src/core/export-html/template-js/*.js dist/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
     "copy-builtin-packages": "bun run scripts/copy-builtin-packages.ts",
     "copy-builtin-workflows": "bun run copy-builtin-packages",
     "docs:check": "bun run scripts/validate-docs-links.ts",
@@ -68,11 +68,11 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.8.31-alpha.3",
+    "@bastani/atomic-natives": "0.0.0",
     "@bufbuild/protobuf": "^2.0.0",
-    "@earendil-works/pi-agent-core": "^0.79.7",
-    "@earendil-works/pi-ai": "^0.79.7",
-    "@earendil-works/pi-tui": "^0.79.7",
+    "@earendil-works/pi-agent-core": "^0.79.9",
+    "@earendil-works/pi-ai": "^0.79.9",
+    "@earendil-works/pi-tui": "^0.79.9",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",

@@ -339,52 +339,41 @@ describe("SessionManager append and tree traversal", () => {
 				expect(summaryEntry.summary).toBe("Summary of abandoned work");
 			}
 		});
-
 		it("throws for non-existent entry", () => {
 			const session = SessionManager.inMemory();
 			session.appendMessage(userMsg("hello"));
-
 			expect(() => session.branchWithSummary("nonexistent", "summary")).toThrow("Entry nonexistent not found");
 		});
 	});
-
 	describe("getLeafEntry", () => {
 		it("returns undefined for empty session", () => {
 			const session = SessionManager.inMemory();
 			expect(session.getLeafEntry()).toBeUndefined();
 		});
-
 		it("returns current leaf entry", () => {
 			const session = SessionManager.inMemory();
-
 			session.appendMessage(userMsg("1"));
 			const id2 = session.appendMessage(assistantMsg("2"));
-
 			const leaf = session.getLeafEntry();
 			expect(leaf).toBeDefined();
 			expect(leaf!.id).toBe(id2);
 		});
 	});
-
 	describe("getEntry", () => {
 		it("returns undefined for non-existent id", () => {
 			const session = SessionManager.inMemory();
 			expect(session.getEntry("nonexistent")).toBeUndefined();
 		});
-
 		it("returns entry by id", () => {
 			const session = SessionManager.inMemory();
-
 			const id1 = session.appendMessage(userMsg("first"));
 			const id2 = session.appendMessage(assistantMsg("second"));
-
 			const entry1 = session.getEntry(id1);
 			expect(entry1).toBeDefined();
 			expect(entry1?.type).toBe("message");
 			if (entry1?.type === "message" && entry1.message.role === "user") {
 				expect(entry1.message.content).toBe("first");
 			}
-
 			const entry2 = session.getEntry(id2);
 			expect(entry2).toBeDefined();
 			if (entry2?.type === "message" && entry2.message.role === "assistant") {
@@ -392,87 +381,68 @@ describe("SessionManager append and tree traversal", () => {
 			}
 		});
 	});
-
 	describe("buildSessionContext with branches", () => {
 		it("returns messages from current branch only", () => {
 			const session = SessionManager.inMemory();
-
 			// Main: 1 -> 2 -> 3
 			session.appendMessage(userMsg("msg1"));
 			const id2 = session.appendMessage(assistantMsg("msg2"));
 			session.appendMessage(userMsg("msg3"));
-
 			// Branch from 2: 2 -> 4
 			session.branch(id2);
 			session.appendMessage(assistantMsg("msg4-branch"));
-
 			const ctx = session.buildSessionContext();
 			expect(ctx.messages).toHaveLength(3); // msg1, msg2, msg4-branch (not msg3)
-
 			expect((ctx.messages[0] as any).content).toBe("msg1");
 			expect((ctx.messages[1] as any).content[0].text).toBe("msg2");
 			expect((ctx.messages[2] as any).content[0].text).toBe("msg4-branch");
 		});
 	});
 });
-
 describe("createBranchedSession", () => {
 	it("throws for non-existent entry", () => {
 		const session = SessionManager.inMemory();
 		session.appendMessage(userMsg("hello"));
-
 		expect(() => session.createBranchedSession("nonexistent")).toThrow("Entry nonexistent not found");
 	});
-
 	it("creates new session with path to specified leaf (in-memory)", () => {
 		const session = SessionManager.inMemory();
-
 		// Build: 1 -> 2 -> 3 -> 4
 		const id1 = session.appendMessage(userMsg("1"));
 		const id2 = session.appendMessage(assistantMsg("2"));
 		const id3 = session.appendMessage(userMsg("3"));
 		session.appendMessage(assistantMsg("4"));
-
 		// Branch from 3: 3 -> 5
 		session.branch(id3);
 		const _id5 = session.appendMessage(userMsg("5"));
-
 		// Create branched session from id2 (should only have 1 -> 2)
 		const result = session.createBranchedSession(id2);
 		expect(result).toBeUndefined(); // in-memory returns null
-
 		// Session should now only have entries 1 and 2
 		const entries = session.getEntries();
 		expect(entries).toHaveLength(2);
 		expect(entries[0].id).toBe(id1);
 		expect(entries[1].id).toBe(id2);
 	});
-
 	it("extracts correct path from branched tree", () => {
 		const session = SessionManager.inMemory();
-
 		// Build: 1 -> 2 -> 3
 		const id1 = session.appendMessage(userMsg("1"));
 		const id2 = session.appendMessage(assistantMsg("2"));
 		session.appendMessage(userMsg("3"));
-
 		// Branch from 2: 2 -> 4 -> 5
 		session.branch(id2);
 		const id4 = session.appendMessage(userMsg("4"));
 		const id5 = session.appendMessage(assistantMsg("5"));
-
 		// Create branched session from id5 (should have 1 -> 2 -> 4 -> 5)
 		session.createBranchedSession(id5);
-
 		const entries = session.getEntries();
 		expect(entries).toHaveLength(4);
 		expect(entries.map((e) => e.id)).toEqual([id1, id2, id4, id5]);
 	});
-
 	it("does not duplicate entries when forking from first user message", () => {
 		const tempDir = join(tmpdir(), `session-fork-dedup-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
-
 		try {
 			// Create a persisted session with a couple of turns
 			const session = SessionManager.create(tempDir, tempDir);
@@ -480,29 +450,22 @@ describe("createBranchedSession", () => {
 			session.appendMessage(assistantMsg("first answer"));
 			session.appendMessage(userMsg("second question"));
 			session.appendMessage(assistantMsg("second answer"));
-
 			// Fork from the very first user message (no assistant in the branched path)
 			const newFile = session.createBranchedSession(id1);
 			expect(newFile).toBeDefined();
-
 			// The branched path has no assistant, so the file should not exist yet
 			// (deferred to _persist on first assistant, matching newSession() contract)
 			expect(existsSync(newFile!)).toBe(false);
-
 			// Simulate extension adding entry before assistant (like preset on turn_start)
 			session.appendCustomEntry("preset-state", { name: "plan" });
-
 			// Now the assistant responds
 			session.appendMessage(assistantMsg("new answer"));
-
 			// File should now exist with exactly one header and no duplicate IDs
 			expect(existsSync(newFile!)).toBe(true);
 			const content = readFileSync(newFile!, "utf-8");
 			const lines = content.trim().split("\n").filter(Boolean);
 			const records = lines.map((line) => JSON.parse(line));
-
 			expect(records.filter((r) => r.type === "session")).toHaveLength(1);
-
 			const entryIds = records
 				.filter((r) => r.type !== "session")
 				.map((r) => r.id)
@@ -512,22 +475,18 @@ describe("createBranchedSession", () => {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
-
 	it("writes file immediately when forking from a point with assistant messages", () => {
 		const tempDir = join(tmpdir(), `session-fork-with-assistant-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
-
 		try {
 			const session = SessionManager.create(tempDir, tempDir);
 			session.appendMessage(userMsg("first question"));
 			const id2 = session.appendMessage(assistantMsg("first answer"));
 			session.appendMessage(userMsg("second question"));
 			session.appendMessage(assistantMsg("second answer"));
-
 			// Fork including the assistant message
 			const newFile = session.createBranchedSession(id2);
 			expect(newFile).toBeDefined();
-
 			// Path includes an assistant, so file should be written immediately
 			expect(existsSync(newFile!)).toBe(true);
 			const content = readFileSync(newFile!, "utf-8");

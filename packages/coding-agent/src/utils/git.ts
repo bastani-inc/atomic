@@ -1,6 +1,14 @@
 import hostedGitInfo from "hosted-git-info";
 
 /**
+ * Clone URLs are eventually handed to `git clone`. Even though the package
+ * manager always spawns git with an argument array (never a shell), constrain
+ * the composed clone URL to characters that cannot carry shell or option
+ * meaning, so a parsed source can never smuggle a metacharacter downstream.
+ */
+const SAFE_CLONE_URL = /^[A-Za-z0-9._~:@\/%+-]+$/;
+
+/**
  * Parsed git URL information.
  */
 export type GitSource = {
@@ -110,6 +118,9 @@ function buildGitSource(args: { repo: string; host: string; path: string; ref?: 
 		return null;
 	}
 	if (hasUnsafeGitInstallPart(args.host, false) || hasUnsafeGitInstallPart(normalizedPath, true)) {
+		return null;
+	}
+	if (!SAFE_CLONE_URL.test(args.repo)) {
 		return null;
 	}
 

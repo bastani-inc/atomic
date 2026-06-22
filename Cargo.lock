@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "atomic-natives"
-version = "0.8.31-alpha.3"
+version = "0.0.0"
 dependencies = [
  "bytes",
  "h2",
@@ -266,9 +266,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.14"
+version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -475,9 +475,9 @@ dependencies = [
 
 [[package]]
 name = "napi"
-version = "3.9.1"
+version = "3.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad513ff22558f1830b595ea6eb4091da48145d09a222ce157e781896f78be0b9"
+checksum = "26d3c7dd60231116a47854321c9ac8df6f13435d11aa3a59d8533a76e07a3730"
 dependencies = [
  "bitflags",
  "ctor",

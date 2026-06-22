@@ -1,33 +1,17 @@
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
-import {
-	type Api,
-	type AssistantMessage,
-	type AssistantMessageEventStream,
-	calculateCost,
-	type Context,
-	createAssistantMessageEventStream,
-	type Model,
-	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
 import { resolveCursorModelVariant } from "./model-mapper.js";
 import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
 
 export interface CursorStreamAdapterOptions {
-	readonly transport: CursorAgentTransport;
-	readonly conversationState?: CursorConversationStateStore;
-	readonly uuid?: () => string;
-	readonly pausedTurnIdleTimeoutMs?: number;
-	readonly streamReadTimeoutMs?: number;
+	readonly transport: CursorAgentTransport; readonly conversationState?: CursorConversationStateStore; readonly uuid?: () => string;
+	readonly pausedTurnIdleTimeoutMs?: number; readonly streamReadTimeoutMs?: number;
 }
-
 interface CursorStreamRuntime {
-	readonly transport: CursorAgentTransport;
-	readonly conversationState: CursorConversationStateStore;
-	readonly uuid: () => string;
-	readonly pausedTurnIdleTimeoutMs: number;
-	readonly streamReadTimeoutMs: number;
+	readonly transport: CursorAgentTransport; readonly conversationState: CursorConversationStateStore; readonly uuid: () => string;
+	readonly pausedTurnIdleTimeoutMs: number; readonly streamReadTimeoutMs: number;
 }
 
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -36,10 +20,7 @@ const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
 const CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR = "Cursor supports text tool results only; tool-result images/screenshots are not supported by Cursor's headless provider API. Remove image content or switch to a vision-capable provider.";
 const CURSOR_IMAGE_SESSION_ID_ERROR = "Cursor experimental image transport requires a non-empty sessionId to isolate image conversations. Provide a non-empty sessionId or remove image content.";
 
-type IteratorReadResult =
-	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> }
-	| { readonly kind: "aborted" };
-
+type IteratorReadResult = { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> } | { readonly kind: "aborted" };
 type CursorReadRaceResult =
 	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage>; readonly read: CursorMessageReadHandle }
 	| { readonly kind: "error"; readonly error: Error; readonly read: CursorMessageReadHandle }
@@ -82,7 +63,6 @@ export class CursorStreamAdapter {
 	getLifecycleSnapshot(): CursorConversationSnapshot {
 		return this.#runtime.conversationState.snapshot(this.#runtime.transport.getLifecycleSnapshot());
 	}
-
 	#messageReaderFor(runStream: CursorRunStream): CursorMessageReader {
 		const existing = this.#messageReaders.get(runStream);
 		if (existing) return existing;
@@ -90,7 +70,6 @@ export class CursorStreamAdapter {
 		this.#messageReaders.set(runStream, reader);
 		return reader;
 	}
-
 	async #runStream(
 		stream: AssistantMessageEventStream,
 		model: Model<Api>,
@@ -99,7 +78,6 @@ export class CursorStreamAdapter {
 	): Promise<void> {
 		const output = createOutputMessage(model);
 		stream.push({ type: "start", partial: output });
-
 		let runStream: CursorRunStream | undefined;
 		let activeConversationKey: string | undefined;
 		let textIndex: number | undefined;
@@ -108,23 +86,17 @@ export class CursorStreamAdapter {
 		let sawToolCall = false;
 		const pendingToolCalls: CursorToolCallMessage[] = [];
 		const effectiveTimeoutMs = options?.timeoutMs ?? this.#runtime.streamReadTimeoutMs;
-
 		try {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
 			const experimentalImageInput = true;
-			if (hasToolResultImageInput(context)) {
-				throw new Error(CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR);
-			}
+			if (hasToolResultImageInput(context)) throw new Error(CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR);
 			const trailingToolResults = getTrailingToolResults(context);
-			if (hasUserImageInput(context)) {
-				if (!options.sessionId?.trim()) throw new Error(CURSOR_IMAGE_SESSION_ID_ERROR);
-			}
+			if (hasUserImageInput(context) && !options.sessionId?.trim()) throw new Error(CURSOR_IMAGE_SESSION_ID_ERROR);
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();
 			}
-
 			const requestId = this.#runtime.uuid();
 			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
 			activeConversationKey = conversationIdentity.activeKey;
@@ -195,7 +167,6 @@ export class CursorStreamAdapter {
 					break;
 				}
 			}
-
 			if (!terminalEventSent) {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
 				if (pendingToolCalls.length > 0 && runStream) {
@@ -231,7 +202,6 @@ export class CursorStreamAdapter {
 				try {
 					await this.#runtime.conversationState.cancelTurn(activeConversationKey);
 				} catch {
-					// Terminal events must not be suppressed by best-effort cleanup failures.
 				} finally {
 					runStream = undefined;
 				}
@@ -248,53 +218,41 @@ export class CursorStreamAdapter {
 		}
 	}
 }
-
 class CursorStreamAbortError extends Error {
 	constructor() {
 		super("Cursor stream aborted.");
 		this.name = "CursorStreamAbortError";
 	}
 }
-
 class CursorStreamTimeoutError extends Error {
 	constructor() {
 		super("Cursor stream timed out while waiting for provider output.");
 		this.name = "CursorStreamTimeoutError";
 	}
 }
-
 interface CursorPendingMessageRead {
 	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
 	consumed: boolean;
 }
-
 interface CursorMessageReadHandle {
 	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
 	consumeResult(result: IteratorResult<CursorServerMessage>): void;
 	consumeError(error: Error): void;
 }
-
 type CursorBufferedMessageRead =
 	| { readonly kind: "result"; readonly result: IteratorResult<CursorServerMessage> }
 	| { readonly kind: "error"; readonly error: Error };
-
-// A Cursor tool turn can pause by timing out while an iterator.next() is still
-// waiting for the first post-tool provider message. Reuse and buffer that exact
-// read across resume calls so the message is not consumed by an abandoned race.
 class CursorMessageReader {
 	readonly #iterator: AsyncIterator<CursorServerMessage>;
 	#pending: CursorPendingMessageRead | undefined;
 	#buffered: CursorBufferedMessageRead | undefined;
-
 	constructor(messages: AsyncIterable<CursorServerMessage>) {
 		this.#iterator = messages[Symbol.asyncIterator]();
 	}
-
 	unread(result: IteratorResult<CursorServerMessage>): void {
 		if (this.#buffered) return;
 		this.#buffered = { kind: "result", result };
 	}
-
 	peek(): CursorMessageReadHandle {
 		if (this.#buffered) return this.peekBuffered(this.#buffered);
 		const pending = this.#pending ?? this.startRead();
@@ -312,7 +270,6 @@ class CursorMessageReader {
 			},
 		};
 	}
-
 	private peekBuffered(buffered: CursorBufferedMessageRead): CursorMessageReadHandle {
 		return {
 			promise: buffered.kind === "result" ? Promise.resolve(buffered.result) : Promise.reject(buffered.error),
@@ -324,7 +281,6 @@ class CursorMessageReader {
 			},
 		};
 	}
-
 	private startRead(): CursorPendingMessageRead {
 		const pending: CursorPendingMessageRead = {
 			promise: this.#iterator.next().catch((error: Error) => {
@@ -349,11 +305,9 @@ class CursorMessageReader {
 		return pending;
 	}
 }
-
 function normalizeCursorReadError(error: Error): Error {
 	return error instanceof Error ? error : new Error(String(error));
 }
-
 function createOutputMessage(model: Model<Api>): AssistantMessage {
 	return {
 		role: "assistant",
@@ -373,7 +327,6 @@ function createOutputMessage(model: Model<Api>): AssistantMessage {
 		timestamp: Date.now(),
 	};
 }
-
 function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 	const results: CursorToolResultMessage[] = [];
 	for (let index = context.messages.length - 1; index >= 0; index--) {
@@ -383,11 +336,9 @@ function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 	}
 	return results;
 }
-
 function textFromToolResult(message: Extract<Context["messages"][number], { readonly role: "toolResult" }>): string {
 	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 }
-
 function textFromMessage(message: Context["messages"][number]): string {
 	if (message.role === "user") {
 		if (typeof message.content === "string") return message.content;
@@ -402,40 +353,31 @@ function textFromMessage(message: Context["messages"][number]): string {
 	}
 	return textFromToolResult(message);
 }
-
 interface CursorConversationIdentity {
 	readonly activeKey: string;
 	readonly wireConversationId: string;
 }
-
 function deriveCursorConversationIdentity(context: Context, sessionId: string | undefined): CursorConversationIdentity {
 	const bridgeKey = deriveCursorConversationKey("bridge", context, sessionId);
 	const conversationKey = deriveCursorConversationKey("conv", context, sessionId);
 	return { activeKey: bridgeKey, wireConversationId: deterministicCursorConversationId(conversationKey) };
 }
-
 function deriveCursorBridgeKeyFromSessionId(sessionId: string): string {
 	return hashCursorKey("bridge", sessionId);
 }
-
 function deriveCursorWireConversationIdFromSessionId(sessionId: string): string {
 	return deterministicCursorConversationId(hashCursorKey("conv", sessionId));
 }
-
 function deriveCursorConversationKey(prefix: "bridge" | "conv", context: Context, sessionId: string | undefined): string {
 	const trimmedSessionId = sessionId?.trim();
 	if (trimmedSessionId) return hashCursorKey(prefix, trimmedSessionId);
 	const firstUserMessage = context.messages.find((message) => message.role === "user");
-	// No-session runs lack a durable session id, so this fallback is best-effort
-	// and can collide for conversations with the same leading user text.
 	const firstUserText = firstUserMessage ? textFromMessage(firstUserMessage).slice(0, 200) : "";
 	return hashCursorKey(prefix, firstUserText);
 }
-
 function hashCursorKey(prefix: "bridge" | "conv", value: string): string {
 	return createHash("sha256").update(`${prefix}:${value}`).digest("hex").slice(0, 16);
 }
-
 function deterministicCursorConversationId(conversationKey: string): string {
 	const hex = createHash("sha256").update(`cursor-conv-id:${conversationKey}`).digest("hex").slice(0, 32);
 	const variantNibble = (0x8 | (Number.parseInt(hex[16] ?? "0", 16) & 0x3)).toString(16);
@@ -447,15 +389,12 @@ function deterministicCursorConversationId(conversationKey: string): string {
 		hex.slice(20, 32),
 	].join("-");
 }
-
 function hasUserImageInput(context: Context): boolean {
 	return context.messages.some((message) => message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image"));
 }
-
 function hasToolResultImageInput(context: Context): boolean {
 	return context.messages.some((message) => message.role === "toolResult" && message.content.some((content) => content.type === "image"));
 }
-
 function appendTextDelta(stream: AssistantMessageEventStream, output: AssistantMessage, existingIndex: number | undefined, delta: string): number {
 	const contentIndex = existingIndex ?? output.content.length;
 	if (existingIndex === undefined) {
@@ -469,7 +408,6 @@ function appendTextDelta(stream: AssistantMessageEventStream, output: AssistantM
 	stream.push({ type: "text_delta", contentIndex, delta, partial: output });
 	return contentIndex;
 }
-
 function appendThinkingDelta(stream: AssistantMessageEventStream, output: AssistantMessage, existingIndex: number | undefined, delta: string): number {
 	const contentIndex = existingIndex ?? output.content.length;
 	if (existingIndex === undefined) {
@@ -483,7 +421,6 @@ function appendThinkingDelta(stream: AssistantMessageEventStream, output: Assist
 	stream.push({ type: "thinking_delta", contentIndex, delta, partial: output });
 	return contentIndex;
 }
-
 function appendToolCall(stream: AssistantMessageEventStream, output: AssistantMessage, id: string, name: string, argumentsJson: string): void {
 	const contentIndex = output.content.length;
 	const parsedArguments = parseJsonObject(argumentsJson) ?? {};
@@ -497,7 +434,6 @@ function appendToolCall(stream: AssistantMessageEventStream, output: AssistantMe
 		partial: output,
 	});
 }
-
 function closeOpenContent(stream: AssistantMessageEventStream, output: AssistantMessage, textIndex: number | undefined, thinkingIndex: number | undefined): void {
 	if (textIndex !== undefined) {
 		const block = output.content[textIndex];
@@ -512,14 +448,11 @@ function closeOpenContent(stream: AssistantMessageEventStream, output: Assistant
 		}
 	}
 }
-
 function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extract<CursorServerMessage, { readonly type: "usage" }>): void {
 	if (message.kind === "outputDelta") {
 		output.usage.output += message.outputTokens;
 	} else {
 		if (message.inputTokens !== undefined) output.usage.input = message.inputTokens;
-		// Cursor checkpoint `usedTokens` omits a dedicated input field on some
-		// frames, so estimate input from already-seen output/cache counters.
 		else if (message.usedTokens !== undefined) output.usage.input = Math.max(0, message.usedTokens - output.usage.output - output.usage.cacheRead - output.usage.cacheWrite);
 		if (message.outputTokens !== undefined) output.usage.output = message.outputTokens;
 		if (message.cacheReadTokens !== undefined) output.usage.cacheRead = message.cacheReadTokens;
@@ -528,7 +461,6 @@ function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extra
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	output.usage.cost = calculateCost(model, output.usage);
 }
-
 async function readNextCursorMessage(reader: CursorMessageReader, signal: AbortSignal | undefined, timeoutMs: number): Promise<IteratorReadResult> {
 	if (signal?.aborted) return { kind: "aborted" };
 	let abortListener: (() => void) | undefined;
@@ -562,7 +494,6 @@ async function readNextCursorMessage(reader: CursorMessageReader, signal: AbortS
 		if (timeout) clearTimeout(timeout);
 	}
 }
-
 export function createCursorStreamAdapter(options: CursorStreamAdapterOptions): CursorStreamAdapter {
 	return new CursorStreamAdapter(options);
 }

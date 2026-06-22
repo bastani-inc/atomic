@@ -1,12 +1,16 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function makeWorkflow(name: string) {
-  return defineWorkflow(name)
-    .run(async () => ({}))
-    .compile();
+  return workflow({
+    name: name,
+    description: "",
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
 }
 
 describe("createRegistry", () => {
@@ -35,7 +39,13 @@ describe("createRegistry", () => {
 
   test("register overwrites same name", () => {
     const w1a = makeWorkflow("w1");
-    const w1b = defineWorkflow("w1").description("updated").run(async () => ({})).compile();
+    const w1b = workflow({
+      name: "w1",
+      description: "updated",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
     const r = createRegistry().register(w1a).register(w1b);
     assert.equal(r.get("w1")?.description, "updated");
     assert.equal(r.names().length, 1);

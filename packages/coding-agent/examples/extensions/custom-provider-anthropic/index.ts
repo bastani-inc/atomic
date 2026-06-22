@@ -1,26 +1,3 @@
-/**
- * Custom Provider Example
- *
- * Demonstrates registering a custom provider with:
- * - Custom API identifier ("custom-anthropic-api")
- * - Custom streamSimple implementation
- * - OAuth support for /login
- * - API key support via environment variable
- * - Two model definitions
- *
- * Usage:
- *   # First install dependencies
- *   cd packages/coding-agent/examples/extensions/custom-provider && npm install
- *
- *   # With OAuth (run /login custom-anthropic first)
- *   atomic -e ./packages/coding-agent/examples/extensions/custom-provider
- *
- *   # With API key
- *   CUSTOM_ANTHROPIC_API_KEY=sk-ant-... atomic -e ./packages/coding-agent/examples/extensions/custom-provider
- *
- * Then use /model to select custom-anthropic/claude-sonnet-4-5
- */
-
 import Anthropic from "@anthropic-ai/sdk";
 import type { ContentBlockParam, MessageCreateParamsStreaming } from "@anthropic-ai/sdk/resources/messages.js";
 import {
@@ -44,18 +21,12 @@ import {
 	type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@bastani/atomic";
-
-// =============================================================================
-// OAuth Implementation (copied from packages/ai/src/utils/oauth/anthropic.ts)
-// =============================================================================
-
 const decode = (s: string) => atob(s);
 const CLIENT_ID = decode("OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl");
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
 const REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
 const SCOPES = "org:create_api_key user:profile user:inference";
-
 async function generatePKCE(): Promise<{ verifier: string; challenge: string }> {
 	const array = new Uint8Array(32);
 	crypto.getRandomValues(array);
@@ -63,7 +34,6 @@ async function generatePKCE(): Promise<{ verifier: string; challenge: string }> 
 		.replace(/\+/g, "-")
 		.replace(/\//g, "_")
 		.replace(/=+$/, "");
-
 	const encoder = new TextEncoder();
 	const data = encoder.encode(verifier);
 	const hash = await crypto.subtle.digest("SHA-256", data);
@@ -71,13 +41,10 @@ async function generatePKCE(): Promise<{ verifier: string; challenge: string }> 
 		.replace(/\+/g, "-")
 		.replace(/\//g, "_")
 		.replace(/=+$/, "");
-
 	return { verifier, challenge };
 }
-
 async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 	const { verifier, challenge } = await generatePKCE();
-
 	const authParams = new URLSearchParams({
 		code: "true",
 		client_id: CLIENT_ID,
@@ -88,12 +55,9 @@ async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCred
 		code_challenge_method: "S256",
 		state: verifier,
 	});
-
 	callbacks.onAuth({ url: `${AUTHORIZE_URL}?${authParams.toString()}` });
-
 	const authCode = await callbacks.onPrompt({ message: "Paste the authorization code:" });
 	const [code, state] = authCode.split("#");
-
 	const tokenResponse = await fetch(TOKEN_URL, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -106,24 +70,20 @@ async function loginAnthropic(callbacks: OAuthLoginCallbacks): Promise<OAuthCred
 			code_verifier: verifier,
 		}),
 	});
-
 	if (!tokenResponse.ok) {
 		throw new Error(`Token exchange failed: ${await tokenResponse.text()}`);
 	}
-
 	const data = (await tokenResponse.json()) as {
 		access_token: string;
 		refresh_token: string;
 		expires_in: number;
 	};
-
 	return {
 		refresh: data.refresh_token,
 		access: data.access_token,
 		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
 	};
 }
-
 async function refreshAnthropicToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
 	const response = await fetch(TOKEN_URL, {
 		method: "POST",
@@ -134,41 +94,21 @@ async function refreshAnthropicToken(credentials: OAuthCredentials): Promise<OAu
 			refresh_token: credentials.refresh,
 		}),
 	});
-
 	if (!response.ok) {
 		throw new Error(`Token refresh failed: ${await response.text()}`);
 	}
-
 	const data = (await response.json()) as {
 		access_token: string;
 		refresh_token: string;
 		expires_in: number;
 	};
-
 	return {
 		refresh: data.refresh_token,
 		access: data.access_token,
 		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
 	};
 }
-
-// =============================================================================
-// Streaming Implementation (simplified from packages/ai/src/providers/anthropic.ts)
-// =============================================================================
-
-// Claude Code tool names for OAuth stealth mode
-const claudeCodeTools = [
-	"Read",
-	"Write",
-	"Edit",
-	"Bash",
-	"Grep",
-	"Glob",
-	"AskUserQuestion",
-	"TodoWrite",
-	"WebFetch",
-	"WebSearch",
-];
+const claudeCodeTools = ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "AskUserQuestion", "TodoWrite", "WebFetch", "WebSearch"];
 const ccToolLookup = new Map(claudeCodeTools.map((t) => [t.toLowerCase(), t]));
 const toClaudeCodeName = (name: string) => ccToolLookup.get(name.toLowerCase()) ?? name;
 const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
@@ -176,15 +116,12 @@ const fromClaudeCodeName = (name: string, tools?: Tool[]) => {
 	const matched = tools?.find((t) => t.name.toLowerCase() === lowerName);
 	return matched?.name ?? name;
 };
-
 function isOAuthToken(apiKey: string): boolean {
 	return apiKey.includes("sk-ant-oat");
 }
-
 function sanitizeSurrogates(text: string): string {
 	return text.replace(/[\uD800-\uDFFF]/g, "\uFFFD");
 }
-
 function convertContentBlocks(
 	content: (TextContent | ImageContent)[],
 ): string | Array<{ type: "text"; text: string } | { type: "image"; source: any }> {
@@ -192,7 +129,6 @@ function convertContentBlocks(
 	if (!hasImages) {
 		return sanitizeSurrogates(content.map((c) => (c as TextContent).text).join("\n"));
 	}
-
 	const blocks = content.map((block) => {
 		if (block.type === "text") {
 			return { type: "text" as const, text: sanitizeSurrogates(block.text) };
@@ -206,20 +142,15 @@ function convertContentBlocks(
 			},
 		};
 	});
-
 	if (!blocks.some((b) => b.type === "text")) {
 		blocks.unshift({ type: "text" as const, text: "(see attached image)" });
 	}
-
 	return blocks;
 }
-
 function convertMessages(messages: Message[], isOAuth: boolean, _tools?: Tool[]): any[] {
 	const params: any[] = [];
-
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
-
 		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
 				if (msg.content.trim()) {
@@ -273,7 +204,6 @@ function convertMessages(messages: Message[], isOAuth: boolean, _tools?: Tool[])
 				content: convertContentBlocks(msg.content),
 				is_error: msg.isError,
 			});
-
 			let j = i + 1;
 			while (j < messages.length && messages[j].role === "toolResult") {
 				const nextMsg = messages[j] as ToolResultMessage;
@@ -289,8 +219,6 @@ function convertMessages(messages: Message[], isOAuth: boolean, _tools?: Tool[])
 			params.push({ role: "user", content: toolResults });
 		}
 	}
-
-	// Add cache control to last user message
 	if (params.length > 0) {
 		const last = params[params.length - 1];
 		if (last.role === "user" && Array.isArray(last.content)) {
@@ -300,10 +228,8 @@ function convertMessages(messages: Message[], isOAuth: boolean, _tools?: Tool[])
 			}
 		}
 	}
-
 	return params;
 }
-
 function convertTools(tools: Tool[], isOAuth: boolean): any[] {
 	return tools.map((tool) => ({
 		name: isOAuth ? toClaudeCodeName(tool.name) : tool.name,
@@ -315,7 +241,6 @@ function convertTools(tools: Tool[], isOAuth: boolean): any[] {
 		},
 	}));
 }
-
 function mapStopReason(reason: string): StopReason {
 	switch (reason) {
 		case "end_turn":
@@ -330,14 +255,12 @@ function mapStopReason(reason: string): StopReason {
 			return "error";
 	}
 }
-
 function streamCustomAnthropic(
 	model: Model<Api>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
 	const stream = createAssistantMessageEventStream();
-
 	(async () => {
 		const output: AssistantMessage = {
 			role: "assistant",
@@ -356,18 +279,14 @@ function streamCustomAnthropic(
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
-
 		try {
 			const apiKey = options?.apiKey ?? "";
 			const isOAuth = isOAuthToken(apiKey);
-
-			// Configure client based on auth type
 			const betaFeatures = ["fine-grained-tool-streaming-2025-05-14", "interleaved-thinking-2025-05-14"];
 			const clientOptions: any = {
 				baseURL: model.baseUrl,
 				dangerouslyAllowBrowser: true,
 			};
-
 			if (isOAuth) {
 				clientOptions.apiKey = null;
 				clientOptions.authToken = apiKey;
@@ -386,18 +305,13 @@ function streamCustomAnthropic(
 					"anthropic-beta": betaFeatures.join(","),
 				};
 			}
-
 			const client = new Anthropic(clientOptions);
-
-			// Build request params
 			const params: MessageCreateParamsStreaming = {
 				model: model.id,
 				messages: convertMessages(context.messages, isOAuth, context.tools),
 				max_tokens: options?.maxTokens || Math.floor(model.maxTokens / 3),
 				stream: true,
 			};
-
-			// System prompt with Claude Code identity for OAuth
 			if (isOAuth) {
 				params.system = [
 					{
@@ -422,12 +336,9 @@ function streamCustomAnthropic(
 					},
 				];
 			}
-
 			if (context.tools) {
 				params.tools = convertTools(context.tools, isOAuth);
 			}
-
-			// Handle thinking/reasoning
 			if (options?.reasoning && model.reasoning) {
 				const defaultBudgets: Record<string, number> = {
 					minimal: 1024,
@@ -441,13 +352,10 @@ function streamCustomAnthropic(
 					budget_tokens: customBudget ?? defaultBudgets[options.reasoning] ?? 10240,
 				};
 			}
-
 			const anthropicStream = client.messages.stream({ ...params }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
-
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
 			const blocks = output.content as Block[];
-
 			for await (const event of anthropicStream) {
 				if (event.type === "message_start") {
 					output.usage.input = event.message.usage.input_tokens || 0;
@@ -486,7 +394,6 @@ function streamCustomAnthropic(
 					const index = blocks.findIndex((b) => b.index === event.index);
 					const block = blocks[index];
 					if (!block) continue;
-
 					if (event.delta.type === "text_delta" && block.type === "text") {
 						block.text += event.delta.text;
 						stream.push({ type: "text_delta", contentIndex: index, delta: event.delta.text, partial: output });
@@ -516,7 +423,6 @@ function streamCustomAnthropic(
 					const index = blocks.findIndex((b) => b.index === event.index);
 					const block = blocks[index];
 					if (!block) continue;
-
 					delete (block as any).index;
 					if (block.type === "text") {
 						stream.push({ type: "text_end", contentIndex: index, content: block.text, partial: output });
@@ -542,11 +448,9 @@ function streamCustomAnthropic(
 					calculateCost(model, output.usage);
 				}
 			}
-
 			if (options?.signal?.aborted) {
 				throw new Error("Request was aborted");
 			}
-
 			stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
 			stream.end();
 		} catch (error) {
@@ -557,20 +461,13 @@ function streamCustomAnthropic(
 			stream.end();
 		}
 	})();
-
 	return stream;
 }
-
-// =============================================================================
-// Extension Entry Point
-// =============================================================================
-
 export default function (pi: ExtensionAPI) {
 	pi.registerProvider("custom-anthropic", {
 		baseUrl: "https://api.anthropic.com",
 		apiKey: "$CUSTOM_ANTHROPIC_API_KEY",
 		api: "custom-anthropic-api",
-
 		models: [
 			{
 				id: "claude-opus-4-5",
@@ -591,14 +488,12 @@ export default function (pi: ExtensionAPI) {
 				maxTokens: 64000,
 			},
 		],
-
 		oauth: {
 			name: "Custom Anthropic (Claude Pro/Max)",
 			login: loginAnthropic,
 			refreshToken: refreshAnthropicToken,
 			getApiKey: (cred) => cred.access,
 		},
-
 		streamSimple: streamCustomAnthropic,
 	});
 }

@@ -4,9 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the web-access extension peer dependency with upstream pi TUI `^0.79.9` so web-access curator, summary review, and rendered Markdown surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during streaming; no web-access extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
 ### Changed
 
 - Aligned the web-access extension peer dependency with upstream pi TUI `^0.79.7` so web-access curator and summary UI surfaces consume the latest shared TUI color-scheme, Warp image capability, and compatibility fixes; no web-access extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ## [0.8.30] - 2026-06-17
 

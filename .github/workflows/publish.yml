@@ -363,6 +363,14 @@ jobs:
                     exit 1
                   fi
 
+                  # main is versionless: it carries the 0.0.0 development placeholder and the
+                  # real version is materialized only on a tagged "Release X" commit produced by
+                  # scripts/cut-release.ts. Refuse to publish the placeholder if it is ever tagged.
+                  if [ "$version" = "0.0.0" ] || [ "$version" = "0.0.0-dev" ]; then
+                    echo "$PACKAGE_DIR/package.json is at the development placeholder ($version); refusing to publish. Cut a release with: bun run scripts/cut-release.ts <version>" >&2
+                    exit 1
+                  fi
+
                   if [ "$RELEASE_TAG" != "$expected_tag" ]; then
                     echo "Tag $RELEASE_TAG does not match $PACKAGE_DIR/package.json version $version (expected $expected_tag)." >&2
                     exit 1

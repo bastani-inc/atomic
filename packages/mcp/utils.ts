@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
+import { reconstructFlattenedKeys } from "@bastani/atomic";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import type { McpConfig, ServerEntry } from "./types.ts";
@@ -126,4 +127,28 @@ export function extractToolUiStreamMode(toolMeta: Record<string, unknown> | unde
     return streamMode;
   }
   return undefined;
+}
+
+/**
+ * Reconstruct flattened tool-call arguments into proper nested arrays/objects.
+ *
+ * Some upstream providers — notably GitHub Copilot Gemini models proxied through
+ * Google's GenAI API — serialize array/object function-call arguments as
+ * flattened, indexed keys on the wire. For example a tool called with
+ * `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }`,
+ * which an MCP server then rejects as invalid arguments.
+ *
+ * This normalizer runs at the MCP `callTool` boundary so arguments are correct
+ * regardless of how the model/provider serialized them. It is provider-agnostic
+ * and **self-gating**: it is a no-op unless at least one bracket-indexed key
+ * (`name[<digit>]`) is present, so well-formed arguments pass through untouched
+ * (including arguments already normalized upstream by the host runtime).
+ */
+export function unflattenToolArguments(
+  args: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  if (args === null || args === undefined) return {};
+  const keys = Object.keys(args);
+  if (!keys.some((key) => /\[\d+\]/.test(key))) return args;
+  return reconstructFlattenedKeys(args, () => true);
 }

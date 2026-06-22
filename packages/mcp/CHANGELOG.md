@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.9` so MCP-backed Atomic sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming code-fence stability, and shared provider/TUI compatibility fixes; no MCP extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
+### Fixed
+
+- Hardened `unflattenToolArguments` against prototype pollution: a flattened key whose path walks through `__proto__`, `constructor`, or `prototype` (at any position, including the final segment and a literal plain key) is now dropped instead of being written, so a model-emitted key such as `__proto__.polluted` can no longer reach and mutate `Object.prototype`. The reconstruction logic (parse/assign/compact plus this guard) is now imported from a single canonical implementation in `@bastani/atomic` (`reconstructFlattenedKeys`) instead of being duplicated in `packages/mcp/utils.ts`, so the host-runtime and MCP `callTool` paths can no longer drift (the previous near-duplicate copies had already diverged on the security guard). Behavior for well-formed and ordinary flattened arguments is unchanged.
+- Fixed MCP tool calls failing under GitHub Copilot Gemini models (e.g. `github-copilot/gemini-3.1-pro-preview`). Gemini, served through Copilot's CAPI/GenAI gateway, serializes array/object function-call arguments as flattened indexed keys on the wire — for example `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }` — which MCP servers reject as invalid arguments. The extension now normalizes arguments at the `callTool` boundary (both direct-tool and proxy/gateway paths) via `unflattenToolArguments`, reconstructing `name[i]`, `name[i].sub`, and `parent.child` keys back into proper arrays/objects before they reach the server. The normalizer is provider-agnostic and self-gating (a no-op unless flattened keys are present), so well-formed arguments — including those already normalized by the host runtime — pass through untouched.
+
 ### Changed
 
 - Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.7` so MCP-backed sessions can use the host's latest provider catalog, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no MCP extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ## [0.8.30] - 2026-06-17
 

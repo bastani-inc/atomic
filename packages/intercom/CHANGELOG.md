@@ -4,9 +4,18 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the intercom extension peer dependency with upstream pi TUI `^0.79.9` so coordination overlays and rendered message surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during Markdown streaming; no intercom extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
 ### Changed
 
 - Aligned the intercom extension peer dependency with upstream pi TUI `^0.79.7` so coordination UI surfaces consume the latest shared TUI color-scheme, Warp image capability, and compatibility fixes; no intercom extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ## [0.8.30] - 2026-06-17
 

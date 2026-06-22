@@ -1,13 +1,16 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function makeWorkflow(name: string, description = "") {
-  return defineWorkflow(name)
-    .description(description)
-    .run(async () => ({}))
-    .compile();
+  return workflow({
+    name: name,
+    description: description,
+    inputs: {},
+    outputs: {},
+    run: async () => ({}),
+  });
 }
 
 describe("WorkflowRegistry extended operations", () => {

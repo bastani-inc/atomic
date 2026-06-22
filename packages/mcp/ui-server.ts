@@ -1,4 +1,4 @@
-import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import http, { type ServerResponse } from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,7 @@ import type { ConsentManager } from "./consent-manager.ts";
 import { ServerError, wrapError } from "./errors.ts";
 import { buildHostHtmlTemplate, buildCspMetaContent, applyCspMeta } from "./host-html-template.ts";
 import { logger } from "./logger.ts";
+import { parseBody, sendJson, validateTokenBody, validateTokenQuery } from "./ui-server-http.ts";
 import type { McpServerManager } from "./server-manager.ts";
 import {
   extractUiPromptText,
@@ -22,14 +23,11 @@ import {
   type UiMessageParams,
   type UiModelContextParams,
   type UiOpenLinkResult,
-  type UiProxyRequestBody,
-  type UiProxyResult,
   type UiResourceContent,
   type UiSessionMessages,
   type UiStreamSummary,
 } from "./types.ts";
 
-const MAX_BODY_SIZE = 2 * 1024 * 1024;
 const ABANDONED_GRACE_MS = 60_000;
 const WATCHDOG_INTERVAL_MS = 5_000;
 const MAX_EVENT_LOG = 128;
@@ -143,7 +141,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
   const serializeEvent = (eventId: number, name: string, payload: unknown): string => {
     return `id: ${eventId}\nevent: ${name}\ndata: ${JSON.stringify(payload)}\n\n`;
   };
-
   const getLatestCheckpointIndex = () => {
     for (let index = eventLog.length - 1; index >= 0; index -= 1) {
       const entry = eventLog[index];
@@ -154,20 +151,16 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     }
     return -1;
   };
-
   const pruneEventLog = () => {
     if (eventLog.length <= MAX_EVENT_LOG) return;
     const latestCheckpointIndex = getLatestCheckpointIndex();
-
     if (latestCheckpointIndex > 0) {
       eventLog.splice(0, latestCheckpointIndex);
     }
-
     if (eventLog.length > MAX_EVENT_LOG) {
       eventLog.splice(0, eventLog.length - MAX_EVENT_LOG);
     }
   };
-
   const pushEvent = (name: string, payload: unknown) => {
     if (completed) return;
     const eventId = nextEventId++;
@@ -183,7 +176,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       }
     }
   };
-
   const replayEvents = (res: ServerResponse, lastEventIdHeader?: string | null) => {
     const parsedLastId = lastEventIdHeader ? Number(lastEventIdHeader) : Number.NaN;
     const eventsToReplay = Number.isFinite(parsedLastId)
@@ -192,7 +184,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           const latestCheckpointIndex = getLatestCheckpointIndex();
           return latestCheckpointIndex >= 0 ? eventLog.slice(latestCheckpointIndex) : eventLog;
         })();
-
     for (const entry of eventsToReplay) {
       try {
         res.write(serializeEvent(entry.id, entry.name, entry.payload));
@@ -202,7 +193,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       }
     }
   };
-
   const closeSse = () => {
     for (const client of sseClients) {
       try {
@@ -211,13 +201,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     }
     sseClients.clear();
   };
-
   const stopWatchdog = () => {
     if (!watchdog) return;
     clearInterval(watchdog);
     watchdog = null;
   };
-
   const markCompleted = (reason: string) => {
     if (completed) return;
     log.debug("Session completed", { reason });
@@ -226,16 +214,13 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     stopWatchdog();
     options.onComplete?.(reason);
   };
-
   const server = http.createServer(async (req, res) => {
     try {
       const method = req.method || "GET";
       const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
-
       if (method === "GET" && url.pathname === "/") {
         if (!validateTokenQuery(url, sessionToken, res)) return;
         touchHeartbeat();
-
         const html = buildHostHtmlTemplate({
           sessionToken,
           serverName: options.serverName,
@@ -247,7 +232,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           cacheToolConsent: options.consentManager.shouldCacheConsent(),
           hostContext,
         });
-
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store",
@@ -255,7 +239,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         res.end(html);
         return;
       }
-
       if (method === "GET" && url.pathname === "/events") {
         if (!validateTokenQuery(url, sessionToken, res)) return;
         touchHeartbeat();
@@ -274,18 +257,14 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         });
         return;
       }
-
       if (method === "GET" && url.pathname === "/health") {
         if (!validateTokenQuery(url, sessionToken, res)) return;
         sendJson(res, 200, { ok: true, result: { healthy: true } });
         return;
       }
-
       if (method === "GET" && url.pathname === "/ui-app") {
         if (!validateTokenQuery(url, sessionToken, res)) return;
         touchHeartbeat();
-        // Serve the MCP app's UI HTML directly (avoids blob URL security issues)
-        // Apply CSP meta tag if specified in resource metadata
         const cspContent = buildCspMetaContent(options.resource.meta.csp);
         const appHtml = applyCspMeta(options.resource.html, cspContent);
         res.writeHead(200, {
@@ -295,9 +274,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         res.end(appHtml);
         return;
       }
-
       if (method === "GET" && url.pathname === "/app-bridge.bundle.js") {
-        // Serve the pre-bundled AppBridge module
         const bundlePath = path.join(import.meta.dirname, "app-bridge.bundle.js");
         try {
           const content = await fs.readFile(bundlePath, "utf-8");
@@ -311,18 +288,15 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         }
         return;
       }
-
       if (method !== "POST") {
         sendJson(res, 404, { ok: false, error: "Not found" });
         return;
       }
-
       const body = await parseBody(req, res);
       if (!body) return;
       if (!validateTokenBody(body, sessionToken, res)) return;
       const params = body.params ?? {};
       touchHeartbeat();
-
       if (url.pathname === "/proxy/tools/call") {
         options.consentManager.ensureApproved(options.serverName);
         const callParams = params as CallToolRequest["params"];
@@ -330,13 +304,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
           sendJson(res, 400, { ok: false, error: "Invalid tools/call params" });
           return;
         }
-
         const connection = options.manager.getConnection(options.serverName);
         if (!connection || connection.status !== "connected") {
           sendJson(res, 503, { ok: false, error: `Server "${options.serverName}" is not connected` });
           return;
         }
-
         try {
           options.manager.touch(options.serverName);
           options.manager.incrementInFlight(options.serverName);
@@ -354,20 +326,15 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         }
         return;
       }
-
       if (url.pathname === "/proxy/ui/consent") {
         const approved = !!(params as { approved?: boolean }).approved;
         options.consentManager.registerDecision(options.serverName, approved);
         sendJson(res, 200, { ok: true, result: { approved } });
         return;
       }
-
       if (url.pathname === "/proxy/ui/message") {
         const msgParams = params as UiMessageParams;
         const promptText = extractUiPromptText(msgParams);
-        
-        // Track messages by type (order: prompt → intent → notify)
-        // Must match the order in index.ts onMessage handler
         if (promptText) {
           sessionMessages.prompts.push(promptText);
           log.debug("UI prompt received", { prompt: promptText.slice(0, 100) });
@@ -387,12 +354,10 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
             log.debug("UI notification", { message: notifyText.slice(0, 100) });
           }
         }
-        
         await options.onMessage?.(msgParams);
         sendJson(res, 200, { ok: true, result: {} });
         return;
       }
-
       if (url.pathname === "/proxy/ui/context") {
         const ctxParams = params as UiModelContextParams;
         log.debug("UI context update", { hasContent: !!ctxParams.content });
@@ -400,7 +365,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         sendJson(res, 200, { ok: true, result: {} });
         return;
       }
-
       if (url.pathname === "/proxy/ui/open-link") {
         const openParams = params as { url?: string };
         if (!openParams?.url || typeof openParams.url !== "string") {
@@ -416,12 +380,10 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         sendJson(res, 200, { ok: true, result });
         return;
       }
-
       if (url.pathname === "/proxy/ui/download-file") {
         sendJson(res, 200, { ok: true, result: { isError: true } });
         return;
       }
-
       if (url.pathname === "/proxy/ui/request-display-mode") {
         const displayParams = params as UiDisplayModeRequest;
         const requested = displayParams?.mode;
@@ -435,12 +397,10 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         sendJson(res, 200, { ok: true, result });
         return;
       }
-
       if (url.pathname === "/proxy/ui/heartbeat") {
         sendJson(res, 200, { ok: true, result: {} });
         return;
       }
-
       if (url.pathname === "/proxy/ui/complete") {
         const reason = typeof (params as { reason?: string }).reason === "string"
           ? (params as { reason?: string }).reason!
@@ -455,7 +415,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         }, 20).unref();
         return;
       }
-
       sendJson(res, 404, { ok: false, error: "Not found" });
     } catch (error) {
       const wrapped = wrapError(error, { server: options.serverName, tool: options.toolName });
@@ -466,7 +425,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       sendJson(res, status, { ok: false, error: wrapped.message });
     }
   });
-
   if (options.initialResultPromise) {
     options.initialResultPromise.then(
       (result) => pushEvent("tool-result", result),
@@ -476,7 +434,6 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
       }
     );
   }
-
   watchdog = setInterval(() => {
     if (completed) return;
     if (Date.now() - lastHeartbeatAt <= ABANDONED_GRACE_MS) return;
@@ -487,13 +444,11 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
     closeSse();
   }, WATCHDOG_INTERVAL_MS);
   watchdog.unref();
-
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => {
       log.error("Failed to start server", error);
       reject(new ServerError(error.message, { port: options.port, cause: error }));
     };
-
     server.once("error", onError);
     server.listen(options.port ?? 0, "127.0.0.1", () => {
       server.off("error", onError);
@@ -504,9 +459,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         reject(err);
         return;
       }
-
       log.debug("Server started", { port: address.port });
-
       const handle: UiServerHandle = {
         url: `http://localhost:${address.port}/?session=${sessionToken}`,
         port: address.port,
@@ -539,85 +492,7 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         getSessionMessages: () => ({ ...sessionMessages }),
         getStreamSummary: () => streamSummary ? { ...streamSummary, phases: [...streamSummary.phases] } : undefined,
       };
-
       resolve(handle);
     });
   });
-}
-
-async function parseBody(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<UiProxyRequestBody<Record<string, unknown>> | null> {
-  try {
-    const body = await readBody(req);
-    if (!body || typeof body !== "object") {
-      sendJson(res, 400, { ok: false, error: "Invalid request body" });
-      return null;
-    }
-    return body as UiProxyRequestBody<Record<string, unknown>>;
-  } catch (error) {
-    sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : "Invalid body" });
-    return null;
-  }
-}
-
-function readBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    const chunks: Buffer[] = [];
-
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_SIZE) {
-        req.destroy();
-        reject(new Error("Request body too large"));
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on("end", () => {
-      try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString("utf-8")));
-      } catch (error) {
-        reject(error);
-      }
-    });
-
-    req.on("error", reject);
-  });
-}
-
-function validateTokenQuery(url: URL, expected: string, res: ServerResponse): boolean {
-  const token = url.searchParams.get("session");
-  if (token !== expected) {
-    sendJson(res, 403, { ok: false, error: "Invalid session" });
-    return false;
-  }
-  return true;
-}
-
-function validateTokenBody(
-  body: UiProxyRequestBody<Record<string, unknown>>,
-  expected: string,
-  res: ServerResponse,
-): boolean {
-  if (body.token !== expected) {
-    sendJson(res, 403, { ok: false, error: "Invalid session" });
-    return false;
-  }
-  return true;
-}
-
-function sendJson<T>(
-  res: ServerResponse,
-  status: number,
-  payload: UiProxyResult<T>,
-): void {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(payload));
 }

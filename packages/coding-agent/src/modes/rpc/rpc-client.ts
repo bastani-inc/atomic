@@ -323,147 +323,72 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	/**
-	 * Apply deletion-only context compaction.
-	 */
+	/** @deprecated Use compact() instead. */
 	async contextCompact(): Promise<ContextCompactionResult> {
 		const response = await this.send({ type: "context_compact" });
 		return this.getData(response);
 	}
-
-	/**
-	 * Set auto-compaction enabled/disabled.
-	 */
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.send({ type: "set_auto_compaction", enabled });
 	}
-
-	/**
-	 * Set auto-retry enabled/disabled.
-	 */
 	async setAutoRetry(enabled: boolean): Promise<void> {
 		await this.send({ type: "set_auto_retry", enabled });
 	}
-
-	/**
-	 * Abort in-progress retry.
-	 */
 	async abortRetry(): Promise<void> {
 		await this.send({ type: "abort_retry" });
 	}
-
-	/**
-	 * Execute a bash command.
-	 */
 	async bash(command: string): Promise<BashResult> {
 		const response = await this.send({ type: "bash", command });
 		return this.getData(response);
 	}
-
-	/**
-	 * Abort running bash command.
-	 */
 	async abortBash(): Promise<void> {
 		await this.send({ type: "abort_bash" });
 	}
-
-	/**
-	 * Get session statistics.
-	 */
 	async getSessionStats(): Promise<SessionStats> {
 		const response = await this.send({ type: "get_session_stats" });
 		return this.getData(response);
 	}
-
-	/**
-	 * Export session to HTML.
-	 */
 	async exportHtml(outputPath?: string): Promise<{ path: string }> {
 		const response = await this.send({ type: "export_html", outputPath });
 		return this.getData(response);
 	}
-
-	/**
-	 * Switch to a different session file.
-	 * @returns Object with `cancelled: true` if an extension cancelled the switch
-	 */
 	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "switch_session", sessionPath });
 		return this.getData(response);
 	}
-
-	/**
-	 * Fork from a specific message.
-	 * @returns Object with `text` (the message text) and `cancelled` (if extension cancelled)
-	 */
 	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
 		const response = await this.send({ type: "fork", entryId });
 		return this.getData(response);
 	}
-
-	/**
-	 * Clone the current active branch into a new session.
-	 * @returns Object with `cancelled: true` if an extension cancelled the clone
-	 */
 	async clone(): Promise<{ cancelled: boolean }> {
 		const response = await this.send({ type: "clone" });
 		return this.getData(response);
 	}
-
-	/**
-	 * Get messages available for forking.
-	 */
 	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
 		const response = await this.send({ type: "get_fork_messages" });
 		return this.getData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
 	}
-
-	/**
-	 * Get text of last assistant message.
-	 */
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.send({ type: "get_last_assistant_text" });
 		return this.getData<{ text: string | null }>(response).text;
 	}
-
-	/**
-	 * Set the session display name.
-	 */
 	async setSessionName(name: string): Promise<void> {
 		await this.send({ type: "set_session_name", name });
 	}
-
-	/**
-	 * Get all messages in the session.
-	 */
 	async getMessages(): Promise<AgentMessage[]> {
 		const response = await this.send({ type: "get_messages" });
 		return this.getData<{ messages: AgentMessage[] }>(response).messages;
 	}
-
-	/**
-	 * Get available commands (extension commands, prompt templates, skills).
-	 */
 	async getCommands(): Promise<RpcSlashCommand[]> {
 		const response = await this.send({ type: "get_commands" });
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
-
-	// =========================================================================
-	// Helpers
-	// =========================================================================
-
-	/**
-	 * Wait for agent to become idle (no streaming).
-	 * Resolves when agent_end event is received.
-	 */
 	waitForIdle(timeout = 60000): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				unsubscribe();
 				reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.stderr}`));
 			}, timeout);
-
 			const unsubscribe = this.onEvent((event) => {
 				if (event.type === "agent_end") {
 					clearTimeout(timer);
@@ -473,10 +398,6 @@ export class RpcClient {
 			});
 		});
 	}
-
-	/**
-	 * Collect events until agent becomes idle.
-	 */
 	collectEvents(timeout = 60000): Promise<RpcEvent[]> {
 		return new Promise((resolve, reject) => {
 			const events: RpcEvent[] = [];
@@ -484,7 +405,6 @@ export class RpcClient {
 				unsubscribe();
 				reject(new Error(`Timeout collecting events. Stderr: ${this.stderr}`));
 			}, timeout);
-
 			const unsubscribe = this.onEvent((event) => {
 				events.push(event);
 				if (event.type === "agent_end") {
@@ -495,52 +415,35 @@ export class RpcClient {
 			});
 		});
 	}
-
-	/**
-	 * Send prompt and wait for completion, returning all events.
-	 */
 	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<RpcEvent[]> {
 		const eventsPromise = this.collectEvents(timeout);
 		await this.prompt(message, images);
 		return eventsPromise;
 	}
-
-	// =========================================================================
-	// Internal
-	// =========================================================================
-
 	private handleLine(line: string): void {
 		try {
 			const data = JSON.parse(line);
-
-			// Check if it's a response to a pending request
 			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
 				return;
 			}
-
-			// Otherwise it's an event
 			for (const listener of this.eventListeners) {
 				listener(data as RpcEvent);
 			}
 		} catch {
-			// Ignore non-JSON lines
 		}
 	}
-
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
 	}
-
 	private rejectPendingRequests(error: Error): void {
 		for (const { reject } of this.pendingRequests.values()) {
 			reject(error);
 		}
 		this.pendingRequests.clear();
 	}
-
 	private async send(command: RpcCommandBody): Promise<RpcResponse> {
 		const childProcess = this.process;
 		const stdin = childProcess?.stdin;
@@ -558,16 +461,13 @@ export class RpcClient {
 		if (stdin.destroyed || !stdin.writable) {
 			throw new Error("Agent process stdin is not writable");
 		}
-
 		const id = `req_${++this.requestId}`;
 		const fullCommand = { ...command, id } as RpcCommand;
-
 		return new Promise((resolve, reject) => {
 			const timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
 				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
 			}, 30000);
-
 			this.pendingRequests.set(id, {
 				resolve: (response) => {
 					clearTimeout(timeout);
@@ -578,7 +478,6 @@ export class RpcClient {
 					reject(error);
 				},
 			});
-
 			try {
 				stdin.write(serializeJsonLine(fullCommand));
 			} catch (error) {
@@ -588,17 +487,13 @@ export class RpcClient {
 			}
 		});
 	}
-
 	private assertSuccess(response: RpcResponse): void {
 		if (!response.success) {
 			throw new Error(response.error);
 		}
 	}
-
 	private getData<T>(response: RpcResponse): T {
 		this.assertSuccess(response);
-		// Type assertion: we trust response.data matches T based on the command sent.
-		// This is safe because each public method specifies the correct T for its command.
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;
 	}

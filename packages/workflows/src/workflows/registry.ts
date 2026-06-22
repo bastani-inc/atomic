@@ -8,7 +8,7 @@
  *            pi-subagents src/agents/agents.ts (discover/parse)
  */
 
-import type { WorkflowDefinition } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
 import { normalizeWorkflowName } from "./identity.js";
 
 export interface WorkflowRegistry {
@@ -17,7 +17,11 @@ export interface WorkflowRegistry {
    * Keyed by the definition's normalizedName; replaces any prior entry with
    * the same key.  Returns a NEW registry — this one is unchanged.
    */
-  register(definition: WorkflowDefinition): WorkflowRegistry;
+  register<
+    TInputs extends WorkflowInputValues,
+    TOutputs extends WorkflowOutputValues,
+    TRunInputs extends WorkflowInputValues = TInputs,
+  >(definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>): WorkflowRegistry;
   /**
    * Return a new registry with all definitions from another registry merged
    * in (other's entries win on collision).
@@ -52,7 +56,7 @@ function makeRegistry(store: Map<string, WorkflowDefinition>): WorkflowRegistry 
   return {
     register(definition) {
       const next = new Map(store);
-      next.set(definition.normalizedName, definition);
+      next.set(definition.normalizedName, definition as never as WorkflowDefinition);
       return makeRegistry(next);
     },
 

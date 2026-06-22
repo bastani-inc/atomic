@@ -4,17 +4,25 @@
 
 ### Added
 
-- Added experimental Cursor user-image transport, requiring a serialization-level internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. Image input is enabled by default without a user-facing flag, supports multiple current-message images, and tolerates historical user image blocks by serializing history as text-only. That protobuf path is undocumented and unvalidated against live Cursor remote behavior; Cursor documents image support on other product/API surfaces, which do not validate this local private protobuf transport. Remote behavior may fail or ignore images, and tool-result images are still rejected.
-
-### Changed
-
-- Published a synchronized Atomic 0.8.31-alpha.3 prerelease from mainline; this branch keeps the experimental Cursor image-support transport changes unreleased.
+- Added experimental Cursor user-image transport, requiring a serialization-level internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. Image input is enabled by default without a user-facing flag, supports multiple current-message images, and tolerates historical user image blocks by serializing history as text-only. Tool-result images remain rejected with provider fallback guidance.
 
 ### Fixed
 
 - Corrected Cursor native-transport failure guidance for local development to use `bun run --cwd packages/natives build`, matching Bun's script invocation semantics.
 - Allowed multi-turn Cursor image conversations by tolerating historical user image blocks in chat history while serializing only current user-message images through Cursor's `selectedImages[]` transport.
-- Kept tool-result images rejected with provider fallback guidance while clarifying Cursor image/screenshot guidance for current-message images and text-only historical serialization.
+
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Published a synchronized Atomic 0.9.0-alpha.2 prerelease; no functional Cursor provider changes were made after 0.9.0-alpha.1.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
+### Changed
+
+- Published a synchronized Atomic 0.9.0-alpha.1 prerelease; no functional Cursor provider changes were made after 0.8.30.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ## [0.8.30] - 2026-06-17
 

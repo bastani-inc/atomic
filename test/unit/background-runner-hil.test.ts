@@ -21,7 +21,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
 
@@ -82,13 +82,18 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
 
-    const def = defineWorkflow("hil-headless-bg")
-      .output("unreached", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-headless-bg",
+      description: "",
+      inputs: {},
+      outputs: {
+        unreached: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.ui.confirm("ok?");
         return { unreached: true };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs, executionMode: "non_interactive" });
     await waitForRunEnded(store, accepted.runId);
@@ -105,13 +110,18 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const jobs = createJobTracker();
     const piUi = makeUISpy();
 
-    const def = defineWorkflow("hil-editor-bg")
-      .output("edited", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-editor-bg",
+      description: "",
+      inputs: {},
+      outputs: {
+        edited: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         const edited = await ctx.ui.editor("seed text");
         return { edited };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs, ui: piUi });
     const { stageId, promptId } = await waitForStagePendingPrompt(store, accepted.runId);
@@ -141,15 +151,20 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const jobs = createJobTracker();
     const piUi = makeUISpy();
 
-    const def = defineWorkflow("hil-mixed-bg")
-      .output("proceed", Type.Optional(Type.Any()))
-      .output("name", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-mixed-bg",
+      description: "",
+      inputs: {},
+      outputs: {
+        proceed: Type.Optional(Type.Any()),
+        name: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         const proceed = await ctx.ui.confirm("ok?");
         const name = await ctx.ui.input("your name");
         return { proceed, name };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs, ui: piUi });
 
@@ -183,13 +198,18 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
 
-    const def = defineWorkflow("hil-killed-bg")
-      .output("unreached", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-killed-bg",
+      description: "",
+      inputs: {},
+      outputs: {
+        unreached: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.ui.input("will be killed");
         return { unreached: true };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, { store, cancellation, jobs });
     const prompt = await waitForStagePendingPrompt(store, accepted.runId);
@@ -210,15 +230,20 @@ describe("runDetached — HIL never reaches pi.ui adapter", () => {
     const cancellation = createCancellationRegistry();
     const jobs = createJobTracker();
 
-    const def = defineWorkflow("hil-parentage-bg")
-      .output("proceed", Type.Optional(Type.Any()))
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "hil-parentage-bg",
+      description: "",
+      inputs: {},
+      outputs: {
+        proceed: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => {
         await ctx.stage("before").prompt("before task");
         const proceed = await ctx.ui.confirm("continue?");
         await ctx.stage("after").prompt(proceed ? "after yes" : "after no");
         return { proceed };
-      })
-      .compile();
+      },
+    });
 
     const accepted = runDetached(def, {}, {
       store,

@@ -8,7 +8,7 @@ permissions:
 
 on:
     push:
-        branches: [main]
+        branches: [main, "release/**", "prerelease/**"]
     pull_request:
         branches: [main]
 
@@ -33,6 +33,8 @@ jobs:
               run: bun install --frozen-lockfile
             - name: Typecheck
               run: bun run typecheck
+            - name: File length check
+              run: bun run check:file-length
             - name: Docs link validation
               working-directory: packages/coding-agent
               run: bun run docs:check

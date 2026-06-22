@@ -369,12 +369,6 @@ function renderTaggedCardThemed(
     1,
     width - row1StripePrefixW - tagW - titleSegW - suffixSegW - tagSubtitleW - trailingW - 1,
   );
-
-  // 1-cell leading space on every card line so the card content is
-  // column-aligned with the band's `[ LABEL ]` (which is itself offset by
-  // `leftPad` inside its surface0 fill) and with the hint rows' `▸` arrow.
-  // All three chat-surface families share the same left edge,
-  // matching the mockup's terminal-padding scheme.
   const row1 =
     ` ${stripe}${STRIPE_CHAR_THEMED}${RESET} ` +
     tagSeg +
@@ -382,7 +376,6 @@ function renderTaggedCardThemed(
     suffixSeg +
     tagSubtitleSeg +
     (opts.trailing ? " ".repeat(gap) + trailingSeg : "");
-
   const bodyPrefix = ` ${stripe}${STRIPE_CHAR_THEMED}${RESET}${" ".repeat(bodyStripePrefixW - 1)}`;
   const rows: string[] = [row1];
   for (const body of opts.bodyRows ?? []) {
@@ -390,13 +383,7 @@ function renderTaggedCardThemed(
   }
   return rows.join("\n");
 }
-
 function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): string {
-  // See renderTaggedCardThemed for the rationale behind the +1 hanging
-  // indent. Plain mode preserves the same column alignment: row 1's
-  // `[tag]` brackets stand in for the surface0 bg pill — the opening
-  // bracket sits at col 3 so the tag text starts at col 4, which is also
-  // where every body row's leading character lands.
   const row1StripePrefixW = 2; // "│ "
   const bodyStripePrefixW = 3; // "│  "
   const tagSeg = `[${opts.tag}]`;
@@ -408,7 +395,6 @@ function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): strin
   const trailingPad = 2;
   const titleSuffixW = opts.titleSuffix ? Math.max(0, opts.titleSuffixWidth ?? 0) : 0;
   const titleSuffixGap = opts.titleSuffix ? 2 : 0;
-
   const titleBudget = Math.max(
     8,
     width - row1StripePrefixW - tagW - tagSubtitleW - titleSuffixGap - titleSuffixW - trailingW - trailingPad - 2,
@@ -416,23 +402,14 @@ function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): strin
   const titleVisible = truncateToWidth(opts.title ?? "", titleBudget, ELLIPSIS);
   const titleSeg = titleVisible ? `  ${titleVisible}` : "";
   const titleW = visibleWidth(titleSeg);
-
-  // Plain-mode suffix: same shape as themed (2-cell gap then verbatim
-  // payload). Caller is responsible for picking a plain-text payload when
-  // theme is absent.
   const suffixSeg = opts.titleSuffix ? `  ${opts.titleSuffix}` : "";
   const suffixSegW = opts.titleSuffix ? titleSuffixGap + titleSuffixW : 0;
-
   const gap = Math.max(
     1,
     width - row1StripePrefixW - tagW - titleW - suffixSegW - tagSubtitleW - trailingW - 1,
   );
   const row1Trailing = opts.trailing ? `${" ".repeat(gap)}${trailing}` : "";
-  // See renderTaggedCardThemed for the leading-space rationale: every card
-  // line starts with one cell so the stripe lines up with the band label
-  // and the hint arrow.
   const row1 = ` ${STRIPE_CHAR_PLAIN} ${tagSeg}${titleSeg}${suffixSeg}${tagSubtitleSeg}${row1Trailing}`;
-
   const bodyPrefix = ` ${STRIPE_CHAR_PLAIN}${" ".repeat(bodyStripePrefixW - 1)}`;
   const rows: string[] = [row1];
   for (const body of opts.bodyRows ?? []) {
@@ -440,25 +417,9 @@ function renderTaggedCardPlain(opts: RenderTaggedCardOpts, width: number): strin
   }
   return rows.join("\n");
 }
-
-// ---------------------------------------------------------------------------
-// Progress strip — variable-width bracketed cells, coloured by stage status
-// ---------------------------------------------------------------------------
-
 export interface ProgressCell {
   status: StageStatus;
 }
-
-/**
- * Render a progress strip whose visible width is at most `budget` cells.
- * Each cell renders as a bracketed status glyph whose visible width can
- * vary by status (`[✓]` is 3 cells, `[❚❚]` is 4 cells). Truncation uses
- * the measured width of each rendered cell and appends a trailing `…`
- * when the next whole cell would exceed the budget.
- *
- * Themed mode colours the glyphs by status; plain mode emits the same
- * bracketed shape so logs remain readable.
- */
 export function progressStrip(
   cells: readonly ProgressCell[],
   budget: number,
@@ -466,11 +427,9 @@ export function progressStrip(
 ): string {
   const usable = Math.max(0, Math.floor(budget));
   if (usable < 3 || cells.length === 0) return "";
-
   const ellipsisWidth = visibleWidth(ELLIPSIS);
   const out: string[] = [];
   let used = 0;
-
   for (let i = 0; i < cells.length; i++) {
     const rendered = theme ? renderCellThemed(cells[i]!.status, theme) : renderCellPlain(cells[i]!.status);
     const renderedWidth = visibleWidth(rendered);
@@ -481,24 +440,19 @@ export function progressStrip(
     used += renderedWidth;
     if (isLast) return out.join("");
   }
-
   if (out.length === 0 && ellipsisWidth > usable) return "";
   const suffix = theme ? `${hexToAnsi(theme.dim)}${ELLIPSIS}${RESET}` : ELLIPSIS;
   return `${out.join("")}${suffix}`;
 }
-
 function renderCellThemed(status: StageStatus, theme: GraphTheme): string {
   const dim = hexToAnsi(theme.dim);
   const glyph = stageGlyph(status);
   const fg = stageColor(status, theme);
-  // Bracket lattice in dim, glyph in status colour.
   return `${dim}[${RESET}${fg}${glyph}${RESET}${dim}]${RESET}`;
 }
-
 function renderCellPlain(status: StageStatus): string {
   return `[${stageGlyph(status)}]`;
 }
-
 function stageGlyph(status: StageStatus): string {
   switch (status) {
     case "completed": return "✓";
@@ -511,7 +465,6 @@ function stageGlyph(status: StageStatus): string {
     default:          return "○";
   }
 }
-
 function stageColor(status: StageStatus, theme: GraphTheme): string {
   switch (status) {
     case "completed": return hexToAnsi(theme.success);
@@ -524,31 +477,12 @@ function stageColor(status: StageStatus, theme: GraphTheme): string {
     default:          return hexToAnsi(theme.dim);
   }
 }
-
-// ---------------------------------------------------------------------------
-// Hint rows — `▸ /slash command  verb-phrase hint`
-// ---------------------------------------------------------------------------
-
 export interface HintRow {
-  /** Full slash command (`/workflow connect <id>`). */
   command: string;
-  /** Verb-phrase trailing hint (`attach & watch`). */
   hint: string;
 }
-
-/**
- * Render one indented hint row per entry. Themed mode colours the arrow
- * dim, the command in `theme.accent`, and the hint in `theme.dim`.
- * Plain mode emits the same shape without ANSI.
- *
- * The plan calls for a single grammar across every chat surface:
- * `▸ /command   hint`.
- */
 export function renderHintRows(rows: readonly HintRow[], theme?: GraphTheme): string {
   if (rows.length === 0) return "";
-  // 1-cell leading space so the `▸` arrow column-aligns with the band's
-  // `[ LABEL ]` opening bracket and the card content. All three share
-  // column 1 — see renderTaggedCardThemed for the alignment contract.
   const indent = " ";
   if (!theme) {
     return rows

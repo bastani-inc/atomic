@@ -21,7 +21,7 @@ import { runDetached } from "../../packages/workflows/src/runs/background/runner
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import type { StageCustomUiRequest } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import type { WorkflowUIAdapter } from "../../packages/workflows/src/shared/types.js";
@@ -56,9 +56,14 @@ async function waitForAwaitingCustomStage(
 
 /** Two-stage workflow: a normal prompt stage, then a ctx.ui.custom call. */
 function customAfterStageWorkflow() {
-  return defineWorkflow("headless-custom-ui")
-    .output("picked", Type.Optional(Type.Any()))
-    .run(async (ctx) => {
+  return workflow({
+    name: "headless-custom-ui",
+    description: "",
+    inputs: {},
+    outputs: {
+      picked: Type.Optional(Type.Any()),
+    },
+    run: async (ctx) => {
       await ctx.stage("warmup").prompt("complete the warmup stage");
       const picked = await ctx.ui.custom<string>(async (_tui, _theme, _kb, done) => ({
         render: () => ["pick something"],
@@ -66,8 +71,8 @@ function customAfterStageWorkflow() {
         invalidate: () => {},
       }));
       return { picked };
-    })
-    .compile();
+    },
+  });
 }
 
 const promptAdapters = {
@@ -101,17 +106,22 @@ describe("headless ctx.ui.custom (#1339)", () => {
   test("all interactive ctx.ui methods get the headless treatment in non-interactive mode", async () => {
     for (const method of ["input", "confirm", "select", "editor"] as const) {
       const store = createStore();
-      const def = defineWorkflow(`headless-${method}`)
-        .output("value", Type.Optional(Type.Any()))
-        .run(async (ctx) => {
+      const def = workflow({
+        name: `headless-${method}`,
+        description: "",
+        inputs: {},
+        outputs: {
+          value: Type.Optional(Type.Any()),
+        },
+        run: async (ctx) => {
           const value =
             method === "input" ? await ctx.ui.input("q?")
             : method === "confirm" ? await ctx.ui.confirm("ok?")
             : method === "select" ? await ctx.ui.select("pick", ["a", "b"])
             : await ctx.ui.editor("seed");
           return { value };
-        })
-        .compile();
+        },
+      });
       const accepted = runDetached(def, {}, {
         store,
         cancellation: createCancellationRegistry(),
@@ -157,10 +167,15 @@ describe("headless ctx.ui.custom (#1339)", () => {
   test("partial UI adapters degrade to clear errors, never 'not a function' TypeErrors", async () => {
     const store = createStore();
     const partial = {} as WorkflowUIAdapter;
-    const def = defineWorkflow("partial-adapter")
-      .output("v", Type.Optional(Type.Any()))
-      .run(async (ctx) => ({ v: await ctx.ui.input("q?") }))
-      .compile();
+    const def = workflow({
+      name: "partial-adapter",
+      description: "",
+      inputs: {},
+      outputs: {
+        v: Type.Optional(Type.Any()),
+      },
+      run: async (ctx) => ({ v: await ctx.ui.input("q?") }),
+    });
 
     const result = await run(def, {}, { store, ui: partial });
     assert.equal(result.status, "failed");

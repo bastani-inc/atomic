@@ -17,11 +17,6 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import {
-	evaluateBashCommandPolicy,
-	formatBashCommandPolicyRejection,
-	type BashCommandPolicy,
-} from "./bash-policy.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -72,7 +67,7 @@ export interface BashOperations {
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
-			const { shell, args } = getShellConfig(options?.shellPath);
+			const shellConfig = getShellConfig(options?.shellPath);
 			try {
 				await fsAccess(cwd, constants.F_OK);
 			} catch {
@@ -82,13 +77,18 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 				throw new Error("aborted");
 			}
 
-			const child = spawn(shell, [...args, command], {
+			const commandFromStdin = shellConfig.commandTransport === "stdin";
+			const child = spawn(shellConfig.shell, commandFromStdin ? shellConfig.args : [...shellConfig.args, command], {
 				cwd,
 				detached: process.platform !== "win32",
 				env: env ?? getShellEnv(),
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
+			if (commandFromStdin) {
+				child.stdin?.on("error", () => {});
+				child.stdin?.end(command);
+			}
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timedOut = false;
 			let timeoutHandle: NodeJS.Timeout | undefined;
@@ -153,10 +153,6 @@ export interface BashToolOptions {
 	shellPath?: string;
 	/** Hook to adjust command, cwd, or env before execution */
 	spawnHook?: BashSpawnHook;
-	/** Optional command-level policy enforced before commandPrefix, spawnHook, or execution */
-	policy?: BashCommandPolicy;
-	/** Human-readable label used in policy denial errors */
-	policyLabel?: string;
 }
 
 const BASH_PREVIEW_LINES = 5;
@@ -289,8 +285,6 @@ export function createBashToolDefinition(
 	const ops = options?.operations ?? createLocalBashOperations({ shellPath: options?.shellPath });
 	const commandPrefix = options?.commandPrefix;
 	const spawnHook = options?.spawnHook;
-	const policy = options?.policy;
-	const policyLabel = options?.policyLabel;
 	return {
 		name: "bash",
 		label: "bash",
@@ -300,16 +294,12 @@ export function createBashToolDefinition(
 		maxResultSizeChars: Infinity,
 		async execute(
 			_toolCallId,
-			{ command, timeout }: { command: string; timeout?: number },
+			bashCommand: BashToolInput,
 			signal?: AbortSignal,
 			onUpdate?,
 			_ctx?,
 		) {
-			const policyDecision = evaluateBashCommandPolicy(command, policy);
-			if (!policyDecision.allowed) {
-				throw new Error(formatBashCommandPolicyRejection(policyDecision, policyLabel));
-			}
-
+			const { command, timeout } = bashCommand;
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${command}` : command;
 			const spawnContext = resolveSpawnContext(resolvedCommand, cwd, spawnHook);
 			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });

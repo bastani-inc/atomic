@@ -2,131 +2,13 @@
  * Type-only package authoring surface for standalone workflow packages.
  *
  * package.json points the root "types" condition here so authors can import
- * defineWorkflow and Type without pulling the Atomic runtime/extension graph into
- * their TypeScript program. Runtime loading still uses src/index.ts.
+ * workflow without pulling the Atomic runtime/extension graph into their
+ * TypeScript program. Runtime loading still uses src/index.ts. Import Type from
+ * typebox directly.
  */
 
-import type {
-  TAny,
-  TArray,
-  TArrayOptions,
-  TBigInt,
-  TBoolean,
-  TEnum,
-  TEnumValue,
-  TInteger,
-  TIntersect,
-  TIntersectOptions,
-  TLiteral,
-  TLiteralValue,
-  TNever,
-  TNull,
-  TNumber,
-  TNumberOptions,
-  TOmit,
-  TObject,
-  TObjectOptions,
-  TPartial,
-  TPick,
-  TRecordAction,
-  TRequired,
-  TSchema,
-  TSchemaOptions,
-  TString,
-  TStringOptions,
-  TTuple,
-  TTupleOptions,
-  TUndefined,
-  TUnion,
-  TUnknown,
-  TVoid,
-  Type as TypeboxType,
-  TKeysToIndexer,
-} from "typebox";
-
-type PreserveOptions<T extends TSchema, O extends TSchemaOptions> = T & O;
-type TypeScriptEnumLike = Record<string, string | number>;
-type TypeScriptEnumValues<T extends TypeScriptEnumLike> = Extract<T[keyof T], TEnumValue>[];
-
-export declare const Type: Omit<
-  typeof TypeboxType,
-  | "Any"
-  | "Array"
-  | "BigInt"
-  | "Boolean"
-  | "Enum"
-  | "Integer"
-  | "Intersect"
-  | "Literal"
-  | "Never"
-  | "Null"
-  | "Number"
-  | "Omit"
-  | "Partial"
-  | "Pick"
-  | "Object"
-  | "Record"
-  | "Required"
-  | "String"
-  | "Tuple"
-  | "Undefined"
-  | "Union"
-  | "Unknown"
-  | "Void"
-> & {
-  Any<const O extends TSchemaOptions>(options: O): PreserveOptions<TAny, O>;
-  Any(): TAny;
-  Array<Type extends TSchema, const O extends TArrayOptions>(items: Type, options: O): PreserveOptions<TArray<Type>, O>;
-  Array<Type extends TSchema>(items: Type): TArray<Type>;
-  BigInt<const O extends TSchemaOptions>(options: O): PreserveOptions<TBigInt, O>;
-  BigInt(): TBigInt;
-  Boolean<const O extends TSchemaOptions>(options: O): PreserveOptions<TBoolean, O>;
-  Boolean(): TBoolean;
-  Enum<Values extends TEnumValue[], const O extends TSchemaOptions>(values: readonly [...Values], options: O): PreserveOptions<TEnum<Values>, O>;
-  Enum<Values extends TEnumValue[]>(values: readonly [...Values]): TEnum<Values>;
-  Enum<Enum extends TypeScriptEnumLike, const O extends TSchemaOptions>(value: Enum, options: O): PreserveOptions<TEnum<TypeScriptEnumValues<Enum>>, O>;
-  Enum<Enum extends TypeScriptEnumLike>(value: Enum): TEnum<TypeScriptEnumValues<Enum>>;
-  Integer<const O extends TNumberOptions>(options: O): PreserveOptions<TInteger, O>;
-  Integer(): TInteger;
-  Intersect<Types extends TSchema[], const O extends TIntersectOptions>(types: [...Types], options: O): PreserveOptions<TIntersect<Types>, O>;
-  Intersect<Types extends TSchema[]>(types: [...Types]): TIntersect<Types>;
-  Literal<const Value extends TLiteralValue, const O extends TSchemaOptions>(value: Value, options: O): PreserveOptions<TLiteral<Value>, O>;
-  Literal<const Value extends TLiteralValue>(value: Value): TLiteral<Value>;
-  Never<const O extends TSchemaOptions>(options: O): PreserveOptions<TNever, O>;
-  Never(): TNever;
-  Null<const O extends TSchemaOptions>(options: O): PreserveOptions<TNull, O>;
-  Null(): TNull;
-  Number<const O extends TNumberOptions>(options: O): PreserveOptions<TNumber, O>;
-  Number(): TNumber;
-  Omit<Type extends TSchema, Indexer extends PropertyKey[], const O extends TSchemaOptions>(type: Type, indexer: readonly [...Indexer], options: O): PreserveOptions<TOmit<Type, TKeysToIndexer<Indexer>>, O>;
-  Omit<Type extends TSchema, Indexer extends PropertyKey[]>(type: Type, indexer: readonly [...Indexer]): TOmit<Type, TKeysToIndexer<Indexer>>;
-  Omit<Type extends TSchema, Indexer extends TSchema, const O extends TSchemaOptions>(type: Type, indexer: Indexer, options: O): PreserveOptions<TOmit<Type, Indexer>, O>;
-  Omit<Type extends TSchema, Indexer extends TSchema>(type: Type, indexer: Indexer): TOmit<Type, Indexer>;
-  Partial<Type extends TSchema, const O extends TSchemaOptions>(type: Type, options: O): PreserveOptions<TPartial<Type>, O>;
-  Partial<Type extends TSchema>(type: Type): TPartial<Type>;
-  Pick<Type extends TSchema, Indexer extends PropertyKey[], const O extends TSchemaOptions>(type: Type, indexer: readonly [...Indexer], options: O): PreserveOptions<TPick<Type, TKeysToIndexer<Indexer>>, O>;
-  Pick<Type extends TSchema, Indexer extends PropertyKey[]>(type: Type, indexer: readonly [...Indexer]): TPick<Type, TKeysToIndexer<Indexer>>;
-  Pick<Type extends TSchema, Indexer extends TSchema, const O extends TSchemaOptions>(type: Type, indexer: Indexer, options: O): PreserveOptions<TPick<Type, Indexer>, O>;
-  Pick<Type extends TSchema, Indexer extends TSchema>(type: Type, indexer: Indexer): TPick<Type, Indexer>;
-  Object<Properties extends Record<PropertyKey, TSchema>, const O extends TObjectOptions>(properties: Properties, options: O): PreserveOptions<TObject<Properties>, O>;
-  Object<Properties extends Record<PropertyKey, TSchema>>(properties: Properties): TObject<Properties>;
-  Record<Key extends TSchema, Value extends TSchema, const O extends TObjectOptions>(key: Key, value: Value, options: O): PreserveOptions<TRecordAction<Key, Value>, O>;
-  Record<Key extends TSchema, Value extends TSchema>(key: Key, value: Value): TRecordAction<Key, Value>;
-  Required<Type extends TSchema, const O extends TSchemaOptions>(type: Type, options: O): PreserveOptions<TRequired<Type>, O>;
-  Required<Type extends TSchema>(type: Type): TRequired<Type>;
-  String<const O extends TStringOptions>(options: O): PreserveOptions<TString, O>;
-  String(): TString;
-  Tuple<Types extends TSchema[], const O extends TTupleOptions>(types: [...Types], options: O): PreserveOptions<TTuple<Types>, O>;
-  Tuple<Types extends TSchema[]>(types: [...Types]): TTuple<Types>;
-  Undefined<const O extends TSchemaOptions>(options: O): PreserveOptions<TUndefined, O>;
-  Undefined(): TUndefined;
-  Union<Types extends TSchema[], const O extends TSchemaOptions>(anyOf: [...Types], options: O): PreserveOptions<TUnion<Types>, O>;
-  Union<Types extends TSchema[]>(anyOf: [...Types]): TUnion<Types>;
-  Unknown<const O extends TSchemaOptions>(options: O): PreserveOptions<TUnknown, O>;
-  Unknown(): TUnknown;
-  Void<const O extends TSchemaOptions>(options: O): PreserveOptions<TVoid, O>;
-  Void(): TVoid;
-};
+import type {} from "./authoring/typebox-defaults.js";
+import type { TSchema } from "typebox";
 export type { Static, TSchema } from "typebox";
 
 export type {
@@ -198,7 +80,9 @@ export type {
   WorkflowParallelOptions,
   WorkflowPersistencePort,
   WorkflowProgressSummary,
+  WorkflowRunChildArgs,
   WorkflowRunChildOptions,
+  WorkflowRunChildOptionsArgument,
   WorkflowRunOutput,
   WorkflowRuntimeConfig,
   WorkflowSerializableObject,
@@ -219,6 +103,18 @@ export type {
 } from "./shared/authoring-contract.js";
 
 import type * as AuthoringContract from "./shared/authoring-contract.js";
+import type {
+  AuthoredWorkflowSpec as SharedAuthoredWorkflowSpec,
+  WorkflowInputsFromSchemas,
+  WorkflowOutputsFromSchemas,
+  WorkflowProvidedInputsFromSchemas,
+} from "./shared/workflow-authoring-types.js";
+
+export type {
+  WorkflowInputsFromSchemas,
+  WorkflowOutputsFromSchemas,
+  WorkflowProvidedInputsFromSchemas,
+} from "./shared/workflow-authoring-types.js";
 
 import type {
   GitWorktreeSetupOptions,
@@ -232,14 +128,16 @@ import type {
   WorkflowDirectOptions,
   WorkflowDirectTaskItem,
   WorkflowExecutionPolicy,
+  WorkflowInputSchemaMap,
   WorkflowInputValues,
+  WorkflowOutputSchemaMap,
   WorkflowOutputValues,
   WorkflowSerializableObject,
   WorkflowChainStep,
 } from "./shared/authoring-contract.js";
 
 // Type-only nominal brand for standalone package typings. Runtime discovery uses
-// the package-internal WeakSet in define-workflow.ts rather than a symbol field.
+// the package-internal WeakSet in authoring/workflow.ts rather than a symbol field.
 declare const workflowDefinitionBrand: unique symbol;
 type WorkflowDefinitionBrand = { readonly [workflowDefinitionBrand]: true };
 
@@ -250,6 +148,17 @@ export interface WorkflowDefinition<
   TDefinitionBrand extends object = WorkflowDefinitionBrand,
 > extends WorkflowContractDefinition<TInputs, TOutputs, TRunInputs, TDefinitionBrand>, WorkflowDefinitionBrand {}
 
+export type AuthoredWorkflowDefinition<
+  TInputs extends WorkflowInputSchemaMap,
+  TOutputs extends WorkflowOutputSchemaMap,
+> = WorkflowDefinition<
+  WorkflowInputsFromSchemas<TInputs>,
+  WorkflowOutputsFromSchemas<TOutputs>,
+  WorkflowProvidedInputsFromSchemas<TInputs>
+> & {
+  readonly outputs: Readonly<TOutputs>;
+};
+
 export type WorkflowRunContext<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
@@ -259,19 +168,22 @@ export type WorkflowRunFn<
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
 > = AuthoringContract.WorkflowRunFn<TInputs, TOutputs, WorkflowDefinitionBrand>;
 
+type WorkflowRunInputArgument<TInputs extends WorkflowInputValues> = [keyof TInputs] extends [never]
+  ? Readonly<Record<string, never>>
+  : TInputs;
+
+export type AuthoredWorkflowSpec<
+  TInputs extends WorkflowInputSchemaMap = {},
+  TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
+  TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
+> = SharedAuthoredWorkflowSpec<
+  TInputs,
+  TOutputs,
+  TActualOutputs,
+  WorkflowRunContext<WorkflowInputsFromSchemas<TInputs>, WorkflowOutputsFromSchemas<TOutputs>>
+>;
+
 export type AnyWorkflowDefinition = WorkflowDefinition<WorkflowInputValues, WorkflowOutputValues, WorkflowInputValues>;
-
-export type WorkflowBuilder<
-  TInputs extends WorkflowInputValues = {},
-  TOutputs extends WorkflowOutputValues = {},
-  TRunInputs extends WorkflowInputValues = TInputs,
-> = AuthoringContract.WorkflowBuilder<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand, WorkflowDefinition<TInputs, TOutputs, TRunInputs>>;
-
-export type CompletedWorkflowBuilder<
-  TInputs extends WorkflowInputValues = {},
-  TOutputs extends WorkflowOutputValues = {},
-  TRunInputs extends WorkflowInputValues = TInputs,
-> = AuthoringContract.CompletedWorkflowBuilder<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand, WorkflowDefinition<TInputs, TOutputs, TRunInputs>>;
 
 export type RunContinuationOpts = AuthoringContract.RunContinuationOpts;
 export type WorkflowParentRunLink = AuthoringContract.WorkflowParentRunLink;
@@ -281,7 +193,7 @@ export declare const INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
 export declare const NON_INTERACTIVE_WORKFLOW_POLICY: WorkflowExecutionPolicy;
 export declare function run<TInputs extends WorkflowInputValues, TOutputs extends WorkflowOutputValues, TRunInputs extends WorkflowInputValues = TInputs>(
   definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>,
-  inputs: Readonly<NoInfer<TRunInputs>>,
+  inputs: Readonly<NoInfer<WorkflowRunInputArgument<TRunInputs>>>,
   opts?: RunOpts,
 ): Promise<RunResult<TOutputs>>;
 export declare function runTask(task: WorkflowDirectTaskItem, runOptions?: RunOpts): Promise<WorkflowDetails>;
@@ -295,8 +207,12 @@ export declare function resolveInputs<TInputs extends WorkflowInputValues>(
 export declare function setupGitWorktree(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
 
 export interface WorkflowRegistry {
-  register<TInputs extends WorkflowInputValues, TOutputs extends WorkflowOutputValues>(
-    definition: WorkflowDefinition<TInputs, TOutputs>,
+  register<
+    TInputs extends WorkflowInputValues,
+    TOutputs extends WorkflowOutputValues,
+    TRunInputs extends WorkflowInputValues = TInputs,
+  >(
+    definition: WorkflowDefinition<TInputs, TOutputs, TRunInputs>,
   ): WorkflowRegistry;
   merge(other: WorkflowRegistry): WorkflowRegistry;
   get(name: string): AnyWorkflowDefinition | undefined;
@@ -308,10 +224,16 @@ export interface WorkflowRegistry {
 
 /**
  * @deprecated Removed imperative workflow API. This runtime value only throws
- * a migration error; author workflows with defineWorkflow(...).compile().
+ * a migration error; author workflows with workflow({...}).
  */
 export declare const runWorkflow: never;
-export declare function defineWorkflow(name: string): WorkflowBuilder;
+export declare function workflow<
+  const TInputs extends WorkflowInputSchemaMap = {},
+  const TOutputs extends WorkflowOutputSchemaMap = WorkflowOutputSchemaMap,
+  TActualOutputs extends WorkflowOutputsFromSchemas<TOutputs> = WorkflowOutputsFromSchemas<TOutputs>,
+>(
+  spec: AuthoredWorkflowSpec<TInputs, TOutputs, TActualOutputs>,
+): AuthoredWorkflowDefinition<TInputs, TOutputs>;
 export declare function createRegistry<TDefinitions extends readonly AnyWorkflowDefinition[] = readonly AnyWorkflowDefinition[]>(
   initial?: TDefinitions,
 ): WorkflowRegistry;

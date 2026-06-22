@@ -4,6 +4,19 @@ import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME, getEnvValue } from "
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
 
+/**
+ * The versionless placeholder stamped on `main` and read from source-tree dev
+ * runs (`bun packages/coding-agent/src/cli.ts`). Real releases never carry it —
+ * `scripts/cut-release.ts` materializes the actual version on the tag commit —
+ * so encountering it means this is a dev build that should not be compared
+ * against the published registry version.
+ */
+const DEV_VERSION_PLACEHOLDER = "0.0.0";
+
+export function isDevVersion(version: string): boolean {
+	return version.trim() === DEV_VERSION_PLACEHOLDER;
+}
+
 export interface LatestPiRelease {
 	version: string;
 	packageName?: string;
@@ -54,6 +67,12 @@ export async function getLatestPiVersion(
 }
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<string | undefined> {
+	// Dev builds always read the versionless `0.0.0` placeholder, which is older
+	// than any published release, so the registry check would always nag. Skip it
+	// (and the network call) for source-tree/dev runs.
+	if (isDevVersion(currentVersion)) {
+		return undefined;
+	}
 	try {
 		const latestVersion = await getLatestPiVersion();
 		if (latestVersion && isNewerPackageVersion(latestVersion, currentVersion)) {

@@ -217,106 +217,85 @@ describe("substituteArgs - positional defaults", () => {
 		expect(substituteArgs(`\${1:-$ARGUMENTS}`, ["a", "b"])).toBe("a");
 		expect(substituteArgs(`\${3:-$ARGUMENTS}`, ["a", "b"])).toBe("$ARGUMENTS");
 	});
-
 	test("should support defaults with spaces", () => {
 		expect(substituteArgs(`\${1:-seven steps}`, [])).toBe("seven steps");
 	});
-
 	test("should support out-of-range positional defaults", () => {
 		expect(substituteArgs(`\${3:-fallback}`, ["a", "b"])).toBe("fallback");
 	});
-
 	test("should mix positional defaults with existing placeholders", () => {
 		expect(substituteArgs(`$1 \${2:-x} $ARGUMENTS`, ["a"])).toBe("a x a");
 	});
 });
-
 // ============================================================================
 // substituteArgs - Array Slicing (Bash-Style)
 // ============================================================================
-
 describe("substituteArgs - array slicing", () => {
 	test(`should slice from index (\${@:N})`, () => {
 		expect(substituteArgs(`\${@:2}`, ["a", "b", "c", "d"])).toBe("b c d");
 		expect(substituteArgs(`\${@:1}`, ["a", "b", "c"])).toBe("a b c");
 		expect(substituteArgs(`\${@:3}`, ["a", "b", "c", "d"])).toBe("c d");
 	});
-
 	test(`should slice with length (\${@:N:L})`, () => {
 		expect(substituteArgs(`\${@:2:2}`, ["a", "b", "c", "d"])).toBe("b c");
 		expect(substituteArgs(`\${@:1:1}`, ["a", "b", "c"])).toBe("a");
 		expect(substituteArgs(`\${@:3:1}`, ["a", "b", "c", "d"])).toBe("c");
 		expect(substituteArgs(`\${@:2:3}`, ["a", "b", "c", "d", "e"])).toBe("b c d");
 	});
-
 	test("should handle out of range slices", () => {
 		expect(substituteArgs(`\${@:99}`, ["a", "b"])).toBe("");
 		expect(substituteArgs(`\${@:5}`, ["a", "b"])).toBe("");
 		expect(substituteArgs(`\${@:10:5}`, ["a", "b"])).toBe("");
 	});
-
 	test("should handle zero-length slices", () => {
 		expect(substituteArgs(`\${@:2:0}`, ["a", "b", "c"])).toBe("");
 		expect(substituteArgs(`\${@:1:0}`, ["a", "b"])).toBe("");
 	});
-
 	test("should handle length exceeding array", () => {
 		expect(substituteArgs(`\${@:2:99}`, ["a", "b", "c"])).toBe("b c");
 		expect(substituteArgs(`\${@:1:10}`, ["a", "b"])).toBe("a b");
 	});
-
 	test("should process slice before simple $@", () => {
 		expect(substituteArgs(`\${@:2} vs $@`, ["a", "b", "c"])).toBe("b c vs a b c");
 		expect(substituteArgs(`First: \${@:1:1}, All: $@`, ["x", "y", "z"])).toBe("First: x, All: x y z");
 	});
-
 	test("should not recursively substitute slice patterns in args", () => {
 		expect(substituteArgs(`\${@:1}`, [`\${@:2}`, "test"])).toBe(`\${@:2} test`);
 		expect(substituteArgs(`\${@:2}`, ["a", `\${@:3}`, "c"])).toBe(`\${@:3} c`);
 	});
-
 	test("should handle mixed usage with positional args", () => {
 		expect(substituteArgs(`$1: \${@:2}`, ["cmd", "arg1", "arg2"])).toBe("cmd: arg1 arg2");
 		expect(substituteArgs(`$1 $2 \${@:3}`, ["a", "b", "c", "d"])).toBe("a b c d");
 	});
-
 	test(`should treat \${@:0} as all args`, () => {
 		expect(substituteArgs(`\${@:0}`, ["a", "b", "c"])).toBe("a b c");
 	});
-
 	test("should handle empty args array", () => {
 		expect(substituteArgs(`\${@:2}`, [])).toBe("");
 		expect(substituteArgs(`\${@:1}`, [])).toBe("");
 	});
-
 	test("should handle single arg array", () => {
 		expect(substituteArgs(`\${@:1}`, ["only"])).toBe("only");
 		expect(substituteArgs(`\${@:2}`, ["only"])).toBe("");
 	});
-
 	test("should handle slice in middle of text", () => {
 		expect(substituteArgs(`Process \${@:2} with $1`, ["tool", "file1", "file2"])).toBe(
 			"Process file1 file2 with tool",
 		);
 	});
-
 	test("should handle multiple slices in one template", () => {
 		expect(substituteArgs(`\${@:1:1} and \${@:2}`, ["a", "b", "c"])).toBe("a and b c");
 		expect(substituteArgs(`\${@:1:2} vs \${@:3:2}`, ["a", "b", "c", "d", "e"])).toBe("a b vs c d");
 	});
-
 	test("should handle quoted arguments in slices", () => {
 		expect(substituteArgs(`\${@:2}`, ["cmd", "first arg", "second arg"])).toBe("first arg second arg");
 	});
-
 	test("should handle special characters in sliced args", () => {
 		expect(substituteArgs(`\${@:2}`, ["cmd", "$100", "@user", "#tag"])).toBe("$100 @user #tag");
 	});
-
 	test("should handle unicode in sliced args", () => {
 		expect(substituteArgs(`\${@:1}`, ["日本語", "🎉", "café"])).toBe("日本語 🎉 café");
 	});
-
 	test("should combine positional, slice, and wildcard placeholders", () => {
 		const template = `Run $1 on \${@:2:2}, then process $@`;
 		const args = ["eslint", "file1.ts", "file2.ts", "file3.ts"];
@@ -324,85 +303,66 @@ describe("substituteArgs - array slicing", () => {
 			"Run eslint on file1.ts file2.ts, then process eslint file1.ts file2.ts file3.ts",
 		);
 	});
-
 	test("should handle slice with no spacing", () => {
 		expect(substituteArgs(`prefix\${@:2}suffix`, ["a", "b", "c"])).toBe("prefixb csuffix");
 	});
-
 	test("should handle large slice lengths gracefully", () => {
 		const args = Array.from({ length: 10 }, (_, i) => `arg${i + 1}`);
 		expect(substituteArgs(`\${@:5:100}`, args)).toBe("arg5 arg6 arg7 arg8 arg9 arg10");
 	});
 });
-
 // ============================================================================
 // parseCommandArgs
 // ============================================================================
-
 describe("parseCommandArgs", () => {
 	test("should parse simple space-separated arguments", () => {
 		expect(parseCommandArgs("a b c")).toEqual(["a", "b", "c"]);
 	});
-
 	test("should parse quoted arguments with spaces", () => {
 		expect(parseCommandArgs('"first arg" second')).toEqual(["first arg", "second"]);
 	});
-
 	test("should parse single-quoted arguments", () => {
 		expect(parseCommandArgs("'first arg' second")).toEqual(["first arg", "second"]);
 	});
-
 	test("should parse mixed quote styles", () => {
 		expect(parseCommandArgs('"double" \'single\' "double again"')).toEqual(["double", "single", "double again"]);
 	});
-
 	test("should handle empty string", () => {
 		expect(parseCommandArgs("")).toEqual([]);
 	});
-
 	test("should handle extra spaces", () => {
 		expect(parseCommandArgs("a  b   c")).toEqual(["a", "b", "c"]);
 	});
-
 	test("should handle tabs as separators", () => {
 		expect(parseCommandArgs("a\tb\tc")).toEqual(["a", "b", "c"]);
 	});
-
 	test("should handle quoted empty string", () => {
 		// Note: Empty quotes are skipped by current implementation
 		expect(parseCommandArgs('"" " "')).toEqual([" "]);
 	});
-
 	test("should handle arguments with special characters", () => {
 		expect(parseCommandArgs("$100 @user #tag")).toEqual(["$100", "@user", "#tag"]);
 	});
-
 	test("should handle unicode characters", () => {
 		expect(parseCommandArgs("日本語 🎉 café")).toEqual(["日本語", "🎉", "café"]);
 	});
-
 	test("should handle newlines in arguments", () => {
 		expect(parseCommandArgs('"line1\nline2" second')).toEqual(["line1\nline2", "second"]);
 	});
-
 	test("should handle escaped quotes inside quoted strings", () => {
 		// Note: This implementation doesn't handle escaped quotes - backslash is literal
 		expect(parseCommandArgs('"quoted \\"text\\""')).toEqual(["quoted \\text\\"]);
 	});
-
 	test("should handle trailing spaces", () => {
 		expect(parseCommandArgs("a b c   ")).toEqual(["a", "b", "c"]);
 	});
-
 	test("should handle leading spaces", () => {
 		expect(parseCommandArgs("   a b c")).toEqual(["a", "b", "c"]);
 	});
 });
-
 // ============================================================================
 // Integration
 // ============================================================================
-
 describe("parseCommandArgs + substituteArgs integration", () => {
 	test("should parse and substitute together correctly", () => {
 		const input = 'Button "onClick handler" "disabled support"';
@@ -411,7 +371,6 @@ describe("parseCommandArgs + substituteArgs integration", () => {
 		const result = substituteArgs(template, args);
 		expect(result).toBe("Create component Button with features: Button onClick handler disabled support");
 	});
-
 	test("should handle the example from README", () => {
 		const input = 'Button "onClick handler" "disabled support"';
 		const args = parseCommandArgs(input);
@@ -421,7 +380,6 @@ describe("parseCommandArgs + substituteArgs integration", () => {
 			"Create a React component named Button with features: Button onClick handler disabled support",
 		);
 	});
-
 	test("should produce same result with $@ and $ARGUMENTS", () => {
 		const args = parseCommandArgs("feature1 feature2 feature3");
 		const template1 = "Implement: $@";
@@ -429,19 +387,15 @@ describe("parseCommandArgs + substituteArgs integration", () => {
 		expect(substituteArgs(template1, args)).toBe(substituteArgs(template2, args));
 	});
 });
-
 // ============================================================================
 // loadPromptTemplates - argument-hint frontmatter
 // ============================================================================
-
 describe("loadPromptTemplates - argument-hint", () => {
 	const testDir = join(tmpdir(), `pi-test-prompts-${Date.now()}`);
-
 	function writeTemplate(name: string, content: string) {
 		mkdirSync(testDir, { recursive: true });
 		writeFileSync(join(testDir, `${name}.md`), content);
 	}
-
 	test("should parse required argument-hint from frontmatter", () => {
 		writeTemplate(
 			"pr",
@@ -451,20 +405,17 @@ argument-hint: "<PR-URL>"
 ---
 You are given one or more GitHub PR URLs: $@`,
 		);
-
 		const templates = loadPromptTemplates({
 			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
 		});
-
 		const pr = templates.find((t) => t.name === "pr");
 		expect(pr).toBeDefined();
 		expect(pr!.argumentHint).toBe("<PR-URL>");
 		expect(pr!.description).toBe("Review PRs from URLs with structured issue and code analysis");
 	});
-
 	test("should parse optional argument-hint from frontmatter", () => {
 		writeTemplate(
 			"wr",
@@ -474,20 +425,17 @@ argument-hint: "[instructions]"
 ---
 Wrap it. Additional instructions: $ARGUMENTS`,
 		);
-
 		const templates = loadPromptTemplates({
 			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
 		});
-
 		const wr = templates.find((t) => t.name === "wr");
 		expect(wr).toBeDefined();
 		expect(wr!.argumentHint).toBe("[instructions]");
 		expect(wr!.description).toBe("Finish the current task end-to-end with changelog, commit, and push");
 	});
-
 	test("should leave argumentHint undefined when not specified", () => {
 		writeTemplate(
 			"cl",
@@ -496,19 +444,16 @@ description: Audit changelog entries before release
 ---
 Audit changelog entries for all commits since the last release.`,
 		);
-
 		const templates = loadPromptTemplates({
 			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
 		});
-
 		const cl = templates.find((t) => t.name === "cl");
 		expect(cl).toBeDefined();
 		expect(cl!.argumentHint).toBeUndefined();
 	});
-
 	test("should ignore empty argument-hint", () => {
 		writeTemplate(
 			"empty-hint",
@@ -518,19 +463,16 @@ argument-hint: ""
 ---
 Do something`,
 		);
-
 		const templates = loadPromptTemplates({
 			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
 		});
-
 		const tmpl = templates.find((t) => t.name === "empty-hint");
 		expect(tmpl).toBeDefined();
 		expect(tmpl!.argumentHint).toBeUndefined();
 	});
-
 	test("should preserve argument-hint with special characters", () => {
 		writeTemplate(
 			"is",
@@ -540,19 +482,16 @@ argument-hint: "<issue>"
 ---
 Analyze GitHub issue(s): $ARGUMENTS`,
 		);
-
 		const templates = loadPromptTemplates({
 			cwd: process.cwd(),
 			agentDir: getAgentDir(),
 			promptPaths: [testDir],
 			includeDefaults: false,
 		});
-
 		const is = templates.find((t) => t.name === "is");
 		expect(is).toBeDefined();
 		expect(is!.argumentHint).toBe("<issue>");
 	});
-
 	afterAll(() => {
 		try {
 			rmSync(testDir, { recursive: true, force: true });

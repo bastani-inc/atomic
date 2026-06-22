@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.9` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming code-fence stability, and shared agent/TUI compatibility fixes; no subagents extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
 ### Added
 
 - Added the `playwright-cli` builtin skill (browser automation, end-to-end UI checks, screenshots, reviewable video recording, and Playwright test workflows) and the `effective-liteparse` builtin skill (fast, local, model-free text/table/value extraction from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI).
@@ -10,6 +18,7 @@
 
 - Changed the `debugger` and `codebase-online-researcher` subagents to load the `playwright-cli` skill and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
 - Aligned the subagents extension peer dependencies with upstream pi `^0.79.7` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider catalog, RPC id handling, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
 
 ### Removed
 
