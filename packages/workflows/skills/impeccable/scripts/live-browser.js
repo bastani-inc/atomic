@@ -5109,7 +5109,7 @@
   }
 
   function scopeCssToSveltePreview(css, sessionId) {
-    const prefix = '[data-impeccable-variants="' + String(sessionId).replace(/"/g, '\\"') + '"] ';
+    const prefix = '[data-impeccable-variants="' + String(sessionId).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"] ';
     return scopeCssBlock(String(css || ''), prefix).trim();
   }
 
@@ -5609,7 +5609,7 @@
     if (!/\.[cm]?[jt]sx$/i.test(String(filePath || ''))) return block;
     return String(block)
       .replace(
-        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style>/g,
+        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style[^>]*>/g,
         (_match, attrs, css) => '<style' + attrs + '>' + css + '</style>',
       )
       .replace(/\bclassName\s*=\s*\{\s*`([^`]*?)`\s*\}/g, (_match, value) => {
@@ -5640,7 +5640,7 @@
     let out = String(prop || '').trim().replace(/^["']|["']$/g, '');
     if (!out) return '';
     if (out.startsWith('--')) return out;
-    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/^-ms-/, '-ms-');
+    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/^ms-/, '-ms-');
   }
 
   function buildSvelteExpressionTextMap(sourceOriginal, liveOriginal) {
