@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release with the intercom extension peer dependency aligned through upstream pi TUI `^0.79.9`, so coordination overlays and rendered message surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during Markdown streaming.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+- No intercom extension source changes were needed after the 0.9.0 prerelease line.
+
 ## [0.9.0-alpha.2] - 2026-06-21
 
 ### Changed

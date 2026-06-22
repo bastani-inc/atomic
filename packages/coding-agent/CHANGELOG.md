@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
+### Breaking Changes
+
+- Changed the bundled `open-claude-design` workflow input contract by removing `reference`, `output_type`, and `design_system`; discovery now gathers output type, design-system context, and references during the run.
+- Removed the Atomic-specific `bashPolicy` command allow/deny API from the SDK/session surface and built-in `bash` tool; use `tools`/`excludedTools`/`noTools`, custom tools, or an external sandbox for command scoping.
+
+### Added
+
+- Added configurable context-window selection for models with multiple context tiers, including GitHub Copilot live-catalog support, CLI/settings/RPC controls, SDK helpers and exported types, per-session persistence, model picker UI, and long-context workflow model tokens.
+- Added upstream Pi 0.79.7/0.79.9 capabilities including automatic light/dark themes, chat-template thinking compatibility for custom OpenAI-compatible providers, expanded SDK exports, updated model/provider metadata, and Markdown streaming stability.
+- Replaced browser automation with the bundled `playwright-cli` skill/command and added the `effective-liteparse` document-extraction skill for local PDF/DOCX/PPTX/XLSX/image extraction.
+- Added the builtin `goal` workflow's safe-by-default `create_pr` toggle and final PR/MR/review handoff stage.
+- Restructured the builtin `open-claude-design` workflow around `impeccable` discovery/init, design-system/reference gathering, forked generation plus user-feedback loops, and a minimal export/display phase.
+
+### Changed
+
+- Aligned Atomic's bundled upstream Pi runtime packages through `^0.79.9`, carrying provider catalog updates, GitHub Copilot model filtering, GLM-5.2 metadata, Mistral prompt-cache accounting, OpenRouter Fusion, and shared TUI/runtime fixes.
+- Changed GitHub Copilot context-window handling to derive tiers from the live CAPI model catalog, display full long-context windows while tracking effective prompt budgets internally, seed cached tiers at startup, and keep per-model persisted selections isolated.
+- Synced the Atomic CLI with upstream behavior such as self-only `atomic update` by default, improved model search/autocomplete, generated model catalog updates, theme mode support, and extension documentation/API clarifications.
+- Updated bundled workflows, subagents, docs, and verification guidance to use `playwright-cli` instead of the removed `browser` skill / `browse` CLI.
+- Changed repository validation to include the monorepo-wide Bun/prek/CI file-length gate for tracked TS/JS/Rust files with only documented generated/vendored exclusions.
+- Switched the repository to versionless `main`: package manifests stay at `0.0.0`, release notes land as CHANGELOG-only PRs, and real versions are stamped only on off-main tag commits via `scripts/cut-release.ts`.
+
+### Fixed
+
+- Fixed GitHub Copilot Gemini request/stream failures by sanitizing Gemini-incompatible tool schemas, reconstructing flattened and dotted tool arguments for execution and replay, preserving Gemini thought signatures through `reasoning_opaque`, retrying degenerate empty/error completions appropriately, and hardening reconstruction against prototype pollution.
+- Fixed context-window startup, session-switch, settings, RPC, picker, SDK, and GitHub Copilot restart edge cases so selected windows are validated and persisted consistently without leaking unsupported defaults across providers.
+- Fixed credential-store load failures and concurrent session creation by surfacing real auth-store read errors, avoiding throwaway `AuthStorage` instances when a registry is supplied, and making credential reads lock-free while retaining atomic locked writes.
+- Fixed workflow and extension resource/session behavior, including default session-dir visibility for extensions, same-directory resource reload reuse, workflow stage inheritance from non-default session dirs, and custom resource snapshots for `atomic -e` workflows.
+- Fixed model and runtime polish including RPC unknown-command ids, `/model` query ranking, WSL bash stdin execution, fuzzy `edit` patch generation, overflow compaction after oversized successful responses, source-CLI Bun subprocess tests, and stale update banners on `0.0.0` dev builds.
+- Fixed release and workflow reliability issues including the `publish-release` Publish-run verifier, `open-claude-design` feedback threading/artifact safety/browser handling, and successful overflow-sized assistant response compaction.
+
 ## [0.9.0-alpha.4] - 2026-06-22
 
 ### Breaking Changes

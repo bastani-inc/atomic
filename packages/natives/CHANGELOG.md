@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release for the native transport package; no functional native transport changes were made after the 0.9.0 prerelease line.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
 ## [0.9.0-alpha.2] - 2026-06-21
 
 ### Changed

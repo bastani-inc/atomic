@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
+### Breaking Changes
+
+- Replaced the removed `defineWorkflow(...).run(...).compile()` builder with the single `workflow({ name?, description, inputs, outputs, run })` authoring door; authored workflows now import and export the `workflow` definition directly.
+- Removed the workflow stage/task/direct-mode `bashPolicy` option and schema so workflow-launched `bash` tools match upstream pi behavior; use `tools`/`noTools`, custom tools, or external sandboxing for command scoping.
+- Changed the builtin `open-claude-design` workflow contract by renaming `browse_cli_status` to `playwright_cli_status` and removing the `reference`, `output_type`, and `design_system` inputs in favor of discovery-stage questioning.
+
+### Added
+
+- Added per-model context-window workflow authoring tokens such as `github-copilot/claude-opus-4.8 (1m):xhigh`, plus `contextWindow`/`contextWindowStrict` stage and direct-task options.
+- Added deterministic workflow-stage resume handling that suppresses duplicate readiness prompts after interactive resumes and continues promptable stages exactly once.
+- Added a `playwright-cli` QA proof-video path to the builtin `ralph` workflow and a safe final-stage attachment/link handoff when `create_pr=true`.
+- Added shared initial prompt-refinement stages to the builtin `ralph` and `goal` workflows so raw requests are clarified with the `prompt-engineer` skill before research and orchestration.
+- Added the builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage for GitHub, Azure Repos, GitLab, Bitbucket, Sapling, or Phabricator handoff after reviewer/reducer approval.
+- Restructured the builtin `open-claude-design` workflow around `impeccable` discovery/init, design-system/reference gathering, optional reference discovery, forked generate/user-feedback iterations, and a minimal exporter/final-display phase.
+
+### Changed
+
+- Decomposed the foreground workflow executor behind an internal `EngineRuntime.spawnStage(...)` chokepoint while preserving run, resume, kill, HIL, worktree, model-fallback, graph-frontier, and continuation behavior.
+- Changed builtin `ralph`, `goal`, and `open-claude-design` browser automation guidance from the removed `browser` skill / `browse` CLI to the `playwright-cli` skill and command.
+- Changed builtin `ralph` review fan-out to three independent model-family reviewers with severity-aware unanimous approval, stronger implementation-notes evidence requirements, and non-blocking P3 nit handling.
+- Changed builtin workflows to use long-context GitHub Copilot fallback model tokens where available and to inherit upstream pi TUI `^0.79.9` compatibility fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
+### Fixed
+
+- Fixed workflow stage sessions to inherit the host's non-default session directory in headless/forked runs while preserving explicit per-stage overrides.
+- Fixed manual workflow pause/resume state so attached-stage controls update the main run status the same way `/workflow pause` and `/workflow resume` do.
+- Fixed the builtin `ralph` review loop to stop on deterministic severity-aware unanimous approval instead of treating non-blocking P3 findings or placeholder findings as blockers.
+- Fixed workflow model fallback to reuse the initially loaded credential/model registry, report real credential-store load failures, and resume follow-ups on the settled fallback model instead of replaying from the unavailable primary.
+- Fixed `open-claude-design` user-feedback threading, test artifact placement, browser-unavailable early exits, snapshot copy safety, placeholder filtering, and read-only final display behavior.
+
 ## [0.9.0-alpha.4] - 2026-06-22
 
 ### Breaking Changes
