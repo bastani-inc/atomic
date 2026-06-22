@@ -4,13 +4,12 @@
 
 <p align="center">
   <b>Loops for all (∀).</b><br>
-  <b>Atomic runs reliable coding-agent loops for the work software engineers do every day.</b><br>
+  <b> Atomic runs reliable coding-agent loops for the work software engineers do every day.</b><br>
   <i>Describe the loop in natural language. Program it when reliability matters. Run it with stages, tools, artifacts, subagents, verification, review gates, checkpoints, and human approvals.</i>
 </p>
 
 <p align="center">
-  Prompt libraries tell an agent what loop to follow. Atomic runs the loop.<br>
-  Real engineering matters: agents should not just sound confident, they should leave proof. Atomic fights demo hype with explicit stages, artifacts, verification, review, and approval gates.
+  Real engineering matter. Agents should not just sound confident, they should leave proof. Atomic fights demo hype with explicit stages, artifacts, verification, review, and approval gates.
 </p>
 
 <p align="center">
