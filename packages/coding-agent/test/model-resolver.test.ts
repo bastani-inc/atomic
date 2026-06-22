@@ -68,8 +68,8 @@ const mockOpenRouterModels: Model<"anthropic-messages">[] = [
 const allModels = [...mockModels, ...mockOpenRouterModels];
 
 const cursorBaseModel: Model<"cursor-agent"> = {
-	id: "composer-2",
-	name: "Composer 2",
+	id: "composer-2.5",
+	name: "Composer 2.5",
 	api: "cursor-agent",
 	provider: "cursor",
 	baseUrl: "https://api2.cursor.sh",

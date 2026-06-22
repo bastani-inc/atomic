@@ -47,17 +47,17 @@ describe("Cursor model mapper", () => {
 	test("marks static fallback catalog as estimated and mirrors the reference visible Cursor model set", () => {
 		const models = mapCursorCatalogToProviderModels(createEstimatedCursorCatalog(123));
 		const ids = models.map((model) => model.id);
-		const composer = models.find((model) => model.id === "composer-2");
+		const composer = models.find((model) => model.id === "composer-2.5");
 		assert.ok(composer);
 		assert.match(composer.name, /estimated/u);
 		assert.equal(composer.reasoning, true);
 		assert.deepEqual(composer.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-		assert.equal(models.length, 37);
-		for (const id of ["gpt-5.4", "gpt-5.4-fast", "gpt-5.4-mini", "claude-4.6-opus", "gpt-5.1-codex-max", "kimi-k2.5"]) {
+		assert.equal(models.length, 48);
+		for (const id of ["composer-2.5-fast", "gemini-3.5-flash", "gpt-5.5-medium", "gpt-5.5-medium-fast", "claude-opus-4-8-medium", "grok-4.3", "grok-build-0.1", "kimi-k2.5"]) {
 			assert.ok(ids.includes(id), `expected fallback catalog to include ${id}`);
 		}
-		for (const leaked of ["gpt-5.4-high", "gpt-5.4-mini-none", "claude-4.6-opus-high", "gpt-5.1-codex-max-high"]) {
-			assert.equal(ids.includes(leaked), false, `fallback catalog leaked effort variant ${leaked}`);
+		for (const leaked of ["composer-1.5", "composer-2", "composer-2-fast", "gpt-5.3-codex-spark-preview", "grok-4-20", "grok-4-20-thinking", "claude-fable-5-medium"]) {
+			assert.equal(ids.includes(leaked), false, `fallback catalog leaked stale or gated model ${leaked}`);
 		}
 	});
 
@@ -94,7 +94,7 @@ describe("Cursor model mapper", () => {
 		);
 	});
 
-	test("collapses effort variants into synthesized primary ids", () => {
+	test("uses callable primary ids for effort-only variant groups", () => {
 		const catalog: CursorModelCatalog = {
 			source: "live",
 			fetchedAt: 1,
@@ -108,8 +108,8 @@ describe("Cursor model mapper", () => {
 		};
 
 		const models = mapCursorCatalogToProviderModels(catalog);
-		assert.deepEqual(models.map((model) => model.id), ["alpha", "beta", "beta-default"]);
-		assert.equal(resolveCursorModelVariant("alpha", models.find((model) => model.id === "alpha")?.thinkingLevelMap, "high"), "alpha-high");
+		assert.deepEqual(models.map((model) => model.id), ["alpha-none", "beta-default", "beta-none"]);
+		assert.equal(resolveCursorModelVariant("alpha-none", models.find((model) => model.id === "alpha-none")?.thinkingLevelMap, "high"), "alpha-high");
 	});
 
 	test("treats max suffixes as effort levels like the reference provider", () => {
@@ -120,8 +120,8 @@ describe("Cursor model mapper", () => {
 		};
 
 		const models = mapCursorCatalogToProviderModels(catalog);
-		assert.deepEqual(models.map((entry) => entry.id), ["gpt-5.1-codex"]);
-		assert.equal(resolveCursorModelVariant("gpt-5.1-codex", models[0]?.thinkingLevelMap, "high"), "gpt-5.1-codex-max");
+		assert.deepEqual(models.map((entry) => entry.id), ["gpt-5.1-codex-max"]);
+		assert.equal(resolveCursorModelVariant("gpt-5.1-codex-max", models[0]?.thinkingLevelMap, "high"), "gpt-5.1-codex-max");
 	});
 
 	test("keeps fast and thinking modes in separate live model groups", () => {
@@ -161,7 +161,7 @@ describe("Cursor model mapper", () => {
 		assert.equal(resolveCursorModelVariant(mapped!.id, mapped!.thinkingLevelMap, "medium"), "claude-4-sonnet-thinking-fast");
 
 		const [effortOnly] = mapCursorCatalogToProviderModels({ source: "live", fetchedAt: 1, models: [{ id: "claude-4.5-opus-high", displayName: "Claude Opus 4.5" }] });
-		assert.equal(effortOnly?.id, "claude-4.5-opus");
+		assert.equal(effortOnly?.id, "claude-4.5-opus-high");
 		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "minimal"), "claude-4.5-opus-high");
 	});
 });

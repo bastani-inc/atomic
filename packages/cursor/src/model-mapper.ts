@@ -58,6 +58,7 @@ interface CursorVariantGroup {
 const CURSOR_FALLBACK_RAW_MODELS = rawFallbackModels satisfies readonly CursorUsableModel[];
 const PARSEABLE_EFFORTS: readonly Exclude<CursorEffort, "default">[] = ["none", "low", "medium", "high", "xhigh", "max"];
 const EFFORT_ORDER: readonly CursorEffort[] = ["none", "low", "default", "medium", "high", "xhigh", "max"];
+const PRIMARY_EFFORT_PREFERENCES: readonly Exclude<CursorEffort, "default">[] = ["medium", "none", "low", "high", "xhigh", "max"];
 const THINKING_LEVEL_EFFORT_PREFERENCES: Record<ThinkingLevel, readonly CursorEffort[]> = {
 	minimal: ["none", "low", "default"],
 	low: ["low", "none", "default"],
@@ -235,11 +236,17 @@ function chooseLargestNumber(values: readonly (number | undefined)[]): number | 
 }
 
 function choosePrimaryId(variants: readonly CursorVariant[], baseId: string): string {
+	const exactBase = variants.find((variant) => variant.id === baseId)?.id;
+	if (exactBase) return exactBase;
+	const exactMode = variants.find((variant) => !variant.effort)?.id;
+	if (exactMode) return exactMode;
 	if (variants.some((variant) => variant.effort)) {
-		const representative = variants[0];
-		return `${baseId}${representative?.thinking ? "-thinking" : ""}${representative?.fast ? "-fast" : ""}`;
+		for (const effort of PRIMARY_EFFORT_PREFERENCES) {
+			const variant = variants.find((candidate) => candidate.effort === effort);
+			if (variant) return variant.id;
+		}
 	}
-	return variants.find((variant) => variant.id === baseId)?.id ?? variants[0]?.id ?? baseId;
+	return variants[0]?.id ?? baseId;
 }
 
 function chooseDisplayName(variants: readonly CursorVariant[], baseId: string, primaryId: string): string {

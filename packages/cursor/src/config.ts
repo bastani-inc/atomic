@@ -9,7 +9,7 @@ export const CURSOR_WEB_BASE_URL = "https://cursor.com";
 // a fresh Cursor login/model request and update this single constant.
 export const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
 export const CURSOR_CLIENT_TYPE = "cli";
-export const CURSOR_DEFAULT_MODEL_ID = "composer-2";
+export const CURSOR_DEFAULT_MODEL_ID = "composer-2.5";
 export const CURSOR_AUTH_POLL_PATH = "/auth/poll";
 export const CURSOR_REFRESH_PATH = "/auth/exchange_user_api_key";
 export const CURSOR_GET_USABLE_MODELS_PATH = "/agent.v1.AgentService/GetUsableModels";

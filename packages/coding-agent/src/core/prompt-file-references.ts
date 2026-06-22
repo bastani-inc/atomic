@@ -33,12 +33,37 @@ interface PromptImageReplacement {
 	image?: ImageContent;
 }
 
-const INLINE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])@(?:"([^"]+)"|'([^']+)'|([^\s]+))/gu;
-const BARE_ABSOLUTE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])(?:"((?:\/|~\/)[^"]+)"|'((?:\/|~\/)[^']+)'|((?:\/|~\/)[^\s]+))/gu;
+const INLINE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])@(?:"([^"]+)"|'([^']+)'|((?:\\.|[^ \t\r\n\f\v])+))/gu;
+const BARE_ABSOLUTE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])(?:"((?:\/|~\/|file:\/\/)[^"]+)"|'((?:\/|~\/|file:\/\/)[^']+)'|((?:\/|~\/|file:\/\/)(?:\\.|[^ \t\r\n\f\v])+))/giu;
+const FILE_TAG_PATTERN = /<file\b[^>]*\bname=(?:"([^"]*)"|'([^']*)')[^>]*>[\s\S]*?<\/file>/giu;
+const UNQUOTED_REFERENCE_START_PATTERN = /(^|[\s([{<])(@?(?:file:\/\/|~\/|\/)|@(?=[^\s"'<>]))/giu;
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp)(?=$|[\s),;:!?.\]}>'"])/giu;
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?"]);
 
 function escapeFileNameAttribute(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function decodeFileNameAttribute(value: string): string {
+	return value.replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt);/gi, (entity, body: string) => {
+		const key = body.toLowerCase();
+		if (key.startsWith("#x")) {
+			const codePoint = Number.parseInt(key.slice(2), 16);
+			return Number.isInteger(codePoint) && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+		}
+		if (key.startsWith("#")) {
+			const codePoint = Number.parseInt(key.slice(1), 10);
+			return Number.isInteger(codePoint) && codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : entity;
+		}
+		const namedEntities: Record<string, string> = {
+			amp: "&",
+			quot: '"',
+			apos: "'",
+			lt: "<",
+			gt: ">",
+		};
+		return namedEntities[key] ?? entity;
+	});
 }
 
 function splitUnquotedCandidate(rawPath: string): CandidatePath[] {
@@ -55,6 +80,37 @@ function splitUnquotedCandidate(rawPath: string): CandidatePath[] {
 		{ path: rawPath, suffix: "" },
 		{ path: rawPath.slice(0, end), suffix: rawPath.slice(end) },
 	];
+}
+
+function lineRemainder(text: string, start: number): string {
+	const newlineIndex = text.indexOf("\n", start);
+	return text.slice(start, newlineIndex === -1 ? undefined : newlineIndex);
+}
+
+function addUniqueCandidate(candidates: CandidatePath[], candidate: CandidatePath): void {
+	if (candidate.path && !candidates.some((existing) => existing.path === candidate.path)) {
+		candidates.push(candidate);
+	}
+}
+
+function imageExtensionCandidates(rawPathAndSuffix: string): CandidatePath[] {
+	const candidates: CandidatePath[] = [];
+	for (const match of rawPathAndSuffix.matchAll(IMAGE_EXTENSION_PATTERN)) {
+		const end = (match.index ?? 0) + match[0].length;
+		addUniqueCandidate(candidates, {
+			path: rawPathAndSuffix.slice(0, end),
+			suffix: rawPathAndSuffix.slice(end),
+		});
+	}
+	return candidates.sort((left, right) => right.path.length - left.path.length);
+}
+
+function unquotedPathCandidates(rawPathAndSuffix: string): CandidatePath[] {
+	const candidates = imageExtensionCandidates(rawPathAndSuffix);
+	for (const candidate of splitUnquotedCandidate(rawPathAndSuffix)) {
+		addUniqueCandidate(candidates, candidate);
+	}
+	return candidates;
 }
 
 function overlapsExistingReplacement(
@@ -148,6 +204,18 @@ export async function resolvePromptImageReferences(
 	};
 	const replacements: PromptImageReplacement[] = [];
 
+	for (const match of text.matchAll(FILE_TAG_PATTERN)) {
+		const fullMatch = match[0];
+		const path = decodeFileNameAttribute(match[1] ?? match[2] ?? "");
+		await addImageReplacementForCandidates(
+			replacements,
+			match.index ?? 0,
+			fullMatch.length,
+			[{ path, suffix: "" }],
+			resolvedOptions,
+		);
+	}
+
 	for (const match of text.matchAll(INLINE_FILE_REFERENCE_PATTERN)) {
 		const fullMatch = match[0];
 		const prefix = match[1] ?? "";
@@ -174,6 +242,21 @@ export async function resolvePromptImageReferences(
 			(match.index ?? 0) + prefix.length,
 			fullMatch.length - prefix.length,
 			pathCandidates,
+			resolvedOptions,
+		);
+	}
+
+	for (const match of text.matchAll(UNQUOTED_REFERENCE_START_PATTERN)) {
+		const prefix = match[1] ?? "";
+		const marker = match[2] ?? "";
+		const start = (match.index ?? 0) + prefix.length;
+		const pathStart = start + (marker === "@" ? marker.length : 0);
+		const rawPathAndSuffix = lineRemainder(text, pathStart);
+		await addImageReplacementForCandidates(
+			replacements,
+			start,
+			pathStart - start + rawPathAndSuffix.length,
+			unquotedPathCandidates(rawPathAndSuffix),
 			resolvedOptions,
 		);
 	}

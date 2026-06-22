@@ -166,7 +166,7 @@ describe("Cursor provider registration", () => {
 		} as unknown as CursorAuthService;
 		const fakeDiscovery = {
 			async discover(): Promise<CursorModelCatalog> {
-				return { source: "live", fetchedAt: 43, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
+				return { source: "live", fetchedAt: 43, models: [{ id: "live-only-model", displayName: "Live Only" }] };
 			},
 		} as unknown as CursorModelDiscoveryService;
 		const runtime = registerCursorProvider(host, {
@@ -179,7 +179,7 @@ describe("Cursor provider registration", () => {
 
 		assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
 		assert.equal(registrations.length, 1);
-		assert.equal(registrations[0]?.config.models.some((model) => model.id === "composer-2.5"), false);
+		assert.equal(registrations[0]?.config.models.some((model) => model.id === "live-only-model"), false);
 		await runtime.dispose();
 	});
 	test("refresh returns rotated credentials when best-effort catalog discovery rejects", async () => {
@@ -332,7 +332,7 @@ describe("Cursor provider registration", () => {
 		const copyScript = readFileSync("packages/coding-agent/scripts/copy-builtin-packages.ts", "utf8");
 		assert.match(builtins, /@bastani\/cursor/u);
 		assert.match(copyScript, /@bastani\/cursor/u);
-		assert.equal(defaultModelPerProvider.cursor, "composer-2");
+		assert.equal(defaultModelPerProvider.cursor, "composer-2.5");
 		assert.equal(existsSync("packages/cursor/src/catalog-cache.ts"), true);
 	});
 });

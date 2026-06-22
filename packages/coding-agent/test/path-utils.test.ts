@@ -156,6 +156,29 @@ describe("path-utils", () => {
 			expect(result).toBe(join(tempDir, macosName));
 		});
 
+		it("should handle shell-escaped macOS screenshot spaces", () => {
+			const macosName = "Screenshot 2026-06-22 at 12.06.12\u202FAM.png";
+			const userName = "Screenshot\\ 2026-06-22\\ at\\ 12.06.12\\ AM.png";
+
+			writeFileSync(join(tempDir, macosName), "content");
+
+			const result = resolveReadPath(userName, tempDir);
+
+			expect(result).toBe(join(tempDir, macosName));
+		});
+
+		it("should prefer a literal backslash path before shell-unescaping", () => {
+			const literalBackslashName = "Screenshot\\ 2026.png";
+			const unescapedName = "Screenshot 2026.png";
+
+			writeFileSync(join(tempDir, literalBackslashName), "literal");
+			writeFileSync(join(tempDir, unescapedName), "unescaped");
+
+			const result = resolveReadPath(literalBackslashName, tempDir);
+
+			expect(result).toBe(join(tempDir, literalBackslashName));
+		});
+
 		it("should handle macOS screenshot lowercase am/pm variant (en_AU locale)", () => {
 			// Some locales like en_AU use lowercase am/pm in screenshot names
 			const macosName = "Screenshot 2024-01-01 at 10.00.00\u202Fam.png"; // U+202F + lowercase

@@ -19,6 +19,35 @@ function tryCurlyQuoteVariant(filePath: string): string {
 	return filePath.replace(/'/g, "\u2019");
 }
 
+function tryShellEscapedPath(filePath: string): string {
+	// Terminal paste often preserves POSIX shell escaping, e.g. `Screenshot\ 2026.png`.
+	// Try the literal path first; only use this as a fallback for paths that did not exist.
+	return filePath.includes("\\") ? filePath.replace(/\\(?=.)/g, "") : filePath;
+}
+
+function addUniqueCandidate(candidates: string[], filePath: string): void {
+	if (!candidates.includes(filePath)) candidates.push(filePath);
+}
+
+function addReadPathVariants(candidates: string[], filePath: string): void {
+	addUniqueCandidate(candidates, filePath);
+	addUniqueCandidate(candidates, tryMacOSScreenshotPath(filePath));
+	const nfdVariant = tryNFDVariant(filePath);
+	addUniqueCandidate(candidates, nfdVariant);
+	addUniqueCandidate(candidates, tryCurlyQuoteVariant(filePath));
+	addUniqueCandidate(candidates, tryCurlyQuoteVariant(nfdVariant));
+}
+
+function getReadPathCandidates(resolved: string): string[] {
+	const candidates: string[] = [];
+	addReadPathVariants(candidates, resolved);
+	const shellEscapedVariant = tryShellEscapedPath(resolved);
+	if (shellEscapedVariant !== resolved) {
+		addReadPathVariants(candidates, shellEscapedVariant);
+	}
+	return candidates;
+}
+
 function fileExists(filePath: string): boolean {
 	try {
 		accessSync(filePath, constants.F_OK);
@@ -52,32 +81,8 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 export function resolveReadPath(filePath: string, cwd: string): string {
 	const resolved = resolveToCwd(filePath, cwd);
 
-	if (fileExists(resolved)) {
-		return resolved;
-	}
-
-	// Try macOS AM/PM variant (narrow no-break space before AM/PM)
-	const amPmVariant = tryMacOSScreenshotPath(resolved);
-	if (amPmVariant !== resolved && fileExists(amPmVariant)) {
-		return amPmVariant;
-	}
-
-	// Try NFD variant (macOS stores filenames in NFD form)
-	const nfdVariant = tryNFDVariant(resolved);
-	if (nfdVariant !== resolved && fileExists(nfdVariant)) {
-		return nfdVariant;
-	}
-
-	// Try curly quote variant (macOS uses U+2019 in screenshot names)
-	const curlyVariant = tryCurlyQuoteVariant(resolved);
-	if (curlyVariant !== resolved && fileExists(curlyVariant)) {
-		return curlyVariant;
-	}
-
-	// Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
-	const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
-	if (nfdCurlyVariant !== resolved && fileExists(nfdCurlyVariant)) {
-		return nfdCurlyVariant;
+	for (const candidate of getReadPathCandidates(resolved)) {
+		if (fileExists(candidate)) return candidate;
 	}
 
 	return resolved;
@@ -86,32 +91,8 @@ export function resolveReadPath(filePath: string, cwd: string): string {
 export async function resolveReadPathAsync(filePath: string, cwd: string): Promise<string> {
 	const resolved = resolveToCwd(filePath, cwd);
 
-	if (await pathExists(resolved)) {
-		return resolved;
-	}
-
-	// Try macOS AM/PM variant (narrow no-break space before AM/PM)
-	const amPmVariant = tryMacOSScreenshotPath(resolved);
-	if (amPmVariant !== resolved && (await pathExists(amPmVariant))) {
-		return amPmVariant;
-	}
-
-	// Try NFD variant (macOS stores filenames in NFD form)
-	const nfdVariant = tryNFDVariant(resolved);
-	if (nfdVariant !== resolved && (await pathExists(nfdVariant))) {
-		return nfdVariant;
-	}
-
-	// Try curly quote variant (macOS uses U+2019 in screenshot names)
-	const curlyVariant = tryCurlyQuoteVariant(resolved);
-	if (curlyVariant !== resolved && (await pathExists(curlyVariant))) {
-		return curlyVariant;
-	}
-
-	// Try combined NFD + curly quote (for French macOS screenshots like "Capture d'écran")
-	const nfdCurlyVariant = tryCurlyQuoteVariant(nfdVariant);
-	if (nfdCurlyVariant !== resolved && (await pathExists(nfdCurlyVariant))) {
-		return nfdCurlyVariant;
+	for (const candidate of getReadPathCandidates(resolved)) {
+		if (await pathExists(candidate)) return candidate;
 	}
 
 	return resolved;

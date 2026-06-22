@@ -121,7 +121,7 @@ describe("Cursor provider registration", () => {
 		assert.equal(config?.oauth.name, "Cursor");
 		assert.equal(config?.api, "cursor-agent");
 		assert.equal(typeof config?.streamSimple, "function");
-		assert.ok(config?.models.some((model) => model.id === "composer-2" && /estimated/u.test(model.name)));
+		assert.ok(config?.models.some((model) => model.id === "composer-2.5" && /estimated/u.test(model.name)));
 		assert.equal(shutdownHandlers.length, 1);
 		await runtime.dispose();
 	});

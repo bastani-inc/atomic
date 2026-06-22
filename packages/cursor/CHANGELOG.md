@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Refreshed Cursor's estimated fallback model catalog against live discovery: removed stale or gated options that fail live smoke tests (`composer-1.5`, `composer-2`, `composer-2-fast`, `gpt-5.3-codex-spark-preview`, `grok-4-20`, and gated Fable/fast Opus variants), added live-verified newer options such as `claude-opus-4-7-*`, `claude-opus-4-8-*`, `gemini-3.5-flash`, `gpt-5.5-*`, `grok-4.3`, and `grok-build-0.1`, and updated the Cursor default to `composer-2.5`.
 - Corrected Cursor native-transport failure guidance for local development to use `bun run --cwd packages/natives build`, matching Bun's script invocation semantics.
 - Allowed multi-turn Cursor image conversations by tolerating historical user image blocks in chat history while serializing only current user-message images through Cursor's `selectedImages[]` transport.
 
