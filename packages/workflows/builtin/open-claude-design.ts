@@ -2,7 +2,7 @@
  * Builtin workflow: open-claude-design
  *
  * Adapts Atomic SDK's Claude Design workflow to the local workflow SDK:
- * project-context setup, design-system/reference research, generation, bounded
+ * combined discovery/init, design-system/reference research, generation, bounded
  * refinement, export, and final display run through ctx.task()/ctx.parallel().
  *
  * Every stage prompt invokes the specific impeccable sub-skill that maps to
@@ -25,7 +25,7 @@ import {
 
 export default workflow({
   name: "open-claude-design",
-  description: "AI-powered design workflow: discovery interview → project-context setup → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate (references take precedence over DESIGN.md/PRODUCT.md). The user iteratively reviews the generated HTML.",
+  description: "AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
   inputs: {
     prompt: Type.String({
       description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.",

@@ -1,15 +1,14 @@
 /**
  * open-claude-design setup helpers.
  *
- * Three additive capabilities that all delegate to the accessible `impeccable`
- * skill (`/skill:impeccable …`), factored into this module so the runner and
- * phases files stay under the 500-line file-length gate:
+ * Capabilities that delegate to the accessible `impeccable` skill
+ * (`/skill:impeccable …`), factored into this module so the runner and phases
+ * files stay under the 500-line file-length gate:
  *
- *   1. Project design context (`init`): always run `/skill:impeccable init`,
- *      which detects PRODUCT.md / DESIGN.md (root, .agents/context/, docs/),
- *      creates whatever is missing, and reconciles existing files against the
- *      discovery brief without clobbering them. cross-ref: impeccable
- *      `reference/init.md`.
+ *   1. Discovery + init front door: one `discovery` stage runs
+ *      `/skill:impeccable shape` and `/skill:impeccable init`, interviews the
+ *      user for the design brief/output type/references, then lets impeccable
+ *      detect/create/reconcile PRODUCT.md and DESIGN.md in the same stage.
  *   2. Reference discovery: browse five curated galleries (Awwwards,
  *      recent.design, Dribbble, Monet, Motionsites) and synthesize a references
  *      brief the generator heavily emulates.
@@ -18,7 +17,7 @@
  *      on-brand variants in the browser. cross-ref: impeccable `reference/live.md`.
  */
 
-import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import {
@@ -34,232 +33,91 @@ type SetupDesignContext = {
 };
 
 // ---------------------------------------------------------------------------
-// 0. Discovery interview (what to build, output type, references)
+// 0. Discovery + init front door (one workflow stage)
 // ---------------------------------------------------------------------------
 
-function buildDiscoveryPrompt(prompt: string): string {
+export type ProjectDesignContextResult = {
+  readonly summary: string;
+};
+
+export function renderDiscoveryContext(discovery: DiscoveryDecision): string {
+  return [
+    `Confirmed design brief: ${discovery.brief}`,
+    `Output type: ${discovery.output_type}`,
+    discovery.references.length > 0
+      ? `References to emulate (take precedence over DESIGN.md/PRODUCT.md): ${discovery.references.join(", ")}`
+      : "References to emulate: none provided.",
+  ].join("\n");
+}
+
+function buildDiscoveryInitPrompt(prompt: string): string {
   const outputTypes = OUTPUT_TYPES.join(", ");
-  return `/skill:impeccable shape\n\n${taggedPrompt([
+  return `/skill:impeccable shape
+/skill:impeccable init
+
+${taggedPrompt([
     [
       "role",
-      "You are an opinionated staff designer running a user interview before any code is written.",
+      "You are an opinionated staff designer running the open-claude-design front door.",
     ],
     [
       "objective",
-      `Understand exactly what the user wants to build, starting from this request: ${prompt}. Apply the impeccable \`shape\` sub-skill to interview the user and arrive at a confirmed design brief. Do NOT write any files or generate any design yet.`,
+      `In ONE workflow stage, first shape the request into a confirmed design brief, output type, and reference list for: ${prompt}. Then immediately run impeccable's \`init\` setup so PRODUCT.md and DESIGN.md are detected, created, or reconciled before downstream design research. Do not ask for or wait on a separate init stage.`,
     ],
     [
       "interview",
       [
-        "Use your \`ask_user_question\` tool to ask the relevant questions you cannot infer from the request or repo.",
-        `Cover, at minimum: (a) what they want to build and the core jobs/screens; (b) the output type — one of: ${outputTypes}; (c) any reference designs they want to emulate (URLs, local file paths, screenshots, or design docs).`,
-        "Ask 2-3 questions per round and wait for answers; propose inferred answers as options, not finished facts.",
-        "Treat the user-provided references as the PRIMARY visual authority for generation — they take precedence over the project's DESIGN.md/PRODUCT.md where they conflict.",
+        "Use your `ask_user_question` tool for important gaps you cannot infer from the request or repo.",
+        `Cover: (a) what to build and core jobs/screens; (b) output type — one of ${outputTypes}; (c) references to emulate (URLs, local paths, screenshots, or design docs).`,
+        "Ask 2-3 questions per round; propose inferred answers as options, not finished facts.",
+        "User-provided references are the PRIMARY visual authority and take precedence over DESIGN.md/PRODUCT.md where they conflict.",
       ].join("\n"),
     ],
     [
-      "references_guidance",
-      "Collect zero or more references. Each reference is a URL (https://…), a local file path, a screenshot path, or a design-doc path. Keep each one verbatim so later import stages can read it.",
-    ],
-    [
-      "degradation",
-      "If you are headless and cannot ask the user, infer the most defensible brief, output type, and references from the request and repo signals; never block the workflow.",
+      "init_instructions",
+      [
+        "After the brief is confirmed, run `/skill:impeccable init` in this same stage.",
+        "Let impeccable init perform its own PRODUCT.md/DESIGN.md detection; do not rely on precomputed detection from the workflow runner.",
+        "Create missing PRODUCT.md and/or DESIGN.md when needed, and reconcile existing files against the confirmed brief. Never silently overwrite existing files.",
+        "When the files already exist, keep it light: load them, reconcile against the brief, and only ask about genuine gaps.",
+        "If headless, infer the most defensible brief/register from the prompt and repo signals, write explicit `## Gaps / Assumptions`, and never block.",
+      ].join("\n"),
     ],
     [
       "output_format",
-      `Return the structured final answer with: \`brief\` (the confirmed, expanded design brief in prose), \`output_type\` (one of ${outputTypes}), and \`references\` (array of verbatim URLs/paths the user wants to emulate; empty array when none).`,
+      `Return the structured final answer with: \`brief\` (confirmed expanded design brief), \`output_type\` (one of ${outputTypes}), and \`references\` (array of verbatim URLs/paths; empty array when none). In your visible summary, also include PRODUCT.md/DESIGN.md files written or reconciled and any assumptions.`,
     ],
   ])}`;
 }
 
-/**
- * Phase 1. Interview the user (impeccable `shape`) to confirm the design brief,
- * the output type, and the references to emulate before onboarding/generation.
- * Tolerant of headless runs: falls back to the raw prompt and an empty reference
- * set when no structured answer is produced.
- */
-export async function runDiscovery(args: {
+export async function runDiscoveryAndInit(args: {
   readonly designContext: SetupDesignContext;
   readonly prompt: string;
   readonly discoveryConfig: SetupModelConfig;
-}): Promise<DiscoveryDecision> {
+}): Promise<{
+  readonly discovery: DiscoveryDecision;
+  readonly discoveryContext: string;
+  readonly projectContext: ProjectDesignContextResult;
+}> {
   const result = await args.designContext.task("discovery", {
-    prompt: buildDiscoveryPrompt(args.prompt),
+    prompt: buildDiscoveryInitPrompt(args.prompt),
     ...args.discoveryConfig,
   });
-  return discoveryDecisionFromResult(result, args.prompt);
-}
-
-// ---------------------------------------------------------------------------
-// 1. Project design context detection + init
-// ---------------------------------------------------------------------------
-
-export type DesignContextDetection = {
-  readonly productPath?: string;
-  readonly designPath?: string;
-  readonly hasProduct: boolean;
-  readonly hasDesign: boolean;
-  readonly hasBoth: boolean;
-};
-
-/** Directories impeccable's init flow checks for PRODUCT.md / DESIGN.md. */
-const CONTEXT_DIRS = ["", ".agents/context", "docs"] as const;
-
-function findContextFile(cwd: string, target: "product.md" | "design.md"): string | undefined {
-  for (const rel of CONTEXT_DIRS) {
-    const dir = rel.length === 0 ? cwd : join(cwd, rel);
-    let entries: string[];
-    try {
-      if (!statSync(dir).isDirectory()) continue;
-      entries = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.toLowerCase() !== target) continue;
-      const full = join(dir, entry);
-      try {
-        if (statSync(full).isFile()) return full;
-      } catch {
-        /* ignore unreadable entry */
-      }
-    }
-  }
-  return undefined;
-}
-
-/**
- * Deterministically report whether PRODUCT.md / DESIGN.md already exist in the
- * project (root, `.agents/context/`, or `docs/`, case-insensitive). Pure read;
- * never writes, never throws.
- */
-export function detectDesignContextFiles(cwd: string): DesignContextDetection {
-  const productPath = findContextFile(cwd, "product.md");
-  const designPath = findContextFile(cwd, "design.md");
-  const hasProduct = productPath !== undefined;
-  const hasDesign = designPath !== undefined;
-  return { productPath, designPath, hasProduct, hasDesign, hasBoth: hasProduct && hasDesign };
-}
-
-export type ProjectDesignContextResult = {
-  readonly initRan: boolean;
-  readonly summary: string;
-  readonly detection: DesignContextDetection;
-};
-
-function buildInitPrompt(args: {
-  readonly prompt: string;
-  readonly detection: DesignContextDetection;
-  readonly discoveryContext: string;
-}): string {
-  const productLine = args.detection.hasProduct
-    ? `PRODUCT.md already exists at ${args.detection.productPath}; review it and refresh only if the brief reveals a gap — never clobber it without confirming.`
-    : "PRODUCT.md does not exist yet; create it.";
-  const designLine = args.detection.hasDesign
-    ? `DESIGN.md already exists at ${args.detection.designPath}; review it and refresh only if the brief reveals a gap — never clobber it without confirming.`
-    : "DESIGN.md does not exist yet; create it (seed it from a few quick questions when there is no code to scan).";
-  const missing = [
-    args.detection.hasProduct ? undefined : "PRODUCT.md",
-    args.detection.hasDesign ? undefined : "DESIGN.md",
-  ].filter((value): value is string => value !== undefined);
-  const statusLine =
-    missing.length > 0
-      ? `This project is missing ${missing.join(" and ")} — create the missing file(s) and reconcile any existing one with the brief.`
-      : "PRODUCT.md and DESIGN.md already exist — review and reconcile them against the discovery brief, refreshing only what the brief reveals as a gap; never overwrite without confirming.";
-  return `/skill:impeccable init\n\n${taggedPrompt([
-    [
-      "role",
-      "You are an opinionated staff design engineer running impeccable's `init` setup for this project.",
-    ],
-    [
-      "objective",
-      `Establish or refresh the project's design context BEFORE any design generation for: ${args.prompt}. ${statusLine} Run the impeccable \`init\` flow so every downstream stage designs on-brand instead of producing generic output.`,
-    ],
-    ["discovery_context", args.discoveryContext],
-    [
-      "why_this_matters",
-      "Impeccable's setup is explicit that skipping the register/brand step produces generic output. PRODUCT.md captures register (brand vs product), target users, purpose, brand personality, anti-references, design principles, and accessibility needs; DESIGN.md captures the visual system (color strategy, typography, components, motion).",
-    ],
-    [
-      "clarifying_questions",
-      [
-        "Use your structured question tool (AskUserQuestion) to interview the user for design/branding that cannot be inferred from the codebase or the `<discovery_context>` above — do NOT re-ask anything the discovery interview already captured, and do NOT synthesize PRODUCT.md from the design prompt alone.",
-        "When PRODUCT.md/DESIGN.md already exist, keep this light: load them, reconcile against the brief, and only ask about genuine gaps instead of re-running the full interview.",
-        "Round 1 (when files are missing): confirm register (brand vs product), users/purpose, and the desired outcome.",
-        "Round 2 (when files are missing): brand personality (3 words), specific named references, explicit anti-references, and accessibility needs.",
-        "Ask 2-3 questions per round and wait for answers; offer inferred answers as hypotheses/options, not finished facts. Do NOT ask about colors/fonts/radii here — those belong to DESIGN.md.",
-      ].join("\n"),
-    ],
-    [
-      "files_to_write",
-      [
-        "Write or refresh PRODUCT.md (strategic) and DESIGN.md (visual system) at the project root, following the impeccable init reference. Never silently overwrite an existing file.",
-        productLine,
-        designLine,
-      ].join("\n"),
-    ],
-    [
-      "degradation",
-      "If you are running headless and cannot ask the user, infer the most defensible register/brand from the prompt and any repo signals, write PRODUCT.md/DESIGN.md with an explicit `## Gaps / Assumptions` section, and never block the workflow.",
-    ],
-    [
-      "output_format",
-      "Return a short markdown summary: register chosen (brand/product), files written or reconciled (absolute paths), the 3-5 design principles, and any assumptions. Do NOT paste the full file bodies.",
-    ],
-  ])}`;
-}
-
-/**
- * Phase 2. ALWAYS run `/skill:impeccable init`: it creates whatever of
- * PRODUCT.md / DESIGN.md is missing and reconciles existing files against the
- * discovery brief (without clobbering them). Best-effort: a headless / failed
- * init never blocks the workflow.
- */
-export async function ensureProjectDesignContext(args: {
-  readonly designContext: SetupDesignContext;
-  readonly cwd: string;
-  readonly prompt: string;
-  readonly discoveryContext: string;
-  readonly designModelConfig: SetupModelConfig;
-}): Promise<ProjectDesignContextResult> {
-  const before = detectDesignContextFiles(args.cwd);
-
-  const init = await args.designContext
-    .task("init", {
-      prompt: buildInitPrompt({
-        prompt: args.prompt,
-        detection: before,
-        discoveryContext: args.discoveryContext,
-      }),
-      ...args.designModelConfig,
-    })
-    .catch(() => undefined);
-
-  const after = detectDesignContextFiles(args.cwd);
-  const missingBefore = [
-    before.hasProduct ? undefined : "PRODUCT.md",
-    before.hasDesign ? undefined : "DESIGN.md",
-  ]
-    .filter((value): value is string => value !== undefined)
-    .join(" and ");
-  const statusBefore = before.hasBoth
-    ? "reviewed existing PRODUCT.md + DESIGN.md against the brief"
-    : `created missing ${missingBefore}`;
+  const discovery = discoveryDecisionFromResult(result, args.prompt);
   return {
-    initRan: true,
-    detection: after,
-    summary: [
-      `Ran \`/skill:impeccable init\` (${statusBefore}).`,
-      (init?.text ?? "").trim(),
-      `Detected after init: PRODUCT.md=${after.productPath ?? "pending"}, DESIGN.md=${after.designPath ?? "pending"}.`,
-    ]
-      .filter((part) => part.length > 0)
-      .join("\n\n"),
+    discovery,
+    discoveryContext: renderDiscoveryContext(discovery),
+    projectContext: {
+      summary: [
+        "Ran `/skill:impeccable shape` + `/skill:impeccable init` in the combined discovery stage.",
+        (result.text ?? "").trim(),
+      ].filter((part) => part.length > 0).join("\n\n"),
+    },
   };
 }
 
 // ---------------------------------------------------------------------------
-// 2. Reference discovery
+// 1. Reference discovery
 // ---------------------------------------------------------------------------
 
 /** Curated galleries of beautiful, current reference designs. */
@@ -339,7 +197,7 @@ export function persistReferencesBrief(artifactDir: string, brief: string): void
 }
 
 // ---------------------------------------------------------------------------
-// 3. Live interactive QA prompt (user-feedback display/review stages)
+// 2. Live interactive QA prompt (user-feedback display/review stages)
 // ---------------------------------------------------------------------------
 
 /**

@@ -697,7 +697,7 @@ Child workflow outputs: `result`, `plan` (latest transformed research question),
 
 ### `open-claude-design`
 
-Discovery interview → project-context setup → design-system/reference research → curated reference discovery with user preference check → forked generate/user-feedback loop → export/handoff pipeline. The discovery stage asks for output type and references; `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
+Combined discovery/init → design-system/reference research → curated reference discovery with user preference check → forked generate/user-feedback loop → export/handoff pipeline. The `discovery` stage asks for output type and references, then runs impeccable init in the same stage so PRODUCT.md/DESIGN.md are detected, created, or reconciled. `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
 
 ```text
 /workflow open-claude-design prompt="Design a kanban board component"

@@ -114,7 +114,7 @@ describe("open-claude-design", () => {
         assert.match(genPrompt, /<reference_inspiration>/);
     });
 
-    test("runs /skill:impeccable init in a full run when the project lacks PRODUCT.md/DESIGN.md", async () => {
+    test("runs /skill:impeccable shape and init in one discovery stage", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -130,16 +130,16 @@ describe("open-claude-design", () => {
                     },
                 },
             );
-            // Point the run at an empty project dir so init detects missing files.
             (ctx as { cwd?: string }).cwd = dir;
             const result = await d.run(ctx);
-            assert.ok(ctx.calls.task.includes("init"));
-            const initPrompt = ctx.calls.prompts["init"]?.[0] ?? "";
-            assert.match(initPrompt, /\/skill:impeccable init/);
-            assert.match(initPrompt, /<discovery_context>/);
+            assert.equal(ctx.calls.task.includes("init"), false);
+            const discoveryPrompt = ctx.calls.prompts["discovery"]?.[0] ?? "";
+            assert.match(discoveryPrompt, /\/skill:impeccable shape/);
+            assert.match(discoveryPrompt, /\/skill:impeccable init/);
+            assert.match(discoveryPrompt, /Let impeccable init perform its own PRODUCT\.md\/DESIGN\.md detection/);
             assert.equal(ctx.calls.task.includes("design-system-builder"), false);
             const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
-            assert.match(genPrompt, /Ran `\/skill:impeccable init`/);
+            assert.match(genPrompt, /shape.*init/s);
             const artifactDir = result["artifact_dir"] as string | undefined;
             if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
         } finally {
@@ -169,12 +169,12 @@ describe("open-claude-design", () => {
         assert.equal(ctx.calls.task.includes("reference-discovery"), false);
     });
 
-    test("always runs init (Phase 2) and drives /skill:impeccable live in user-feedback", async () => {
+    test("combined discovery/init drives /skill:impeccable live in user-feedback", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
-        // Phase 2 always runs now, even when PRODUCT.md/DESIGN.md already exist
-        // (repo root has them committed); init reconciles rather than skipping.
+        // Discovery now includes init in the same stage; there is no separate
+        // init task even when PRODUCT.md/DESIGN.md already exist.
         const ctx = makeMockCtx(
             { prompt: "Design a dashboard", max_refinements: 1 },
             {
@@ -186,12 +186,11 @@ describe("open-claude-design", () => {
             },
         );
         await d.run(ctx);
-        assert.ok(ctx.calls.task.includes("init"));
+        assert.equal(ctx.calls.task.includes("init"), false);
         assert.ok(ctx.calls.task.includes("discovery"));
-        assert.match(
-            ctx.calls.prompts["discovery"]?.[0] ?? "",
-            /\/skill:impeccable shape/,
-        );
+        const discoveryPrompt = ctx.calls.prompts["discovery"]?.[0] ?? "";
+        assert.match(discoveryPrompt, /\/skill:impeccable shape/);
+        assert.match(discoveryPrompt, /\/skill:impeccable init/);
         const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
         assert.match(feedbackPrompt, /\/skill:impeccable live/);
         assert.match(feedbackPrompt, /`live_changes`/);

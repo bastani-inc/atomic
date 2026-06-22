@@ -15,9 +15,8 @@ import { exportOpenClaudeDesign, refineOpenClaudeDesign } from "./open-claude-de
 import {
   NO_REFERENCES_BRIEF,
   buildReferenceDiscoveryPrompt,
-  ensureProjectDesignContext,
   persistReferencesBrief,
-  runDiscovery,
+  runDiscoveryAndInit,
 } from "./open-claude-design-setup.js";
 
 type OpenClaudeDesignOutputs = {
@@ -86,33 +85,19 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "anthropic/claude-sonnet-4-6:high",
     ],
   };
-  // Phase 1: discovery — interview the user (impeccable `shape`) to confirm the
-  // design brief, output type, and references before onboarding or generation.
-  const discovery = await runDiscovery({
+  // Phase 1: combined discovery + init — one stage interviews the user via
+  // impeccable `shape`, then immediately runs impeccable `init` so PRODUCT.md /
+  // DESIGN.md are detected, created, or reconciled before design research.
+  const frontDoor = await runDiscoveryAndInit({
     designContext,
     prompt,
     discoveryConfig: { ...designModelConfig, schema: discoveryDecisionSchema },
   });
+  const discovery = frontDoor.discovery;
   const designBrief = discovery.brief;
   const outputType = discovery.output_type;
   const references = discovery.references;
-
-  // Phase 2: establish project design context (PRODUCT.md / DESIGN.md) via
-  // `/skill:impeccable init`; reuse discovery answers and reconcile gaps.
-  const discoveryContext = [
-    `Confirmed design brief: ${designBrief}`,
-    `Output type: ${outputType}`,
-    references.length > 0
-      ? `References to emulate (take precedence over DESIGN.md/PRODUCT.md): ${references.join(", ")}`
-      : "References to emulate: none provided.",
-  ].join("\n");
-  const projectContext = await ensureProjectDesignContext({
-    designContext,
-    cwd: workflowCwd,
-    prompt: designBrief,
-    discoveryContext,
-    designModelConfig,
-  });
+  const projectContext = frontDoor.projectContext;
 
   const userReferenceContext = references.length > 0
     ? references.map((ref, index) => `${index + 1}. ${ref}`).join("\n")
