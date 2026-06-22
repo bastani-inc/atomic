@@ -2,12 +2,11 @@
  * Shared prompt-refinement stage used by the ralph and goal workflows.
  *
  * Before the main work loop begins, both workflows run this single
- * `prompt-refinement` stage. It invokes the prompt-engineer skill
- * (`/skill:prompt-engineer`) to sharpen the raw user request into a clearer,
- * more actionable objective using the Workflow Best Practices prompt anatomy
- * documented in `packages/coding-agent/docs/workflows.md`. The refined request
- * replaces the original as the operative objective downstream; the original is
- * preserved by each workflow for reporting.
+ * `prompt-refinement` stage. The stage uses the Workflow Best Practices prompt
+ * anatomy documented in `packages/coding-agent/docs/workflows.md` to sharpen the
+ * raw user request into a clearer, more actionable objective. The refined
+ * request replaces the original as the operative objective downstream; the
+ * original is preserved by each workflow for reporting.
  */
 
 import type { WorkflowModelValue, WorkflowTaskOptions, WorkflowTaskResult } from "../src/shared/types.js";
@@ -21,7 +20,7 @@ export type PromptSection = readonly [tag: string, content: string];
  * inferred from the raw request.
  */
 export const PROMPT_REFINEMENT_CRITERIA = [
-  "Apply the workflow best practices documented in the `## Workflow Best Practices` section of `docs/workflows.md`. Treat that section as the authoritative prompt-anatomy rubric: use its Objective, Context, Scope, Non-goals, Done criteria, Validation command, Reporting requirements, and Stop conditions when refining the request.",
+  "Apply the workflow best practices documented in the `## Workflow Best Practices` section of `docs/workflows.md` to transform the raw request into a clear and verifiable objective. Treat that section as the authoritative prompt-anatomy rubric: use its Objective, Context, Scope, Non-goals, Done criteria, Validation command, Reporting requirements, and Stop conditions when refining the request.",
   "Objective — state what should be true when the work is complete.",
   "Context — note why it matters and where the relevant code or area likely lives.",
   "Scope — state what is allowed to change (the smallest correct change).",
@@ -39,21 +38,12 @@ export const PROMPT_REFINEMENT_CRITERIA = [
  */
 export function renderPromptRefinementPrompt(args: {
   readonly request: string;
-  readonly workflowLabel: string;
   readonly workflowCwdContext?: PromptSection;
 }): string {
   const sections: readonly string[] = [
-    `/skill:prompt-engineer Refine the following user request into a clearer, more actionable objective for the ${args.workflowLabel} workflow. Improve clarity and completeness using the rubric below without changing the user's intent, expanding scope, or inventing requirements that cannot be reasonably inferred from the request.`,
+    `Refine the following user request into a clear and verifiable objective. Improve clarity and completeness using the rubric below without changing the user's intent, expanding scope, or inventing requirements that cannot be reasonably inferred from the request.`,
     `<original_request>\n${args.request}\n</original_request>`,
-    `<clarity_rubric>\nApply the Workflow Best Practices prompt anatomy. Make each of the following explicit where it can be reasonably inferred from the original request:\n${PROMPT_REFINEMENT_CRITERIA}\n</clarity_rubric>`,
-    [
-      "<refinement_rules>",
-      "- Preserve the user's original intent and scope; do not add unrelated work.",
-      "- If the original request is already clear and complete, return it essentially unchanged with only clarity improvements.",
-      "- Where a criterion cannot be reasonably inferred, state it as a concise assumption or a 'to confirm' note rather than fabricating specifics.",
-      "- Do not implement anything, run commands, or edit files. This stage only produces the refined request text.",
-      "</refinement_rules>",
-    ].join("\n"),
+    `<instructions>\n${PROMPT_REFINEMENT_CRITERIA}\n</instructions>`,
     `<output_format>\nReturn ONLY the refined request. No preamble, no explanation, and no Markdown fences. The returned text replaces the original request as the operative objective for the rest of the workflow, so it must be a single self-contained request.\n</output_format>`,
   ];
   const tail = args.workflowCwdContext === undefined
@@ -84,7 +74,6 @@ export async function runPromptRefinementStage(
   ctx: PromptRefinementContext,
   options: {
     readonly request: string;
-    readonly workflowLabel: string;
     readonly workflowCwdContext?: PromptSection;
     readonly modelConfig: PromptRefinementModelConfig;
   },
@@ -92,7 +81,6 @@ export async function runPromptRefinementStage(
   const result = await ctx.task("prompt-refinement", {
     prompt: renderPromptRefinementPrompt({
       request: options.request,
-      workflowLabel: options.workflowLabel,
       ...(options.workflowCwdContext === undefined ? {} : { workflowCwdContext: options.workflowCwdContext }),
     }),
     ...options.modelConfig,

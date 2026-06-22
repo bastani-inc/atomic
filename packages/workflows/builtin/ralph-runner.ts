@@ -49,7 +49,7 @@ export async function runRalphWorkflow(
   let finalResult = "";
   let finalPrReport: string | undefined;
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
-  const refinedPrompt = await runPromptRefinementStage(ctx, { request: prompt, workflowLabel: "Ralph", workflowCwdContext, modelConfig: promptEngineerModelConfig });
+  const refinedPrompt = await runPromptRefinementStage(ctx, { request: prompt, workflowCwdContext, modelConfig: promptEngineerModelConfig });
   const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(refinedPrompt));
   const implementationNotesPath = await createImplementationNotesFile(refinedPrompt);
   const qaVideoPath = await createQaEvidenceVideoPath();
