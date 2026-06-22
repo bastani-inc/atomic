@@ -315,7 +315,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
 
     const builder = await designContext.task("design-system-builder", {
       prompt: taggedPrompt([
-        ["role", "You are a staff design enginer."],
+        ["role", "You are a staff design engineer."],
         [
           "objective",
           `Build the project DESIGN.md that will steer generation for: ${designBrief}. Apply the impeccable \`document\` sub-skill to synthesize a coherent design system spec from the located evidence, audit findings, and pattern analysis. This is the most critical step for generation quality; use impeccable's design knowledge to make smart calls when evidence conflicts or is incomplete.`,

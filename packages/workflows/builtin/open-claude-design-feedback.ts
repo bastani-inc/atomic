@@ -66,8 +66,6 @@ const PLACEHOLDER_TOKENS = new Set<string>([
   "nonecaptured",
   "tbd",
   "pending",
-  "n",
-  "a",
 ]);
 
 function isPlaceholderValue(value: string): boolean {
@@ -183,6 +181,11 @@ export function hasMeaningfulLiveChanges(feedback: PreviewFeedback): boolean {
   return typeof feedback.liveChanges === "string" && feedback.liveChanges.length > 0;
 }
 
+/** Whether a feedback round carries any meaningful user signal: typed notes or accepted live variants. */
+export function hasMeaningfulFeedback(feedback: PreviewFeedback): boolean {
+  return hasMeaningfulUserNotes(feedback) || hasMeaningfulLiveChanges(feedback);
+}
+
 function feedbackLabel(feedback: PreviewFeedback): string {
   return feedback.iteration === 0
     ? "the initial preview"
@@ -285,12 +288,21 @@ export function assertUserAnnotationsThreaded(
   stageName: string,
 ): void {
   for (const feedback of history) {
-    if (!hasMeaningfulUserNotes(feedback)) continue;
-    const notes = (feedback.userNotes ?? "").trim();
-    if (notes.length > 0 && !prompt.includes(notes)) {
-      throw new Error(
-        `open-claude-design ${stageName}: user annotations captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback (see issue #1464).`,
-      );
+    if (hasMeaningfulUserNotes(feedback)) {
+      const notes = (feedback.userNotes ?? "").trim();
+      if (notes.length > 0 && !prompt.includes(notes)) {
+        throw new Error(
+          `open-claude-design ${stageName}: user annotations captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback (see issue #1464).`,
+        );
+      }
+    }
+    if (hasMeaningfulLiveChanges(feedback)) {
+      const changes = (feedback.liveChanges ?? "").trim();
+      if (changes.length > 0 && !prompt.includes(changes)) {
+        throw new Error(
+          `open-claude-design ${stageName}: accepted live variants captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback (see issue #1464).`,
+        );
+      }
     }
   }
 }

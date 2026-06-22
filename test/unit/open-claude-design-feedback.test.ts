@@ -59,6 +59,8 @@ describe("open-claude-design feedback threading (#1464)", () => {
         assert.equal(extractUserNotes("user_notes: N/A"), undefined);
         assert.equal(extractUserNotes("display_method: manual\npreview_path: /tmp/x.html"), undefined);
         assert.equal(extractUserNotes(""), undefined);
+        // A one-character real note must survive (no longer treated as a placeholder).
+        assert.equal(extractUserNotes("user_notes: a"), "a");
     });
 
     test("extracts the annotated_snapshot path", () => {
@@ -166,6 +168,33 @@ describe("open-claude-design feedback threading (#1464)", () => {
         assert.throws(
             () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "apply-changes-1"),
             /were not threaded into the refinement context/,
+        );
+    });
+
+    test("assertUserAnnotationsThreaded also enforces accepted live-change threading", () => {
+        const feedback = toPreviewFeedback({
+            iteration: 1,
+            stageName: "preview-display-1",
+            result: {
+                text: [
+                    "display_method: live",
+                    "live_changes: Accepted variant 2 for the hero (committed accent).",
+                    "user_notes: none",
+                ].join("\n"),
+            },
+        });
+        // Threaded live changes -> no throw.
+        assert.doesNotThrow(() =>
+            assertUserAnnotationsThreaded(
+                "brief includes: Accepted variant 2 for the hero (committed accent).",
+                [feedback],
+                "apply-changes-1",
+            ),
+        );
+        // Dropped live changes -> throws, even though there are no typed notes.
+        assert.throws(
+            () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "apply-changes-1"),
+            /accepted live variants .* were not threaded/,
         );
     });
 

@@ -11,6 +11,7 @@ import {
 import {
   assertUserAnnotationsThreaded,
   buildRefinementBrief,
+  hasMeaningfulFeedback,
   persistPreviewFeedback,
   toPreviewFeedback,
   userAnnotationsBlock,
@@ -58,6 +59,13 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
   if (options.initialPreviewFeedback !== undefined) {
     previewFeedbackHistory.push(options.initialPreviewFeedback);
   }
+  // Tracks whether meaningful annotations have been captured since the last
+  // apply pass. The export gate must not honor an immediate ready_for_export
+  // while such feedback is still pending, or it silently drops it (#1464
+  // relocated from the apply stage to the gate).
+  let unappliedMeaningfulFeedback =
+    options.initialPreviewFeedback !== undefined &&
+    hasMeaningfulFeedback(options.initialPreviewFeedback);
   for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
     refinementCount = iteration;
 
@@ -101,7 +109,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     });
 
     const feedbackDecision = refinementDecisionFromResult(feedback);
-    if (feedbackDecision.ready_for_export) {
+    // Deterministic guard: honor an immediate export approval ONLY when there
+    // are no captured-but-unaddressed annotations. Otherwise fall through to a
+    // forced apply pass (which threads them via assertUserAnnotationsThreaded)
+    // so user feedback is never silently dropped at the gate. #1464
+    if (feedbackDecision.ready_for_export && !unappliedMeaningfulFeedback) {
       approvedForExport = true;
       break;
     }
@@ -251,6 +263,8 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       ...designModelConfig,
     });
     latestDesign = applied.text;
+    // Every captured annotation just went through an apply pass; nothing pending.
+    unappliedMeaningfulFeedback = false;
 
     // Re-display the freshly revised preview with interactive `live` QA so the
     // user can keep iterating element-by-element in the browser.
@@ -276,6 +290,9 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     });
     persistPreviewFeedback({ artifactDir, workflowCwd, feedback: revisedFeedback });
     previewFeedbackHistory.push(revisedFeedback);
+    if (hasMeaningfulFeedback(revisedFeedback)) {
+      unappliedMeaningfulFeedback = true;
+    }
     }
 
 
