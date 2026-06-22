@@ -15,8 +15,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { isGeneratedFile } from './is-generated.mjs';
-import { readBuffer as readManualEditsBuffer, writeBuffer as writeManualEditsBuffer } from './live-manual-edits-buffer.mjs';
+import { isGeneratedFile } from './lib/is-generated.mjs';
+import { readBuffer as readManualEditsBuffer, writeBuffer as writeManualEditsBuffer } from './live/manual-edits-buffer.mjs';
+import {
+  applyDeferredSvelteComponentAccepts,
+  findSvelteComponentManifest,
+  inlineSvelteComponentAccept,
+  removeSvelteComponentSession,
+} from './live/svelte-component.mjs';
 
 const EXTENSIONS = ['.html', '.jsx', '.tsx', '.vue', '.svelte', '.astro'];
 
@@ -41,6 +47,9 @@ Required:
 
 Options:
   --page-url URL     Current browser page URL; scopes staged copy-edit cleanup
+  --defer-source-write
+                     Deprecated compatibility flag. Svelte component accepts
+                     now write the real source immediately.
 
 Output (JSON):
   { handled, file, carbonize }`);
@@ -64,18 +73,67 @@ Output (JSON):
 
   // Find the file containing this session's markers
   const found = findSessionFile(id, process.cwd());
-  if (!found) {
+  const svelteComponentManifest = found ? null : findSvelteComponentManifest(id, process.cwd());
+
+  if (!found && !svelteComponentManifest) {
     console.log(JSON.stringify({ handled: false, error: 'Session markers not found for id: ' + id }));
     process.exit(0);
   }
 
+  if (svelteComponentManifest) {
+    if (isDiscard) {
+      removeSvelteComponentSession(id, process.cwd());
+      console.log(JSON.stringify({
+        handled: true,
+        file: svelteComponentManifest.sourceFile,
+        carbonize: false,
+        previewMode: 'svelte-component',
+        componentDir: svelteComponentManifest.componentDir,
+      }));
+      return;
+    }
+
+    let result;
+    try {
+      result = inlineSvelteComponentAccept(
+        svelteComponentManifest,
+        variantNum,
+        paramValues,
+        process.cwd(),
+      );
+    } catch (err) {
+      result = {
+        handled: false,
+        error: err.message,
+        file: svelteComponentManifest.sourceFile,
+        sourceFile: svelteComponentManifest.sourceFile,
+        previewMode: 'svelte-component',
+        componentDir: svelteComponentManifest.componentDir,
+      };
+    }
+    if (result.carbonize) {
+      result.todo = 'REQUIRED before next poll: carbonize cleanup in ' + result.file + '. See reference/live.md "Required after accept".';
+    }
+    console.log(JSON.stringify({ handled: result.handled !== false, ...result }));
+    return;
+  }
+
   const { file: targetFile, content, lines } = found;
   const relFile = path.relative(process.cwd(), targetFile);
+  const previewBlock = findMarkerBlock(id, lines);
+  const sourceShadowPreview = previewBlock
+    ? readSourceShadowPreviewMeta(content, id)
+    : null;
 
-  // Bail if the session lives in a generated file. The agent manually wrote
-  // the wrapper there for preview, and is responsible for writing the
-  // accepted variant to true source (or cleaning up on discard). See
-  // "Handle fallback" in live.md.
+  if (sourceShadowPreview) {
+    console.log(JSON.stringify({
+      handled: false,
+      error: 'source_shadow_preview_deprecated',
+      hint: 'Svelte live mode now uses svelte-component injection. Re-wrap the element and regenerate variants.',
+    }));
+    process.exit(0);
+  }
+
   if (isGeneratedFile(targetFile, { cwd: process.cwd() })) {
     console.log(JSON.stringify({
       handled: false,
@@ -207,6 +265,71 @@ function handleDiscard(id, lines, targetFile) {
 // Accept
 // ---------------------------------------------------------------------------
 
+/**
+ * Build carbonize stitch-in lines. JSX targets occupy a single child slot
+ * (ternary branch, return value, etc.) — the same constraint as live-wrap.
+ * When isJsx, tuck markers + <style> + variant wrapper inside one outer
+ * <div data-impeccable-carbonize> so the slot keeps a single root node.
+ */
+function buildCarbonizeReplacement({
+  indent,
+  commentSyntax,
+  isJsx,
+  id,
+  variantNum,
+  cssContent,
+  paramValues,
+  restored,
+}) {
+  const lines = [];
+  if (!cssContent) {
+    lines.push(...restored);
+    return lines;
+  }
+
+  const variantStyleAttr = isJsx
+    ? "style={{ display: 'contents' }}"
+    : 'style="display: contents"';
+
+  const pushCarbonizeBody = (bodyIndent) => {
+    const bodyRestored = reindentContent(restored, indent, bodyIndent + '  ');
+    lines.push(bodyIndent + commentSyntax.open + ' impeccable-carbonize-start ' + id + ' ' + commentSyntax.close);
+    lines.push(bodyIndent + '<style data-impeccable-css="' + id + '">' + (isJsx ? '{`' : ''));
+    for (const cssLine of cssContent) {
+      lines.push(bodyIndent + cssLine.trimStart());
+    }
+    lines.push(bodyIndent + (isJsx ? '`}</style>' : '</style>'));
+    if (paramValues && Object.keys(paramValues).length > 0) {
+      lines.push(
+        bodyIndent + commentSyntax.open + ' impeccable-param-values ' + id + ': ' + JSON.stringify(paramValues) + ' ' + commentSyntax.close,
+      );
+    }
+    lines.push(bodyIndent + commentSyntax.open + ' impeccable-carbonize-end ' + id + ' ' + commentSyntax.close);
+    lines.push(bodyIndent + '<div data-impeccable-variant="' + variantNum + '" ' + variantStyleAttr + '>');
+    lines.push(...bodyRestored);
+    lines.push(bodyIndent + '</div>');
+  };
+
+  if (isJsx) {
+    const wrapperStyle = 'style={{ display: "contents" }}';
+    lines.push(indent + '<div data-impeccable-carbonize="' + id + '" ' + wrapperStyle + '>');
+    pushCarbonizeBody(indent + '  ');
+    lines.push(indent + '</div>');
+  } else {
+    pushCarbonizeBody(indent);
+  }
+
+  return lines;
+}
+
+function reindentContent(contentLines, fromIndent, toIndent) {
+  return contentLines.map((line) => {
+    if (line.trim() === '') return '';
+    if (line.startsWith(fromIndent)) return toIndent + line.slice(fromIndent.length);
+    return toIndent + line.trimStart();
+  });
+}
+
 function handleAccept(id, variantNum, lines, targetFile, paramValues) {
   const block = findMarkerBlock(id, lines);
   if (!block) return { handled: false, error: 'Markers not found' };
@@ -235,45 +358,17 @@ function handleAccept(id, variantNum, lines, targetFile, paramValues) {
   const hasHelperAttrs = variantText.includes('data-impeccable-variant');
   const needsCarbonize = !!(cssContent || hasHelperAttrs);
 
-  // Build the replacement
   const restored = deindentContent(variantContent, indent);
-  const replacement = [];
-
-  if (cssContent) {
-    replacement.push(indent + commentSyntax.open + ' impeccable-carbonize-start ' + id + ' ' + commentSyntax.close);
-    // JSX targets need the CSS body wrapped in a template literal so that the
-    // `{` and `}` in CSS rules don't get parsed as JSX expressions.
-    replacement.push(indent + '<style data-impeccable-css="' + id + '">' + (isJsx ? '{`' : ''));
-    // Re-indent CSS content to match
-    for (const cssLine of cssContent) {
-      replacement.push(indent + cssLine.trimStart());
-    }
-    replacement.push(indent + (isJsx ? '`}</style>' : '</style>'));
-    if (paramValues && Object.keys(paramValues).length > 0) {
-      // Preserve the user's knob positions for the carbonize-cleanup agent
-      // to bake into the final CSS when it collapses scoped rules.
-      replacement.push(indent + commentSyntax.open + ' impeccable-param-values ' + id + ': ' + JSON.stringify(paramValues) + ' ' + commentSyntax.close);
-    }
-    replacement.push(indent + commentSyntax.open + ' impeccable-carbonize-end ' + id + ' ' + commentSyntax.close);
-  }
-
-  // Keep the `@scope ([data-impeccable-variant="N"])` selectors in the
-  // carbonize CSS block working visually by re-wrapping the accepted content
-  // in a data-impeccable-variant="N" div with `display: contents` (so layout
-  // isn't affected). The carbonize agent strips this attribute + wrapper when
-  // it moves the CSS to a proper stylesheet.
-  //
-  // Style attribute syntax has to follow the host file's flavor — JSX files
-  // need the object form, otherwise React 19 throws "Failed to set indexed
-  // property [0] on CSSStyleDeclaration" while parsing the string char-by-char.
-  if (cssContent) {
-    const styleAttr = isJsx ? "style={{ display: 'contents' }}" : 'style="display: contents"';
-    replacement.push(indent + '<div data-impeccable-variant="' + variantNum + '" ' + styleAttr + '>');
-    replacement.push(...restored);
-    replacement.push(indent + '</div>');
-  } else {
-    replacement.push(...restored);
-  }
+  const replacement = buildCarbonizeReplacement({
+    indent,
+    commentSyntax,
+    isJsx,
+    id,
+    variantNum,
+    cssContent,
+    paramValues,
+    restored,
+  });
 
   const newLines = [
     ...lines.slice(0, replaceRange.start),
@@ -283,6 +378,34 @@ function handleAccept(id, variantNum, lines, targetFile, paramValues) {
   fs.writeFileSync(targetFile, newLines.join('\n'), 'utf-8');
 
   return { carbonize: needsCarbonize, acceptedOriginalText: originalContent.join('\n') };
+}
+
+function readSourceShadowPreviewMeta(content, id) {
+  const escaped = escapeRegExp(id);
+  const wrapperRe = new RegExp('<[^>]+data-impeccable-variants=(["\'])' + escaped + '\\1[^>]*>');
+  const match = String(content || '').match(wrapperRe);
+  if (!match) return null;
+  const tag = match[0];
+  if (readHtmlAttr(tag, 'data-impeccable-preview') !== 'source-shadow') return null;
+  const sourceFile = readHtmlAttr(tag, 'data-impeccable-source-file');
+  const sourceStartLine = Number(readHtmlAttr(tag, 'data-impeccable-source-start'));
+  const sourceEndLine = Number(readHtmlAttr(tag, 'data-impeccable-source-end'));
+  if (!sourceFile || !Number.isFinite(sourceStartLine) || !Number.isFinite(sourceEndLine)) return null;
+  return { sourceFile, sourceStartLine, sourceEndLine };
+}
+
+function readHtmlAttr(tag, name) {
+  const match = String(tag || '').match(new RegExp('\\s' + escapeRegExp(name) + '\\s*=\\s*(["\'])(.*?)\\1'));
+  if (!match) return null;
+  return decodeHtmlAttr(match[2]);
+}
+
+function decodeHtmlAttr(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
 
 // ---------------------------------------------------------------------------
@@ -405,16 +528,19 @@ function stripStyleAndJoin(lines, block) {
     let line = lines[i];
 
     if (!inStyle) {
-      // An unclosed <style> opener (more non-self-closed openers than same-line
-      // closers) starts a multi-line body that continues on following lines.
-      const openers = (line.match(/<style\b/gi) || []).length;
-      const selfClosed = (line.match(/<style\b[^>]*\/\s*>/gi) || []).length;
-      const closers = (line.match(/<\/style\b/gi) || []).length;
-      if (openers - selfClosed > closers) inStyle = true;
-      // Remove every <style> element on this line in a single pass — self-closed
-      // <style/>, same-line <style>…</style>, or an unclosed opener through end
-      // of line — so the result provably cannot retain a <style fragment.
-      line = line.replace(/<style\b(?:[^>]*\/>|[^>]*>[\s\S]*?(?:<\/style[^>]*>|$))/gi, '');
+      // Strip any complete <style> elements on this line (self-closed or
+      // same-line-closed), including their body content.
+      line = line
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
+        .replace(/<style\b[^>]*\/\s*>/g, '');
+
+      // If a <style> opener remains (multi-line body starts here), strip from
+      // the opener to end-of-line and flip into skip mode.
+      const openerIdx = line.search(/<style\b/);
+      if (openerIdx !== -1) {
+        line = line.slice(0, openerIdx);
+        inStyle = true;
+      }
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
@@ -432,8 +558,7 @@ function stripStyleAndJoin(lines, block) {
 /**
  * Find the inner content of `<TAG ...attrMatch...>…</TAG>` inside `text`,
  * handling nested same-tag elements via depth counting. `attrMatch` is a
- * regex source fragment that must appear inside the opener tag; callers must
- * pre-escape any dynamic (non-constant) portion with `escapeRegExp`.
+ * regex source fragment that must appear inside the opener tag.
  * Returns the inner string (may be empty), or null if not found.
  */
 function extractInnerByAttr(text, attrMatch) {
@@ -481,7 +606,7 @@ function extractOriginal(lines, block) {
  */
 function extractVariant(lines, block, variantNum) {
   const text = stripStyleAndJoin(lines, block);
-  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + escapeRegExp(variantNum) + '"');
+  const inner = extractInnerByAttr(text, 'data-impeccable-variant="' + variantNum + '"');
   if (inner === null) return null;
   const result = inner.split('\n');
   // Collapse a lone empty leading/trailing line (common after string splice).
@@ -684,4 +809,4 @@ if (_running?.endsWith('live-accept.mjs') || _running?.endsWith('live-accept.mjs
   acceptCli();
 }
 
-export { findMarkerBlock, extractOriginal, extractVariant, extractCss, deindentContent, detectCommentSyntax, scrubManualEditsAgainstFile, scrubManualEditsAgainstOriginalBlock };
+export { findMarkerBlock, extractOriginal, extractVariant, extractCss, deindentContent, detectCommentSyntax, scrubManualEditsAgainstFile, scrubManualEditsAgainstOriginalBlock, applyDeferredSvelteComponentAccepts };
