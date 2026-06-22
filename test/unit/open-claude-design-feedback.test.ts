@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     assertUserAnnotationsThreaded,
-    buildRefinementBrief,
     buildUserAnnotationsSection,
     extractAnnotatedSnapshot,
     extractLiveChanges,
@@ -91,13 +90,13 @@ describe("open-claude-design feedback threading (#1464)", () => {
 
         const feedback = toPreviewFeedback({
             iteration: 1,
-            stageName: "preview-display-1",
+            stageName: "user-feedback-1",
             result: { text: liveText },
         });
         assert.match(feedback.liveChanges ?? "", /tighter density/);
 
         // Accepted live variants thread into the user-annotations block so the
-        // apply stage honors them even with no typed notes.
+        // generate stage honors them even with no typed notes.
         const block = userAnnotationsBlock([feedback]);
         assert.equal(block.hasNotes, true);
         assert.match(block.text, /Accepted live variants\/edits/);
@@ -107,12 +106,12 @@ describe("open-claude-design feedback threading (#1464)", () => {
     test("buildUserAnnotationsSection orders latest feedback first", () => {
         const first = toPreviewFeedback({
             iteration: 0,
-            stageName: "preview-display-initial",
+            stageName: "user-feedback-1",
             result: { text: "user_notes: simplify the hero background" },
         });
         const second = toPreviewFeedback({
             iteration: 1,
-            stageName: "preview-display-1",
+            stageName: "user-feedback-1",
             result: { text: "user_notes: now fix the footer spacing" },
         });
         const section = buildUserAnnotationsSection([first, second]);
@@ -123,7 +122,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         const empty = userAnnotationsBlock([
             toPreviewFeedback({
                 iteration: 0,
-                stageName: "preview-display-initial",
+                stageName: "user-feedback-1",
                 result: { text: "display_method: manual fallback" },
             }),
         ]);
@@ -131,29 +130,10 @@ describe("open-claude-design feedback threading (#1464)", () => {
         assert.match(empty.text, /No interactive user annotations were captured/);
     });
 
-    test("buildRefinementBrief puts user annotations above internal critique", () => {
-        const brief = buildRefinementBrief({
-            userAnnotations: "Simplify the hero background.",
-            reviewerDecision: "Not ready: honor user notes.",
-            critique: "Heuristic score 3/4 on visibility.",
-            screenshot: "Contrast fails WCAG AA on masthead.",
-            currentDesign: "A landing page.",
-        });
-        assert.ok(
-            brief.indexOf("## User annotations") <
-                brief.indexOf("## Impeccable critique findings"),
-        );
-        assert.ok(
-            brief.indexOf("Simplify the hero background") <
-                brief.indexOf("Heuristic score"),
-        );
-        assert.ok(brief.includes("## Screenshot / visual QA findings"));
-    });
-
     test("assertUserAnnotationsThreaded throws when notes are dropped", () => {
         const feedback = toPreviewFeedback({
             iteration: 0,
-            stageName: "preview-display-initial",
+            stageName: "user-feedback-1",
             result: { text: "user_notes: simplify the hero background" },
         });
         // Threaded prompt -> no throw.
@@ -161,12 +141,12 @@ describe("open-claude-design feedback threading (#1464)", () => {
             assertUserAnnotationsThreaded(
                 "context includes: simplify the hero background",
                 [feedback],
-                "apply-changes-1",
+                "generate-2",
             ),
         );
         // Missing notes -> throws a clear workflow error.
         assert.throws(
-            () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "apply-changes-1"),
+            () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
             /were not threaded into the refinement context/,
         );
     });
@@ -174,7 +154,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
     test("assertUserAnnotationsThreaded also enforces accepted live-change threading", () => {
         const feedback = toPreviewFeedback({
             iteration: 1,
-            stageName: "preview-display-1",
+            stageName: "user-feedback-1",
             result: {
                 text: [
                     "display_method: live",
@@ -188,12 +168,12 @@ describe("open-claude-design feedback threading (#1464)", () => {
             assertUserAnnotationsThreaded(
                 "brief includes: Accepted variant 2 for the hero (committed accent).",
                 [feedback],
-                "apply-changes-1",
+                "generate-2",
             ),
         );
         // Dropped live changes -> throws, even though there are no typed notes.
         assert.throws(
-            () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "apply-changes-1"),
+            () => assertUserAnnotationsThreaded("nothing relevant", [feedback], "generate-2"),
             /accepted live variants .* were not threaded/,
         );
     });
@@ -203,7 +183,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         tempDirs.push(dir);
         const withNotes = toPreviewFeedback({
             iteration: 0,
-            stageName: "preview-display-initial",
+            stageName: "user-feedback-1",
             result: { text: "user_notes: simplify the hero background" },
         });
         persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: withNotes });
@@ -217,7 +197,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         // No-notes feedback writes nothing.
         const noNotes = toPreviewFeedback({
             iteration: 1,
-            stageName: "preview-display-1",
+            stageName: "user-feedback-1",
             result: { text: "display_method: manual fallback" },
         });
         persistPreviewFeedback({ artifactDir: dir, workflowCwd: dir, feedback: noNotes });
@@ -229,7 +209,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         tempDirs.push(dir);
         const liveOnly = toPreviewFeedback({
             iteration: 2,
-            stageName: "preview-display-2",
+            stageName: "user-feedback-2",
             result: {
                 text: [
                     "display_method: live",
@@ -254,7 +234,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         writeFileSync(join(dir, "annotations-test.yaml"), "annotations: []");
         const feedback = toPreviewFeedback({
             iteration: 0,
-            stageName: "preview-display-initial",
+            stageName: "user-feedback-1",
             result: {
                 text: [
                     "user_notes: simplify the hero",
@@ -275,7 +255,7 @@ describe("open-claude-design feedback threading (#1464)", () => {
         writeFileSync(snapshot, "fake-png-bytes");
         const feedback = toPreviewFeedback({
             iteration: 0,
-            stageName: "preview-display-initial",
+            stageName: "user-feedback-1",
             result: {
                 text: [
                     "user_notes: simplify the hero",

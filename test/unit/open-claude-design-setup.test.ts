@@ -96,7 +96,7 @@ describe("open-claude-design setup", () => {
             assert.ok(calls.tasks.includes("discovery"));
             const prompt = calls.prompts["discovery"] ?? "";
             assert.match(prompt, /\/skill:impeccable shape/);
-            assert.match(prompt, /AskUserQuestion/);
+            assert.match(prompt, /ask_user_question/);
             assert.match(prompt, /prototype, wireframe, page, component, theme, tokens/);
             assert.equal(decision.brief, "A confirmed kanban board brief.");
             assert.equal(decision.output_type, "component");
@@ -167,7 +167,7 @@ describe("open-claude-design setup", () => {
             const prompt = buildReferenceDiscoveryPrompt({
                 prompt: "Design a landing page",
                 outputType: "page",
-                designContextHint: "PRODUCT.md=/p DESIGN.md=/d",
+                designContextHint: "PRODUCT.md=/p DESIGN.md=/d\n\nDesign-system/reference discovery evidence from ds-* stages:\n### ds-locator\nFound tokens.",
                 artifactDir: "/tmp/run",
                 browserBootstrapRules: "which playwright-cli ... @playwright/cli",
             });
@@ -181,6 +181,11 @@ describe("open-claude-design setup", () => {
             assert.match(prompt, /screenshot --full-page/);
             assert.match(prompt, /CLICK INTO/);
             assert.match(prompt, /destination URL/i);
+            assert.match(prompt, /ds-\* discovery evidence/i);
+            assert.match(prompt, /ask_user_question/);
+            assert.match(prompt, /which reference direction they prefer/i);
+            assert.match(prompt, /None of these fit/);
+            assert.match(prompt, /provide a reference image, screenshot, URL, or local file path/i);
         });
 
         test("persistReferencesBrief writes references.md", () => {

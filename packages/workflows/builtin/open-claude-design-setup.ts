@@ -42,7 +42,7 @@ function buildDiscoveryPrompt(prompt: string): string {
   return `/skill:impeccable shape\n\n${taggedPrompt([
     [
       "role",
-      "You are an opinionated staff design engineer running a short design-discovery interview before any code is written.",
+      "You are an opinionated staff designer running a user interview before any code is written.",
     ],
     [
       "objective",
@@ -51,7 +51,7 @@ function buildDiscoveryPrompt(prompt: string): string {
     [
       "interview",
       [
-        "Use your structured question tool (AskUserQuestion) to ask the relevant questions you cannot infer from the request or repo.",
+        "Use your \`ask_user_question\` tool to ask the relevant questions you cannot infer from the request or repo.",
         `Cover, at minimum: (a) what they want to build and the core jobs/screens; (b) the output type — one of: ${outputTypes}; (c) any reference designs they want to emulate (URLs, local file paths, screenshots, or design docs).`,
         "Ask 2-3 questions per round and wait for answers; propose inferred answers as options, not finished facts.",
         "Treat the user-provided references as the PRIMARY visual authority for generation — they take precedence over the project's DESIGN.md/PRODUCT.md where they conflict.",
@@ -307,9 +307,11 @@ export function buildReferenceDiscoveryPrompt(args: {
         `5. ALSO take a FULL-PAGE still as a supplement/fallback: \`playwright-cli screenshot --full-page --filename=${join(args.artifactDir, "ref-<site>-<n>.png")}\`. If video recording is unavailable, the full-page screenshot is the minimum.`,
         "6. Record the FULL destination URL you actually landed on (the live site / project URL, not the gallery listing URL), plus the work's title and author.",
         "7. For every reference, extract the CONCRETE transferable trait (layout topology, type pairing, color strategy, spacing rhythm) AND the MOTION vocabulary you saw in the recording (entrance animations, scroll reveals, easing, parallax, hover/active states) — cite what you observed on the real page, not what you imagine.",
-        "8. For on-brand fit, consult the project's DESIGN.md / PRODUCT.md on disk (see <design_context> for where they live); prefer references that fit, and flag any that would require departing from the project's system.",
-        "9. If `playwright-cli` is unavailable or a site blocks automation, fall back to web search / page fetch to reach the actual design pages, and clearly mark any reference you could not capture with a recording or full-page screenshot.",
-        "10. Never fabricate references or visual claims; if a gallery yielded nothing usable, say so.",
+        "8. For on-brand fit, consult the project's DESIGN.md / PRODUCT.md and the ds-* discovery evidence in <design_context>; prefer references that fit, and flag any that would require departing from the project's system.",
+        "9. After curating the strongest options, use ask_user_question to ask the user which reference direction they prefer. Offer 2-4 concise choices drawn from the best references/directions and include a clear `None of these fit` choice when appropriate.",
+        "10. If the user says none of the discovered references align with their preference, ask them to provide a reference image, screenshot, URL, or local file path for best results, and include that request and any answer in the final brief.",
+        "11. If `playwright-cli` is unavailable or a site blocks automation, fall back to web search / page fetch to reach the actual design pages, and clearly mark any reference you could not capture with a recording or full-page screenshot.",
+        "12. Never fabricate references or visual claims; if a gallery yielded nothing usable, say so.",
       ].join("\n"),
     ],
     [
@@ -317,9 +319,10 @@ export function buildReferenceDiscoveryPrompt(args: {
       [
         "Markdown sections:",
         "1. Curated references (table: Source gallery | Work (title/author) | Full page URL (destination) | Scroll-through video path | Full-page screenshot path | Transferable trait (incl. motion) | On-brand?)",
-        "2. Synthesis: the 3-5 strongest directions to emulate for THIS design, ranked by fit, calling out motion/animation worth reproducing.",
-        "3. What to avoid (anti-references observed on the real pages).",
-        "4. Verification notes (which references have a scroll-through recording and/or full-page screenshot of the actual design page vs search-only).",
+        "2. User preference check: which curated direction/reference the user preferred, or that none aligned and a reference image/screenshot/URL/path was requested for best results.",
+        "3. Synthesis: the 3-5 strongest directions to emulate for THIS design, ranked by fit, calling out motion/animation worth reproducing.",
+        "4. What to avoid (anti-references observed on the real pages).",
+        "5. Verification notes (which references have a scroll-through recording and/or full-page screenshot of the actual design page vs search-only).",
       ].join("\n"),
     ],
   ]);
@@ -336,16 +339,16 @@ export function persistReferencesBrief(artifactDir: string, brief: string): void
 }
 
 // ---------------------------------------------------------------------------
-// 3. Live interactive QA prompt (shared by initial + per-iteration display)
+// 3. Live interactive QA prompt (user-feedback display/review stages)
 // ---------------------------------------------------------------------------
 
 /**
- * Build the interactive-QA prompt for the `preview-display-*` stages. Drives
+ * Build the interactive-QA prompt for the `user-feedback-*` stages. Drives
  * `/skill:impeccable live` against the static preview so the user can pick
  * elements in the browser, annotate, and accept on-brand variants; degrades to
  * `playwright-cli show --annotate` and finally to a manual file path. The output
  * labels (`user_notes`, `annotated_snapshot`, `live_changes`) are parsed by the
- * refinement feedback threading.
+ * generate/user-feedback loop.
  */
 export function buildLivePreviewDisplayPrompt(args: {
   readonly previewPath: string;

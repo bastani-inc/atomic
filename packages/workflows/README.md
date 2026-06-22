@@ -697,19 +697,17 @@ Child workflow outputs: `result`, `plan` (latest transformed research question),
 
 ### `open-claude-design`
 
-Design-system onboarding → reference import → generation → refinement → export/handoff pipeline.
+Discovery interview → project-context setup → design-system/reference research → curated reference discovery with user preference check → forked generate/user-feedback loop → export/handoff pipeline. The discovery stage asks for output type and references; `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
 
 ```text
-/workflow open-claude-design prompt="Design a kanban board" output_type=prototype
+/workflow open-claude-design prompt="Design a kanban board component"
 ```
 
-| Input             | Type     | Required | Default     | Description                                                          |
-| ----------------- | -------- | -------- | ----------- | -------------------------------------------------------------------- |
-| `prompt`          | `text`   | ✓        | —           | Design brief or description.                                         |
-| `reference`       | `text`   | —        | —           | Optional URL, path, screenshot, or design doc.                       |
-| `output_type`     | `select` | —        | `prototype` | `prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`. |
-| `design_system`   | `text`   | —        | —           | Existing design-system reference / Design.md path.                   |
-| `max_refinements` | `number` | —        | `3`         | Maximum critique/apply refinement iterations.                        |
+| Input                 | Type      | Required | Default | Description                                                                 |
+| --------------------- | --------- | -------- | ------- | --------------------------------------------------------------------------- |
+| `prompt`              | `text`    | ✓        | —       | Design brief or description.                                                |
+| `discover_references` | `boolean` | —        | `true`  | Discover current gallery references with browser tooling; set false to skip. |
+| `max_refinements`     | `number`  | —        | `3`     | Maximum generate/user-feedback loop iterations.                              |
 
 Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 

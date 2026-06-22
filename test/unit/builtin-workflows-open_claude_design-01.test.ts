@@ -31,35 +31,7 @@ import {
     readPaths,
 } from "./builtin-workflows-helpers.js";
 
-describe("open-claude-design", () => {    function refinementDecision(readyForExport: boolean): string {
-        return JSON.stringify({
-            ready_for_export: readyForExport,
-            rationale: readyForExport
-                ? "Preview is ready for export."
-                : "More refinement is needed.",
-            required_changes: readyForExport ? [] : ["Tighten hierarchy"],
-        });
-    }
-
-    function exportGateDecision(hasBlockingFindings: boolean): string {
-        return JSON.stringify({
-            has_blocking_findings: hasBlockingFindings,
-            rationale: hasBlockingFindings
-                ? "A P0 issue blocks export."
-                : "No P0 issues block export.",
-            blocking_findings: hasBlockingFindings
-                ? [
-                      {
-                          finding: "Critical contrast issue",
-                          evidence: "#submit-button",
-                          why_blocking: "Primary action is unreadable.",
-                          must_fix_action: "Increase contrast.",
-                          severity: "P0",
-                      },
-                  ]
-                : [],
-        });
-    }
+describe("open-claude-design", () => {
 
     test("loads and has correct shape", async () => {
         const mod =
@@ -122,19 +94,23 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
         );
         await d.run(ctx);
         assert.ok(ctx.calls.task.includes("reference-discovery"));
+        assert.ok(ctx.calls.parallel.some((names) => names.includes("ds-locator")));
+        assert.equal(ctx.calls.parallel.some((names) => names.includes("reference-discovery")), false);
+        assert.ok(ctx.calls.task.indexOf("ds-patterns") < ctx.calls.task.indexOf("reference-discovery"));
         const refPrompt = ctx.calls.prompts["reference-discovery"]?.[0] ?? "";
         assert.match(refPrompt, /awwwards\.com\/websites/);
         assert.match(refPrompt, /motionsites\.ai/);
-        const genPrompt = ctx.calls.prompts["generator"]?.[0] ?? "";
+        assert.match(refPrompt, /\[mock-task:ds-locator\]/);
+        assert.match(refPrompt, /ask_user_question/);
+        assert.match(refPrompt, /reference image, screenshot, URL, or local file path/i);
+        const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
         assert.match(genPrompt, /<reference_inspiration>/);
     });
 
@@ -149,9 +125,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
                 {
                     task: (name) => {
                         if (name.startsWith("user-feedback-"))
-                            return refinementDecision(true);
-                        if (name === "pre-export-scan")
-                            return exportGateDecision(false);
+                            return "user_notes: none";
                         return undefined;
                     },
                 },
@@ -163,9 +137,9 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             const initPrompt = ctx.calls.prompts["init"]?.[0] ?? "";
             assert.match(initPrompt, /\/skill:impeccable init/);
             assert.match(initPrompt, /<discovery_context>/);
-            const builderPrompt =
-                ctx.calls.prompts["design-system-builder"]?.[0] ?? "";
-            assert.match(builderPrompt, /<project_design_context>/);
+            assert.equal(ctx.calls.task.includes("design-system-builder"), false);
+            const genPrompt = ctx.calls.prompts["generate-1"]?.[0] ?? "";
+            assert.match(genPrompt, /Ran `\/skill:impeccable init`/);
             const artifactDir = result["artifact_dir"] as string | undefined;
             if (artifactDir) rmSync(artifactDir, { recursive: true, force: true });
         } finally {
@@ -186,9 +160,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -197,7 +169,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
         assert.equal(ctx.calls.task.includes("reference-discovery"), false);
     });
 
-    test("always runs init (Phase 2) and drives /skill:impeccable live in preview-display", async () => {
+    test("always runs init (Phase 2) and drives /skill:impeccable live in user-feedback", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -208,9 +180,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -222,10 +192,9 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             ctx.calls.prompts["discovery"]?.[0] ?? "",
             /\/skill:impeccable shape/,
         );
-        const previewPrompt =
-            ctx.calls.prompts["preview-display-initial"]?.[0] ?? "";
-        assert.match(previewPrompt, /\/skill:impeccable live/);
-        assert.match(previewPrompt, /`live_changes`/);
+        const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
+        assert.match(feedbackPrompt, /\/skill:impeccable live/);
+        assert.match(feedbackPrompt, /`live_changes`/);
     });
 
     test("declares child workflow output contract", async () => {
@@ -249,7 +218,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
         });
     });
 
-    test("runs onboarding, import, generation, refinement, scan, and export", async () => {
+    test("runs context gathering, generate/user-feedback loop, and export", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -267,9 +236,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
                             references: ["https://example.com/reference"],
                         });
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -286,27 +253,23 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
                     names.includes("ds-patterns"),
             ),
         );
-        assert.ok(
-            ctx.calls.parallel.some((names) => names.includes("web-capture-1")),
-        );
-        assert.ok(ctx.calls.task.includes("design-system-builder"));
-        assert.ok(ctx.calls.task.includes("generator"));
+        assert.equal(ctx.calls.parallel.some((names) => names.includes("reference-discovery")), false);
+        assert.equal(ctx.calls.task.includes("web-capture-1"), false);
+        assert.equal(ctx.calls.task.includes("file-parser-1"), false);
+        assert.equal(ctx.calls.task.includes("design-system-builder"), false);
+        assert.ok(ctx.calls.task.includes("generate-1"));
+        assert.match(ctx.calls.prompts["ds-locator"]?.[0] ?? "", /https:\/\/example\.com\/reference/);
+        assert.match(ctx.calls.prompts["generate-1"]?.[0] ?? "", /<reference_context>/);
         assert.ok(ctx.calls.task.includes("user-feedback-1"));
-        assert.ok(ctx.calls.task.includes("pre-export-scan"));
+        assert.equal(ctx.calls.task.includes("pre-export-scan"), false);
+        assert.equal(ctx.calls.task.includes("forced-fix"), false);
         assert.ok(ctx.calls.task.includes("exporter"));
-        const refinementOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
-        assert.notEqual(refinementOptions?.schema, undefined);
-        assert.equal(refinementOptions?.customTools, undefined);
-        assert.deepEqual(refinementOptions?.tools, ["read", "grep", "ls"]);
-        const refinementPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-        assert.doesNotMatch(refinementPrompt, /structured_output/i);
-        assert.match(refinementPrompt, /ready_for_export=true/);
-        const exportGateOptions = ctx.calls.taskOptions["pre-export-scan"]?.[0];
-        assert.notEqual(exportGateOptions?.schema, undefined);
-        assert.equal(exportGateOptions?.customTools, undefined);
-        assert.deepEqual(exportGateOptions?.tools, ["read", "grep", "ls"]);
-        assert.doesNotMatch(ctx.calls.prompts["pre-export-scan"]?.[0] ?? "", /structured_output/i);
-        assert.doesNotMatch(ctx.calls.prompts["pre-export-scan"]?.[0] ?? "", /output_format/i);
+        assert.ok(ctx.calls.task.includes("final-display"));
+        const feedbackOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
+        assert.equal(feedbackOptions?.schema, undefined);
+        const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
+        assert.match(feedbackPrompt, /\/skill:impeccable live/);
+        assert.match(feedbackPrompt, /`user_notes`/);
         assert.equal(result["output_type"], "component");
         assert.equal(typeof result["artifact"], "string");
         assert.equal(typeof result["handoff"], "string");
@@ -321,9 +284,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -332,7 +293,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
         assert.equal(result["output_type"], "prototype");
     });
 
-    test("browser display prompts use playwright-cli bootstrap rules", async () => {
+    test("browser-capable prompts use playwright-cli bootstrap rules", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -350,9 +311,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
                             references: ["https://example.com/reference"],
                         });
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -360,13 +319,13 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
 
         await d.run(ctx);
 
-        const webCapturePrompt = ctx.calls.prompts["web-capture-1"]?.[0] ?? "";
-        const previewPrompt =
-            ctx.calls.prompts["preview-display-initial"]?.[0] ?? "";
+        const feedbackPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
         const finalPrompt = ctx.calls.prompts["final-display"]?.[0] ?? "";
         for (const displayPrompt of [
-            webCapturePrompt,
-            previewPrompt,
+            ctx.calls.prompts["ds-locator"]?.[0] ?? "",
+            ctx.calls.prompts["ds-analyzer"]?.[0] ?? "",
+            ctx.calls.prompts["ds-patterns"]?.[0] ?? "",
+            feedbackPrompt,
             finalPrompt,
         ]) {
             assert.match(displayPrompt, /<browser_use_guidelines>/);
@@ -401,20 +360,18 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
         "next_action_hint: proceed to refinement",
     ].join("\n");
 
-    test("threads captured preview annotations into user-feedback and apply-changes", async () => {
+    test("threads captured user-feedback annotations into the next generate stage", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
         const ctx = makeMockCtx(
-            { prompt: "Redesign the Atomic website", max_refinements: 1 },
+            { prompt: "Redesign the Atomic website", max_refinements: 2 },
             {
                 task: (name) => {
-                    if (name === "preview-display-initial")
+                    if (name === "user-feedback-1")
                         return previewWithAnnotations;
-                    if (name.startsWith("user-feedback-"))
-                        return refinementDecision(false);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                    if (name === "user-feedback-2")
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -422,32 +379,19 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
 
         const result = await d.run(ctx);
 
-        // user-feedback receives the annotations as a primary signal.
-        const ufPrompt = ctx.calls.prompts["user-feedback-1"]?.[0] ?? "";
-        assert.match(ufPrompt, /<user_annotations>/);
-        assert.ok(ufPrompt.includes("I don't like this background"));
-        assert.ok(ufPrompt.includes("Apple website"));
-
-        // apply-changes receives the merged brief with annotations FIRST.
-        const applyPrompt = ctx.calls.prompts["apply-changes-1"]?.[0] ?? "";
-        assert.ok(applyPrompt.includes("I don't like this background"));
-        assert.ok(applyPrompt.includes("Apple website"));
-        const annotationsIdx = applyPrompt.indexOf("## User annotations");
-        const critiqueHeaderIdx = applyPrompt.indexOf(
-            "## Impeccable critique findings",
-        );
-        assert.ok(annotationsIdx >= 0);
-        assert.ok(critiqueHeaderIdx >= 0);
-        assert.ok(annotationsIdx < critiqueHeaderIdx);
-        assert.ok(
-            applyPrompt.indexOf("I don't like this background") <
-                applyPrompt.indexOf("[mock-task:critique-1]"),
-        );
+        assert.equal(ctx.calls.task.includes("preview-display-initial"), false);
+        assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
+        assert.ok(ctx.calls.task.includes("generate-2"));
+        const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
+        assert.ok(generatePrompt.includes("I don't like this background"));
+        assert.ok(generatePrompt.includes("Apple website"));
+        assert.doesNotMatch(generatePrompt, /Impeccable critique findings/);
+        assert.doesNotMatch(generatePrompt, /screenshot-validated/);
 
         // Annotations persisted as durable workflow artifacts.
         const artifactDir = result["artifact_dir"] as string;
-        const mdPath = join(artifactDir, "feedback", "iteration-0.md");
-        const jsonPath = join(artifactDir, "feedback", "iteration-0.json");
+        const mdPath = join(artifactDir, "feedback", "iteration-1.md");
+        const jsonPath = join(artifactDir, "feedback", "iteration-1.json");
         assert.ok(existsSync(mdPath));
         assert.match(readFileSync(mdPath, "utf8"), /I don't like this background/);
         const persisted = JSON.parse(readFileSync(jsonPath, "utf8"));
@@ -465,9 +409,7 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
             {
                 task: (name) => {
                     if (name.startsWith("user-feedback-"))
-                        return refinementDecision(false);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                        return "user_notes: none";
                     return undefined;
                 },
             },
@@ -475,13 +417,9 @@ describe("open-claude-design", () => {    function refinementDecision(readyForEx
 
         const result = await d.run(ctx);
 
-        // apply-changes still ran (guardrail did not throw) with the no-notes
-        // fallback, and no feedback artifacts were persisted.
-        const applyPrompt = ctx.calls.prompts["apply-changes-1"]?.[0] ?? "";
-        assert.match(
-            applyPrompt,
-            /No interactive user annotations were captured/,
-        );
+        // No notes means no second generate stage and no feedback artifacts.
+        assert.equal(ctx.calls.task.includes("generate-2"), false);
+        assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
         assert.equal(typeof result["handoff"], "string");
         const artifactDir = result["artifact_dir"] as string;
         assert.equal(existsSync(join(artifactDir, "feedback")), false);

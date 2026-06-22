@@ -18,15 +18,6 @@ export type OutputType = (typeof OUTPUT_TYPES)[number];
 export const DEFAULT_OUTPUT_TYPE: OutputType = "prototype";
 export const DEFAULT_MAX_REFINEMENTS = 3;
 
-/**
- * Read-only builtin tools granted to the structured-decision stages
- * (user-feedback refinement gate and pre-export gate) so they can actually
- * inspect the on-disk `preview.html` before emitting their decision. The
- * artifact stays immutable here — writes/edits belong to apply-changes and
- * forced-fix, so this list deliberately excludes write/edit/bash.
- */
-export const READ_ONLY_TOOLS = ["read", "grep", "ls"] as const;
-
 type PromptSection = readonly [tag: string, content: string];
 
 export function taggedPrompt(sections: readonly PromptSection[]): string {
@@ -71,71 +62,6 @@ export function shouldEarlyExitForBrowser(
   nodeEnv: string | undefined,
 ): boolean {
   return !browserAvailable && nodeEnv !== "test";
-}
-
-export type RefinementDecision = {
-  readonly ready_for_export: boolean;
-  readonly rationale: string;
-  readonly required_changes: readonly string[];
-};
-
-export type ExportGateFinding = {
-  readonly finding: string;
-  readonly evidence: string;
-  readonly why_blocking: string;
-  readonly must_fix_action: string;
-  readonly severity: "P0";
-};
-
-export type ExportGateDecision = {
-  readonly has_blocking_findings: boolean;
-  readonly rationale: string;
-  readonly blocking_findings: readonly ExportGateFinding[];
-};
-
-export const refinementDecisionSchema = Type.Object(
-  {
-    ready_for_export: Type.Boolean(),
-    rationale: Type.String(),
-    required_changes: Type.Array(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-const exportGateFindingSchema = Type.Object(
-  {
-    finding: Type.String(),
-    evidence: Type.String(),
-    why_blocking: Type.String(),
-    must_fix_action: Type.String(),
-    severity: Type.Literal("P0"),
-  },
-  { additionalProperties: false },
-);
-
-export const exportGateDecisionSchema = Type.Object(
-  {
-    has_blocking_findings: Type.Boolean(),
-    rationale: Type.String(),
-    blocking_findings: Type.Array(exportGateFindingSchema),
-  },
-  { additionalProperties: false },
-);
-
-export function refinementDecisionFromResult(result: WorkflowTaskResult): RefinementDecision {
-  const decision = result.structured as RefinementDecision | undefined;
-  if (!decision) {
-    throw new Error("open-claude-design refinement decision missing structured result.");
-  }
-  return decision;
-}
-
-export function exportGateDecisionFromResult(result: WorkflowTaskResult): ExportGateDecision {
-  const decision = result.structured as ExportGateDecision | undefined;
-  if (!decision) {
-    throw new Error("open-claude-design export gate decision missing structured result.");
-  }
-  return decision;
 }
 
 export type DiscoveryDecision = {

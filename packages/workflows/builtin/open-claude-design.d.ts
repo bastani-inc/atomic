@@ -1,14 +1,14 @@
-import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../src/authoring.js";
+import type { WorkflowDefinition, WorkflowOutputValues } from "../src/authoring.js";
 
 export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "component" | "theme" | "tokens";
 
-export type OpenClaudeDesignWorkflowInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;
   readonly discover_references: boolean;
   readonly max_refinements: number;
 };
 
-export type OpenClaudeDesignWorkflowRunInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowRunInputs = {
   readonly prompt: string;
   readonly discover_references?: boolean;
   readonly max_refinements?: number;
