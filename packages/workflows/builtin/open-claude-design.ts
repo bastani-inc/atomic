@@ -25,28 +25,20 @@ import { workflow } from "../src/authoring/workflow.js";
 import { runOpenClaudeDesignWorkflow } from "./open-claude-design-runner.js";
 import {
   DEFAULT_MAX_REFINEMENTS,
-  DEFAULT_OUTPUT_TYPE,
-  OUTPUT_TYPES,
 } from "./open-claude-design-utils.js";
 
 export default workflow({
   name: "open-claude-design",
-  description: "AI-powered design workflow: design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Each stage delegates to a specific impeccable sub-skill; the user can iteratively review the generated HTML through the playwright-cli skill.",
+  description: "AI-powered design workflow: discovery interview (impeccable `shape`) → optional project-context setup (`/skill:impeccable init`) when DESIGN.md/PRODUCT.md are missing → design-system onboarding → curated reference discovery → reference import → HTML generation → impeccable `live`-driven refinement → quality gate → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate (references take precedence over DESIGN.md/PRODUCT.md). The user iteratively reviews the generated HTML through impeccable `live` / the playwright-cli skill.",
   inputs: {
     prompt: Type.String({
-      description: "What to design (for example, a dashboard, page, component, or prototype).",
+      description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.",
     }),
-    reference: Type.Optional(Type.String({
-      description: "URL, file path, screenshot path, or design doc to import as a reference.",
-    })),
-    output_type: Type.Union(
-      [...OUTPUT_TYPES].map((value) => Type.Literal(value)),
-      { default: DEFAULT_OUTPUT_TYPE, description: "Kind of design artifact to produce." },
-    ),
-    design_system: Type.Optional(Type.String({
+    discover_references: Type.Boolean({
+      default: true,
       description:
-        "Path(s) or description of an existing design system (DESIGN.md, PRODUCT.md, etc.); skips onboarding when provided.",
-    })),
+        "Discover beautiful, current reference designs (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
+    }),
     max_refinements: Type.Number({
       default: DEFAULT_MAX_REFINEMENTS,
       description: `Maximum critique/apply refinement iterations (default ${DEFAULT_MAX_REFINEMENTS}).`,
@@ -54,7 +46,7 @@ export default workflow({
   },
   outputs: {
     output_type: Type.Optional(Type.String({ description: "Kind of design artifact produced." })),
-    design_system: Type.Optional(Type.String({ description: "Design system source used for generation: supplied input or project-derived design system." })),
+    design_system: Type.Optional(Type.String({ description: "Design system source used for generation: the project-derived design system." })),
     artifact: Type.Optional(Type.String({ description: "Latest final design summary from the approved preview artifact." })),
     handoff: Type.Optional(Type.String({ description: "Final rich HTML spec and implementation handoff summary." })),
     approved_for_export: Type.Optional(Type.Boolean({ description: "Whether refinement completed before the final export gate." })),
