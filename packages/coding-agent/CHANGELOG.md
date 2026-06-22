@@ -2,7 +2,17 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Changed the bundled builtin `open-claude-design` workflow's inputs: removed `reference`, `output_type`, and `design_system` in favor of a new `discovery` interview stage that asks for the output type and references. Inputs are now `prompt`, `discover_references`, and `max_refinements`. Drop those removed arguments from existing invocations and let discovery ask (or describe them in `prompt`).
+
 ### Added
+
+- Restructured the bundled builtin `open-claude-design` workflow around the accessible `impeccable` skill. It now opens with a `discovery` stage (`/skill:impeccable shape`) that interviews you for a confirmed brief, the output type, and the references to emulate (references take precedence over `DESIGN.md`/`PRODUCT.md`); then **always** runs an `init` stage (`/skill:impeccable init`) that creates `PRODUCT.md`/`DESIGN.md` when missing and reconciles existing files against the brief (reusing the discovery answers); then a **single combined context phase** that concurrently runs design-system onboarding, the gated gallery `reference-discovery` pass (Awwwards, recent.design, Dribbble, Monet, Motionsites via `playwright-cli` — clicking into standout work to record a scroll-through video of each real design page so animations are captured, with a full-page screenshot fallback plus the real URLs, with a web-search fallback), and per-reference import before synthesizing the design system; then generation and impeccable `live`-driven in-browser refinement (`preview-display-*` drive `/skill:impeccable live`, capturing accepted variants and notes; degrades to `playwright-cli show --annotate`). A `discover_references` input (default `true`) gates the gallery pass. Updated the bundled workflow docs to describe the discovery interview, the trimmed input set, the always-run init, the combined context phase, references precedence, and live QA.
+
+### Fixed
+
+- Hardened the bundled builtin `open-claude-design` refinement/export flow: the export gate no longer drops feedback (an immediate export approval is refused while the latest preview has unaddressed annotations), the final refinement iteration and post-export `final-display` are read-only (they no longer solicit changes they cannot apply and point you at re-running), the apply guardrail now also covers accepted `live_changes`, snapshot artifact copies are constrained to the project/artifact dir, and the browser-centric workflow now exits cleanly up front when the `playwright-cli` browser is unavailable instead of generating a design you could not review (skipped under the test harness).
 
 - Added the bundled builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage. Goal now mirrors Ralph's PR handoff behavior: omitted or `false` skips PR/MR/review creation and omits `pr_report`, while strict `create_pr=true` authorizes only the final stage after reviewer quorum plus reducer approval to inspect the goal ledger, worker receipts, reviewer artifacts, final report, repository state, and provider credentials before attempting a provider-appropriate PR/MR/review request. Intermediate Goal worker/reviewer prompts now tell stages to ignore PR-creation requests so PR handoff stays confined to the final stage. Updated the bundled workflow docs, quickstart, README, and `/atomic` guide copy to describe the opt-in behavior.
 

@@ -1,13 +1,13 @@
 /** Check if content looks like a full page (not a component/partial) */
 function isFullPage(content) {
-  // Strip comments until stable so a nested/overlapping <!-- ... --> cannot
-  // survive a single pass (incomplete multi-character sanitization).
-  let stripped = content;
-  let prevStripped;
+  // Strip comments to a fixpoint so nested/overlapping comment markers cannot
+  // survive a single pass (CodeQL: complete sanitization).
+  let stripped = String(content);
+  let prev;
   do {
-    prevStripped = stripped;
+    prev = stripped;
     stripped = stripped.replace(/<!--[\s\S]*?-->/g, '');
-  } while (stripped !== prevStripped);
+  } while (stripped !== prev);
   return /<!doctype\s|<html[\s>]|<head[\s>]/i.test(stripped);
 }
 

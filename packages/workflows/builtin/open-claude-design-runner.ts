@@ -5,18 +5,29 @@ import {
   HTML_PREVIEW_RULES,
   READ_ONLY_TOOLS,
   buildPlaywrightCliBootstrapRules,
+  discoveryDecisionSchema,
   exportGateDecisionSchema,
   isFileLike,
   isUrl,
   joinResults,
-  normalizeOutputType,
   positiveInteger,
   prepareArtifactDir,
   refinementDecisionSchema,
+  shouldEarlyExitForBrowser,
   taggedPrompt,
   ensurePlaywrightCli,
+  REFERENCE_PRECEDENCE,
 } from "./open-claude-design-utils.js";
 import { exportOpenClaudeDesign, refineOpenClaudeDesign } from "./open-claude-design-phases.js";
+import { persistPreviewFeedback, toPreviewFeedback } from "./open-claude-design-feedback.js";
+import {
+  NO_REFERENCES_BRIEF,
+  buildLivePreviewDisplayPrompt,
+  buildReferenceDiscoveryPrompt,
+  ensureProjectDesignContext,
+  persistReferencesBrief,
+  runDiscovery,
+} from "./open-claude-design-setup.js";
 
 type OpenClaudeDesignOutputs = {
   readonly output_type?: string; readonly design_system?: string; readonly artifact?: string; readonly handoff?: string;
@@ -27,7 +38,8 @@ type OpenClaudeDesignOutputs = {
 
 type OpenClaudeDesignContext = {
   readonly cwd?: string;
-  readonly inputs: { readonly prompt: string; readonly reference?: string; readonly output_type?: string; readonly design_system?: string; readonly max_refinements?: number };
+  readonly inputs: { readonly prompt: string; readonly discover_references?: boolean; readonly max_refinements?: number };
+  exit?(options?: { readonly status?: string; readonly reason?: string; readonly outputs?: Partial<OpenClaudeDesignOutputs> }): never;
   task(name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult>;
   parallel(steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
 };
@@ -36,18 +48,13 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   const designContext = ctx;
 
     // Initial deterministic setup step (no LLM): ensure the playwright-cli skill's
-    // `playwright-cli` command is installed before any design stage runs. Best-effort —
-    // a failed install never blocks the workflow; downstream stages keep their
-    // graceful-degradation fallback (surface the manual preview path / URL).
+    // `playwright-cli` command is installed before any design stage runs. Best-effort.
     const playwrightCli = ensurePlaywrightCli();
     const browserBootstrapRules = buildPlaywrightCliBootstrapRules(playwrightCli);
 
     const inputs = designContext.inputs;
-
     const prompt = inputs.prompt;
-    const reference = inputs.reference?.trim() ?? "";
-    const outputType = normalizeOutputType(inputs.output_type);
-    const designSystemInput = (inputs.design_system ?? "").trim();
+    const discoverReferences = inputs.discover_references !== false;
     const maxRefinements = positiveInteger(
       inputs.max_refinements,
       DEFAULT_MAX_REFINEMENTS,
@@ -59,6 +66,23 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     );
     const previewFileUrl = `file://${previewPath}`;
     const specFileUrl = `file://${specPath}`;
+
+    // Browser-centric workflow: the discovery/preview review and the interactive
+    // `live` QA loop need the playwright-cli browser. If it is unavailable, exit
+    // cleanly up front (surfacing artifact paths) rather than generating a design
+    // no one can review. Gated off under NODE_ENV=test / runtimes without ctx.exit.
+    if (
+      shouldEarlyExitForBrowser(playwrightCli.available, process.env.NODE_ENV) &&
+      typeof designContext.exit === "function"
+    ) {
+      designContext.exit({
+        reason: `open-claude-design needs the playwright-cli skill's browser for interactive design review, which is unavailable (${playwrightCli.error ?? playwrightCli.summary}). No design was generated. Install it (\`npm install -g @playwright/cli@latest\` + \`npx playwright install chromium\`) and re-run.`,
+        outputs: {
+          playwright_cli_status: playwrightCli.summary, run_id: runId, artifact_dir: artifactDir,
+          preview_path: previewPath, preview_file_url: previewFileUrl, spec_path: specPath, spec_file_url: specFileUrl,
+        },
+      });
+    }
 
     const designModelConfig = {
       model: "anthropic/claude-fable-5:xhigh",
@@ -82,275 +106,282 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       schema: exportGateDecisionSchema,
     };
 
-    let designSystem: string;
-    let onboarding: readonly WorkflowTaskResult[] = [];
+    // Phase 1: discovery — interview the user (impeccable `shape`) to confirm the
+    // design brief, output type, and references before onboarding or generation.
+    const discovery = await runDiscovery({
+      designContext,
+      prompt,
+      discoveryConfig: { ...designModelConfig, schema: discoveryDecisionSchema },
+    });
+    const designBrief = discovery.brief;
+    const outputType = discovery.output_type;
+    const references = discovery.references;
 
-    if (designSystemInput.length > 0) {
-      const loaded = await designContext.task("load-design-system", {
-        prompt: taggedPrompt([
-          [
-            "role",
-            "You are an opinionated staff design engineer.",
-          ],
-          [
-            "objective",
-            `Prepare a six-section DESIGN.md-shaped brief that will steer generation of: ${prompt}. Apply the impeccable \`document\` sub-skill to read an existing DESIGN.md / PRODUCT.md (or equivalent).`,
-          ],
-          ["design_system_reference", designSystemInput],
-          [
-            "instructions",
+    // Phase 2: establish project design context (PRODUCT.md / DESIGN.md) via
+    // `/skill:impeccable init` when either is missing; reuse the discovery answers.
+    const discoveryContext = [
+      `Confirmed design brief: ${designBrief}`,
+      `Output type: ${outputType}`,
+      references.length > 0
+        ? `References to emulate (take precedence over DESIGN.md/PRODUCT.md): ${references.join(", ")}`
+        : "References to emulate: none provided.",
+    ].join("\n");
+    const projectContext = await ensureProjectDesignContext({
+      designContext,
+      cwd: workflowCwd,
+      prompt: designBrief,
+      discoveryContext,
+      designModelConfig,
+    });
+
+    // Phase 3 (combined): one concurrent context-gathering fan-out collects the
+    // project's design-system evidence (ds-*), the gallery references (gated),
+    // and the user-reference imports together; then the builder synthesizes.
+    const dsSteps: WorkflowTaskStep[] = [
+        {
+          name: "ds-locator",
+          task: taggedPrompt([
+            ["role", "You are an opinionated staff design engineer."],
             [
-              "1. Read every reference path/URL supplied.",
-              "2. Extract: register (brand vs product), Creative North Star, color tokens with descriptive names, type stack, elevation philosophy, components/variants, accessibility constraints, and the named DO/DON'T rules.",
-              "3. Distinguish explicit rules in the source from inferred conventions; never invent rules.",
-              "4. State what could not be verified instead of guessing.",
-            ].join("\n"),
-          ],
-          [
-            "output_format",
+              "objective",
+              `Find UI/design-system sources for this request: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design-system evidence already living in this codebase.`,
+            ],
             [
-              "Markdown with the six required headings, in this exact order and case:",
-              "## Overview",
-              "## Colors",
-              "## Typography",
-              "## Elevation",
-              "## Components",
-              "## Do's and Don'ts",
-              "Then a final `## Gaps / Assumptions` section listing anything unverified.",
-            ].join("\n"),
-          ],
-        ]),
-        ...designModelConfig,
-      });
-      designSystem = loaded.text;
-      onboarding = [loaded];
-    } else {
-      onboarding = await designContext.parallel(
-        [
+              "instructions",
+              [
+                "1. Locate UI components, stylesheets, tokens (CSS custom properties, Tailwind config, CSS-in-JS themes, design-token files), Storybook/examples, screenshots, tests, and design docs.",
+                "2. Return concrete file paths plus why each path informs design generation.",
+                "3. Separate primary sources from supporting examples.",
+                "4. If no explicit design system exists, identify the strongest implicit evidence (most-repeated literals, dominant component patterns).",
+              ].join("\n"),
+            ],
+            [
+              "output_format",
+              "Markdown table: Path | Evidence type | What it reveals | Repetitions seen | Confidence (low/med/high).",
+            ],
+          ]),
+          ...designModelConfig,
+        },
+        {
+          name: "ds-analyzer",
+          task: taggedPrompt([
+            ["role", "You are an opinionated staff design engineer."],
+            [
+              "objective",
+              `Audit the project UI constraints that must shape: ${designBrief}. Independently scan the repository and evaluate the design-system evidence you find against impeccable's six dimensions of design quality, then produce a detailed report with actionable insights for generation. This pass runs in PARALLEL with the locator and pattern passes, so do your own scan rather than relying on their output.`,
+            ],
+            [
+              "impeccable_skill",
+              "audit — score 0–4 across Accessibility, Performance, Theming, Responsive, Anti-patterns. Tag every finding P0 (blocks release) → P3 (polish). Document, do not fix.",
+            ],
+            [
+              "instructions",
+              [
+                "1. Inspect: UI stack, styling approach, token usage, responsive behavior, accessibility conventions, component APIs.",
+                "2. Ground every claim in exact paths, symbols, or code examples.",
+                "3. Call out constraints that generated designs MUST follow to integrate cleanly.",
+                "4. State uncertainty rather than guessing when evidence is incomplete.",
+              ].join("\n"),
+            ],
+            [
+              "output_format",
+              [
+                "Markdown sections in this order:",
+                "1. Stack",
+                "2. Tokens",
+                "3. Components",
+                "4. Layout / responsiveness",
+                "5. Accessibility",
+                "6. Audit scores (per dimension, 0–4)",
+                "7. Hard constraints for generation",
+              ].join("\n"),
+            ],
+          ]),
+          ...designModelConfig,
+        },
+        {
+          name: "ds-patterns",
+          task: taggedPrompt([
+            ["role", "You are an opinionated staff design engineer."],
+            [
+              "objective",
+              `Extract reusable patterns and anti-patterns for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to find design patterns that should be reused and anti-patterns that must be avoided in generation. This pass runs in PARALLEL with the locator and auditor passes, so scan the codebase yourself rather than depending on their output.`,
+            ],
+            [
+              "instructions",
+              [
+                "1. Find naming, variant, composition, state, animation, and layout patterns that should be reused.",
+                "2. Include examples with concrete paths and component/symbol names.",
+                "3. Identify anti-patterns the generated design must avoid — cross-reference impeccable's 25 deterministic anti-patterns (gradient text, AI palettes, nested cards, side-tab borders, line-length problems, etc.).",
+                "4. Do not generalize beyond the evidence found in the repository.",
+              ].join("\n"),
+            ],
+            [
+              "output_format",
+              "Markdown with sections: Reusable patterns | Examples | Anti-patterns | Generation implications.",
+            ],
+          ]),
+          ...designModelConfig,
+        },
+    ];
+
+    // Gallery reference discovery joins the same fan-out (gated by discover_references).
+    const referenceStep: WorkflowTaskStep[] = discoverReferences
+      ? [
           {
-            name: "ds-locator",
-            task: taggedPrompt([
-              [
-                "role",
-                "You are an opinionated staff design engineer.",
-              ],
-              [
-                "objective",
-                `Find UI/design-system sources for this request: ${prompt}. Apply the impeccable \`extract\` sub-skill to find design-system evidence already living in this codebase.`,
-              ],
-              [
-                "instructions",
-                [
-                  "1. Locate UI components, stylesheets, tokens (CSS custom properties, Tailwind config, CSS-in-JS themes, design-token files), Storybook/examples, screenshots, tests, and design docs.",
-                  "2. Return concrete file paths plus why each path informs design generation.",
-                  "3. Separate primary sources from supporting examples.",
-                  "4. If no explicit design system exists, identify the strongest implicit evidence (most-repeated literals, dominant component patterns).",
-                ].join("\n"),
-              ],
-              [
-                "output_format",
-                "Markdown table: Path | Evidence type | What it reveals | Repetitions seen | Confidence (low/med/high).",
-              ],
-            ]),
+            name: "reference-discovery",
+            task: buildReferenceDiscoveryPrompt({
+              prompt: designBrief,
+              outputType,
+              designContextHint: projectContext.summary,
+              artifactDir,
+              browserBootstrapRules,
+            }),
             ...designModelConfig,
           },
-          {
-            name: "ds-analyzer",
-            task: taggedPrompt([
-              [
-                "role",
-                "You are an opinionated staff design engineer.",
-              ],
-              [
-                "objective",
-                `Audit the project UI constraints that must shape: ${prompt}. Apply the impeccable \`audit\` sub-skill to evaluate the located design-system evidence against impeccable's six dimensions of design quality and produce a detailed report with actionable insights for generation.`,
-              ],
-              [
-                "impeccable_skill",
-                "audit — score 0–4 across Accessibility, Performance, Theming, Responsive, Anti-patterns. Tag every finding P0 (blocks release) → P3 (polish). Document, do not fix.",
-              ],
-              [
-                "instructions",
-                [
-                  "1. Inspect: UI stack, styling approach, token usage, responsive behavior, accessibility conventions, component APIs.",
-                  "2. Ground every claim in exact paths, symbols, or code examples.",
-                  "3. Call out constraints that generated designs MUST follow to integrate cleanly.",
-                  "4. State uncertainty rather than guessing when evidence is incomplete.",
-                ].join("\n"),
-              ],
-              [
-                "output_format",
-                [
-                  "Markdown sections in this order:",
-                  "1. Stack",
-                  "2. Tokens",
-                  "3. Components",
-                  "4. Layout / responsiveness",
-                  "5. Accessibility",
-                  "6. Audit scores (per dimension, 0–4)",
-                  "7. Hard constraints for generation",
-                ].join("\n"),
-              ],
-            ]),
-            ...designModelConfig,
-          },
-          {
-            name: "ds-patterns",
-            task: taggedPrompt([
-              [
-                "role",
-                "You are an opinionated staff design engineer.",
-              ],
-              [
-                "objective",
-                `Extract reusable patterns and anti-patterns for: ${prompt}. Apply the impeccable \`extract\` sub-skill to find design patterns that should be reused and anti-patterns that must be avoided in generation.`,
-              ],
-              [
-                "instructions",
-                [
-                  "1. Find naming, variant, composition, state, animation, and layout patterns that should be reused.",
-                  "2. Include examples with concrete paths and component/symbol names.",
-                  "3. Identify anti-patterns the generated design must avoid — cross-reference impeccable's 25 deterministic anti-patterns (gradient text, AI palettes, nested cards, side-tab borders, line-length problems, etc.).",
-                  "4. Do not generalize beyond the evidence found in the repository.",
-                ].join("\n"),
-              ],
-              [
-                "output_format",
-                "Markdown with sections: Reusable patterns | Examples | Anti-patterns | Generation implications.",
-              ],
-            ]),
-            ...designModelConfig,
-          },
-        ],
-        { task: prompt },
-      );
+        ]
+      : [];
 
-      const builder = await designContext.task("design-system-builder", {
-        prompt: taggedPrompt([
-          [
-            "role",
-            "You are a staff design enginer.",
-          ],
-          [
-            "objective",
-            `Build the project DESIGN.md that will steer generation for: ${prompt}. Apply the impeccable \`document\` sub-skill to synthesize a coherent design system spec from the located evidence, audit findings, and pattern analysis. This is the most critical step for generation quality; use impeccable's design knowledge to make smart calls when evidence conflicts or is incomplete.`,
-          ],
-          ["onboarding_analysis", "{previous}"],
-          [
-            "instructions",
-            [
-              "1. Synthesize locator + auditor + pattern-miner evidence into one coherent source of truth.",
-              "2. Keep every claim traceable to a path or symbol from the analysis.",
-              "3. Prefer concrete tokens, component conventions, and accessibility rules over vague style adjectives.",
-              "4. List assumptions in a separate trailing section; never mix them with verified rules.",
-            ].join("\n"),
-          ],
-          [
-            "output_format",
-            [
-              "Markdown with exactly these headings, in this order:",
-              "## Overview (include the Creative North Star)",
-              "## Colors",
-              "## Typography",
-              "## Elevation",
-              "## Components",
-              "## Do's and Don'ts (use the impeccable named-rule style)",
-              "## Verified vs Assumed",
-            ].join("\n"),
-          ],
-        ]),
-        previous: onboarding,
-        ...designModelConfig,
-      });
-      designSystem = builder.text;
-      onboarding = [...onboarding, builder];
-    }
-
+    // The user-provided references gathered in discovery are imported in the
+    // same fan-out; they take precedence over DESIGN.md/PRODUCT.md downstream.
     const importSteps: WorkflowTaskStep[] = [];
-    if (isUrl(reference)) {
-      importSteps.push({
-        name: "web-capture",
-        task: taggedPrompt([
-          [
-            "role",
-            "You are a staff QA engineer with design expertise.",
-          ],
-          [
-            "objective",
-            `Capture transferable design intent from this reference for: ${prompt}. Apply the impeccable \`extract\` sub-skill to lift concrete, citable design traits from the reference URL. Use browser/screenshot tooling if available; never guess about visual traits without observable evidence.`,
-          ],
-          ["reference_url", reference],
-          ["browser_use_guidelines", browserBootstrapRules],
-          [
-            "instructions",
+    references.forEach((ref, index) => {
+      const position = index + 1;
+      if (isUrl(ref)) {
+        importSteps.push({
+          name: `web-capture-${position}`,
+          task: taggedPrompt([
+            ["role", "You are a staff QA engineer with design expertise."],
             [
-              "1. Use browser/screenshot tooling (for example the playwright-cli skill's `playwright-cli` command) if available; cite observable evidence rather than guessing.",
-              "2. If `playwright-cli` is available but opening the reference URL reports a missing browser executable, follow the bootstrap rules and retry once.",
-              "3. Analyze: layout, visual hierarchy, navigation, color, typography, spacing, states, interactions, responsive behavior.",
-              "4. Separate reference-specific styling from requirements that should transfer to this project's design system.",
-              "5. If the URL is inaccessible or browser bootstrap fails, state that and provide a best-effort fallback based only on available information — never fabricate observations.",
-            ].join("\n"),
-          ],
-          [
-            "output_format",
-            "Markdown sections: Observable design traits | Transferable requirements | Assets/content | Uncertainty.",
-          ],
-        ]),
-        ...designModelConfig,
-      });
-    }
-    if (isFileLike(reference)) {
-      importSteps.push({
-        name: "file-parser",
-        task: taggedPrompt([
-          [
-            "role",
-            "You are an opinionated staff design engineer.",
-          ],
-          [
-            "objective",
-            `Extract actionable design requirements for: ${prompt}. Apply the impeccable \`extract\` sub-skill to pull out concrete, citable design requirements from this reference file or doc. The reference might be a design file, a screenshot, a code file, or a design doc; adapt your extraction approach accordingly but never guess about traits that are not explicitly observable in the source.`,
-          ],
-          ["reference", reference],
-          [
-            "instructions",
+              "objective",
+              `Capture transferable design intent from this user-provided reference for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to lift concrete, citable design traits from the reference URL. ${REFERENCE_PRECEDENCE} Use browser/screenshot tooling if available; never guess about visual traits without observable evidence.`,
+            ],
+            ["reference_url", ref],
+            ["browser_use_guidelines", browserBootstrapRules],
             [
-              "1. Extract: requirements, tokens, layout details, interaction notes, assets, copy, constraints, acceptance criteria.",
-              "2. Quote or cite concrete sections/paths wherever possible.",
-              "3. Separate explicit requirements from inferred design direction.",
-              "4. If the reference cannot be read, say exactly what failed and what remains unknown.",
-            ].join("\n"),
-          ],
-          [
-            "output_format",
-            "Markdown sections: Explicit requirements | Inferred direction | Assets/copy | Constraints | Unknowns.",
-          ],
-        ]),
-        ...designModelConfig,
-      });
-    }
+              "instructions",
+              [
+                "1. Use browser/screenshot tooling (for example the playwright-cli skill's `playwright-cli` command) if available; cite observable evidence rather than guessing.",
+                "2. If `playwright-cli` is available but opening the reference URL reports a missing browser executable, follow the bootstrap rules and retry once.",
+                "3. Analyze: layout, visual hierarchy, navigation, color, typography, spacing, states, interactions, responsive behavior.",
+                "4. Separate reference-specific styling from requirements that should transfer to this design.",
+                "5. If the URL is inaccessible or browser bootstrap fails, state that and provide a best-effort fallback based only on available information — never fabricate observations.",
+              ].join("\n"),
+            ],
+            [
+              "output_format",
+              "Markdown sections: Observable design traits | Transferable requirements | Assets/content | Uncertainty.",
+            ],
+          ]),
+          ...designModelConfig,
+        });
+      } else if (isFileLike(ref)) {
+        importSteps.push({
+          name: `file-parser-${position}`,
+          task: taggedPrompt([
+            ["role", "You are an opinionated staff design engineer."],
+            [
+              "objective",
+              `Extract actionable design requirements for: ${designBrief}. Apply the impeccable \`extract\` sub-skill to pull out concrete, citable design requirements from this user-provided reference file or doc. ${REFERENCE_PRECEDENCE} The reference might be a design file, a screenshot, a code file, or a design doc; adapt your extraction approach accordingly but never guess about traits that are not explicitly observable in the source.`,
+            ],
+            ["reference", ref],
+            [
+              "instructions",
+              [
+                "1. Extract: requirements, tokens, layout details, interaction notes, assets, copy, constraints, acceptance criteria.",
+                "2. Quote or cite concrete sections/paths wherever possible.",
+                "3. Separate explicit requirements from inferred design direction.",
+                "4. If the reference cannot be read, say exactly what failed and what remains unknown.",
+              ].join("\n"),
+            ],
+            [
+              "output_format",
+              "Markdown sections: Explicit requirements | Inferred direction | Assets/copy | Constraints | Unknowns.",
+            ],
+          ]),
+          ...designModelConfig,
+        });
+      }
+    });
 
-    const imports =
-      importSteps.length > 0
-        ? await designContext.parallel(importSteps, { task: prompt })
-        : [];
+    // Run the whole context-gathering phase concurrently in a single fan-out.
+    const contextResults = await designContext.parallel(
+      [...dsSteps, ...referenceStep, ...importSteps],
+      { task: designBrief },
+    );
+    const dsNames = new Set(["ds-locator", "ds-analyzer", "ds-patterns"]);
+    const onboardingAnalysis = contextResults.filter((result) =>
+      dsNames.has(result.name ?? ""),
+    );
+    const referenceResult = contextResults.find(
+      (result) => result.name === "reference-discovery",
+    );
+    const importResults = contextResults.filter(
+      (result) =>
+        (result.name ?? "").startsWith("web-capture-") ||
+        (result.name ?? "").startsWith("file-parser-"),
+    );
+
+    const referencesBriefRaw = (referenceResult?.text ?? "").trim();
+    const referencesBrief =
+      referencesBriefRaw.length > 0 ? referencesBriefRaw : NO_REFERENCES_BRIEF;
+    if (referencesBriefRaw.length > 0) persistReferencesBrief(artifactDir, referencesBrief);
+
     const importContext =
-      imports.length > 0
-        ? joinResults(imports)
-        : "No external reference was provided; infer the design direction from the prompt and project design system.";
+      importResults.length > 0
+        ? joinResults(importResults)
+        : "No user reference was provided; infer the design direction from the brief and project design system.";
+
+    const builder = await designContext.task("design-system-builder", {
+      prompt: taggedPrompt([
+        ["role", "You are a staff design engineer."],
+        [
+          "objective",
+          `Build the project DESIGN.md that will steer generation for: ${designBrief}. Apply the impeccable \`document\` sub-skill to synthesize a coherent design system spec from the located evidence, audit findings, and pattern analysis. This is the most critical step for generation quality; use impeccable's design knowledge to make smart calls when evidence conflicts or is incomplete.`,
+        ],
+        ["onboarding_analysis", "{previous}"],
+        ["project_design_context", projectContext.summary],
+        [
+          "instructions",
+          [
+            "1. Synthesize locator + auditor + pattern-miner evidence into one coherent source of truth.",
+            "2. Keep every claim traceable to a path or symbol from the analysis.",
+            "3. Prefer concrete tokens, component conventions, and accessibility rules over vague style adjectives.",
+            "4. List assumptions in a separate trailing section; never mix them with verified rules.",
+          ].join("\n"),
+        ],
+        [
+          "output_format",
+          [
+            "Markdown with exactly these headings, in this order:",
+            "## Overview (include the Creative North Star)",
+            "## Colors",
+            "## Typography",
+            "## Elevation",
+            "## Components",
+            "## Do's and Don'ts (use the impeccable named-rule style)",
+            "## Verified vs Assumed",
+          ].join("\n"),
+        ],
+      ]),
+      previous: onboardingAnalysis,
+      ...designModelConfig,
+    });
+    const designSystem = builder.text;
+    const onboarding = [...onboardingAnalysis, builder];
 
     const generated = await designContext.task("generator", {
       prompt: taggedPrompt([
-        [
-          "role",
-          "You are an opinionated staff design engineer.",
-        ],
+        ["role", "You are an opinionated staff design engineer."],
         [
           "objective",
-          `Generate the first revision of a production-ready ${outputType} for: ${prompt}. Write it to disk as an interactive HTML preview the user can open in a browser. Apply the impeccable \`craft\` sub-skill to build the design with deliberate ordering and impeccable attention to detail. Every design decision must trace back to the brief, and every visual trait must be justified by the design system or reference context.`,
+          `Generate the first revision of a production-ready ${outputType} for: ${designBrief}. Write it to disk as an interactive HTML preview the user can open in a browser. Apply the impeccable \`craft\` sub-skill to build the design with deliberate ordering and impeccable attention to detail. Every design decision must trace back to the brief, and every visual trait must be justified by the references, design system, or reference context.`,
         ],
+        ["design_brief", designBrief],
         ["design_system", designSystem],
         ["reference_context", importContext],
+        ["reference_inspiration", referencesBrief],
+        ["reference_precedence", REFERENCE_PRECEDENCE],
         ["preview_artifact_path", previewPath],
         ["html_rules", HTML_PREVIEW_RULES],
         ["anti_design_slop_rules", ANTI_SLOP_RULES],
@@ -358,11 +389,12 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
           "instructions",
           [
             `1. Use the Write tool to create the HTML artifact at exactly this path: ${previewPath}.`,
-            "2. Treat the verified DESIGN.md rules as hard constraints unless a conflict is explicitly flagged.",
-            `3. Build the artifact as the requested output_type (${outputType}). For prototypes/pages, render full layouts with realistic content. For components, render the component in 3+ representative contexts (default, with content variations, with state variations).`,
-            "4. Include structure, states, accessibility behavior, responsive behavior, and integration notes — but keep them in HTML comments inside the file so the rendered preview stays clean.",
-            "5. Do not use generic placeholder language when project conventions are available.",
-            "6. After writing the file, return a short markdown summary (NOT the HTML body) describing what you built, the decisions you made, and assumptions you are leaving for the user to confirm.",
+            "2. Follow the `<reference_precedence>` rule: the user-provided references in `<reference_context>` win over DESIGN.md/PRODUCT.md where they conflict; DESIGN.md fills the gaps the references do not cover.",
+            "3. Heavily reference the `<reference_inspiration>` block: emulate the strongest direction(s) it ranks for this brief while staying consistent with the user references; never copy a reference wholesale or invent traits it does not contain.",
+            `4. Build the artifact as the requested output_type (${outputType}). For prototypes/pages, render full layouts with realistic content. For components, render the component in 3+ representative contexts (default, with content variations, with state variations).`,
+            "5. Include structure, states, accessibility behavior, responsive behavior, and integration notes — but keep them in HTML comments inside the file so the rendered preview stays clean.",
+            "6. Do not use generic placeholder language when project conventions are available.",
+            "7. After writing the file, return a short markdown summary (NOT the HTML body) describing what you built, the decisions you made, and assumptions you are leaving for the user to confirm.",
           ].join("\n"),
         ],
         [
@@ -378,7 +410,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
           ].join("\n"),
         ],
       ]),
-      previous: [...onboarding, ...imports],
+      previous: [...onboarding, ...importResults],
       ...designModelConfig,
     });
 
@@ -386,44 +418,31 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     let approvedForExport = false;
     let refinementCount = 0;
 
-    // Try to display the freshly generated preview to the user via browser.
-    await designContext
+    // Display the preview and run interactive `live` QA (pick / annotate / accept
+    // variants); degrades to playwright-cli annotation, then a manual file path.
+    const initialPreviewResult = await designContext
       .task("preview-display-initial", {
-        prompt: taggedPrompt([
-          [
-            "role",
-            "You are an opinionated staff design engineer.",
-          ],
-          [
-            "objective",
-            "Your job is to make the just-generated HTML artifact visible to the user so they can give feedback. Open the HTML preview file using the playwright-cli skill's `playwright-cli` command when available, then prompt the user for feedback. Gracefully degrade if browser automation is unavailable.",
-          ],
-          ["preview_path", previewPath],
-          ["preview_file_url", previewFileUrl],
-          ["browser_use_guidelines", browserBootstrapRules],
-          [
-            "instructions",
-            [
-              "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
-              `2. If available, run: \`playwright-cli open ${previewFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-              "3. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate` so the user can draw on the page and add notes; if interactive review is unavailable, ask the user to review the visible page or manual file path and provide notes inline.",
-              "4. Capture any annotation artifact path, screenshot path, or user notes and surface them in your output.",
-              `5. If \`playwright-cli\` is NOT available or browser bootstrap fails, print a clear instruction block telling the user to open the file manually at: ${previewPath} (or via the URL ${previewFileUrl}).`,
-              "6. Never block the workflow on unavailable tooling; always exit with a non-empty status string.",
-            ].join("\n"),
-          ],
-          [
-            "output_format",
-            "Markdown with: `display_method`, `preview_path`, `annotated_snapshot` (if available), `user_notes` (if available), `next_action_hint`.",
-          ],
-        ]),
+        prompt: buildLivePreviewDisplayPrompt({
+          previewPath,
+          previewFileUrl,
+          browserBootstrapRules,
+        }),
         ...designModelConfig,
       })
       .catch(() => undefined);
 
+    // Capture the interactive annotation feedback (do NOT discard it) so the
+    // refinement loop can thread it into user-feedback/apply-changes. #1464
+    const initialPreviewFeedback = toPreviewFeedback({
+      iteration: 0,
+      stageName: "preview-display-initial",
+      result: initialPreviewResult,
+    });
+    persistPreviewFeedback({ artifactDir, workflowCwd, feedback: initialPreviewFeedback });
+
     const refinement = await refineOpenClaudeDesign({
       designContext,
-      prompt,
+      prompt: designBrief,
       outputType,
       maxRefinements,
       previewPath,
@@ -434,6 +453,10 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       latestDesign,
       designModelConfig,
       refinementDecisionConfig,
+      workflowCwd,
+      initialPreviewFeedback,
+      referencesBrief,
+      importContext,
     });
     latestDesign = refinement.latestDesign;
     approvedForExport = refinement.approvedForExport;
@@ -441,7 +464,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
 
     const exportResult = await exportOpenClaudeDesign({
       designContext,
-      prompt,
+      prompt: designBrief,
       outputType,
       previewPath,
       previewFileUrl,
@@ -458,7 +481,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
 
     return {
       output_type: outputType,
-      design_system: designSystemInput || "project-derived design system",
+      design_system: "project-derived design system",
       artifact: latestDesign,
       handoff: handoff.text,
       approved_for_export: approvedForExport,

@@ -12,7 +12,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { getLiveDir } from './impeccable-paths.mjs';
+import { getLiveDir } from '../lib/impeccable-paths.mjs';
 
 const BUFFER_VERSION = 1;
 const BUFFER_FILENAME = 'pending-manual-edits.json';

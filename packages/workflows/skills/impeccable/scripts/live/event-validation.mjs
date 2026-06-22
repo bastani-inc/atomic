@@ -3,12 +3,13 @@
  * Extracted for unit testing (insert mode rules).
  */
 
-import { canCreateInsert } from './live-insert-ui.mjs';
+import { canCreateInsert } from './insert-ui.mjs';
 
-export const VISUAL_ACTIONS = [
-  'impeccable', 'bolder', 'quieter', 'distill', 'polish', 'typeset',
-  'colorize', 'layout', 'adapt', 'animate', 'delight', 'overdrive',
-];
+// The accepted visual action values come from the canonical vocabulary so the
+// validator, the picker UI, and the marketing demo never drift. Imported (not
+// just re-exported) so it is also in scope for the validators below.
+import { VISUAL_ACTIONS } from './vocabulary.mjs';
+export { VISUAL_ACTIONS };
 
 const ID_PATTERN = /^[0-9a-f]{8}$/;
 const VARIANT_ID_PATTERN = /^[0-9]{1,3}$/;

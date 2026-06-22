@@ -60,6 +60,19 @@ export function isFileLike(value: string): boolean {
   return trimmed.length > 0 && !isUrl(trimmed);
 }
 
+/**
+ * Whether the browser-centric workflow should exit early instead of generating
+ * artifacts no one can review interactively. True only when the playwright-cli
+ * browser is unavailable AND we are not under the test harness (`NODE_ENV=test`,
+ * which always skips the global install and runs headlessly to completion).
+ */
+export function shouldEarlyExitForBrowser(
+  browserAvailable: boolean,
+  nodeEnv: string | undefined,
+): boolean {
+  return !browserAvailable && nodeEnv !== "test";
+}
+
 export type RefinementDecision = {
   readonly ready_for_export: boolean;
   readonly rationale: string;
@@ -125,6 +138,48 @@ export function exportGateDecisionFromResult(result: WorkflowTaskResult): Export
   return decision;
 }
 
+export type DiscoveryDecision = {
+  readonly brief: string;
+  readonly output_type: OutputType;
+  readonly references: readonly string[];
+};
+
+export const discoveryDecisionSchema = Type.Object(
+  {
+    brief: Type.String(),
+    output_type: Type.Union([...OUTPUT_TYPES].map((value) => Type.Literal(value))),
+    references: Type.Array(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+/**
+ * Parse the discovery stage's structured result, tolerating a missing/invalid
+ * structured payload (headless / mock runs) by falling back to the raw prompt as
+ * the brief, the default output type, and an empty reference list.
+ */
+export function discoveryDecisionFromResult(
+  result: WorkflowTaskResult,
+  fallbackBrief: string,
+): DiscoveryDecision {
+  const decision = result.structured as Partial<DiscoveryDecision> | undefined;
+  const brief =
+    typeof decision?.brief === "string" && decision.brief.trim().length > 0
+      ? decision.brief.trim()
+      : fallbackBrief;
+  const references = Array.isArray(decision?.references)
+    ? decision.references
+        .filter((ref): ref is string => typeof ref === "string")
+        .map((ref) => ref.trim())
+        .filter((ref) => ref.length > 0)
+    : [];
+  return {
+    brief,
+    output_type: normalizeOutputType(decision?.output_type),
+    references,
+  };
+}
+
 export function joinResults(results: readonly WorkflowTaskResult[]): string {
   return results
     .map((result) => `### ${result.name}\n\n${result.text}`)
@@ -144,10 +199,15 @@ export function prepareArtifactDir(cwd = process.cwd()): {
   readonly specPath: string;
 } {
   const runId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${Math.random().toString(36).slice(2, 8)}`;
-  const candidates = [
-    join(cwd, "specs", "design", runId),
-    join(tmpdir(), "open-claude-design", runId),
-  ];
+  // Under automated tests, prefer the OS tmpdir so a full `d.run()` does not
+  // pollute the project's `specs/design/` tree with per-run artifact folders.
+  const candidates =
+    process.env.NODE_ENV === "test"
+      ? [join(tmpdir(), "open-claude-design", runId)]
+      : [
+          join(cwd, "specs", "design", runId),
+          join(tmpdir(), "open-claude-design", runId),
+        ];
   for (const candidate of candidates) {
     try {
       mkdirSync(candidate, { recursive: true });
@@ -186,6 +246,10 @@ export const ANTI_SLOP_RULES = [
   "Avoid the AI design clichés impeccable's anti-pattern catalog calls out: gradient text for emphasis, side-tab borders, three-font headers, decorative shadows on flat-by-default systems.",
   "Commit to a specific aesthetic direction; do not hedge with generic SaaS defaults.",
 ].join("\n");
+
+/** Reference-import precedence note shared by import, generation, and refinement. */
+export const REFERENCE_PRECEDENCE =
+  "User-provided references in <reference_context> are the PRIMARY visual authority: when they conflict with DESIGN.md/PRODUCT.md, follow the references. DESIGN.md governs decisions the references do not cover; PRODUCT.md still governs strategic register/voice.";
 
 export type PlaywrightCliStatus = {
   /** Whether the `playwright-cli` command is expected to be available to downstream stages. */

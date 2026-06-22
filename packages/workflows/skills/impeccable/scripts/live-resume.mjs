@@ -3,7 +3,7 @@
  * Recover the next agent action from the durable live-session journal.
  */
 
-import { createLiveSessionStore } from './live-session-store.mjs';
+import { createLiveSessionStore } from './live/session-store.mjs';
 
 function manualApplyReplyCommand(eventOrId = 'EVENT_ID') {
   const id = typeof eventOrId === 'string' ? eventOrId : eventOrId?.id || 'EVENT_ID';

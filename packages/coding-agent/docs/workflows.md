@@ -160,7 +160,7 @@ For the builtin result tables below, `deep-research-codebase`, `goal`, and `ralp
 | `deep-research-codebase` | Scout + research-history chain → parallel specialist waves → aggregator. Indexes the whole repo and synthesizes findings. | Broad or cross-cutting research before you decide what to change. Prefer `/skill:research-codebase` for one subsystem. |
 | `goal` | Persisted goal ledger → bounded worker turns → receipts → three-reviewer gate → deterministic reducer → final report → optional final-stage PR handoff after approval. | Small-to-medium scope changes when you can identify the work surface, state the exact outcome, name the validation that proves it is done, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true` after Goal reaches `complete`. |
 | `ralph` | Prompt-refinement → research-prompt-refinement → codebase/online research → sub-agent orchestration → multi-model parallel review → optional final-stage PR handoff. | Larger migrations, broad refactors, and multi-package changes where you want Atomic to refine the prompt for clarity, transform it into a research question, research the codebase before implementing, delegate through sub-agents, review, iterate, and optionally allow only the final `pull-request` stage to attempt PR creation with `create_pr=true`. |
-| `open-claude-design` | Design-system onboarding → reference import → HTML generation → impeccable-driven refinement → quality gate → rich HTML handoff. Renders a live `preview.html` you can iterate against (opens through `browser` when available). | UI, page, component, theme, or design-token work that benefits from generation + critique loops. |
+| `open-claude-design` | Discovery interview (`/skill:impeccable shape`) → project-context setup (`/skill:impeccable init`, always — creates missing `PRODUCT.md`/`DESIGN.md`, reconciles existing) → a combined context phase (design-system onboarding + curated gallery reference-discovery + user-reference import, run concurrently) → HTML generation → impeccable `live`-driven interactive refinement → quality gate → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate (references take precedence over `DESIGN.md`/`PRODUCT.md`). Renders a live `preview.html` you can iterate against in the browser (opens through impeccable `live` / the `playwright-cli` skill when available). | UI, page, component, theme, or design-token work that benefits from a guided brief, beautiful references, and generation + critique loops. |
 
 ### `deep-research-codebase`
 
@@ -304,18 +304,18 @@ Inputs:
 
 | Input | Type | Required | Default | Description |
 |---|---|---|---|---|
-| `prompt` | text | yes | — | What to design (dashboard, page, component, prototype, …). |
-| `reference` | text | no | — | URL, file path, screenshot path, or design doc to import as a reference. |
-| `output_type` | select | no | `prototype` | One of `prototype`, `wireframe`, `page`, `component`, `theme`, `tokens`. |
-| `design_system` | text | no | — | Path(s) or description of an existing design system (e.g. `DESIGN.md`, `PRODUCT.md`). Skips onboarding when provided. |
+| `prompt` | text | yes | — | What to design (dashboard, page, component, prototype, …). The discovery stage refines this into a confirmed brief and asks for the output type and references. |
+| `discover_references` | boolean | no | `true` | Discover beautiful, current reference designs (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set `false` to skip the network/browser reference pass. |
 | `max_refinements` | number | no | `3` | Maximum critique/apply refinement iterations. |
+
+The output type (`prototype`, `wireframe`, `page`, `component`, `theme`, `tokens`) and any reference designs are **not** inputs — the discovery stage asks for them. There is no `design_system` input; the project's `DESIGN.md`/`PRODUCT.md` are established/loaded automatically.
 
 Result fields:
 
 | Field | Meaning |
 |---|---|
-| `output_type` | Kind of design artifact produced. |
-| `design_system` | Design system source used for generation: supplied input or project-derived design system. |
+| `output_type` | Kind of design artifact produced (chosen during the discovery interview). |
+| `design_system` | Design system source used for generation: the project-derived design system. |
 | `artifact` | Latest final design summary from the approved preview artifact. |
 | `handoff` | Final rich HTML spec and implementation handoff summary. |
 | `approved_for_export` | Whether refinement completed before the final export gate. |
@@ -331,13 +331,30 @@ Result fields:
 
 `open-claude-design` has no `result` output; it exposes only the declared fields listed above. Use the declared `artifact` and `handoff` fields for generated content.
 
+**Discovery interview.** The workflow's first stage runs `/skill:impeccable shape` to interview you (via the structured question tool) about what you want to build, the **output type** (`prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`), and which **references** to emulate (URLs, local file paths, screenshots, or design docs). It produces a confirmed design brief; the references you name take **precedence over `DESIGN.md`/`PRODUCT.md`** during generation (the design system fills gaps the references don't cover, and `PRODUCT.md` still governs strategic register/voice). Headless runs infer a defensible brief, output type, and references rather than blocking.
+
+**Project design context (init).** After discovery, the workflow **always** runs an `init` stage that invokes `/skill:impeccable init` (reusing the discovery answers so it doesn't re-ask). It deterministically detects whether `PRODUCT.md` and `DESIGN.md` exist (project root, `.agents/context/`, or `docs/`, case-insensitive): it **creates** whichever is missing (capturing register, users/purpose, brand personality, anti-references, and accessibility needs) and **reconciles** any that already exist against the discovery brief, refreshing only genuine gaps and never clobbering them. This step is best-effort and never blocks the run.
+
+**Combined context phase.** Onboarding, gallery reference discovery, and user-reference import all run **concurrently in a single fan-out**, then the design-system synthesis closes it out:
+
+- *Design-system onboarding* — three parallel passes (`ds-locator` / `ds-analyzer` / `ds-patterns`) extract the project's design-system evidence, which `design-system-builder` synthesizes into the working design system.
+- *Reference discovery* (gated by `discover_references=true`, the default) — the `reference-discovery` stage uses the `playwright-cli` skill to browse five curated galleries — [Awwwards](https://www.awwwards.com/websites/), [recent.design](https://recent.design/), [Dribbble recents](https://dribbble.com/shots/recent), [Monet](https://www.monet.design/c), and [Motionsites](https://motionsites.ai/) — then **clicks into the standout work** and, ideally, **records a scroll-through video of each real design page so its animations are captured** (with a full-page screenshot as a supplement/fallback) plus the real destination URL (it does not just screenshot the gallery thumbnails; web-search fallback when the browser is unavailable), persists the curated **references brief** to `<artifact_dir>/references.md`, and threads it into the generator (`reference_inspiration`) and refinement. Set `discover_references=false` to skip it.
+- *Reference import* — each reference the discovery interview collected is imported (`web-capture-<n>` for URLs, `file-parser-<n>` for files/screenshots); the extracted requirements feed the generator and **take precedence over `DESIGN.md`/`PRODUCT.md`**.
+
+**Interactive live QA.** The `preview-display-*` stages drive `/skill:impeccable live` against the static `preview.html`: you pick elements in the browser, annotate them, and compare three on-brand variants, accepting one that is written into the preview in place. Accepted variants and your notes are captured (`live_changes` / `user_notes` / `annotated_snapshot`) and threaded through the refinement loop as the **primary** signal: the `user-feedback-*` stage receives them in a dedicated `user_annotations` block (and will not approve export while honest feedback is unaddressed), and the `apply-changes-*` stage consumes a merged refinement brief that orders your annotations and accepted live edits **above** the internal critique and screenshot/visual-QA findings. The export gate is guarded too: an immediate `ready_for_export` is refused while the latest preview holds unaddressed annotations, forcing one apply pass first. The **final** refinement iteration shows a read-only review (and the post-export `final-display`) that no longer solicits change requests it cannot apply — it tells you how to re-run for further changes — so terminal annotations are never captured-then-dropped. When `/skill:impeccable live` cannot boot, the stage degrades to `playwright-cli show --annotate`, then to a manual file path. Captured feedback is persisted as durable artifacts under `<artifact_dir>/feedback/iteration-<n>.md` / `.json` (plus a best-effort copy of the annotated snapshot, constrained to files within the project/artifact dir). If a preview captured notes but they fail to thread into the apply stage, the run fails loudly rather than silently refining from internal critique alone.
+
+**Browser requirement.** open-claude-design is browser-centric (the discovery/preview review and the `live` QA loop need the `playwright-cli` skill's browser). If the browser cannot be made available, the workflow exits cleanly up front — surfacing the would-be artifact paths and install instructions — rather than generating a design you could not review interactively. (This early exit is skipped under the test harness so headless test runs still complete.)
+
 Run examples:
 
 ```text
 /workflow open-claude-design prompt="Refresh the settings page hierarchy"
-/workflow open-claude-design prompt="Design a billing page" reference=https://stripe.com/billing output_type=page
-/workflow open-claude-design prompt="Generate spacing and color tokens" output_type=tokens design_system=./DESIGN.md
+/workflow open-claude-design prompt="Design a billing page like Stripe's"
+/workflow open-claude-design prompt="Generate spacing and color tokens"
+/workflow open-claude-design prompt="Design a marketing landing page" discover_references=false
 ```
+
+The discovery interview asks for the output type and any reference URLs/files, so you no longer pass `output_type`, `reference`, or `design_system` on the command line.
 
 ### Launching with natural language
 

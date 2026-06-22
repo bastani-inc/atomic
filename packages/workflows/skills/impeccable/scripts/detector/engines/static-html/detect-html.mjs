@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { GENERIC_FONTS, OVERUSED_FONTS } from '../../shared/constants.mjs';
+import {
+  checkSourceDesignSystem,
+  collectStaticDesignSystemFindings,
+  mergeDesignSystemFindings,
+} from '../../design-system.mjs';
 import { isFullPage } from '../../shared/page.mjs';
+import { applyInlineIgnores } from '../../shared/inline-ignores.mjs';
 import { finding } from '../../findings.mjs';
 import { profileFindings, profileStep, profileStepAsync } from '../../profile/profiler.mjs';
 import {
@@ -168,6 +174,22 @@ async function detectHtml(filePath, options = {}) {
     }
   }
 
+  if (options?.designSystem) {
+    const sourceDesignFindings = profileFindings(profile, {
+      engine: 'static-html',
+      phase: 'source',
+      ruleId: 'design-system',
+      target: filePath,
+    }, () => checkSourceDesignSystem(html, filePath, { designSystem: options.designSystem }));
+    const staticDesignFindings = profileFindings(profile, {
+      engine: 'static-html',
+      phase: 'page',
+      ruleId: 'design-system',
+      target: filePath,
+    }, () => collectStaticDesignSystemFindings(document, window, filePath, options.designSystem));
+    findings.push(...mergeDesignSystemFindings(staticDesignFindings, sourceDesignFindings));
+  }
+
   if (isFullPage(html)) {
     const runPageCheck = (ruleId, callback) => profile
       ? profileFindings(profile, { engine: 'static-html', phase: 'page', ruleId, target: filePath }, callback)
@@ -202,7 +224,11 @@ async function detectHtml(filePath, options = {}) {
     }
   }
 
-  return filterByProviders(findings, options.providers);
+  const byProvider = filterByProviders(findings, options.providers);
+  // Static-HTML findings carry no line number, so only whole-file
+  // `impeccable-disable` directives apply here — exactly the standalone-document
+  // waiver this primitive targets. Bypassed by `--no-config` / `--no-inline-ignores`.
+  return options?.inlineIgnores === false ? byProvider : applyInlineIgnores(byProvider, html);
 }
 
 export { checkStaticPageTypography, STATIC_ELEMENT_RULES, detectHtml };

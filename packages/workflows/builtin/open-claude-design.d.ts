@@ -4,17 +4,13 @@ export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "c
 
 export type OpenClaudeDesignWorkflowInputs = WorkflowInputValues & {
   readonly prompt: string;
-  readonly reference?: string;
-  readonly output_type: OpenClaudeDesignOutputType;
-  readonly design_system?: string;
+  readonly discover_references: boolean;
   readonly max_refinements: number;
 };
 
 export type OpenClaudeDesignWorkflowRunInputs = WorkflowInputValues & {
   readonly prompt: string;
-  readonly reference?: string;
-  readonly output_type?: OpenClaudeDesignOutputType;
-  readonly design_system?: string;
+  readonly discover_references?: boolean;
   readonly max_refinements?: number;
 };
 

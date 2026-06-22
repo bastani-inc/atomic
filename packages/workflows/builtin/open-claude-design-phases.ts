@@ -3,10 +3,21 @@ import type { WorkflowTaskResult } from "../src/shared/types.js";
 import {
   ANTI_SLOP_RULES,
   HTML_PREVIEW_RULES,
+  REFERENCE_PRECEDENCE,
   exportGateDecisionFromResult,
   refinementDecisionFromResult,
   taggedPrompt,
 } from "./open-claude-design-utils.js";
+import {
+  assertUserAnnotationsThreaded,
+  buildRefinementBrief,
+  hasMeaningfulFeedback,
+  persistPreviewFeedback,
+  toPreviewFeedback,
+  userAnnotationsBlock,
+  type PreviewFeedback,
+} from "./open-claude-design-feedback.js";
+import { buildLivePreviewDisplayPrompt } from "./open-claude-design-setup.js";
 
 type DesignContext = {
   task(name: string, options: object): Promise<WorkflowTaskResult>;
@@ -28,15 +39,37 @@ type RefineOptions = {
   readonly latestDesign: string;
   readonly designModelConfig: ModelConfig;
   readonly refinementDecisionConfig: ModelConfig;
+  readonly workflowCwd: string;
+  readonly initialPreviewFeedback?: PreviewFeedback;
+  readonly referencesBrief?: string;
+  readonly importContext?: string;
 };
 
 export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ readonly latestDesign: string; readonly approvedForExport: boolean; readonly refinementCount: number; }> {
-  const { designContext, prompt, outputType, maxRefinements, previewPath, previewFileUrl, artifactDir, browserBootstrapRules, designSystem, designModelConfig, refinementDecisionConfig } = options;
+  const { designContext, prompt, outputType, maxRefinements, previewPath, previewFileUrl, artifactDir, browserBootstrapRules, designSystem, designModelConfig, refinementDecisionConfig, workflowCwd } = options;
+  const referencesBrief = options.referencesBrief ?? "";
+  const importContext = options.importContext ?? "";
   let latestDesign = options.latestDesign;
   let approvedForExport = false;
   let refinementCount = 0;
+  // Durable carrier for interactive annotation feedback captured by the
+  // preview-display stages. Seeded with the initial preview's annotations so the
+  // very first refinement honors what the user drew on the page. #1464
+  const previewFeedbackHistory: PreviewFeedback[] = [];
+  if (options.initialPreviewFeedback !== undefined) {
+    previewFeedbackHistory.push(options.initialPreviewFeedback);
+  }
+  // Tracks whether meaningful annotations have been captured since the last
+  // apply pass. The export gate must not honor an immediate ready_for_export
+  // while such feedback is still pending, or it silently drops it (#1464
+  // relocated from the apply stage to the gate).
+  let unappliedMeaningfulFeedback =
+    options.initialPreviewFeedback !== undefined &&
+    hasMeaningfulFeedback(options.initialPreviewFeedback);
   for (let iteration = 1; iteration <= maxRefinements; iteration += 1) {
     refinementCount = iteration;
+
+    const annotations = userAnnotationsBlock(previewFeedbackHistory);
 
     const feedback = await designContext.task(`user-feedback-${iteration}`, {
       prompt: taggedPrompt([
@@ -50,15 +83,17 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
         ],
         ["preview_path", previewPath],
         ["preview_file_url", previewFileUrl],
+        ["user_annotations", annotations.text],
         ["current_design_summary", "{previous}"],
         [
         "instructions",
         [
-          "1. If a previous `preview-display-*` step captured annotated user feedback or notes, honor them as the primary signal.",
-          "2. Otherwise, you may inspect the HTML file at preview_path directly (read it from disk) and run an impeccable `critique` against it.",
-          "3. Decide whether the current design is ready for export.",
-          "4. If refinement is still needed, put specific changes in required_changes ordered by user value and implementation risk.",
-          "5. Never request changes that contradict DESIGN.md unless you explicitly identify and explain the conflict.",
+          "1. Treat the `<user_annotations>` block as the PRIMARY signal: it holds the interactive feedback the user drew/typed on the live preview. Honor every annotation it contains.",
+          "2. When `<user_annotations>` contains real user notes, set ready_for_export=false unless the current design already satisfies every annotation; never approve export while honest user feedback remains unaddressed.",
+          "3. If `<user_annotations>` says no annotations were captured, inspect the HTML file at preview_path directly (read it from disk) and run an impeccable `critique` against it instead.",
+          "4. Decide whether the current design is ready for export.",
+          "5. If refinement is still needed, put specific changes in required_changes ordered by user value and implementation risk; lead with the user annotations.",
+          "6. Never request changes that contradict DESIGN.md unless you explicitly identify and explain the conflict.",
         ].join("\n"),
         ],
         [
@@ -74,7 +109,11 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
     });
 
     const feedbackDecision = refinementDecisionFromResult(feedback);
-    if (feedbackDecision.ready_for_export) {
+    // Deterministic guard: honor an immediate export approval ONLY when there
+    // are no captured-but-unaddressed annotations. Otherwise fall through to a
+    // forced apply pass (which threads them via assertUserAnnotationsThreaded)
+    // so user feedback is never silently dropped at the gate. #1464
+    if (feedbackDecision.ready_for_export && !unappliedMeaningfulFeedback) {
       approvedForExport = true;
       break;
     }
@@ -163,28 +202,43 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
       { task: prompt },
     );
 
-    const applied = await designContext.task(`apply-changes-${iteration}`, {
-      prompt: taggedPrompt([
+    const critiqueResult =
+      validation.find((result) => result.name === `critique-${iteration}`) ?? validation[0];
+    const screenshotResult =
+      validation.find((result) => result.name === `screenshot-${iteration}`) ?? validation[1];
+    const refinementBrief = buildRefinementBrief({
+      userAnnotations: annotations.text,
+      reviewerDecision: feedback.text,
+      critique: critiqueResult?.text ?? "",
+      screenshot: screenshotResult?.text ?? "",
+      currentDesign: latestDesign,
+    });
+
+    const applyPrompt = taggedPrompt([
         [
         "role",
         "You are an opinionated staff design engineer.",
         ],
         [
         "objective",
-        `Produce the next ${outputType} revision for: ${prompt}. Update the HTML file in place; do not branch the artifact. Apply the impeccable \`polish\` sub-skill to methodically apply the required changes, addressing every critique finding and screenshot-validated issue with surgical precision. This is not a redesign; it's a focused polish iteration to get from the current design to an export-ready state in one step.`,
+        `Produce the next ${outputType} revision for: ${prompt}. Update the HTML file in place; do not branch the artifact. Apply the impeccable \`polish\` sub-skill to methodically apply the required changes, addressing every user annotation, critique finding, and screenshot-validated issue with surgical precision. This is not a redesign; it's a focused polish iteration to get from the current design to an export-ready state in one step.`,
         ],
         ["design_system", designSystem],
+        ["reference_inspiration", referencesBrief],
+        ["reference_context", importContext],
+        ["reference_precedence", REFERENCE_PRECEDENCE],
         ["preview_artifact_path", previewPath],
-        ["revision_context", "{previous}"],
+        ["revision_context", refinementBrief],
         [
         "instructions",
         [
           "1. Read the current HTML at preview_artifact_path with your file-read tool.",
-          `2. Apply user feedback, critique findings, screenshot/visual QA findings, and DESIGN.md constraints together. Overwrite ${previewPath} with the revised HTML (full file rewrite, not patches — the artifact must always be self-contained).`,
-          "3. Preserve strong existing design decisions unless a finding requires change.",
-          "4. Resolve conflicting feedback explicitly; choose the safest DESIGN.md-aligned option and note the trade-off.",
-          "5. Update states, accessibility, responsiveness, and HTML implementation comments when changes affect them.",
-          "6. After writing, return a short markdown summary listing the changes, trade-offs, and remaining questions — do NOT paste the HTML body.",
+          "2. The `<revision_context>` block is a merged refinement brief. Treat its `## User annotations` section as the HIGHEST priority: every user annotation MUST be visibly addressed in this revision, or you must explicitly explain in your summary why a specific annotation conflicts with DESIGN.md/spec and cannot be applied. Only after honoring the user annotations should you apply the critique findings and screenshot/visual QA findings.",
+          `3. Apply the user annotations, critique findings, screenshot/visual QA findings, and DESIGN.md constraints together, honoring \`<reference_precedence>\` (the user references in \`<reference_context>\` win over DESIGN.md/PRODUCT.md where they conflict). Overwrite ${previewPath} with the revised HTML (full file rewrite, not patches — the artifact must always be self-contained).`,
+          "4. Preserve strong existing design decisions unless a finding requires change.",
+          "5. Resolve conflicting feedback explicitly; choose the safest DESIGN.md-aligned option and note the trade-off.",
+          "6. Update states, accessibility, responsiveness, and HTML implementation comments when changes affect them.",
+          "7. After writing, return a short markdown summary listing the changes, trade-offs, and remaining questions — do NOT paste the HTML body.",
         ].join("\n"),
         ],
         [
@@ -192,57 +246,57 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
         [
           "Markdown with headings:",
           "1. Revised artifact (path only)",
-          "2. Changes applied (bullet list, each tied to a critique or screenshot finding)",
-          "3. Trade-offs / conflicts resolved",
-          "4. Remaining questions",
+          "2. User annotations addressed (each annotation → how it was applied, or why it was deferred/conflicts)",
+          "3. Changes applied (bullet list, each tied to a user annotation, critique, or screenshot finding)",
+          "4. Trade-offs / conflicts resolved",
+          "5. Remaining questions",
         ].join("\n"),
         ],
-      ]),
-      previous: [
-        { name: "current-design", text: latestDesign },
-        feedback,
-        ...validation,
-      ],
+      ]);
+
+    // Guardrail: if a preview-display stage captured user annotations, refuse to
+    // run the apply stage unless they actually threaded into this prompt. #1464
+    assertUserAnnotationsThreaded(applyPrompt, previewFeedbackHistory, `apply-changes-${iteration}`);
+
+    const applied = await designContext.task(`apply-changes-${iteration}`, {
+      prompt: applyPrompt,
       ...designModelConfig,
     });
     latestDesign = applied.text;
+    // Every captured annotation just went through an apply pass; nothing pending.
+    unappliedMeaningfulFeedback = false;
 
-    // Re-display the freshly revised preview so the user can keep iterating.
-    await designContext
+    // Re-display the freshly revised preview. On non-final iterations this runs
+    // interactive `live` QA and captures annotations for the NEXT iteration; on
+    // the FINAL iteration it is a read-only review that solicits no actionable
+    // feedback, so terminal annotations are never captured-then-orphaned. #1464
+    const isFinalIteration = iteration === maxRefinements;
+    const revisedPreviewResult = await designContext
       .task(`preview-display-${iteration}`, {
-        prompt: taggedPrompt([
-        [
-          "role",
-          "You are a staff product manager with expertise in design. Re-open the revised HTML preview so the user can review the latest iteration.",
-        ],
-        [
-          "objective",
-          `Show the user the revised preview after iteration ${iteration}/${maxRefinements} and capture any new annotated feedback for the next loop.`,
-        ],
-        ["preview_path", previewPath],
-        ["preview_file_url", previewFileUrl],
-        [
-          "browser_use_bootstrap",
+        prompt: buildLivePreviewDisplayPrompt({
+          previewPath,
+          previewFileUrl,
           browserBootstrapRules,
-        ],
-        [
-          "instructions",
-          [
-            `1. If \`playwright-cli\` is available, run \`playwright-cli open ${previewFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-            "2. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate`; otherwise ask the user to provide feedback inline.",
-            `3. If \`playwright-cli\` is unavailable or browser bootstrap fails, surface the path clearly: ${previewPath} (URL: ${previewFileUrl}).`,
-            "4. Return any captured annotations as structured notes the next user-feedback step can read.",
-            "5. Do not block on unavailable tooling.",
-          ].join("\n"),
-        ],
-        [
-          "output_format",
-          "Markdown with: `display_method`, `preview_path`, `annotated_snapshot` (if any), `user_notes` (if any), `next_action_hint`.",
-        ],
-        ]),
+          iteration,
+          maxRefinements,
+          final: isFinalIteration,
+        }),
         ...designModelConfig,
       })
       .catch(() => undefined);
+
+    if (!isFinalIteration) {
+      const revisedFeedback = toPreviewFeedback({
+        iteration,
+        stageName: `preview-display-${iteration}`,
+        result: revisedPreviewResult,
+      });
+      persistPreviewFeedback({ artifactDir, workflowCwd, feedback: revisedFeedback });
+      previewFeedbackHistory.push(revisedFeedback);
+      if (hasMeaningfulFeedback(revisedFeedback)) {
+        unappliedMeaningfulFeedback = true;
+      }
+    }
     }
 
 
@@ -401,7 +455,7 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
           ],
           [
             "objective",
-            "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. Degrade gracefully if browser automation is unavailable.",
+            "Make the rich HTML spec visible to the user. Open the final spec.html with the playwright-cli skill's `playwright-cli` command so the user can review the agreed design and implementation handoff. This is post-export — do NOT solicit change requests; if the user wants more changes, tell them to re-run the workflow. Degrade gracefully if browser automation is unavailable.",
           ],
           ["spec_path", specPath],
           ["spec_file_url", specFileUrl],
@@ -412,15 +466,15 @@ export async function exportOpenClaudeDesign(options: ExportOptions): Promise<{ 
             "instructions",
             [
               "1. Probe for `playwright-cli` availability using the bootstrap rules above.",
-              `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once.`,
-              "3. Then run `playwright-cli snapshot` and, for interactive review, `playwright-cli show --annotate` so the user can capture any final notes.",
+              `2. If available, run \`playwright-cli open ${specFileUrl}\`. If that reports a missing browser executable, follow the bootstrap rules and retry once, then \`playwright-cli snapshot\`.`,
+              "3. Do NOT run `show --annotate` or otherwise invite change requests: export is done and there is no further refinement pass. If the user wants changes, tell them to re-run `/workflow open-claude-design`.",
               `4. Always print, prominently, the absolute paths so the user can open them manually:\n   - Final spec: ${specPath}\n   - Approved preview: ${previewPath}`,
               "5. Do not block the workflow; return a structured summary even if no tooling worked.",
             ].join("\n"),
           ],
           [
             "output_format",
-            "Markdown with: `display_method` | `spec_path` | `preview_path` | `annotated_snapshot` (if any) | `user_notes` (if any) | `manual_open_instructions`.",
+            "Markdown with: `display_method` | `spec_path` | `preview_path` | `manual_open_instructions` | `next_action_hint` (how to re-run the workflow for further changes).",
           ],
         ]),
         ...designModelConfig,
