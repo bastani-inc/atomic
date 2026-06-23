@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests.
+
 ## [0.9.1] - 2026-06-23
 
 ### Changed
