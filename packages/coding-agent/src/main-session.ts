@@ -32,7 +32,10 @@ async function findLocalSessionByExactId(
 ): Promise<{ type: "local"; path: string } | undefined> {
 	const localSessions = await SessionManager.list(cwd, sessionDir);
 	const localMatch = localSessions.find((s) => s.id === sessionId);
-	return localMatch ? { type: "local", path: localMatch.path } : undefined;
+	if (localMatch) return { type: "local", path: localMatch.path };
+	if (sessionDir === undefined) return undefined;
+	const anyCustomDirMatch = (await SessionManager.listAll(sessionDir)).find((s) => s.id === sessionId);
+	return anyCustomDirMatch ? { type: "local", path: anyCustomDirMatch.path } : undefined;
 }
 
 async function resolveSessionPath(sessionArg: string, cwd: string, sessionDir?: string): Promise<ResolvedSession> {
