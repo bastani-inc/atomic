@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests.
+- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
 
 ## [0.9.1] - 2026-06-23
 

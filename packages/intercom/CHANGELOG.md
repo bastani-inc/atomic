@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the intercom extension peer dependency with upstream pi TUI `^0.79.10`; no intercom extension source changes were needed for this metadata sync.
+
 ## [0.9.1] - 2026-06-23
 
 ### Changed

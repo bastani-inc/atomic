@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.10`; no MCP extension source changes were needed for this metadata sync.
+
 ## [0.9.1] - 2026-06-23
 
 ### Changed

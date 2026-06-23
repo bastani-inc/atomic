@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import { subset as semverSubset } from "semver";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
 import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
@@ -193,10 +194,13 @@ describe("package metadata", () => {
                 ["dependencies"],
             )) {
                 if (dependencyName.startsWith("@bastani/")) continue;
-                assert.equal(
-                    atomicRuntimeDependencyRange(dependencyName),
-                    dependencyRange,
-                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name}`,
+                const atomicDependencyRange =
+                    atomicRuntimeDependencyRange(dependencyName);
+                const foundRange = atomicDependencyRange ?? "missing";
+                assert.ok(
+                    atomicDependencyRange !== undefined &&
+                        semverSubset(atomicDependencyRange, dependencyRange),
+                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
                 );
             }
         }
