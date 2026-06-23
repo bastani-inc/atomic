@@ -32,6 +32,7 @@ export {
   createWriteTool,
   createGrepTool,
   createFindTool,
+  createSearchTool,
   createLsTool,
   createStructuredOutputCapture,
   createStructuredOutputTool,

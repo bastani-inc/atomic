@@ -507,8 +507,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 Specify which tools to expose by name:
 
-- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ask_user_question`, `todo`
-- The default active built-ins include `ask_user_question` and `todo` in addition to file and shell tools.
+- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `search`, `ls`, `ask_user_question`, `todo`
+- The default active built-ins include `find`, `search`, `ask_user_question`, and `todo` in addition to file and shell tools. `search` is a compatibility wrapper around the existing `grep` behavior.
 - `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed.
 - `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
 - `noTools: "all"` disables all tools
@@ -519,12 +519,12 @@ import { createAgentSession } from "@bastani/atomic";
 
 // Read-only mode
 const { session } = await createAgentSession({
-  tools: ["read", "grep", "find", "ls"],
+  tools: ["read", "search", "find", "ls"],
 });
 
 // Pick specific tools
 const { session } = await createAgentSession({
-  tools: ["read", "bash", "grep"],
+  tools: ["read", "bash", "search"],
 });
 
 // Keep defaults but remove HITL prompts

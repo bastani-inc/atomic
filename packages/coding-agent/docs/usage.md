@@ -198,7 +198,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob-like entries such as `*.ts` and honors `timeout`; `search` is the content-search builtin for normal coding sessions and mirrors the existing `grep` behavior while accepting compatibility aliases such as `paths`, `i`, and `skip` for file-page pagination. `grep` and `ls` remain available through tool options for read-only/restricted configurations. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
 
 ### Project Trust Options
 
@@ -274,7 +274,7 @@ atomic --model sonnet:high "Solve this complex problem"
 atomic --models "claude-*,gpt-4o"
 
 # Read-only mode
-atomic --tools read,grep,find,ls -p "Review the code"
+atomic --tools read,search,find,ls -p "Review the code"
 ```
 
 ### Environment Variables

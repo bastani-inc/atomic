@@ -32,6 +32,7 @@ const grepSchema = Type.Object({
 		Type.Number({ description: "Number of lines to show before and after each match (default: 0)" }),
 	),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of matches to return (default: 100)" })),
+	gitignore: Type.Optional(Type.Boolean({ description: "Respect .gitignore files (default: true)" })),
 });
 
 export type GrepToolInput = Static<typeof grepSchema>;
@@ -153,6 +154,7 @@ export function createGrepToolDefinition(
 				literal,
 				context,
 				limit,
+				gitignore,
 			}: {
 				pattern: string;
 				path?: string;
@@ -161,6 +163,7 @@ export function createGrepToolDefinition(
 				literal?: boolean;
 				context?: number;
 				limit?: number;
+				gitignore?: boolean;
 			},
 			signal?: AbortSignal,
 			_onUpdate?,
@@ -225,6 +228,7 @@ export function createGrepToolDefinition(
 						};
 
 						const args: string[] = ["--json", "--line-number", "--color=never", "--hidden"];
+						if (gitignore === false) args.push("--no-ignore");
 						if (ignoreCase) args.push("--ignore-case");
 						if (literal) args.push("--fixed-strings");
 						if (glob) args.push("--glob", glob);

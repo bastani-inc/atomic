@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a first-class `search` built-in backed by the existing content search behavior and exposed `find`/`search` in normal coding sessions for builtin-tool compatibility ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed
@@ -27,6 +31,7 @@
 ### Fixed
 
 - Fixed GitHub Copilot Gemini tool-call normalization to synthesize omitted required empty array properties before validation, preventing Ralph reviewer structured output such as `findings: []` from failing when CAPI drops the empty array from the tool call.
+- Fixed `find` and `search` compatibility with oh-my-pi-style glob entries in `paths`, restored `search.skip` file-page pagination, and made `find.timeout` return a partial timed-out result instead of accepting an ignored option ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
 
 ## [0.9.1] - 2026-06-23
 

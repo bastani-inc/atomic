@@ -183,10 +183,12 @@ By default, Atomic gives the model these tools:
 - `bash` - run shell commands
 - `edit` - patch files
 - `write` - create or overwrite files
+- `find` - discover files by glob pattern
+- `search` - search file contents
 - `ask_user_question` - ask structured questions in the TUI
 - `todo` - manage file-based todos
 
-Additional built-in read-only tools (`grep`, `find`, `ls`) are available through tool options. Atomic runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
+Normal coding sessions include file discovery and content search through `find` and `search` in addition to `read`, `bash`, `edit`, and `write`. Additional read-only built-ins (`grep`, `ls`) remain available through tool options. Atomic runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
 
 ## Give Atomic project instructions
 

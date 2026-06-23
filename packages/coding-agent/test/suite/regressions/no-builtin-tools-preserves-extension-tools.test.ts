@@ -78,7 +78,19 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 				.getAllTools()
 				.map((tool) => tool.name)
 				.sort(),
-		).toEqual(["ask_user_question", "bash", "dynamic_tool", "edit", "find", "grep", "ls", "read", "todo", "write"]);
+		).toEqual([
+			"ask_user_question",
+			"bash",
+			"dynamic_tool",
+			"edit",
+			"find",
+			"grep",
+			"ls",
+			"read",
+			"search",
+			"todo",
+			"write",
+		]);
 		expect(session.getActiveToolNames()).toEqual(["dynamic_tool"]);
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).not.toContain("- read:");

@@ -35,6 +35,13 @@ export {
 	type GrepToolOptions,
 } from "./grep.ts";
 export {
+	createSearchTool,
+	createSearchToolDefinition,
+	type SearchToolDetails,
+	type SearchToolInput,
+	type SearchToolOptions,
+} from "./search.ts";
+export {
 	createLsTool,
 	createLsToolDefinition,
 	type LsOperations,
@@ -90,6 +97,7 @@ import { createEditTool, createEditToolDefinition, type EditToolOptions } from "
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
+import { createSearchTool, createSearchToolDefinition, type SearchToolOptions } from "./search.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
 import { createTodoToolDefinition } from "./todos.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -104,6 +112,7 @@ export type ToolName =
 	| "write"
 	| "grep"
 	| "find"
+	| "search"
 	| "ls"
 	| "ask_user_question"
 	| "todo";
@@ -114,6 +123,7 @@ export const allToolNames: Set<ToolName> = new Set([
 	"write",
 	"grep",
 	"find",
+	"search",
 	"ls",
 	"ask_user_question",
 	"todo",
@@ -124,6 +134,8 @@ export const defaultToolNames: readonly ToolName[] = [
 	"bash",
 	"edit",
 	"write",
+	"find",
+	"search",
 	"ask_user_question",
 	"todo",
 ];
@@ -135,6 +147,7 @@ export interface ToolsOptions {
 	edit?: EditToolOptions;
 	grep?: GrepToolOptions;
 	find?: FindToolOptions;
+	search?: SearchToolOptions;
 	ls?: LsToolOptions;
 }
 
@@ -152,6 +165,8 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
+		case "search":
+			return createSearchToolDefinition(cwd, options?.search);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
@@ -177,6 +192,8 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createGrepTool(cwd, options?.grep);
 		case "find":
 			return createFindTool(cwd, options?.find);
+		case "search":
+			return createSearchTool(cwd, options?.search);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "ask_user_question":
@@ -194,6 +211,8 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createBashToolDefinition(cwd, options?.bash),
 		createEditToolDefinition(cwd, options?.edit),
 		createWriteToolDefinition(cwd, options?.write),
+		createFindToolDefinition(cwd, options?.find),
+		createSearchToolDefinition(cwd, options?.search),
 	];
 }
 
@@ -202,6 +221,7 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 		createReadToolDefinition(cwd, options?.read),
 		createGrepToolDefinition(cwd, options?.grep),
 		createFindToolDefinition(cwd, options?.find),
+		createSearchToolDefinition(cwd, options?.search),
 		createLsToolDefinition(cwd, options?.ls),
 	];
 }
@@ -214,6 +234,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		write: createWriteToolDefinition(cwd, options?.write),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
+		search: createSearchToolDefinition(cwd, options?.search),
 		ls: createLsToolDefinition(cwd, options?.ls),
 		ask_user_question: createAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
@@ -226,6 +247,8 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createBashTool(cwd, options?.bash),
 		createEditTool(cwd, options?.edit),
 		createWriteTool(cwd, options?.write),
+		createFindTool(cwd, options?.find),
+		createSearchTool(cwd, options?.search),
 	];
 }
 
@@ -234,6 +257,7 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 		createReadTool(cwd, options?.read),
 		createGrepTool(cwd, options?.grep),
 		createFindTool(cwd, options?.find),
+		createSearchTool(cwd, options?.search),
 		createLsTool(cwd, options?.ls),
 	];
 }
@@ -246,6 +270,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		write: createWriteTool(cwd, options?.write),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
+		search: createSearchTool(cwd, options?.search),
 		ls: createLsTool(cwd, options?.ls),
 		ask_user_question: wrapToolDefinition(createAskUserQuestionToolDefinition()),
 		todo: wrapToolDefinition(createTodoToolDefinition(cwd)),
