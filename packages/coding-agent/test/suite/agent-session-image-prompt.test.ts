@@ -24,6 +24,28 @@ describe("AgentSession image prompt handling", () => {
 		}
 	});
 
+	it("does not duplicate images already attached for CLI file arguments", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const imagePath = join(harness.tempDir, "cli.png");
+		const imageData = TINY_PNG_BASE64;
+		writeFileSync(imagePath, Buffer.from(imageData, "base64"));
+		let currentUserImageCount = 0;
+
+		harness.setResponses([
+			(context) => {
+				currentUserImageCount = countImagesInCurrentUserMessage(context.messages);
+				return fauxAssistantMessage("ok");
+			},
+		]);
+
+		await harness.session.prompt(`<file name="${imagePath}"></file> describe`, {
+			images: [{ type: "image", mimeType: "image/png", data: imageData }],
+		});
+
+		expect(currentUserImageCount).toBe(1);
+	});
+
 	it("attaches images for back-to-back image prompts", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

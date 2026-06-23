@@ -9,6 +9,18 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
 
+function mergePromptImages(existing: readonly ImageContent[] | undefined, resolved: readonly ImageContent[]): ImageContent[] | undefined {
+	if (!existing || existing.length === 0) return resolved.length > 0 ? [...resolved] : undefined;
+	if (resolved.length === 0) return [...existing];
+	const merged = [...existing];
+	for (const image of resolved) {
+		if (!merged.some((candidate) => candidate.mimeType === image.mimeType && candidate.data === image.data)) {
+			merged.push(image);
+		}
+	}
+	return merged;
+}
+
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
@@ -31,18 +43,36 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			}
 		}
 
+		// Extension sendUserMessage() is exposed as fire-and-forget. Preserve its
+		// synchronous streaming queue behavior by avoiding async image probing before
+		// queue insertion; extensions can pass structured images explicitly.
+		let currentText = text;
+		let currentImages = options?.images;
+		if (this.isStreaming && options?.source === "extension" && !this._extensionRunner.hasHandlers("input")) {
+			if (!options.streamingBehavior) {
+				throw new Error(
+					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+				);
+			}
+			if (options.streamingBehavior === "followUp") {
+				await this._queueFollowUp(currentText, currentImages);
+			} else {
+				await this._queueSteer(currentText, currentImages);
+			}
+			preflightResult?.(true);
+			return;
+		}
+
 		// Resolve inline @image references before extension interception so the
 		// current user turn carries images as attachments instead of forcing the
 		// model to read them through tool results.
-		let currentText = text;
-		let currentImages = options?.images;
 		const inlineImageReferences = await resolvePromptImageReferences(currentText, {
 			cwd: this._cwd,
 			autoResizeImages: this.settingsManager.getImageAutoResize(),
 		});
 		if (inlineImageReferences.images.length > 0 || inlineImageReferences.text !== currentText) {
 			currentText = inlineImageReferences.text;
-			currentImages = currentImages ? [...currentImages, ...inlineImageReferences.images] : inlineImageReferences.images;
+			currentImages = mergePromptImages(currentImages, inlineImageReferences.images);
 		}
 		if (this._extensionRunner.hasHandlers("input")) {
 			const inputResult = await this._extensionRunner.emitInput(
