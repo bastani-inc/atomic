@@ -7,6 +7,10 @@ import { resolvePromptImageReferences } from "../src/core/prompt-file-references
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 
+function shellEscapePath(value: string): string {
+	return value.replace(/[\\\s]/gu, "\\$&");
+}
+
 describe("resolvePromptImageReferences", () => {
 	const tempDirs: string[] = [];
 
@@ -26,7 +30,7 @@ describe("resolvePromptImageReferences", () => {
 	it("resolves shell-escaped macOS screenshot paths with narrow no-break spaces", async () => {
 		const tempDir = createTempDir();
 		const imagePath = join(tempDir, "Screenshot 2026-06-22 at 12.06.12\u202fAM.png");
-		const escapedImagePath = imagePath.replace(/ /g, "\\ ");
+		const escapedImagePath = shellEscapePath(imagePath);
 		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
 
 		const result = await resolvePromptImageReferences(`what is this a pic of ${escapedImagePath}`, {
