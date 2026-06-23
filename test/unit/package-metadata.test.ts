@@ -33,6 +33,7 @@ interface PackageDependencySections {
 interface WorkspacePackageJson extends PackageDependencySections {
     version: string;
     private?: boolean;
+    engines?: Record<string, string>;
 }
 
 interface WorkspacePackage {
@@ -119,6 +120,29 @@ function atomicRuntimeDependencyRange(name: string): string | undefined {
     return ATOMIC_RUNTIME_DEPENDENCIES[name];
 }
 
+function parseMajorMinorPatch(range: string): [number, number, number] | undefined {
+    const match = /^(?:\^)?(\d+)\.(\d+)\.(\d+)$/.exec(range);
+    if (!match) return undefined;
+    return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function versionAtLeast(left: [number, number, number], right: [number, number, number]): boolean {
+    if (left[0] !== right[0]) return left[0] > right[0];
+    if (left[1] !== right[1]) return left[1] > right[1];
+    return left[2] >= right[2];
+}
+
+function directRuntimeCoversBundledRange(directRange: string | undefined, bundledRange: string): boolean {
+    if (directRange === bundledRange) return true;
+    if (!directRange || !bundledRange.startsWith("^")) return false;
+    const directVersion = parseMajorMinorPatch(directRange);
+    const bundledMinimum = parseMajorMinorPatch(bundledRange);
+    return directVersion !== undefined
+        && bundledMinimum !== undefined
+        && directVersion[0] === bundledMinimum[0]
+        && versionAtLeast(directVersion, bundledMinimum);
+}
+
 describe("package metadata", () => {
     test("all workspace packages share the same strict release version", async () => {
         const packages = await workspacePackages();
@@ -193,12 +217,31 @@ describe("package metadata", () => {
                 ["dependencies"],
             )) {
                 if (dependencyName.startsWith("@bastani/")) continue;
-                assert.equal(
-                    atomicRuntimeDependencyRange(dependencyName),
-                    dependencyRange,
+                assert.ok(
+                    directRuntimeCoversBundledRange(atomicRuntimeDependencyRange(dependencyName), dependencyRange),
                     `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name}`,
                 );
             }
+        }
+    });
+
+    test("publishes the synced Pi runtime and Node engine floors", () => {
+        assert.equal(atomicPackageJson.engines.node, ">=22.19.0");
+        for (const name of [
+            "@earendil-works/pi-agent-core",
+            "@earendil-works/pi-ai",
+            "@earendil-works/pi-tui",
+        ]) {
+            assert.equal((atomicPackageJson.dependencies as DependencyMap)[name], "^0.79.10");
+        }
+        for (const packageJson of [
+            workflowsPackageJson,
+            subagentsPackageJson,
+            mcpPackageJson,
+            webAccessPackageJson,
+            intercomPackageJson,
+        ]) {
+            assert.equal(packageJson.peerDependencies?.["@earendil-works/pi-tui"], "^0.79.10");
         }
     });
 
