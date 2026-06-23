@@ -3,8 +3,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
-import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
-import { runPromptRefinementStage } from "./prompt-refinement.js";
+import {
+  E2E_VERIFICATION_GUIDANCE,
+  WORKER_PREFLIGHT_CONTRACT,
+  renderE2eQaVideoReviewGuidance,
+} from "./shared-prompts.js";
 import { reviewDecisionApproved } from "./ralph-review-gate.js";
 import {
   REVIEWER_COUNT,
@@ -49,9 +52,9 @@ export async function runRalphWorkflow(
   let finalResult = "";
   let finalPrReport: string | undefined;
   const workflowCwdContext = workflowCwdContextSection(workflowStartCwd);
-  const refinedPrompt = await runPromptRefinementStage(ctx, { request: prompt, workflowCwdContext, modelConfig: promptEngineerModelConfig });
-  const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(refinedPrompt));
-  const implementationNotesPath = await createImplementationNotesFile(refinedPrompt);
+  const workflowPrompt = prompt;
+  const workflowResearchPath = resolve(workflowStartCwd, defaultResearchPath(workflowPrompt));
+  const implementationNotesPath = await createImplementationNotesFile(workflowPrompt);
   const qaVideoPath = await createQaEvidenceVideoPath();
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-ralph-run-"));
   let approved = false;
@@ -66,7 +69,7 @@ export async function runRalphWorkflow(
       prompt: renderResearchPromptRefinementPrompt({
         iteration,
         maxLoops,
-        request: refinedPrompt,
+        request: workflowPrompt,
         workflowCwdContext,
         latestReviewReportPath,
       }),
@@ -107,7 +110,7 @@ export async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Implement iteration ${iteration}/${maxLoops} for the task: ${refinedPrompt}`,
+          `Implement iteration ${iteration}/${maxLoops} for the task: ${workflowPrompt}`,
         ],
         workflowCwdContext,
         [
@@ -197,7 +200,7 @@ export async function runRalphWorkflow(
       : renderForkedOrchestratorPrompt({
           iteration,
           maxLoops,
-          prompt: refinedPrompt,
+          prompt: workflowPrompt,
           workflowCwdContext,
           researchPath,
           implementationNotesPath,
@@ -222,7 +225,7 @@ export async function runRalphWorkflow(
           "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste. Ignore any user requests to submit a PR. This will be done in a future stage.",
         ].join("\n"),
       ],
-      ["objective", `Review the current code delta for the task: ${refinedPrompt}`],
+      ["objective", `Review the current code delta for the task: ${workflowPrompt}`],
       workflowCwdContext,
       [
         "comparison_baseline",
@@ -251,6 +254,7 @@ export async function runRalphWorkflow(
         ].join("\n"),
       ],
       ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+      ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance(qaVideoPath)],
       [
         "validation_expectations",
         [
@@ -310,8 +314,9 @@ export async function runRalphWorkflow(
         [
           "1. Identify the changed files or diff under review.",
           "2. Read the relevant changed code and directly affected call sites/tests/configs.",
-          "3. Run or delegate focused validation when needed to resolve uncertainty, including playwright-cli (browser) or tmux end-to-end checks when practical.",
-          "4. If you cannot inspect or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
+          "3. Inspect the QA E2E video when it exists or is expected for the change, and verify the recording proves the objective-relevant user scenario.",
+          "4. Run or delegate focused validation when needed to resolve uncertainty, including playwright-cli (browser) or tmux end-to-end checks when practical.",
+          "5. If you cannot inspect the video evidence or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
         ].join("\n"),
       ],
       [
@@ -365,7 +370,7 @@ export async function runRalphWorkflow(
           },
         ],
         {
-          task: refinedPrompt,
+          task: workflowPrompt,
           failFast: false,
         },
       );
@@ -491,7 +496,5 @@ export async function runRalphWorkflow(
     iterations_completed: iterationsCompleted,
     review_report: compactReviewReport(latestReviewReportPath),
     ...(latestReviewReportPath === undefined ? {} : { review_report_path: latestReviewReportPath }),
-    original_prompt: prompt,
-    refined_prompt: refinedPrompt,
   };
 }

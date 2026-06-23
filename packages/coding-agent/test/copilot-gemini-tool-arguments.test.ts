@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   normalizeCopilotGeminiReplayToolArguments,
   normalizeToolArgumentsForModel,
@@ -157,6 +158,44 @@ describe("normalizeToolArgumentsForModel", () => {
     expect(normalizeToolArgumentsForModel({ "metadata.confidence": 0.9 }, geminiModel(), schema)).toEqual({
       metadata: { confidence: 0.9 },
     });
+  });
+
+  it("synthesizes omitted required array arguments as empty arrays for Copilot Gemini", () => {
+    const schema = Type.Object(
+      {
+        findings: Type.Array(Type.Object({ title: Type.String() })),
+        overall_correctness: Type.String(),
+      },
+      { additionalProperties: false },
+    );
+    expect(normalizeToolArgumentsForModel(
+      { overall_correctness: "patch is correct" },
+      geminiModel(),
+      schema,
+    )).toEqual({ overall_correctness: "patch is correct", findings: [] });
+  });
+
+  it("does not synthesize omitted optional array arguments", () => {
+    const schema = Type.Object(
+      {
+        findings: Type.Optional(Type.Array(Type.String())),
+        overall_correctness: Type.String(),
+      },
+      { additionalProperties: false },
+    );
+    const args = { overall_correctness: "patch is correct" };
+    expect(normalizeToolArgumentsForModel(args, geminiModel(), schema)).toBe(args);
+  });
+
+  it("leaves minItems constraints intact for synthesized empty arrays", () => {
+    const schema = Type.Object(
+      { findings: Type.Array(Type.String(), { minItems: 1 }) },
+      { additionalProperties: false },
+    );
+    const normalized = normalizeToolArgumentsForModel({}, geminiModel(), schema);
+    const findingsSchema = schema.properties.findings as { minItems?: number };
+    expect(normalized).toEqual({ findings: [] });
+    expect(findingsSchema.minItems).toBe(1);
   });
 
   it("is a no-op for other providers/models (returns same reference)", () => {

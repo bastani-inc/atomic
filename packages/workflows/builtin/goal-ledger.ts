@@ -21,14 +21,12 @@ export function appendLifecycleEvent(
 
 export async function createGoalLedger(
   objective: string,
-  originalObjective?: string,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-goal-runner-"));
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: randomUUID(),
     objective,
-    ...(originalObjective === undefined || originalObjective === objective ? {} : { original_objective: originalObjective }),
     status: "active",
     turns: 0,
     created_at: now,

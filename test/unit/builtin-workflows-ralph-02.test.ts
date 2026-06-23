@@ -26,7 +26,6 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
-    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -142,13 +141,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                 create_pr: false,
             },
             {
-                task: promptRefinementPassthroughTaskResponder((name) => {
+                task: (name) => {
                     if (name === "research-prompt-refinement-1") return "first question";
                     if (name === "research-1") return "first research";
                     if (name === "research-prompt-refinement-2") return "second question";
                     if (name === "research-2") return "second research";
                     return undefined;
-                }),
+                },
             },
         );
 
@@ -228,7 +227,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             (ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "").startsWith(
-                "/skill:prompt-engineer Transform the following refined user request",
+                "/skill:prompt-engineer Transform the following user request",
             ),
             true,
         );
@@ -319,19 +318,16 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
         const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
-        assert.equal(
-            reviewerCOptions?.model,
-            "github-copilot/gemini-3.1-pro-preview (1m):high",
-        );
-        assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 2), [
-            "google/gemini-3.1-pro-preview:high",
-            "google-vertex/gemini-3.1-pro-preview:high",
+        assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
+        assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
+            "zai-coding-cn/glm-5.2:xhigh",
+            "github-copilot/gemini-3.5-flash (1m):high",
+            "google/gemini-3.5-flash:high",
+            "google-vertex/gemini-3.5-flash:high",
         ]);
         assert.equal(
-            reviewerCOptions?.fallbackModels?.some((model) =>
-                model.includes("gemini-3.5-flash"),
-            ),
-            false,
+            reviewerCOptions?.fallbackModels?.includes("github-copilot/gemini-3.1-pro-preview (1m):high"),
+            true,
         );
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);

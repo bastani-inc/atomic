@@ -1,4 +1,8 @@
-import { E2E_VERIFICATION_GUIDANCE, WORKER_PREFLIGHT_CONTRACT } from "./shared-prompts.js";
+import {
+  E2E_VERIFICATION_GUIDANCE,
+  WORKER_PREFLIGHT_CONTRACT,
+  renderE2eQaVideoReviewGuidance,
+} from "./shared-prompts.js";
 import type { GoalLedger } from "./goal-types.js";
 
 export { WORKER_PREFLIGHT_CONTRACT };
@@ -241,6 +245,7 @@ export function renderReviewerPrompt(args: {
     ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["auditability", RECEIPT_EXPECTATIONS],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+    ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance()],
     [
       "goal_context",
       [
@@ -333,9 +338,10 @@ export function renderReviewerPrompt(args: {
         "1. Identify the changed files or diff under review.",
         "2. Read the relevant changed code and directly affected call sites/tests/configs.",
         "3. Read the goal ledger and worker receipt, then map receipts to the inferred verification oracle and original owner outcome.",
-        "4. Run or delegate focused validation when needed to resolve uncertainty.",
-        "5. Decide whether the receipt/evidence map proves completion; if evidence is uncertain, indirect, stale, missing, or narrower than the requested outcome, set goal_oracle_satisfied=false and stop_review_loop=false.",
-        "6. If you cannot inspect receipts or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
+        "4. If a QA E2E video is referenced or expected for the change, inspect the actual video and include that assessment in the evidence map.",
+        "5. Run or delegate focused validation when needed to resolve uncertainty.",
+        "6. Decide whether the receipt/evidence map proves completion; if evidence is uncertain, indirect, stale, missing, or narrower than the requested outcome, set goal_oracle_satisfied=false and stop_review_loop=false.",
+        "7. If you cannot inspect receipts, video evidence, or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
       ].join("\n"),
     ],
     [

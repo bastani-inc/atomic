@@ -13,7 +13,6 @@ import {
     fieldRequired,
     makeMockCtx,
     normalizePathSeparators,
-    promptRefinementPassthroughTaskResponder,
 } from "./builtin-workflows-helpers.js";
 
 describe("goal", () => {    type ReviewJsonFinding = {
@@ -152,7 +151,6 @@ describe("goal", () => {    type ReviewJsonFinding = {
             iterations_completed: "number",
             ledger_path: "text",
             objective: "text",
-            original_objective: "text",
             pr_report: "text",
             receipts: "array",
             remaining_work: "text",
@@ -279,7 +277,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         const ctx = makeMockCtx(
             { objective: "Refactor tests" },
             {
-                task: promptRefinementPassthroughTaskResponder((name) => {
+                task: (name) => {
                     if (
                         name.startsWith("completion-reviewer-") ||
                         name.startsWith("evidence-reviewer-")
@@ -294,7 +292,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         });
                     }
                     return undefined;
-                }),
+                },
             },
         );
 
@@ -304,6 +302,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(ctx.calls.task.includes("orchestrator-1"), false);
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
         assert.equal(ctx.calls.task.includes("pull-request"), false);
+        assert.equal(ctx.calls.task.includes("prompt-refinement"), false);
         assert.ok(ctx.calls.task.includes("work-turn-1"));
         assert.equal(
             ctx.calls.taskOptions["work-turn-1"]?.[0]?.outputMode,
@@ -317,6 +316,10 @@ describe("goal", () => {    type ReviewJsonFinding = {
                     names.includes("risk-reviewer-1"),
             ),
         );
+        const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
+        assert.match(reviewerPrompt, /<qa_e2e_video_review>/);
+        assert.match(reviewerPrompt, /inspect the actual video before approving/i);
+        assert.match(reviewerPrompt, /Look for QA E2E video references in the goal ledger/i);
         assert.equal(result["status"], "complete");
         assert.equal(result["approved"], true);
         assert.equal(result["turns_completed"], 1);

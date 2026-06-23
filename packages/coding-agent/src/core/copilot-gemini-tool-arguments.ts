@@ -34,8 +34,11 @@ import { reconstructFlattenedKeys } from "./flattened-tool-arguments.ts";
  * purely dotted key (`parent.child`, with no array anywhere) is ambiguous —
  * a legitimate argument key can itself contain a dot — so it is only split when
  * the optional tool `schema` marks its head segment as an object/array
- * container property. The transform is gated to GitHub Copilot Gemini models,
- * so it never touches well-formed arguments from any other provider/model.
+ * container property. When Gemini omits a required empty array entirely (there
+ * are no `name[0]` keys to send), the schema is also used to synthesize `[]` for
+ * missing required top-level array properties so normal validation can proceed.
+ * The transform is gated to GitHub Copilot Gemini models, so it never touches
+ * well-formed arguments from any other provider/model.
  */
 
 type JsonRecord = Record<string, unknown>;
@@ -69,6 +72,39 @@ function containerPropertyNames(schema: unknown): Set<string> {
     if (isContainerSchema(sub)) names.add(name);
   }
   return names;
+}
+
+function schemaTypeIncludes(schema: JsonRecord, type: string): boolean {
+  if (schema.type === type) return true;
+  return Array.isArray(schema.type) && schema.type.includes(type);
+}
+
+function isArraySchema(schema: unknown): boolean {
+  if (!isPlainObject(schema)) return false;
+  if (schemaTypeIncludes(schema, "array")) return true;
+  if ("items" in schema && !schemaTypeIncludes(schema, "object")) return true;
+  const union = schema.anyOf ?? schema.oneOf;
+  return Array.isArray(union) && union.some((branch) => isArraySchema(branch));
+}
+
+function requiredArrayPropertyNames(schema: unknown): readonly string[] {
+  if (!isPlainObject(schema)) return [];
+  const required = schema.required;
+  const properties = schema.properties;
+  if (!Array.isArray(required) || !isPlainObject(properties)) return [];
+  return required.filter((name): name is string => (
+    typeof name === "string" &&
+    Object.hasOwn(properties, name) &&
+    isArraySchema(properties[name])
+  ));
+}
+
+function fillMissingRequiredArrayProperties(args: JsonRecord, schema: unknown): JsonRecord {
+  const missing = requiredArrayPropertyNames(schema).filter((name) => !Object.hasOwn(args, name));
+  if (missing.length === 0) return args;
+  const next: JsonRecord = { ...args };
+  for (const name of missing) next[name] = [];
+  return next;
 }
 
 /** Whether `key` is a pure dotted path (`parent.child`) headed by a container prop. */
@@ -106,9 +142,13 @@ export function unflattenGeminiToolArguments(args: unknown, schema?: unknown): u
   const containers = hasBracket ? new Set<string>() : containerPropertyNames(schema);
   const hasDottedContainer =
     !hasBracket && keys.some((key) => isDottedContainerKey(key, containers));
-  if (!hasBracket && !hasDottedContainer) return args;
+  const reconstructed = hasBracket || hasDottedContainer
+    ? reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, hasBracket, containers))
+    : args;
 
-  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, hasBracket, containers));
+  return isPlainObject(reconstructed)
+    ? fillMissingRequiredArrayProperties(reconstructed, schema)
+    : reconstructed;
 }
 
 /**
