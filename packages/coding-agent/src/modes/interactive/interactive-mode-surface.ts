@@ -1,5 +1,6 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
 import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, ContextCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
+import type { OnboardingRoutingAssessment } from "./interactive-onboarding.ts";
 
 declare module "./interactive-mode-base.ts" {
   interface InteractiveModeBase {
@@ -11,6 +12,15 @@ declare module "./interactive-mode-base.ts" {
   createBaseAutocompleteProvider(): AutocompleteProvider;
   setupAutocompleteProvider(): void;
   showStartupNoticesIfNeeded(): void;
+  hadLastChangelogVersionAtStartup: boolean;
+  firstRunOnboardingHeaderComponents: Component[];
+  firstRunOnboardingSeedInFlight: boolean;
+  isFirstRunOnboardingEligible(): boolean;
+  clearFirstRunOnboardingUi(): void;
+  completeFirstRunOnboarding(): void;
+  runOnboardingRoutingAssessment(seed: string): Promise<OnboardingRoutingAssessment>;
+  launchOnboardingWorkflow(seed: string, assessment: OnboardingRoutingAssessment): Promise<void>;
+  handleOnboardingWorkflowSeed(seed: string): Promise<void>;
   init(): Promise<void>;
   updateTerminalTitle(): void;
   run(): Promise<void>;

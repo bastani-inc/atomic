@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added one-time first-run onboarding that explains Atomic workflows, uses an onboarding editor placeholder, lets users opt into normal chat with `/chat`, preserves other slash commands, and routes the first pasted ticket/spec/task through a lightweight scope check into `goal` or `ralph` using the standard workflow launch/status/connect experience.
+
 ## [0.9.0] - 2026-06-22
 
 ### Breaking Changes

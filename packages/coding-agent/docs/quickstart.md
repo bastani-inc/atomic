@@ -80,6 +80,8 @@ See [Providers](/providers) for all supported providers, environment variables, 
 
 ## First session
 
+On a fresh install, Atomic starts with a first-run workflow prompt. Paste a ticket description, GitHub issue, path to a spec, or task prompt and Atomic does a quick read-only scope check, explains whether the work looks like a smaller focused `goal` run or a larger/cross-cutting `ralph` run, then launches the selected workflow with the standard `/workflow` run/status/connect UI. If you want normal chat instead, type `/chat` or `/chat <message>`; other slash commands such as `/login`, `/model`, and `/atomic` still work and do not dismiss onboarding.
+
 Once Atomic starts, the fastest way to get value is to kick off a built-in workflow or invoke a skill. Atomic turns repeatable engineering loops into executable stages with inspectable evidence instead of relying on a markdown checklist the model may or may not follow.
 
 For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overview`, `/atomic workflows`, and `/atomic example` walk through the same flow in more depth.

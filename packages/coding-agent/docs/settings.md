@@ -73,6 +73,8 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
 | `enableInstallTelemetry` | boolean | `true` | Send an anonymous install/update version ping after first install or changelog-detected updates. This does not control update checks |
+| `firstRunOnboardingStartedVersion` | string | - | Internal first-run onboarding start marker used to keep unfinished fresh-install onboarding separate from changelog state |
+| `onboardedVersion` | string | - | Internal one-time first-run onboarding completion marker. `/chat` or a successful onboarding workflow launch sets it |
 | `doubleEscapeAction` | string | `"tree"` | Action for double-escape: `"tree"`, `"fork"`, or `"none"` |
 | `treeFilterMode` | string | `"default"` | Default filter for `/tree`: `"default"`, `"no-tools"`, `"user-only"`, `"labeled-only"`, `"all"` |
 | `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
