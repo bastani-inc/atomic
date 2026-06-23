@@ -119,7 +119,7 @@
       "name": "@bastani/atomic-natives",
       "version": "0.0.0",
       "devDependencies": {
-        "@napi-rs/cli": "3.7.0",
+        "@napi-rs/cli": "3.7.2",
       },
     },
     "packages/subagents": {
@@ -424,7 +424,7 @@
 
     "@mozilla/readability": ["@mozilla/readability@0.6.0", "", {}, "sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ=="],
 
-    "@napi-rs/cli": ["@napi-rs/cli@3.7.0", "", { "dependencies": { "@inquirer/prompts": "^8.0.0", "@napi-rs/cross-toolchain": "^1.0.3", "@napi-rs/wasm-tools": "^1.0.1", "@octokit/rest": "^22.0.1", "clipanion": "^4.0.0-rc.4", "colorette": "^2.0.20", "emnapi": "^1.10.0", "es-toolkit": "^1.41.0", "js-yaml": "^4.1.0", "obug": "^2.0.0", "semver": "^7.7.3", "typanion": "^3.14.0" }, "peerDependencies": { "@emnapi/runtime": "^1.7.1" }, "optionalPeers": ["@emnapi/runtime"], "bin": { "napi": "dist/cli.js", "napi-raw": "cli.mjs" } }, "sha512-3d3+rmxlOIV/G1zPWeX4PCxuYnhcCQM2BvY9rtimC8RO0dFR9gtYP+Grov+WoduZtfWRj5N1XvytWeRxxCk5zw=="],
+    "@napi-rs/cli": ["@napi-rs/cli@3.7.2", "", { "dependencies": { "@inquirer/prompts": "^8.5.2", "@napi-rs/cross-toolchain": "^1.0.3", "@napi-rs/wasm-tools": "^1.0.1", "@octokit/rest": "^22.0.1", "clipanion": "^4.0.0-rc.4", "colorette": "^2.0.20", "emnapi": "^1.11.1", "es-toolkit": "^1.47.0", "js-yaml": "^4.2.0", "obug": "^2.1.2", "semver": "^7.8.2", "typanion": "^3.14.0" }, "peerDependencies": { "@emnapi/runtime": "^1.7.1" }, "optionalPeers": ["@emnapi/runtime"], "bin": { "napi": "dist/cli.js", "napi-raw": "cli.mjs" } }, "sha512-shDW0Td/XZQpP04Yy+OsMt1ILMKGGkoLcy1zVAsSAK0fLfWm0Upgkmfs/NOV2ZhMQwkgpR3ZEdyHmTwgrUDQuA=="],
 
     "@napi-rs/cross-toolchain": ["@napi-rs/cross-toolchain@1.0.3", "", { "dependencies": { "@napi-rs/lzma": "^1.4.5", "@napi-rs/tar": "^1.1.0", "debug": "^4.4.1" }, "peerDependencies": { "@napi-rs/cross-toolchain-arm64-target-aarch64": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-armv7": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-ppc64le": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-s390x": "^1.0.3", "@napi-rs/cross-toolchain-arm64-target-x86_64": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-aarch64": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-armv7": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-ppc64le": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-s390x": "^1.0.3", "@napi-rs/cross-toolchain-x64-target-x86_64": "^1.0.3" }, "optionalPeers": ["@napi-rs/cross-toolchain-arm64-target-aarch64", "@napi-rs/cross-toolchain-arm64-target-armv7", "@napi-rs/cross-toolchain-arm64-target-ppc64le", "@napi-rs/cross-toolchain-arm64-target-s390x", "@napi-rs/cross-toolchain-arm64-target-x86_64", "@napi-rs/cross-toolchain-x64-target-aarch64", "@napi-rs/cross-toolchain-x64-target-armv7", "@napi-rs/cross-toolchain-x64-target-ppc64le", "@napi-rs/cross-toolchain-x64-target-s390x", "@napi-rs/cross-toolchain-x64-target-x86_64"] }, "sha512-ENPfLe4937bsKVTDA6zdABx4pq9w0tHqRrJHyaGxgaPq03a2Bd1unD5XSKjXJjebsABJ+MjAv1A2OvCgK9yehg=="],
 
@@ -814,7 +814,7 @@
 
     "ee-first": ["ee-first@1.1.1", "", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
 
-    "emnapi": ["emnapi@1.11.0", "", { "peerDependencies": { "node-addon-api": ">= 6.1.0" }, "optionalPeers": ["node-addon-api"] }, "sha512-3+AyVLAzk2jr9FPnCT9fgU4/gGoHrB3MpYxqNG6JdmkWmFPpKAhArQgfK/WEiT9kExX2ecXVA6DoPceDShR47g=="],
+    "emnapi": ["emnapi@1.11.1", "", { "peerDependencies": { "node-addon-api": ">= 6.1.0" }, "optionalPeers": ["node-addon-api"] }, "sha512-kSRjhIcxjMFsBqk7ORvoc9aA5SBKDmecrtF5RMcmOTao0kD/zamaxsuTxMI8C1//wGUuvE7a+19pCE7AEhGVnA=="],
 
     "encodeurl": ["encodeurl@2.0.0", "", {}, "sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg=="],
 
@@ -1239,6 +1239,8 @@
     "@bastani/atomic/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@inquirer/core/signal-exit": ["signal-exit@4.1.0", "", {}, "sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw=="],
+
+    "@napi-rs/cli/obug": ["obug@2.1.3", "", {}, "sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg=="],
 
     "@napi-rs/cli/semver": ["semver@7.8.4", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA=="],
 
