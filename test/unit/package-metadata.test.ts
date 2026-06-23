@@ -41,6 +41,14 @@ interface WorkspacePackage {
     packageJson: WorkspacePackageJson;
 }
 
+interface RuntimeDependencyPackageJson {
+    name: string;
+    version: string;
+    engines?: {
+        node?: string;
+    };
+}
+
 async function workspacePackages(): Promise<WorkspacePackage[]> {
     return (
         await Promise.all(
@@ -118,6 +126,13 @@ function dependencyEntries(
 
 function atomicRuntimeDependencyRange(name: string): string | undefined {
     return ATOMIC_RUNTIME_DEPENDENCIES[name];
+}
+
+async function runtimeDependencyPackageJson(
+    dependencyName: string,
+): Promise<RuntimeDependencyPackageJson> {
+    const manifestPath = join("node_modules", dependencyName, "package.json");
+    return (await Bun.file(manifestPath).json()) as RuntimeDependencyPackageJson;
 }
 
 describe("package metadata", () => {
@@ -203,6 +218,25 @@ describe("package metadata", () => {
                     `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
                 );
             }
+        }
+    });
+
+    test("@bastani/atomic Node.js engine range is no broader than direct runtime dependency engines", async () => {
+        const atomicNodeEngine = atomicPackageJson.engines.node;
+        assert.equal(typeof atomicNodeEngine, "string");
+
+        for (const dependencyName of Object.keys(
+            ATOMIC_RUNTIME_DEPENDENCIES,
+        ).sort()) {
+            const dependencyPackageJson =
+                await runtimeDependencyPackageJson(dependencyName);
+            const dependencyNodeEngine = dependencyPackageJson.engines?.node;
+            if (!dependencyNodeEngine) continue;
+
+            assert.ok(
+                semverSubset(atomicNodeEngine, dependencyNodeEngine),
+                `@bastani/atomic engines.node (${atomicNodeEngine}) must be equal to or narrower than ${dependencyName} engines.node (${dependencyNodeEngine})`,
+            );
         }
     });
 

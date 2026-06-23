@@ -5,6 +5,7 @@
 ### Changed
 
 - Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
+- Raised the published Node.js engine floor to `>=22.19.0` to match direct runtime dependency requirements, including `undici@8.5.0`.
 
 ## [0.9.1] - 2026-06-23
 
