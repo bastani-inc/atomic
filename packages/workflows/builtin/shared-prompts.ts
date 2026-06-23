@@ -16,3 +16,18 @@ export const E2E_VERIFICATION_GUIDANCE = [
   "For TUI or terminal-app flows, use the tmux skill, or delegate to a subagent with `skill: \"tmux\"`, to launch the app in an isolated tmux session, send keys, capture pane output, and simulate the scenario end to end.",
   "If end-to-end verification is not practical in this checkout, record what was attempted, the smallest missing prerequisite, and the narrower validation that was run instead; do not claim end-to-end proof when it was not performed.",
 ].join("\n");
+
+export function renderE2eQaVideoReviewGuidance(
+  knownVideoPath?: string,
+): string {
+  const target = knownVideoPath === undefined || knownVideoPath.length === 0
+    ? "Look for QA E2E video references in the goal ledger, worker receipt, implementation notes, orchestrator report, or other review context artifacts."
+    : `Known QA E2E video path for this run: ${knownVideoPath}`;
+  return [
+    target,
+    "When a QA E2E video exists or is claimed as evidence, inspect the actual video before approving; do not treat a path, filename, transcript summary, or stage claim as proof by itself.",
+    "Use available video/file tooling such as `fetch_content` on the local video path with a prompt focused on whether the recording proves the required user scenario, or inspect representative frames/metadata when full video analysis is unavailable.",
+    "Check that the video is from the current workflow iteration/state, exercises the objective-relevant user path, shows the expected final behavior, and does not visibly hide errors, stale UI, broken loading states, or skipped steps.",
+    "For UI-applicable or full-stack changes, treat a missing, stale, unreadable, or inconclusive QA video as missing E2E evidence unless the receipt or implementation notes justify why no video applies and provide adequate alternate end-to-end proof.",
+  ].join("\n");
+}

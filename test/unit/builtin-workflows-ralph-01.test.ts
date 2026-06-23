@@ -26,7 +26,6 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
-    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -176,12 +175,10 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             approved: "boolean",
             implementation_notes_path: "text",
             iterations_completed: "number",
-            original_prompt: "text",
             plan: "text",
             plan_path: "text",
             pr_report: "text",
             qa_video_path: "text",
-            refined_prompt: "text",
             research: "text",
             research_path: "text",
             result: "text",
@@ -190,39 +187,35 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         });
     });
 
-    test("starts Ralph with prompt-engineering and research prompts", async () => {
+    test("starts Ralph with raw-prompt research refinement and research prompts", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
-        const ctx = makeMockCtx(
-            {
-                prompt: "Add a small feature",
-                max_loops: 1,
-                base_branch: "main",
-                git_worktree_dir: "",
-                create_pr: false,
-            },
-            {
-                task: promptRefinementPassthroughTaskResponder(),
-            },
-        );
+        const ctx = makeMockCtx({
+            prompt: "Add a small feature",
+            max_loops: 1,
+            base_branch: "main",
+            git_worktree_dir: "",
+            create_pr: false,
+        });
 
         await mod.default.run({ ...ctx, cwd: requireRalphTempCwd() });
 
         const promptEngineerPrompt = ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "";
         assert.equal(
             promptEngineerPrompt.startsWith(
-                "/skill:prompt-engineer Transform the following refined user request into a codebase and online research question which can be thoroughly explored: Add a small feature",
+                "/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: Add a small feature",
             ),
             true,
         );
         const researchPrompt = ctx.calls.prompts["research-1"]?.[0] ?? "";
         assert.equal(researchPrompt.startsWith("/skill:research-codebase "), true);
         assert.match(researchPrompt, /mock-task:research-prompt-refinement-1/);
+        assert.equal(ctx.calls.task.includes("prompt-refinement"), false);
         assert.equal(ctx.calls.task.includes("planner-1"), false);
         assert.doesNotMatch(promptEngineerPrompt, /Technical Design Document|RFC Template/);
-        assert.equal(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.noTools, "all");
-        assert.equal(
+        assert.equal(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.noTools, undefined);
+        assert.deepEqual(
             ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.excludedTools,
-            undefined,
+            ["ask_user_question"],
         );
     });
 
@@ -255,7 +248,6 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         await mod.default.run({ ...ctx, cwd });
 
         const prompts = [
-            ["prompt-refinement", ctx.calls.prompts["prompt-refinement"]?.[0] ?? ""],
             ["research-prompt-refinement-1", ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? ""],
             ["research-1", ctx.calls.prompts["research-1"]?.[0] ?? ""],
             ["orchestrator-1", ctx.calls.prompts["orchestrator-1"]?.[0] ?? ""],
@@ -287,6 +279,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
             assert.match(prompt, /skill: "playwright-cli"/, label);
             assert.match(prompt, /skill: "tmux"/, label);
+        }
+        for (const label of ["reviewer-a", "reviewer-b"] as const) {
+            const prompt = ctx.calls.prompts[label]?.[0] ?? "";
+            assert.match(prompt, /<qa_e2e_video_review>/, label);
+            assert.match(prompt, /Known QA E2E video path for this run:/, label);
+            assert.match(prompt, /qa-e2e-evidence\.webm/, label);
+            assert.match(prompt, /inspect the actual video before approving/i, label);
         }
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
     });

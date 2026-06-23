@@ -93,7 +93,6 @@ export type GoalLifecycleEvent = {
 export type GoalLedger = {
   readonly goal_id: string;
   readonly objective: string;
-  readonly original_objective?: string;
   status: GoalStatus;
   turns: number;
   readonly created_at: string;
@@ -124,7 +123,6 @@ export type GoalWorkflowOutputs = {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
-  readonly original_objective?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;
