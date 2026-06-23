@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.2 release with MCP extension peer dependencies aligned to upstream pi AI/TUI `^0.79.10`; no MCP extension source changes were needed for this metadata sync.
+
 ## [0.9.2-alpha.1] - 2026-06-23
 
 ### Changed
