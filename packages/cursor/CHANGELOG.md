@@ -4,13 +4,30 @@
 
 ### Added
 
-- Added experimental Cursor user-image transport, requiring a serialization-level internal guard and strict base64/data URL validation before encoding final user-message images into Cursor's local private protobuf `selectedImages[].data` path while keeping Cursor model metadata text-only. Image input is enabled by default without a user-facing flag, supports multiple current-message images, and tolerates historical user image blocks by serializing history as text-only. Tool-result images remain rejected with provider fallback guidance.
+- Added default-enabled experimental Cursor current user-message image input through Atomic's private `selectedImages[].data` protobuf path, including strict serialization validation, multiple current-turn images, text-only history handling for later turns, and continued rejection of unsupported tool-result images.
 
 ### Fixed
 
-- Refreshed Cursor's estimated fallback model catalog against live discovery: removed stale or gated options that fail live smoke tests (`composer-1.5`, `composer-2`, `composer-2-fast`, `gpt-5.3-codex-spark-preview`, `grok-4-20`, and gated Fable/fast Opus variants), added live-verified newer options such as `claude-opus-4-7-*`, `claude-opus-4-8-*`, `gemini-3.5-flash`, `gpt-5.5-*`, `grok-4.3`, and `grok-build-0.1`, and updated the Cursor default to `composer-2.5`.
-- Corrected Cursor native-transport failure guidance for local development to use `bun run --cwd packages/natives build`, matching Bun's script invocation semantics.
-- Allowed multi-turn Cursor image conversations by tolerating historical user image blocks in chat history while serializing only current user-message images through Cursor's `selectedImages[]` transport.
+- Refreshed Cursor's estimated model catalog and defaults around live Composer 2.5-era model ids, and documented local native-transport build guidance for source checkouts.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the Cursor provider package; no functional Cursor provider changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the Cursor provider package; no functional Cursor provider changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release for the Cursor provider package; no functional Cursor provider changes were made after the 0.9.0 prerelease line.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
 
 ## [0.9.0-alpha.2] - 2026-06-21
 

@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the web-access extension peer dependency with upstream pi TUI `^0.79.10`; no web-access extension source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the web-access extension; no functional web-access changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the web-access extension; no functional web-access changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release with the web-access extension peer dependency aligned through upstream pi TUI `^0.79.9`, so curator, summary review, and rendered Markdown surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during streaming.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+- No web-access extension source changes were needed after the 0.9.0 prerelease line.
+
 ## [0.9.0-alpha.2] - 2026-06-21
 
 ### Changed

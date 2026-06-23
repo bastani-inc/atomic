@@ -2,23 +2,84 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
+- Raised the published Node.js engine floor to `>=22.19.0` to match direct runtime dependency requirements, including `undici@8.5.0`.
+
+### Fixed
+
+- Fixed prompt image attachment merging so CLI `@image` file arguments that already carry structured images are not re-attached from their generated `<file>` marker.
+- Fixed extension-origin queued user messages during streaming so fire-and-forget `sendUserMessage()` calls without input handlers queue synchronously instead of being dropped behind async image-reference resolution.
+- Fixed custom-session-dir fork creation to reject an explicit `--session-id` that already exists anywhere in that custom session directory before auth/model validation.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Changed the bundled `goal`/`ralph` workflow prompt-refinement stage to use a workflow-neutral, model-only rubric prompt that returns only the refined objective instead of invoking the `prompt-engineer` skill directly.
+
+### Fixed
+
+- Fixed the bundled `ralph` workflow reviewer-c model configuration to use Gemini 3.1 Pro as the third reviewer with Gemini 3.1 provider fallbacks, removing Gemini 3.5 Flash from that slot's fallback chain ([#1484](https://github.com/bastani-inc/atomic/issues/1484)).
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Changed the bundled `goal`/`ralph` workflow prompt-refinement stage to use a workflow-neutral, model-only rubric prompt that returns only the refined objective instead of invoking the `prompt-engineer` skill directly.
+
+### Fixed
+
+- Fixed the bundled `ralph` workflow reviewer-c model configuration to use Gemini 3.1 Pro as the third reviewer with Gemini 3.1 provider fallbacks, removing Gemini 3.5 Flash from that slot's fallback chain ([#1484](https://github.com/bastani-inc/atomic/issues/1484)).
+
+## [0.9.0] - 2026-06-22
+
+### Breaking Changes
+
+- Changed the bundled `open-claude-design` workflow input contract by removing `reference`, `output_type`, and `design_system`; discovery now gathers output type, design-system context, and references during the run.
+- Removed the Atomic-specific `bashPolicy` command allow/deny API from the SDK/session surface and built-in `bash` tool; use `tools`/`excludedTools`/`noTools`, custom tools, or an external sandbox for command scoping.
+
+### Added
+
+- Added configurable context-window selection for models with multiple context tiers, including GitHub Copilot live-catalog support, CLI/settings/RPC controls, SDK helpers and exported types, per-session persistence, model picker UI, and long-context workflow model tokens.
+- Added upstream Pi 0.79.7/0.79.9 capabilities including automatic light/dark themes, chat-template thinking compatibility for custom OpenAI-compatible providers, expanded SDK exports, updated model/provider metadata, and Markdown streaming stability.
+- Replaced browser automation with the bundled `playwright-cli` skill/command and added the `effective-liteparse` document-extraction skill for local PDF/DOCX/PPTX/XLSX/image extraction.
+- Added the builtin `goal` workflow's safe-by-default `create_pr` toggle and final PR/MR/review handoff stage.
+- Restructured the builtin `open-claude-design` workflow around `impeccable` discovery/init, design-system/reference gathering, forked generation plus user-feedback loops, and a minimal export/display phase.
+
+### Changed
+
+- Aligned Atomic's bundled upstream Pi runtime packages through `^0.79.9`, carrying provider catalog updates, GitHub Copilot model filtering, GLM-5.2 metadata, Mistral prompt-cache accounting, OpenRouter Fusion, and shared TUI/runtime fixes.
+- Changed GitHub Copilot context-window handling to derive tiers from the live CAPI model catalog, display full long-context windows while tracking effective prompt budgets internally, seed cached tiers at startup, and keep per-model persisted selections isolated.
+- Synced the Atomic CLI with upstream behavior such as self-only `atomic update` by default, improved model search/autocomplete, generated model catalog updates, theme mode support, and extension documentation/API clarifications.
+- Updated bundled workflows, subagents, docs, and verification guidance to use `playwright-cli` instead of the removed `browser` skill / `browse` CLI.
+- Changed repository validation to include the monorepo-wide Bun/prek/CI file-length gate for tracked TS/JS/Rust files with only documented generated/vendored exclusions.
+- Switched the repository to versionless `main`: package manifests stay at `0.0.0`, release notes land as CHANGELOG-only PRs, and real versions are stamped only on off-main tag commits via `scripts/cut-release.ts`.
+
+### Fixed
+
+- Fixed GitHub Copilot Gemini request/stream failures by sanitizing Gemini-incompatible tool schemas, reconstructing flattened and dotted tool arguments for execution and replay, preserving Gemini thought signatures through `reasoning_opaque`, retrying degenerate empty/error completions appropriately, and hardening reconstruction against prototype pollution.
+- Fixed context-window startup, session-switch, settings, RPC, picker, SDK, and GitHub Copilot restart edge cases so selected windows are validated and persisted consistently without leaking unsupported defaults across providers.
+- Fixed credential-store load failures and concurrent session creation by surfacing real auth-store read errors, avoiding throwaway `AuthStorage` instances when a registry is supplied, and making credential reads lock-free while retaining atomic locked writes.
+- Fixed workflow and extension resource/session behavior, including default session-dir visibility for extensions, same-directory resource reload reuse, workflow stage inheritance from non-default session dirs, and custom resource snapshots for `atomic -e` workflows.
+- Fixed model and runtime polish including RPC unknown-command ids, `/model` query ranking, WSL bash stdin execution, fuzzy `edit` patch generation, overflow compaction after oversized successful responses, source-CLI Bun subprocess tests, and stale update banners on `0.0.0` dev builds.
+- Fixed release and workflow reliability issues including the `publish-release` Publish-run verifier, `open-claude-design` feedback threading/artifact safety/browser handling, and successful overflow-sized assistant response compaction.
+
+## [0.9.0-alpha.4] - 2026-06-22
+
 ### Breaking Changes
 
 - Changed the bundled builtin `open-claude-design` workflow's inputs: removed `reference`, `output_type`, and `design_system` in favor of a new `discovery` interview stage that asks for the output type and references. Inputs are now `prompt`, `discover_references`, and `max_refinements`. Drop those removed arguments from existing invocations and let discovery ask (or describe them in `prompt`).
 
 ### Added
 
-- Restructured the bundled builtin `open-claude-design` workflow around the accessible `impeccable` skill. It now opens with a `discovery` stage (`/skill:impeccable shape`) that interviews you for a confirmed brief, the output type, and the references to emulate (references take precedence over `DESIGN.md`/`PRODUCT.md`); then **always** runs an `init` stage (`/skill:impeccable init`) that creates `PRODUCT.md`/`DESIGN.md` when missing and reconciles existing files against the brief (reusing the discovery answers); then a **single combined context phase** that concurrently runs design-system onboarding, the gated gallery `reference-discovery` pass (Awwwards, recent.design, Dribbble, Monet, Motionsites via `playwright-cli` — clicking into standout work to record a scroll-through video of each real design page so animations are captured, with a full-page screenshot fallback plus the real URLs, with a web-search fallback), and per-reference import before synthesizing the design system; then generation and impeccable `live`-driven in-browser refinement (`preview-display-*` drive `/skill:impeccable live`, capturing accepted variants and notes; degrades to `playwright-cli show --annotate`). A `discover_references` input (default `true`) gates the gallery pass. Updated the bundled workflow docs to describe the discovery interview, the trimmed input set, the always-run init, the combined context phase, references precedence, and live QA.
+- Restructured the bundled builtin `open-claude-design` workflow around the accessible `impeccable` skill. It now opens with one combined `discovery` stage that runs `/skill:impeccable shape` and `/skill:impeccable init` so PRODUCT.md/DESIGN.md are detected, created, or reconciled without a separate init stage, gathers context with `ds-locator` / `ds-analyzer` / `ds-patterns` (which directly capture/parse user-provided URL/file references), then runs optional gallery `reference-discovery` using that ds-* context and asks which curated direction the user prefers (or asks for a reference image/screenshot/URL/path if none fit), then runs a forked `generate-*` / `user-feedback-*` loop. `generate-1` is the first loop iteration, later generate stages fork from the previous generate session, and user-feedback stages fork from the previous feedback session while driving `/skill:impeccable live`. Export is now deliberately only `exporter` plus `final-display`; the separate `web-capture-*`, `file-parser-*`, `design-system-builder`, `pre-export-scan`, and `forced-fix` stages were removed. Updated the bundled workflow docs to describe the trimmed input set, combined discovery/init stage, context/reference phase, reference precedence, forked generate/user-feedback loop, and minimal export phase.
+- Added the bundled builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage. Goal now mirrors Ralph's PR handoff behavior: omitted or `false` skips PR/MR/review creation and omits `pr_report`, while strict `create_pr=true` authorizes only the final stage after reviewer quorum plus reducer approval to inspect the goal ledger, worker receipts, reviewer artifacts, final report, repository state, and provider credentials before attempting a provider-appropriate PR/MR/review request. Intermediate Goal worker/reviewer prompts now tell stages to ignore PR-creation requests so PR handoff stays confined to the final stage. Updated the bundled workflow docs, quickstart, README, and `/atomic` guide copy to describe the opt-in behavior.
 
 ### Fixed
 
-- Refreshed Cursor estimated model options against live smoke tests: removed stale or gated choices such as `composer-1.5`, `composer-2`, `composer-2-fast`, `gpt-5.3-codex-spark-preview`, `grok-4-20`, and gated Fable/fast Opus variants; added live-verified newer choices including `claude-opus-4-7-*`, `claude-opus-4-8-*`, `gemini-3.5-flash`, `gpt-5.5-*`, `grok-4.3`, and `grok-build-0.1`; and updated Cursor's default/example model to `composer-2.5`.
-
-- Fixed and hardened Cursor/current-turn image prompts for unescaped and shell-escaped macOS screenshot paths, `file://` drag/drop URLs, and pasted `<file name="...png"></file>` markers: prompt image resolution now keeps narrow no-break spaces in candidates, falls back from POSIX-escaped paths to real filesystem paths, uses filesystem-backed image-extension candidates for paths with spaces, and re-attaches pasted file-marker images before the model can fall back to unsupported `read` tool-result image handling.
-
-- Hardened the bundled builtin `open-claude-design` refinement/export flow: the export gate no longer drops feedback (an immediate export approval is refused while the latest preview has unaddressed annotations), the final refinement iteration and post-export `final-display` are read-only (they no longer solicit changes they cannot apply and point you at re-running), the apply guardrail now also covers accepted `live_changes`, snapshot artifact copies are constrained to the project/artifact dir, and the browser-centric workflow now exits cleanly up front when the `playwright-cli` browser is unavailable instead of generating a design you could not review (skipped under the test harness).
-
-- Added the bundled builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage. Goal now mirrors Ralph's PR handoff behavior: omitted or `false` skips PR/MR/review creation and omits `pr_report`, while strict `create_pr=true` authorizes only the final stage after reviewer quorum plus reducer approval to inspect the goal ledger, worker receipts, reviewer artifacts, final report, repository state, and provider credentials before attempting a provider-appropriate PR/MR/review request. Intermediate Goal worker/reviewer prompts now tell stages to ignore PR-creation requests so PR handoff stays confined to the final stage. Updated the bundled workflow docs, quickstart, README, and `/atomic` guide copy to describe the opt-in behavior.
+- Fixed the bundled builtin `open-claude-design` feedback path so live annotations from `user-feedback-*` are parsed, persisted, and required to thread into the next `generate-*` prompt before another revision runs. Also kept final display read-only, constrained annotation snapshot artifact copies to the project/artifact dir, and preserved the browser-centric clean early exit when `playwright-cli` is unavailable (skipped under the test harness).
 
 ## [0.9.0-alpha.3] - 2026-06-21
 
@@ -73,8 +134,6 @@
 
 ### Fixed
 
-- Fixed inline image prompts such as `@screenshot.png what is this?` and pasted absolute image paths such as `/tmp/atomic-clipboard-....png` so local image references are attached to the current user message before the model can fall back to the `read` tool, made the `read` tool omit image blocks for Cursor/text-only models instead of returning unsupported tool-result images, and enabled Cursor current user-message image input by default without a user-facing flag.
-- Fixed Cursor native-transport local-development guidance to point at `bun run --cwd packages/natives build`, and documented that source checkouts need a local `@bastani/atomic-natives` platform artifact before Cursor prompts can use the native HTTP/2 transport.
 - Exposed `SessionManager.usesDefaultSessionDir()` through the read-only extension session-manager surface so bundled extensions can distinguish default global session storage from non-default `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or settings-backed session directories without path guessing ([#1444](https://github.com/bastani-inc/atomic/issues/1444)).
 - Fixed `github-copilot/*` Gemini models (for example `github-copilot/gemini-3.1-pro-preview` and `github-copilot/gemini-3.5-flash`) failing **every** chat turn with `Error: 400 invalid request body`. These models are served through GitHub's Copilot API (CAPI), which translates the OpenAI chat-completions request into a Google GenAI `GenerateContent` request and forwards tool/function JSON Schema `anyOf`/`oneOf` verbatim into Gemini's `FunctionDeclaration` schema. Gemini rejects a union whose branch is a complex **object** schema, so Google returned HTTP 400 and CAPI relabelled it `{"error":{"code":"invalid_request_body"}}`. Because Atomic's bundled `workflow` tool — and any tool using the TypeBox `Type.Union([Type.Object(...), Type.String()])` pattern for fields such as `task`, `chain`, and `parallel` — is present in normal chat turns, the request failed before the model ever ran (it was previously masked only when a fallback model existed). Atomic now sanitizes outbound tool JSON Schemas for GitHub Copilot Gemini models into the subset CAPI/Gemini honors: it resolves object/array-bearing `anyOf`/`oneOf` to their most expressive branch, converts `const`/literal unions to `enum`, collapses nullable unions to `nullable`, prunes `required` to existing properties, and drops non-portable keywords (`additionalProperties`, `patternProperties`, `$schema`, `format`, `pattern`, numeric/length bounds, `default`, `title`, etc.). The transform is gated to `github-copilot` Gemini `openai-completions` models and runs last in the provider-payload pipeline (so it also covers extension/SDK-injected tools), leaving every other provider/model payload unchanged.
 - Fixed `github-copilot/*` Gemini models getting stuck in an infinite tool-call retry loop (most visibly on the workflow `structured_output` tool). Capturing the raw CAPI stream confirmed that Gemini serializes array/object function-call arguments as **flattened indexed keys** on the wire — for example `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }` — so schema validation failed (`keywords: must have required properties keywords` and `root: must not have additional properties`) and the model re-emitted the same shape forever. Atomic now reconstructs flattened tool-call arguments (`name[i]`, `name[i].sub`, `parent.child`) back into proper arrays/objects in each tool's `prepareArguments` step, before validation runs. Gated to GitHub Copilot Gemini models at call time and a no-op for well-formed arguments, so it covers built-in, extension, SDK, and MCP tools without affecting any other provider/model.

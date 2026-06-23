@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.10`; no MCP extension source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the MCP extension; no functional MCP changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Fixed
+
+- Fixed MCP tool calls under GitHub Copilot Gemini models by normalizing flattened array/object and dotted arguments at the `callTool` boundary before they reach direct-tool or proxy/gateway MCP servers.
+- Hardened flattened tool-argument reconstruction against prototype pollution by dropping any reconstructed key path that walks through `__proto__`, `constructor`, or `prototype`, using the canonical host implementation shared with `@bastani/atomic`.
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release with MCP peer dependencies aligned through upstream pi AI/TUI `^0.79.9`, so MCP-backed sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming stability, and shared provider/TUI fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
 ## [0.9.0-alpha.2] - 2026-06-21
 
 ### Changed

@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.10` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the subagents extension; no functional subagents changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the subagents extension; no functional subagents changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Added
+
+- Added the `playwright-cli` builtin skill for browser automation, end-to-end UI checks, screenshots, reviewable video recording, and Playwright test workflows.
+- Added the `effective-liteparse` builtin skill for fast, local, model-free text/table/value extraction from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI.
+
+### Changed
+
+- Changed the `debugger` and `codebase-online-researcher` subagents to load `playwright-cli` and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
+- Published the stable Atomic 0.9.0 release with subagents peer dependencies aligned through upstream pi `^0.79.9` runtime packages, so child sessions inherit provider catalog, RPC id handling, model search, theme/color-scheme, Warp image capability, Markdown streaming stability, and shared agent/TUI fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
+### Removed
+
+- Removed the bundled `browser` skill and remaining references to its `browse` CLI in favor of `playwright-cli`.
+
 ## [0.9.0-alpha.2] - 2026-06-21
 
 ### Changed
