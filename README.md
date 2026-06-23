@@ -1,4 +1,4 @@
-<h1 align="center">Atomic — The Loop Engine For All (∀) Engineering Work</h1>
+<h1 align="center">Atomic — The Reliable Loop Engine For All (∀) Engineering Work</h1>
 
 <p align="center"><img width="800" height="450" alt="atomic-promo" src="./assets/atomic-promo.gif" /></p>
 
