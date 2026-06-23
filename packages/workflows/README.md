@@ -678,7 +678,7 @@ Child workflow outputs: `result`, `status`, `approved`, `goal_id`, `objective`, 
 
 ### `ralph`
 
-Prompt-engineering → research → orchestrate → review workflow with optional final-stage PR handoff: transform the user prompt into a codebase and online research question with `/skill:prompt-engineer`, run `/skill:research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers, and iterate until approval or the loop limit. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video, references it in the implementation notes, and exposes it as the `qa_video_path` output; when `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
+Prompt-refinement → prompt-engineering research → orchestrate → review workflow with optional final-stage PR handoff: first sharpen the raw prompt into a clearer objective, then transform it into a codebase and online research question with `/skill:prompt-engineer`, run `/skill:research-codebase` against it, write findings under `research/`, delegate implementation through sub-agents from that research, run parallel reviewers across Claude Fable 5, GPT-5.5 Codex, and Gemini 3.1 Pro model families, and iterate until approval or the loop limit. Ralph's orchestrator and reviewers are prompted to verify user-visible behavior end-to-end when practical with `playwright-cli`-skilled subagents for web/frontend flows that may depend on backend/API behavior and tmux-skilled subagents for TUI or terminal-app scenarios. For UI-applicable or full-stack changes, the orchestrator runs a `playwright-cli` end-to-end QA pass and records a reviewable proof video, references it in the implementation notes, and exposes it as the `qa_video_path` output; when `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review. Follow-up iterations pass unresolved review artifacts into prompt-engineering/research and fork research from prior research session data when available. Ralph skips PR creation by default; prompt text alone does not opt in. Pass `create_pr=true` to authorize only the final `pull-request` stage to inspect provider credentials and attempt provider-appropriate PR/MR/review creation (for example GitHub `gh`, Azure Repos `az repos pr create`, or Sapling/Phabricator tooling). Ralph's own PR-creation instructions live in that final stage. Reviewers inspect repository infrastructure directly as needed; Ralph no longer runs separate `infra-*` discovery stages.
 
 ```text
 /workflow ralph prompt="Migrate the database layer to Drizzle ORM" max_loops=3 base_branch=develop
@@ -697,19 +697,17 @@ Child workflow outputs: `result`, `plan` (latest transformed research question),
 
 ### `open-claude-design`
 
-Design-system onboarding → reference import → generation → refinement → export/handoff pipeline.
+Combined discovery/init → design-system/reference research → curated reference discovery with user preference check → forked generate/user-feedback loop → export/handoff pipeline. The `discovery` stage asks for output type and references, then runs impeccable init in the same stage so PRODUCT.md/DESIGN.md are detected, created, or reconciled. `ds-*` stages handle user-provided URL/file reference extraction directly, then `reference-discovery` uses that context and asks which curated direction you prefer (or asks for a reference image/path/URL if none fit). Export is only `exporter` plus `final-display`.
 
 ```text
-/workflow open-claude-design prompt="Design a kanban board" output_type=prototype
+/workflow open-claude-design prompt="Design a kanban board component"
 ```
 
-| Input             | Type     | Required | Default     | Description                                                          |
-| ----------------- | -------- | -------- | ----------- | -------------------------------------------------------------------- |
-| `prompt`          | `text`   | ✓        | —           | Design brief or description.                                         |
-| `reference`       | `text`   | —        | —           | Optional URL, path, screenshot, or design doc.                       |
-| `output_type`     | `select` | —        | `prototype` | `prototype`, `wireframe`, `page`, `component`, `theme`, or `tokens`. |
-| `design_system`   | `text`   | —        | —           | Existing design-system reference / Design.md path.                   |
-| `max_refinements` | `number` | —        | `3`         | Maximum critique/apply refinement iterations.                        |
+| Input                 | Type      | Required | Default | Description                                                                 |
+| --------------------- | --------- | -------- | ------- | --------------------------------------------------------------------------- |
+| `prompt`              | `text`    | ✓        | —       | Design brief or description.                                                |
+| `discover_references` | `boolean` | —        | `true`  | Discover current gallery references with browser tooling; set false to skip. |
+| `max_refinements`     | `number`  | —        | `3`     | Maximum generate/user-feedback loop iterations.                              |
 
 Child workflow outputs: `output_type`, `design_system`, `artifact`, `handoff`, `approved_for_export`, `refinements_completed`, `import_context`, `run_id`, `artifact_dir`, `preview_path`, `preview_file_url`, `spec_path`, `spec_file_url`, and `playwright_cli_status`. `open-claude-design` has no `result` output; it exposes only the declared fields listed here.
 

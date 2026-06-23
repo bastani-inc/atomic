@@ -82,6 +82,7 @@ import type {
   GoalWorkflowRunInputs,
   GoalWorkflowStatus,
   OpenClaudeDesignWorkflowOutputs,
+  OpenClaudeDesignWorkflowRunInputs,
   RalphWorkflowOutputs,
   RalphWorkflowRunInputs,
 } from "@bastani/workflows/builtin";
@@ -337,29 +338,27 @@ run(authoredWorkflow, {});
 run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } });
 run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
 run(goal, { objective: "x" }); run(goal, { objective: "x", create_pr: true });
-run(goalDefault, { objective: "x", create_pr: false });
-run(ralph, { prompt: "x" });
-run(ralph, { prompt: "x", create_pr: true });
-run(ralphDefault, { prompt: "x", create_pr: false });
-run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
-run(openClaudeDesignDefault, { prompt: "x", output_type: "tokens" });
+run(goalDefault, { objective: "x", create_pr: false }); run(ralph, { prompt: "x" });
+run(ralph, { prompt: "x", create_pr: true }); run(ralphDefault, { prompt: "x", create_pr: false });
+run(openClaudeDesign, { prompt: "x", discover_references: false }); run(openClaudeDesignDefault, { prompt: "x", max_refinements: 1 });
 run(goal, { objective: "x" }).then((runResult) => {
   const status: GoalWorkflowStatus | undefined = runResult.result?.status;
   const firstReceiptPath: string | undefined = runResult.result?.receipts?.[0]?.artifact_path;
-  void status;
-  void firstReceiptPath;
+  void status; void firstReceiptPath;
 });
 const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: true, receipts: [{ turn: 1, stage: "worker", artifact_path: "worker.md", summary: "done" }] };
 const typedDesignOutputs: OpenClaudeDesignWorkflowOutputs = { approved_for_export: true, preview_path: "preview.html", refinements_completed: 1 };
 const typedDeepResearchOutputs: DeepResearchCodebaseWorkflowOutputs = { partitions: ["core"], explorer_count: 1, research_doc_path: "research.md" };
 const typedRalphOutputs: RalphWorkflowOutputs = { approved: true, iterations_completed: 1, research_path: "research.md" };
 const typedGoalRunInputs: GoalWorkflowRunInputs = { objective: "x", create_pr: true };
-const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true };
-void typedGoalOutputs; void typedGoalRunInputs; void typedDesignOutputs; void typedDeepResearchOutputs; void typedRalphOutputs; void typedRalphRunInputs;
+const typedRalphRunInputs: RalphWorkflowRunInputs = { prompt: "x", create_pr: true }; const typedDesignRunInputs: OpenClaudeDesignWorkflowRunInputs = { prompt: "x", discover_references: true, max_refinements: 2 };
+void typedGoalOutputs; void typedGoalRunInputs; void typedDesignOutputs; void typedDesignRunInputs; void typedDeepResearchOutputs; void typedRalphOutputs; void typedRalphRunInputs;
 // @ts-expect-error builtin goal status is a declared literal union.
 const invalidGoalOutputs: GoalWorkflowOutputs = { status: "done" };
-// @ts-expect-error builtin open-claude-design only accepts runtime-declared output_type values.
-run(openClaudeDesign, { prompt: "x", output_type: "flow" });
+// @ts-expect-error builtin open-claude-design discover_references must be boolean.
+run(openClaudeDesign, { prompt: "x", discover_references: "yes" });
+// @ts-expect-error builtin open-claude-design run input type has boolean discover_references.
+const invalidDesignRunInputs: OpenClaudeDesignWorkflowRunInputs = { prompt: "x", discover_references: "yes" };
 // @ts-expect-error builtin goal create_pr must be boolean.
 run(goal, { objective: "x", create_pr: "true" });
 // @ts-expect-error builtin ralph create_pr must be boolean.

@@ -298,7 +298,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             },
             {
                 task: (name) => {
-                    if (name === "reviewer-a" || name === "reviewer-b") {
+                    if (name === "reviewer-a" || name === "reviewer-b" || name === "reviewer-c") {
                         return JSON.stringify({
                             findings: [],
                             overall_correctness: "patch is correct",
@@ -318,6 +318,21 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
+        const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
+        assert.equal(
+            reviewerCOptions?.model,
+            "github-copilot/gemini-3.1-pro-preview (1m):high",
+        );
+        assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 2), [
+            "google/gemini-3.1-pro-preview:high",
+            "google-vertex/gemini-3.1-pro-preview:high",
+        ]);
+        assert.equal(
+            reviewerCOptions?.fallbackModels?.some((model) =>
+                model.includes("gemini-3.5-flash"),
+            ),
+            false,
+        );
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);

@@ -86,7 +86,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     if (!rawObjective) {
       throw new Error("goal requires an objective input.");
     }
-    const objective = await runPromptRefinementStage(ctx, { request: rawObjective, workflowLabel: "Goal", modelConfig: promptEngineerModelConfig });
+    const objective = await runPromptRefinementStage(ctx, { request: rawObjective, modelConfig: promptEngineerModelConfig });
 
     const maxTurns = positiveInteger(inputs.max_turns, DEFAULT_MAX_TURNS);
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
@@ -103,9 +103,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "anthropic/claude-opus-4-8:medium",
           "zai/glm-5.2:medium",
           "zai-coding-cn/glm-5.2:medium",
+          "github-copilot/gemini-3.1-pro-preview (1m):medium",
+          "google/gemini-3.1-pro-preview:medium",
+          "google-vertex/gemini-3.1-pro-preview:medium",
           "github-copilot/gemini-3.5-flash (1m):medium",
           "google/gemini-3.5-flash:medium",
-          "google-vertex/gemini-3.5-flash:medium"
+          "google-vertex/gemini-3.5-flash:medium",
       ],
       tools: goalRunnerTools,
     };
@@ -120,12 +123,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "anthropic/claude-opus-4-8:xhigh",
           "zai/glm-5.2:xhigh",
           "zai-coding-cn/glm-5.2:xhigh",
-          "github-copilot/gemini-3.5-flash (1m):high",
-          "google/gemini-3.5-flash:high",
-          "google-vertex/gemini-3.5-flash:high",
           "github-copilot/gemini-3.1-pro-preview (1m):high",
           "google/gemini-3.1-pro-preview:high",
           "google-vertex/gemini-3.1-pro-preview:high",
+          "github-copilot/gemini-3.5-flash (1m):high",
+          "google/gemini-3.5-flash:high",
+          "google-vertex/gemini-3.5-flash:high",
       ],
       tools: goalRunnerTools,
       schema: reviewDecisionSchema,
