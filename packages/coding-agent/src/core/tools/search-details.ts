@@ -1,6 +1,6 @@
-import type { GrepToolDetails } from "./grep.ts";
+import type { TruncationResult } from "./truncate.ts";
 
-export interface SearchToolDetails extends GrepToolDetails {
+export interface SearchToolDetails {
 	scopePath?: string;
 	searchPath?: string;
 	cwd?: string;
@@ -12,7 +12,10 @@ export interface SearchToolDetails extends GrepToolDetails {
 	displayContent?: string;
 	fileLimitReached?: boolean;
 	perFileLimitReached?: boolean;
-	meta?: { source?: string; truncation?: GrepToolDetails["truncation"]; limits?: { fileLimit?: number } };
+	truncation?: TruncationResult;
+	matchLimitReached?: number;
+	linesTruncated?: boolean;
+	meta?: { source?: string; truncation?: TruncationResult; limits?: { fileLimit?: number } };
 }
 
 export function buildSearchDetails(base: SearchToolDetails | undefined, text: string, cwd: string, scopePath: string, missingPaths: string[] = []): SearchToolDetails {

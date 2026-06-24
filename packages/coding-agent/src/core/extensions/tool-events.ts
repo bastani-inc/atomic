@@ -6,8 +6,6 @@ import type {
 	EditToolInput,
 	FindToolDetails,
 	FindToolInput,
-	GrepToolDetails,
-	GrepToolInput,
 	LsToolDetails,
 	LsToolInput,
 	ReadToolDetails,
@@ -44,11 +42,6 @@ export interface WriteToolCallEvent extends ToolCallEventBase {
 	input: WriteToolInput;
 }
 
-export interface GrepToolCallEvent extends ToolCallEventBase {
-	toolName: "grep";
-	input: GrepToolInput;
-}
-
 export interface FindToolCallEvent extends ToolCallEventBase {
 	toolName: "find";
 	input: FindToolInput;
@@ -75,7 +68,6 @@ export type ToolCallEvent =
 	| ReadToolCallEvent
 	| EditToolCallEvent
 	| WriteToolCallEvent
-	| GrepToolCallEvent
 	| FindToolCallEvent
 	| LsToolCallEvent
 	| CustomToolCallEvent;
@@ -108,11 +100,6 @@ export interface WriteToolResultEvent extends ToolResultEventBase {
 	details: undefined;
 }
 
-export interface GrepToolResultEvent extends ToolResultEventBase {
-	toolName: "grep";
-	details: GrepToolDetails | undefined;
-}
-
 export interface FindToolResultEvent extends ToolResultEventBase {
 	toolName: "find";
 	details: FindToolDetails | undefined;
@@ -134,7 +121,6 @@ export type ToolResultEvent =
 	| ReadToolResultEvent
 	| EditToolResultEvent
 	| WriteToolResultEvent
-	| GrepToolResultEvent
 	| FindToolResultEvent
 	| LsToolResultEvent
 	| CustomToolResultEvent;
@@ -151,9 +137,6 @@ export function isEditToolResult(e: ToolResultEvent): e is EditToolResultEvent {
 }
 export function isWriteToolResult(e: ToolResultEvent): e is WriteToolResultEvent {
 	return e.toolName === "write";
-}
-export function isGrepToolResult(e: ToolResultEvent): e is GrepToolResultEvent {
-	return e.toolName === "grep";
 }
 export function isFindToolResult(e: ToolResultEvent): e is FindToolResultEvent {
 	return e.toolName === "find";
@@ -186,7 +169,6 @@ export function isToolCallEventType(toolName: "bash", event: ToolCallEvent): eve
 export function isToolCallEventType(toolName: "read", event: ToolCallEvent): event is ReadToolCallEvent;
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
-export function isToolCallEventType(toolName: "grep", event: ToolCallEvent): event is GrepToolCallEvent;
 export function isToolCallEventType(toolName: "find", event: ToolCallEvent): event is FindToolCallEvent;
 export function isToolCallEventType(toolName: "ls", event: ToolCallEvent): event is LsToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(

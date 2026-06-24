@@ -34,7 +34,6 @@ export {
 	isBashToolResult,
 	isEditToolResult,
 	isFindToolResult,
-	isGrepToolResult,
 	isLsToolResult,
 	isReadToolResult,
 	isToolCallEventType,

@@ -27,14 +27,6 @@ export {
 	type FindToolOptions,
 } from "./find.ts";
 export {
-	createGrepTool,
-	createGrepToolDefinition,
-	type GrepOperations,
-	type GrepToolDetails,
-	type GrepToolInput,
-	type GrepToolOptions,
-} from "./grep.ts";
-export {
 	createSearchTool,
 	createSearchToolDefinition,
 	type SearchToolDetails,
@@ -96,7 +88,6 @@ import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashl
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
-import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
 import { createLsTool, createLsToolDefinition, type LsToolOptions } from "./ls.ts";
 import { createSearchTool, createSearchToolDefinition, type SearchToolOptions } from "./search.ts";
 import { createReadTool, createReadToolDefinition, type ReadToolOptions } from "./read.ts";
@@ -111,7 +102,6 @@ export type ToolName =
 	| "bash"
 	| "edit"
 	| "write"
-	| "grep"
 	| "find"
 	| "search"
 	| "ls"
@@ -122,7 +112,6 @@ export const allToolNames: Set<ToolName> = new Set([
 	"bash",
 	"edit",
 	"write",
-	"grep",
 	"find",
 	"search",
 	"ls",
@@ -146,7 +135,6 @@ export interface ToolsOptions {
 	bash?: BashToolOptions;
 	write?: WriteToolOptions;
 	edit?: EditToolOptions;
-	grep?: GrepToolOptions;
 	find?: FindToolOptions;
 	search?: SearchToolOptions;
 	ls?: LsToolOptions;
@@ -163,8 +151,6 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
 		case "write":
 			return createWriteToolDefinition(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
-		case "grep":
-			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
 		case "search":
@@ -190,8 +176,6 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createEditTool(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
 		case "write":
 			return createWriteTool(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
-		case "grep":
-			return createGrepTool(cwd, options?.grep);
 		case "find":
 			return createFindTool(cwd, options?.find);
 		case "search":
@@ -223,7 +207,6 @@ export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOption
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
 		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
-		createGrepToolDefinition(cwd, options?.grep),
 		createFindToolDefinition(cwd, options?.find),
 		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 		createLsToolDefinition(cwd, options?.ls),
@@ -237,7 +220,6 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		bash: createBashToolDefinition(cwd, { asyncEnabled: true, ...options?.bash }),
 		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
-		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		search: createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsToolDefinition(cwd, options?.ls),
@@ -262,7 +244,6 @@ export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[]
 	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
 		createReadTool(cwd, { ...options?.read, hashlineStore }),
-		createGrepTool(cwd, options?.grep),
 		createFindTool(cwd, options?.find),
 		createSearchTool(cwd, { ...options?.search, hashlineStore }),
 		createLsTool(cwd, options?.ls),
@@ -276,7 +257,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		bash: createBashTool(cwd, { asyncEnabled: true, ...options?.bash }),
 		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
 		write: createWriteTool(cwd, { ...options?.write, hashlineStore }),
-		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		search: createSearchTool(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsTool(cwd, options?.ls),

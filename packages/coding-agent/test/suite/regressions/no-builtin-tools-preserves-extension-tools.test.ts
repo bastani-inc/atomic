@@ -84,7 +84,6 @@ describe("noTools builtin mode keeps extension tools enabled", () => {
 			"dynamic_tool",
 			"edit",
 			"find",
-			"grep",
 			"ls",
 			"read",
 			"search",

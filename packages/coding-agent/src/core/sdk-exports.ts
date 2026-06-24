@@ -30,7 +30,6 @@ export {
   createBashTool,
   createEditTool,
   createWriteTool,
-  createGrepTool,
   createFindTool,
   createSearchTool,
   createLsTool,

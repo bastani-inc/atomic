@@ -83,8 +83,6 @@ export type {
 	GetThinkingLevelHandler,
 	HostCustomUiState,
 	HostCustomUiStateListener,
-	GrepToolCallEvent,
-	GrepToolResultEvent,
 	// Events - Input
 	InputEvent,
 	InputEventResult,
@@ -176,7 +174,6 @@ export {
 	isBashToolResult,
 	isEditToolResult,
 	isFindToolResult,
-	isGrepToolResult,
 	isLsToolResult,
 	isReadToolResult,
 	isToolCallEventType,
