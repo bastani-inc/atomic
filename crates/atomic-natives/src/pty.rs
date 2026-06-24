@@ -58,7 +58,7 @@ enum ReaderEvent {
 
 enum ControlMessage {
 	Input(String),
-	Resize { cols: u16, rows: u16 },
+	Resize(u16, u16),
 	Kill,
 }
 
@@ -67,21 +67,16 @@ struct PtySessionCore {
 }
 
 #[napi]
+#[derive(Default)]
 pub struct PtySession {
 	core: Arc<Mutex<Option<PtySessionCore>>>,
-}
-
-impl Default for PtySession {
-	fn default() -> Self {
-		Self::new()
-	}
 }
 
 #[napi]
 impl PtySession {
 	#[napi(constructor)]
 	pub fn new() -> Self {
-		Self { core: Arc::new(Mutex::new(None)) }
+		Self::default()
 	}
 
 	#[napi]
@@ -138,10 +133,7 @@ impl PtySession {
 
 	#[napi]
 	pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-		self.send_control(ControlMessage::Resize {
-			cols: cols.clamp(20, 400),
-			rows: rows.clamp(5, 200),
-		})
+		self.send_control(ControlMessage::Resize(cols.clamp(20, 400), rows.clamp(5, 200)))
 	}
 
 	#[napi]
@@ -175,44 +167,14 @@ fn run_pty_sync(
 		.map_err(|err| Error::from_reason(format!("Failed to spawn PTY command: {err}")))?;
 	drop(pair.slave);
 	let master = pair.master;
-	let mut writer = Some(
-		master
-			.take_writer()
-			.map_err(|err| Error::from_reason(format!("Failed to create PTY writer: {err}")))?,
-	);
-	#[cfg(windows)]
-	{
-		if let Some(writer) = writer.as_mut() {
-			let _ = writer.write_all(b"\x1b[1;1R");
-			let _ = writer.flush();
-		}
-	}
-	let stdin_transport = config.command_transport.as_deref() == Some("stdin");
-	if stdin_transport && let Some(writer_ref) = writer.as_mut() {
-		writer_ref
-			.write_all(config.command.as_bytes())
-			.map_err(|err| Error::from_reason(format!("Failed writing PTY stdin command: {err}")))?;
-		writer_ref
-			.write_all(if config.close_stdin_after_command { b"\n\x04" } else { b"\n" })
-			.map_err(|err| {
-				Error::from_reason(format!("Failed finalizing PTY stdin command: {err}"))
-			})?;
-		writer_ref
-			.flush()
-			.map_err(|err| Error::from_reason(format!("Failed flushing PTY stdin command: {err}")))?;
-	}
-	let mut reader = master
-		.try_clone_reader()
-		.map_err(|err| Error::from_reason(format!("Failed to create PTY reader: {err}")))?;
-	let (reader_tx, reader_rx) = mpsc::channel::<ReaderEvent>();
-	let reader_thread = std::thread::spawn(move || {
-		let _ = catch_unwind(AssertUnwindSafe(|| reader_loop(&mut reader, reader_tx)));
-	});
+	// Capture IDs before setup errors can return and leak a running child.
 	let child_pid = child.process_id().and_then(|value| i32::try_from(value).ok());
 	#[cfg(unix)]
 	let process_group_id = master.process_group_leader().filter(|pgid| *pgid > 0);
 	#[cfg(not(unix))]
 	let process_group_id: Option<i32> = None;
+	let (mut writer, reader_thread, reader_rx) =
+		prepare_pty_io(&mut child, &master, &config, child_pid, process_group_id)?;
 	let started = Instant::now();
 	let timeout = config
 		.timeout_ms
@@ -359,7 +321,7 @@ fn drain_control(
 				let _ = writer.write_all(data.as_bytes());
 				let _ = writer.flush();
 			},
-			Ok(ControlMessage::Resize { cols, rows }) => {
+			Ok(ControlMessage::Resize(cols, rows)) => {
 				let _ = master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
 			},
 			Ok(ControlMessage::Kill) => {
@@ -485,6 +447,47 @@ fn terminate_pty_processes(
 			libc::kill(-pgid, libc::SIGKILL);
 		}
 	}
+}
+type PtyIoHandles =
+	(Option<Box<dyn Write + Send>>, std::thread::JoinHandle<()>, mpsc::Receiver<ReaderEvent>);
+#[allow(clippy::borrowed_box, clippy::type_complexity)]
+fn prepare_pty_io(
+	child: &mut Box<dyn Child + Send + Sync>,
+	master: &Box<dyn portable_pty::MasterPty + Send>,
+	config: &PtyRunConfig,
+	child_pid: Option<i32>,
+	process_group_id: Option<i32>,
+) -> Result<PtyIoHandles> {
+	let mut abort_err = |reason: &str, msg: String| {
+		terminate_pty_processes(child, child_pid, process_group_id);
+		Error::from_reason(format!("{reason}: {msg}"))
+	};
+	let writer = master.take_writer();
+	let mut writer =
+		Some(writer.map_err(|err| abort_err("Failed to create PTY writer", format!("{err}")))?);
+	#[cfg(windows)]
+	if let Some(w) = writer.as_mut() {
+		let _ = w.write_all(b"\x1b[1;1R");
+		let _ = w.flush();
+	}
+	if config.command_transport.as_deref() == Some("stdin")
+		&& let Some(w) = writer.as_mut()
+	{
+		w.write_all(config.command.as_bytes())
+			.map_err(|err| abort_err("Failed writing PTY stdin command", format!("{err}")))?;
+		let terminator: &[u8] = if config.close_stdin_after_command { b"\n\x04" } else { b"\n" };
+		w.write_all(terminator)
+			.map_err(|err| abort_err("Failed finalizing PTY stdin command", format!("{err}")))?;
+		w.flush().map_err(|err| abort_err("Failed flushing PTY stdin command", format!("{err}")))?;
+	}
+	let reader = master.try_clone_reader();
+	let mut reader =
+		reader.map_err(|err| abort_err("Failed to create PTY reader", format!("{err}")))?;
+	let (reader_tx, reader_rx) = mpsc::channel::<ReaderEvent>();
+	let reader_thread = std::thread::spawn(move || {
+		let _ = catch_unwind(AssertUnwindSafe(|| reader_loop(&mut reader, reader_tx)));
+	});
+	Ok((writer, reader_thread, reader_rx))
 }
 
 fn emit_chunk(text: &str, callback: Option<&ThreadsafeFunction<String>>) {
