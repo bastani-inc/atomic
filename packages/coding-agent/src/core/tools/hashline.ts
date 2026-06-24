@@ -75,8 +75,30 @@ export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolu
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;
+	// Trailing tool chrome a model is likely to copy along with the hashline
+	// body: the read/search continuation footers, the write tool's own
+	// `Successfully wrote N bytes to <path>` confirmation (and its stripped-
+	// note), and `Resolved …` conflict footers. These never carry a line
+	// number, so they mark the end of the numbered body — they must not abort
+	// stripping the way an arbitrary non-row line would.
+	const isToolFooter = (line: string): boolean =>
+		line.trim() === ""
+		|| /^\[\d+ more lines in file\./.test(line)
+		|| /^\[Showing lines /.test(line)
+		|| /^Successfully wrote \d+ bytes to /.test(line)
+		|| /^Resolved \d+ conflicts?/.test(line)
+		|| /^Resolved conflict \d+/.test(line)
+		|| /^Note: stripped copied hashline/.test(line)
+		|| /^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line);
+	let onlyFooter = true;
 	for (const line of body) {
-		if (line.trim() === "" || /^\[\d+ more lines in file\./.test(line) || /^\[Showing lines /.test(line)) continue;
+		if (isToolFooter(line)) {
+			// A footer after the numbered body ends the body; a footer before any
+			// row (leading blanks / a copied snapshot header) is just skipped.
+			if (sawRow) break;
+			continue;
+		}
+		onlyFooter = false;
 		const match = line.match(/^[* ]?(\d+):(.*)$/s);
 		if (!match) return { content, stripped: false };
 		sawRow = true;
@@ -85,7 +107,12 @@ export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolu
 		if (snapshotLines[lineNumber - 1] !== strippedLine) return { content, stripped: false };
 		stripped.push(strippedLine);
 	}
-	return sawRow ? { content: stripped.join("\n"), stripped: true } : { content, stripped: false };
+	if (sawRow) return { content: stripped.join("\n"), stripped: true };
+	// Header + only tool chrome (e.g. a copied write confirmation
+	// `Successfully wrote N bytes to <path>`) names a known snapshot with no
+	// numbered body to recover — resolve to the snapshot's stored content.
+	if (onlyFooter) return { content: snapshot.content, stripped: true };
+	return { content, stripped: false };
 }
 
 export function stripKnownHashlineCopiedContent(content: string, absolutePath: string, cwd: string, store: HashlineSnapshotStore): string {
