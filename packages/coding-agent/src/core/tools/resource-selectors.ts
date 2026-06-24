@@ -13,7 +13,7 @@ export interface InternalResourceRouter {
 }
 export interface InternalResourceContext { internalRouter?: InternalResourceRouter; internalResourceRouter?: InternalResourceRouter; resolveInternalUrl?: (url: string) => string | undefined | Promise<string | undefined> }
 type SqliteValue = string | number | boolean | null;
-interface SqliteQuery { all(...params: SqliteValue[]): Record<string, SqliteValue>[]; run(...params: SqliteValue[]): { changes?: number; lastInsertRowid?: number | bigint } }
+interface SqliteQuery { all(...params: SqliteValue[]): Record<string, SqliteValue>[]; get?(...params: SqliteValue[]): Record<string, SqliteValue> | undefined; iterate?(): Iterable<Record<string, SqliteValue>>; run(...params: SqliteValue[]): { changes?: number; lastInsertRowid?: number | bigint } }
 interface SqliteDatabase { query(sql: string): SqliteQuery; close(): void }
 type SqliteDatabaseConstructor = new (path: string, options?: { readonly?: boolean }) => SqliteDatabase;
 function sqliteDatabase(): SqliteDatabaseConstructor {
@@ -266,6 +266,9 @@ export async function expandShellInternalUrls(text: string, cwd: string, context
 	return output;
 }
 
+const ROW_COUNT_PROBE_CAP = 50_000;
+const MAX_RAW_QUERY_ROWS = 1000;
+
 function quoteSqliteIdent(value: string): string { return `"${value.replace(/"/g, '""')}"`; }
 function formatSqliteOrder(order: string | undefined): string {
 	if (!order) return "";
@@ -276,17 +279,26 @@ function formatSqliteOrder(order: string | undefined): string {
 		return `${quoteSqliteIdent(column)} ${dir}`;
 	}).join(", ");
 }
+const FORBIDDEN_WHERE_KEYWORDS = new Set(["limit", "offset", "union", "intersect", "except", "attach", "detach", "pragma"]);
 function validateSqliteWhere(where: string | undefined): string | undefined {
-	if (!where) return undefined;
-	if (/[;]|--|\/\*|\*\//.test(where) || /\b(limit|offset|order|group|union|insert|update|delete|drop|alter|create|attach|detach|reindex|vacuum|pragma)\b/i.test(where)) throw new Error("Invalid SQLite where filter");
-	return where;
+	const trimmed = where?.trim(); if (!trimmed) return undefined;
+	let quote = "", token = "";
+	const flush = () => { if (token && FORBIDDEN_WHERE_KEYWORDS.has(token.toLowerCase())) throw new Error("Invalid SQLite where filter"); token = ""; };
+	for (let i = 0; i <= trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote) { if (ch === quote && next === quote) { i++; continue; } if (ch === quote) quote = ""; continue; } if (ch === "'" || ch === '"') { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	return trimmed;
 }
 function rowsToJsonLines(rows: Record<string, SqliteValue>[]): string { return rows.map((row) => JSON.stringify(row)).join("\n"); }
 
-function validateRawSqliteQuery(query: string): string {
-	const trimmed = query.trim();
-	if (!trimmed) throw new Error("SQLite raw query must not be empty");
-	return trimmed;
+function validateRawSqliteQuery(query: string): string { const trimmed = query.trim(); if (!trimmed) throw new Error("SQLite raw query must not be empty"); return trimmed; }
+
+function readRawSqliteRows(query: SqliteQuery): Record<string, SqliteValue>[] { const rows: Record<string, SqliteValue>[] = []; const iterable = query.iterate?.(); if (!iterable) return query.all().slice(0, MAX_RAW_QUERY_ROWS); for (const row of iterable) { if (rows.length >= MAX_RAW_QUERY_ROWS) break; rows.push(row); } return rows; }
+
+function sqliteTableColumns(db: SqliteDatabase, table: string): string[] { return (db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string }>).map((row) => String(row.name ?? "")).filter(Boolean); }
+
+function boundedSqliteRowCount(db: SqliteDatabase, table: string): string | number { const row = db.query(`select count(*) as count from (select 1 from ${quoteSqliteIdent(table)} limit ${ROW_COUNT_PROBE_CAP + 1})`).all()[0]; const count = Number(row?.count ?? 0); return count > ROW_COUNT_PROBE_CAP ? `${ROW_COUNT_PROBE_CAP}+` : count; }
+function normalizeSqliteWriteValue(value: unknown, column: string): SqliteValue {
+	if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+	throw new Error(`SQLite column '${column}' only accepts JSON scalar values or null`);
 }
 
 function sqlitePrimaryKey(db: SqliteDatabase, table: string): string { return (db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string; pk?: number }>).find((row) => row.pk === 1)?.name ?? "rowid"; }
@@ -294,14 +306,10 @@ export function readSqliteSelector(selector: SqliteSelector): string {
 	const Database = sqliteDatabase();
 	const db = new Database(selector.databasePath, { readonly: true });
 	try {
-		if (selector.query) return rowsToJsonLines(db.query(validateRawSqliteQuery(selector.query)).all().slice(0, 1000));
+		if (selector.query) return rowsToJsonLines(readRawSqliteRows(db.query(validateRawSqliteQuery(selector.query))));
 		if (!selector.table) {
 			const tables = db.query("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name").all().slice(0, 500);
-			return tables.map((row) => {
-				const name = String(row.name ?? "");
-				const count = db.query(`select count(*) as count from ${quoteSqliteIdent(name)}`).all()[0]?.count ?? 0;
-				return JSON.stringify({ table: name, rows: count });
-			}).join("\n");
+			return tables.map((row) => { const name = String(row.name ?? ""); return JSON.stringify({ table: name, rows: boundedSqliteRowCount(db, name) }); }).join("\n");
 		}
 		const schemaRows = db.query(`pragma table_info(${quoteSqliteIdent(selector.table)})`).all();
 		if (selector.schema) return rowsToJsonLines(schemaRows);
@@ -331,11 +339,11 @@ function parseLooseJsonObject(content: string): Record<string, SqliteValue> {
 		parsed = JSON.parse(normalized);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("SQLite write content must be a JSON object.");
-	return parsed as Record<string, SqliteValue>;
+	return Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([column, value]) => [column, normalizeSqliteWriteValue(value, column)]));
 }
 export function writeSqliteSelector(selector: SqliteSelector, content: string): string {
 	if (!selector.table) throw new Error("SQLite write target must include a table name"); if (!existsSync(selector.databasePath)) throw new Error(`SQLite database does not exist: ${selector.databasePath}`); if (content.trim() === "") { if (!selector.rowId) throw new Error("SQLite empty content deletes a row only when a row id is present."); const Database = sqliteDatabase(); const db = new Database(selector.databasePath); try { const table = selector.table; const result = db.query(`delete from ${quoteSqliteIdent(table)} where ${quoteSqliteIdent(sqlitePrimaryKey(db, table))} = ?`).run(selector.rowId); return (result.changes ?? 0) > 0 ? `Deleted row '${selector.rowId}' in ${table}` : `No row deleted for '${selector.rowId}' in ${table}`; } finally { db.close(); } } const data = parseLooseJsonObject(content); const Database = sqliteDatabase(); const db = new Database(selector.databasePath);
-	try { const table = selector.table; const quotedTable = quoteSqliteIdent(table); const key = sqlitePrimaryKey(db, table); const quotedKey = quoteSqliteIdent(key); if (!selector.rowId && key !== "id" && Object.hasOwn(data, "id") && !Object.hasOwn(data, key)) { data[key] = data.id; delete data.id; } const columns = Object.keys(data); if (columns.length === 0) { if (!selector.rowId) { db.query(`insert into ${quotedTable} default values`).run(); return `Inserted row into ${table}`; } throw new Error("SQLite update content must include at least one column."); } if (!selector.rowId) { const quoted = columns.map(quoteSqliteIdent).join(", "); db.query(`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`).run(...columns.map((column) => data[column])); return `Inserted row into ${table}`; } const assignments = columns.map((column) => `${quoteSqliteIdent(column)} = ?`).join(", "); const result = db.query(`update ${quotedTable} set ${assignments} where ${quotedKey} = ?`).run(...columns.map((column) => data[column]), selector.rowId); return (result.changes ?? 0) > 0 ? `Updated row '${selector.rowId}' in ${table}` : `No row updated for '${selector.rowId}' in ${table}`; } finally { db.close(); }
+	try { const table = selector.table; const quotedTable = quoteSqliteIdent(table); const key = sqlitePrimaryKey(db, table); const quotedKey = quoteSqliteIdent(key); const validColumns = new Set(sqliteTableColumns(db, table)); if (!selector.rowId && key !== "id" && Object.hasOwn(data, "id") && !Object.hasOwn(data, key)) { data[key] = data.id; delete data.id; } const columns = Object.keys(data); for (const column of columns) if (!validColumns.has(column)) throw new Error(`SQLite table '${table}' has no column named '${column}'`); if (columns.length === 0) { if (!selector.rowId) { db.query(`insert into ${quotedTable} default values`).run(); return `Inserted row into ${table}`; } throw new Error("SQLite update content must include at least one column."); } if (!selector.rowId) { const quoted = columns.map(quoteSqliteIdent).join(", "); db.query(`insert into ${quotedTable} (${quoted}) values (${columns.map(() => "?").join(", ")})`).run(...columns.map((column) => data[column])); return `Inserted row into ${table}`; } const assignments = columns.map((column) => `${quoteSqliteIdent(column)} = ?`).join(", "); const result = db.query(`update ${quotedTable} set ${assignments} where ${quotedKey} = ?`).run(...columns.map((column) => data[column]), selector.rowId); return (result.changes ?? 0) > 0 ? `Updated row '${selector.rowId}' in ${table}` : `No row updated for '${selector.rowId}' in ${table}`; } finally { db.close(); }
 }
 export function searchSqliteSelector(selector: SqliteSelector, pattern: string, ignoreCase = false, contextBefore = 1, contextAfter = 3): string {
 	const normalized = normalizeSearchPattern(pattern, ignoreCase);

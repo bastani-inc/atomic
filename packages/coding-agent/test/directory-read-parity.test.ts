@@ -15,6 +15,10 @@ describe("directory read parity", () => {
 		const dir = await tempDir();
 		await mkdir(join(dir, "many"));
 		await writeFile(join(dir, "old.txt"), "old");
+		await mkdir(join(dir, ".git"));
+		await mkdir(join(dir, "node_modules"));
+		await writeFile(join(dir, ".git", "config"), "hidden");
+		await writeFile(join(dir, "node_modules", "pkg.js"), "hidden");
 		await writeFile(join(dir, "new.txt"), "new");
 		await utimes(join(dir, "old.txt"), new Date("2020-01-01T00:00:00Z"), new Date("2020-01-01T00:00:00Z"));
 		await utimes(join(dir, "new.txt"), new Date("2024-01-01T00:00:00Z"), new Date("2024-01-01T00:00:00Z"));
@@ -23,5 +27,7 @@ describe("directory read parity", () => {
 		expect(output.indexOf("new.txt")).toBeLessThan(output.indexOf("old.txt"));
 		expect(output).toContain("- many/");
 		expect(output).toContain("… 2 more");
+		expect(output).not.toContain(".git");
+		expect(output).not.toContain("node_modules");
 	});
 });

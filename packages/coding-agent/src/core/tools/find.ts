@@ -30,12 +30,7 @@ const MAX_LIMIT = 200;
 const DEFAULT_TIMEOUT_MS = 5000;
 const MIN_TIMEOUT_MS = 500;
 const MAX_TIMEOUT_MS = 60_000;
-interface FindTarget {
-	searchPath: string;
-	pattern: string;
-	exactPathInput: boolean;
-	inputPath: string;
-}
+interface FindTarget { searchPath: string; pattern: string; exactPathInput: boolean; inputPath: string }
 function normalizeLimit(limit: number | undefined): number { return limit === undefined || !Number.isFinite(limit) ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit))); }
 function normalizeTimeoutMs(timeout: number | undefined): number { return timeout === undefined || !Number.isFinite(timeout) ? DEFAULT_TIMEOUT_MS : Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.floor(timeout * 1000))); }
 function formatTimeoutSeconds(timeoutMs: number): string { const seconds = timeoutMs / 1000; return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1); }
@@ -69,6 +64,7 @@ function relativizeFoundPath(foundPath: string, searchPath: string): string {
 }
 function formatExactFoundPath(foundPath: string, cwd: string): string { return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath)); }
 function containsHiddenSegment(value: string): boolean { return toPosixPath(value).split("/").some((part) => part.startsWith(".") && part.length > 1); }
+function findTargetMentionsNodeModules(target: FindTarget): boolean { return target.pattern.includes("node_modules") || toPosixPath(target.searchPath).split("/").includes("node_modules"); }
 function formatFoundPath(foundPath: string, searchPath: string, searchPaths: string[], cwd: string): string {
 	let absoluteFoundPath = path.isAbsolute(foundPath) ? foundPath : path.resolve(searchPath, foundPath);
 	if (foundPath.endsWith("/") && !absoluteFoundPath.endsWith("/")) absoluteFoundPath += "/";
@@ -315,7 +311,8 @@ export function createFindToolDefinition(
 								const remaining = effectiveLimit - relativized.length;
 								const remainingMs = deadline - Date.now();
 								if (remaining <= 0) {
-									const probe = await Promise.resolve(ops.glob(target.pattern, target.searchPath, { ignore: gitignore === false ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"], limit: 1, hidden: hidden !== false }));
+									const ignore = findTargetMentionsNodeModules(target) ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"];
+									const probe = await Promise.resolve(ops.glob(target.pattern, target.searchPath, { ignore, limit: 1, hidden: hidden !== false }));
 									if (probe.some((p) => hidden !== false || !containsHiddenSegment(p))) customLimitReached = true;
 									if (customLimitReached) break;
 									continue;
@@ -326,7 +323,7 @@ export function createFindToolDefinition(
 								}
 								const timeoutResult = Symbol("find-timeout");
 								let raceTimer: ReturnType<typeof setTimeout> | undefined;
-								const ignore = gitignore === false ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"];
+								const ignore = findTargetMentionsNodeModules(target) ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"];
 								const results = await Promise.race<string[] | symbol>([
 									Promise.resolve(ops.glob(target.pattern, target.searchPath, { ignore, limit: remaining + 1, hidden: hidden !== false })),
 									new Promise<typeof timeoutResult>((resolveTimeout) => {
@@ -370,7 +367,7 @@ export function createFindToolDefinition(
 										recursive: false,
 										hidden: hidden !== false,
 										gitignore: gitignore !== false,
-										includeNodeModules: gitignore === false || target.pattern.includes("node_modules") || target.searchPath.includes("node_modules"),
+										includeNodeModules: findTargetMentionsNodeModules(target),
 										maxResults: effectiveLimit + 1,
 										cache: false,
 										sortByMtime: true,
@@ -409,6 +406,7 @@ export function createFindToolDefinition(
 							const args: string[] = ["--glob", "--color=never", "--no-require-git", "--max-results", String(remaining + 1)];
 							if (hidden !== false) args.push("--hidden");
 							if (gitignore === false) args.push("--no-ignore");
+							if (!findTargetMentionsNodeModules(target)) args.push("--exclude", "node_modules");
 							let fdPattern = target.pattern;
 							if (target.pattern.includes("/")) {
 								args.push("--full-path");

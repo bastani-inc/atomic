@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createFindToolDefinition } from "../src/core/tools/find.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createSearchToolDefinition } from "../src/core/tools/search.ts";
+import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 interface SqliteQuery { all(...params: Array<string | number>): Record<string, string | number | null>[]; run(...params: Array<string | number>): void }
 interface SqliteDb { run(sql: string, ...params: Array<string | number>): void; query(sql: string): SqliteQuery; close(): void }
@@ -43,6 +44,16 @@ describe("sqlite and metadata parity", () => {
 		try { db.run("create table t (id integer primary key)"); for (let i = 1; i <= 1500; i++) db.run("insert into t values (?)", i); } finally { db.close(); }
 		const raw = text(await createReadToolDefinition(dir).execute("raw-q", { path: "data.sqlite?q=select * from t" }, undefined, undefined, {} as never));
 		expect((raw.match(/"id":/g) ?? []).length).toBeLessThanOrEqual(1000);
+	});
+
+	it("validates SQLite where clauses and write columns like oh-my-pi", async () => {
+		const mod = sqlite(); if (!mod) return;
+		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
+		try { db.run("create table users (id integer primary key, name text)"); db.run("insert into users values (1, 'Ada')"); } finally { db.close(); }
+		const read = createReadToolDefinition(dir);
+		expect(text(await read.execute("where-quoted", { path: "data.sqlite:users?where=name%3D'LIMIT'" }, undefined, undefined, {} as never))).not.toContain("Invalid SQLite where");
+		await expect(read.execute("where-intersect", { path: "data.sqlite:users?where=1%3D1%20INTERSECT%20SELECT%201" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid SQLite where/);
+		await expect(createWriteToolDefinition(dir).execute("unknown-column", { path: "data.sqlite:users:1", content: "{missing:'nope'}" }, undefined, undefined, {} as never)).rejects.toThrow(/no column named/);
 	});
 
 	it("propagates read/search/find meta details", async () => {

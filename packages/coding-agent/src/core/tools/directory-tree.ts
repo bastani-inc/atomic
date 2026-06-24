@@ -38,6 +38,8 @@ function formatAge(ageSeconds: number): string {
 	return `${Math.floor(months / 12)}y`;
 }
 
+function shouldSkipDirectory(name: string): boolean { return name === ".git" || name === "node_modules"; }
+
 function byRecency(a: TreeNode, b: TreeNode): number {
 	return b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name);
 }
@@ -47,7 +49,7 @@ async function buildNode(fullPath: string, name: string, depth: number, maxDepth
 	if (!info) return undefined;
 	const node: TreeNode = { name, path: fullPath, isDir: info.isDirectory(), mtimeMs: info.mtimeMs, size: info.size, depth, children: [], droppedCount: 0 };
 	if (!node.isDir || depth >= maxDepth) return node;
-	const entries = await readdir(fullPath, { withFileTypes: true }).catch(() => []);
+	const entries = (await readdir(fullPath, { withFileTypes: true }).catch(() => [])).filter((entry) => !entry.isDirectory() || !shouldSkipDirectory(entry.name));
 	const children = await Promise.all(entries.map((entry) => buildNode(resolve(fullPath, entry.name), entry.name, depth + 1, maxDepth)));
 	node.children = children.filter((child): child is TreeNode => child !== undefined).sort(byRecency);
 	return node;

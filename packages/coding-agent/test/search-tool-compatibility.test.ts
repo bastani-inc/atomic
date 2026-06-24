@@ -104,7 +104,7 @@ describe("find and search builtins", () => {
 		expect(textOutput(await find.execute("custom-extensionless-file", { paths: ["Makefile"] }))).toContain("Makefile");
 	});
 
-	it("custom find operations search directories and honor gitignore false", async () => {
+	it("custom find operations search directories and keep node_modules ignored unless explicit", async () => {
 		const calls: Array<{ pattern: string; ignore: string[] }> = [];
 		const find = createFindToolDefinition("/remote/project", { operations: {
 			exists: (p) => p === "/remote/project/src" || p === "/remote/project",
@@ -112,6 +112,8 @@ describe("find and search builtins", () => {
 		} });
 		expect(textOutput(await find.execute("custom-dir", { paths: ["src"] }))).toContain("a.ts");
 		expect(textOutput(await find.execute("custom-nm", { paths: ["**/*.js"], gitignore: false }))).toContain("index.js");
+		expect(calls.at(-1)?.ignore).toContain("**/node_modules/**");
+		await find.execute("custom-explicit-nm", { paths: ["**/node_modules/**/*.js"] });
 		expect(calls.at(-1)?.ignore).not.toContain("**/node_modules/**");
 	});
 
@@ -460,12 +462,12 @@ describe("find and search builtins", () => {
 		expect(output).toContain("tests/");
 	});
 
-	it("honors gitignore false for find under node_modules", async () => {
+	it("keeps node_modules pruned from broad find scans even when gitignore is false", async () => {
 		mkdirSync(join(testDir, "node_modules", "pkg"), { recursive: true });
 		writeFileSync(join(testDir, "node_modules", "pkg", "index.js"), "");
 		const output = textOutput(await createFindToolDefinition(testDir).execute("find-node-modules", { paths: ["**/*.js"], gitignore: false }));
-		expect(output).toContain("node_modules/pkg/");
-		expect(output).toContain("index.js");
+		expect(output).not.toContain("node_modules/pkg/");
+		expect(output).not.toContain("index.js");
 	});
 
 	it("does not prune explicitly requested node_modules find globs", async () => {
