@@ -306,7 +306,7 @@ describe("resource selector tools", () => {
 			import { tmpdir } from "node:os";
 			import { join } from "node:path";
 			import { Database } from "bun:sqlite";
-			const modRoot = process.cwd().endsWith("packages/coding-agent") ? "./src/core/tools" : "./packages/coding-agent/src/core/tools";
+			const modRoot = process.cwd().replace(/\\\\/g, "/").endsWith("packages/coding-agent") ? "./src/core/tools" : "./packages/coding-agent/src/core/tools";
 			const { createReadToolDefinition } = await import(modRoot + "/read.ts");
 			const { createSearchToolDefinition } = await import(modRoot + "/search.ts");
 			const dir = mkdtempSync(join(tmpdir(), "atomic-sqlite-smoke-"));

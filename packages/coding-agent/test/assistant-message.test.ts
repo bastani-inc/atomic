@@ -1,12 +1,27 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AssistantMessageComponent } from "../src/modes/interactive/components/assistant-message.ts";
 import { initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+let previousColorTerm: string | undefined;
+
+beforeEach(() => {
+	previousColorTerm = process.env.COLORTERM;
+	process.env.COLORTERM = "truecolor";
+});
+
+afterEach(() => {
+	if (previousColorTerm === undefined) {
+		delete process.env.COLORTERM;
+	} else {
+		process.env.COLORTERM = previousColorTerm;
+	}
+});
 
 function createAssistantMessage(
 	content: AssistantMessage["content"],

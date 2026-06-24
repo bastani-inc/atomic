@@ -35,22 +35,24 @@ function normalizeLimit(limit: number | undefined): number { return limit === un
 function normalizeTimeoutMs(timeout: number | undefined): number { return timeout === undefined || !Number.isFinite(timeout) ? DEFAULT_TIMEOUT_MS : Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.floor(timeout * 1000))); }
 function formatTimeoutSeconds(timeoutMs: number): string { const seconds = timeoutMs / 1000; return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1); }
 async function resolveFindInternal(input: string, cwd: string, ctx?: InternalResourceContext): Promise<string> { const parsed = splitPathLikeGlob(input); if (!/^[a-z]+:\/\//i.test(parsed.basePath)) return input; for (const resolve of [ctx?.internalRouter?.resolve, ctx?.internalResourceRouter?.resolve, ctx?.resolveInternalUrl]) { const resolved = await resolve?.(parsed.basePath); if (typeof resolved === "string") return parsed.glob ? `${resolved}/${parsed.glob}` : resolved; } const fallback = resolveInternalSelector(parsed.basePath, cwd); return fallback ? parsed.glob ? `${fallback}/${parsed.glob}` : fallback : input; }
-async function delimiterInExistingGlobRoot(value: string, cwd: string, ops: FindOperations): Promise<boolean> { const parsed = splitPathLikeGlob(value); return !!parsed.glob && /[;,\s]/.test(parsed.basePath) && await ops.exists(resolveToCwd(parsed.basePath, cwd)); }
-async function expandDelimitedFindPaths(pathsValue: string[] | undefined, cwd: string, ops: FindOperations, ctx?: InternalResourceContext): Promise<string[]> {
+function isWindowsAbsolutePath(value: string): boolean { return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\"); }
+function resolveFindBackendPath(input: string, cwd: string, customBackend: boolean): string { if (!customBackend) return resolveToCwd(input, cwd); if (input === "." || input === "") return cwd; if (input.startsWith("/") || isWindowsAbsolutePath(input)) return input; if (cwd.includes("\\") || isWindowsAbsolutePath(cwd)) return path.resolve(cwd, input); return `${cwd.replace(/\/+$/, "")}/${input}`; }
+async function delimiterInExistingGlobRoot(value: string, cwd: string, ops: FindOperations, customBackend: boolean): Promise<boolean> { const parsed = splitPathLikeGlob(value); return !!parsed.glob && /[;,\s]/.test(parsed.basePath) && await ops.exists(resolveFindBackendPath(parsed.basePath, cwd, customBackend)); }
+async function expandDelimitedFindPaths(pathsValue: string[] | undefined, cwd: string, ops: FindOperations, ctx?: InternalResourceContext, customBackend = false): Promise<string[]> {
 	if (!pathsValue?.length) throw new Error("find.paths must include at least one path or glob."); const expanded: string[] = [];
 	for (const input of pathsValue) { const raw = normalizePathLikeInput(input); if (raw === "") throw new Error("find.paths entries must not be empty."); const resolvedRaw = await resolveFindInternal(raw, cwd, ctx); const rawParsed = splitPathLikeGlob(resolvedRaw);
-		if ((rawParsed.glob === undefined && await ops.exists(resolveToCwd(rawParsed.basePath, cwd))) || await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops)) { expanded.push(resolvedRaw); continue; }
+		if ((rawParsed.glob === undefined && await ops.exists(resolveFindBackendPath(rawParsed.basePath, cwd, customBackend))) || await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops, customBackend)) { expanded.push(resolvedRaw); continue; }
 		const parts = await Promise.all(raw.split(/[;,\s]+/).map(normalizePathLikeInput).filter(Boolean).map((part) => resolveFindInternal(part, cwd, ctx)));
-		const delimiterCanSplit = /[;,]/.test(raw) ? (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).some(Boolean) : (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).every(Boolean);
+		const delimiterCanSplit = /[;,]/.test(raw) ? (await Promise.all(parts.map((part) => ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend))))).some(Boolean) : (await Promise.all(parts.map((part) => ops.exists(resolveFindBackendPath(splitPathLikeGlob(part).basePath, cwd, customBackend))))).every(Boolean);
 		if (parts.length > 1 && delimiterCanSplit) expanded.push(...parts); else expanded.push(resolvedRaw);
 	}
 	return expanded;
 }
-function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined): FindTarget[] {
+function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined, customBackend = false): FindTarget[] {
 	if (!pathsValue || pathsValue.length === 0) throw new Error("find.paths must include at least one path or glob.");
 	return pathsValue.map((searchPath) => {
 		const parsed = splitPathLikeGlob(searchPath);
-		const target = { searchPath: resolveToCwd(parsed.basePath, cwd), pattern: parsed.glob ?? "**/*", exactPathInput: parsed.glob === undefined, inputPath: searchPath };
+		const target = { searchPath: resolveFindBackendPath(parsed.basePath, cwd, customBackend), pattern: parsed.glob ?? "**/*", exactPathInput: parsed.glob === undefined, inputPath: searchPath };
 		if (path.parse(target.searchPath).root === target.searchPath) throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
 		return target;
 	});
@@ -256,7 +258,7 @@ export function createFindToolDefinition(
 				(async () => {
 					try {
 						const ops = customOps ?? defaultFindOperations;
-						const targets = normalizeFindTargets(cwd, await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx));
+						const targets = normalizeFindTargets(cwd, await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx, !!customOps), !!customOps);
 						const searchPaths = targets.map((target) => target.searchPath);
 						const effectiveLimit = normalizeLimit(limit);
 						const timeoutMs = normalizeTimeoutMs(timeout);

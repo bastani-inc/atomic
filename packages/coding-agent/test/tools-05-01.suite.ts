@@ -89,13 +89,14 @@ describe("Coding Agent Tools", () => {
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
+			const payloadPattern = payload.replace(/\\/g, "/");
 			const testFile = join(testDir, "target.txt");
 			writeFileSync(payload, `#!/bin/sh\necho executed > ${marker}\ncat "$1"\n`);
 			chmodSync(payload, 0o755);
 			writeFileSync(testFile, "target\n");
 
 			const result = await grepTool.execute("test-call-grep-injection", {
-				pattern: `--pre=${payload}`,
+				pattern: `--pre=${payloadPattern}`,
 				path: testDir,
 			});
 

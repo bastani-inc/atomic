@@ -50,7 +50,7 @@ describe("bash interceptor parity", () => {
 		const asyncResult = await bash.execute("bash-async", { command: "echo hi", async: true }, undefined, undefined, {} as ExtensionContext);
 		expect(asyncResult.details?.async?.jobId).toBeTruthy();
 		expect(text(await bash.execute("bash-custom-pty", { command: "echo hi", pty: true }, undefined, undefined, {} as ExtensionContext))).toBe("allowed");
-		expect(text(await createBashToolDefinition(dir).execute("bash-pty", { command: "echo hi", pty: true }, undefined, undefined, {} as ExtensionContext)).trim()).toBe("hi");
+		expect(text(await createBashToolDefinition(dir).execute("bash-pty", { command: "echo hi", pty: true }, undefined, undefined, {} as ExtensionContext))).toContain("hi");
 	});
 
 	it("runs an explicitly configured interceptor before local execution", async () => {

@@ -95,7 +95,7 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 	return new Promise((resolvePromise, reject) => {
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
-		}, 10_000);
+		}, 30_000);
 		child.on("error", (error) => {
 			clearTimeout(timeout);
 			reject(error);

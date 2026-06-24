@@ -16,7 +16,7 @@ import crossSpawn from "cross-spawn";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
-const WINDOWS_SHELL_COMMANDS = new Set(["npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
+const WINDOWS_SHELL_COMMANDS = new Set(["bun", "npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
 
 export function shouldUseWindowsShell(command: string): boolean {
 	if (process.platform !== "win32") return false;
@@ -44,6 +44,12 @@ export function spawnProcessSync(
 		: nodeSpawnSync(command, args, options);
 }
 
+function isWindowsProcessAlive(pid: number): boolean {
+	const result = nodeSpawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], { encoding: "utf-8", windowsHide: true });
+	if (result.status !== 0) return true;
+	return new RegExp(`\\b${pid}\\b`).test(result.stdout);
+}
+
 /**
  * Wait for a child process to terminate without hanging on inherited stdio handles.
  *
@@ -66,8 +72,13 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 		let postExitActiveDrainHardCapTimer: NodeJS.Timeout | undefined;
 		let stdoutEnded = child.stdout === null;
 		let stderrEnded = child.stderr === null;
+		let windowsExitPoll: NodeJS.Timeout | undefined;
 
 		const cleanup = () => {
+			if (windowsExitPoll) {
+				clearInterval(windowsExitPoll);
+				windowsExitPoll = undefined;
+			}
 			if (postExitIdleTimer) {
 				clearTimeout(postExitIdleTimer);
 				postExitIdleTimer = undefined;
@@ -147,10 +158,18 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			}
 		};
 
+		const pollWindowsExit = () => {
+			if (process.platform !== "win32" || !child.pid || exited || settled) return;
+			if (!isWindowsProcessAlive(child.pid)) {
+				onExit(child.exitCode ?? 0);
+			}
+		};
+
 		const onClose = (code: number | null) => {
 			finalize(code);
 		};
 
+		if (process.platform === "win32" && child.pid) windowsExitPoll = setInterval(pollWindowsExit, 50);
 		child.stdout?.once("end", onStdoutEnd);
 		child.stderr?.once("end", onStderrEnd);
 		child.stdout?.on("data", onData);

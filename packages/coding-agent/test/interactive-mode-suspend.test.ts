@@ -23,6 +23,8 @@ function callHandleCtrlZ(context: HandleCtrlZThis): void {
 
 const interactiveModePrototype = InteractiveMode.prototype as unknown;
 
+const testNonWindowsSuspend = process.platform === "win32" ? test.skip : test;
+
 describe("InteractiveMode.handleCtrlZ", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -62,7 +64,7 @@ describe("InteractiveMode.handleCtrlZ", () => {
 		expect(processKillSpy).not.toHaveBeenCalled();
 	});
 
-	test("keeps the process alive while suspended and restores the TUI on SIGCONT", () => {
+	testNonWindowsSuspend("keeps the process alive while suspended and restores the TUI on SIGCONT", () => {
 		const ui: FakeUi = {
 			start: vi.fn(),
 			stop: vi.fn(),
@@ -112,7 +114,7 @@ describe("InteractiveMode.handleCtrlZ", () => {
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
 	});
 
-	test("cleans up the temporary handlers if suspension fails", () => {
+	testNonWindowsSuspend("cleans up the temporary handlers if suspension fails", () => {
 		const ui: FakeUi = {
 			start: vi.fn(),
 			stop: vi.fn(),

@@ -10,7 +10,6 @@ import {
 	type GrepToolOptions,
 } from "./grep.ts";
 import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
-import { loadNativeSearchBinding } from "./search-native.ts";
 import { createHashlineSnapshotStore, recordHashlineSnapshot, type HashlineSnapshotStore } from "./hashline.ts";
 import { invalidArgText, shortenPath, str } from "./render-utils.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -121,28 +120,15 @@ async function searchFileLineRanges(target: SearchTarget, cwd: string, pattern: 
 	if (!target.lineRanges?.length || target.glob || target.archive || target.sqlite || target.internal) return undefined;
 	const absolutePath = resolveToCwd(target.path, cwd);
 	if (!await fsStat(absolutePath).then((stat) => stat.isFile()).catch(() => false)) return undefined;
-	const native = loadNativeSearchBinding();
-	let text: string;
-	if (native) {
-		const result = await native.grep({ pattern, path: absolutePath, ignoreCase, contextBefore, contextAfter, maxColumns: 2000, cache: false });
-		const rows: string[] = [];
-		for (const match of result.matches) {
-			for (const ctx of match.contextBefore ?? []) rows.push(`${target.path}-${ctx.lineNumber}- ${ctx.line}`);
-			rows.push(`${target.path}:${match.lineNumber}: ${match.line}`);
-			for (const ctx of match.contextAfter ?? []) rows.push(`${target.path}-${ctx.lineNumber}- ${ctx.line}`);
-		}
-		text = rows.join("\n") || "No matches found";
-	} else {
-		const source = (await fsReadFile(absolutePath, "utf8")).split("\n");
-		const normalized = normalizeInlineSearchPattern(pattern, ignoreCase);
-		let regex: RegExp;
-		try { regex = new RegExp(normalized.pattern, normalized.flags); } catch { return undefined; }
-		const matchLines = new Set<number>();
-		source.forEach((line, index) => { regex.lastIndex = 0; if (regex.test(line)) matchLines.add(index + 1); });
-		const outputLines = new Set<number>();
-		for (const line of matchLines) for (let n = Math.max(1, line - contextBefore); n <= Math.min(source.length, line + contextAfter); n++) outputLines.add(n);
-		text = [...outputLines].sort((a, b) => a - b).map((n) => `${target.path}${matchLines.has(n) ? ":" : "-"}${n}${matchLines.has(n) ? ":" : "-"} ${source[n - 1] ?? ""}`).join("\n") || "No matches found";
-	}
+	const source = (await fsReadFile(absolutePath, "utf8")).split("\n");
+	const normalized = normalizeInlineSearchPattern(pattern, ignoreCase);
+	let regex: RegExp;
+	try { regex = new RegExp(normalized.pattern, normalized.flags); } catch { return undefined; }
+	const matchLines = new Set<number>();
+	source.forEach((line, index) => { regex.lastIndex = 0; if (regex.test(line)) matchLines.add(index + 1); });
+	const outputLines = new Set<number>();
+	for (const line of matchLines) for (let n = Math.max(1, line - contextBefore); n <= Math.min(source.length, line + contextAfter); n++) outputLines.add(n);
+	const text = [...outputLines].sort((a, b) => a - b).map((n) => `${target.path}${matchLines.has(n) ? ":" : "-"}${n}${matchLines.has(n) ? ":" : "-"} ${source[n - 1] ?? ""}`).join("\n") || "No matches found";
 	return filterSearchOutputByLineRange(text, target.lineRanges, contextBefore, contextAfter);
 }
 

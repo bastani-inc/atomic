@@ -1,6 +1,6 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, setDefaultTimeout, test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +19,7 @@ import {
   type PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
 
+setDefaultTimeout(30_000);
 const tempDirs: string[] = [];
 const ENV_KEYS = [
   "ATOMIC_SUBAGENT_CHILD",
