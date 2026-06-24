@@ -1,82 +1,38 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Container, Spacer, Text } from "@earendil-works/pi-tui";
+import { Filesystem, Patch, Patcher, type PreparedSection, type WriteResult } from "./hashline-engine/index.ts";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { renderDiff } from "../../modes/interactive/components/diff.ts";
 import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition } from "../extensions/types.ts";
-import {
-	applyEditsToNormalizedContent,
-	computeEditsDiff,
-	detectLineEnding,
-	type Edit,
-	type EditDiffError,
-	type EditDiffResult,
-	generateDiffString,
-	generateUnifiedPatch,
-	normalizeToLF,
-	restoreLineEndings,
-	stripBom,
-} from "./edit-diff.ts";
+import { generateDiffString, generateUnifiedPatch, normalizeToLF, stripBom } from "./edit-diff.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { createHashlineSnapshotStore, formatCompactHashlineEditResult, recordHashlineSnapshot, type HashlineSnapshotStore } from "./hashline.ts";
+import { invalidateNativeSearchCache } from "./search-native.ts";
+import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
+import { nativeBlockResolver } from "./block-resolver.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { renderToolPath, str } from "./render-utils.ts";
+import { renderToolPath } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
-type EditPreview = EditDiffResult | EditDiffError;
-
-type EditRenderState = {
-	callComponent?: EditCallRenderComponent;
-};
-
-const replaceEditSchema = Type.Object(
-	{
-		oldText: Type.String({
-			description:
-				"Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
-		}),
-		newText: Type.String({ description: "Replacement text for this targeted edit." }),
-	},
-	{ additionalProperties: false },
-);
-
 const editSchema = Type.Object(
-	{
-		path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
-		edits: Type.Array(replaceEditSchema, {
-			description:
-				"One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.",
-		}),
-	},
+	{ input: Type.String({ description: "One or more hashline file sections. Must start with [PATH#TAG]; tag comes from the latest read, search, write, or successful edit output." }) },
 	{ additionalProperties: false },
 );
 
 export type EditToolInput = Static<typeof editSchema>;
-type LegacyEditToolInput = EditToolInput & {
-	oldText?: unknown;
-	newText?: unknown;
-};
 
 export interface EditToolDetails {
-	/** Display-oriented diff of the changes made */
 	diff: string;
-	/** Standard unified patch of the changes made */
 	patch: string;
-	/** Line number of the first change in the new file (for editor navigation) */
 	firstChangedLine?: number;
 }
 
-/**
- * Pluggable operations for the edit tool.
- * Override these to delegate file editing to remote systems (for example SSH).
- */
 export interface EditOperations {
-	/** Read file contents as a Buffer */
 	readFile: (absolutePath: string) => Promise<Buffer>;
-	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
-	/** Check if file is readable and writable (throw if not) */
 	access: (absolutePath: string) => Promise<void>;
 }
 
@@ -87,344 +43,151 @@ const defaultEditOperations: EditOperations = {
 };
 
 export interface EditToolOptions {
-	/** Custom operations for file editing. Default: local filesystem */
 	operations?: EditOperations;
+	hashlineStore?: HashlineSnapshotStore;
 }
-
-function prepareEditArguments(input: unknown): EditToolInput {
-	if (!input || typeof input !== "object") {
-		return input as EditToolInput;
-	}
-
-	const args = input as Record<string, unknown>;
-
-	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
-	if (typeof args.edits === "string") {
-		try {
-			const parsed = JSON.parse(args.edits);
-			if (Array.isArray(parsed)) args.edits = parsed;
-		} catch {}
-	}
-
-	const legacy = args as LegacyEditToolInput;
-	if (typeof legacy.oldText !== "string" || typeof legacy.newText !== "string") {
-		return args as EditToolInput;
-	}
-
-	const edits = Array.isArray(legacy.edits) ? [...legacy.edits] : [];
-	edits.push({ oldText: legacy.oldText, newText: legacy.newText });
-	const { oldText: _oldText, newText: _newText, ...rest } = legacy;
-	return { ...rest, edits } as EditToolInput;
-}
-
-function validateEditInput(input: EditToolInput): { path: string; edits: Edit[] } {
-	if (!Array.isArray(input.edits) || input.edits.length === 0) {
-		throw new Error("Edit tool input is invalid. edits must contain at least one replacement.");
-	}
-	return { path: input.path, edits: input.edits };
-}
-
-type RenderableEditArgs = {
-	path?: string;
-	file_path?: string;
-	edits?: Edit[];
-	oldText?: string;
-	newText?: string;
-};
 
 type EditToolResultLike = {
 	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 	details?: EditToolDetails;
 };
 
-type EditCallRenderComponent = Box & {
-	preview?: EditPreview;
-	previewArgsKey?: string;
-	previewPending?: boolean;
-	settledError?: boolean;
-};
+class EditFilesystem extends Filesystem {
+	private readonly cwd: string;
+	private readonly operations: EditOperations;
+	constructor(cwd: string, operations: EditOperations) { super(); this.cwd = cwd; this.operations = operations; }
 
-function createEditCallRenderComponent(): EditCallRenderComponent {
-	return Object.assign(new Box(1, 1, (text: string) => text), {
-		preview: undefined as EditPreview | undefined,
-		previewArgsKey: undefined as string | undefined,
-		previewPending: false,
-		settledError: false,
-	});
+	canonicalPath(path: string): string { return resolveToCwd(path, this.cwd); }
+
+	async preflightWrite(path: string): Promise<void> {
+		const absolutePath = this.canonicalPath(path);
+		try { await this.operations.access(absolutePath); }
+		catch (error: unknown) {
+			const message = error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
+			throw new Error(`Could not edit file: ${path}. ${message}.`);
+		}
+	}
+
+	async readText(path: string): Promise<string> {
+		const absolutePath = this.canonicalPath(path);
+		return isNotebookPath(absolutePath) ? readEditableNotebookText(absolutePath, path) : (await this.operations.readFile(absolutePath)).toString("utf-8");
+	}
+
+	async writeText(path: string, content: string): Promise<WriteResult> {
+		const absolutePath = this.canonicalPath(path);
+		const persisted = isNotebookPath(absolutePath) ? serializeEditedNotebookText(absolutePath, path, normalizeToLF(stripBom(content).text)) : content;
+		await this.operations.writeFile(absolutePath, persisted);
+		return { text: persisted };
+	}
 }
 
-function getEditCallRenderComponent(state: EditRenderState, lastComponent: unknown): EditCallRenderComponent {
-	if (lastComponent instanceof Box) {
-		const component = lastComponent as EditCallRenderComponent;
-		state.callComponent = component;
-		return component;
-	}
-	if (state.callComponent) {
-		return state.callComponent;
-	}
-	const component = createEditCallRenderComponent();
-	state.callComponent = component;
-	return component;
+function extractFirstHeaderPath(input: string | undefined): string | undefined {
+	return input?.match(/(?:^|\n)\s*\[([^\]#]+)#[0-9A-Fa-f]{4}\]/)?.[1];
 }
 
-function getRenderablePreviewInput(args: RenderableEditArgs | undefined): { path: string; edits: Edit[] } | null {
-	if (!args) {
-		return null;
-	}
-
-	const path = typeof args.path === "string" ? args.path : typeof args.file_path === "string" ? args.file_path : null;
-	if (!path) {
-		return null;
-	}
-
-	if (
-		Array.isArray(args.edits) &&
-		args.edits.length > 0 &&
-		args.edits.every((edit) => typeof edit?.oldText === "string" && typeof edit?.newText === "string")
-	) {
-		return { path, edits: args.edits };
-	}
-
-	if (typeof args.oldText === "string" && typeof args.newText === "string") {
-		return { path, edits: [{ oldText: args.oldText, newText: args.newText }] };
-	}
-
-	return null;
-}
-
-function formatEditCall(args: RenderableEditArgs | undefined, theme: Theme, cwd: string): string {
-	const pathDisplay = renderToolPath(str(args?.file_path ?? args?.path), theme, cwd);
+function formatEditCall(args: unknown, theme: Theme, cwd: string): string {
+	const input = args && typeof args === "object" && "input" in args ? (args as { input?: unknown }).input : undefined;
+	const pathDisplay = renderToolPath(extractFirstHeaderPath(typeof input === "string" ? input : undefined) ?? null, theme, cwd);
 	return `${theme.fg("toolTitle", theme.bold("edit"))} ${pathDisplay}`;
 }
 
-function formatEditResult(
-	args: RenderableEditArgs | undefined,
-	preview: EditPreview | undefined,
-	result: EditToolResultLike,
-	theme: Theme,
-	isError: boolean,
-): string | undefined {
-	const rawPath = str(args?.file_path ?? args?.path);
-	const previewDiff = preview && !("error" in preview) ? preview.diff : undefined;
-	const previewError = preview && "error" in preview ? preview.error : undefined;
+function formatEditResult(result: EditToolResultLike, theme: Theme, isError: boolean): string | undefined {
 	if (isError) {
-		const errorText = result.content
-			.filter((c) => c.type === "text")
-			.map((c) => c.text || "")
-			.join("\n");
-		if (!errorText || errorText === previewError) {
-			return undefined;
-		}
-		return theme.fg("error", errorText);
+		const errorText = result.content.filter((c) => c.type === "text").map((c) => c.text || "").join("\n");
+		return errorText ? theme.fg("error", errorText) : undefined;
 	}
-
-	const resultDiff = result.details?.diff;
-	if (resultDiff && resultDiff !== previewDiff) {
-		return renderDiff(resultDiff, { filePath: rawPath ?? undefined });
-	}
-
-	return undefined;
+	return result.details?.diff ? renderDiff(result.details.diff) : undefined;
 }
 
-function getEditHeaderBg(
-	preview: EditPreview | undefined,
-	settledError: boolean | undefined,
-	theme: Theme,
-): (text: string) => string {
-	if (preview) {
-		if ("error" in preview) {
-			return (text: string) => theme.bg("toolErrorBg", text);
-		}
-		return (text: string) => theme.bg("toolSuccessBg", text);
-	}
-	if (settledError) {
-		return (text: string) => theme.bg("toolErrorBg", text);
-	}
-	return (text: string) => theme.bg("toolPendingBg", text);
+async function withFileMutationQueues<T>(filePaths: readonly string[], fn: () => Promise<T>): Promise<T> {
+	const sorted = [...new Set(filePaths)].sort();
+	const run = (index: number): Promise<T> => {
+		const filePath = sorted[index];
+		return filePath ? withFileMutationQueue(filePath, () => run(index + 1)) : fn();
+	};
+	return run(0);
 }
 
-function buildEditCallComponent(
-	component: EditCallRenderComponent,
-	args: RenderableEditArgs | undefined,
-	theme: Theme,
-	cwd: string,
-): EditCallRenderComponent {
-	component.setBgFn(getEditHeaderBg(component.preview, component.settledError, theme));
-	component.clear();
-	component.addChild(new Text(formatEditCall(args, theme, cwd), 0, 0));
-
-	if (!component.preview) {
-		return component;
-	}
-
-	const body =
-		"error" in component.preview ? theme.fg("error", component.preview.error) : renderDiff(component.preview.diff);
-	component.addChild(new Spacer(1));
-	component.addChild(new Text(body, 0, 0));
-	return component;
+function throwIfAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error("Operation aborted");
 }
 
-function setEditPreview(
-	component: EditCallRenderComponent,
-	preview: EditPreview,
-	argsKey: string | undefined,
-): boolean {
-	const current = component.preview;
-	const changed =
-		current === undefined ||
-		("error" in current && "error" in preview
-			? current.error !== preview.error
-			: "error" in current !== "error" in preview) ||
-		(!("error" in current) &&
-			!("error" in preview) &&
-			(current.diff !== preview.diff || current.firstChangedLine !== preview.firstChangedLine));
-	component.preview = preview;
-	component.previewArgsKey = argsKey;
-	component.previewPending = false;
-	return changed;
+function formatNoopMessage(path: string, count: number): string {
+	return `Edits to ${path} parsed and applied cleanly, but produced no change: your body row(s) are byte-identical to the file at the targeted lines. The bug is somewhere else — re-read the file before issuing another edit. Do NOT widen the payload or add lines; verify the anchor first.${count > 1 ? `\nNo-op count for this identical payload: ${count}.` : ""}`;
 }
 
-export function createEditToolDefinition(
-	cwd: string,
-	options?: EditToolOptions,
-): ToolDefinition<typeof editSchema, EditToolDetails | undefined, EditRenderState> {
+function blockMessages(item: PreparedSection): string[] {
+	const warnings = [...item.parseWarnings, ...(item.applyResult.warnings ?? [])];
+	const resolutions = item.applyResult.blockResolutions?.map((resolution) => {
+		const verb = resolution.op === "insert_after" ? "insert after block" : `${resolution.op} block`;
+		const lands = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
+		return `${verb} ${resolution.anchorLine} → resolved lines ${resolution.start}-${resolution.end} (${resolution.end - resolution.start + 1} lines)${lands}`;
+	}) ?? [];
+	return [...warnings, ...resolutions];
+}
+
+export function createEditToolDefinition(cwd: string, options?: EditToolOptions): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
 	const ops = options?.operations ?? defaultEditOperations;
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
+	const fs = new EditFilesystem(cwd, ops);
+	const patcher = new Patcher({ fs, snapshots: hashlineStore.snapshots, blockResolver: nativeBlockResolver });
+	const noopCounts = new Map<string, number>();
 	return {
 		name: "edit",
 		label: "edit",
-		description:
-			"Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
-		promptSnippet:
-			"Make precise file edits with exact text replacement, including multiple disjoint edits in one call",
+		description: "Edit existing files with the hashline patch language: each section starts with [PATH#TAG] (TAG is the 4-hex snapshot tag from your latest read/search), then hunk headers (replace N..M:, replace block N:, delete N..M, delete block N, insert before|after N:, insert after block N:, insert head:, insert tail:) followed by +TEXT body rows. Numbers refer to the original file. Use the write tool to create new files.",
+		promptSnippet: "Apply source edits with hashline patch input",
 		promptGuidelines: [
-			"Use edit for precise changes (edits[].oldText must match exactly)",
-			"When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-			"Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-			"Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+			"hashline edit format: a header ending in ':' is followed by '+'TEXT body rows; 'delete' has no body. Every section starts with [PATH#TAG]; TAG is REQUIRED (the 4-hex snapshot tag from your latest read/search) — there is no hashless form. Use the write tool to create new files.",
+			"Ops: 'replace N..M:' replaces original lines N..M (INCLUSIVE — line M is consumed); 'replace block N:' replaces the whole syntactic block that BEGINS on line N (Atomic resolves the closing line with a brace/indent heuristic; point N at the opener); 'delete N..M' / 'delete block N' delete (no body); 'insert before N:' / 'insert after N:' insert relative to a line; 'insert after block N:' inserts after the END of the block beginning on N; 'insert head:' / 'insert tail:' insert at file start/end. Single line: 'replace N..N:' / 'delete N'. The range is the ORIGINAL lines you touch; body length is irrelevant.",
+			"Body rows appear only under a ':' header. Every row is '+TEXT' (adds a literal line, leading whitespace kept; '+' alone adds a blank line). There is NO other body row kind — never write '-old' or a bare/context line. To keep a line, leave it out of every range. For a literal line starting with '-' or '+', prefix it: '+-x', '++x'.",
+			"Numbers refer to the ORIGINAL file and do not shift as hunks apply; they die with the call — every applied edit mints a fresh #TAG and renumbers, so anchor the next edit on the edit response or a fresh read. Ranges are TIGHT: cover ONLY lines whose content changes; a stale wide range shreds everything it spans. Pure additions use 'insert', never a widened 'replace'. Whole construct → 'replace block N'; lines inside it → 'replace N..M'.",
+			"On a stale-tag rejection or any surprising result: STOP and re-read before further edits. Never start or end a range mid-expression/mid-block, and never span a hunk across an elided ('…') region — read it first. Never use edit to reformat/restyle code; run the project formatter instead.",
 		],
 		parameters: editSchema,
-		renderShell: "self",
-		prepareArguments: prepareEditArguments,
-		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal, _onUpdate?, _ctx?) {
-			const { path, edits } = validateEditInput(input);
-			const absolutePath = resolveToCwd(path, cwd);
-
-			return withFileMutationQueue(absolutePath, async () => {
-				// Do not reject from an abort event listener here: that would release the
-				// mutation queue while an in-flight filesystem operation may still finish.
-				// Checking signal.aborted after each await observes the same aborts while
-				// keeping the queue locked until the current operation has settled.
-				const throwIfAborted = (): void => {
-					if (signal?.aborted) throw new Error("Operation aborted");
-				};
-
-				throwIfAborted();
-
-				// Check if file exists.
-				try {
-					await ops.access(absolutePath);
-				} catch (error: unknown) {
-					throwIfAborted();
-					const errorMessage =
-						error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
-					throw new Error(`Could not edit file: ${path}. ${errorMessage}.`);
+		async execute(_toolCallId, input: EditToolInput, signal?: AbortSignal) {
+			if (typeof input.input !== "string" || input.input.trim() === "") throw new Error("edit input must be a non-empty hashline script with [PATH#TAG] sections.");
+			const patch = Patch.parse(input.input, { cwd });
+			const prepared: PreparedSection[] = [];
+			for (const section of patch.sections) { throwIfAborted(signal); prepared.push(await patcher.prepare(section)); }
+			const noops = prepared.filter((item) => item.isNoop);
+			if (noops.length > 0) {
+				if (noops.length !== prepared.length) throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
+				const key = prepared.map((item) => `${item.canonicalPath}\0${item.applyResult.text}`).join("\0\0");
+				const count = (noopCounts.get(key) ?? 0) + 1;
+				noopCounts.set(key, count);
+				if (count >= 3) throw new Error(`STOP. ${formatNoopMessage(prepared[0]!.section.path, count)}`);
+				return { content: [{ type: "text", text: formatNoopMessage(prepared[0]!.section.path, count) }], details: { diff: "", patch: "" } };
+			}
+			return withFileMutationQueues(prepared.map((item) => item.canonicalPath), async () => {
+				for (const item of prepared) if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized) throw new Error(`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`);
+				const outputs: string[] = [];
+				let combinedDiff = "", combinedPatch = "";
+				let firstChangedLine: number | undefined;
+				for (const item of prepared) {
+					throwIfAborted(signal);
+					const result = await patcher.commit(item);
+					invalidateNativeSearchCache(result.canonicalPath);
+					const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
+					const diffResult = generateDiffString(result.before, result.after);
+					combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
+					combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
+					firstChangedLine ??= diffResult.firstChangedLine;
+					outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(item)));
 				}
-				throwIfAborted();
-
-				// Read the file.
-				const buffer = await ops.readFile(absolutePath);
-				const rawContent = buffer.toString("utf-8");
-				throwIfAborted();
-
-				// Strip BOM before matching. The model will not include an invisible BOM in oldText.
-				const { bom, text: content } = stripBom(rawContent);
-				const originalEnding = detectLineEnding(content);
-				const normalizedContent = normalizeToLF(content);
-				const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
-				throwIfAborted();
-
-				const finalContent = bom + restoreLineEndings(newContent, originalEnding);
-				await ops.writeFile(absolutePath, finalContent);
-				throwIfAborted();
-
-				const diffResult = generateDiffString(baseContent, newContent);
-				const patch = generateUnifiedPatch(path, baseContent, newContent);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Successfully replaced ${edits.length} block(s) in ${path}.`,
-						},
-					],
-					details: { diff: diffResult.diff, patch, firstChangedLine: diffResult.firstChangedLine },
-				};
+				return { content: [{ type: "text", text: outputs.join("\n\n") }], details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine } };
 			});
 		},
 		renderCall(args, theme, context) {
-			const component = getEditCallRenderComponent(context.state, context.lastComponent);
-			const previewInput = getRenderablePreviewInput(args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })
-				: undefined;
-
-			if (component.previewArgsKey !== argsKey) {
-				component.preview = undefined;
-				component.previewArgsKey = argsKey;
-				component.previewPending = false;
-				component.settledError = false;
-			}
-
-			if (context.argsComplete && previewInput && !component.preview && !component.previewPending) {
-				component.previewPending = true;
-				const requestKey = argsKey;
-				void computeEditsDiff(previewInput.path, previewInput.edits, context.cwd).then((preview) => {
-					if (component.previewArgsKey === requestKey) {
-						setEditPreview(component, preview, requestKey);
-						context.invalidate();
-					}
-				});
-			}
-
-			return buildEditCallComponent(component, args, theme, context.cwd);
+			const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+			text.setText(formatEditCall(args, theme, context.cwd));
+			return text;
 		},
 		renderResult(result, _options, theme, context) {
-			const callComponent = context.state.callComponent;
-			const previewInput = getRenderablePreviewInput(context.args as RenderableEditArgs | undefined);
-			const argsKey = previewInput
-				? JSON.stringify({ path: previewInput.path, edits: previewInput.edits })
-				: undefined;
-			const typedResult = result as EditToolResultLike;
-			const resultDiff = !context.isError ? typedResult.details?.diff : undefined;
-			let changed = false;
-			if (callComponent) {
-				if (typeof resultDiff === "string") {
-					changed =
-						setEditPreview(
-							callComponent,
-							{ diff: resultDiff, firstChangedLine: typedResult.details?.firstChangedLine },
-							argsKey,
-						) || changed;
-				}
-				if (callComponent.settledError !== context.isError) {
-					callComponent.settledError = context.isError;
-					changed = true;
-				}
-				if (changed) {
-					buildEditCallComponent(
-						callComponent,
-						context.args as RenderableEditArgs | undefined,
-						theme,
-						context.cwd,
-					);
-				}
-			}
-
-			const output = formatEditResult(context.args, callComponent?.preview, typedResult, theme, context.isError);
+			const output = formatEditResult(result as EditToolResultLike, theme, context.isError);
 			const component = (context.lastComponent as Container | undefined) ?? new Container();
 			component.clear();
-			if (!output) {
-				return component;
-			}
+			if (!output) return component;
 			component.addChild(new Spacer(1));
 			component.addChild(new Text(output, 1, 0));
 			return component;

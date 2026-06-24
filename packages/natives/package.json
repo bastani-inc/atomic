@@ -50,6 +50,7 @@
   "files": [
     "native/index.js",
     "native/index.d.ts",
+    "native/*.node",
     "README.md",
     "CHANGELOG.md"
   ],

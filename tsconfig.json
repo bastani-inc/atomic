@@ -38,6 +38,7 @@
         }
     },
     "include": [
+        "packages/coding-agent/src/**/*.d.ts",
         "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",

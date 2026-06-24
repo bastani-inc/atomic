@@ -11,15 +11,15 @@ function nonGeminiModel(): Pick<Model<Api>, "provider" | "api" | "id"> {
   return { provider: "github-copilot", api: "openai-completions", id: "gpt-4o" };
 }
 
-const editTool = {
+const batchTool = {
   type: "function",
   function: {
-    name: "edit",
+    name: "batch_update",
     parameters: {
       type: "object",
       properties: {
-        path: { type: "string" },
-        edits: { type: "array", items: { type: "object" } },
+        target: { type: "string" },
+        items: { type: "array", items: { type: "object" } },
       },
     },
   },
@@ -206,16 +206,16 @@ describe("normalizeToolArgumentsForModel", () => {
 });
 
 describe("normalizeCopilotGeminiReplayToolArguments", () => {
-  function payloadWithEdit(args: Record<string, unknown>) {
+  function payloadWithBatchTool(args: Record<string, unknown>) {
     return {
-      tools: [editTool],
+      tools: [batchTool],
       messages: [
         { role: "user", content: "go" },
         {
           role: "assistant",
           content: null,
           tool_calls: [
-            { id: "call_1", type: "function", function: { name: "edit", arguments: JSON.stringify(args) } },
+            { id: "call_1", type: "function", function: { name: "batch_update", arguments: JSON.stringify(args) } },
           ],
         },
         { role: "tool", tool_call_id: "call_1", content: "ok" },
@@ -223,34 +223,34 @@ describe("normalizeCopilotGeminiReplayToolArguments", () => {
     };
   }
 
-  it("reconstructs flattened `edit` arguments on a replayed assistant tool call", () => {
-    const payload = payloadWithEdit({
-      path: "x.ts",
-      "edits[0].oldText": "old",
-      "edits[0].newText": "new",
+  it("reconstructs flattened array arguments on a replayed assistant tool call", () => {
+    const payload = payloadWithBatchTool({
+      target: "x.ts",
+      "items[0].from": "old",
+      "items[0].to": "new",
     });
     const out = normalizeCopilotGeminiReplayToolArguments(payload, geminiModel()) as any;
     const replayed = JSON.parse(out.messages[1].tool_calls[0].function.arguments);
-    expect(replayed).toEqual({ path: "x.ts", edits: [{ oldText: "old", newText: "new" }] });
+    expect(replayed).toEqual({ target: "x.ts", items: [{ from: "old", to: "new" }] });
   });
 
   it("leaves well-formed nested arguments unchanged (same payload reference)", () => {
-    const payload = payloadWithEdit({ path: "x.ts", edits: [{ oldText: "a", newText: "b" }] });
+    const payload = payloadWithBatchTool({ target: "x.ts", items: [{ from: "a", to: "b" }] });
     expect(normalizeCopilotGeminiReplayToolArguments(payload, geminiModel())).toBe(payload);
   });
 
   it("is a no-op for non-Gemini models", () => {
-    const payload = payloadWithEdit({ "edits[0].newText": "new" });
+    const payload = payloadWithBatchTool({ "items[0].to": "new" });
     expect(normalizeCopilotGeminiReplayToolArguments(payload, nonGeminiModel())).toBe(payload);
   });
 
   it("fails open on malformed argument JSON", () => {
     const payload = {
-      tools: [editTool],
+      tools: [batchTool],
       messages: [
         {
           role: "assistant",
-          tool_calls: [{ id: "c", type: "function", function: { name: "edit", arguments: "{not json" } }],
+          tool_calls: [{ id: "c", type: "function", function: { name: "batch_update", arguments: "{not json" } }],
         },
       ],
     };
@@ -278,7 +278,7 @@ describe("normalizeCopilotGeminiReplayToolArguments", () => {
 
   it("only normalizes assistant messages, not user/tool messages", () => {
     const payload = {
-      tools: [editTool],
+      tools: [batchTool],
       messages: [{ role: "user", content: "x" }, { role: "tool", tool_call_id: "c", content: "y" }],
     };
     expect(normalizeCopilotGeminiReplayToolArguments(payload, geminiModel())).toBe(payload);

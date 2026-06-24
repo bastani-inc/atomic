@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { stat as fsStat } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Text } from "@earendil-works/pi-tui";
@@ -7,198 +9,179 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { ensureTool } from "../../utils/tools-manager.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { splitPathLikeGlob } from "./glob-path-utils.ts";
+import { normalizePathLikeInput, splitPathLikeGlob } from "./glob-path-utils.ts";
+import { loadNativeSearchBinding } from "./search-native.ts";
 import { pathExists, resolveToCwd } from "./path-utils.ts";
-import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
+import { resolveInternalSelector, type InternalResourceContext } from "./resource-selectors.ts";
+import { getTextOutput } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
-
-function toPosixPath(value: string): string {
-	return value.split(path.sep).join("/");
-}
-
+const toPosixPath = (value: string): string => value.split(path.sep).join("/");
 const findSchema = Type.Object({
-	pattern: Type.Optional(
-		Type.String({
-			description: "Glob pattern to match files, e.g. '*.ts', '**/*.json', or 'src/**/*.spec.ts' (default: '**')",
-		}),
-	),
-	path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
-	paths: Type.Optional(
-		Type.Union([
-			Type.String({ description: "Directory to search in" }),
-			Type.Array(Type.String({ description: "Directories to search in" })),
-		]),
-	),
-	limit: Type.Optional(Type.Number({ description: "Maximum number of results (default/max: 200)", minimum: 1, maximum: 200 })),
-	hidden: Type.Optional(Type.Boolean({ description: "Compatibility option. Hidden files are included by default." })),
-	gitignore: Type.Optional(
-		Type.Boolean({ description: "Compatibility option. .gitignore is respected by default." }),
-	),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: 5, clamped to 0.5..60)" })),
-});
-
+	paths: Type.Array(Type.String({ description: "File, directory, or glob path to find." }), { description: "Paths or glob paths to find.", minItems: 1 }),
+	hidden: Type.Optional(Type.Boolean({ description: "Include hidden files. Defaults to true." })),
+	gitignore: Type.Optional(Type.Boolean({ description: "Respect gitignore. Defaults to true." })),
+	limit: Type.Optional(Type.Number({ description: "Maximum number of results, clamped to 1-200.", minimum: 1, maximum: 200 })),
+	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds; default 5, clamped to 0.5..60.", minimum: 0.5, maximum: 60 })),
+}, { additionalProperties: false });
 export type FindToolInput = Static<typeof findSchema>;
-
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 200;
 const DEFAULT_TIMEOUT_MS = 5000;
 const MIN_TIMEOUT_MS = 500;
 const MAX_TIMEOUT_MS = 60_000;
-
 interface FindTarget {
 	searchPath: string;
 	pattern: string;
+	exactPathInput: boolean;
+	inputPath: string;
 }
-
-function normalizeLimit(limit: number | undefined): number {
-	if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_LIMIT;
-	return Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit)));
+function normalizeLimit(limit: number | undefined): number { return limit === undefined || !Number.isFinite(limit) ? DEFAULT_LIMIT : Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit))); }
+function normalizeTimeoutMs(timeout: number | undefined): number { return timeout === undefined || !Number.isFinite(timeout) ? DEFAULT_TIMEOUT_MS : Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.floor(timeout * 1000))); }
+function formatTimeoutSeconds(timeoutMs: number): string { const seconds = timeoutMs / 1000; return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1); }
+async function resolveFindInternal(input: string, cwd: string, ctx?: InternalResourceContext): Promise<string> { const parsed = splitPathLikeGlob(input); if (!/^[a-z]+:\/\//i.test(parsed.basePath)) return input; for (const resolve of [ctx?.internalRouter?.resolve, ctx?.internalResourceRouter?.resolve, ctx?.resolveInternalUrl]) { const resolved = await resolve?.(parsed.basePath); if (typeof resolved === "string") return parsed.glob ? `${resolved}/${parsed.glob}` : resolved; } const fallback = resolveInternalSelector(parsed.basePath, cwd); return fallback ? parsed.glob ? `${fallback}/${parsed.glob}` : fallback : input; }
+async function delimiterInExistingGlobRoot(value: string, cwd: string, ops: FindOperations): Promise<boolean> { const parsed = splitPathLikeGlob(value); return !!parsed.glob && /[;,\s]/.test(parsed.basePath) && await ops.exists(resolveToCwd(parsed.basePath, cwd)); }
+async function expandDelimitedFindPaths(pathsValue: string[] | undefined, cwd: string, ops: FindOperations, ctx?: InternalResourceContext): Promise<string[]> {
+	if (!pathsValue?.length) throw new Error("find.paths must include at least one path or glob."); const expanded: string[] = [];
+	for (const input of pathsValue) { const raw = normalizePathLikeInput(input); if (raw === "") throw new Error("find.paths entries must not be empty."); const resolvedRaw = await resolveFindInternal(raw, cwd, ctx); const rawParsed = splitPathLikeGlob(resolvedRaw);
+		if ((rawParsed.glob === undefined && await ops.exists(resolveToCwd(rawParsed.basePath, cwd))) || await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops)) { expanded.push(resolvedRaw); continue; }
+		const parts = await Promise.all(raw.split(/[;,\s]+/).map(normalizePathLikeInput).filter(Boolean).map((part) => resolveFindInternal(part, cwd, ctx)));
+		if (parts.length > 1 && (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).every(Boolean)) expanded.push(...parts); else expanded.push(resolvedRaw);
+	}
+	return expanded;
 }
-
-function normalizeTimeoutMs(timeout: number | undefined): number {
-	if (timeout === undefined || !Number.isFinite(timeout)) return DEFAULT_TIMEOUT_MS;
-	return Math.max(MIN_TIMEOUT_MS, Math.min(MAX_TIMEOUT_MS, Math.floor(timeout * 1000)));
-}
-
-function formatTimeoutSeconds(timeoutMs: number): string {
-	const seconds = timeoutMs / 1000;
-	return Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
-}
-
-function normalizeSearchPaths(pathValue: string | undefined, pathsValue: string | string[] | undefined): string[] {
-	if (Array.isArray(pathsValue)) return pathsValue.length > 0 ? pathsValue : [pathValue ?? "."];
-	return [pathValue ?? pathsValue ?? "."];
-}
-
-function normalizeFindTargets(
-	cwd: string,
-	pathValue: string | undefined,
-	pathsValue: string | string[] | undefined,
-	pattern: string | undefined,
-): FindTarget[] {
-	return normalizeSearchPaths(pathValue, pathsValue).map((searchPath) => {
-		if (pattern !== undefined) return { searchPath: resolveToCwd(searchPath, cwd), pattern };
+function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined): FindTarget[] {
+	if (!pathsValue || pathsValue.length === 0) throw new Error("find.paths must include at least one path or glob.");
+	return pathsValue.map((searchPath) => {
 		const parsed = splitPathLikeGlob(searchPath);
-		return { searchPath: resolveToCwd(parsed.basePath, cwd), pattern: parsed.glob ?? "**" };
+		const target = { searchPath: resolveToCwd(parsed.basePath, cwd), pattern: parsed.glob ?? "**/*", exactPathInput: parsed.glob === undefined, inputPath: searchPath };
+		if (path.parse(target.searchPath).root === target.searchPath) throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
+		return target;
 	});
 }
-
 function relativizeFoundPath(foundPath: string, searchPath: string): string {
 	const hadTrailingSlash = foundPath.endsWith("/") || foundPath.endsWith("\\");
-	let relativePath = foundPath;
-	if (foundPath.startsWith(searchPath)) {
-		relativePath = foundPath.slice(searchPath.length + 1);
-	} else {
-		relativePath = path.relative(searchPath, foundPath);
-	}
+	let relativePath = path.relative(searchPath, foundPath);
+	if (!relativePath) relativePath = path.basename(foundPath);
 	if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
 	return toPosixPath(relativePath);
 }
-
-function closestSearchPath(foundPath: string, searchPaths: string[]): string {
-	return searchPaths
-		.filter((searchPath) => foundPath.startsWith(searchPath))
-		.sort((a, b) => b.length - a.length)[0] ?? searchPaths[0] ?? ".";
-}
-
+function formatExactFoundPath(foundPath: string, cwd: string): string { return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath)); }
+function containsHiddenSegment(value: string): boolean { return toPosixPath(value).split("/").some((part) => part.startsWith(".") && part.length > 1); }
 function formatFoundPath(foundPath: string, searchPath: string, searchPaths: string[], cwd: string): string {
-	const relative = relativizeFoundPath(foundPath, searchPath);
+	let absoluteFoundPath = path.isAbsolute(foundPath) ? foundPath : path.resolve(searchPath, foundPath);
+	if (foundPath.endsWith("/") && !absoluteFoundPath.endsWith("/")) absoluteFoundPath += "/";
+	const relative = relativizeFoundPath(absoluteFoundPath, searchPath);
 	if (searchPaths.length <= 1) return relative;
 	const rootLabel = toPosixPath(path.relative(cwd, searchPath) || path.basename(searchPath) || ".");
 	return `${rootLabel}/${relative}`;
 }
-
-export interface FindToolDetails {
-	truncation?: TruncationResult;
-	resultLimitReached?: number;
-	timedOut?: boolean;
-	truncated?: boolean;
+interface FindTreeNode {
+	files: Set<string>;
+	dirs: Map<string, FindTreeNode>;
 }
-
+function createFindTreeNode(): FindTreeNode { return { files: new Set(), dirs: new Map() }; }
+function formatFindTree(relativized: string[]): string {
+	const root = createFindTreeNode();
+	for (const item of relativized) {
+		const isDir = item.endsWith("/");
+		const parts = item.replace(/\/+$/g, "").split("/").filter(Boolean);
+		if (parts.length === 0) continue;
+		let node = root;
+		const dirParts = isDir ? parts : parts.slice(0, -1);
+		for (const dir of dirParts) {
+			let child = node.dirs.get(dir);
+			if (!child) {
+				child = createFindTreeNode();
+				node.dirs.set(dir, child);
+			}
+			node = child;
+		}
+		if (!isDir) node.files.add(parts[parts.length - 1]!);
+	}
+	const lines: string[] = [];
+	const collapse = (dir: string, node: FindTreeNode): { label: string; node: FindTreeNode } => {
+		const parts = [dir];
+		let current = node;
+		while (current.files.size === 0 && current.dirs.size === 1) {
+			const [[nextDir, nextNode]] = [...current.dirs.entries()];
+			parts.push(nextDir!);
+			current = nextNode!;
+		}
+		return { label: parts.join("/"), node: current };
+	};
+	const render = (node: FindTreeNode, depth: number): void => {
+		for (const file of [...node.files].sort()) lines.push(file);
+		for (const [dir, child] of [...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+			const folded = collapse(dir, child);
+			lines.push(`${"#".repeat(depth + 1)} ${folded.label}/`);
+			render(folded.node, depth + 1);
+		}
+	};
+	render(root, 0);
+	return lines.join("\n");
+}
+export interface FindToolDetails { truncation?: TruncationResult; resultLimitReached?: number; timedOut?: boolean; truncated?: boolean; skippedMissingPaths?: string[]; missingPaths?: string[]; scopePath?: string; fileCount?: number; files?: string[]; meta?: { limits?: { resultLimit?: number }; truncation?: TruncationResult } }
 function buildFindResult(
 	relativized: string[],
 	effectiveLimit: number,
 	timedOut: boolean,
 	timeoutMs: number,
+	skippedMissingPaths: string[] = [],
+	resultLimitReached = false,
 ): {
 	content: Array<{ type: "text"; text: string }>;
 	details: FindToolDetails | undefined;
 } {
-	const resultLimitReached = relativized.length >= effectiveLimit;
-	const rawOutput = relativized.length > 0 ? relativized.join("\n") : "No files found matching pattern";
+	const rawOutput = relativized.length > 0 ? formatFindTree(relativized) : "No files found matching pattern";
 	const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 	let resultOutput = truncation.content;
-	const details: FindToolDetails = {};
+	const details: FindToolDetails = { scopePath: ".", fileCount: relativized.length, files: relativized, meta: { limits: { resultLimit: effectiveLimit } } };
 	const notices: string[] = [];
 	if (resultLimitReached) {
 		notices.push(`${effectiveLimit} results limit reached. Refine pattern or path to narrow results`);
 		details.resultLimitReached = effectiveLimit;
 	}
-	if (timedOut) {
-		notices.push(
-			`find timed out after ${formatTimeoutSeconds(timeoutMs)}s; returning ${relativized.length} partial matches — increase timeout or narrow pattern`,
-		);
-		details.timedOut = true;
-		details.truncated = true;
+	if (timedOut) { notices.push(`find timed out after ${formatTimeoutSeconds(timeoutMs)}s; returning ${relativized.length} partial matches — increase timeout or narrow pattern`); details.timedOut = true; details.truncated = true; }
+	if (skippedMissingPaths.length > 0) {
+		notices.push(`Skipped missing paths: ${skippedMissingPaths.join(", ")}`);
+		details.skippedMissingPaths = skippedMissingPaths;
+		details.missingPaths = skippedMissingPaths;
 	}
 	if (truncation.truncated) {
 		notices.push(`${formatSize(truncation.maxBytes ?? DEFAULT_MAX_BYTES)} limit reached`);
 		details.truncation = truncation;
+		details.meta = { ...(details.meta ?? {}), truncation };
 		details.truncated = true;
 	}
 	if (notices.length > 0) {
 		resultOutput += `\n\n[${notices.join(". ")}]`;
 	}
-	return {
-		content: [{ type: "text", text: resultOutput }],
-		details: Object.keys(details).length > 0 ? details : undefined,
-	};
+	return { content: [{ type: "text", text: resultOutput }], details };
 }
-
-/**
- * Pluggable operations for the find tool.
- * Override these to delegate file search to remote systems (for example SSH).
- */
+/** Pluggable operations for remote/container find backends. */
 export interface FindOperations {
-	/** Check if path exists */
-	exists: (absolutePath: string) => Promise<boolean> | boolean;
-	/** Find files matching glob pattern. Returns relative or absolute paths. */
-	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number }) => Promise<string[]> | string[];
+	stat?: (path: string) => Promise<{ isFile: boolean; isDirectory: boolean }> | { isFile: boolean; isDirectory: boolean } | undefined;
+	exists: (path: string) => Promise<boolean> | boolean;
+	glob: (pattern: string, cwd: string, options: { ignore: string[]; limit: number; hidden: boolean }) => Promise<string[]> | string[];
 }
-
 const defaultFindOperations: FindOperations = {
 	exists: pathExists,
-	// This is a placeholder. Actual fd execution happens in execute() when no custom glob is provided.
 	glob: () => [],
 };
-
 export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
 	operations?: FindOperations;
 }
-
 function formatFindCall(
-	args: { pattern?: string; path?: string; paths?: string | string[]; limit?: number } | undefined,
+	args: { paths?: string[]; limit?: number } | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.ts").theme,
 ): string {
-	const pattern = str(args?.pattern ?? "**");
-	const rawPaths = Array.isArray(args?.paths) ? args.paths.join(", ") : args?.paths;
-	const rawPath = str(args?.path ?? rawPaths);
-	const path = rawPath !== null ? shortenPath(rawPath || ".") : null;
-	const limit = args?.limit;
-	const invalidArg = invalidArgText(theme);
-	let text =
-		theme.fg("toolTitle", theme.bold("find")) +
-		" " +
-		(pattern === null ? invalidArg : theme.fg("accent", pattern || "")) +
-		theme.fg("toolOutput", ` in ${path === null ? invalidArg : path}`);
-	if (limit !== undefined) {
-		text += theme.fg("toolOutput", ` (limit ${limit})`);
-	}
+	const paths = Array.isArray(args?.paths) ? args.paths.map((item) => splitPathLikeGlob(item).glob ? item : `${item.replace(/\/+$/g, "")}/**/*`).join(", ") : "<paths>";
+	let text = `${theme.fg("toolTitle", theme.bold("find"))} ${theme.fg("accent", paths)}`;
+	if (args?.limit !== undefined) text += theme.fg("toolOutput", ` (limit ${args.limit})`);
 	return text;
 }
-
 function formatFindResult(
 	result: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
@@ -220,7 +203,6 @@ function formatFindResult(
 			text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`;
 		}
 	}
-
 	const resultLimit = result.details?.resultLimitReached;
 	const truncation = result.details?.truncation;
 	const timedOut = result.details?.timedOut;
@@ -233,7 +215,6 @@ function formatFindResult(
 	}
 	return text;
 }
-
 export function createFindToolDefinition(
 	cwd: string,
 	options?: FindToolOptions,
@@ -242,29 +223,12 @@ export function createFindToolDefinition(
 	return {
 		name: "find",
 		label: "find",
-		description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results (default/max) or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-		promptSnippet: "Find files by glob pattern (respects .gitignore)",
+		description: "Find filesystem paths by glob; use search when you need content matches instead of path matches.",
+		promptSnippet: "Find filesystem paths by glob.",
 		parameters: findSchema,
 		async execute(
 			_toolCallId,
-			{
-				pattern,
-				path: searchDir,
-				paths,
-				limit,
-				hidden,
-				gitignore,
-				timeout,
-			}: {
-				pattern?: string;
-				path?: string;
-				paths?: string | string[];
-				limit?: number;
-				hidden?: boolean;
-				gitignore?: boolean;
-				timeout?: number;
-			},
-
+			params: FindToolInput & { pattern?: string },
 			signal?: AbortSignal,
 			_onUpdate?,
 			_ctx?,
@@ -274,7 +238,6 @@ export function createFindToolDefinition(
 					reject(new Error("Operation aborted"));
 					return;
 				}
-
 				let settled = false;
 				let stopChild: (() => void) | undefined;
 				let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
@@ -291,24 +254,56 @@ export function createFindToolDefinition(
 					settle(() => reject(new Error("Operation aborted")));
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
-
+				const { limit, hidden, gitignore, timeout } = params;
+				const paths = params.paths ?? (typeof params.pattern === "string" ? [params.pattern] : undefined);
+				const resourceCtx = _ctx as InternalResourceContext | undefined;
 				(async () => {
 					try {
-						const targets = normalizeFindTargets(cwd, searchDir, paths, pattern);
+						const ops = customOps ?? defaultFindOperations;
+						const targets = normalizeFindTargets(cwd, await expandDelimitedFindPaths(paths, cwd, ops, resourceCtx));
 						const searchPaths = targets.map((target) => target.searchPath);
-						const targetPatterns = Array.from(new Set(targets.map((target) => target.pattern)));
-						const effectivePattern = targetPatterns.length === 1 ? targetPatterns[0]! : `{${targetPatterns.join(",")}}`;
 						const effectiveLimit = normalizeLimit(limit);
 						const timeoutMs = normalizeTimeoutMs(timeout);
-						const ops = customOps ?? defaultFindOperations;
-
-						// If custom operations provide glob(), use that instead of fd.
+						const emitUpdate = (files: string[]) => _onUpdate?.({ content: [{ type: "text", text: files.join("\n") || "No files found matching pattern" }], details: { scopePath: ".", files, fileCount: files.length, truncated: false } });
+						const exactFileResults: string[] = [];
+						const searchableTargets: FindTarget[] = [];
+						const skippedMissingPaths: string[] = [];
+						for (const target of targets) {
+							if (target.searchPath === path.parse(target.searchPath).root) throw new Error("Refusing to search filesystem root with find; provide a narrower path.");
+							const stat = customOps ? await customOps.stat?.(target.searchPath) : await fsStat(target.searchPath).catch(() => undefined);
+							if (!stat && targets.length > 1 && !customOps) {
+								skippedMissingPaths.push(target.inputPath);
+								continue;
+							}
+							if (!stat && targets.length === 1 && !customOps) {
+								throw new Error(`ENOENT: Path not found: ${target.searchPath}`);
+							}
+							if (target.exactPathInput) {
+								const isFile = typeof stat?.isFile === "function" ? stat.isFile() : stat?.isFile;
+								if (isFile) {
+									exactFileResults.push(formatExactFoundPath(target.searchPath, cwd));
+									continue;
+								}
+							}
+							searchableTargets.push(target);
+						}
+						if (exactFileResults.length > effectiveLimit || searchableTargets.length === 0) {
+							const resultLimitReached = exactFileResults.length > effectiveLimit;
+							settle(() => resolve(buildFindResult(exactFileResults.slice(0, effectiveLimit), effectiveLimit, false, timeoutMs, skippedMissingPaths, resultLimitReached)));
+							emitUpdate(exactFileResults.slice(0, effectiveLimit));
+							return;
+						}
 						if (customOps?.glob) {
 							const deadline = Date.now() + timeoutMs;
 							let timedOut = false;
-							const relativized: string[] = [];
-							for (const target of targets) {
+							const relativized: string[] = [...exactFileResults];
+							let customLimitReached = false;
+							for (const target of searchableTargets) {
 								if (!(await ops.exists(target.searchPath))) {
+									if (targets.length > 1) {
+										skippedMissingPaths.push(target.inputPath);
+										continue;
+									}
 									settle(() => reject(new Error(`Path not found: ${target.searchPath}`)));
 									return;
 								}
@@ -318,20 +313,21 @@ export function createFindToolDefinition(
 								}
 								const remaining = effectiveLimit - relativized.length;
 								const remainingMs = deadline - Date.now();
-								if (remaining <= 0) break;
+								if (remaining <= 0) {
+									const probe = await Promise.resolve(ops.glob(target.pattern, target.searchPath, { ignore: gitignore === false ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"], limit: 1, hidden: hidden !== false }));
+									if (probe.some((p) => hidden !== false || !containsHiddenSegment(p))) customLimitReached = true;
+									if (customLimitReached) break;
+									continue;
+								}
 								if (remainingMs <= 0) {
 									timedOut = true;
 									break;
 								}
 								const timeoutResult = Symbol("find-timeout");
 								let raceTimer: ReturnType<typeof setTimeout> | undefined;
+								const ignore = gitignore === false ? ["**/.git/**"] : ["**/node_modules/**", "**/.git/**"];
 								const results = await Promise.race<string[] | symbol>([
-									Promise.resolve(
-										ops.glob(target.pattern, target.searchPath, {
-											ignore: ["**/node_modules/**", "**/.git/**"],
-											limit: remaining,
-										}),
-									),
+									Promise.resolve(ops.glob(target.pattern, target.searchPath, { ignore, limit: remaining + 1, hidden: hidden !== false })),
 									new Promise<typeof timeoutResult>((resolveTimeout) => {
 										raceTimer = setTimeout(() => resolveTimeout(timeoutResult), remainingMs);
 									}),
@@ -341,17 +337,61 @@ export function createFindToolDefinition(
 									timedOut = true;
 									break;
 								}
+								if (target.exactPathInput && results.length === 0) { const stat = await customOps.stat?.(target.searchPath); if (!stat?.isDirectory) relativized.push(formatExactFoundPath(target.searchPath, cwd)); continue; }
 								if (signal?.aborted) {
 									settle(() => reject(new Error("Operation aborted")));
 									return;
 								}
-								relativized.push(...results.map((p) => formatFoundPath(p, target.searchPath, searchPaths, cwd)));
+								const visible = results.filter((p) => hidden !== false || !containsHiddenSegment(p));
+								if (visible.length > remaining) customLimitReached = true;
+								relativized.push(...visible.slice(0, remaining).map((p) => formatFoundPath(p, target.searchPath, searchPaths, cwd)));
+								emitUpdate(relativized);
+								if (customLimitReached) break;
 							}
-							settle(() => resolve(buildFindResult(relativized, effectiveLimit, timedOut, timeoutMs)));
+							settle(() => resolve(buildFindResult(relativized, effectiveLimit, timedOut, timeoutMs, skippedMissingPaths, customLimitReached)));
 							return;
 						}
-
-						// Default implementation uses fd.
+						const nativeBinding = loadNativeSearchBinding();
+						if (nativeBinding) {
+							const matches: { path: string; mtime: number }[] = exactFileResults.map((path) => ({ path, mtime: Number.POSITIVE_INFINITY }));
+							let timedOut = false;
+							const deadline = Date.now() + timeoutMs;
+							for (const target of searchableTargets) {
+								const remainingMs = deadline - Date.now();
+								if (remainingMs <= 0) {
+									timedOut = true;
+									break;
+								}
+								try {
+									const result = await nativeBinding.glob({
+										pattern: target.pattern,
+										path: target.searchPath,
+										recursive: target.pattern === "**" || target.pattern.startsWith("**/"),
+										hidden: hidden !== false,
+										gitignore: gitignore !== false,
+										includeNodeModules: gitignore === false || target.pattern.includes("node_modules") || target.searchPath.includes("node_modules"),
+										maxResults: effectiveLimit + 1,
+										cache: false,
+										sortByMtime: true,
+										timeoutMs: remainingMs,
+										signal,
+									});
+									matches.push(...result.matches.map((match) => { const isDir = (match.fileType === 2 || (match as { file_type?: number }).file_type === 2 || statSync(path.resolve(target.searchPath, match.path), { throwIfNoEntry: false })?.isDirectory()) && !match.path.endsWith("/"); const matchPath = isDir ? `${match.path}/` : match.path; return { path: formatFoundPath(matchPath, target.searchPath, searchPaths, cwd), mtime: match.mtime ?? 0 }; }));
+									emitUpdate(matches.map((match) => match.path));
+								} catch (error) {
+									if (String(error).toLowerCase().includes("timed out")) {
+										timedOut = true;
+										break;
+									}
+									throw error;
+								}
+							}
+							const uniqueMatches = [...matches.reduce((map, match) => { const previous = map.get(match.path); if (!previous || match.mtime > previous.mtime) map.set(match.path, match); return map; }, new Map<string, { path: string; mtime: number }>()).values()];
+							uniqueMatches.sort((a, b) => b.mtime - a.mtime || a.path.localeCompare(b.path));
+							const resultLimitReached = uniqueMatches.length > effectiveLimit;
+							settle(() => resolve(buildFindResult(uniqueMatches.slice(0, effectiveLimit).map((match) => match.path), effectiveLimit, timedOut, timeoutMs, skippedMissingPaths, resultLimitReached)));
+							return;
+						}
 						const fdPath = await ensureTool("fd", true);
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
@@ -361,84 +401,76 @@ export function createFindToolDefinition(
 							settle(() => reject(new Error("fd is not available and could not be downloaded")));
 							return;
 						}
-
-						// Build fd arguments. --no-require-git makes fd apply hierarchical .gitignore
-						// semantics whether or not the search path is inside a git repository, without
-						// leaking sibling-directory rules the way --ignore-file (a global source) would.
-						const args: string[] = ["--glob", "--color=never", "--no-require-git", "--max-results", String(effectiveLimit)];
-						if (hidden !== false) args.push("--hidden");
-						if (gitignore === false) args.push("--no-ignore");
-
-						// fd --glob matches against the basename unless --full-path is set; in --full-path
-						// mode it matches against the absolute candidate path, so a path-containing
-						// pattern like 'src/**/*.spec.ts' needs a leading '**/' to match anything.
-						let fdPattern = effectivePattern;
-						if (effectivePattern.includes("/")) {
-							args.push("--full-path");
-							if (!effectivePattern.startsWith("/") && !effectivePattern.startsWith("**/") && effectivePattern !== "**") {
-								fdPattern = `**/${effectivePattern}`;
-							}
-						}
-						args.push("--", fdPattern, ...searchPaths);
-
-						const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
-						const rl = createInterface({ input: child.stdout });
-						let stderr = "";
 						let timedOut = false;
-						const lines: string[] = [];
-
-						stopChild = () => {
-							if (!child.killed) {
-								child.kill();
+						const relativized: string[] = [...exactFileResults];
+						const deadline = Date.now() + timeoutMs;
+						const runFdForTarget = async (target: FindTarget, remaining: number): Promise<boolean> => {
+							const args: string[] = ["--glob", "--color=never", "--no-require-git", "--max-results", String(remaining + 1)];
+							if (hidden !== false) args.push("--hidden");
+							if (gitignore === false) args.push("--no-ignore");
+							let fdPattern = target.pattern;
+							if (target.pattern.includes("/")) {
+								args.push("--full-path");
+								if (!target.pattern.startsWith("/") && !target.pattern.startsWith("**/") && target.pattern !== "**") fdPattern = `**/${target.pattern}`;
 							}
+							args.push("--", fdPattern, target.searchPath);
+							const remainingMs = deadline - Date.now();
+							if (remainingMs <= 0) {
+								timedOut = true;
+								return false;
+							}
+							return await new Promise<boolean>((resolveTarget, rejectTarget) => {
+								const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+								const rl = createInterface({ input: child.stdout });
+								let stderr = "";
+								const lines: string[] = [];
+								stopChild = () => {
+									if (!child.killed) child.kill();
+								};
+								const targetTimer = setTimeout(() => {
+									timedOut = true;
+									stopChild?.();
+								}, remainingMs);
+								const cleanup = () => {
+									clearTimeout(targetTimer);
+									rl.close();
+								};
+								child.stderr?.on("data", (chunk) => {
+									stderr += chunk.toString();
+								});
+								rl.on("line", (line) => lines.push(line));
+								child.on("error", (error) => {
+									cleanup();
+									rejectTarget(new Error(`Failed to run fd: ${error.message}`));
+								});
+								child.on("close", (code) => {
+									cleanup();
+									if (signal?.aborted) {
+										rejectTarget(new Error("Operation aborted"));
+										return;
+									}
+									if (!timedOut && code !== 0 && lines.length === 0) {
+										rejectTarget(new Error(stderr.trim() || `fd exited with code ${code}`));
+										return;
+									}
+									for (const rawLine of lines.slice(0, remaining)) {
+										const line = rawLine.replace(/\r$/, "").trim();
+										if (line) { const found = statSync(path.resolve(target.searchPath, line), { throwIfNoEntry: false })?.isDirectory() && !line.endsWith("/") ? `${line}/` : line; relativized.push(formatFoundPath(found, target.searchPath, searchPaths, cwd)); }
+									}
+									emitUpdate(relativized);
+									resolveTarget(lines.length > Math.max(0, remaining));
+								});
+							});
 						};
-						timeoutTimer = setTimeout(() => {
-							timedOut = true;
-							stopChild?.();
-						}, timeoutMs);
-
-						const cleanup = () => {
-							rl.close();
-						};
-
-						child.stderr?.on("data", (chunk) => {
-							stderr += chunk.toString();
-						});
-
-						rl.on("line", (line) => {
-							lines.push(line);
-						});
-
-						child.on("error", (error) => {
-							cleanup();
-							settle(() => reject(new Error(`Failed to run fd: ${error.message}`)));
-						});
-
-						child.on("close", (code) => {
-							cleanup();
-							if (signal?.aborted) {
-								settle(() => reject(new Error("Operation aborted")));
-								return;
-							}
-							const output = lines.join("\n");
-							if (!timedOut && code !== 0) {
-								const errorMsg = stderr.trim() || `fd exited with code ${code}`;
-								if (!output) {
-									settle(() => reject(new Error(errorMsg)));
-									return;
-								}
-							}
-
-							const relativized: string[] = [];
-							for (const rawLine of lines) {
-								const line = rawLine.replace(/\r$/, "").trim();
-								if (!line) continue;
-								const matchingSearchPath = closestSearchPath(line, searchPaths);
-								relativized.push(formatFoundPath(line, matchingSearchPath, searchPaths, cwd));
-							}
-
-							settle(() => resolve(buildFindResult(relativized, effectiveLimit, timedOut, timeoutMs)));
-						});
+						let resultLimitReached = false;
+						for (const target of searchableTargets) {
+							const remaining = effectiveLimit - relativized.length;
+							if (timedOut) break;
+							if (remaining <= 0) { if (await runFdForTarget(target, 0)) { resultLimitReached = true; break; } continue; }
+							const targetLimitReached = await runFdForTarget(target, remaining);
+							if (targetLimitReached) { resultLimitReached = true; break; }
+						}
+						settle(() => resolve(buildFindResult(relativized.slice(0, effectiveLimit), effectiveLimit, timedOut, timeoutMs, skippedMissingPaths, resultLimitReached)));
 					} catch (e) {
 						if (signal?.aborted) {
 							settle(() => reject(new Error("Operation aborted")));
@@ -462,7 +494,6 @@ export function createFindToolDefinition(
 		},
 	};
 }
-
 export function createFindTool(cwd: string, options?: FindToolOptions): AgentTool<typeof findSchema> {
 	return wrapToolDefinition(createFindToolDefinition(cwd, options));
 }

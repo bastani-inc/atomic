@@ -92,6 +92,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { createAskUserQuestionToolDefinition } from "./ask-user-question/index.ts";
+import { createHashlineSnapshotStore, type HashlineSnapshotStore } from "./hashline.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
@@ -149,24 +150,25 @@ export interface ToolsOptions {
 	find?: FindToolOptions;
 	search?: SearchToolOptions;
 	ls?: LsToolOptions;
+	hashlineStore?: HashlineSnapshotStore;
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":
-			return createReadToolDefinition(cwd, options?.read);
+			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore: options?.hashlineStore });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
 		case "edit":
-			return createEditToolDefinition(cwd, options?.edit);
+			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
 		case "write":
-			return createWriteToolDefinition(cwd, options?.write);
+			return createWriteToolDefinition(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
 		case "grep":
 			return createGrepToolDefinition(cwd, options?.grep);
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
 		case "search":
-			return createSearchToolDefinition(cwd, options?.search);
+			return createSearchToolDefinition(cwd, { ...options?.search, hashlineStore: options?.hashlineStore });
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
@@ -181,19 +183,19 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
 	switch (toolName) {
 		case "read":
-			return createReadTool(cwd, options?.read);
+			return createReadTool(cwd, { ...options?.read, hashlineStore: options?.hashlineStore });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
 		case "edit":
-			return createEditTool(cwd, options?.edit);
+			return createEditTool(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
 		case "write":
-			return createWriteTool(cwd, options?.write);
+			return createWriteTool(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
 		case "grep":
 			return createGrepTool(cwd, options?.grep);
 		case "find":
 			return createFindTool(cwd, options?.find);
 		case "search":
-			return createSearchTool(cwd, options?.search);
+			return createSearchTool(cwd, { ...options?.search, hashlineStore: options?.hashlineStore });
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "ask_user_question":
@@ -206,35 +208,38 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 }
 
 export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadToolDefinition(cwd, options?.read),
-		createBashToolDefinition(cwd, options?.bash),
-		createEditToolDefinition(cwd, options?.edit),
-		createWriteToolDefinition(cwd, options?.write),
+		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
+		createBashToolDefinition(cwd, { asyncEnabled: true, ...options?.bash }),
+		createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
+		createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
 		createFindToolDefinition(cwd, options?.find),
-		createSearchToolDefinition(cwd, options?.search),
+		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 	];
 }
 
 export function createReadOnlyToolDefinitions(cwd: string, options?: ToolsOptions): ToolDef[] {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadToolDefinition(cwd, options?.read),
+		createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
 		createGrepToolDefinition(cwd, options?.grep),
 		createFindToolDefinition(cwd, options?.find),
-		createSearchToolDefinition(cwd, options?.search),
+		createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 		createLsToolDefinition(cwd, options?.ls),
 	];
 }
 
 export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): Record<ToolName, ToolDef> {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
-		read: createReadToolDefinition(cwd, options?.read),
-		bash: createBashToolDefinition(cwd, options?.bash),
-		edit: createEditToolDefinition(cwd, options?.edit),
-		write: createWriteToolDefinition(cwd, options?.write),
+		read: createReadToolDefinition(cwd, { ...options?.read, hashlineStore }),
+		bash: createBashToolDefinition(cwd, { asyncEnabled: true, ...options?.bash }),
+		edit: createEditToolDefinition(cwd, { ...options?.edit, hashlineStore }),
+		write: createWriteToolDefinition(cwd, { ...options?.write, hashlineStore }),
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
-		search: createSearchToolDefinition(cwd, options?.search),
+		search: createSearchToolDefinition(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsToolDefinition(cwd, options?.ls),
 		ask_user_question: createAskUserQuestionToolDefinition(),
 		todo: createTodoToolDefinition(cwd),
@@ -242,35 +247,38 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 }
 
 export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadTool(cwd, options?.read),
-		createBashTool(cwd, options?.bash),
-		createEditTool(cwd, options?.edit),
-		createWriteTool(cwd, options?.write),
+		createReadTool(cwd, { ...options?.read, hashlineStore }),
+		createBashTool(cwd, { asyncEnabled: true, ...options?.bash }),
+		createEditTool(cwd, { ...options?.edit, hashlineStore }),
+		createWriteTool(cwd, { ...options?.write, hashlineStore }),
 		createFindTool(cwd, options?.find),
-		createSearchTool(cwd, options?.search),
+		createSearchTool(cwd, { ...options?.search, hashlineStore }),
 	];
 }
 
 export function createReadOnlyTools(cwd: string, options?: ToolsOptions): Tool[] {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return [
-		createReadTool(cwd, options?.read),
+		createReadTool(cwd, { ...options?.read, hashlineStore }),
 		createGrepTool(cwd, options?.grep),
 		createFindTool(cwd, options?.find),
-		createSearchTool(cwd, options?.search),
+		createSearchTool(cwd, { ...options?.search, hashlineStore }),
 		createLsTool(cwd, options?.ls),
 	];
 }
 
 export function createAllTools(cwd: string, options?: ToolsOptions): Record<ToolName, Tool> {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
-		read: createReadTool(cwd, options?.read),
-		bash: createBashTool(cwd, options?.bash),
-		edit: createEditTool(cwd, options?.edit),
-		write: createWriteTool(cwd, options?.write),
+		read: createReadTool(cwd, { ...options?.read, hashlineStore }),
+		bash: createBashTool(cwd, { asyncEnabled: true, ...options?.bash }),
+		edit: createEditTool(cwd, { ...options?.edit, hashlineStore }),
+		write: createWriteTool(cwd, { ...options?.write, hashlineStore }),
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
-		search: createSearchTool(cwd, options?.search),
+		search: createSearchTool(cwd, { ...options?.search, hashlineStore }),
 		ls: createLsTool(cwd, options?.ls),
 		ask_user_question: wrapToolDefinition(createAskUserQuestionToolDefinition()),
 		todo: wrapToolDefinition(createTodoToolDefinition(cwd)),

@@ -11,17 +11,41 @@ crate-type = ["cdylib"]
 
 [dependencies]
 bytes.workspace = true
+dashmap.workspace = true
+globset.workspace = true
+grep-matcher.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
 h2.workspace = true
 http.workspace = true
+ignore.workspace = true
+libc.workspace = true
+memmap2.workspace = true
 napi.workspace = true
 napi-derive.workspace = true
+portable-pty.workspace = true
+rayon.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+smallvec.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 url.workspace = true
 webpki-roots.workspace = true
+tree-sitter.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-ruby.workspace = true
+tree-sitter-css.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-bash.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-java.workspace = true
 
 [build-dependencies]
 napi-build.workspace = true

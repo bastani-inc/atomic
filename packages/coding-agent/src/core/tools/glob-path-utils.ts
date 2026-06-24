@@ -5,11 +5,20 @@ export interface PathLikeGlobParts {
 	glob?: string;
 }
 
+export function normalizePathLikeInput(value: string): string {
+	let trimmed = value.trim();
+	if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+		trimmed = trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
 export function pathLikeContainsGlob(value: string): boolean {
 	return GLOB_CHARS.test(value);
 }
 
-export function splitPathLikeGlob(value: string): PathLikeGlobParts {
+export function splitPathLikeGlob(input: string): PathLikeGlobParts {
+	const value = normalizePathLikeInput(input);
 	const normalized = value.replace(/\\/g, "/");
 	const segments = normalized.split("/");
 	const firstGlobSegment = segments.findIndex((segment) => pathLikeContainsGlob(segment));

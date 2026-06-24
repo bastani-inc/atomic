@@ -134,6 +134,12 @@ export function _buildRuntime(this: AgentSession, options: {
 	const autoResizeImages = this.settingsManager.getImageAutoResize();
 	const shellCommandPrefix = this.settingsManager.getShellCommandPrefix();
 	const shellPath = this.settingsManager.getShellPath();
+	const isAllowedBuiltinTool = (name: string): boolean => {
+		if (this._allowedToolNames && !this._allowedToolNames.has(name)) return false;
+		if (this._excludedToolNames?.has(name)) return false;
+		return true;
+	};
+	const activeBuiltinTools = (options.activeToolNames ?? [...defaultToolNames]).filter(isAllowedBuiltinTool);
 	const baseToolDefinitions = this._baseToolsOverride
 		? Object.fromEntries(
 				Object.entries(this._baseToolsOverride).map(([name, tool]) => [
@@ -146,6 +152,21 @@ export function _buildRuntime(this: AgentSession, options: {
 				bash: {
 					commandPrefix: shellCommandPrefix,
 					shellPath,
+					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
+					availableTools: activeBuiltinTools,
+					interceptor: async (context) => {
+						const result = await this._extensionRunner.emitUserBash({
+							type: "user_bash",
+							command: context.command,
+							excludeFromContext: false,
+							cwd: context.cwd,
+						});
+						return result;
+					},
+				},
+				search: {
+					contextBefore: this.settingsManager.getSearchContextBefore(),
+					contextAfter: this.settingsManager.getSearchContextAfter(),
 				},
 			});
 

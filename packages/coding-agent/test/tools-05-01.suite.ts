@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 

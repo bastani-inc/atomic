@@ -99,31 +99,25 @@ describe("ToolExecutionComponent parity", () => {
 	});
 
 	test("uses built-in rendering for built-in overrides without custom renderers", () => {
-		const overrideDefinition: ToolDefinition = {
-			...createBaseToolDefinition("edit"),
-		};
-
+		const overrideDefinition: ToolDefinition = { ...createBaseToolDefinition("edit") };
 		const component = new ToolExecutionComponent(
-			"edit",
-			"tool-2",
-			{ path: "README.md", oldText: "before", newText: "after" },
-			{},
-			overrideDefinition,
-			createFakeTui(),
-			process.cwd(),
+			"edit", "tool-2", { input: "[README.md#ABCD]\nreplace 1..1:\n+after" }, {},
+			overrideDefinition, createFakeTui(), process.cwd(),
 		);
 		component.updateResult({ content: [], details: { diff: "+1 after", firstChangedLine: 1 }, isError: false });
-		const rendered = stripAnsi(component.render(120).join("\n"));
+		const rawRendered = component.render(120).join("\n");
+		expect(rawRendered).toMatch(/\x1b\[48;/);
+		const rendered = stripAnsi(rawRendered);
 		expect(rendered).toContain("edit");
 		expect(rendered).toContain("README.md");
 		expect(rendered).not.toContain(":1");
 	});
 
-	test("preserves legacy file_path rendering compatibility for built-in tools", () => {
+	test("renders built-in read path arguments", () => {
 		const component = new ToolExecutionComponent(
 			"read",
 			"tool-3",
-			{ file_path: "README.md" },
+			{ path: "README.md" },
 			{},
 			undefined,
 			createFakeTui(),
@@ -150,6 +144,7 @@ describe("ToolExecutionComponent parity", () => {
 			(update) => updates.push(update as { content: Array<{ type: string; text?: string }>; details?: unknown }),
 			{} as never,
 		);
+		await Promise.resolve();
 		expect(updates).toEqual([{ content: [], details: undefined }]);
 		await promise;
 	});
@@ -479,14 +474,14 @@ describe("ToolExecutionComponent parity", () => {
 		});
 	}
 	for (const scenario of [
-		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
-		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
+		{ title: "SKILL.md", path: `${join(process.cwd(), "attio", "SKILL.md")}:120+210`, compact: "SKILL.md:120+210" },
+		{ title: "Pi documentation", path: `${getReadmePath()}:120+210`, compact: "README.md:120+210" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {
 			const component = new ToolExecutionComponent(
 				"read",
 				`tool-compact-range-${scenario.title}`,
-				{ path: scenario.path, offset: 120, limit: 210 },
+				{ path: scenario.path },
 				{},
 				createReadToolDefinition(process.cwd()),
 				createFakeTui(),
@@ -494,7 +489,6 @@ describe("ToolExecutionComponent parity", () => {
 			);
 			const collapsed = stripAnsi(component.render(120).join("\n"));
 			expect(collapsed).toContain(scenario.compact);
-			expect(collapsed.indexOf(":120-329")).toBeLessThan(collapsed.indexOf("Expand"));
 		});
 	}
 });

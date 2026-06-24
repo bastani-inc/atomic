@@ -62,6 +62,8 @@ export interface ExtensionContext {
 	modelRegistry: ModelRegistry;
 	/** Current model (may be undefined) */
 	model: Model<Api> | undefined;
+	/** Session-scoped internal resource router (e.g. artifact:// resolver). */
+	readonly internalResourceRouter?: import("../tools/resource-selectors.ts").InternalResourceRouter;
 	/** Whether the agent is idle (not streaming) */
 	isIdle(): boolean;
 	/** Whether project-local trust is active for this context. */

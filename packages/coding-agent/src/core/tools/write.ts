@@ -1,22 +1,27 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
-import { mkdir as fsMkdir, writeFile as fsWriteFile } from "fs/promises";
+import { chmod as fsChmod, mkdir as fsMkdir, readFile as fsReadFile, readdir as fsReaddir, stat as fsStat, writeFile as fsWriteFile } from "fs/promises";
 import { dirname } from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { getRegisteredConflictBlock, parseConflictBlocks, type ConflictBlock } from "./conflict-registry.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
+import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnapshot, stripKnownHashlineCopiedContent, type HashlineSnapshotStore } from "./hashline.ts";
 import { resolveToCwd } from "./path-utils.ts";
+import { parseArchiveSelector, parseSqliteSelector, resolveInternalSelector, sqliteSelectorForPath, writeArchiveSelector, writeInternalSelector, writeSqliteSelector, type InternalResourceContext } from "./resource-selectors.ts";
+import { invalidateNativeSearchCache } from "./search-native.ts";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
 const writeSchema = Type.Object({
-	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
-	content: Type.String({ description: "Content to write to the file" }),
-});
+	path: Type.String({ description: "File path, writable internal resource, archive entry, SQLite row selector, or conflict resolution target." }),
+	content: Type.String({ description: "Full replacement content. SQLite non-delete writes parse as a JSON5 object; empty content deletes a SQLite row when a row key exists." }),
+}, { additionalProperties: false });
 
 export type WriteToolInput = Static<typeof writeSchema>;
+export interface WriteToolDetails { resolvedPath?: string; madeExecutable?: boolean; meta?: { sourcePath?: string; diagnostics?: unknown }; diagnostics?: unknown }
 
 /**
  * Pluggable operations for the write tool.
@@ -25,10 +30,42 @@ export type WriteToolInput = Static<typeof writeSchema>;
 export interface WriteOperations {
 	/** Write content to a file */
 	writeFile: (absolutePath: string, content: string) => Promise<void>;
-	/** Create directory recursively */
 	mkdir: (dir: string) => Promise<void>;
 }
 
+
+async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBlock[]> {
+	const out: ConflictBlock[] = [];
+	async function walk(dir: string): Promise<void> { for (const entry of await fsReaddir(dir, { withFileTypes: true }).catch(() => [])) { if (out.length >= limit || entry.name === ".git" || entry.name === "node_modules") continue; const full = `${dir}/${entry.name}`; if (entry.isDirectory()) await walk(full); else if (entry.isFile()) { const text = await fsReadFile(full, "utf8").catch(() => ""); if (text.includes("<<<<<<<") && text.includes("=======") && text.includes(">>>>>>>")) out.push(...parseConflictBlocks(full, text)); } } }
+	await walk(root); return out;
+}
+function conflictReplacement(content: string, block: ConflictBlock): string[] {
+	const token = content.trim();
+	if (token === "@ours") return block.ours;
+	if (token === "@theirs") return block.theirs;
+	if (token === "@base") return block.base;
+	const normalized = content.endsWith("\n") ? content.slice(0, -1) : content;
+	return normalized === "" ? [] : normalized.split("\n");
+}
+async function resolveConflictBlocks(blocks: ConflictBlock[], content: string): Promise<string[]> {
+	const byFile = new Map<string, ConflictBlock[]>();
+	for (const block of blocks) byFile.set(block.file, [...(byFile.get(block.file) ?? []), block]);
+	const written: string[] = [];
+	for (const [file, fileBlocks] of byFile) {
+		const text = await fsReadFile(file, "utf8"), lines = text.split("\n");
+		for (const block of fileBlocks.sort((a, b) => b.start - a.start)) lines.splice(block.start, block.end - block.start + 1, ...conflictReplacement(content, block));
+		await fsWriteFile(file, lines.join("\n"), "utf8"); written.push(file);
+	}
+	return written;
+}
+async function conflictSnapshotHeaders(files: string[], cwd: string, store: HashlineSnapshotStore): Promise<string[]> {
+	const headers: string[] = [];
+	for (const file of [...new Set(files)]) { invalidateNativeSearchCache(file); const text = await fsReadFile(file, "utf8").catch(() => undefined); if (text !== undefined) headers.push(formatHashlineContent(recordHashlineSnapshot(file, cwd, text, store)).split("\n")[0]!); }
+	return headers;
+}
+function hasGeneratedMarker(text: string): boolean {
+	return text.split("\n").slice(0, 5).some((line) => /@generated|auto-generated|DO NOT EDIT|GENERATED -- do not edit/i.test(line));
+}
 const defaultWriteOperations: WriteOperations = {
 	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
@@ -37,6 +74,7 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
+	hashlineStore?: HashlineSnapshotStore;
 }
 
 type WriteHighlightCache = {
@@ -129,12 +167,12 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 }
 
 function formatWriteCall(
-	args: { path?: string; file_path?: string; content?: string } | undefined,
+	args: { path?: string; content?: string } | undefined,
 	options: ToolRenderResultOptions,
 	theme: typeof import("../../modes/interactive/theme/theme.ts").theme,
 	cache: WriteHighlightCache | undefined,
 ): string {
-	const rawPath = str(args?.file_path ?? args?.path);
+	const rawPath = str(args?.path);
 	const fileContent = str(args?.content);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
 	const invalidArg = invalidArgText(theme);
@@ -181,15 +219,15 @@ function formatWriteResult(
 export function createWriteToolDefinition(
 	cwd: string,
 	options?: WriteToolOptions,
-): ToolDefinition<typeof writeSchema, undefined> {
+): ToolDefinition<typeof writeSchema, WriteToolDetails | undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	return {
 		name: "write",
 		label: "write",
-		description:
-			"Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-		promptSnippet: "Create or overwrite files",
-		promptGuidelines: ["Use write only for new files or complete rewrites."],
+		description: "Create or overwrite a file, writable internal resource, archive entry, SQLite row, or merge-conflict resolution.",
+		promptSnippet: "Create or overwrite a writable path selector.",
+		promptGuidelines: ["Use write when replacing the full content of a target; use edit for source edits anchored to existing hashline snapshots."],
 		parameters: writeSchema,
 		async execute(
 			_toolCallId,
@@ -198,6 +236,46 @@ export function createWriteToolDefinition(
 			_onUpdate?,
 			_ctx?,
 		) {
+			const resourceCtx = _ctx as InternalResourceContext | undefined;
+			const archive = parseArchiveSelector(path);
+			const parsedSqlite = parseSqliteSelector(path);
+			if (parsedSqlite?.table && path.includes("?")) throw new Error("SQLite write selectors must not include query parameters.");
+			if (parsedSqlite?.table && (parsedSqlite.limit !== undefined || parsedSqlite.offset !== undefined || parsedSqlite.where || parsedSqlite.order || parsedSqlite.schema || parsedSqlite.sampleRows !== undefined || parsedSqlite.query)) throw new Error("SQLite write selectors must not include query parameters.");
+			const sqlite = sqliteSelectorForPath(path, cwd);
+			if (!sqlite && parsedSqlite?.table) throw new Error(`SQLite database not found or is not SQLite: ${path}`);
+			if (sqlite) {
+				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
+				const message = writeSqliteSelector(sqlite, writeContent);
+				return { content: [{ type: "text", text: message }], details: { meta: { sourcePath: sqlite.databasePath } } };
+			}
+			if (archive) {
+				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
+				archive.archivePath = resolveToCwd(archive.archivePath, cwd);
+				writeArchiveSelector(archive, writeContent);
+				return { content: [{ type: "text", text: `Successfully wrote ${writeContent.length} characters to ${path}` }], details: { resolvedPath: archive.archivePath } };
+			}
+			if (path.startsWith("conflict://")) {
+				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
+				const target = decodeURIComponent(path.slice("conflict://".length));
+				if (!target) throw new Error("conflict:// target is required.");
+				if (target.includes("/")) throw new Error("Scoped conflict resources are read-only; write conflict://<id> or conflict://*.");
+				const blocks = await findConflictBlocks(cwd);
+				if (blocks.length === 0) throw new Error("No conflict markers found.");
+				if (target === "*") { const headers = await conflictSnapshotHeaders(await resolveConflictBlocks(blocks, writeContent), cwd, hashlineStore); return { content: [{ type: "text", text: `Resolved ${blocks.length} conflict${blocks.length === 1 ? "" : "s"}${headers.length > 0 ? `\n\nSnapshots:\n${headers.join("\n")}` : ""}` }], details: undefined }; }
+				if (!/^\d+$/.test(target)) throw new Error("Conflict writes must target conflict://<id> or conflict://*.");
+				const id = Number.parseInt(target, 10);
+				const block = getRegisteredConflictBlock(cwd, id) ?? blocks[id - 1];
+				if (!block) throw new Error(`Conflict id not found: ${target}`);
+				const headers = await conflictSnapshotHeaders(await resolveConflictBlocks([block], writeContent), cwd, hashlineStore);
+				return { content: [{ type: "text", text: `Resolved conflict ${target}${headers[0] ? `\n\n${headers[0]}` : ""}` }], details: undefined };
+			}
+			if (/^[a-z]+:\/\//i.test(path)) {
+				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, cwd) : undefined;
+				if (sourcePath) return createWriteToolDefinition(cwd, options).execute(_toolCallId, { path: sourcePath, content }, signal, _onUpdate, _ctx as never);
+				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
+				await writeInternalSelector(path, cwd, writeContent, resourceCtx);
+				return { content: [{ type: "text", text: `Successfully wrote ${writeContent.length} characters to ${path}` }], details: {} };
+			}
 			const absolutePath = resolveToCwd(path, cwd);
 			const dir = dirname(absolutePath);
 			return withFileMutationQueue(absolutePath, async () => {
@@ -214,19 +292,33 @@ export function createWriteToolDefinition(
 				await ops.mkdir(dir);
 				throwIfAborted();
 
-				// Write the file contents.
-				await ops.writeFile(absolutePath, content);
+				const existing = await fsReadFile(absolutePath, "utf8").catch(() => undefined);
+				if (existing !== undefined && hasGeneratedMarker(existing)) throw new Error(`Refusing to overwrite generated file: ${path}`);
+				const writeContent = stripKnownHashlineCopiedContent(content, absolutePath, cwd, hashlineStore);
+				await ops.writeFile(absolutePath, writeContent);
+				invalidateNativeSearchCache(absolutePath);
+				let madeExecutable = false;
+				if (writeContent.startsWith("#!")) {
+					const mode = await fsStat(absolutePath).then((stat) => stat.mode).catch(() => undefined);
+					if (mode !== undefined) { await fsChmod(absolutePath, mode | 0o111); madeExecutable = true; }
+				}
 				throwIfAborted();
 
+				const snapshot = recordHashlineSnapshot(absolutePath, cwd, writeContent, hashlineStore);
 				return {
-					content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${path}` }],
-					details: undefined,
+					content: [
+						{
+							type: "text",
+							text: `Successfully wrote ${writeContent.length} bytes to ${path}\n\n${formatHashlineContent(snapshot)}`,
+						},
+					],
+					details: { resolvedPath: absolutePath, ...(madeExecutable ? { madeExecutable } : {}) },
 				};
 			});
 		},
 		renderCall(args, theme, context) {
-			const renderArgs = args as { path?: string; file_path?: string; content?: string } | undefined;
-			const rawPath = str(renderArgs?.file_path ?? renderArgs?.path);
+			const renderArgs = args as { path?: string; content?: string } | undefined;
+			const rawPath = str(renderArgs?.path);
 			const fileContent = str(renderArgs?.content);
 			const component =
 				(context.lastComponent as WriteCallRenderComponent | undefined) ?? new WriteCallRenderComponent();

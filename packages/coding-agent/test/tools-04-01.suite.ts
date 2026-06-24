@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -58,12 +58,14 @@ describe("Coding Agent Tools", () => {
 			const result = await bashTool.execute("test-call-8", { command: "echo 'test output'" });
 
 			expect(getTextOutput(result)).toContain("test output");
-			expect(result.details).toBeUndefined();
+			expect(result.details?.timeoutSeconds).toBe(300);
+			expect(typeof result.details?.wallTimeMs).toBe("number");
 		});
 		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
-				/(Command failed|code 1)/,
-			);
+			const result = await bashTool.execute("test-call-9", { command: "exit 1" });
+			expect(result.isError).toBe(true);
+			expect(result.details?.exitCode).toBe(1);
+			expect(getTextOutput(result)).toContain("Command exited with code 1");
 		});
 		it("should respect timeout", async () => {
 			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(

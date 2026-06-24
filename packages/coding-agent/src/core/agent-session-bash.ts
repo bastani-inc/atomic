@@ -8,7 +8,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 export async function executeBash(this: AgentSession, 
 	command: string,
 	onChunk?: (chunk: string) => void,
-	options?: { excludeFromContext?: boolean; operations?: BashOperations },
+	options?: { excludeFromContext?: boolean; operations?: BashOperations; pty?: boolean },
 ): Promise<BashResult> {
 	this._bashAbortController = new AbortController();
 
@@ -25,6 +25,7 @@ export async function executeBash(this: AgentSession,
 			{
 				onChunk,
 				signal: this._bashAbortController.signal,
+				pty: options?.pty,
 			},
 		);
 

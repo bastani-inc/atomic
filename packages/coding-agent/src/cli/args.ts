@@ -243,7 +243,7 @@ export function printHelp(extensionFlags?: ExtensionFlag[]): void {
 					})
 					.join("\n")}\n`
 			: "";
-	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, ask_user_question, todo tools
+	console.log(`${chalk.bold(APP_NAME)} - AI coding assistant with read, bash, edit, write, find, search, ask_user_question, todo tools
 
 ${chalk.bold("Usage:")}
   ${APP_NAME} [options] [@files...] [messages...]
@@ -350,7 +350,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} --model custom/long-context-model --context-window 1m "Review this repository"
 
   # Read-only mode (no file modifications possible)
-  ${APP_NAME} --tools read,grep,find,ls -p "Review the code in src/"
+  ${APP_NAME} --tools read,search,find,ls -p "Review the code in src/"
 
   # Disable one tool while keeping the rest available
   ${APP_NAME} --exclude-tools ask_user_question
@@ -404,14 +404,15 @@ ${chalk.bold("Environment Variables:")}
   PI_* aliases are also supported for app-specific variables above.
 
 ${chalk.bold("Built-in Tool Names:")}
-  read              - Read file contents
-  bash              - Execute bash commands
-  edit              - Edit files with find/replace
-  write             - Write files (creates/overwrites)
+  read              - Read path selectors (files, dirs, archives, URLs)
+  bash              - Execute shell commands
+  edit              - Apply hashline-anchored source edits
+  write             - Create or overwrite writable path selectors
+  find              - Find filesystem paths by glob pattern (default)
+  search            - Search file contents with regex (default)
   ask_user_question - Ask structured questions in the TUI (default)
   todo              - Manage file-based todos (default)
-  grep              - Search file contents (read-only, off by default)
-  find              - Find files by glob pattern (read-only, off by default)
-  ls                - List directory contents (read-only, off by default)
+  grep              - Legacy content search helper (read-only, off by default)
+  ls                - Legacy directory listing helper (read-only, off by default)
 `);
 }

@@ -75,7 +75,7 @@ describe("regression #2835: tool allowlists filter extension tools", () => {
 				.sort(),
 		).toEqual(["dynamic_tool", "read"]);
 		expect(session.getActiveToolNames().sort()).toEqual(["dynamic_tool", "read"]);
-		expect(session.systemPrompt).toContain("- read: Read file contents");
+		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).toContain("- dynamic_tool: Run dynamic test behavior");
 		expect(session.systemPrompt).not.toContain("- bash:");
 		expect(session.systemPrompt).not.toContain("- edit:");

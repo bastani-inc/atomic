@@ -25,6 +25,8 @@ export interface BashExecutorOptions {
 	onChunk?: (chunk: string) => void;
 	/** AbortSignal for cancellation */
 	signal?: AbortSignal;
+	/** Run with PTY handling when supported by the operations backend */
+	pty?: boolean;
 }
 
 export interface BashResult {
@@ -109,6 +111,7 @@ export async function executeBashWithOperations(
 		const result = await operations.exec(command, cwd, {
 			onData,
 			signal: options?.signal,
+			pty: options?.pty,
 		});
 
 		const fullOutput = outputChunks.join("");

@@ -507,8 +507,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 Specify which tools to expose by name:
 
-- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `search`, `ls`, `ask_user_question`, `todo`
-- The default active built-ins include `find`, `search`, `ask_user_question`, and `todo` in addition to file and shell tools. `search` is a compatibility wrapper around the existing `grep` behavior.
+- Built-in tool names enabled by default: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
+- `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed.
 - `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
 - `noTools: "all"` disables all tools
