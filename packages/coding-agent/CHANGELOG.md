@@ -16,7 +16,7 @@
 
 - Fixed `@` file-reference autocomplete in the first-run onboarding editor before the asynchronous `fd` readiness check completes by falling back to the built-in synchronous path completer while preserving `@` prefixes and quoted paths.
 - Fixed workflow config/discovery isolation so `ATOMIC_CODING_AGENT_DIR` prevents home-global workflows from shadowing the bundled first-run onboarding `goal` and `ralph` targets.
-- Fixed first-run onboarding reset for copied settings that already have `lastChangelogVersion`, so deleting the onboarding markers reliably re-arms the CTA and placeholder without changing changelog behavior.
+- Fixed first-run onboarding returning-user detection so existing Atomic users with prior changelog state are marked onboarded and do not see the first-run CTA/placeholder when upgrading to a build that includes onboarding, while auth-only fresh installs and unfinished onboarding sessions still see the first-run flow.
 - Fixed first-run onboarding so multiline absolute path seeds with `:line[:column]` plus notes are saved or handed off with the full original text instead of being mistaken for slash commands.
 
 ## [0.9.2] - 2026-06-23

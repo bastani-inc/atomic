@@ -18,6 +18,7 @@ function installSubmitHandler(host: Record<string, unknown>): (text: string) => 
 async function initHostWithOptions(
   options: { initialMessage?: string; initialMessages?: string[] },
   configureSettings?: (settingsManager: SettingsManager) => void,
+  storedAuthProviders: string[] = [],
 ) {
   const settingsManager = SettingsManager.inMemory();
   settingsManager.setQuietStartup(true);
@@ -28,7 +29,10 @@ async function initHostWithOptions(
     version: "9.9.9-test",
     session: {
       state: { messages: [] },
-      modelRegistry: { getError: () => undefined },
+      modelRegistry: {
+        getError: () => undefined,
+        authStorage: { list: () => storedAuthProviders },
+      },
     },
     settingsManager,
     registerSignalHandlers: vi.fn(),
@@ -65,12 +69,43 @@ async function initHostWithOptions(
 }
 
 describe("first-run onboarding round 7 regressions", () => {
-  it("re-arms onboarding for copied settings with only lastChangelogVersion", async () => {
+  it("starts onboarding for a fresh install with no returning-user evidence", async () => {
+    const host = await initHostWithOptions({});
+
+    expect(host.settingsManager.getFirstRunOnboardingStartedVersion()).toBe("9.9.9-test");
+    expect(host.settingsManager.getOnboardedVersion()).toBeUndefined();
+    expect(host.firstRunOnboardingActive).toBe(true);
+    expect(host.defaultEditor.setPlaceholder).toHaveBeenCalledWith(ONBOARDING_PLACEHOLDER);
+  });
+
+  it("marks copied settings with lastChangelogVersion as an onboarded returning user", async () => {
     const host = await initHostWithOptions({}, (settingsManager) => {
       settingsManager.setLastChangelogVersion("0.9.1");
     });
 
+    expect(host.settingsManager.getFirstRunOnboardingStartedVersion()).toBeUndefined();
+    expect(host.settingsManager.getOnboardedVersion()).toBe("9.9.9-test");
+    expect(host.firstRunOnboardingActive).toBe(false);
+    expect(host.defaultEditor.setPlaceholder).not.toHaveBeenCalled();
+  });
+
+  it("still starts onboarding when stored auth is the only prior state", async () => {
+    const host = await initHostWithOptions({}, undefined, ["github-copilot"]);
+
     expect(host.settingsManager.getFirstRunOnboardingStartedVersion()).toBe("9.9.9-test");
+    expect(host.settingsManager.getOnboardedVersion()).toBeUndefined();
+    expect(host.firstRunOnboardingActive).toBe(true);
+    expect(host.defaultEditor.setPlaceholder).toHaveBeenCalledWith(ONBOARDING_PLACEHOLDER);
+  });
+
+  it("keeps unfinished onboarding active even after auth and changelog state exist", async () => {
+    const host = await initHostWithOptions({}, (settingsManager) => {
+      settingsManager.setLastChangelogVersion("9.9.9-test");
+      settingsManager.setFirstRunOnboardingStartedVersion("9.9.9-test");
+    }, ["github-copilot"]);
+
+    expect(host.settingsManager.getFirstRunOnboardingStartedVersion()).toBe("9.9.9-test");
+    expect(host.settingsManager.getOnboardedVersion()).toBeUndefined();
     expect(host.firstRunOnboardingActive).toBe(true);
     expect(host.defaultEditor.setPlaceholder).toHaveBeenCalledWith(ONBOARDING_PLACEHOLDER);
   });

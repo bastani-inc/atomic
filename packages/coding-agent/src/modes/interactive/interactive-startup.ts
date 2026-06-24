@@ -56,7 +56,11 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       && !hadFirstRunOnboardingStarted
       && !this.settingsManager.getOnboardedVersion()
     ) {
-      this.settingsManager.setFirstRunOnboardingStartedVersion(this.version);
+      if (this.hadLastChangelogVersionAtStartup) {
+        this.settingsManager.setOnboardedVersion(this.version);
+      } else {
+        this.settingsManager.setFirstRunOnboardingStartedVersion(this.version);
+      }
     }
 
     // Add header container as first child. Populate it after theme initialization.
