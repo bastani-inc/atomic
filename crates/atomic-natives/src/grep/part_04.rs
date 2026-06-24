@@ -83,6 +83,16 @@ fn run_parallel_search(
 	raw.into_iter().flatten().collect()
 }
 
+fn reserve_streaming_budget(budget: &AtomicU64, requested: u64) -> u64 {
+	let requested = requested.max(1);
+	loop {
+		let current = budget.load(Ordering::Relaxed);
+		if current == 0 { return 0; }
+		let allowed = current.min(requested);
+		if budget.compare_exchange(current, current - allowed, Ordering::Relaxed, Ordering::Relaxed).is_ok() { return allowed; }
+	}
+}
+
 struct StreamingGrepVisitor<'a> {
 	root: &'a Path,
 	matcher: &'a grep_regex::RegexMatcher,
@@ -93,6 +103,7 @@ struct StreamingGrepVisitor<'a> {
 	results: Vec<FileSearchResult>,
 	shared_results: Arc<Mutex<Vec<Vec<FileSearchResult>>>>,
 	error: Arc<Mutex<Option<String>>>,
+	collection_budget: Arc<AtomicU64>,
 	skipped_oversized: Arc<AtomicU64>,
 	ct: &'a task::CancelToken,
 	visited: usize,
@@ -149,7 +160,7 @@ impl ParallelVisitor for StreamingGrepVisitor<'_> {
 			},
 			Ok(ReadFile::Skipped) | Err(_) => return WalkState::Continue,
 		};
-		let search = if self.params.mode == OutputMode::FilesWithMatches {
+		let mut search = if self.params.mode == OutputMode::FilesWithMatches {
 			let Ok(matched) = self.matcher.is_match(bytes.as_slice()) else {
 				return WalkState::Continue;
 			};
@@ -167,13 +178,12 @@ impl ParallelVisitor for StreamingGrepVisitor<'_> {
 			};
 			search
 		};
-
-		self.results.push(FileSearchResult {
-			relative_path: relative.into_owned(),
-			matches: search.matches,
-			match_count: search.match_count,
-			limit_reached: search.limit_reached,
-		});
+		if search.match_count == 0 { return WalkState::Continue; }
+		let requested = match self.params.mode { OutputMode::Content => search.matches.len() as u64, OutputMode::Count | OutputMode::FilesWithMatches => 1 };
+		let allowed = reserve_streaming_budget(&self.collection_budget, requested);
+		if allowed == 0 { return WalkState::Quit; }
+		if self.params.mode == OutputMode::Content && allowed < requested { search.matches.truncate(allowed as usize); search.limit_reached = true; }
+		self.results.push(FileSearchResult { relative_path: relative.into_owned(), matches: search.matches, match_count: search.match_count, limit_reached: search.limit_reached });
 		WalkState::Continue
 	}
 }
@@ -186,6 +196,7 @@ struct StreamingGrepVisitorBuilder<'a> {
 	params: SearchParams,
 	shared_results: Arc<Mutex<Vec<Vec<FileSearchResult>>>>,
 	error: Arc<Mutex<Option<String>>>,
+	collection_budget: Arc<AtomicU64>,
 	skipped_oversized: Arc<AtomicU64>,
 	ct: &'a task::CancelToken,
 }
@@ -202,6 +213,7 @@ impl<'a> ParallelVisitorBuilder<'a> for StreamingGrepVisitorBuilder<'a> {
 			results: Vec::new(),
 			shared_results: Arc::clone(&self.shared_results),
 			error: Arc::clone(&self.error),
+			collection_budget: Arc::clone(&self.collection_budget),
 			skipped_oversized: Arc::clone(&self.skipped_oversized),
 			ct: self.ct,
 			visited: 0,
@@ -232,6 +244,7 @@ fn run_streaming_grep(
 	let file_params = per_file_params(params);
 	let shared_results = Arc::new(Mutex::new(Vec::new()));
 	let error = Arc::new(Mutex::new(None));
+	let collection_budget = Arc::new(AtomicU64::new(params.max_count.unwrap_or(DEFAULT_NATIVE_GREP_MAX_COUNT).saturating_add(params.offset).saturating_add(1024)));
 	let skipped_oversized = Arc::new(AtomicU64::new(0));
 	let mut visitor_builder = StreamingGrepVisitorBuilder {
 		root: search_path,
@@ -241,6 +254,7 @@ fn run_streaming_grep(
 		params: file_params,
 		shared_results: Arc::clone(&shared_results),
 		error: Arc::clone(&error),
+		collection_budget: Arc::clone(&collection_budget),
 		skipped_oversized: Arc::clone(&skipped_oversized),
 		ct,
 	};

@@ -47,6 +47,9 @@ test("blocks private URL reads by default", async () => {
 		for (const host of ["2130706433", "0x7f.0.0.1", "0177.0.0.1", "127.1"]) {
 			await expect(loadPage(`http://${host}:1/`, 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
 		}
+		for (const host of ["[64:ff9b::a9fe:a9fe]", "[2002:a9fe:a9fe::]"]) {
+			await expect(loadPage(`http://${host}/`, 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
+		}
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previous;

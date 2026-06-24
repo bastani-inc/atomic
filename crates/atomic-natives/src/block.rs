@@ -6,6 +6,7 @@
 //! (excluding the whole-file root). Pointing at a continuation line or a lone
 //! closing delimiter resolves to nothing.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use napi_derive::napi;
@@ -76,6 +77,10 @@ fn content_end_line(end: Point, start_row: usize) -> u32 {
 /// there, or the resolved subtree contains a syntax error.
 #[napi(js_name = "blockRangeAt")]
 pub fn block_range_at(options: BlockRangeOptions) -> Option<BlockRange> {
+	catch_unwind(AssertUnwindSafe(|| block_range_at_inner(options))).ok().flatten()
+}
+
+fn block_range_at_inner(options: BlockRangeOptions) -> Option<BlockRange> {
 	let BlockRangeOptions { code, path, line } = options;
 	if line == 0 || code.is_empty() {
 		return None;

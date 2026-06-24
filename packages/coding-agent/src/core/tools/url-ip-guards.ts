@@ -42,6 +42,26 @@ export function normalizeIpLiteralHost(hostname: string): string | undefined {
 export function ipFamily(address: string): 4 | 6 {
 	return address.includes(":") ? 6 : 4;
 }
+function ipv4FromHextets(high: number, low: number): string { return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`; }
+
+function expandIpv6(address: string): number[] | undefined {
+	const value = address.toLowerCase().replace(/%.+$/, "");
+	const pieces = value.split("::"); if (pieces.length > 2) return undefined;
+	const parseSide = (side: string): number[] | undefined => side ? side.split(":").flatMap((part) => {
+		if (part.includes(".")) { const nums = part.split(".").map((v) => Number.parseInt(v, 10)); if (nums.length !== 4 || nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return [Number.NaN]; return [(nums[0]! << 8) | nums[1]!, (nums[2]! << 8) | nums[3]!]; }
+		if (!/^[0-9a-f]{1,4}$/.test(part)) return [Number.NaN]; return [Number.parseInt(part, 16)];
+	}) : [];
+	const left = parseSide(pieces[0] ?? ""), right = parseSide(pieces[1] ?? ""); if (!left || !right || left.some(Number.isNaN) || right.some(Number.isNaN)) return undefined;
+	const zeros = pieces.length === 2 ? 8 - left.length - right.length : 0; if (zeros < 0 || pieces.length === 1 && left.length !== 8) return undefined;
+	return [...left, ...Array.from({ length: zeros }, () => 0), ...right];
+}
+
+function embeddedPrivateIpv4(address: string): boolean {
+	const hextets = expandIpv6(address); if (!hextets) return false;
+	if (hextets[0] === 0x2002) return isPrivateIpAddress(ipv4FromHextets(hextets[1]!, hextets[2]!));
+	if (hextets[0] === 0x64 && hextets[1] === 0xff9b && hextets.slice(2, 6).every((part) => part === 0)) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
+	return false;
+}
 
 export function isPrivateIpAddress(address: string): boolean {
 	if (address.includes(":")) {
@@ -53,7 +73,7 @@ export function isPrivateIpAddress(address: string): boolean {
 			const high = Number.parseInt(hexMapped[1]!, 16), low = Number.parseInt(hexMapped[2]!, 16);
 			return isPrivateIpAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
 		}
-		return mapped ? isPrivateIpAddress(mapped) : false;
+		return mapped ? isPrivateIpAddress(mapped) : embeddedPrivateIpv4(address);
 	}
 	const parts = address.split(".").map((part) => Number.parseInt(part, 10));
 	if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return false;

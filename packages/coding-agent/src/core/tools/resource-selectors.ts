@@ -51,19 +51,31 @@ function crc32(data: Buffer): number {
 	for (const byte of data) { crc ^= byte; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)); }
 	return ~crc >>> 0;
 }
+function assertZipRange(buf: Buffer, offset: number, length: number, label: string): void {
+	if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset > buf.length - length) throw new Error(`Invalid zip entry bounds: ${label}`);
+}
+function zipEntryPayload(buf: Buffer, label: string, name: string, localOffset: number, compressedSize: number): Buffer {
+	if (compressedSize > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member compressed data too large: ${name}`);
+	assertZipRange(buf, localOffset, 30, label);
+	if (buf.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`Invalid zip local header: ${label}`);
+	const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28), start = localOffset + 30 + localNameLen + localExtraLen;
+	assertZipRange(buf, start, compressedSize, label);
+	return buf.subarray(start, start + compressedSize);
+}
 export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string, Buffer> {
 	const entries = new Map<string, Buffer>();
 	let eocd = -1; for (let i = buf.length - 22; i >= 0; i--) if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
 	if (eocd < 0) throw new Error(`Invalid zip archive: ${label}`);
 	let ptr = buf.readUInt32LE(eocd + 16); const total = buf.readUInt16LE(eocd + 10);
 	for (let n = 0; n < total; n++) {
+		assertZipRange(buf, ptr, 46, label);
 		if (buf.readUInt32LE(ptr) !== 0x02014b50) throw new Error(`Invalid zip central directory: ${label}`);
 		const method = buf.readUInt16LE(ptr + 10), compressedSize = buf.readUInt32LE(ptr + 20), size = buf.readUInt32LE(ptr + 24), nameLen = buf.readUInt16LE(ptr + 28), extraLen = buf.readUInt16LE(ptr + 30), commentLen = buf.readUInt16LE(ptr + 32), localOffset = buf.readUInt32LE(ptr + 42);
+		assertZipRange(buf, ptr + 46, nameLen + extraLen + commentLen, label);
 		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen;
 		if (name.endsWith("/")) continue;
 		if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${name}`);
-		const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28);
-		const start = localOffset + 30 + localNameLen + localExtraLen; const data = buf.subarray(start, start + compressedSize);
+		const data = zipEntryPayload(buf, label, name, localOffset, compressedSize);
 		entries.set(name, method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES }) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })());
 	}
 	return entries;
@@ -126,11 +138,13 @@ function readZipSelector(path: string, memberPath: string): string {
 	if (eocd < 0) throw new Error(`Invalid zip archive: ${path}`);
 	let ptr = buf.readUInt32LE(eocd + 16); const total = buf.readUInt16LE(eocd + 10), names: string[] = [];
 	for (let n = 0; n < total; n++) {
+		assertZipRange(buf, ptr, 46, path);
 		if (buf.readUInt32LE(ptr) !== 0x02014b50) throw new Error(`Invalid zip central directory: ${path}`);
 		const method = buf.readUInt16LE(ptr + 10), compressedSize = buf.readUInt32LE(ptr + 20), size = buf.readUInt32LE(ptr + 24), nameLen = buf.readUInt16LE(ptr + 28), extraLen = buf.readUInt16LE(ptr + 30), commentLen = buf.readUInt16LE(ptr + 32), localOffset = buf.readUInt32LE(ptr + 42);
+		assertZipRange(buf, ptr + 46, nameLen + extraLen + commentLen, path);
 		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen; if (name.endsWith("/")) continue; names.push(name); if (memberPath && name !== memberPath) continue;
 		if (!memberPath) continue; if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${memberPath}`);
-		const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28), start = localOffset + 30 + localNameLen + localExtraLen, data = buf.subarray(start, start + compressedSize);
+		const data = zipEntryPayload(buf, path, name, localOffset, compressedSize);
 		return (method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES }) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })()).toString("utf8");
 	}
 	const listing = listArchiveDirectory(names, memberPath);
@@ -289,7 +303,14 @@ function validateSqliteWhere(where: string | undefined): string | undefined {
 }
 function rowsToJsonLines(rows: Record<string, SqliteValue>[]): string { return rows.map((row) => JSON.stringify(row)).join("\n"); }
 
-function validateRawSqliteQuery(query: string): string { const trimmed = query.trim(); if (!trimmed) throw new Error("SQLite raw query must not be empty"); return trimmed; }
+const FORBIDDEN_RAW_QUERY_KEYWORDS = new Set(["attach", "detach", "pragma", "insert", "update", "delete", "drop", "alter", "create", "replace", "vacuum", "reindex", "load_extension", "union", "intersect", "except"]);
+function validateRawSqliteQuery(query: string): string {
+	const trimmed = query.trim(); if (!trimmed) throw new Error("SQLite raw query must not be empty"); if (!/^select\b/i.test(trimmed)) throw new Error("Invalid raw SQLite query");
+	let quote = "", token = "";
+	const flush = () => { const lower = token.toLowerCase(); if (lower && (FORBIDDEN_RAW_QUERY_KEYWORDS.has(lower) || lower.startsWith("sqlite_"))) throw new Error("Invalid raw SQLite query"); token = ""; };
+	for (let i = 0; i <= trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote) { if (ch === quote && next === quote) { i++; continue; } if (ch === quote) quote = ""; continue; } if (ch === "'" || ch === '"') { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid raw SQLite query"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	return trimmed;
+}
 
 function readRawSqliteRows(query: SqliteQuery): Record<string, SqliteValue>[] { const rows: Record<string, SqliteValue>[] = []; const iterable = query.iterate?.(); if (!iterable) return query.all().slice(0, MAX_RAW_QUERY_ROWS); for (const row of iterable) { if (rows.length >= MAX_RAW_QUERY_ROWS) break; rows.push(row); } return rows; }
 

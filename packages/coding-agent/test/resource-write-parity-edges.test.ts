@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
+import { readZipEntriesFromBuffer } from "../src/core/tools/resource-selectors.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 interface SqliteQuery { get(): Record<string, string | number | null> | undefined }
@@ -31,6 +32,12 @@ describe("resource write parity edges", () => {
 		expect(readFileSync(join(testDir, "copy.txt"), "utf8")).toBe("hello\n");
 	});
 
+
+	it("rejects malformed zip member bounds", () => {
+		const buf = Buffer.alloc(22);
+		buf.writeUInt32LE(0x06054b50, 0); buf.writeUInt16LE(1, 8); buf.writeUInt16LE(1, 10); buf.writeUInt32LE(46, 12); buf.writeUInt32LE(22, 16);
+		expect(() => readZipEntriesFromBuffer(buf, "bad.zip")).toThrow(/Invalid zip entry bounds/);
+	});
 	it("rejects archive directory write targets", async () => {
 		await expect(createWriteToolDefinition(testDir).execute("zip-dir", { path: "a.zip:dir/", content: "x" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid archive member path/);
 	});

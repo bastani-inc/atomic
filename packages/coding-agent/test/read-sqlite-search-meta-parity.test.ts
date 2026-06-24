@@ -44,6 +44,8 @@ describe("sqlite and metadata parity", () => {
 		try { db.run("create table t (id integer primary key)"); for (let i = 1; i <= 1500; i++) db.run("insert into t values (?)", i); } finally { db.close(); }
 		const raw = text(await createReadToolDefinition(dir).execute("raw-q", { path: "data.sqlite?q=select * from t" }, undefined, undefined, {} as never));
 		expect((raw.match(/"id":/g) ?? []).length).toBeLessThanOrEqual(1000);
+		await expect(createReadToolDefinition(dir).execute("raw-attach", { path: "data.sqlite?q=ATTACH DATABASE 'x' AS x" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
+		await expect(createReadToolDefinition(dir).execute("raw-master", { path: "data.sqlite?q=select * from sqlite_master" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
 	});
 
 	it("validates SQLite where clauses and write columns like oh-my-pi", async () => {

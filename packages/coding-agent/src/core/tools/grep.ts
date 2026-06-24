@@ -86,7 +86,7 @@ const defaultGrepOperations: GrepOperations = {
 export interface GrepToolOptions {
 	/** Custom operations for grep. Default: local filesystem plus ripgrep */
 	operations?: GrepOperations;
-	/** Enable shared native filesystem scan cache. Defaults to true for direct grep, false for search callers. */
+	/** Enable shared native filesystem scan cache. Defaults to false; search callers also disable it to stay fresh across out-of-band filesystem mutations. */
 	nativeCache?: boolean;
 }
 

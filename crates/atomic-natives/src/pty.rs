@@ -1,6 +1,7 @@
 use std::{
 	collections::HashMap,
 	io::{Read, Write},
+	panic::{AssertUnwindSafe, catch_unwind},
 	str,
 	sync::{Arc, Mutex, mpsc},
 	time::{Duration, Instant},
@@ -115,9 +116,11 @@ impl PtySession {
 			*guard = Some(PtySessionCore { control_tx });
 		}
 		env.spawn_future(async move {
-			let result =
-				tokio::task::spawn_blocking(move || run_pty_sync(run_config, on_chunk, control_rx))
-					.await;
+			let result = tokio::task::spawn_blocking(move || {
+				catch_unwind(AssertUnwindSafe(|| run_pty_sync(run_config, on_chunk, control_rx)))
+					.unwrap_or_else(|_| Err(Error::from_reason("PTY execution panicked")))
+			})
+			.await;
 			let mut guard =
 				core.lock().map_err(|_| Error::from_reason("PTY session lock poisoned"))?;
 			*guard = None;
@@ -202,7 +205,9 @@ fn run_pty_sync(
 		.try_clone_reader()
 		.map_err(|err| Error::from_reason(format!("Failed to create PTY reader: {err}")))?;
 	let (reader_tx, reader_rx) = mpsc::channel::<ReaderEvent>();
-	let reader_thread = std::thread::spawn(move || reader_loop(&mut reader, reader_tx));
+	let reader_thread = std::thread::spawn(move || {
+		let _ = catch_unwind(AssertUnwindSafe(|| reader_loop(&mut reader, reader_tx)));
+	});
 	let child_pid = child.process_id().and_then(|value| i32::try_from(value).ok());
 	#[cfg(unix)]
 	let process_group_id = master.process_group_leader().filter(|pgid| *pgid > 0);
@@ -219,6 +224,7 @@ fn run_pty_sync(
 	let mut exit_code: Option<i32> = None;
 	let mut terminate_requested = false;
 	let mut reader_drain_deadline: Option<Instant> = None;
+	let mut run_error: Option<String> = None;
 	while exit_code.is_none() || !reader_done {
 		if !terminate_requested && timeout.is_some_and(|limit| started.elapsed() >= limit) {
 			timed_out = true;
@@ -243,14 +249,21 @@ fn run_pty_sync(
 			control_state,
 		);
 		drain_reader(&reader_rx, &on_chunk, &mut reader_done);
-		if exit_code.is_none()
-			&& let Some(status) = child
-				.try_wait()
-				.map_err(|err| Error::from_reason(format!("Failed checking PTY status: {err}")))?
-		{
-			exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
-			if !reader_done && reader_drain_deadline.is_none() {
-				reader_drain_deadline = Some(Instant::now() + Duration::from_millis(300));
+		if exit_code.is_none() && run_error.is_none() {
+			match child.try_wait() {
+				Ok(Some(status)) => {
+					exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
+					if !reader_done && reader_drain_deadline.is_none() {
+						reader_drain_deadline = Some(Instant::now() + Duration::from_millis(300));
+					}
+				},
+				Ok(None) => {},
+				Err(err) => {
+					run_error = Some(format!("Failed checking PTY status: {err}"));
+					terminate_pty_processes(&mut child, child_pid, process_group_id);
+					terminate_requested = true;
+					reader_drain_deadline = Some(Instant::now() + Duration::from_millis(300));
+				},
 			}
 		}
 		if reader_drain_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -267,16 +280,19 @@ fn run_pty_sync(
 			}
 		}
 	}
-	if exit_code.is_none() {
-		let status = child
-			.wait()
-			.map_err(|err| Error::from_reason(format!("Failed waiting PTY process: {err}")))?;
-		exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
+	if exit_code.is_none() && run_error.is_none() {
+		match child.wait() {
+			Ok(status) => exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX)),
+			Err(err) => run_error = Some(format!("Failed waiting PTY process: {err}")),
+		}
 	}
 	drop(writer);
 	drop(master);
 	finalize_reader(&reader_rx, &on_chunk, &mut reader_done);
 	let _ = reader_thread.join();
+	if let Some(error) = run_error {
+		return Err(Error::from_reason(error));
+	}
 	Ok(PtyRunResult { exit_code, cancelled, timed_out })
 }
 
@@ -285,25 +301,8 @@ fn open_pair(
 	cols: u16,
 	rows: u16,
 ) -> Result<portable_pty::PtyPair> {
-	const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-	if cfg!(windows) {
-		let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
-		let (tx, rx) = mpsc::channel();
-		std::thread::spawn(move || {
-			let result = native_pty_system().openpty(size);
-			let _ = tx.send(result);
-		});
-		return match rx.recv_timeout(STARTUP_TIMEOUT) {
-			Ok(Ok(pair)) => Ok(pair),
-			Ok(Err(error)) => Err(Error::from_reason(format!("Failed to open PTY: {error}"))),
-			Err(_) => Err(Error::from_reason(
-				"PTY creation timed out (5s). ConPTY may be unavailable on this system.",
-			)),
-		};
-	}
-	system
-		.openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-		.map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))
+	let size = PtySize { rows, cols, pixel_width: 0, pixel_height: 0 };
+	system.openpty(size).map_err(|err| Error::from_reason(format!("Failed to open PTY: {err}")))
 }
 
 fn build_command(config: &PtyRunConfig) -> CommandBuilder {
