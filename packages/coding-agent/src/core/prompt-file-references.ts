@@ -34,11 +34,14 @@ interface PromptImageReplacement {
 }
 
 const INLINE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])@(?:"([^"]+)"|'([^']+)'|((?:\\.|[^ \t\r\n\f\v])+))/gu;
+// Bare absolute references intentionally probe the filesystem so clipboard and
+// terminal drag/drop image paths can become current-turn attachments without an
+// explicit `@` prefix. Callers should gate this resolver to image-capable paths.
 const BARE_ABSOLUTE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])(?:"((?:\/|~\/|file:\/\/)[^"]+)"|'((?:\/|~\/|file:\/\/)[^']+)'|((?:\/|~\/|file:\/\/)(?:\\.|[^ \t\r\n\f\v])+))/giu;
 const FILE_TAG_PATTERN = /<file\b[^>]*\bname=(?:"([^"]*)"|'([^']*)')[^>]*>[\s\S]*?<\/file>/giu;
 const UNQUOTED_REFERENCE_START_PATTERN = /(^|[\s([{<])(@?(?:file:\/\/|~\/|\/)|@(?=[^\s"'<>]))/giu;
 const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp)(?=$|[\s),;:!?.\]}>'"])/giu;
-const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?"]);
+const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}", ">"]);
 
 function escapeFileNameAttribute(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

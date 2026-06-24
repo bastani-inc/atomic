@@ -1,10 +1,9 @@
-// @ts-nocheck
 import { Buffer } from "node:buffer";
 import { fromBinary } from "@bufbuild/protobuf";
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { AgentClientMessageSchema } from "../../packages/cursor/src/proto/agent_pb.js";
+import { AgentClientMessageSchema, type SelectedImage } from "../../packages/cursor/src/proto/agent_pb.js";
 import {
 	CursorProtobufProtocolCodec,
 	CursorTransportError,
@@ -78,6 +77,12 @@ function decodeRunUserMessage(data: Uint8Array) {
 	return userMessage;
 }
 
+function selectedImageData(image: SelectedImage | undefined): Uint8Array {
+	if (!image) assert.fail("expected selected image");
+	if (image.dataOrBlobId.case !== "data") assert.fail("expected selected image inline data");
+	return image.dataOrBlobId.value;
+}
+
 describe("Cursor HTTP2 image transport boundary", () => {
 	test("protobuf codec encodes current user images as inline Cursor selected images without changing text", () => {
 		const codec = new CursorProtobufProtocolCodec();
@@ -109,8 +114,7 @@ describe("Cursor HTTP2 image transport boundary", () => {
 		const selectedImages = userMessage.selectedContext?.selectedImages ?? [];
 		assert.equal(selectedImages.length, 1);
 		assert.equal(selectedImages[0]?.mimeType, "image/png");
-		assert.equal(selectedImages[0]?.dataOrBlobId.case, "data");
-		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...pngBytes]);
+		assert.deepEqual([...selectedImageData(selectedImages[0])], [...pngBytes]);
 	});
 
 	test("protobuf codec rejects current user images without serialization opt-in", () => {
@@ -155,8 +159,8 @@ describe("Cursor HTTP2 image transport boundary", () => {
 
 		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
 		assert.equal(selectedImages.length, 2);
-		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...currentFirstImage]);
-		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [...currentSecondImage]);
+		assert.deepEqual([...selectedImageData(selectedImages[0])], [...currentFirstImage]);
+		assert.deepEqual([...selectedImageData(selectedImages[1])], [...currentSecondImage]);
 	});
 
 	test("protobuf codec rejects tool-result images anywhere in context under serialization opt-in without leaking payloads", () => {
@@ -264,8 +268,8 @@ describe("Cursor HTTP2 image transport boundary", () => {
 
 		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
 		assert.equal(selectedImages.length, 2);
-		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...pngBytes]);
-		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [4, 5]);
+		assert.deepEqual([...selectedImageData(selectedImages[0])], [...pngBytes]);
+		assert.deepEqual([...selectedImageData(selectedImages[1])], [4, 5]);
 	});
 
 	test("protobuf codec accepts ASCII-whitespace-wrapped image base64", () => {
@@ -294,8 +298,8 @@ describe("Cursor HTTP2 image transport boundary", () => {
 
 		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
 		assert.equal(selectedImages.length, 2);
-		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...firstBytes]);
-		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [...secondBytes]);
+		assert.deepEqual([...selectedImageData(selectedImages[0])], [...firstBytes]);
+		assert.deepEqual([...selectedImageData(selectedImages[1])], [...secondBytes]);
 	});
 
 	test("protobuf codec rejects malformed image base64 and data URLs without leaking payloads", () => {

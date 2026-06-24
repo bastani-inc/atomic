@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed inline prompt image-reference resolution so `images.blockImages` skips filesystem probing and text-only provider paths no longer scan arbitrary path-like prompt text before a turn.
 - Fixed prompt image attachment merging so CLI `@image` file arguments that already carry structured images are not re-attached from their generated `<file>` marker.
 - Fixed extension-origin queued user messages during streaming so fire-and-forget `sendUserMessage()` calls without input handlers queue synchronously instead of being dropped behind async image-reference resolution.
 - Fixed custom-session-dir fork creation to reject an explicit `--session-id` that already exists anywhere in that custom session directory before auth/model validation.

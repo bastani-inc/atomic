@@ -195,7 +195,7 @@ The `/settings` picker offers these presets:
 | `terminal.imageWidthCells` | number | `60` | Preferred inline image width in terminal cells |
 | `terminal.clearOnShrink` | boolean | `false` | Clear empty rows when content shrinks (can cause flicker) |
 | `images.autoResize` | boolean | `true` | Resize images to 2000x2000 max |
-| `images.blockImages` | boolean | `false` | Block all images from being sent to LLM |
+| `images.blockImages` | boolean | `false` | Block all images from being sent to the LLM and skip inline image-reference filesystem probing/resolution |
 
 ### Shell
 

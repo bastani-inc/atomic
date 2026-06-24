@@ -21,6 +21,11 @@ function mergePromptImages(existing: readonly ImageContent[] | undefined, resolv
 	return merged;
 }
 
+function shouldResolveInlineImageReferences(this: AgentSession): boolean {
+	if (this.settingsManager.getBlockImages()) return false;
+	return this.model?.provider === "cursor" || this.model?.input?.includes("image") === true;
+}
+
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
@@ -63,16 +68,19 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			return;
 		}
 
-		// Resolve inline @image references before extension interception so the
-		// current user turn carries images as attachments instead of forcing the
-		// model to read them through tool results.
-		const inlineImageReferences = await resolvePromptImageReferences(currentText, {
-			cwd: this._cwd,
-			autoResizeImages: this.settingsManager.getImageAutoResize(),
-		});
-		if (inlineImageReferences.images.length > 0 || inlineImageReferences.text !== currentText) {
-			currentText = inlineImageReferences.text;
-			currentImages = mergePromptImages(currentImages, inlineImageReferences.images);
+		// Resolve inline @image references before extension interception only when
+		// the active model path can consume image attachments. This avoids probing
+		// arbitrary path-like prompt text for text-only providers and honors the
+		// global images.blockImages escape hatch before doing filesystem I/O.
+		if (shouldResolveInlineImageReferences.call(this)) {
+			const inlineImageReferences = await resolvePromptImageReferences(currentText, {
+				cwd: this._cwd,
+				autoResizeImages: this.settingsManager.getImageAutoResize(),
+			});
+			if (inlineImageReferences.images.length > 0 || inlineImageReferences.text !== currentText) {
+				currentText = inlineImageReferences.text;
+				currentImages = mergePromptImages(currentImages, inlineImageReferences.images);
+			}
 		}
 		if (this._extensionRunner.hasHandlers("input")) {
 			const inputResult = await this._extensionRunner.emitInput(

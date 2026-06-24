@@ -90,6 +90,35 @@ describe("resolvePromptImageReferences", () => {
 		expect(result.text).toBe(`describe ${missingPath} please`);
 	});
 
+	it("leaves non-image paths unchanged", async () => {
+		const tempDir = createTempDir();
+		const textPath = join(tempDir, "notes.txt");
+		writeFileSync(textPath, "not an image");
+
+		const result = await resolvePromptImageReferences(`describe ${textPath} please`, {
+			cwd: tempDir,
+			autoResizeImages: false,
+		});
+
+		expect(result.images).toHaveLength(0);
+		expect(result.text).toBe(`describe ${textPath} please`);
+	});
+
+	it("resolves bracketed image references without consuming closing brackets", async () => {
+		const tempDir = createTempDir();
+		const imagePath = join(tempDir, "diagram.png");
+		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+
+		const result = await resolvePromptImageReferences("compare (@diagram.png) please", {
+			cwd: tempDir,
+			autoResizeImages: false,
+		});
+
+		expect(result.images).toHaveLength(1);
+		expect(result.images[0]?.mimeType).toBe("image/png");
+		expect(result.text).toBe(`compare (<file name="${imagePath}"></file>) please`);
+	});
+
 	it("resolves pasted file tags as image attachments", async () => {
 		const tempDir = createTempDir();
 		const imagePath = join(tempDir, "atomic-clipboard & tag.png");
