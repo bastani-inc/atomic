@@ -46,6 +46,10 @@ describe("sqlite and metadata parity", () => {
 		expect((raw.match(/"id":/g) ?? []).length).toBeLessThanOrEqual(1000);
 		await expect(createReadToolDefinition(dir).execute("raw-attach", { path: "data.sqlite?q=ATTACH DATABASE 'x' AS x" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
 		await expect(createReadToolDefinition(dir).execute("raw-master", { path: "data.sqlite?q=select * from sqlite_master" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
+		// Double-quoted identifiers must be scanned for the sqlite_ prefix too
+		// (the validator previously skipped content inside quotes).
+		await expect(createReadToolDefinition(dir).execute("raw-quoted-master", { path: "data.sqlite?q=select * from \"sqlite_master\"" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
+		await expect(createReadToolDefinition(dir).execute("raw-quoted-attach", { path: "data.sqlite?q=select * from \"ATTACH\"" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
 	});
 
 	it("validates SQLite where clauses and write columns like oh-my-pi", async () => {

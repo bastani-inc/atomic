@@ -142,19 +142,22 @@ export interface ToolsOptions {
 }
 
 export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
+	// Default a shared store so the singular factories don't hand read/edit/
+	// write/search isolated stores (which silently degrades drift recovery).
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	switch (toolName) {
 		case "read":
-			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore: options?.hashlineStore });
+			return createReadToolDefinition(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashToolDefinition(cwd, options?.bash);
 		case "edit":
-			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
+			return createEditToolDefinition(cwd, { ...options?.edit, hashlineStore });
 		case "write":
-			return createWriteToolDefinition(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
+			return createWriteToolDefinition(cwd, { ...options?.write, hashlineStore });
 		case "find":
 			return createFindToolDefinition(cwd, options?.find);
 		case "search":
-			return createSearchToolDefinition(cwd, { ...options?.search, hashlineStore: options?.hashlineStore });
+			return createSearchToolDefinition(cwd, { ...options?.search, hashlineStore });
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
 		case "ask_user_question":
@@ -167,19 +170,20 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 }
 
 export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
+	const hashlineStore = options?.hashlineStore ?? createHashlineSnapshotStore();
 	switch (toolName) {
 		case "read":
-			return createReadTool(cwd, { ...options?.read, hashlineStore: options?.hashlineStore });
+			return createReadTool(cwd, { ...options?.read, hashlineStore });
 		case "bash":
 			return createBashTool(cwd, options?.bash);
 		case "edit":
-			return createEditTool(cwd, { ...options?.edit, hashlineStore: options?.hashlineStore });
+			return createEditTool(cwd, { ...options?.edit, hashlineStore });
 		case "write":
-			return createWriteTool(cwd, { ...options?.write, hashlineStore: options?.hashlineStore });
+			return createWriteTool(cwd, { ...options?.write, hashlineStore });
 		case "find":
 			return createFindTool(cwd, options?.find);
 		case "search":
-			return createSearchTool(cwd, { ...options?.search, hashlineStore: options?.hashlineStore });
+			return createSearchTool(cwd, { ...options?.search, hashlineStore });
 		case "ls":
 			return createLsTool(cwd, options?.ls);
 		case "ask_user_question":

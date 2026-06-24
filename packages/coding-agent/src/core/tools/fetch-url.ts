@@ -18,7 +18,7 @@ import { lookup } from "node:dns/promises";
 import { ipFamily, isPrivateIpAddress, normalizeIpLiteralHost } from "./url-ip-guards.ts";
 import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
-import { Agent, type Dispatcher } from "undici";
+import { Agent, request as undiciRequest, type Dispatcher } from "undici";
 import { getArtifactManager } from "./artifacts.ts";
 import { extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import type { TruncationResult } from "./truncate.ts";
@@ -171,7 +171,7 @@ function documentExtensionFromContentType(contentType: string): string | undefin
 	return undefined;
 }
 
-interface SafeFetchAddress { address: string; family: 4 | 6 }
+interface SafeFetchAddress { address: string; family: 4 | 6; /** True only when the address came from DNS resolution and must be pinned to prevent rebinding at connect time. */ pinned: boolean }
 type LookupCallback = (error: NodeJS.ErrnoException | null, address: string | SafeFetchAddress[], family?: number) => void;
 
 function createPinnedDispatcher(pinned: SafeFetchAddress): Agent {
@@ -182,6 +182,30 @@ async function closePinnedDispatcher(dispatcher: Agent | undefined): Promise<voi
 	const close = (dispatcher as { close?: () => Promise<void> | void } | undefined)?.close;
 	if (typeof close === "function") await close.call(dispatcher);
 }
+/**
+ * Fetch a URL through undici with the pinned dispatcher so the validated
+ * address is the one actually connected to. Unlike `globalThis.fetch`, which
+ * silently ignores the undici `dispatcher` option under Bun's compiled binary
+ * (reopening a DNS-rebinding TOCTOU window for hostname targets), undici's own
+ * client honors the dispatcher's custom `lookup` regardless of host runtime.
+ * Adapts the undici response to the WHATWG-Response shape loadPage consumes.
+ */
+async function pinnedFetch(url: string, dispatcher: Dispatcher, options: { signal: AbortSignal; headers?: Record<string, string> }): Promise<Response> {
+	const result = await undiciRequest(url, { method: "GET", dispatcher, signal: options.signal, headers: options.headers });
+	const body = result.body;
+	const status = result.statusCode;
+	const headers = new Headers();
+	for (const [key, value] of Object.entries(result.headers as Record<string, string | string[] | undefined>)) {
+		if (value === undefined) continue;
+		const values = Array.isArray(value) ? value : [value];
+		for (const entry of values) headers.append(key, entry);
+	}
+	const stream = new ReadableStream({
+		start(controller) { body.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk))); body.on("end", () => controller.close()); body.on("error", (error: unknown) => controller.error(error)); },
+		cancel() { body.destroy(); },
+	});
+	return new Response(stream, { status, headers });
+}
 
 
 async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undefined> {
@@ -191,12 +215,12 @@ async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undef
 	const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
 	if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
 	const literalAddress = normalizeIpLiteralHost(hostname);
-	if (literalAddress) { if (isPrivateIpAddress(literalAddress)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`); return { address: literalAddress, family: ipFamily(literalAddress) }; }
+	if (literalAddress) { if (isPrivateIpAddress(literalAddress)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`); return { address: literalAddress, family: ipFamily(literalAddress), pinned: false }; }
 	const addresses = await lookup(hostname, { all: true }).catch((error: unknown) => { throw new Error(`Could not resolve URL host ${hostname}: ${error instanceof Error ? error.message : String(error)}`); });
 	if (addresses.length === 0) throw new Error(`Could not resolve URL host ${hostname}: no addresses returned`);
 	for (const address of addresses) if (isPrivateIpAddress(address.address)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
 	const first = addresses[0]!;
-	return { address: first.address, family: first.family === 6 ? 6 : 4 };
+	return { address: first.address, family: first.family === 6 ? 6 : 4, pinned: true };
 }
 
 async function readResponseTextWithLimit(response: Response): Promise<string> {
@@ -225,9 +249,18 @@ export async function loadPage(url: string, timeoutMs: number, signal?: AbortSig
 		let currentUrl = url;
 		for (let redirects = 0; redirects <= MAX_URL_REDIRECTS; redirects++) {
 			const pinned = await assertSafeFetchUrl(currentUrl);
-			const dispatcher = pinned ? createPinnedDispatcher(pinned) : undefined;
+			// Only a DNS-resolved hostname needs pinning: a literal-IP host is
+			// validated directly and cannot be re-resolved at connect time, so
+			// global fetch is sufficient and stays redirect/mock-friendly.
+			const dispatcher = pinned?.pinned ? createPinnedDispatcher(pinned) : undefined;
 			try {
-				const response = await fetch(currentUrl, { signal: controller.signal, headers: accept ? { Accept: accept } : undefined, redirect: "manual", ...(dispatcher ? { dispatcher } : {}) } as RequestInit & { dispatcher?: Dispatcher });
+				const headers = accept ? { Accept: accept } : undefined;
+				// Route pinned (hostname) fetches through undici directly so the
+				// dispatcher's custom lookup is honored even under Bun's compiled
+				// fetch, which silently ignores the `dispatcher` option.
+				const response = dispatcher
+					? await pinnedFetch(currentUrl, dispatcher, { signal: controller.signal, headers })
+					: await fetch(currentUrl, { signal: controller.signal, headers, redirect: "manual" });
 				if (response.status >= 300 && response.status < 400 && response.headers.get("location")) { await response.body?.cancel().catch(() => {}); currentUrl = new URL(response.headers.get("location")!, currentUrl).href; continue; }
 				const contentLength = Number.parseInt(response.headers.get("content-length") ?? "0", 10);
 				if (contentLength > MAX_URL_RESPONSE_BYTES) throw new Error(`URL response exceeds ${MAX_URL_RESPONSE_BYTES} byte limit: ${currentUrl}`);

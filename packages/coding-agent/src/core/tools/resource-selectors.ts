@@ -298,7 +298,7 @@ function validateSqliteWhere(where: string | undefined): string | undefined {
 	const trimmed = where?.trim(); if (!trimmed) return undefined;
 	let quote = "", token = "";
 	const flush = () => { if (token && FORBIDDEN_WHERE_KEYWORDS.has(token.toLowerCase())) throw new Error("Invalid SQLite where filter"); token = ""; };
-	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote) { if (ch === quote && next === quote) { i++; continue; } if (ch === quote) quote = ""; continue; } if (ch === "'" || ch === '"') { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; token += "\""; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
 	flush();
 	return trimmed;
 }
@@ -309,8 +309,9 @@ function validateRawSqliteQuery(query: string): string {
 	const trimmed = query.trim(); if (!trimmed) throw new Error("SQLite raw query must not be empty"); if (!/^select\b/i.test(trimmed)) throw new Error("Invalid raw SQLite query");
 	let quote = "", token = "";
 	const flush = () => { const lower = token.toLowerCase(); if (lower && (FORBIDDEN_RAW_QUERY_KEYWORDS.has(lower) || lower.startsWith("sqlite_"))) throw new Error("Invalid raw SQLite query"); token = ""; };
-	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote) { if (ch === quote && next === quote) { i++; continue; } if (ch === quote) quote = ""; continue; } if (ch === "'" || ch === '"') { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid raw SQLite query"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; token += "\""; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid raw SQLite query"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
 	flush();
+	if (quote) throw new Error("Invalid raw SQLite query");
 	return trimmed;
 }
 

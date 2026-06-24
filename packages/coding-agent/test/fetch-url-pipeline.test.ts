@@ -1,4 +1,24 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
+
+// Hoisted DNS resolution used by the mocked node:dns/promises.lookup. `null`
+// (default) preserves the real lookup; a hostname test sets a public IP to force
+// the pinned (undici) connect path.
+const { resolvedHost, setResolvedHost } = vi.hoisted(() => {
+	const state = { address: null as { address: string; family: number } | null };
+	return {
+		resolvedHost: state,
+		setResolvedHost: (value: { address: string; family: number } | null) => { state.address = value; },
+	};
+});
+vi.mock("node:dns/promises", async (importActual) => {
+	const actual = await importActual<typeof import("node:dns/promises")>();
+	return {
+		...actual,
+		lookup: ((hostname: string, options?: object) =>
+			resolvedHost.address ? Promise.resolve([resolvedHost.address]) : actual.lookup(hostname, options as never)) as typeof actual.lookup,
+	};
+});
+
 import { getReadUrlCacheKey, isReadableUrlPath, loadPage, parseReadUrlTarget, repairCollapsedScheme } from "../src/core/tools/fetch-url.ts";
 
 // Network rendering (HTML→markdown, caching, llms.txt discovery, artifact
@@ -79,4 +99,30 @@ test("cache keys are scoped and split raw vs rendered", () => {
 	expect(a).not.toBe(b);
 	expect(a).not.toBe(c);
 	expect(a).toBe(getReadUrlCacheKey("session-1", "https://example.com", false));
+});
+
+test("pins the DNS-resolved address for hostname fetches (no rebinding at connect)", async () => {
+	// Regression: globalThis.fetch ignores the undici `dispatcher` option under
+	// Bun's compiled binary, so a hostname target must route through undici's
+	// own client for the pinned lookup to take effect. If the pinned (undici)
+	// path is taken, a mocked global fetch returning 200 must NOT be reached.
+	const previousAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	const previousFetch = globalThis.fetch;
+	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	let globalFetchCalls = 0;
+	globalThis.fetch = (async () => { globalFetchCalls++; return new Response("should-not-reach", { status: 200 }); }) as typeof fetch;
+	// Resolve the hostname to a routable-but-unreachable public IP; undici's
+	// pinned client attempts the connect and fails — proving the request went
+	// through undici (the pinned path), not the mocked global fetch.
+	setResolvedHost({ address: "192.0.2.1", family: 4 });
+	try {
+		await expect(loadPage("http://dns-pinned.example/", 2000, undefined, "text/plain")).rejects.toThrow();
+		// The hostname went through undici's pinned client, not global fetch.
+		expect(globalFetchCalls).toBe(0);
+	} finally {
+		setResolvedHost(null);
+		globalThis.fetch = previousFetch;
+		if (previousAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previousAllowance;
+	}
 });

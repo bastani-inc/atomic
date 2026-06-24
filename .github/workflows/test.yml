@@ -51,6 +51,9 @@ jobs:
               run: bun run test:unit
             - name: Integration tests
               run: bun run test:integration
+            - name: coding-agent vitest suite
+              working-directory: packages/coding-agent
+              run: bun run test
             - name: Build native release binary
               shell: bash
               run: ./scripts/build-binaries.sh --platform "${{ matrix.binary_platform }}"
