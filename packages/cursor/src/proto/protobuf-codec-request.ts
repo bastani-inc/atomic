@@ -170,20 +170,21 @@ function extractBase64ImagePayload(data: string): string {
 }
 
 function decodeStrictBase64ImagePayload(encoded: string): Uint8Array {
-	if (encoded.length === 0 || /\s/u.test(encoded) || /[^A-Za-z0-9+/=]/u.test(encoded)) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
-	const firstPaddingIndex = encoded.indexOf("=");
+	const normalized = encoded.replace(/[ \t\r\n\f\v]/gu, "");
+	if (normalized.length === 0 || /[^A-Za-z0-9+/=]/u.test(normalized)) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	const firstPaddingIndex = normalized.indexOf("=");
 	const hasPadding = firstPaddingIndex !== -1;
 	if (hasPadding) {
-		const padding = encoded.slice(firstPaddingIndex);
-		if (!/^={1,2}$/u.test(padding) || encoded.length % 4 !== 0) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
-	} else if (encoded.length % 4 === 1) {
+		const padding = normalized.slice(firstPaddingIndex);
+		if (!/^={1,2}$/u.test(padding) || normalized.length % 4 !== 0) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	} else if (normalized.length % 4 === 1) {
 		throw new Error(CURSOR_IMAGE_DECODE_ERROR);
 	}
-	const padded = hasPadding ? encoded : encoded.padEnd(Math.ceil(encoded.length / 4) * 4, "=");
+	const padded = hasPadding ? normalized : normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
 	const bytes = Buffer.from(padded, "base64");
 	const canonical = bytes.toString("base64");
 	const actual = hasPadding ? canonical : canonical.replace(/=+$/u, "");
-	if (actual !== encoded) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
+	if (actual !== normalized) throw new Error(CURSOR_IMAGE_DECODE_ERROR);
 	return Uint8Array.from(bytes);
 }
 

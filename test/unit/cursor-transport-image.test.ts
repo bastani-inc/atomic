@@ -268,11 +268,42 @@ describe("Cursor HTTP2 image transport boundary", () => {
 		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [4, 5]);
 	});
 
+	test("protobuf codec accepts ASCII-whitespace-wrapped image base64", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const firstBytes = new Uint8Array([6, 7, 8, 9]);
+		const secondBytes = new Uint8Array([10, 11, 12]);
+		const firstWrapped = Buffer.from(firstBytes).toString("base64").replace("IC", "I\r\n\tC");
+		const secondWrapped = Buffer.from(secondBytes).toString("base64").replace("C", "C \f\v");
+		const encodedRun = codec.encodeRunRequest({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-wrapped-image-base64",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				messages: [{
+					role: "user",
+					content: [
+						{ type: "image", data: `data:image/png;base64,${firstWrapped}`, mimeType: "image/png" },
+						{ type: "image", data: secondWrapped, mimeType: "image/png" },
+					],
+					timestamp: 1,
+				}],
+			},
+		});
+
+		const selectedImages = decodeRunUserMessage(encodedRun).selectedContext?.selectedImages ?? [];
+		assert.equal(selectedImages.length, 2);
+		assert.deepEqual([...(selectedImages[0]?.dataOrBlobId.value ?? [])], [...firstBytes]);
+		assert.deepEqual([...(selectedImages[1]?.dataOrBlobId.value ?? [])], [...secondBytes]);
+	});
+
 	test("protobuf codec rejects malformed image base64 and data URLs without leaking payloads", () => {
 		const cases = [
 			"%%%%malformed-image-payload%%%%",
 			"abcde",
 			"YQ=Q",
+			" \t\r\n\f\v ",
 			"data:image/png;base64,%%%%malformed-data-url%%%%",
 			"data:image/png,not-base64",
 			"data:image/png;base64",
