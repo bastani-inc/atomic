@@ -90,10 +90,10 @@ export class CursorStreamAdapter {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
-			const experimentalImageInput = true;
+			const experimentalImageInput = hasUserImageInput(context);
 			if (hasToolResultImageInput(context)) throw new Error(CURSOR_TOOL_RESULT_IMAGE_INPUT_ERROR);
 			const trailingToolResults = getTrailingToolResults(context);
-			if (hasUserImageInput(context) && !options.sessionId?.trim()) throw new Error(CURSOR_IMAGE_SESSION_ID_ERROR);
+			if (hasCurrentUserImageInput(context) && !options.sessionId?.trim()) throw new Error(CURSOR_IMAGE_SESSION_ID_ERROR);
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();
 			}
@@ -392,6 +392,7 @@ function deterministicCursorConversationId(conversationKey: string): string {
 function hasUserImageInput(context: Context): boolean {
 	return context.messages.some((message) => message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image"));
 }
+function hasCurrentUserImageInput(context: Context): boolean { for (let index = context.messages.length - 1; index >= 0; index--) { const message = context.messages[index]; if (!message || message.role === "assistant" || message.role === "toolResult") break; if (message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image")) return true; } return false; }
 function hasToolResultImageInput(context: Context): boolean {
 	return context.messages.some((message) => message.role === "toolResult" && message.content.some((content) => content.type === "image"));
 }

@@ -164,6 +164,30 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 		assert.equal(secondTransport.runs.length, 0);
 	});
 
+	test("rejects current-turn image input before a later user message without sessionId", async () => {
+		const transport = new CursorMockTransport();
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-current-segment-image-no-session" });
+		const imageData = "current-segment-image-must-not-leak";
+		const imageContext: Context = {
+			messages: [
+				{ role: "user", content: [{ type: "image", data: imageData, mimeType: "image/png" }], timestamp: 1 },
+				{ role: "user", content: [{ type: "text", text: "follow-up text" }], timestamp: 2 },
+			],
+		};
+
+		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+
+		const terminal = events.at(-1);
+		assert.equal(terminal?.type, "error");
+		if (terminal?.type === "error") {
+			const message = terminal.error.errorMessage ?? "";
+			assert.match(message, /non-empty sessionId/u);
+			assert.doesNotMatch(message, /access-secret/u);
+			assert.doesNotMatch(message, /current-segment-image-must-not-leak/u);
+		}
+		assert.equal(transport.runs.length, 0);
+	});
+
 	test("rejects user image input with whitespace-only sessionId before invoking Cursor transport", async () => {
 		const transport = new CursorMockTransport();
 		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-user-image-whitespace-session" });
@@ -197,6 +221,25 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 		assert.equal(transport.runs.length, 1);
 		assert.equal(transport.runs[0]?.request.experimentalImageInput, true);
 		assert.deepEqual(transport.runs[0]?.request.context, imageContext);
+	});
+
+	test("does not require sessionId when only historical user messages contain images", async () => {
+		const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-historical-image-text" });
+		const imageContext: Context = {
+			messages: [
+				{ role: "user", content: [{ type: "image", data: "historical-image-must-not-leak", mimeType: "image/png" }], timestamp: 1 },
+				{ role: "assistant", content: [{ type: "text", text: "ok" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+				{ role: "user", content: [{ type: "text", text: "next" }], timestamp: 3 },
+			],
+		};
+
+		const events = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+
+		assert.equal(events.some((event) => event.type === "error"), false);
+		assert.equal(events.at(-1)?.type, "done");
+		assert.equal(transport.runs.length, 1);
+		assert.equal(transport.runs[0]?.request.experimentalImageInput, true);
 	});
 
 	test("allows historical user images while sending current image input", async () => {

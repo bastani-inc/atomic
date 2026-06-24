@@ -10,15 +10,13 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import type { PromptOptions } from "./agent-session-types.ts";
 
 function mergePromptImages(existing: readonly ImageContent[] | undefined, resolved: readonly ImageContent[]): ImageContent[] | undefined {
-	if (!existing || existing.length === 0) return resolved.length > 0 ? [...resolved] : undefined;
-	if (resolved.length === 0) return [...existing];
-	const merged = [...existing];
+	const merged = [...(existing ?? [])];
 	for (const image of resolved) {
 		if (!merged.some((candidate) => candidate.mimeType === image.mimeType && candidate.data === image.data)) {
 			merged.push(image);
 		}
 	}
-	return merged;
+	return merged.length > 0 ? merged : undefined;
 }
 
 function shouldResolveInlineImageReferences(this: AgentSession): boolean {
@@ -59,10 +57,15 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
+			let queuedText = currentText;
+			if (expandPromptTemplates) {
+				queuedText = this._expandSkillCommand(queuedText);
+				queuedText = expandPromptTemplate(queuedText, [...this.promptTemplates]);
+			}
 			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(currentText, currentImages);
+				await this._queueFollowUp(queuedText, currentImages);
 			} else {
-				await this._queueSteer(currentText, currentImages);
+				await this._queueSteer(queuedText, currentImages);
 			}
 			preflightResult?.(true);
 			return;

@@ -46,6 +46,25 @@ describe("AgentSession image prompt handling", () => {
 		expect(currentUserImageCount).toBe(1);
 	});
 
+	it("deduplicates repeated inline image references without explicit attachments", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const imagePath = join(harness.tempDir, "duplicate.png");
+		writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+		let currentUserImageCount = 0;
+
+		harness.setResponses([
+			(context) => {
+				currentUserImageCount = countImagesInCurrentUserMessage(context.messages);
+				return fauxAssistantMessage("ok");
+			},
+		]);
+
+		await harness.session.prompt(`@${imagePath} and @${imagePath}`);
+
+		expect(currentUserImageCount).toBe(1);
+	});
+
 	it("attaches images for back-to-back image prompts", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
