@@ -16,12 +16,13 @@ pub fn force_rescan(
 		skip_node_modules: options.skip_node_modules,
 		detail: options.detail,
 	};
+	bump_cache_epoch();
 	FS_CACHE.remove(&key);
 
+	let scan_epoch = cache_epoch();
 	let entries = collect_entries(root, options, ct)?;
-	if store {
-		let now = Instant::now();
-		FS_CACHE.insert(key, CacheEntry { created_at: now, entries: entries.clone() });
+	if store && cache_epoch() == scan_epoch {
+		FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), entries: entries.clone() });
 		evict_oldest();
 	}
 	Ok(entries)
@@ -36,6 +37,7 @@ pub fn force_rescan(
 /// Removes any cache entry whose root is a prefix of (or equal to) `target`,
 /// because a file mutation under that root makes the scan stale.
 pub fn invalidate_path(target: &Path) {
+	bump_cache_epoch();
 	let keys_to_remove: Vec<CacheKey> = FS_CACHE
 		.iter()
 		.filter(|entry| target.starts_with(&entry.key().root))
@@ -48,6 +50,7 @@ pub fn invalidate_path(target: &Path) {
 
 /// Clear the entire scan cache.
 pub fn invalidate_all() {
+	bump_cache_epoch();
 	FS_CACHE.clear();
 }
 

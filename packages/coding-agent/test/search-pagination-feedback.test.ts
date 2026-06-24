@@ -42,4 +42,13 @@ describe("search pagination feedback", () => {
 		expect(output).toContain("Search collected the first 2000 matches before pagination");
 		expect(result.details?.fileLimitReached).toBe(true);
 	});
+
+	it("counts per-file search output caps by matches instead of context lines", async () => {
+		const dir = await tempDir();
+		const content = Array.from({ length: 6 }, (_, index) => [`before ${index}`, `needle ${index}`, `after ${index}a`, `after ${index}b`, `after ${index}c`].join("\n")).join("\n");
+		await writeFile(join(dir, "many-matches.txt"), `${content}\n`, "utf8");
+		const search = createSearchToolDefinition(dir);
+		const output = text(await search.execute("search-context-lines", { pattern: "needle", paths: "." }, undefined, undefined, {} as never));
+		expect(output).toContain("needle 5");
+	});
 });

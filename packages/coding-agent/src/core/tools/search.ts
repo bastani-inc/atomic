@@ -206,8 +206,18 @@ function applyDefaultSearchContext(text: string, before = 1, after = 3): string 
 	return output.join("\n");
 }
 
+function isSearchMatchLine(line: string): boolean { return /:\d+: /.test(line); }
+function sliceGroupLinesByMatchCount(lines: readonly string[], matchLimit: number): string[] {
+	if (matchLimit <= 0) return [];
+	let matches = 0; const output: string[] = [];
+	for (const line of lines) {
+		if (isSearchMatchLine(line)) { if (matches >= matchLimit) break; matches++; }
+		output.push(line);
+	}
+	return output;
+}
 function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileLimit = 20): string {
-	return groups.slice(0, Math.max(0, limit)).flatMap((group) => group.lines.slice(0, perFileLimit)).join("\n");
+	return groups.slice(0, Math.max(0, limit)).flatMap((group) => sliceGroupLinesByMatchCount(group.lines, perFileLimit)).join("\n");
 }
 
 function dedupeRenderedSearchOutput(content: string): string {

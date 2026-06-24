@@ -169,9 +169,13 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 		if (eocd < 0) throw new Error(`Invalid zip archive: ${path}`);
 		let ptr = source.readUInt32LE(eocd + 16); const total = source.readUInt16LE(eocd + 10);
 		for (let n = 0; n < total; n++) {
+			assertZipRange(source, ptr, 46, path);
 			const start = ptr, nameLen = source.readUInt16LE(ptr + 28), extraLen = source.readUInt16LE(ptr + 30), commentLen = source.readUInt16LE(ptr + 32), localOffset = source.readUInt32LE(ptr + 42), compressedSize = source.readUInt32LE(ptr + 20);
+			assertZipRange(source, ptr + 46, nameLen + extraLen + commentLen, path);
 			const name = source.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen; if (name === memberPath) continue;
+			assertZipRange(source, localOffset, 30, path);
 			const localNameLen = source.readUInt16LE(localOffset + 26), localExtraLen = source.readUInt16LE(localOffset + 28), localEnd = localOffset + 30 + localNameLen + localExtraLen + compressedSize;
+			assertZipRange(source, localOffset, localEnd - localOffset, path);
 			const local = source.subarray(localOffset, localEnd), central = Buffer.from(source.subarray(start, ptr)); central.writeUInt32LE(offset, 42); locals.push(local); centrals.push(central); offset += local.length;
 		}
 	}
@@ -297,8 +301,8 @@ const FORBIDDEN_WHERE_KEYWORDS = new Set(["limit", "offset", "union", "intersect
 function validateSqliteWhere(where: string | undefined): string | undefined {
 	const trimmed = where?.trim(); if (!trimmed) return undefined;
 	let quote = "", token = "";
-	const flush = () => { if (token && FORBIDDEN_WHERE_KEYWORDS.has(token.toLowerCase())) throw new Error("Invalid SQLite where filter"); token = ""; };
-	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; token += "\""; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	const flush = () => { const lower = token.toLowerCase(); if (token && (FORBIDDEN_WHERE_KEYWORDS.has(lower) || lower.startsWith("pragma_"))) throw new Error("Invalid SQLite where filter"); token = ""; };
+	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
 	flush();
 	return trimmed;
 }
@@ -308,8 +312,8 @@ const FORBIDDEN_RAW_QUERY_KEYWORDS = new Set(["attach", "detach", "pragma", "ins
 function validateRawSqliteQuery(query: string): string {
 	const trimmed = query.trim(); if (!trimmed) throw new Error("SQLite raw query must not be empty"); if (!/^select\b/i.test(trimmed)) throw new Error("Invalid raw SQLite query");
 	let quote = "", token = "";
-	const flush = () => { const lower = token.toLowerCase(); if (lower && (FORBIDDEN_RAW_QUERY_KEYWORDS.has(lower) || lower.startsWith("sqlite_"))) throw new Error("Invalid raw SQLite query"); token = ""; };
-	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; token += "\""; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid raw SQLite query"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
+	const flush = () => { const lower = token.toLowerCase(); if (lower && (FORBIDDEN_RAW_QUERY_KEYWORDS.has(lower) || lower.startsWith("sqlite_") || lower.startsWith("pragma_"))) throw new Error("Invalid raw SQLite query"); token = ""; };
+	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid raw SQLite query"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
 	flush();
 	if (quote) throw new Error("Invalid raw SQLite query");
 	return trimmed;

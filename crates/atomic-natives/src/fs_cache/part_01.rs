@@ -14,7 +14,10 @@
 use std::{
 	borrow::Cow,
 	path::{Path, PathBuf},
-	sync::{Arc, LazyLock, Mutex},
+	sync::{
+		atomic::{AtomicU64, Ordering},
+		Arc, LazyLock, Mutex,
+	},
 	time::{Duration, Instant},
 };
 
@@ -125,6 +128,15 @@ struct CacheEntry {
 }
 
 static FS_CACHE: LazyLock<DashMap<CacheKey, CacheEntry>> = LazyLock::new(DashMap::new);
+static FS_CACHE_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn cache_epoch() -> u64 {
+	FS_CACHE_EPOCH.load(Ordering::Acquire)
+}
+
+fn bump_cache_epoch() {
+	FS_CACHE_EPOCH.fetch_add(1, Ordering::AcqRel);
+}
 
 /// Result of a cache-aware scan, including the age of the cached data.
 pub struct ScanResult {
@@ -452,8 +464,11 @@ pub fn get_or_scan(
 		FS_CACHE.remove(&key);
 	}
 
+	let scan_epoch = cache_epoch();
 	let entries = collect_entries(root, options, ct)?;
-	FS_CACHE.insert(key, CacheEntry { created_at: now, entries: entries.clone() });
-	evict_oldest();
+	if cache_epoch() == scan_epoch {
+		FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), entries: entries.clone() });
+		evict_oldest();
+	}
 	Ok(ScanResult { entries, cache_age_ms: 0 })
 }
