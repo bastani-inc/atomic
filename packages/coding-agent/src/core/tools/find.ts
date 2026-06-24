@@ -57,10 +57,9 @@ function normalizeFindTargets(cwd: string, pathsValue: string[] | undefined): Fi
 }
 function relativizeFoundPath(foundPath: string, searchPath: string): string {
 	const hadTrailingSlash = foundPath.endsWith("/") || foundPath.endsWith("\\");
-	let relativePath = path.relative(searchPath, foundPath);
-	if (!relativePath) relativePath = path.basename(foundPath);
-	if (hadTrailingSlash && !relativePath.endsWith("/")) relativePath += "/";
-	return toPosixPath(relativePath);
+	const relativePath = path.relative(searchPath, foundPath) || path.basename(foundPath);
+	const outputPath = hadTrailingSlash && !relativePath.endsWith("/") ? `${relativePath}/` : relativePath;
+	return toPosixPath(outputPath);
 }
 function formatExactFoundPath(foundPath: string, cwd: string): string { return toPosixPath(path.relative(cwd, foundPath) || path.basename(foundPath)); }
 function containsHiddenSegment(value: string): boolean { return toPosixPath(value).split("/").some((part) => part.startsWith(".") && part.length > 1); }
