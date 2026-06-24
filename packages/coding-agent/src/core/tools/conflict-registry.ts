@@ -41,6 +41,11 @@ export function registerConflictBlocks(cwd: string, blocks: ConflictBlock[]): vo
 	conflictRegistry.set(cwd, blocks);
 }
 
+/** All conflict blocks a prior `read …:conflicts` registered for this cwd, in read order. */
+export function getRegisteredConflictBlocks(cwd: string): ConflictBlock[] {
+	return conflictRegistry.get(cwd) ?? [];
+}
+
 export function getRegisteredConflictBlock(cwd: string, id: number): ConflictBlock | undefined {
 	return conflictRegistry.get(cwd)?.[id - 1];
 }

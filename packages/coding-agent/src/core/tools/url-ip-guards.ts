@@ -58,6 +58,11 @@ function expandIpv6(address: string): number[] | undefined {
 
 function embeddedPrivateIpv4(address: string): boolean {
 	const hextets = expandIpv6(address); if (!hextets) return false;
+	// IPv4-mapped (::ffff:0:0/96) and IPv4-compatible (::/96) addresses: any
+	// fully-expanded form (e.g. [0:0:0:0:0:ffff:169.254.169.254]) must be
+	// re-checked against the IPv4 private predicates, not just the compressed
+	// `::ffff:` literals handled by isPrivateIpAddress.
+	if (hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
 	if (hextets[0] === 0x2002) return isPrivateIpAddress(ipv4FromHextets(hextets[1]!, hextets[2]!));
 	if (hextets[0] === 0x64 && hextets[1] === 0xff9b && hextets.slice(2, 6).every((part) => part === 0)) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
 	return false;
@@ -78,5 +83,5 @@ export function isPrivateIpAddress(address: string): boolean {
 	const parts = address.split(".").map((part) => Number.parseInt(part, 10));
 	if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return false;
 	const [a, b] = parts as [number, number, number, number];
-	return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
+	return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168 || a === 100 && b >= 64 && b <= 127;
 }

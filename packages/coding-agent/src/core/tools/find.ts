@@ -226,7 +226,7 @@ export function createFindToolDefinition(
 		parameters: findSchema,
 		async execute(
 			_toolCallId,
-			params: FindToolInput & { pattern?: string },
+			params: FindToolInput,
 			signal?: AbortSignal,
 			_onUpdate?,
 			_ctx?,
@@ -251,7 +251,7 @@ export function createFindToolDefinition(
 				};
 				signal?.addEventListener("abort", onAbort, { once: true });
 				const { limit, hidden, gitignore, timeout } = params;
-				const paths = params.paths ?? (typeof params.pattern === "string" ? [params.pattern] : undefined);
+				const paths = params.paths;
 				const resourceCtx = _ctx as InternalResourceContext | undefined;
 				(async () => {
 					try {

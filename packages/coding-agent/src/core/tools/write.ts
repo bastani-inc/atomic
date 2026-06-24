@@ -6,7 +6,7 @@ import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { getRegisteredConflictBlock, parseConflictBlocks, type ConflictBlock } from "./conflict-registry.ts";
+import { getRegisteredConflictBlocks, parseConflictBlocks, type ConflictBlock } from "./conflict-registry.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
 import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnapshot, stripKnownHashlineCopiedContent, stripKnownHashlineCopiedContentWithMeta, type HashlineSnapshotStore } from "./hashline.ts";
 import { resolveToCwd } from "./path-utils.ts";
@@ -38,6 +38,25 @@ async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBl
 	const out: ConflictBlock[] = [];
 	async function walk(dir: string): Promise<void> { for (const entry of await fsReaddir(dir, { withFileTypes: true }).catch(() => [])) { if (out.length >= limit || entry.name === ".git" || entry.name === "node_modules") continue; const full = `${dir}/${entry.name}`; if (entry.isDirectory()) await walk(full); else if (entry.isFile()) { const text = await fsReadFile(full, "utf8").catch(() => ""); if (text.includes("<<<<<<<") && text.includes("=======") && text.includes(">>>>>>>")) out.push(...parseConflictBlocks(full, text)); } } }
 	await walk(root); return out;
+}
+/**
+ * Reconcile the read-time conflict view (registry, populated by `read
+ * …:conflicts`) against the live tree-walk snapshot. A registered block is
+ * only trustworthy when the markers still sit at its recorded file+offset —
+ * otherwise the file drifted and the id→block mapping would be wrong. When
+ * any registered block is still live, resolve ids against the registered
+ * ordering (what the agent actually saw); otherwise fall back to the fresh
+ * tree walk. This closes the divergent id-space where `conflict://2` could
+ * resolve a different block than the read displayed.
+ */
+function reconcileConflictBlocks(live: ConflictBlock[], cwd: string): ConflictBlock[] {
+	const registered = getRegisteredConflictBlocks(cwd);
+	if (registered.length === 0) return live;
+	const liveKeys = new Set(live.map((block) => `${block.file}\0${block.start}\0${block.end}`));
+	const registeredLive = registered.filter((block) => liveKeys.has(`${block.file}\0${block.start}\0${block.end}`));
+	// If the registered view no longer matches the live tree at all, the file
+	// changed under us — trust the live walk rather than a stale id mapping.
+	return registeredLive.length > 0 ? registeredLive : live;
 }
 function conflictReplacement(content: string, block: ConflictBlock): string[] {
 	const token = content.trim();
@@ -264,12 +283,13 @@ export function createWriteToolDefinition(
 				const target = decodeURIComponent(path.slice("conflict://".length));
 				if (!target) throw new Error("conflict:// target is required.");
 				if (target.includes("/")) throw new Error("Scoped conflict resources are read-only; write conflict://<id> or conflict://*.");
-				const blocks = await findConflictBlocks(cwd);
-				if (blocks.length === 0) throw new Error("No conflict markers found.");
+				const liveBlocks = await findConflictBlocks(cwd);
+				if (liveBlocks.length === 0) throw new Error("No conflict markers found.");
+				const blocks = reconcileConflictBlocks(liveBlocks, cwd);
 				if (target === "*") { const headers = await conflictSnapshotHeaders(await resolveConflictBlocks(blocks, writeContent), cwd, hashlineStore); return { content: [{ type: "text", text: `Resolved ${blocks.length} conflict${blocks.length === 1 ? "" : "s"}${headers.length > 0 ? `\n\nSnapshots:\n${headers.join("\n")}` : ""}` }], details: undefined }; }
 				if (!/^\d+$/.test(target)) throw new Error("Conflict writes must target conflict://<id> or conflict://*.");
 				const id = Number.parseInt(target, 10);
-				const block = getRegisteredConflictBlock(cwd, id) ?? blocks[id - 1];
+				const block = blocks[id - 1];
 				if (!block) throw new Error(`Conflict id not found: ${target}`);
 				const headers = await conflictSnapshotHeaders(await resolveConflictBlocks([block], writeContent), cwd, hashlineStore);
 				return { content: [{ type: "text", text: `Resolved conflict ${target}${headers[0] ? `\n\n${headers[0]}` : ""}` }], details: undefined };
