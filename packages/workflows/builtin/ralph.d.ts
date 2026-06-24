@@ -28,8 +28,6 @@ export type RalphWorkflowOutputs = WorkflowOutputValues & {
   readonly iterations_completed?: number;
   readonly review_report?: string;
   readonly review_report_path?: string;
-  readonly original_prompt?: string;
-  readonly refined_prompt?: string;
 };
 
 export type RalphWorkflowDefinition = WorkflowDefinition<

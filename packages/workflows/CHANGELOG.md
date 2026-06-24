@@ -6,13 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Changed
-
-- Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
-
 ### Fixed
 
 - Fixed the aggregate `@bastani/workflows/builtin` declaration for `openClaudeDesign` so its input types match the per-workflow export and runtime schema (`prompt`, `discover_references`, and `max_refinements`).
+
+## [0.9.2] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
+
+## [0.9.2-alpha.1] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
 
 ## [0.9.1] - 2026-06-23
 

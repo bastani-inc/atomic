@@ -125,35 +125,6 @@ export function expectedDeepResearchAggregatorReadCount(): number {
     return 5;
 }
 
-/**
- * Task responder that turns the shared `prompt-refinement` stage into a
- * passthrough: it returns the original request unchanged (extracted from the
- * stage's `<original_request>` block) so tests can keep asserting on downstream
- * behavior without the refinement stage rewriting the objective/prompt. An
- * optional base responder is delegated to for every other stage name.
- */
-export function promptRefinementPassthroughTaskResponder(
-    base?: (
-        name: string,
-        options: WorkflowTaskOptions,
-        calls: MockCalls,
-    ) => string | undefined,
-): (
-    name: string,
-    options: WorkflowTaskOptions,
-    calls: MockCalls,
-) => string | undefined {
-    return (name, options, calls) => {
-        if (name === "prompt-refinement") {
-            const match = promptText(options).match(
-                /<original_request>\n([\s\S]*?)\n<\/original_request>/,
-            );
-            return match ? match[1] : undefined;
-        }
-        return base?.(name, options, calls);
-    };
-}
-
 export function assertStringOutput(
     output: WorkflowTaskOptions["output"] | undefined,
 ): asserts output is string {

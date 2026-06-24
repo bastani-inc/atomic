@@ -5,7 +5,6 @@ import { join } from "node:path";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import {
     makeMockCtx,
-    promptRefinementPassthroughTaskResponder,
     readPaths,
 } from "./builtin-workflows-helpers.js";
 
@@ -26,16 +25,16 @@ describe("goal create_pr", () => {
 
     function makeGoalCtx(inputs: Record<string, unknown>, decision: "complete" | "continue") {
         return makeMockCtx(inputs, {
-            task: promptRefinementPassthroughTaskResponder((name) => {
+            task: (name) => {
                 if (name.includes("reviewer-")) return reviewJson(decision);
                 return undefined;
-            }),
+            },
         });
     }
 
     function makeApprovingGoalCtx(inputs: Record<string, unknown>) {
         return makeMockCtx(inputs, {
-            task: promptRefinementPassthroughTaskResponder((name) => {
+            task: (name) => {
                 if (
                     name.startsWith("completion-reviewer-") ||
                     name.startsWith("evidence-reviewer-")
@@ -44,7 +43,7 @@ describe("goal create_pr", () => {
                 }
                 if (name.startsWith("risk-reviewer-")) return reviewJson("continue");
                 return undefined;
-            }),
+            },
         });
     }
 

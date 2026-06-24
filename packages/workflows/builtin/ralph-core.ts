@@ -265,7 +265,7 @@ export function renderResearchPromptRefinementPrompt(args: {
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
 }): string {
-  const basePrompt = `/skill:prompt-engineer Transform the following refined user request into a codebase and online research question which can be thoroughly explored: ${args.request}`;
+  const basePrompt = `/skill:prompt-engineer Transform the following user request into a codebase and online research question which can be thoroughly explored: ${args.request}`;
   return [
     basePrompt,
     taggedPrompt([
@@ -404,7 +404,5 @@ export type RalphWorkflowResult = {
   readonly iterations_completed: number;
   readonly review_report: string;
   readonly review_report_path?: string;
-  readonly original_prompt: string;
-  readonly refined_prompt: string;
 };
 

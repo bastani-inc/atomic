@@ -26,7 +26,6 @@ import {
     makeMockCtx,
     makeTaskResult,
     normalizePathSeparators,
-    promptRefinementPassthroughTaskResponder,
     promptText,
     readPathEndsWith,
     readPaths,
@@ -142,13 +141,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                 create_pr: false,
             },
             {
-                task: promptRefinementPassthroughTaskResponder((name) => {
+                task: (name) => {
                     if (name === "research-prompt-refinement-1") return "first question";
                     if (name === "research-1") return "first research";
                     if (name === "research-prompt-refinement-2") return "second question";
                     if (name === "research-2") return "second research";
                     return undefined;
-                }),
+                },
             },
         );
 
@@ -228,7 +227,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             (ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "").startsWith(
-                "/skill:prompt-engineer Transform the following refined user request",
+                "/skill:prompt-engineer Transform the following user request",
             ),
             true,
         );

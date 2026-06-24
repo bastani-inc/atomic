@@ -2,16 +2,37 @@
 
 ## [Unreleased]
 
-### Changed
-
-- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
-- Raised the published Node.js engine floor to `>=22.19.0` to match direct runtime dependency requirements, including `undici@8.5.0`.
-
 ### Fixed
 
 - Fixed prompt image attachment merging so CLI `@image` file arguments that already carry structured images are not re-attached from their generated `<file>` marker.
 - Fixed extension-origin queued user messages during streaming so fire-and-forget `sendUserMessage()` calls without input handlers queue synchronously instead of being dropped behind async image-reference resolution.
 - Fixed custom-session-dir fork creation to reject an explicit `--session-id` that already exists anywhere in that custom session directory before auth/model validation.
+
+## [0.9.2] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the bundled `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated bundled `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
+- Raised the published Node.js engine floor to `>=22.19.0` to match direct runtime dependency requirements, including `undici@8.5.0`.
+
+### Fixed
+
+- Fixed GitHub Copilot Gemini tool-call normalization to synthesize omitted required empty array properties before validation, preventing Ralph reviewer structured output such as `findings: []` from failing when CAPI drops the empty array from the tool call.
+
+## [0.9.2-alpha.1] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the bundled `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated bundled `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Synced bundled upstream Pi package dependencies to `^0.79.10` across Atomic's CLI and extension peer manifests, and aligned shared coding-agent direct runtime/dev dependency pins with upstream Pi v0.79.10.
+- Raised the published Node.js engine floor to `>=22.19.0` to match direct runtime dependency requirements, including `undici@8.5.0`.
+
+### Fixed
+
+- Fixed GitHub Copilot Gemini tool-call normalization to synthesize omitted required empty array properties before validation, preventing Ralph reviewer structured output such as `findings: []` from failing when CAPI drops the empty array from the tool call.
 
 ## [0.9.1] - 2026-06-23
 

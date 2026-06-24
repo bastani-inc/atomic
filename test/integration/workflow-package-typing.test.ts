@@ -44,7 +44,7 @@ describe("standalone workflow package typing", () => {
               module: "NodeNext",
               moduleResolution: "NodeNext",
               noEmit: true,
-              skipLibCheck: true,
+              skipLibCheck: true, types: ["node"], typeRoots: [join(repoRoot, "node_modules", "@types")],
               allowImportingTsExtensions: true,
               allowArbitraryExtensions: true,
               ignoreDeprecations: "6.0",
@@ -337,13 +337,12 @@ run(authoredWorkflow, {});
 // @ts-expect-error pickedNoDefault has no default and remains required.
 run(authoredWorkflow, { message: "hello", omittedNoDefault: { enabled: true } });
 run(optionalOutputWorkflow, {}); run(postRunEditedWorkflow, {});
-run(goal, { objective: "x" }); run(goal, { objective: "x", create_pr: true });
-run(goalDefault, { objective: "x", create_pr: false }); run(ralph, { prompt: "x" });
-run(ralph, { prompt: "x", create_pr: true }); run(ralphDefault, { prompt: "x", create_pr: false });
-run(openClaudeDesign, { prompt: "x", discover_references: false }); run(openClaudeDesignDefault, { prompt: "x", max_refinements: 1 });
+run(goal, { objective: "x" }); run(goal, { objective: "x", create_pr: true }); run(goalDefault, { objective: "x", create_pr: false });
+run(ralph, { prompt: "x" }); run(ralph, { prompt: "x", create_pr: true }); run(ralphDefault, { prompt: "x", create_pr: false });
+run(openClaudeDesign, { prompt: "x" }); run(openClaudeDesign, { prompt: "x", discover_references: false });
+run(openClaudeDesignDefault, { prompt: "x", discover_references: false }); run(openClaudeDesignDefault, { prompt: "x", max_refinements: 1 });
 run(goal, { objective: "x" }).then((runResult) => {
-  const status: GoalWorkflowStatus | undefined = runResult.result?.status;
-  const firstReceiptPath: string | undefined = runResult.result?.receipts?.[0]?.artifact_path;
+  const status: GoalWorkflowStatus | undefined = runResult.result?.status; const firstReceiptPath: string | undefined = runResult.result?.receipts?.[0]?.artifact_path;
   void status; void firstReceiptPath;
 });
 const typedGoalOutputs: GoalWorkflowOutputs = { status: "complete", approved: true, receipts: [{ turn: 1, stage: "worker", artifact_path: "worker.md", summary: "done" }] };
@@ -359,6 +358,8 @@ const invalidGoalOutputs: GoalWorkflowOutputs = { status: "done" };
 run(openClaudeDesign, { prompt: "x", discover_references: "yes" });
 // @ts-expect-error builtin open-claude-design run input type has boolean discover_references.
 const invalidDesignRunInputs: OpenClaudeDesignWorkflowRunInputs = { prompt: "x", discover_references: "yes" };
+// @ts-expect-error builtin open-claude-design no longer accepts output_type as an input.
+run(openClaudeDesign, { prompt: "x", output_type: "prototype" });
 // @ts-expect-error builtin goal create_pr must be boolean.
 run(goal, { objective: "x", create_pr: "true" });
 // @ts-expect-error builtin ralph create_pr must be boolean.

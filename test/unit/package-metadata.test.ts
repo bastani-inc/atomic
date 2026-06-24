@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import { subset as semverSubset } from "semver";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
 import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
@@ -39,6 +40,14 @@ interface WorkspacePackageJson extends PackageDependencySections {
 interface WorkspacePackage {
     manifestPath: string;
     packageJson: WorkspacePackageJson;
+}
+
+interface RuntimeDependencyPackageJson {
+    name: string;
+    version: string;
+    engines?: {
+        node?: string;
+    };
 }
 
 async function workspacePackages(): Promise<WorkspacePackage[]> {
@@ -120,27 +129,11 @@ function atomicRuntimeDependencyRange(name: string): string | undefined {
     return ATOMIC_RUNTIME_DEPENDENCIES[name];
 }
 
-function parseMajorMinorPatch(range: string): [number, number, number] | undefined {
-    const match = /^(?:\^)?(\d+)\.(\d+)\.(\d+)$/.exec(range);
-    if (!match) return undefined;
-    return [Number(match[1]), Number(match[2]), Number(match[3])];
-}
-
-function versionAtLeast(left: [number, number, number], right: [number, number, number]): boolean {
-    if (left[0] !== right[0]) return left[0] > right[0];
-    if (left[1] !== right[1]) return left[1] > right[1];
-    return left[2] >= right[2];
-}
-
-function directRuntimeCoversBundledRange(directRange: string | undefined, bundledRange: string): boolean {
-    if (directRange === bundledRange) return true;
-    if (!directRange || !bundledRange.startsWith("^")) return false;
-    const directVersion = parseMajorMinorPatch(directRange);
-    const bundledMinimum = parseMajorMinorPatch(bundledRange);
-    return directVersion !== undefined
-        && bundledMinimum !== undefined
-        && directVersion[0] === bundledMinimum[0]
-        && versionAtLeast(directVersion, bundledMinimum);
+async function runtimeDependencyPackageJson(
+    dependencyName: string,
+): Promise<RuntimeDependencyPackageJson> {
+    const manifestPath = join("node_modules", dependencyName, "package.json");
+    return (await Bun.file(manifestPath).json()) as RuntimeDependencyPackageJson;
 }
 
 describe("package metadata", () => {
@@ -217,31 +210,34 @@ describe("package metadata", () => {
                 ["dependencies"],
             )) {
                 if (dependencyName.startsWith("@bastani/")) continue;
+                const atomicDependencyRange =
+                    atomicRuntimeDependencyRange(dependencyName);
+                const foundRange = atomicDependencyRange ?? "missing";
                 assert.ok(
-                    directRuntimeCoversBundledRange(atomicRuntimeDependencyRange(dependencyName), dependencyRange),
-                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name}`,
+                    atomicDependencyRange !== undefined &&
+                        semverSubset(atomicDependencyRange, dependencyRange),
+                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
                 );
             }
         }
     });
 
-    test("publishes the synced Pi runtime and Node engine floors", () => {
-        assert.equal(atomicPackageJson.engines.node, ">=22.19.0");
-        for (const name of [
-            "@earendil-works/pi-agent-core",
-            "@earendil-works/pi-ai",
-            "@earendil-works/pi-tui",
-        ]) {
-            assert.equal((atomicPackageJson.dependencies as DependencyMap)[name], "^0.79.10");
-        }
-        for (const packageJson of [
-            workflowsPackageJson,
-            subagentsPackageJson,
-            mcpPackageJson,
-            webAccessPackageJson,
-            intercomPackageJson,
-        ]) {
-            assert.equal(packageJson.peerDependencies?.["@earendil-works/pi-tui"], "^0.79.10");
+    test("@bastani/atomic Node.js engine range is no broader than direct runtime dependency engines", async () => {
+        const atomicNodeEngine = atomicPackageJson.engines.node;
+        assert.equal(typeof atomicNodeEngine, "string");
+
+        for (const dependencyName of Object.keys(
+            ATOMIC_RUNTIME_DEPENDENCIES,
+        ).sort()) {
+            const dependencyPackageJson =
+                await runtimeDependencyPackageJson(dependencyName);
+            const dependencyNodeEngine = dependencyPackageJson.engines?.node;
+            if (!dependencyNodeEngine) continue;
+
+            assert.ok(
+                semverSubset(atomicNodeEngine, dependencyNodeEngine),
+                `@bastani/atomic engines.node (${atomicNodeEngine}) must be equal to or narrower than ${dependencyName} engines.node (${dependencyNodeEngine})`,
+            );
         }
     });
 

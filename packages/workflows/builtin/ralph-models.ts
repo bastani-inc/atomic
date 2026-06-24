@@ -10,14 +10,14 @@ export const promptEngineerModelConfig = {
       "anthropic/claude-opus-4-8:xhigh",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "github-copilot/gemini-3.1-pro-preview (1m):high",
-      "google/gemini-3.1-pro-preview:high",
-      "google-vertex/gemini-3.1-pro-preview:high",
       "github-copilot/gemini-3.5-flash (1m):high",
       "google/gemini-3.5-flash:high",
       "google-vertex/gemini-3.5-flash:high",
+      "github-copilot/gemini-3.1-pro-preview (1m):high",
+      "google/gemini-3.1-pro-preview:high",
+      "google-vertex/gemini-3.1-pro-preview:high"
     ],
-    noTools: "all" as const,
+    excludedTools: ["ask_user_question"],
 };
 
 export const researchModelConfig = {
@@ -29,12 +29,12 @@ export const researchModelConfig = {
         "anthropic/claude-opus-4-8:medium",
         "zai/glm-5.2:medium",
         "zai-coding-cn/glm-5.2:medium",
-        "github-copilot/gemini-3.1-pro-preview (1m):medium",
-        "google/gemini-3.1-pro-preview:medium",
-        "google-vertex/gemini-3.1-pro-preview:medium",
         "github-copilot/gemini-3.5-flash (1m):medium",
         "google/gemini-3.5-flash:medium",
         "google-vertex/gemini-3.5-flash:medium",
+        "github-copilot/gemini-3.1-pro-preview (1m):medium",
+        "google/gemini-3.1-pro-preview:medium",
+        "google-vertex/gemini-3.1-pro-preview:medium"
     ],
     excludedTools: ["ask_user_question"],
 };

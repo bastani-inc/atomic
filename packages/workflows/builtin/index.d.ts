@@ -53,7 +53,6 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
-  readonly original_objective?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;
@@ -103,12 +102,12 @@ export type RalphWorkflowDefinition = WorkflowDefinition<
 >;
 
 export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "component" | "theme" | "tokens";
-export type OpenClaudeDesignWorkflowInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;
   readonly discover_references: boolean;
   readonly max_refinements: number;
 };
-export type OpenClaudeDesignWorkflowRunInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowRunInputs = {
   readonly prompt: string;
   readonly discover_references?: boolean;
   readonly max_refinements?: number;

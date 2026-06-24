@@ -2,22 +2,18 @@
  * Builtin workflow: open-claude-design
  *
  * Adapts Atomic SDK's Claude Design workflow to the local workflow SDK:
- * design-system onboarding, reference import, generation, bounded refinement,
- * enforcement, and export/handoff all run through ctx.task()/ctx.parallel().
+ * combined discovery/init, design-system/reference research, generation, bounded
+ * refinement, export, and final display run through ctx.task()/ctx.parallel().
  *
  * Every stage prompt invokes the specific impeccable sub-skill that maps to
  * its role (see https://github.com/pbakaus/impeccable/tree/main/site/content/skills):
  *
  *   onboarding     → impeccable `document` / `extract` / `audit`
  *   import         → impeccable `extract`
- *   generator      → impeccable `craft` (HTML preview)
- *   user-feedback  → impeccable `critique` (against the live HTML preview)
- *   critique-N     → impeccable `critique`
- *   screenshot-N   → impeccable `audit` + `live`
- *   apply-changes  → impeccable `polish`
- *   pre-export     → impeccable `audit`
- *   forced-fix     → impeccable `harden`
+ *   generate-N     → impeccable `craft` / `polish` (HTML preview)
+ *   user-feedback  → impeccable `live` (browser review + user notes)
  *   exporter       → impeccable `document` (rich HTML spec)
+ *   final-display  → opens/surfaces the exported HTML spec
  */
 
 import { Type } from "typebox";
@@ -29,7 +25,7 @@ import {
 
 export default workflow({
   name: "open-claude-design",
-  description: "AI-powered design workflow: discovery interview (impeccable `shape`) → optional project-context setup (`/skill:impeccable init`) when DESIGN.md/PRODUCT.md are missing → design-system onboarding → curated reference discovery → reference import → HTML generation → impeccable `live`-driven refinement → quality gate → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate (references take precedence over DESIGN.md/PRODUCT.md). The user iteratively reviews the generated HTML through impeccable `live` / the playwright-cli skill.",
+  description: "AI-powered design workflow: combined discovery/init → design-system/reference research → curated reference discovery → HTML generation → live-driven refinement → rich HTML handoff. The discovery stage asks what to build, the output type, and which references to emulate, then runs impeccable init for PRODUCT.md/DESIGN.md (references take precedence over project context). The user iteratively reviews the generated HTML.",
   inputs: {
     prompt: Type.String({
       description: "What to design (for example, a dashboard, page, component, or prototype). The discovery stage refines this into a confirmed brief and asks for the output type and references.",
@@ -37,11 +33,11 @@ export default workflow({
     discover_references: Type.Boolean({
       default: true,
       description:
-        "Discover beautiful, current reference designs (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
+        "Discover beautiful, current reference designs from notable design websites (Awwwards, recent.design, Dribbble, Monet, Motionsites) and feed them to generation. Set false to skip the network/browser reference pass.",
     }),
     max_refinements: Type.Number({
       default: DEFAULT_MAX_REFINEMENTS,
-      description: `Maximum critique/apply refinement iterations (default ${DEFAULT_MAX_REFINEMENTS}).`,
+      description: `Maximum generate/user-feedback loop iterations (default ${DEFAULT_MAX_REFINEMENTS}).`,
     }),
   },
   outputs: {
@@ -49,7 +45,7 @@ export default workflow({
     design_system: Type.Optional(Type.String({ description: "Design system source used for generation: the project-derived design system." })),
     artifact: Type.Optional(Type.String({ description: "Latest final design summary from the approved preview artifact." })),
     handoff: Type.Optional(Type.String({ description: "Final rich HTML spec and implementation handoff summary." })),
-    approved_for_export: Type.Optional(Type.Boolean({ description: "Whether refinement completed before the final export gate." })),
+    approved_for_export: Type.Optional(Type.Boolean({ description: "Whether refinement completed before export." })),
     refinements_completed: Type.Optional(Type.Number({ description: "Number of refinement iterations completed." })),
     import_context: Type.Optional(Type.String({ description: "Reference-import context used during generation." })),
     run_id: Type.Optional(Type.String({ description: "Per-run design workflow artifact identifier." })),

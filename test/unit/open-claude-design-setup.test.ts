@@ -1,17 +1,15 @@
 // @ts-nocheck
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
     REFERENCE_DESIGN_SITES,
     buildLivePreviewDisplayPrompt,
     buildReferenceDiscoveryPrompt,
-    detectDesignContextFiles,
-    ensureProjectDesignContext,
     persistReferencesBrief,
-    runDiscovery,
+    runDiscoveryAndInit,
 } from "../../packages/workflows/builtin/open-claude-design-setup.js";
 import { shouldEarlyExitForBrowser } from "../../packages/workflows/builtin/open-claude-design-utils.js";
 
@@ -48,39 +46,8 @@ describe("open-claude-design setup", () => {
         return dir;
     };
 
-    describe("detectDesignContextFiles", () => {
-        test("reports missing when neither file exists", () => {
-            const detection = detectDesignContextFiles(tempDir());
-            assert.equal(detection.hasProduct, false);
-            assert.equal(detection.hasDesign, false);
-            assert.equal(detection.hasBoth, false);
-        });
-
-        test("detects PRODUCT.md / DESIGN.md at the project root", () => {
-            const dir = tempDir();
-            writeFileSync(join(dir, "PRODUCT.md"), "# Product");
-            writeFileSync(join(dir, "DESIGN.md"), "# Design");
-            const detection = detectDesignContextFiles(dir);
-            assert.equal(detection.hasBoth, true);
-            assert.equal(detection.productPath, join(dir, "PRODUCT.md"));
-            assert.equal(detection.designPath, join(dir, "DESIGN.md"));
-        });
-
-        test("detects case-insensitive files under .agents/context and docs", () => {
-            const dir = tempDir();
-            mkdirSync(join(dir, ".agents", "context"), { recursive: true });
-            mkdirSync(join(dir, "docs"), { recursive: true });
-            writeFileSync(join(dir, ".agents", "context", "product.md"), "# Product");
-            writeFileSync(join(dir, "docs", "Design.md"), "# Design");
-            const detection = detectDesignContextFiles(dir);
-            assert.equal(detection.hasProduct, true);
-            assert.equal(detection.hasDesign, true);
-            assert.equal(detection.hasBoth, true);
-        });
-    });
-
-    describe("runDiscovery", () => {
-        test("asks via impeccable shape and parses the structured brief/output_type/references", async () => {
+    describe("runDiscoveryAndInit", () => {
+        test("runs one discovery stage for shape + init and parses the structured brief/output_type/references", async () => {
             const { calls, designContext } = makeRecorder(() =>
                 JSON.stringify({
                     brief: "A confirmed kanban board brief.",
@@ -88,77 +55,40 @@ describe("open-claude-design setup", () => {
                     references: ["https://example.com/a", "./mock.png"],
                 }),
             );
-            const decision = await runDiscovery({
+            const result = await runDiscoveryAndInit({
                 designContext,
                 prompt: "Design a kanban board",
                 discoveryConfig: {},
             });
-            assert.ok(calls.tasks.includes("discovery"));
+            assert.deepEqual(calls.tasks, ["discovery"]);
             const prompt = calls.prompts["discovery"] ?? "";
             assert.match(prompt, /\/skill:impeccable shape/);
-            assert.match(prompt, /AskUserQuestion/);
+            assert.match(prompt, /\/skill:impeccable init/);
+            assert.match(prompt, /ask_user_question/);
             assert.match(prompt, /prototype, wireframe, page, component, theme, tokens/);
-            assert.equal(decision.brief, "A confirmed kanban board brief.");
-            assert.equal(decision.output_type, "component");
-            assert.deepEqual(decision.references, [
+            assert.match(prompt, /Let impeccable init perform its own PRODUCT\.md\/DESIGN\.md detection/);
+            assert.doesNotMatch(prompt, /<discovery_context>/);
+            assert.equal(result.discovery.brief, "A confirmed kanban board brief.");
+            assert.equal(result.discovery.output_type, "component");
+            assert.deepEqual(result.discovery.references, [
                 "https://example.com/a",
                 "./mock.png",
             ]);
+            assert.match(result.discoveryContext, /A confirmed kanban board brief/);
+            assert.match(result.projectContext.summary, /shape.*init/s);
         });
 
         test("falls back to the raw prompt and empty references when unstructured", async () => {
-            const { designContext } = makeRecorder(() => "not json");
-            const decision = await runDiscovery({
+            const { calls, designContext } = makeRecorder(() => "not json");
+            const result = await runDiscoveryAndInit({
                 designContext,
                 prompt: "Design a dashboard",
                 discoveryConfig: {},
             });
-            assert.equal(decision.brief, "Design a dashboard");
-            assert.equal(decision.output_type, "prototype");
-            assert.deepEqual(decision.references, []);
-        });
-    });
-
-    describe("ensureProjectDesignContext", () => {
-        test("runs /skill:impeccable init with discovery context when files are missing", async () => {
-            const dir = tempDir();
-            const { calls, designContext } = makeRecorder();
-            const result = await ensureProjectDesignContext({
-                designContext,
-                cwd: dir,
-                prompt: "Design a dashboard",
-                discoveryContext: "Confirmed design brief: a dashboard.",
-                designModelConfig: {},
-            });
-            assert.equal(result.initRan, true);
-            assert.ok(calls.tasks.includes("init"));
-            const initPrompt = calls.prompts["init"] ?? "";
-            assert.match(initPrompt, /\/skill:impeccable init/);
-            assert.match(initPrompt, /<discovery_context>/);
-            assert.match(initPrompt, /Confirmed design brief: a dashboard/);
-            assert.match(initPrompt, /PRODUCT\.md/);
-            assert.match(initPrompt, /DESIGN\.md/);
-        });
-
-        test("always runs init and reconciles when both files already exist", async () => {
-            const dir = tempDir();
-            writeFileSync(join(dir, "PRODUCT.md"), "# Product");
-            writeFileSync(join(dir, "DESIGN.md"), "# Design");
-            const { calls, designContext } = makeRecorder();
-            const result = await ensureProjectDesignContext({
-                designContext,
-                cwd: dir,
-                prompt: "Design a dashboard",
-                discoveryContext: "brief",
-                designModelConfig: {},
-            });
-            // Phase 2 always runs now — even when both files exist.
-            assert.equal(result.initRan, true);
-            assert.ok(calls.tasks.includes("init"));
-            const initPrompt = calls.prompts["init"] ?? "";
-            assert.match(initPrompt, /already exist/);
-            assert.match(initPrompt, /never clobber|never overwrite|never silently overwrite/i);
-            assert.match(result.summary, /reviewed existing/);
+            assert.deepEqual(calls.tasks, ["discovery"]);
+            assert.equal(result.discovery.brief, "Design a dashboard");
+            assert.equal(result.discovery.output_type, "prototype");
+            assert.deepEqual(result.discovery.references, []);
         });
     });
 
@@ -167,7 +97,7 @@ describe("open-claude-design setup", () => {
             const prompt = buildReferenceDiscoveryPrompt({
                 prompt: "Design a landing page",
                 outputType: "page",
-                designContextHint: "PRODUCT.md=/p DESIGN.md=/d",
+                designContextHint: "PRODUCT.md=/p DESIGN.md=/d\n\nDesign-system/reference discovery evidence from ds-* stages:\n### ds-locator\nFound tokens.",
                 artifactDir: "/tmp/run",
                 browserBootstrapRules: "which playwright-cli ... @playwright/cli",
             });
@@ -181,6 +111,11 @@ describe("open-claude-design setup", () => {
             assert.match(prompt, /screenshot --full-page/);
             assert.match(prompt, /CLICK INTO/);
             assert.match(prompt, /destination URL/i);
+            assert.match(prompt, /ds-\* discovery evidence/i);
+            assert.match(prompt, /ask_user_question/);
+            assert.match(prompt, /which reference direction they prefer/i);
+            assert.match(prompt, /None of these fit/);
+            assert.match(prompt, /provide a reference image, screenshot, URL, or local file path/i);
         });
 
         test("persistReferencesBrief writes references.md", () => {

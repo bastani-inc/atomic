@@ -5,27 +5,7 @@ import { rmSync } from "node:fs";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
-describe("open-claude-design — refinement export gate (#1464)", () => {
-    function refinementDecision(readyForExport: boolean): string {
-        return JSON.stringify({
-            ready_for_export: readyForExport,
-            rationale: readyForExport
-                ? "Preview is ready for export."
-                : "More refinement is needed.",
-            required_changes: readyForExport ? [] : ["Tighten hierarchy"],
-        });
-    }
-
-    function exportGateDecision(hasBlockingFindings: boolean): string {
-        return JSON.stringify({
-            has_blocking_findings: hasBlockingFindings,
-            rationale: hasBlockingFindings
-                ? "A P0 issue blocks export."
-                : "No P0 issues block export.",
-            blocking_findings: [],
-        });
-    }
-
+describe("open-claude-design — generate/user-feedback refinement loop (#1464)", () => {
     const previewWithAnnotations = [
         "display_method: playwright-cli interactive annotation",
         "preview_path: /tmp/preview.html",
@@ -36,7 +16,7 @@ describe("open-claude-design — refinement export gate (#1464)", () => {
         "next_action_hint: proceed to refinement",
     ].join("\n");
 
-    test("forces an apply pass before export when the latest preview captured unaddressed annotations", async () => {
+    test("threads user feedback directly into the next generate stage", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -44,13 +24,8 @@ describe("open-claude-design — refinement export gate (#1464)", () => {
             { prompt: "Redesign the Atomic website", max_refinements: 2 },
             {
                 task: (name) => {
-                    if (name === "preview-display-initial")
-                        return previewWithAnnotations;
-                    // The reviewer model approves export on every round.
-                    if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                    if (name === "user-feedback-1") return previewWithAnnotations;
+                    if (name === "user-feedback-2") return "user_notes: none";
                     return undefined;
                 },
             },
@@ -58,21 +33,60 @@ describe("open-claude-design — refinement export gate (#1464)", () => {
 
         const result = await d.run(ctx);
 
-        // Even though user-feedback-1 returned ready_for_export=true, the captured
-        // annotations were not yet addressed, so the gate must force an apply pass
-        // (which threads them) instead of silently exporting at the gate. #1464
-        assert.ok(ctx.calls.task.includes("apply-changes-1"));
-        const applyPrompt = ctx.calls.prompts["apply-changes-1"]?.[0] ?? "";
-        assert.ok(applyPrompt.includes("I don't like this background"));
-        assert.ok(applyPrompt.includes("Apple website"));
-        // The next iteration approves with no new annotations -> no second apply.
-        assert.equal(ctx.calls.task.includes("apply-changes-2"), false);
+        assert.ok(ctx.calls.task.includes("generate-1"));
+        assert.ok(ctx.calls.task.includes("user-feedback-1"));
+        assert.ok(ctx.calls.task.includes("generate-2"));
+        assert.ok(ctx.calls.task.includes("user-feedback-2"));
+        assert.equal(ctx.calls.task.includes("critique-1"), false);
+        assert.equal(ctx.calls.task.includes("screenshot-1"), false);
+        assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
+        assert.equal(ctx.calls.task.includes("pre-export-scan"), false);
+        assert.equal(ctx.calls.task.includes("forced-fix"), false);
+        assert.ok(ctx.calls.task.includes("exporter"));
+        assert.ok(ctx.calls.task.includes("final-display"));
+
+        const generatePrompt = ctx.calls.prompts["generate-2"]?.[0] ?? "";
+        assert.ok(generatePrompt.includes("I don't like this background"));
+        assert.ok(generatePrompt.includes("Apple website"));
+        assert.doesNotMatch(generatePrompt, /screenshot-validated/i);
+        assert.doesNotMatch(generatePrompt, /critique finding/i);
         assert.equal(typeof result["handoff"], "string");
         const artifactDir = result["artifact_dir"] as string;
         rmSync(artifactDir, { recursive: true, force: true });
     });
 
-    test("exports immediately when there are no captured annotations to drop", async () => {
+    test("forks generate and user-feedback loops from their prior sessions", async () => {
+        const mod =
+            await import("../../packages/workflows/builtin/open-claude-design.js");
+        const d = mod.default as unknown as WorkflowDefinition;
+        const ctx = makeMockCtx(
+            { prompt: "Redesign the Atomic website", max_refinements: 2 },
+            {
+                task: (name) => {
+                    if (name === "user-feedback-1") return previewWithAnnotations;
+                    if (name === "user-feedback-2") return "user_notes: none";
+                    return undefined;
+                },
+                sessionFile: (name) => `/tmp/${name}.jsonl`,
+            },
+        );
+
+        const result = await d.run(ctx);
+
+        const feedbackOneOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
+        assert.equal(feedbackOneOptions?.context, "fork");
+        assert.equal(feedbackOneOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
+        const generateTwoOptions = ctx.calls.taskOptions["generate-2"]?.[0];
+        assert.equal(generateTwoOptions?.context, "fork");
+        assert.equal(generateTwoOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
+        const feedbackTwoOptions = ctx.calls.taskOptions["user-feedback-2"]?.[0];
+        assert.equal(feedbackTwoOptions?.context, "fork");
+        assert.equal(feedbackTwoOptions?.forkFromSessionFile, "/tmp/user-feedback-1.jsonl");
+        const artifactDir = result["artifact_dir"] as string;
+        rmSync(artifactDir, { recursive: true, force: true });
+    });
+
+    test("exports after user feedback reports no changes", async () => {
         const mod =
             await import("../../packages/workflows/builtin/open-claude-design.js");
         const d = mod.default as unknown as WorkflowDefinition;
@@ -80,10 +94,7 @@ describe("open-claude-design — refinement export gate (#1464)", () => {
             { prompt: "Design a dashboard", max_refinements: 2 },
             {
                 task: (name) => {
-                    if (name.startsWith("user-feedback-"))
-                        return refinementDecision(true);
-                    if (name === "pre-export-scan")
-                        return exportGateDecision(false);
+                    if (name === "user-feedback-1") return "user_notes: none";
                     return undefined;
                 },
             },
@@ -91,9 +102,13 @@ describe("open-claude-design — refinement export gate (#1464)", () => {
 
         const result = await d.run(ctx);
 
-        // No meaningful annotations were captured, so an immediate export approval
-        // is honored without forcing an apply pass.
-        assert.equal(ctx.calls.task.includes("apply-changes-1"), false);
+        assert.ok(ctx.calls.task.includes("generate-1"));
+        assert.ok(ctx.calls.task.includes("user-feedback-1"));
+        assert.equal(ctx.calls.task.includes("generate-2"), false);
+        assert.deepEqual(
+            ctx.calls.task.filter((name) => name === "exporter" || name === "final-display"),
+            ["exporter", "final-display"],
+        );
         assert.equal(result["approved_for_export"], true);
         const artifactDir = result["artifact_dir"] as string;
         rmSync(artifactDir, { recursive: true, force: true });

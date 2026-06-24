@@ -1,26 +1,23 @@
 /**
  * open-claude-design feedback threading.
  *
- * The interactive `preview-display-*` stages capture Playwright annotation
- * feedback (user notes + annotated snapshot) from the user. Historically that
- * feedback was awaited-and-discarded, so the downstream `user-feedback-*` and
- * `apply-changes-*` stages never saw it and refined from internal critique
- * alone. This module is the durable carrier for that feedback: it parses the
- * preview-display stage output, persists it as a workflow artifact, and builds
- * the ordered refinement brief (user annotations FIRST, then internal critique)
- * that the refinement stages consume. cross-ref: issue #1464.
+ * The `user-feedback-*` stages capture Playwright annotation feedback (user
+ * notes + annotated snapshot) from the user. This module is the durable carrier
+ * for that feedback: it parses the feedback-stage output, persists it as a
+ * workflow artifact, and renders the user annotations that the next `generate-*`
+ * stage must honor. cross-ref: issue #1464.
  */
 
 import { copyFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { isAbsolute, dirname, join, resolve, sep } from "node:path";
 
-/** A single captured preview-display feedback round. */
+/** A single captured user-feedback round. */
 export type PreviewFeedback = {
-  /** 0 for the initial preview, 1..N for post-refinement previews. */
+  /** 1..N for generate/user-feedback loop iterations. */
   readonly iteration: number;
-  /** Originating stage name, e.g. `preview-display-initial`. */
+  /** Originating stage name, e.g. `user-feedback-1`. */
   readonly stageName: string;
-  /** Full markdown result text emitted by the preview-display stage. */
+  /** Full markdown result text emitted by the user-feedback stage. */
   readonly text: string;
   /** Extracted user annotation notes when the user actually annotated. */
   readonly userNotes?: string;
@@ -35,7 +32,7 @@ export type PreviewFeedback = {
 type PreviewResultLike = { readonly text?: string };
 
 /**
- * Field labels the preview-display stages are instructed to emit, stored in
+ * Field labels the user-feedback stages are instructed to emit, stored in
  * canonical (alphanumeric-only, lowercase) form. Used to bound multi-line value
  * extraction (a value ends when the next known field starts).
  */
@@ -111,7 +108,7 @@ function isHorizontalRule(line: string): boolean {
 }
 
 /**
- * Extract the value of a labeled field (e.g. `user_notes`) from a preview-display
+ * Extract the value of a labeled field (e.g. `user_notes`) from a user-feedback
  * markdown blob, tolerating heading / bullet / bold / backtick label styles and
  * multi-line values that run until the next known field label or a rule.
  */
@@ -235,52 +232,17 @@ export function userAnnotationsBlock(history: readonly PreviewFeedback[]): {
   if (section.length === 0) {
     return {
       hasNotes: false,
-      text: "No interactive user annotations were captured in the preview-display stage(s). There is no user feedback to honor for this iteration; fall back to an impeccable critique of the live preview.",
+      text: "No interactive user annotations were captured in the user-feedback stage. There is no user feedback to honor for this iteration.",
     };
   }
   return { hasNotes: true, text: section };
 }
 
 /**
- * Build the merged refinement brief consumed by `apply-changes-*`. User
- * annotations are ordered ABOVE internal critique/QA so the apply stage honors
- * the user's direction first. cross-ref: issue #1464 expected behavior (3).
- */
-export function buildRefinementBrief(input: {
-  readonly userAnnotations: string;
-  readonly reviewerDecision: string;
-  readonly critique: string;
-  readonly screenshot: string;
-  readonly currentDesign: string;
-}): string {
-  return [
-    "## User annotations (highest priority — address these before any internal critique)",
-    "",
-    input.userAnnotations.trim(),
-    "",
-    "## Reviewer refinement decision",
-    "",
-    input.reviewerDecision.trim(),
-    "",
-    "## Impeccable critique findings",
-    "",
-    input.critique.trim(),
-    "",
-    "## Screenshot / visual QA findings",
-    "",
-    input.screenshot.trim(),
-    "",
-    "## Current design summary",
-    "",
-    input.currentDesign.trim(),
-  ].join("\n");
-}
-
-/**
  * Guardrail: every captured user annotation must be present verbatim in the
- * refinement prompt before the apply stage runs. If a `preview-display-*` stage
- * captured `user_notes` but they did not thread through, fail loudly instead of
- * silently refining without user feedback. cross-ref: issue #1464 fix (6).
+ * next generate prompt. If a `user-feedback-*` stage captured `user_notes` but
+ * they did not thread through, fail loudly instead of silently generating
+ * without user feedback. cross-ref: issue #1464 fix (6).
  */
 export function assertUserAnnotationsThreaded(
   prompt: string,
@@ -300,7 +262,7 @@ export function assertUserAnnotationsThreaded(
       const changes = (feedback.liveChanges ?? "").trim();
       if (changes.length > 0 && !prompt.includes(changes)) {
         throw new Error(
-          `open-claude-design ${stageName}: accepted live variants captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback (see issue #1464).`,
+          `open-claude-design ${stageName}: accepted live variants captured in ${feedback.stageName} were not threaded into the refinement context. Refusing to refine without user feedback.`,
         );
       }
     }
