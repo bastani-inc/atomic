@@ -3,7 +3,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { constants } from "fs";
-import { access as fsAccess, readFile as fsReadFile, readdir as fsReaddir, stat as fsStat } from "fs/promises";
+import { access as fsAccess, readFile as fsReadFile, stat as fsStat } from "fs/promises";
 import { type Static, Type } from "typebox";
 import { getReadmePath } from "../../config.ts";
 import { keyHint, keyText } from "../../modes/interactive/components/keybinding-hints.ts";
@@ -12,6 +12,7 @@ import { getLanguageFromPath, highlightCode, type Theme } from "../../modes/inte
 import { formatDimensionNote, resizeImage } from "../../utils/image-resize.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.ts";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.ts";
+import { buildDirectoryTree } from "./directory-tree.ts";
 import { applyReadLineSelection, extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
 import { isReadableUrlPath } from "./fetch-url.ts";
 import { readUrlBranch } from "./read-url.ts";
@@ -21,7 +22,7 @@ import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnaps
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import { formatHashlineSelectedLines, isReadResourceSelector, selectExactReadRanges, selectReadRanges, splitReadLineSelector, type ReadLineSelector } from "./read-selectors.ts";
-import { parseArchiveSelector, readArchiveSelector, readInternalSelector, readSqliteSelector, resolveInternalSelector, sqliteSelectorForPath, type InternalResourceContext } from "./resource-selectors.ts";
+import { parseArchiveSelector, readArchiveSelector, readInternalSelector, readSqliteSelector, resolveArchiveSelector, resolveInternalSelector, sqliteSelectorForPath, type InternalResourceContext } from "./resource-selectors.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.ts";
 const readSchema = Type.Object({
@@ -41,6 +42,8 @@ export interface OversizedReadDetails {
 	byteGuidance: boolean;
 }
 export interface ReadToolDetails {
+	isDirectory?: boolean;
+	resolvedPath?: string;
 	truncation?: TruncationResult;
 	oversizedRead?: OversizedReadDetails;
 	meta?: { source?: string; sourcePath?: string; artifactId?: string; truncation?: TruncationResult; limits?: Record<string, number> };
@@ -211,27 +214,7 @@ function formatReadResult(
 	}
 	return text;
 }
-async function formatDirectoryRead(absolutePath: string): Promise<string> {
-	const lines: string[] = [];
-	const render = async (dir: string, depth: number, prefix = ""): Promise<void> => {
-		const entries = (await fsReaddir(dir, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name));
-		for (const entry of entries.slice(0, 200)) {
-			const child = resolvePath(dir, entry.name);
-			if (entry.isDirectory()) {
-				lines.push(`${prefix}${entry.name}/`);
-				if (depth < 2) await render(child, depth + 1, `${prefix}  `);
-			} else {
-				const stat = await fsStat(child).catch(() => undefined);
-				const size = stat ? ` (${formatSize(stat.size)})` : "";
-				lines.push(`${prefix}${entry.name}${size}`);
-			}
-		}
-		if (entries.length > 200) lines.push(`${prefix}... (${entries.length - 200} more entries)`);
-	};
-	await render(absolutePath, 1);
-	return lines.join("\n") || "(empty directory)";
-}
-function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean { const archive = parseArchiveSelector(pathValue); if (!archive || !archive.memberPath) return false; try { archive.archivePath = resolveToCwd(archive.archivePath, cwd); readArchiveSelector(archive); return true; } catch { return false; } }
+function archiveSelectorMemberExists(pathValue: string, cwd: string): boolean { const archive = parseArchiveSelector(pathValue); if (!archive || !archive.memberPath) return false; try { readArchiveSelector(resolveArchiveSelector(archive, cwd)); return true; } catch { return false; } }
 function appendReadSelectors(pathValue: string, selector: ReadLineSelector): string {
 	const range = selector.ranges?.map((item) => item.end === undefined ? `${item.start}` : `${item.start}-${item.end}`).join(",") ?? (selector.offset ? `${selector.offset}` : "");
 	return `${pathValue}${range ? `:${range}` : ""}${selector.conflicts ? ":conflicts" : ""}${selector.raw ? ":raw" : ""}`;
@@ -291,8 +274,8 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(effectivePath) }); return;
 							}
 							if (archive) {
-								archive.archivePath = resolveToCwd(archive.archivePath, cwd);
-								const textContent = readArchiveSelector(archive);
+								const resolvedArchive = resolveArchiveSelector(archive, cwd);
+								const textContent = readArchiveSelector(resolvedArchive);
 								let allLines = textContent.split("\n");
 								if (conflictsOnly) {
 									let inConflict = false;
@@ -309,8 +292,8 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 								const endLine = effectiveLimit !== undefined ? Math.min(startLine + effectiveLimit, allLines.length) : allLines.length;
 								const selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
 								const selectedText = selectedLines.join("\n");
-								if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: `${archive.archivePath}:${archive.memberPath}`, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: startLine + 1, totalFileLines: allLines.length, firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"), byteGuidance: false })); return; }
-							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(`${archive.archivePath}:${archive.memberPath}`) });
+								if (selectedText.length > READ_TOOL_MAX_RESULT_CHARS || Buffer.byteLength(selectedText, "utf8") > DEFAULT_MAX_BYTES) { resolve(oversizedReadResult({ blocked: true, path: `${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`, chars: selectedText.length, maxChars: READ_TOOL_MAX_RESULT_CHARS, startLine: startLine + 1, totalFileLines: allLines.length, firstLineBytes: Buffer.byteLength(selectedLines[0] ?? "", "utf8"), byteGuidance: false })); return; }
+							resolve({ content: [{ type: "text", text: selectedText }], details: readSourceMeta(`${resolvedArchive.archivePath}:${resolvedArchive.memberPath}`) });
 								return;
 							}
 							if (/^(?:skill|agent|artifact|history|issue|local|memory|pr|conflict|omp|rule|mcp|vault):\/\//.test(effectivePath)) {
@@ -347,8 +330,13 @@ export function createReadToolDefinition(cwd: string, options?: ReadToolOptions)
 							content = [{ type: "text", text: selectedText }]; resolve({ content, details: readSourceMeta(absolutePath) }); return;
 							}
 							if (!options?.operations && (await fsStat(absolutePath)).isDirectory()) {
-								content = [{ type: "text", text: await formatDirectoryRead(absolutePath) }];
-							resolve({ content, details: readSourceMeta(absolutePath) });
+								const tree = await buildDirectoryTree(absolutePath, { maxDepth: 2, perDirLimit: 12, rootLimit: null });
+								const allLines = tree.rendered.split("\n"), rangeSelection = (rawOutput ? selectExactReadRanges : selectReadRanges)(allLines, effectiveRanges), startLine = rangeSelection ? rangeSelection.firstLine - 1 : effectiveOffset ? Math.max(0, effectiveOffset - 1) : 0;
+								if (startLine >= allLines.length || (effectiveRanges && rangeSelection?.selectedLines.length === 0)) { resolve({ content: [{ type: "text", text: `Requested line ${startLine + 1} is beyond end of directory (${allLines.length} lines total).` }], details: undefined }); return; }
+								const endLine = effectiveLimit !== undefined ? Math.min(startLine + effectiveLimit, allLines.length) : allLines.length, selectedLines = rangeSelection?.selectedLines ?? allLines.slice(startLine, endLine);
+								content = [{ type: "text", text: selectedLines.join("\n") }];
+								const meta = { ...readSourceMeta(absolutePath).meta, ...(tree.truncated ? { limits: { perDirLimit: 12, totalLines: tree.totalLines } } : {}) };
+								resolve({ content, details: { isDirectory: true, resolvedPath: absolutePath, meta } });
 								return;
 							}
 							const mimeType = ops.detectImageMimeType ? await ops.detectImageMimeType(absolutePath) : undefined;

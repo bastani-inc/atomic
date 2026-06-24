@@ -318,13 +318,13 @@ describe("find and search builtins", () => {
 		expect(skippedSingleFile).toContain("*1:needle one");
 	});
 
-	it("keeps search line-range context inside the requested range", async () => {
+	it("renders configured context around search line-range matches", async () => {
 		writeFileSync(join(testDir, "scoped.txt"), "pre\nneedle\npost\nmore\n");
-		const output = textOutput(await createSearchToolDefinition(testDir).execute("range-no-leak", { pattern: "needle", paths: "scoped.txt:2-2" }));
+		const output = textOutput(await createSearchToolDefinition(testDir).execute("range-context-around-match", { pattern: "needle", paths: "scoped.txt:2-2" }));
+		expect(output).toContain(" 1:pre");
 		expect(output).toContain("*2:needle");
-		expect(output).not.toContain("1:pre");
-		expect(output).not.toContain("3:post");
-		expect(output).not.toContain("4:more");
+		expect(output).toContain(" 3:post");
+		expect(output).toContain(" 4:more");
 	});
 
 	it("finds ranged matches beyond the internal raw grep cap", async () => {
@@ -335,13 +335,14 @@ describe("find and search builtins", () => {
 		expect(output).not.toContain("No matches found");
 	});
 
-	it("preserves in-range context for direct ranged file searches", async () => {
+	it("does not count out-of-range context lines as search hits", async () => {
 		writeFileSync(join(testDir, "range-context.txt"), "alpha\nneedle\nomega\noutside\n");
 		const output = textOutput(await createSearchToolDefinition(testDir).execute("range-context", { pattern: "needle", paths: "range-context.txt:1-3" }));
 		expect(output).toContain(" 1:alpha");
 		expect(output).toContain("*2:needle");
 		expect(output).toContain(" 3:omega");
-		expect(output).not.toContain("outside");
+		expect(output).toContain(" 4:outside");
+		expect(output).not.toContain("*4:outside");
 	});
 
 	it("uses backend regex semantics for direct ranged file searches", async () => {

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
@@ -21,7 +21,7 @@ function sqliteDatabase(): SqliteDatabaseConstructor {
 	catch { throw new Error("SQLite selectors require Atomic's Bun runtime with bun:sqlite support."); }
 }
 function existingSqliteFile(path: string): boolean | undefined { if (!existsSync(path)) return undefined; return readFileSync(path).subarray(0, 16).toString("binary") === "SQLite format 3\0"; }
-export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined { const selector = parseSqliteSelector(value); if (!selector) return undefined; const absolute = resolve(cwd, selector.databasePath); if (existingSqliteFile(absolute) !== true) return undefined; return { ...selector, databasePath: absolute }; }
+export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined { const selector = parseSqliteSelector(value); if (!selector) return undefined; const absolute = resolveContainedLocalPath(cwd, selector.databasePath, "SQLite selector"); if (existingSqliteFile(absolute) !== true) return undefined; return { ...selector, databasePath: absolute }; }
 
 const MAX_TAR_ARCHIVE_BYTES = 256 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024;
@@ -30,6 +30,9 @@ const MAX_ARCHIVE_DIRECTORY_ENTRIES = 500;
 export function parseArchiveSelector(value: string): ArchiveSelector | undefined {
 	const match = value.match(/^(.+\.(?:zip|jar|tar|tgz|tar\.gz|gz)):(.*)$/i);
 	return match ? { archivePath: match[1] ?? "", memberPath: match[2] ?? "" } : undefined;
+}
+export function resolveArchiveSelector(selector: ArchiveSelector, cwd: string): ArchiveSelector {
+	return { ...selector, archivePath: resolveContainedLocalPath(cwd, selector.archivePath, "Archive selector") };
 }
 export function parseSqliteSelector(value: string): SqliteSelector | undefined {
 	const match = value.match(/^(.+\.(?:sqlite3?|db3?))(?:\?q=(.+)|:([^:?]+)(?:\?(.+))?(?::([^:?]+))?)?$/i);
@@ -221,15 +224,26 @@ async function resolveViaRouter(value: string, cwd: string, context?: InternalRe
 	const resolved = await context?.resolveInternalUrl?.(value); if (resolved) return resolved;
 	return resolveInternalSelector(value, cwd);
 }
-function resolveContainedLocalPath(cwd: string, pathValue: string): string {
-	const resolved = resolve(cwd, pathValue);
-	const rel = relative(cwd, resolved);
-	if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
-	throw new Error(`local:// resource escapes the workspace: ${pathValue}`);
+function isContained(root: string, candidate: string): boolean {
+	const rel = relative(root, candidate);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
+function nearestExistingAncestor(pathValue: string): string {
+	let current = pathValue;
+	while (!existsSync(current)) { const parent = dirname(current); if (parent === current) return current; current = parent; }
+	return current;
+}
+function realpathExisting(pathValue: string): string { return realpathSync.native(nearestExistingAncestor(pathValue)); }
+function resolveContainedPath(root: string, pathValue: string, label: string): string {
+	const lexicalRoot = resolve(root), resolved = resolve(root, pathValue);
+	if (!isContained(lexicalRoot, resolved)) throw new Error(`${label} escapes the workspace: ${pathValue}`);
+	if (!isContained(realpathExisting(lexicalRoot), realpathExisting(resolved))) throw new Error(`${label} escapes the workspace: ${pathValue}`);
+	return resolved;
+}
+function resolveContainedLocalPath(cwd: string, pathValue: string, label = "local:// resource"): string { return resolveContainedPath(cwd, pathValue, label); }
 
 function fallbackInternalPath(value: string, cwd: string): string | undefined {
-	const skill = value.match(/^skill:\/\/([^/]+)\/?(.*)$/); if (skill) { const rest = skill[2] || "SKILL.md"; return [resolve(cwd, ".agents", "skills", skill[1] ?? "", rest), resolve(cwd, "packages", "subagents", "skills", skill[1] ?? "", rest), resolve(cwd, "packages", "workflows", "skills", skill[1] ?? "", rest)].find((candidate) => existsSync(candidate)); }
+	const skill = value.match(/^skill:\/\/([^/]+)\/?(.*)$/); if (skill) { const name = skill[1] ?? "", rest = skill[2] || "SKILL.md"; return [".agents/skills", "packages/subagents/skills", "packages/workflows/skills"].map((base) => resolveContainedPath(resolveContainedLocalPath(cwd, base, "skill:// resource"), `${name}/${rest}`, "skill:// resource")).find((candidate) => existsSync(candidate)); }
 	const local = value.match(/^local:\/\/(.+)$/); if (local) return resolveContainedLocalPath(cwd, local[1] ?? "");
 	return undefined;
 }
@@ -271,7 +285,7 @@ function rowsToJsonLines(rows: Record<string, SqliteValue>[]): string { return r
 
 function validateRawSqliteQuery(query: string): string {
 	const trimmed = query.trim();
-	if (!/^select\b/i.test(trimmed) || /[;]|--|\/\*|\*\//.test(trimmed) || /\b(attach|detach|pragma|insert|update|delete|drop|alter|create|replace|vacuum|reindex|load_extension)\b/i.test(trimmed) || /\bsqlite_/i.test(trimmed)) throw new Error("Invalid raw SQLite query");
+	if (!trimmed) throw new Error("SQLite raw query must not be empty");
 	return trimmed;
 }
 

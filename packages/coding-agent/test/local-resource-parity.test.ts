@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -34,6 +34,16 @@ describe("local resource parity", () => {
 		const dir = await tempDir();
 		await expect(createReadToolDefinition(dir).execute("read-local-traversal", { path: "local://../secret.txt" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
 		await expect(createWriteToolDefinition(dir).execute("write-local-traversal", { path: "local://../secret.txt", content: "nope" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+	});
+
+	it("rejects symlink and selector escapes for local resources", async () => {
+		const dir = await tempDir(), outside = await tempDir();
+		await writeFile(join(outside, "secret.txt"), "secret", "utf8");
+		await symlink(join(outside, "secret.txt"), join(dir, "link.txt"));
+		await expect(createReadToolDefinition(dir).execute("read-local-symlink", { path: "local://link.txt" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+		await expect(createReadToolDefinition(dir).execute("read-skill-escape", { path: "skill://x/../../secret.txt" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+		await expect(createReadToolDefinition(dir).execute("read-archive-escape", { path: "../outside/archive.zip:a.txt" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+		await expect(createReadToolDefinition(dir).execute("read-sqlite-escape", { path: "../outside/data.sqlite:t" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
 	});
 
 	it("reports write executable and resource metadata", async () => {

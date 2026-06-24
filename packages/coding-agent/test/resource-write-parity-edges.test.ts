@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
+import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import { createWriteToolDefinition } from "../src/core/tools/write.ts";
 
 interface SqliteQuery { get(): Record<string, string | number | null> | undefined }
@@ -17,6 +18,18 @@ describe("resource write parity edges", () => {
 	let testDir: string;
 	beforeEach(() => { testDir = join(tmpdir(), `atomic-resource-write-${Date.now()}-${Math.random().toString(16).slice(2)}`); mkdirSync(testDir, { recursive: true }); });
 	afterEach(() => { rmSync(testDir, { recursive: true, force: true }); });
+
+	it("returns compact write headers and stripped hashline notes", async () => {
+		const store = createHashlineSnapshotStore();
+		const write = createWriteToolDefinition(testDir, { hashlineStore: store });
+		const writeOutput = text(await write.execute("plain-write", { path: "plain.txt", content: "hello\n" }, undefined, undefined, {} as never));
+		expect(writeOutput).toMatch(/^\[plain\.txt#[0-9A-F]{4}\]\nSuccessfully wrote 6 bytes/);
+		expect(writeOutput).not.toContain("1:hello");
+		const readOutput = text(await createReadToolDefinition(testDir, { hashlineStore: store }).execute("read-plain", { path: "plain.txt" }, undefined, undefined, {} as never));
+		const copied = text(await write.execute("copy-write", { path: "copy.txt", content: readOutput }, undefined, undefined, {} as never));
+		expect(copied).toContain("Note: stripped copied hashline headers");
+		expect(readFileSync(join(testDir, "copy.txt"), "utf8")).toBe("hello\n");
+	});
 
 	it("rejects archive directory write targets", async () => {
 		await expect(createWriteToolDefinition(testDir).execute("zip-dir", { path: "a.zip:dir/", content: "x" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid archive member path/);

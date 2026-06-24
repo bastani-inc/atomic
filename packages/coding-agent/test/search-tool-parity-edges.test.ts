@@ -26,6 +26,16 @@ describe("find/search edge parity", () => {
 		expect(searched).toContain("needle right"); expect(searched).not.toContain("needle wrong");
 	});
 
+	it("splits comma and semicolon lists when at least one path resolves", async () => {
+		writeFileSync(join(testDir, "hit.txt"), "needle\n");
+		const search = await createSearchToolDefinition(testDir).execute("search-missing-comma", { pattern: "needle", paths: "hit.txt,missing.txt" });
+		expect(textOutput(search)).toContain("needle");
+		expect(search.details?.missingPaths).toContain("missing.txt");
+		const found = textOutput(await createFindToolDefinition(testDir).execute("find-missing-semicolon", { paths: ["hit.txt;missing.txt"] }));
+		expect(found).toContain("hit.txt");
+		expect(found).toContain("Skipped missing paths: missing.txt");
+	});
+
 	it("does not report glob find truncation for exactly limit matches", async () => {
 		writeFileSync(join(testDir, "only.txt"), "");
 		const result = await createFindToolDefinition(testDir).execute("find-exact-glob-limit", { paths: ["*.txt"], limit: 1 });

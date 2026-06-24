@@ -8,9 +8,9 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { getRegisteredConflictBlock, parseConflictBlocks, type ConflictBlock } from "./conflict-registry.ts";
 import { withFileMutationQueue } from "./file-mutation-queue.ts";
-import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnapshot, stripKnownHashlineCopiedContent, type HashlineSnapshotStore } from "./hashline.ts";
+import { createHashlineSnapshotStore, formatHashlineContent, recordHashlineSnapshot, stripKnownHashlineCopiedContent, stripKnownHashlineCopiedContentWithMeta, type HashlineSnapshotStore } from "./hashline.ts";
 import { resolveToCwd } from "./path-utils.ts";
-import { parseArchiveSelector, parseSqliteSelector, resolveInternalSelector, sqliteSelectorForPath, writeArchiveSelector, writeInternalSelector, writeSqliteSelector, type InternalResourceContext } from "./resource-selectors.ts";
+import { parseArchiveSelector, parseSqliteSelector, resolveArchiveSelector, resolveInternalSelector, sqliteSelectorForPath, writeArchiveSelector, writeInternalSelector, writeSqliteSelector, type InternalResourceContext } from "./resource-selectors.ts";
 import { invalidateNativeSearchCache } from "./search-native.ts";
 import { invalidArgText, normalizeDisplayText, replaceTabs, shortenPath, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -63,9 +63,14 @@ async function conflictSnapshotHeaders(files: string[], cwd: string, store: Hash
 	for (const file of [...new Set(files)]) { invalidateNativeSearchCache(file); const text = await fsReadFile(file, "utf8").catch(() => undefined); if (text !== undefined) headers.push(formatHashlineContent(recordHashlineSnapshot(file, cwd, text, store)).split("\n")[0]!); }
 	return headers;
 }
+const GENERATED_MARKER_BYTES = 1024;
+const GENERATED_MARKER_LINES = 40;
 function hasGeneratedMarker(text: string): boolean {
-	return text.split("\n").slice(0, 5).some((line) => /@generated|auto-generated|DO NOT EDIT|GENERATED -- do not edit/i.test(line));
+	const header = text.slice(0, GENERATED_MARKER_BYTES).split("\n").slice(0, GENERATED_MARKER_LINES);
+	return header.some((line) => /@generated|auto-generated|DO NOT EDIT|GENERATED -- do not edit/i.test(line));
 }
+function strippedHashlineNote(stripped: boolean): string { return stripped ? "\n\nNote: stripped copied hashline headers and line prefixes before writing." : ""; }
+function hashlineHeaderForWrite(path: string, cwd: string, content: string, store: HashlineSnapshotStore): string { const snapshot = recordHashlineSnapshot(path, cwd, content, store); return `[${snapshot.displayPath}#${snapshot.tag}]`; }
 const defaultWriteOperations: WriteOperations = {
 	writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
 	mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => {}),
@@ -244,15 +249,15 @@ export function createWriteToolDefinition(
 			const sqlite = sqliteSelectorForPath(path, cwd);
 			if (!sqlite && parsedSqlite?.table) throw new Error(`SQLite database not found or is not SQLite: ${path}`);
 			if (sqlite) {
-				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
-				const message = writeSqliteSelector(sqlite, writeContent);
-				return { content: [{ type: "text", text: message }], details: { meta: { sourcePath: sqlite.databasePath } } };
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
+				const message = writeSqliteSelector(sqlite, stripped.content);
+				return { content: [{ type: "text", text: `${message}${strippedHashlineNote(stripped.stripped)}` }], details: { meta: { sourcePath: sqlite.databasePath } } };
 			}
 			if (archive) {
-				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
-				archive.archivePath = resolveToCwd(archive.archivePath, cwd);
-				writeArchiveSelector(archive, writeContent);
-				return { content: [{ type: "text", text: `Successfully wrote ${writeContent.length} characters to ${path}` }], details: { resolvedPath: archive.archivePath } };
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
+				const resolvedArchive = resolveArchiveSelector(archive, cwd);
+				writeArchiveSelector(resolvedArchive, stripped.content);
+				return { content: [{ type: "text", text: `Successfully wrote ${stripped.content.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}` }], details: { resolvedPath: resolvedArchive.archivePath } };
 			}
 			if (path.startsWith("conflict://")) {
 				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
@@ -272,9 +277,9 @@ export function createWriteToolDefinition(
 			if (/^[a-z]+:\/\//i.test(path)) {
 				const sourcePath = path.startsWith("local://") ? resolveInternalSelector(path, cwd) : undefined;
 				if (sourcePath) return createWriteToolDefinition(cwd, options).execute(_toolCallId, { path: sourcePath, content }, signal, _onUpdate, _ctx as never);
-				const writeContent = stripKnownHashlineCopiedContent(content, "", cwd, hashlineStore);
-				await writeInternalSelector(path, cwd, writeContent, resourceCtx);
-				return { content: [{ type: "text", text: `Successfully wrote ${writeContent.length} characters to ${path}` }], details: {} };
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, "", cwd, hashlineStore);
+				await writeInternalSelector(path, cwd, stripped.content, resourceCtx);
+				return { content: [{ type: "text", text: `Successfully wrote ${stripped.content.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}` }], details: {} };
 			}
 			const absolutePath = resolveToCwd(path, cwd);
 			const dir = dirname(absolutePath);
@@ -294,7 +299,8 @@ export function createWriteToolDefinition(
 
 				const existing = await fsReadFile(absolutePath, "utf8").catch(() => undefined);
 				if (existing !== undefined && hasGeneratedMarker(existing)) throw new Error(`Refusing to overwrite generated file: ${path}`);
-				const writeContent = stripKnownHashlineCopiedContent(content, absolutePath, cwd, hashlineStore);
+				const stripped = stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, hashlineStore);
+				const writeContent = stripped.content;
 				await ops.writeFile(absolutePath, writeContent);
 				invalidateNativeSearchCache(absolutePath);
 				let madeExecutable = false;
@@ -304,14 +310,9 @@ export function createWriteToolDefinition(
 				}
 				throwIfAborted();
 
-				const snapshot = recordHashlineSnapshot(absolutePath, cwd, writeContent, hashlineStore);
+				const header = hashlineHeaderForWrite(absolutePath, cwd, writeContent, hashlineStore);
 				return {
-					content: [
-						{
-							type: "text",
-							text: `Successfully wrote ${writeContent.length} bytes to ${path}\n\n${formatHashlineContent(snapshot)}`,
-						},
-					],
+					content: [{ type: "text", text: `${header}\nSuccessfully wrote ${writeContent.length} bytes to ${path}${strippedHashlineNote(stripped.stripped)}` }],
 					details: { resolvedPath: absolutePath, ...(madeExecutable ? { madeExecutable } : {}) },
 				};
 			});

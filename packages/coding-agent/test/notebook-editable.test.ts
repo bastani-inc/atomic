@@ -60,6 +60,14 @@ describe("notebook editable projection", () => {
 		expect(parsed.cells[0].source).toEqual(["print(2)\n"]);
 	});
 
+	it("preserves unknown top-level notebook fields", async () => {
+		const dir = await tempDir(); const file = join(dir, "extra.ipynb");
+		await writeFile(file, JSON.stringify({ cells: [{ cell_type: "code", source: "print(1)\n" }], metadata: {}, nbformat: 4, nbformat_minor: 5, custom_top: { keep: true } }));
+		const editable = readEditableNotebookText(file, "extra.ipynb");
+		const parsed = JSON.parse(serializeEditedNotebookText(file, "extra.ipynb", editable.replace("print(1)", "print(2)")));
+		expect(parsed.custom_top).toEqual({ keep: true });
+	});
+
 	it("splitNotebookSource preserves newline chunks", () => {
 		expect(splitNotebookSource("a\nb\nc")).toEqual(["a\n", "b\n", "c"]);
 		expect(splitNotebookSource("")).toEqual([]);

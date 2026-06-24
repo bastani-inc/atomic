@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { getShellEnv } from "../../utils/shell.ts";
 
@@ -9,6 +10,11 @@ export interface LeadingCdSpawnContext {
 
 function isShellWhitespace(char: string | undefined): boolean { return char === " " || char === "\t" || char === "\n" || char === "\r"; }
 function requiresShellExpansion(pathValue: string): boolean { return pathValue.includes("$") || pathValue.includes("`") || pathValue.includes("("); }
+function expandHomePath(pathValue: string): string {
+	if (pathValue === "~") return homedir();
+	if (pathValue.startsWith("~/")) return resolvePath(homedir(), pathValue.slice(2));
+	return pathValue;
+}
 
 export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSpawnContext | undefined {
 	let index = 0;
@@ -40,5 +46,5 @@ export function stripLeadingCdCommand(command: string, cwd: string): LeadingCdSp
 	index += separatorLength;
 	while (isShellWhitespace(command[index])) index++;
 	const nextCommand = command.slice(index);
-	return nextCommand ? { command: nextCommand, cwd: resolvePath(cwd, rawPath), env: { ...getShellEnv() } } : undefined;
+	return nextCommand ? { command: nextCommand, cwd: resolvePath(cwd, expandHomePath(rawPath)), env: { ...getShellEnv() } } : undefined;
 }

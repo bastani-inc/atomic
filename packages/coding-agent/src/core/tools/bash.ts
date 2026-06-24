@@ -14,7 +14,7 @@ import { getShellConfig, getShellEnv, killProcessTree, trackDetachedChildPid, un
 import type { BashResult } from "../bash-executor.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { createAsyncOutputAppender } from "./bash-async-output.ts";
-import { abortManagedBashJob, createManagedBashJob, getManagedBashJob } from "./bash-async-jobs.ts";
+import { abortManagedBashJob, createManagedBashJob, formatAsyncJobError, getManagedBashJob } from "./bash-async-jobs.ts";
 import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
 import { executeNativePty } from "./bash-pty-native.ts";
 import { checkBashInterceptionCandidates, DEFAULT_BASH_INTERCEPTOR_RULES, type BashInterceptorRule } from "./bash-interceptor.ts";
@@ -340,7 +340,7 @@ export function createBashToolDefinition(
 					job.endedAt = Date.now();
 				}).catch((error: unknown) => {
 					job.status = "failed"; job.endedAt = Date.now();
-					job.error = job.abortController?.signal.aborted ? "aborted" : error instanceof Error ? error.message : String(error);
+					job.error = job.abortController?.signal.aborted ? "aborted" : formatAsyncJobError(error);
 				}).finally(() => signal?.removeEventListener("abort", onParentAbort));
 				return { content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${executionContext.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })` }], details: { async: { jobId: job.jobId, type: "bash", state: "running", command: executionContext.command, status: "running" }, timeoutSeconds: timeout, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}) } };
 			}

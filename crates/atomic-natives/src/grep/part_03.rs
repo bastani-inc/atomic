@@ -1,5 +1,4 @@
 #[cfg(test)]
-#[cfg(test)]
 mod tests {
 	#[cfg(unix)]
 	use std::{ffi::CString, os::unix::ffi::OsStrExt};

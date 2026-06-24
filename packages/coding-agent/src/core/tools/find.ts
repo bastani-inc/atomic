@@ -46,7 +46,8 @@ async function expandDelimitedFindPaths(pathsValue: string[] | undefined, cwd: s
 	for (const input of pathsValue) { const raw = normalizePathLikeInput(input); if (raw === "") throw new Error("find.paths entries must not be empty."); const resolvedRaw = await resolveFindInternal(raw, cwd, ctx); const rawParsed = splitPathLikeGlob(resolvedRaw);
 		if ((rawParsed.glob === undefined && await ops.exists(resolveToCwd(rawParsed.basePath, cwd))) || await delimiterInExistingGlobRoot(resolvedRaw, cwd, ops)) { expanded.push(resolvedRaw); continue; }
 		const parts = await Promise.all(raw.split(/[;,\s]+/).map(normalizePathLikeInput).filter(Boolean).map((part) => resolveFindInternal(part, cwd, ctx)));
-		if (parts.length > 1 && (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).every(Boolean)) expanded.push(...parts); else expanded.push(resolvedRaw);
+		const delimiterCanSplit = /[;,]/.test(raw) ? (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).some(Boolean) : (await Promise.all(parts.map((part) => ops.exists(resolveToCwd(splitPathLikeGlob(part).basePath, cwd))))).every(Boolean);
+		if (parts.length > 1 && delimiterCanSplit) expanded.push(...parts); else expanded.push(resolvedRaw);
 	}
 	return expanded;
 }

@@ -244,7 +244,7 @@ export function createGrepToolDefinition(
 								hidden: hidden ?? true,
 								gitignore: gitignore !== false,
 								cache: cache ?? nativeCache,
-								maxCount: effectiveLimit + 1,
+								maxCount: mode === "count" ? undefined : effectiveLimit + 1,
 								offset,
 								context: contextBefore === undefined && contextAfter === undefined ? contextValue : undefined,
 								contextBefore,
@@ -316,6 +316,7 @@ export function createGrepToolDefinition(
 						if (gitignore === false) args.push("--no-ignore");
 						if (ignoreCase) args.push("--ignore-case");
 						if (literal) args.push("--fixed-strings");
+						if (pattern.includes("\n") || pattern.includes("\\n")) args.push("--multiline");
 						if (type) args.push("--type", type);
 						if (maxCountPerFile !== undefined) args.push("--max-count", String(maxCountPerFile));
 						if (glob) args.push("--glob", glob);

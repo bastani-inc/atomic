@@ -155,5 +155,5 @@ function parseNotebookSafe(raw: string, displayPath: string): NotebookDocument {
 	try { parsed = JSON.parse(raw); } catch { throw new Error(`Invalid notebook JSON for ${displayPath}`); }
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`Invalid notebook JSON for ${displayPath}`);
 	const doc = parsed as Partial<NotebookDocument>;
-	return { cells: Array.isArray(doc.cells) ? doc.cells as NotebookCell[] : [], metadata: (doc.metadata ?? {}) as Record<string, unknown>, nbformat: doc.nbformat ?? 4, nbformat_minor: doc.nbformat_minor ?? 5 };
+	return { ...doc, cells: Array.isArray(doc.cells) ? doc.cells as NotebookCell[] : [], metadata: (doc.metadata ?? {}) as Record<string, unknown>, nbformat: doc.nbformat ?? 4, nbformat_minor: doc.nbformat_minor ?? 5 };
 }

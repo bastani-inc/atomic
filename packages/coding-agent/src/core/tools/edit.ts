@@ -13,7 +13,7 @@ import { createHashlineSnapshotStore, formatCompactHashlineEditResult, recordHas
 import { invalidateNativeSearchCache } from "./search-native.ts";
 import { isNotebookPath, readEditableNotebookText, serializeEditedNotebookText } from "./notebook.ts";
 import { nativeBlockResolver } from "./block-resolver.ts";
-import { resolveToCwd } from "./path-utils.ts";
+import { resolveReadPath } from "./path-utils.ts";
 import { renderToolPath } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
 
@@ -57,7 +57,7 @@ class EditFilesystem extends Filesystem {
 	private readonly operations: EditOperations;
 	constructor(cwd: string, operations: EditOperations) { super(); this.cwd = cwd; this.operations = operations; }
 
-	canonicalPath(path: string): string { return resolveToCwd(path, this.cwd); }
+	canonicalPath(path: string): string { return resolveReadPath(path, this.cwd); }
 
 	async preflightWrite(path: string): Promise<void> {
 		const absolutePath = this.canonicalPath(path);

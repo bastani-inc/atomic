@@ -16,12 +16,18 @@ export interface ManagedBashJob {
 const MAX_MANAGED_BASH_JOBS = 100;
 const COMPLETED_JOB_TTL_MS = 30 * 60 * 1000;
 const managedBashJobs = new Map<string, ManagedBashJob>();
+export function formatAsyncJobError(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.startsWith("timeout:")) return `Command timed out after ${message.slice("timeout:".length)} seconds`;
+	return message;
+}
 
 function cleanupManagedBashJobs(now = Date.now()): void {
 	for (const [jobId, job] of managedBashJobs) if (job.status !== "running" && job.endedAt !== undefined && now - job.endedAt > COMPLETED_JOB_TTL_MS) managedBashJobs.delete(jobId);
 	while (managedBashJobs.size > MAX_MANAGED_BASH_JOBS) {
-		const oldest = [...managedBashJobs.values()].filter((job) => job.status !== "running").sort((a, b) => (a.endedAt ?? a.startedAt) - (b.endedAt ?? b.startedAt))[0];
+		const oldest = [...managedBashJobs.values()].sort((a, b) => (a.endedAt ?? a.startedAt) - (b.endedAt ?? b.startedAt))[0];
 		if (!oldest) break;
+		if (oldest.status === "running") oldest.abortController?.abort();
 		managedBashJobs.delete(oldest.jobId);
 	}
 }
@@ -31,6 +37,7 @@ export function createManagedBashJob(command: string, cwd: string, timeoutSecond
 	const jobId = `bash-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 	const job: ManagedBashJob = { jobId, command, cwd, status: "running", output: "", startedAt: Date.now(), timeoutSeconds, requestedTimeoutSeconds, abortController: new AbortController() };
 	managedBashJobs.set(jobId, job);
+	cleanupManagedBashJobs();
 	return job;
 }
 

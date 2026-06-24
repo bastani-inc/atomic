@@ -59,31 +59,37 @@ export function formatHashlineContent(snapshot: HashlineSnapshot, content = snap
 	return [formatHashlineHeader(snapshot.displayPath, snapshot.tag), formatNumberedLines(normalizeHashlineContent(content), startLine)].join("\n");
 }
 
-export function stripKnownHashlineCopiedContent(content: string, _absolutePath: string, _cwd: string, store: HashlineSnapshotStore): string {
+export interface StrippedHashlineContent { content: string; stripped: boolean }
+
+export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolutePath: string, _cwd: string, store: HashlineSnapshotStore): StrippedHashlineContent {
 	const normalized = normalizeHashlineContent(content);
 	const lines = normalized.split("\n");
 	const headerIndex = lines.findIndex((line, index) => /^\[[^\]\n]+#[0-9A-Fa-f]{4}\]$/.test(line) && lines.slice(0, index).every((prefix) => prefix.trim() === "" || /^#\s+.+\/?$/.test(prefix)));
-	if (headerIndex < 0) return content;
+	if (headerIndex < 0) return { content, stripped: false };
 	const header = (lines[headerIndex] ?? "").match(/^\[([^\]\n]+)#([0-9A-Fa-f]{4})\]$/);
-	if (!header) return content;
+	if (!header) return { content, stripped: false };
 	const snapshot = store.findByHeader(header[1] ?? "", header[2] ?? "");
-	if (!snapshot) return content;
+	if (!snapshot) return { content, stripped: false };
 	const body = lines.slice(headerIndex + 1);
-	if (body.length === 0) return "";
+	if (body.length === 0) return { content: "", stripped: true };
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;
 	for (const line of body) {
 		if (line.trim() === "" || /^\[\d+ more lines in file\./.test(line) || /^\[Showing lines /.test(line)) continue;
 		const match = line.match(/^[* ]?(\d+):(.*)$/s);
-		if (!match) return content;
+		if (!match) return { content, stripped: false };
 		sawRow = true;
 		const lineNumber = Number.parseInt(match[1] ?? "0", 10);
 		const strippedLine = match[2] ?? "";
-		if (snapshotLines[lineNumber - 1] !== strippedLine) return content;
+		if (snapshotLines[lineNumber - 1] !== strippedLine) return { content, stripped: false };
 		stripped.push(strippedLine);
 	}
-	return sawRow ? stripped.join("\n") : content;
+	return sawRow ? { content: stripped.join("\n"), stripped: true } : { content, stripped: false };
+}
+
+export function stripKnownHashlineCopiedContent(content: string, absolutePath: string, cwd: string, store: HashlineSnapshotStore): string {
+	return stripKnownHashlineCopiedContentWithMeta(content, absolutePath, cwd, store).content;
 }
 
 export function formatCompactHashlineEditResult(snapshot: HashlineSnapshot, diff: { diff?: string; firstChangedLine?: number }, messages: readonly string[] = []): string {

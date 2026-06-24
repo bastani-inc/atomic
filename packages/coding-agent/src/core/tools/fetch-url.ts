@@ -15,7 +15,7 @@
  *    truncation metadata when the visible output is head-truncated.
  */
 import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { ipFamily, isPrivateIpAddress, normalizeIpLiteralHost } from "./url-ip-guards.ts";
 import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
 import { Agent, type Dispatcher } from "undici";
@@ -174,33 +174,15 @@ function documentExtensionFromContentType(contentType: string): string | undefin
 interface SafeFetchAddress { address: string; family: 4 | 6 }
 type LookupCallback = (error: NodeJS.ErrnoException | null, address: string | SafeFetchAddress[], family?: number) => void;
 
-function ipFamily(address: string): 4 | 6 { return address.includes(":") ? 6 : 4; }
-
 function createPinnedDispatcher(pinned: SafeFetchAddress): Agent {
 	return new Agent({ connect: { lookup: (_hostname: string, options: { all?: boolean }, callback: LookupCallback) => { if (options.all) callback(null, [pinned]); else callback(null, pinned.address, pinned.family); } } });
 }
+
 async function closePinnedDispatcher(dispatcher: Agent | undefined): Promise<void> {
 	const close = (dispatcher as { close?: () => Promise<void> | void } | undefined)?.close;
 	if (typeof close === "function") await close.call(dispatcher);
 }
 
-function isPrivateIpAddress(address: string): boolean {
-	if (address.includes(":")) {
-		const lower = address.toLowerCase();
-		if (lower === "::" || lower === "::1" || lower === "0:0:0:0:0:0:0:1" || lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) return true;
-		const mapped = lower.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-		const hexMapped = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-		if (hexMapped) {
-			const high = Number.parseInt(hexMapped[1]!, 16), low = Number.parseInt(hexMapped[2]!, 16);
-			return isPrivateIpAddress(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
-		}
-		return mapped ? isPrivateIpAddress(mapped) : false;
-	}
-	const parts = address.split(".").map((part) => Number.parseInt(part, 10));
-	if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part))) return false;
-	const [a, b] = parts as [number, number, number, number];
-	return a === 0 || a === 10 || a === 127 || a === 169 && b === 254 || a === 172 && b >= 16 && b <= 31 || a === 192 && b === 168;
-}
 
 async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undefined> {
 	if (process.env.ATOMIC_ALLOW_PRIVATE_URL_READS === "1") return undefined;
@@ -208,7 +190,8 @@ async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undef
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
 	const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
 	if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
-	if (isIP(hostname)) { if (isPrivateIpAddress(hostname)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`); return { address: hostname, family: ipFamily(hostname) }; }
+	const literalAddress = normalizeIpLiteralHost(hostname);
+	if (literalAddress) { if (isPrivateIpAddress(literalAddress)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`); return { address: literalAddress, family: ipFamily(literalAddress) }; }
 	const addresses = await lookup(hostname, { all: true }).catch((error: unknown) => { throw new Error(`Could not resolve URL host ${hostname}: ${error instanceof Error ? error.message : String(error)}`); });
 	if (addresses.length === 0) throw new Error(`Could not resolve URL host ${hostname}: no addresses returned`);
 	for (const address of addresses) if (isPrivateIpAddress(address.address)) throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
@@ -298,7 +281,8 @@ async function tryLlmEndpoints(url: string, signal?: AbortSignal): Promise<{ con
 }
 
 function parseAlternateMarkdownLink(html: string, pageUrl: string): string | undefined {
-	const head = html.slice(0, html.toLowerCase().indexOf("</head>") + 7 || html.length);
+	const headEnd = html.toLowerCase().indexOf("</head>");
+	const head = html.slice(0, headEnd >= 0 ? headEnd + 7 : html.length);
 	const links = [...head.matchAll(/<link\b[^>]*>/gi)].map((m) => m[0] ?? "");
 	for (const tag of links) {
 		const rel = /rel=["']?([^"'>]+)["']?/i.exec(tag)?.[1] ?? "";

@@ -267,7 +267,7 @@ fn run_pty_sync(
 			}
 		}
 	}
-	if exit_code.is_none() && !terminate_requested {
+	if exit_code.is_none() {
 		let status = child
 			.wait()
 			.map_err(|err| Error::from_reason(format!("Failed waiting PTY process: {err}")))?;
