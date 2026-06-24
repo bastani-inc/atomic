@@ -67,8 +67,6 @@ export async function runRalphWorkflow(
     const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionFile);
     const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
       prompt: renderResearchPromptRefinementPrompt({
-        iteration,
-        maxLoops,
         request: workflowPrompt,
         workflowCwdContext,
         latestReviewReportPath,
@@ -82,8 +80,6 @@ export async function runRalphWorkflow(
     const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
     const research = await ctx.task(`research-${iteration}`, {
       prompt: renderResearchPrompt({
-        iteration,
-        maxLoops,
         transformedResearchQuestion: researchPromptRefinement.text,
         workflowCwdContext,
         latestReviewReportPath,
@@ -100,7 +96,7 @@ export async function runRalphWorkflow(
     const researchPath = workflowResearchPath;
     finalResearchPath = researchPath;
     finalPlanPath = researchPath;
-    const orchestratorReportPath = join(artifactDir, `orchestrator-${iteration}.md`);
+    const orchestratorReportPath = join(artifactDir, "orchestrator-report.md");
     const orchestratorForkOptions = forkContinuationOptions(previousOrchestratorSessionFile);
     const orchestratorPrompt = orchestratorForkOptions.forkFromSessionFile === undefined
       ? taggedPrompt([
@@ -110,7 +106,7 @@ export async function runRalphWorkflow(
         ],
         [
           "objective",
-          `Implement iteration ${iteration}/${maxLoops} for the task: ${workflowPrompt}`,
+          `Implement the full requested task: ${workflowPrompt}`,
         ],
         workflowCwdContext,
         [
@@ -125,7 +121,7 @@ export async function runRalphWorkflow(
           [
             `Keep a running Markdown implementation notes file at this OS temp directory path: ${implementationNotesPath}`,
             "The file has already been initialized for this workflow run; update it while you implement from the research findings.",
-            "Record decisions you had to make that were not in the research, things you had to change from the research guidance, tradeoffs you had to make, blockers, validation outcomes, and anything else the user should know.",
+            "Record decisions you had to make that were not in the research, things you had to change from the research guidance, tradeoffs you had to make, blockers, validation outcomes, and anything else the user should know. Do not stop until the objective is complete.",
             "Ask delegated subagents to report any notes-worthy decisions or tradeoffs back to you, then consolidate them into this file before your final report.",
             "Do not include secrets, credentials, tokens, or unrelated environment details in the notes file.",
           ].join("\n"),
@@ -141,7 +137,7 @@ export async function runRalphWorkflow(
             "Delegate codebase understanding, impact analysis, and implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when available.",
             "Delegate shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — to subagents that can run those commands rather than doing it in this orchestrator context.",
             "Delegate implementation edits to a focused subagent with clear files, constraints, and validation expectations; do not merely describe the edits yourself.",
-            "Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes.",
+            "Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes for the complete requested outcome.",
             "Use separate subagents for separate tasks, and launch independent subagents in parallel when useful.",
             "Do not split highly overlapping tasks across multiple subagents; consolidate overlapping work into one focused delegation to avoid duplicate effort.",
             "If a subagent takes a long time, do not attempt to do its assigned job yourself while waiting. Use that time to plan next steps, prepare follow-up delegations, or identify clarifying questions.",
@@ -152,7 +148,7 @@ export async function runRalphWorkflow(
           [
             "The required output format is a completion report, not the task itself.",
             "Do not jump straight to the report. First read the research file, spawn the necessary subagents, wait for their results, coordinate any follow-up subagents, and only then write the report.",
-            "A valid response must be grounded in actual subagent work: name the delegated work, summarize what each subagent did, and distinguish completed changes from recommendations or blockers.",
+            "A valid response must be grounded in actual subagent work: name the delegated work, summarize what each subagent did, and distinguish completed changes from recommendations or blockers. Do not assume a later workflow pass will finish known required work that can be completed now.",
             "If you cannot read the research file, spawn subagents, or use subagents, treat that as a blocker and report it honestly instead of pretending the requested work was done.",
           ].join("\n"),
         ],
@@ -173,11 +169,11 @@ export async function runRalphWorkflow(
             "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
             "Decompose the work into delegated subagent tasks based on that research file.",
             "Pass each subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
-            "Coordinate subagent results into the smallest coherent set of changes that satisfies the researched implementation guidance and original user prompt.",
+            "Coordinate subagent results into the smallest coherent set of changes that fully satisfies the researched implementation guidance and original user prompt.",
             "Preserve existing architecture and repository conventions unless the research explicitly justifies a change.",
             "Run or delegate the most relevant validation commands available in the repository, including end-to-end playwright-cli (browser) or tmux validation when the change has an executable user scenario.",
-            "For UI-applicable or full-stack changes, ensure the QA E2E pass described in <qa_e2e_video> runs and records the reviewable proof video before you finalize this iteration.",
-            `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this iteration.`,
+            "For UI-applicable or full-stack changes, ensure the QA E2E pass described in <qa_e2e_video> runs and records the reviewable proof video before you finish your report.",
+            `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this implementation work.`,
             "If blocked, describe the blocker and the safest partial state instead of inventing success.",
             "Do not hide failures; reviewers need accurate status.",
           ].join("\n"),
@@ -198,8 +194,6 @@ export async function runRalphWorkflow(
         ],
       ])
       : renderForkedOrchestratorPrompt({
-          iteration,
-          maxLoops,
           prompt: workflowPrompt,
           workflowCwdContext,
           researchPath,
@@ -384,10 +378,9 @@ export async function runRalphWorkflow(
         reviewerErrorDecision(`Reviewer ${reviewer} returned no structured decision.`);
       const artifactPath = join(
         artifactDir,
-        `review-${iteration}-${artifactSafeName(reviewer)}.json`,
+        `review-${artifactSafeName(reviewer)}.json`,
       );
       await writeJsonArtifact(artifactPath, {
-        iteration,
         reviewer,
         decision,
         raw_text: review.text,
@@ -401,8 +394,8 @@ export async function runRalphWorkflow(
       reviewEntries.length === REVIEWER_COUNT &&
       approvalCount === REVIEWER_COUNT;
     latestReviewReportPath = await writeJsonArtifact(
-      join(artifactDir, `review-round-${iteration}.json`),
-      { iteration, reviews: reviewEntries },
+      join(artifactDir, "review-round-latest.json"),
+      { reviews: reviewEntries },
     );
     if (approved) break;
   }

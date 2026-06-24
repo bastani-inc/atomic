@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Revised the builtin `goal` worker/continuation prompts and the builtin `ralph` orchestrator prompts to emphasize implementing the requested task through full completion ("do not stop until the objective is complete") instead of preparing a partial implementation for incremental review.
+- Removed model-visible current-iteration/turn/loop information from the builtin `goal`, `ralph`, and `open-claude-design` workflows so models are not biased by which iteration they are on. This drops the worker `Turn: N/M` banner, `Implement iteration N/M` / `Research iteration N/M` framing, "first iteration/worker turn" phrasing, and the live-preview `iteration N/M` label; switches model-relayed artifacts to stable non-ordinal names (`worker-receipt.md`, `review-<reviewer>.json`, `review-round-latest.json`, `orchestrator-report.md`); and strips turn fields from the model-facing goal ledger artifact. Internal UI stage names (e.g. `work-turn-2`, `orchestrator-2`) are unchanged, and the `max_turns`/`max_loops` inputs and `turns_completed`/`iterations_completed` outputs are retained.
+
+### Fixed
+
+- Fixed the builtin `open-claude-design` continuation loop so generator stages fork only from prior generator sessions and user-feedback stages fork only from prior feedback sessions; the first feedback stage now starts its own chain instead of inheriting generator context.
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

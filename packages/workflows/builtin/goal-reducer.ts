@@ -103,7 +103,7 @@ export function reduceGoalDecision(
       decision: {
         turn: options.turn,
         decision: "blocked",
-        reason: `Same blocker repeated for ${blockerCount}/${options.blockerThreshold} consecutive turns.`,
+        reason: `Same blocker repeated for ${blockerCount}/${options.blockerThreshold} consecutive controller observations.`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
         blocker: observation.blocker,
@@ -118,7 +118,7 @@ export function reduceGoalDecision(
       decision: {
         turn: options.turn,
         decision: "needs_human",
-        reason: `Maximum worker turns reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
+        reason: `Worker attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
         ...(observation ? { blocker: observation.blocker } : {}),

@@ -220,7 +220,7 @@ export function buildLivePreviewDisplayPrompt(args: {
   const isFinal = args.final === true;
   const label = isInitial
     ? "the just-generated HTML artifact"
-    : `the revised preview after iteration ${args.iteration}/${args.maxRefinements}`;
+    : "the revised preview";
   const objective = isFinal
     ? `Show the user ${label} as the FINAL refinement pass and let them review it in the browser. This is the last automated iteration, so do NOT solicit change requests this run cannot apply — if the user wants further changes, tell them to re-run \`/workflow open-claude-design\`. Drive \`/skill:impeccable live\` for viewing/QA when possible; degrade gracefully.`
     : `Make ${label} visible to the user, run an interactive design-QA session against it, then capture the user's feedback for the refinement loop. Drive \`/skill:impeccable live\` against the static preview when possible; degrade gracefully when browser automation is unavailable.`;

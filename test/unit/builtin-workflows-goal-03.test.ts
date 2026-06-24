@@ -201,7 +201,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             ledger.decisions.map((decision) => decision.decision),
             ["continue", "blocked"],
         );
-        assert.match(ledger.decisions[1]!.reason, /2\/2 consecutive turns/);
+        assert.match(ledger.decisions[1]!.reason, /2\/2 consecutive controller observations/);
     });
 
     test("continues until fixed blocker threshold is met", async () => {
@@ -313,7 +313,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(result["approved"], false);
         assert.equal(result["turns_completed"], 2);
         assert.equal(ctx.calls.task.includes("work-turn-3"), false);
-        assert.match(ctx.calls.prompts["work-turn-1"]?.[0] ?? "", /Turn: 1\/2/);
+        assert.doesNotMatch(ctx.calls.prompts["work-turn-1"]?.[0] ?? "", /Turn: \d/);
         assert.match(
             String(result["remaining_work"]),
             /published docs proof missing/,
@@ -361,7 +361,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             }[];
         };
         assert.equal(ledger.status, "needs_human");
-        assert.equal(ledger.turns, 1);
+        assert.equal(Object.hasOwn(ledger, "turns"), false);
         assert.equal(ledger.receipts.length, 0);
         assert.equal(ledger.reviews.length, 0);
         assert.deepEqual(
@@ -412,7 +412,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             decisions: readonly { decision: string }[];
         };
         assert.equal(ledger.reviews.length, 1);
-        assert.equal(ledger.reviews[0]!.reviewer, "reviewer-error-1");
+        assert.equal(ledger.reviews[0]!.reviewer, "reviewer-error");
         assert.equal(ledger.reviews[0]!.decision, "continue");
         assert.match(
             ledger.reviews[0]!.explanation,

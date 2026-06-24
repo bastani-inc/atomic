@@ -23,7 +23,7 @@ export function reviewerErrorDecision(message: string): ReviewDecision {
     findings: [],
     overall_correctness: "patch is incorrect",
     overall_explanation:
-      "Reviewer execution failed, so the review gate cannot safely approve this turn.",
+      "Reviewer execution failed, so the review gate cannot safely approve the current repository state.",
     overall_confidence_score: 0,
     goal_oracle_satisfied: false,
     receipt_assessment:

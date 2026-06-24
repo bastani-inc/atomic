@@ -9,8 +9,9 @@ export { WORKER_PREFLIGHT_CONTRACT };
 
 export const GOAL_CONTINUATION_REFERENCE = [
   "Continuation behavior:",
-  "- This goal persists across turns. Ending this turn does not require shrinking the objective to what fits now.",
-  "- Keep the full objective intact. If it cannot be finished now, make concrete progress toward the real requested end state, leave the goal active, and do not redefine success around a smaller or easier task.",
+  "- This goal persists across workflow continuations. A worker session ending does not require shrinking the objective to what fits immediately.",
+  "- Keep the full objective intact and do not stop until the objective is complete. Do not intentionally leave known required implementation, validation, documentation, or cleanup for a later worker session.",
+  "- If the full objective genuinely cannot be finished with available context/tools, make the most concrete progress toward the real requested end state, leave the goal active, and do not redefine success around a smaller or easier task.",
   "- Temporary rough edges are acceptable while the work is moving in the right direction. Completion still requires the requested end state to be true and verified.",
   "",
   "Work from evidence:",
@@ -20,7 +21,7 @@ export const GOAL_CONTINUATION_REFERENCE = [
   "If todo management is available and the next work is meaningfully multi-step, use it to show a concise plan tied to the real objective. Keep the plan current as steps complete or the next best action changes. Skip planning overhead for trivial one-step progress, and do not treat a todo update as a substitute for doing the work.",
   "",
   "Fidelity:",
-  "- Optimize each turn for movement toward the requested end state, not for the smallest stable-looking subset or easiest passing change.",
+  "- Optimize worker effort for full completion of the requested end state, not for the smallest stable-looking subset or easiest passing change.",
   "- Do not substitute a narrower, safer, smaller, merely compatible, or easier-to-test solution because it is more likely to pass current tests.",
   "- Treat alignment as movement toward the requested end state. An edit is aligned only if it makes the requested final state more true; useful-looking behavior that preserves a different end state is misaligned.",
   "",
@@ -39,20 +40,21 @@ export const GOAL_CONTINUATION_REFERENCE = [
   "",
   "Blocked audit:",
   "- Do not report blocked the first time a blocker appears.",
-  "- Only use blocked when the same blocking condition has repeated for the configured blocker threshold of consecutive goal turns, counting the original worker turn and any workflow continuations.",
+  "- Only use blocked when the same blocking condition has repeated often enough for the controller's blocker policy to identify a true impasse.",
   "- Use blocked only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.",
   "- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; report blocked.",
   "- Never use blocked merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.",
   "",
-  "Do not report the goal as done unless the goal is complete. Do not mark a goal complete merely because the workflow turn is ending.",
+  "Do not report the goal as done unless the goal is complete. Do not mark a goal complete merely because the worker session is ending.",
 ].join("\n");
 
 export const WORKER_RECEIPT_CONTRACT = [
-  "Produce concrete progress toward the full objective in this turn.",
+  "Implement the requested objective completely before reporting. Do not stop until the objective is complete.",
   "Inspect current files, commands, artifacts, and repository guidance before relying on prior summaries.",
   "Improve, replace, or remove existing work as needed to satisfy the actual objective.",
   "If todo management is available and the next work is meaningfully multi-step, use it to show a concise plan tied to the real objective. Keep the plan current as steps complete or the next best action changes. Skip planning overhead for trivial one-step progress, and do not treat todo updates as a substitute for doing the work.",
-  "If meaningful work remains, do the next safest useful slice; do not redefine success around a smaller task.",
+  "If meaningful work remains, keep working through implementation, validation, documentation, and cleanup instead of stopping at a reviewable partial state.",
+  "Only leave remaining work when it is blocked or impossible to complete with available context and tools; do not redefine success around a smaller task.",
   "Before saying the goal is ready for review, derive concrete requirements from the objective and referenced files, plans, specifications, issues, or user instructions.",
   "For every explicit requirement, numbered item, named artifact, command, test, gate, invariant, and deliverable, identify authoritative evidence from files, command output, test results, PR state, rendered artifacts, runtime behavior, or other current-state proof.",
   "Classify evidence honestly: proves completion, contradicts completion, shows incomplete work, is too weak or indirect, is merely consistent with completion, or is missing.",
@@ -62,7 +64,7 @@ export const WORKER_RECEIPT_CONTRACT = [
 ].join("\n");
 
 export const GOAL_METHOD_REFERENCE = [
-  "Maintain a concrete goal contract for the run: intent, verification oracle, work surface, execution loop, and proof.",
+  "Maintain a concrete goal contract for the run: intent, verification oracle, work surface, execution workflow, and proof.",
   "Infer the owner outcome and a verifiable oracle from the user's task and repository evidence; do not ask the user unless the workflow is truly blocked.",
   "Treat any user-supplied planning artifacts as supporting context, not as the primary success criterion.",
   "Keep pressure on current evidence: the current worktree, artifacts, command output, tests, demos, generated files, and explicit human decisions are more authoritative than prior conversation summaries.",
@@ -135,23 +137,21 @@ export function renderReceiptHistory(ledger: GoalLedger): string {
   if (ledger.receipts.length === 0) return "No prior work receipts.";
   const latestReceipt = ledger.receipts.at(-1);
   if (latestReceipt === undefined) return "No prior work receipts.";
-  return `Latest receipt: turn ${latestReceipt.turn} ${latestReceipt.stage} (artifact: ${latestReceipt.artifact_path}). Read the artifact if you need receipt details.`;
+  return `Latest receipt artifact: ${latestReceipt.artifact_path}. Read it if you need receipt details.`;
 }
 
 export function renderLatestReviewArtifacts(paths: readonly string[]): string {
-  if (paths.length === 0) return "No prior review artifacts; this is the first worker turn.";
+  if (paths.length === 0) return "No prior review artifacts are available.";
   return [
-    "Latest review artifacts from the previous round:",
+    "Latest available review artifacts:",
     ...paths.map((path) => `- ${path}`),
-    "Read only the details needed for the next action; do not load old review rounds unless the latest round explicitly refers to them.",
+    "Read only the details needed for the next action; do not load older review artifacts unless the latest artifacts explicitly refer to them.",
   ].join("\n");
 }
 
 export function renderGoalContinuationPrompt(
   ledger: GoalLedger,
   ledgerPath: string,
-  turn: number,
-  maxTurns: number,
   blockerThreshold: number,
   latestReviewArtifactPaths: readonly string[],
 ): string {
@@ -162,10 +162,9 @@ export function renderGoalContinuationPrompt(
         "Continue working toward the active thread goal.",
         "The goal ledger artifact is the authoritative state for the objective, status, receipts, latest reviewer decisions, blockers, reducer decisions, and lifecycle events.",
         "",
-        "Workflow state:",
-        `- Turn: ${turn}/${maxTurns}`,
+        "Workflow context:",
         `- Goal ledger artifact: ${ledgerPath}`,
-        `- Blocked threshold: same blocker must repeat for at least ${blockerThreshold} consecutive turns before the controller can stop as blocked.`,
+        `- Blocked threshold: same blocker must repeat for at least ${blockerThreshold} controller observations before the controller can stop as blocked.`,
         "- Completion transition: the worker may claim readiness, but reviewer quorum plus the deterministic reducer decides final workflow status.",
         "",
         renderReceiptHistory(ledger),
@@ -182,8 +181,6 @@ export function renderGoalContinuationPrompt(
 export function renderForkedGoalWorkerPrompt(
   ledger: GoalLedger,
   ledgerPath: string,
-  turn: number,
-  maxTurns: number,
   blockerThreshold: number,
   latestReviewArtifactPaths: readonly string[],
 ): string {
@@ -191,14 +188,13 @@ export function renderForkedGoalWorkerPrompt(
     [
       "goal_context",
       [
-        "Continue the same goal-runner worker thread from the previous work turn.",
+        "Continue the same goal-runner worker thread from the previous worker session.",
         "Reuse the goal invariants, project preflight, worker receipt contract, completion audit, and blocked audit.",
         "Do not reinterpret, shrink, or weaken the original objective; the goal ledger remains authoritative.",
         "",
-        "Current workflow state:",
-        `- Turn: ${turn}/${maxTurns}`,
+        "Workflow context:",
         `- Goal ledger artifact: ${ledgerPath}`,
-        `- Blocked threshold: same blocker must repeat for at least ${blockerThreshold} consecutive turns before the controller can stop as blocked.`,
+        `- Blocked threshold: same blocker must repeat for at least ${blockerThreshold} controller observations before the controller can stop as blocked.`,
         "- Completion transition: the worker may claim readiness, but reviewer quorum plus the deterministic reducer decides final workflow status.",
         "",
         renderReceiptHistory(ledger),
@@ -217,7 +213,6 @@ export function renderReviewerPrompt(args: {
   readonly ledgerPath: string;
   readonly workTurnPath: string;
   readonly comparisonBaseBranch: string;
-  readonly turn: number;
   readonly reviewQuorum: number;
   readonly blockerThreshold: number;
 }): string {
@@ -260,7 +255,7 @@ export function renderReviewerPrompt(args: {
       "reference_branch",
       [
         `The baseline branch for comparison is \`${args.comparisonBaseBranch}\`.`,
-        "Compare the current working tree against this baseline branch, not against previous workflow reasoning or expected loop progress.",
+        "Compare the current working tree against this baseline branch, not against previous workflow reasoning or progress expectations.",
         `Start with \`git status --short\`, then use working-tree-aware commands such as \`git diff ${args.comparisonBaseBranch}\` and \`git diff --cached ${args.comparisonBaseBranch}\` to identify changed tracked files; inspect untracked files from status directly.`,
       ].join("\n"),
     ],
@@ -327,8 +322,8 @@ export function renderReviewerPrompt(args: {
       [
         "The structured review decision is only valid after you inspect the actual repository state and compare it against the stated baseline branch.",
         "Do not approve based solely on workflow stage summaries or prior agent reasoning.",
-        "Treat this review as the completion audit for the current goal turn: approval means receipts and current evidence prove the original owner outcome against the full objective.",
-        "Do not approve when proof only shows planning, discovery, task selection, helper documents, or a narrow slice while the broader requested outcome still has safe local work remaining.",
+        "Treat this review as the completion audit for the current repository and goal state: approval means receipts and current evidence prove the original owner outcome against the full objective.",
+        "Do not approve when proof only shows planning, discovery, task selection, helper documents, or a narrow slice while the broader requested outcome still has required work remaining.",
         "The tool call is the final verdict after review work, not a shortcut around review work.",
       ].join("\n"),
     ],
@@ -349,7 +344,7 @@ export function renderReviewerPrompt(args: {
       [
         `Reviewer quorum is ${args.reviewQuorum}; same blocker threshold is ${args.blockerThreshold}. You do not decide final workflow status. The reducer does.`,
         "If the strict blocked audit is satisfied by current evidence, do not invent a finding. Set stop_review_loop=false, goal_oracle_satisfied=false, verification_remaining to the concise blocker, and reviewer_error.kind to dependency_unavailable or tool_failure with reviewer_error.message set to the same concise blocker.",
-        "When the same dependency or tool blocker from prior reviewer history is still present, echo the prior turn's exact blocker string in verification_remaining and reviewer_error.message instead of rephrasing it.",
+        "When the same dependency or tool blocker from prior reviewer history is still present, echo the prior blocker string in verification_remaining and reviewer_error.message instead of rephrasing it.",
         "Use reviewer_error for a blocker only when there is a real impasse that prevents meaningful progress without user input or an external-state change; never for ordinary incomplete work, uncertainty, or useful work remaining.",
       ].join("\n"),
     ],

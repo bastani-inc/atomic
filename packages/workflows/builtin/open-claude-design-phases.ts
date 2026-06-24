@@ -110,9 +110,7 @@ export async function refineOpenClaudeDesign(options: RefineOptions): Promise<{ 
           maxRefinements,
         }),
         ...designModelConfig,
-        ...forkContinuationOptions(
-          latestUserFeedbackSessionFile ?? latestGenerateSessionFile,
-        ),
+        ...forkContinuationOptions(latestUserFeedbackSessionFile),
       })
       .catch(() => undefined);
 

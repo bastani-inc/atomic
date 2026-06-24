@@ -139,18 +139,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     let previousWorkerSessionFile: string | undefined;
 
     for (let turn = 1; turn <= maxTurns && ledger.status === "active"; turn += 1) {
-      appendLifecycleEvent(ledger, "work_turn_started", `Worker turn ${turn} started.`, turn);
+      appendLifecycleEvent(ledger, "work_turn_started", "Worker started.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
-      const workTurnPath = join(artifactDir, `work-turn-${turn}.md`);
+      const workTurnPath = join(artifactDir, "worker-receipt.md");
       const workerForkOptions = forkContinuationOptions(previousWorkerSessionFile);
       const workerPrompt = workerForkOptions.forkFromSessionFile === undefined
         ? [
             renderGoalContinuationPrompt(
               ledger,
               ledgerPath,
-              turn,
-              maxTurns,
               blockerThreshold,
               latestReviewArtifactPaths,
             ),
@@ -166,8 +164,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         : renderForkedGoalWorkerPrompt(
             ledger,
             ledgerPath,
-            turn,
-            maxTurns,
             blockerThreshold,
             latestReviewArtifactPaths,
           );
@@ -184,7 +180,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        terminalRemainingWork = `Worker turn ${turn} failed before producing a receipt: ${message}`;
+        terminalRemainingWork = `Worker failed before producing a receipt: ${message}`;
         latestReviews = [];
         latestReviewArtifactPaths = [];
         latestReviewReportPath = undefined;
@@ -208,9 +204,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         turn,
         stage: worker.name ?? worker.stageName,
         artifact_path: workTurnPath,
-        summary: `Worker receipt artifact for turn ${turn}: ${workTurnPath}`,
+        summary: `Worker receipt artifact: ${workTurnPath}`,
       });
-      appendLifecycleEvent(ledger, "receipt_recorded", `Worker turn ${turn} receipt recorded.`, turn);
+      appendLifecycleEvent(ledger, "receipt_recorded", "Worker receipt recorded.", turn);
       await writeGoalLedger(ledgerPath, ledger);
 
       const reviewerStep = (
@@ -226,7 +222,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           ledgerPath,
           workTurnPath,
           comparisonBaseBranch,
-          turn,
           reviewQuorum,
           blockerThreshold,
         }),
@@ -263,8 +258,8 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         const structured = reviewerErrorDecision(message);
         reviewResults = [
           {
-            name: `reviewer-error-${turn}`,
-            stageName: `reviewer-error-${turn}`,
+            name: "reviewer-error",
+            stageName: "reviewer-error",
             text: JSON.stringify(structured, null, 2),
             structured,
           },
@@ -279,14 +274,13 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           );
         const reviewArtifactPath = await writeReviewArtifact(
           artifactDir,
-          turn,
-          reviewerName,
+          reviewerName.replace(/-\d+$/u, ""),
           parsed,
           result.text,
         );
         return reviewDecisionToRecord({
           turn,
-          reviewer: reviewerName,
+          reviewer: reviewerName.replace(/-\d+$/u, ""),
           artifactPath: reviewArtifactPath,
           decision: parsed,
         });
@@ -294,14 +288,13 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       latestReviewArtifactPaths = latestReviews.map((review) => review.artifact_path);
       latestReviewReportPath = await writeReviewRoundArtifact(
         artifactDir,
-        turn,
         latestReviews,
       );
       ledger.reviews.push(...latestReviews);
       appendLifecycleEvent(
         ledger,
         "reviews_recorded",
-        `Recorded ${latestReviews.length} reviewer decisions for turn ${turn}.`,
+        `Recorded ${latestReviews.length} reviewer decisions.`,
         turn,
       );
 

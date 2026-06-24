@@ -74,14 +74,55 @@ describe("open-claude-design — generate/user-feedback refinement loop (#1464)"
         const result = await d.run(ctx);
 
         const feedbackOneOptions = ctx.calls.taskOptions["user-feedback-1"]?.[0];
-        assert.equal(feedbackOneOptions?.context, "fork");
-        assert.equal(feedbackOneOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
+        assert.equal(feedbackOneOptions?.context, undefined);
+        assert.equal(feedbackOneOptions?.forkFromSessionFile, undefined);
         const generateTwoOptions = ctx.calls.taskOptions["generate-2"]?.[0];
         assert.equal(generateTwoOptions?.context, "fork");
         assert.equal(generateTwoOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
         const feedbackTwoOptions = ctx.calls.taskOptions["user-feedback-2"]?.[0];
         assert.equal(feedbackTwoOptions?.context, "fork");
         assert.equal(feedbackTwoOptions?.forkFromSessionFile, "/tmp/user-feedback-1.jsonl");
+        const artifactDir = result["artifact_dir"] as string;
+        rmSync(artifactDir, { recursive: true, force: true });
+    });
+
+    test("does not fall back feedback stages to generate sessions", async () => {
+        const mod =
+            await import("../../packages/workflows/builtin/open-claude-design.js");
+        const d = mod.default as unknown as WorkflowDefinition;
+        const ctx = makeMockCtx(
+            { prompt: "Redesign the Atomic website", max_refinements: 3 },
+            {
+                task: (name) => {
+                    if (name === "user-feedback-1") return previewWithAnnotations;
+                    if (name === "user-feedback-2") return previewWithAnnotations;
+                    if (name === "user-feedback-3") return "user_notes: none";
+                    return undefined;
+                },
+                sessionFile: (name) =>
+                    name.startsWith("generate-")
+                        ? `/tmp/${name}.jsonl`
+                        : undefined,
+            },
+        );
+
+        const result = await d.run(ctx);
+
+        for (const name of [
+            "user-feedback-1",
+            "user-feedback-2",
+            "user-feedback-3",
+        ]) {
+            const options = ctx.calls.taskOptions[name]?.[0];
+            assert.equal(options?.context, undefined);
+            assert.equal(options?.forkFromSessionFile, undefined);
+        }
+        const generateTwoOptions = ctx.calls.taskOptions["generate-2"]?.[0];
+        assert.equal(generateTwoOptions?.context, "fork");
+        assert.equal(generateTwoOptions?.forkFromSessionFile, "/tmp/generate-1.jsonl");
+        const generateThreeOptions = ctx.calls.taskOptions["generate-3"]?.[0];
+        assert.equal(generateThreeOptions?.context, "fork");
+        assert.equal(generateThreeOptions?.forkFromSessionFile, "/tmp/generate-2.jsonl");
         const artifactDir = result["artifact_dir"] as string;
         rmSync(artifactDir, { recursive: true, force: true });
     });
