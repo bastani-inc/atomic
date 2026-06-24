@@ -1,4 +1,5 @@
 use std::{
+	panic::{AssertUnwindSafe, catch_unwind},
 	sync::{
 		Arc,
 		atomic::{AtomicBool, Ordering},
@@ -66,6 +67,16 @@ where
 	work: Option<Box<dyn FnOnce(CancelToken) -> Result<T> + Send>>,
 }
 
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+	if let Some(message) = payload.downcast_ref::<&str>() {
+		return (*message).to_owned();
+	}
+	if let Some(message) = payload.downcast_ref::<String>() {
+		return message.clone();
+	}
+	"native worker panicked".to_owned()
+}
+
 impl<T> Task for Blocking<T>
 where
 	T: ToNapiValue + Send + 'static + TypeName,
@@ -76,7 +87,12 @@ where
 	fn compute(&mut self) -> Result<Self::Output> {
 		let work =
 			self.work.take().ok_or_else(|| Error::from_reason("Blocking task already consumed"))?;
-		work(self.cancel_token.clone())
+		match catch_unwind(AssertUnwindSafe(|| work(self.cancel_token.clone()))) {
+			Ok(result) => result,
+			Err(payload) => {
+				Err(Error::from_reason(format!("Native worker panicked: {}", panic_message(payload))))
+			},
+		}
 	}
 
 	fn resolve(&mut self, _env: napi::Env, output: Self::Output) -> Result<Self::JsValue> {

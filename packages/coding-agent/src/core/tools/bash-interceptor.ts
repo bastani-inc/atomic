@@ -31,3 +31,18 @@ export function checkBashInterception(
 	}
 	return undefined;
 }
+
+export function checkBashInterceptionCandidates(
+	candidates: Array<string | undefined>,
+	availableTools: readonly string[],
+	rules: readonly BashInterceptorRule[] = DEFAULT_BASH_INTERCEPTOR_RULES,
+): void {
+	const seen = new Set<string>();
+	for (const candidate of candidates) {
+		const command = candidate?.trim();
+		if (!command || seen.has(command)) continue;
+		seen.add(command);
+		const blocked = checkBashInterception(command, availableTools, rules);
+		if (blocked) throw new Error(blocked);
+	}
+}

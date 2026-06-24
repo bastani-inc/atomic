@@ -10,7 +10,7 @@ fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
 	let (context_before, context_after) =
 		resolve_context(options.context, options.context_before, options.context_after);
 	let max_columns = options.max_columns;
-	let max_count = options.max_count.map(u64::from);
+	let max_count = options.max_count.map(u64::from).or(Some(DEFAULT_NATIVE_GREP_MAX_COUNT));
 	let offset = options.offset.unwrap_or(0) as u64;
 	let params = SearchParams {
 		context_before,
@@ -53,7 +53,7 @@ fn grep_sync(
 	let (context_before, context_after) =
 		if output_mode == OutputMode::Content { (context_before, context_after) } else { (0, 0) };
 	let max_columns = options.max_columns;
-	let max_count = options.max_count.map(u64::from);
+	let max_count = options.max_count.map(u64::from).or(Some(DEFAULT_NATIVE_GREP_MAX_COUNT));
 	let offset = options.offset.unwrap_or(0) as u64;
 	let include_hidden = options.hidden.unwrap_or(true);
 	let use_gitignore = options.gitignore.unwrap_or(true);

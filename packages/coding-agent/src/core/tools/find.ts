@@ -173,11 +173,13 @@ export interface FindToolOptions {
 	/** Custom operations for find. Default: local filesystem plus fd */
 	operations?: FindOperations;
 }
+function stripTrailingForwardSlashes(value: string): string { let end = value.length; while (end > 0 && value[end - 1] === "/") end--; return value.slice(0, end); }
+
 function formatFindCall(
 	args: { paths?: string[]; limit?: number } | undefined,
 	theme: typeof import("../../modes/interactive/theme/theme.ts").theme,
 ): string {
-	const paths = Array.isArray(args?.paths) ? args.paths.map((item) => splitPathLikeGlob(item).glob ? item : `${item.replace(/\/+$/g, "")}/**/*`).join(", ") : "<paths>";
+	const paths = Array.isArray(args?.paths) ? args.paths.map((item) => splitPathLikeGlob(item).glob ? item : `${stripTrailingForwardSlashes(item)}/**/*`).join(", ") : "<paths>";
 	let text = `${theme.fg("toolTitle", theme.bold("find"))} ${theme.fg("accent", paths)}`;
 	if (args?.limit !== undefined) text += theme.fg("toolOutput", ` (limit ${args.limit})`);
 	return text;
@@ -240,12 +242,10 @@ export function createFindToolDefinition(
 				}
 				let settled = false;
 				let stopChild: (() => void) | undefined;
-				let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
 				const settle = (fn: () => void) => {
 					if (settled) return;
 					settled = true;
 					signal?.removeEventListener("abort", onAbort);
-					if (timeoutTimer) clearTimeout(timeoutTimer);
 					stopChild = undefined;
 					fn();
 				};
@@ -366,7 +366,7 @@ export function createFindToolDefinition(
 									const result = await nativeBinding.glob({
 										pattern: target.pattern,
 										path: target.searchPath,
-										recursive: target.pattern === "**" || target.pattern.startsWith("**/"),
+										recursive: false,
 										hidden: hidden !== false,
 										gitignore: gitignore !== false,
 										includeNodeModules: gitignore === false || target.pattern.includes("node_modules") || target.searchPath.includes("node_modules"),
@@ -376,7 +376,7 @@ export function createFindToolDefinition(
 										timeoutMs: remainingMs,
 										signal,
 									});
-									matches.push(...result.matches.map((match) => { const isDir = (match.fileType === 2 || (match as { file_type?: number }).file_type === 2 || statSync(path.resolve(target.searchPath, match.path), { throwIfNoEntry: false })?.isDirectory()) && !match.path.endsWith("/"); const matchPath = isDir ? `${match.path}/` : match.path; return { path: formatFoundPath(matchPath, target.searchPath, searchPaths, cwd), mtime: match.mtime ?? 0 }; }));
+									matches.push(...result.matches.map((match) => { const fileType = match.fileType ?? (match as { file_type?: number }).file_type; const isDir = (fileType === 2 || fileType === "Dir" || (fileType === undefined && statSync(path.resolve(target.searchPath, match.path), { throwIfNoEntry: false })?.isDirectory())) && !match.path.endsWith("/"); const matchPath = isDir ? `${match.path}/` : match.path; return { path: formatFoundPath(matchPath, target.searchPath, searchPaths, cwd), mtime: match.mtime ?? 0 }; }));
 									emitUpdate(matches.map((match) => match.path));
 								} catch (error) {
 									if (String(error).toLowerCase().includes("timed out")) {

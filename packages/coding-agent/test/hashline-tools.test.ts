@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ExtensionContext } from "../src/core/extensions/types.ts";
-import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 import { createEditToolDefinition } from "../src/core/tools/edit.ts";
 import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
@@ -278,8 +277,38 @@ describe("hashline file tool parity", () => {
 			writeFile: async (absolutePath: string) => { writes.push(absolutePath); },
 		};
 		const edit = createEditToolDefinition(dir, { hashlineStore: store, operations: ops });
-		await expect(edit.execute("edit-two-stale", { input: `[a.txt#${aTag}]\nreplace 1..1:\n+new a\n\n[b.txt#${bTag}]\nreplace 1..1:\n+new b` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Stale hashline tag for b\.txt/);
+		await expect(edit.execute("edit-two-stale", { input: `[a.txt#${aTag}]\nreplace 1..1:\n+new a\n\n[b.txt#${bTag}]\nreplace 1..1:\n+new b` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/file changed between read and edit|Stale hashline tag/);
 		expect(writes).toEqual([]);
+	});
+
+	it("rejects duplicate canonical paths in one edit batch", async () => {
+		const dir = await createTempDir();
+		const store = createHashlineSnapshotStore();
+		await writeFile(join(dir, "a.txt"), "one\ntwo\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore: store });
+		const tag = text(await read.execute("read-a", { path: "a.txt" }, undefined, undefined, {} as ExtensionContext)).match(/#([0-9A-F]{4})/)?.[1];
+		const edit = createEditToolDefinition(dir, { hashlineStore: store });
+		await expect(edit.execute("edit-duplicate-canonical", { input: `[a.txt#${tag}]\nreplace 1..1:\n+ONE\n\n[./a.txt#${tag}]\nreplace 2..2:\n+TWO` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Multiple hashline sections resolve to the same file/);
+		await expect(readFile(join(dir, "a.txt"), "utf8")).resolves.toBe("one\ntwo\n");
+	});
+
+	it("reports already-written sections when a multi-file edit write fails", async () => {
+		const dir = await createTempDir();
+		const store = createHashlineSnapshotStore();
+		await writeFile(join(dir, "a.txt"), "old a\n", "utf8");
+		await writeFile(join(dir, "b.txt"), "old b\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore: store });
+		const aTag = text(await read.execute("read-a", { path: "a.txt" }, undefined, undefined, {} as ExtensionContext)).match(/#([0-9A-F]{4})/)?.[1];
+		const bTag = text(await read.execute("read-b", { path: "b.txt" }, undefined, undefined, {} as ExtensionContext)).match(/#([0-9A-F]{4})/)?.[1];
+		const writes: string[] = [];
+		const ops = {
+			access: async () => {},
+			readFile: async (absolutePath: string) => Buffer.from(absolutePath.endsWith("a.txt") ? "old a\n" : "old b\n"),
+			writeFile: async (absolutePath: string) => { writes.push(absolutePath); if (absolutePath.endsWith("b.txt")) throw new Error("permission denied"); },
+		};
+		const edit = createEditToolDefinition(dir, { hashlineStore: store, operations: ops });
+		await expect(edit.execute("edit-two-write-fail", { input: `[a.txt#${aTag}]\nreplace 1..1:\n+new a\n\n[b.txt#${bTag}]\nreplace 1..1:\n+new b` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Sections already written: a\.txt/);
+		expect(writes.map((file) => file.endsWith("a.txt") ? "a" : "b")).toEqual(["a", "b"]);
 	});
 
 	it("write strips copied hashline headers only for known snapshots", async () => {

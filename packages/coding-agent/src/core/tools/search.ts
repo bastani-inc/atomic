@@ -80,8 +80,7 @@ interface PagedSearchOutputGroup {
 	group: SearchOutputGroup;
 }
 
-const DEFAULT_LIMIT = 20;
-const INTERNAL_SKIP_LIMIT = 100_000;
+const DEFAULT_LIMIT = 20, INTERNAL_SKIP_LIMIT = 2000, MULTI_FILE_PER_FILE_MATCHES = 20, SINGLE_FILE_MATCHES = 200;
 
 function normalizeSkip(skip: number | null | undefined): number {
 	if (skip === undefined || skip === null) return 0;
@@ -165,7 +164,6 @@ function filterSearchOutputByLineRange(text: string, target: SearchTarget): stri
 function stripExtendedRegexWhitespace(pattern: string): string { let out = "", escaped = false, inClass = false, inComment = false; for (const ch of pattern) { if (inComment) { if (ch === "\n" || ch === "\r") inComment = false; continue; } if (escaped) { out += ch; escaped = false; continue; } if (ch === "\\") { out += ch; escaped = true; continue; } if (ch === "[") inClass = true; else if (ch === "]") inClass = false; if (!inClass && ch === "#") { inComment = true; continue; } if (!inClass && /\s/.test(ch)) continue; out += ch; } return out; }
 function normalizeInlineSearchPattern(pattern: string, ignoreCase: boolean): { pattern: string; flags: string } { const match = pattern.match(/^\(\?([imsUx-]+)\)([\s\S]*)$/), flags = new Set<string>(); if (ignoreCase) flags.add("i"); if (match) { const inline = match[1] ?? ""; for (const flag of inline) if (flag === "i" || flag === "m" || flag === "s") flags.add(flag); return { pattern: inline.includes("x") ? stripExtendedRegexWhitespace(match[2] ?? "") : match[2] ?? "", flags: [...flags].join("") }; } return { pattern, flags: [...flags].join("") }; }
 
-
 async function searchFileLineRanges(target: SearchTarget, cwd: string, pattern: string, ignoreCase: boolean, contextBefore = 1, contextAfter = 3): Promise<string | undefined> {
 	if (!target.lineRanges?.length || target.glob || target.archive || target.sqlite || target.internal) return undefined;
 	const absolutePath = resolveToCwd(target.path, cwd);
@@ -184,7 +182,8 @@ async function searchFileLineRanges(target: SearchTarget, cwd: string, pattern: 
 	} else {
 		const source = (await fsReadFile(absolutePath, "utf8")).split("\n");
 		const normalized = normalizeInlineSearchPattern(pattern, ignoreCase);
-		const regex = new RegExp(normalized.pattern, normalized.flags);
+		let regex: RegExp;
+		try { regex = new RegExp(normalized.pattern, normalized.flags); } catch { return undefined; }
 		const matchLines = new Set<number>();
 		source.forEach((line, index) => { regex.lastIndex = 0; if (regex.test(line)) matchLines.add(index + 1); });
 		const outputLines = new Set<number>();
@@ -316,7 +315,7 @@ export function createSearchToolDefinition(
 			const ignoreCase = params.i === true || params.case === false;
 			const contextBefore = options?.contextBefore ?? 1, contextAfter = options?.contextAfter ?? 3, searchContext = Math.max(contextBefore, contextAfter);
 			const isSingleFileSearch = targets.length === 1 && await fsStat(resolveToCwd(targets[0]!.path, cwd)).then((stat) => stat.isFile()).catch(() => false);
-			const limit = isSingleFileSearch ? 200 : DEFAULT_LIMIT;
+			const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
 			let skip = normalizeSkip(params.skip);
 			if (skip > 0 && isSingleFileSearch) skip = 0;
 			for (const target of targets) {
@@ -386,6 +385,7 @@ export function createSearchToolDefinition(
 						ignoreCase,
 						literal: false,
 						context: searchContext,
+						maxCountPerFile: isSingleFileSearch ? SINGLE_FILE_MATCHES : MULTI_FILE_PER_FILE_MATCHES,
 						limit: INTERNAL_SKIP_LIMIT,
 						gitignore: params.gitignore,
 					},

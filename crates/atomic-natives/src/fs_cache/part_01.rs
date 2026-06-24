@@ -135,12 +135,12 @@ pub struct ScanResult {
 }
 
 fn evict_oldest() {
-	if FS_CACHE.len() > *MAX_CACHE_ENTRIES
-		&& let Some(oldest_key) = FS_CACHE
+	while FS_CACHE.len() > *MAX_CACHE_ENTRIES {
+		let Some(oldest_key) = FS_CACHE
 			.iter()
 			.min_by_key(|entry| entry.value().created_at)
 			.map(|entry| entry.key().clone())
-	{
+		else { break; };
 		FS_CACHE.remove(&oldest_key);
 	}
 }
@@ -293,7 +293,7 @@ impl Drop for EntryVisitor<'_> {
 			return;
 		}
 		let entries = std::mem::take(&mut self.entries);
-		self.shared_entries.lock().expect("entry collection lock poisoned").push(entries);
+		self.shared_entries.lock().unwrap_or_else(|poison| poison.into_inner()).push(entries);
 	}
 }
 
@@ -302,7 +302,7 @@ impl ParallelVisitor for EntryVisitor<'_> {
 		if self.visited == 0 || self.visited >= 128 {
 			self.visited = 0;
 			if let Err(err) = self.ct.heartbeat() {
-				*self.error.lock().expect("error lock poisoned") = Some(err.to_string());
+				*self.error.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(err.to_string());
 				return WalkState::Quit;
 			}
 		}
@@ -370,13 +370,13 @@ fn collect_entries(
 	ct.heartbeat()?;
 	builder.build_parallel().visit(&mut visitor_builder);
 
-	let walk_error = error.lock().expect("error lock poisoned").take();
+	let walk_error = error.lock().unwrap_or_else(|poison| poison.into_inner()).take();
 	if let Some(error) = walk_error {
 		return Err(Error::from_reason(error));
 	}
 
 	let mut entries: Vec<GlobMatch> =
-		shared_entries.lock().expect("entry collection lock poisoned").drain(..).flatten().collect();
+		shared_entries.lock().unwrap_or_else(|poison| poison.into_inner()).drain(..).flatten().collect();
 	entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
 	Ok(entries)
 }

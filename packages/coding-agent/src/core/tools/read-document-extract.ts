@@ -21,16 +21,123 @@ function documentExtensionFromContentType(contentType: string): string | undefin
 	return undefined;
 }
 
+function isHtmlWhitespace(char: string | undefined): boolean { return char === " " || char === "\t" || char === "\n" || char === "\r" || char === "\f"; }
+
+function findElementStart(lowerHtml: string, tagName: string, fromIndex: number): number {
+	const needle = `<${tagName}`;
+	let index = fromIndex;
+	for (;;) {
+		const found = lowerHtml.indexOf(needle, index);
+		if (found < 0) return -1;
+		const next = lowerHtml[found + needle.length];
+		if (next === undefined || next === ">" || next === "/" || isHtmlWhitespace(next)) return found;
+		index = found + needle.length;
+	}
+}
+
+function findClosingTag(lowerHtml: string, tagName: string, fromIndex: number): number {
+	const needle = `</${tagName}`;
+	let index = fromIndex;
+	for (;;) {
+		const found = lowerHtml.indexOf(needle, index);
+		if (found < 0) return -1;
+		let cursor = found + needle.length;
+		while (isHtmlWhitespace(lowerHtml[cursor])) cursor++;
+		if (lowerHtml[cursor] === ">") return found;
+		index = found + needle.length;
+	}
+}
+
+function stripElementBlocks(html: string, tagName: string): string {
+	const lowerHtml = html.toLowerCase();
+	const chunks: string[] = [];
+	let index = 0;
+	for (;;) {
+		const start = findElementStart(lowerHtml, tagName, index);
+		if (start < 0) break;
+		chunks.push(html.slice(index, start));
+		const startEnd = html.indexOf(">", start);
+		if (startEnd < 0) { index = html.length; break; }
+		const closeStart = findClosingTag(lowerHtml, tagName, startEnd + 1);
+		if (closeStart < 0) { index = html.length; break; }
+		const closeEnd = html.indexOf(">", closeStart);
+		if (closeEnd < 0) { index = html.length; break; }
+		index = closeEnd + 1;
+	}
+	chunks.push(html.slice(index));
+	return chunks.join("");
+}
+
+function extractElementText(html: string, tagName: string): string | undefined {
+	const lowerHtml = html.toLowerCase();
+	const start = findElementStart(lowerHtml, tagName, 0);
+	if (start < 0) return undefined;
+	const startEnd = html.indexOf(">", start);
+	if (startEnd < 0) return undefined;
+	const closeStart = findClosingTag(lowerHtml, tagName, startEnd + 1);
+	return closeStart < 0 ? undefined : html.slice(startEnd + 1, closeStart);
+}
+
+function readTagName(tagContent: string): { closing: boolean; name: string } {
+	let index = 0;
+	while (isHtmlWhitespace(tagContent[index])) index++;
+	const closing = tagContent[index] === "/";
+	if (closing) index++;
+	while (isHtmlWhitespace(tagContent[index])) index++;
+	const start = index;
+	while (index < tagContent.length) {
+		const char = tagContent[index];
+		if (!char || !(char >= "a" && char <= "z") && !(char >= "A" && char <= "Z") && !(char >= "0" && char <= "9")) break;
+		index++;
+	}
+	return { closing, name: tagContent.slice(start, index).toLowerCase() };
+}
+
+function htmlMarkupToPlainText(html: string): string {
+	let output = "";
+	let index = 0;
+	while (index < html.length) {
+		const open = html.indexOf("<", index);
+		if (open < 0) { output += html.slice(index); break; }
+		output += html.slice(index, open);
+		const close = html.indexOf(">", open + 1);
+		if (close < 0) break;
+		const tag = readTagName(html.slice(open + 1, close));
+		if (tag.name === "br" || tag.closing && ["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li", "tr", "blockquote", "pre"].includes(tag.name)) output += "\n";
+		else if (!tag.closing && tag.name === "li") output += "- ";
+		index = close + 1;
+	}
+	return normalizeDecodedText(output);
+}
+
+function normalizeDecodedText(value: string): string {
+	return decodeEntities(value).split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
+}
+
 function htmlToReadableText(html: string): string {
-	let text = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "").replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "");
-	const title = text.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim();
-	text = text.replace(/<\/(h[1-6]|p|div|li|tr|blockquote|pre)>/gi, "\n").replace(/<br\s*\/?>/gi, "\n").replace(/<li\b[^>]*>/gi, "- ").replace(/<[^>]+>/g, "");
-	text = decodeEntities(text).split("\n").map((line) => line.trim()).filter(Boolean).join("\n");
-	return title && !text.startsWith(title) ? `# ${title}\n\n${text}` : text;
+	const stripped = stripElementBlocks(stripElementBlocks(html, "script"), "style");
+	const title = extractElementText(stripped, "title");
+	const titleText = title ? htmlMarkupToPlainText(title).split("\n").join(" ").trim() : undefined;
+	const text = htmlMarkupToPlainText(stripped);
+	return titleText && !text.startsWith(titleText) ? `# ${titleText}\n\n${text}` : text;
 }
 
 function decodeEntities(value: string): string {
-	return value.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+	const entities: Record<string, string> = { nbsp: " ", amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
+	let output = "";
+	let index = 0;
+	while (index < value.length) {
+		const ampersand = value.indexOf("&", index);
+		if (ampersand < 0) { output += value.slice(index); break; }
+		output += value.slice(index, ampersand);
+		const semicolon = value.indexOf(";", ampersand + 1);
+		if (semicolon < 0 || semicolon - ampersand > 12) { output += "&"; index = ampersand + 1; continue; }
+		const entity = value.slice(ampersand + 1, semicolon).toLowerCase();
+		const decoded = entities[entity];
+		output += decoded ?? value.slice(ampersand, semicolon + 1);
+		index = semicolon + 1;
+	}
+	return output;
 }
 
 function notebookMarkdown(buffer: Buffer, source: string): string {

@@ -247,7 +247,7 @@ impl Drop for SortedMatchVisitor<'_> {
 		self
 			.shared
 			.lock()
-			.expect("glob match collection lock poisoned")
+			.unwrap_or_else(|poison| poison.into_inner())
 			.extend(drained.into_iter().map(|ranked| ranked.entry));
 	}
 }
@@ -257,7 +257,7 @@ impl ParallelVisitor for SortedMatchVisitor<'_> {
 		if self.visited == 0 || self.visited >= 128 {
 			self.visited = 0;
 			if let Err(err) = self.ct.heartbeat() {
-				*self.error.lock().expect("error lock poisoned") = Some(err.to_string());
+				*self.error.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(err.to_string());
 				return WalkState::Quit;
 			}
 		}
@@ -354,13 +354,13 @@ fn collect_sorted_matches_uncached(
 	ct.heartbeat()?;
 	builder.build_parallel().visit(&mut visitor_builder);
 
-	let walk_error = error.lock().expect("error lock poisoned").take();
+	let walk_error = error.lock().unwrap_or_else(|poison| poison.into_inner()).take();
 	if let Some(error) = walk_error {
 		return Err(Error::from_reason(error));
 	}
 
 	let mut matches =
-		std::mem::take(&mut *shared.lock().expect("glob match collection lock poisoned"));
+		std::mem::take(&mut *shared.lock().unwrap_or_else(|poison| poison.into_inner()));
 	matches.sort_by(compare_matches_by_rank);
 	matches.truncate(config.max_results);
 	Ok(matches)

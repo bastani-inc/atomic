@@ -1,13 +1,13 @@
 /**
  * URL branch of the `read` tool: routes plain URL reads through the
- * cache/artifact/llms.txt fetch pipeline ({@link executeReadUrl}) and keeps an
- * inline fetch + line-range path for explicit URL line selectors.
+ * cache/artifact/llms.txt fetch pipeline ({@link executeReadUrl}); explicit
+ * URL line selectors reuse the same safe rendering path before slicing lines.
  */
 import { resolve as resolvePath } from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ReadToolDetails } from "./read.ts";
 import { applyReadLineSelection, decodeReadableUrl } from "./read-document-extract.ts";
-import { executeReadUrl } from "./fetch-url.ts";
+import { executeReadUrl, loadPage } from "./fetch-url.ts";
 
 export interface ReadUrlBranchArgs {
 	effectivePath: string;
@@ -44,8 +44,8 @@ export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBra
 			},
 		};
 	}
-	const response = await fetch(/^www\./i.test(effectivePath) ? `https://${effectivePath}` : effectivePath, { signal });
-	const textContent = rawOutput ? await response.text() : await decodeReadableUrl(response, effectivePath);
+	const page = await loadPage(effectivePath, 10_000, signal);
+	const textContent = rawOutput ? page.content : await decodeReadableUrl(new Response(page.content, { headers: { "content-type": page.contentType } }), page.finalUrl || effectivePath);
 	const selection = applyReadLineSelection(textContent.split("\n"), effectiveRanges, effectiveOffset, effectiveLimit, rawOutput), selectedText = selection.lines.join("\n");
 	if ((effectiveRanges || effectiveOffset) && selection.lines.length === 0) {
 		const requested = effectiveRanges?.[0]?.start ?? effectiveOffset ?? 1;
@@ -54,5 +54,5 @@ export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBra
 	if (selectedText.length > maxChars || Buffer.byteLength(selectedText, "utf8") > maxBytes) {
 		return oversized({ blocked: true, path: effectivePath, chars: selectedText.length, maxChars, startLine: selection.firstLine, totalFileLines: textContent.split("\n").length, firstLineBytes: Buffer.byteLength(selection.lines[0] ?? "", "utf8"), byteGuidance: false });
 	}
-	return { content: [{ type: "text", text: rawOutput ? selectedText : `URL: ${effectivePath}\nStatus: ${response.status}\nContent-Type: ${response.headers.get("content-type") ?? "unknown"}\n\n${selectedText}` }], details: sourceMeta(effectivePath) };
+	return { content: [{ type: "text", text: rawOutput ? selectedText : `URL: ${effectivePath}\nStatus: ${page.status}\nContent-Type: ${page.contentType || "unknown"}\n\n${selectedText}` }], details: sourceMeta(effectivePath) };
 }

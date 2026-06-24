@@ -274,11 +274,9 @@ fn run_pty_sync(
 		exit_code = Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX));
 	}
 	drop(writer);
-	finalize_reader(&reader_rx, &on_chunk, &mut reader_done);
 	drop(master);
-	if reader_done {
-		let _ = reader_thread.join();
-	}
+	finalize_reader(&reader_rx, &on_chunk, &mut reader_done);
+	let _ = reader_thread.join();
 	Ok(PtyRunResult { exit_code, cancelled, timed_out })
 }
 

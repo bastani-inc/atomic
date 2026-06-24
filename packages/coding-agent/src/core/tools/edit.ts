@@ -1,6 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Spacer, Text } from "@earendil-works/pi-tui";
-import { Filesystem, Patch, Patcher, type PreparedSection, type WriteResult } from "./hashline-engine/index.ts";
+import { Filesystem, Patch, Patcher, type PatchSectionResult, type PreparedSection, type WriteResult } from "./hashline-engine/index.ts";
 import { constants } from "fs";
 import { access as fsAccess, readFile as fsReadFile, writeFile as fsWriteFile } from "fs/promises";
 import { type Static, Type } from "typebox";
@@ -81,8 +81,22 @@ class EditFilesystem extends Filesystem {
 	}
 }
 
+function isFourDigitHexTag(value: string): boolean {
+	return value.length === 4 && [...value].every((char) => (char >= "0" && char <= "9") || (char >= "a" && char <= "f") || (char >= "A" && char <= "F"));
+}
+
 function extractFirstHeaderPath(input: string | undefined): string | undefined {
-	return input?.match(/(?:^|\n)\s*\[([^\]#]+)#[0-9A-Fa-f]{4}\]/)?.[1];
+	if (!input) return undefined;
+	for (const line of input.split("\n")) {
+		const trimmed = line.trimStart();
+		if (!trimmed.startsWith("[")) continue;
+		const hashIndex = trimmed.indexOf("#", 1);
+		const closeIndex = hashIndex >= 0 ? trimmed.indexOf("]", hashIndex + 1) : -1;
+		if (hashIndex <= 1 || closeIndex !== hashIndex + 5) continue;
+		const tag = trimmed.slice(hashIndex + 1, closeIndex);
+		if (isFourDigitHexTag(tag)) return trimmed.slice(1, hashIndex);
+	}
+	return undefined;
 }
 
 function formatEditCall(args: unknown, theme: Theme, cwd: string): string {
@@ -116,14 +130,23 @@ function formatNoopMessage(path: string, count: number): string {
 	return `Edits to ${path} parsed and applied cleanly, but produced no change: your body row(s) are byte-identical to the file at the targeted lines. The bug is somewhere else — re-read the file before issuing another edit. Do NOT widen the payload or add lines; verify the anchor first.${count > 1 ? `\nNo-op count for this identical payload: ${count}.` : ""}`;
 }
 
-function blockMessages(item: PreparedSection): string[] {
-	const warnings = [...item.parseWarnings, ...(item.applyResult.warnings ?? [])];
-	const resolutions = item.applyResult.blockResolutions?.map((resolution) => {
+function blockMessages(item: PreparedSection | PatchSectionResult): string[] {
+	const warnings = "parseWarnings" in item ? [...item.parseWarnings, ...(item.applyResult.warnings ?? [])] : item.warnings;
+	const resolutions = ("applyResult" in item ? item.applyResult.blockResolutions : item.blockResolutions)?.map((resolution) => {
 		const verb = resolution.op === "insert_after" ? "insert after block" : `${resolution.op} block`;
 		const lands = resolution.op === "insert_after" ? `; body lands after line ${resolution.end}` : "";
 		return `${verb} ${resolution.anchorLine} → resolved lines ${resolution.start}-${resolution.end} (${resolution.end - resolution.start + 1} lines)${lands}`;
 	}) ?? [];
 	return [...warnings, ...resolutions];
+}
+
+function assertUniquePreparedPaths(prepared: readonly PreparedSection[]): void {
+	const seen = new Map<string, string>();
+	for (const entry of prepared) {
+		const previous = seen.get(entry.canonicalPath);
+		if (previous) throw new Error(`Multiple hashline sections resolve to the same file (${previous} and ${entry.section.path}). Merge their ops under one header before applying.`);
+		seen.set(entry.canonicalPath, entry.section.path);
+	}
 }
 
 export function createEditToolDefinition(cwd: string, options?: EditToolOptions): ToolDefinition<typeof editSchema, EditToolDetails | undefined> {
@@ -150,6 +173,7 @@ export function createEditToolDefinition(cwd: string, options?: EditToolOptions)
 			const patch = Patch.parse(input.input, { cwd });
 			const prepared: PreparedSection[] = [];
 			for (const section of patch.sections) { throwIfAborted(signal); prepared.push(await patcher.prepare(section)); }
+			assertUniquePreparedPaths(prepared);
 			const noops = prepared.filter((item) => item.isNoop);
 			if (noops.length > 0) {
 				if (noops.length !== prepared.length) throw new Error(`Hashline edit for ${noops[0]!.section.path} did not change the file.`);
@@ -161,19 +185,19 @@ export function createEditToolDefinition(cwd: string, options?: EditToolOptions)
 			}
 			return withFileMutationQueues(prepared.map((item) => item.canonicalPath), async () => {
 				for (const item of prepared) if (normalizeToLF(stripBom(await fs.readText(item.section.path)).text) !== item.normalized) throw new Error(`Stale hashline tag for ${item.section.path}: file content changed before write. Re-read before editing.`);
+				const applyResult = await patcher.apply(patch);
 				const outputs: string[] = [];
 				let combinedDiff = "", combinedPatch = "";
 				let firstChangedLine: number | undefined;
-				for (const item of prepared) {
+				for (const result of applyResult.sections) {
 					throwIfAborted(signal);
-					const result = await patcher.commit(item);
 					invalidateNativeSearchCache(result.canonicalPath);
 					const snapshot = recordHashlineSnapshot(result.canonicalPath, cwd, result.after, hashlineStore);
 					const diffResult = generateDiffString(result.before, result.after);
 					combinedDiff += `${combinedDiff ? "\n" : ""}${diffResult.diff}`;
 					combinedPatch += `${combinedPatch ? "\n" : ""}${generateUnifiedPatch(result.path, result.before, result.after)}`;
 					firstChangedLine ??= diffResult.firstChangedLine;
-					outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(item)));
+					outputs.push(formatCompactHashlineEditResult(snapshot, diffResult, blockMessages(result)));
 				}
 				return { content: [{ type: "text", text: outputs.join("\n\n") }], details: { diff: combinedDiff, patch: combinedPatch, firstChangedLine } };
 			});

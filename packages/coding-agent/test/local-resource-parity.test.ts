@@ -30,6 +30,12 @@ describe("local resource parity", () => {
 		expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("updated\n");
 	});
 
+	it("rejects local resource traversal outside the workspace", async () => {
+		const dir = await tempDir();
+		await expect(createReadToolDefinition(dir).execute("read-local-traversal", { path: "local://../secret.txt" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+		await expect(createWriteToolDefinition(dir).execute("write-local-traversal", { path: "local://../secret.txt", content: "nope" }, undefined, undefined, {} as never)).rejects.toThrow("escapes the workspace");
+	});
+
 	it("reports write executable and resource metadata", async () => {
 		const dir = await tempDir();
 		const script = await createWriteToolDefinition(dir).execute("write-script", { path: "run.sh", content: "#!/bin/sh\necho ok\n" }, undefined, undefined, {} as never);

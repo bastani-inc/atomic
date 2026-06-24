@@ -14,9 +14,10 @@ import { getShellConfig, getShellEnv, killProcessTree, trackDetachedChildPid, un
 import type { BashResult } from "../bash-executor.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { createAsyncOutputAppender } from "./bash-async-output.ts";
-import { createManagedBashJob, getManagedBashJob } from "./bash-async-jobs.ts";
+import { abortManagedBashJob, createManagedBashJob, getManagedBashJob } from "./bash-async-jobs.ts";
+import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
 import { executeNativePty } from "./bash-pty-native.ts";
-import { checkBashInterception, DEFAULT_BASH_INTERCEPTOR_RULES, type BashInterceptorRule } from "./bash-interceptor.ts";
+import { checkBashInterceptionCandidates, DEFAULT_BASH_INTERCEPTOR_RULES, type BashInterceptorRule } from "./bash-interceptor.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
@@ -43,7 +44,10 @@ export interface BashOperations {
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env, pty }) => {
-			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") return executeNativePty(command, cwd, { onData, signal, timeout, env, shellPath: options?.shellPath });
+			if (pty && process.env.PI_NO_PTY !== "1" && process.env.ATOMIC_NO_PTY !== "1") {
+				try { return await executeNativePty(command, cwd, { onData, signal, timeout, env, shellPath: options?.shellPath }); }
+				catch (error) { const message = String(error instanceof Error ? error.message : error); if (!message.includes("Native PTY") && !message.includes("PtySession")) throw error; }
+			}
 			const shellConfig = getShellConfig(options?.shellPath);
 			try { const cwdStat = await fsStat(cwd); if (!cwdStat.isDirectory()) throw new Error(`Working directory is not a directory: ${cwd}`); await fsAccess(cwd, constants.F_OK); } catch (error) {
 				if (error instanceof Error && error.message.startsWith("Working directory is not a directory")) throw error;
@@ -133,13 +137,6 @@ const MAX_TIMEOUT_SECONDS = 3600;
 function normalizeTimeoutSeconds(timeout: number | undefined): number {
 	if (timeout === undefined || !Number.isFinite(timeout)) return DEFAULT_TIMEOUT_SECONDS;
 	return Math.max(MIN_TIMEOUT_SECONDS, Math.min(MAX_TIMEOUT_SECONDS, Math.floor(timeout)));
-}
-function stripLeadingCdCommand(command: string, cwd: string): BashSpawnContext | undefined {
-	const match = command.match(/^\s*cd\s+((?:'[^']*')|(?:"[^"]*")|(?:[^&;]+))\s*&&\s*([\s\S]+)$/);
-	if (!match) return undefined;
-	const rawPath = (match[1] ?? "").trim();
-	const unquoted = rawPath.replace(/^(['"])(.*)\1$/, "$2");
-	return { command: match[2] ?? "", cwd: resolvePath(cwd, unquoted), env: { ...getShellEnv() } };
 }
 function bashResultToToolResult(result: BashResult): { content: Array<{ type: "text"; text: string }>; details: BashToolDetails | undefined } {
 	const details: BashToolDetails | undefined = result.truncated ? { fullOutputPath: result.fullOutputPath } : undefined;
@@ -290,24 +287,25 @@ export function createBashToolDefinition(
 				const text = [`Job ${job.jobId}: ${job.status}`, `Command: ${job.command}`, job.error ? `Error: ${job.error}` : undefined, job.output].filter(Boolean).join("\n");
 				return { content: [{ type: "text", text }], details: { async: { jobId: job.jobId, type: "bash", state: job.status, command: job.command, status: job.status }, exitCode: job.exitCode, timeoutSeconds: job.timeoutSeconds, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}), wallTimeMs: (job.endedAt ?? Date.now()) - job.startedAt } };
 			}
+			const jobCancelMatch = command.match(/^__atomic_bash_job_cancel\s+(\S+)$/);
+			if (jobCancelMatch) {
+				const job = abortManagedBashJob(jobCancelMatch[1]!);
+				if (!job) throw new Error(`Unknown bash async job: ${jobCancelMatch[1]}`);
+				return { content: [{ type: "text", text: `Cancellation requested for bash job ${job.jobId}` }], details: { async: { jobId: job.jobId, type: "bash", state: job.status, command: job.command, status: job.status } } };
+			}
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
 			const resourceCtx = _ctx as InternalResourceContext | undefined;
 			const hasExplicitCwd = typeof bashCommand.cwd === "string";
 			const rawStrippedContext = hasExplicitCwd ? undefined : stripLeadingCdCommand(command, cwd);
 			const interceptorEnabled = isInterceptorEnabled();
-			if (interceptorEnabled) {
-				const commandsToCheck = rawStrippedContext ? [command, rawStrippedContext.command] : [command];
-				for (const commandToCheck of commandsToCheck) {
-					const blocked = checkBashInterception(commandToCheck, availableTools, interceptorRules);
-					if (blocked) throw new Error(blocked);
-				}
-			}
+			if (interceptorEnabled) checkBashInterceptionCandidates([command, rawStrippedContext?.command], availableTools, interceptorRules);
 			const cwdInput = hasExplicitCwd ? await expandShellInternalUrls(bashCommand.cwd!, cwd, resourceCtx) : cwd, requestedCwd = resolvePath(cwd, cwdInput);
 			const expandedCommand = await expandShellInternalUrls(command, cwd, resourceCtx, true);
 			const strippedExpandedContext = hasExplicitCwd ? undefined : stripLeadingCdCommand(expandedCommand, requestedCwd);
 			const resolvedCommand = commandPrefix ? `${commandPrefix}\n${expandedCommand}` : expandedCommand;
 			const spawnContext = resolveSpawnContext(resolvedCommand, requestedCwd, spawnHook);
 			const strippedCdContext = strippedExpandedContext ? resolveSpawnContext(commandPrefix ? `${commandPrefix}\n${strippedExpandedContext.command}` : strippedExpandedContext.command, strippedExpandedContext.cwd, spawnHook) : undefined;
+			if (interceptorEnabled) checkBashInterceptionCandidates([expandedCommand, strippedExpandedContext?.command, resolvedCommand, strippedCdContext?.command], availableTools, interceptorRules);
 			let expandedEnv: NodeJS.ProcessEnv | undefined;
 			if (bashCommand.env) {
 				expandedEnv = {};
@@ -328,20 +326,23 @@ export function createBashToolDefinition(
 				if (!asyncEnabled) throw new Error("bash async execution is disabled");
 				const job = createManagedBashJob(executionContext.command, executionContext.cwd, timeout, bashCommand.timeout !== undefined && bashCommand.timeout !== timeout ? bashCommand.timeout : undefined);
 				const appendAsyncOutput = createAsyncOutputAppender(job);
+				const onParentAbort = () => job.abortController?.abort();
+				if (signal?.aborted) onParentAbort(); else signal?.addEventListener("abort", onParentAbort, { once: true });
 				void ops.exec(executionContext.command, executionContext.cwd, {
 					onData: appendAsyncOutput,
 					timeout,
 					env: executionContext.env,
 					pty: bashCommand.pty,
+					signal: job.abortController?.signal,
 				}).then((result) => {
 					job.exitCode = result.exitCode;
 					job.status = result.exitCode && result.exitCode !== 0 ? "failed" : "completed";
 					job.endedAt = Date.now();
 				}).catch((error: unknown) => {
 					job.status = "failed"; job.endedAt = Date.now();
-					job.error = error instanceof Error ? error.message : String(error);
-				});
-				return { content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${executionContext.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" })` }], details: { async: { jobId: job.jobId, type: "bash", state: "running", command: executionContext.command, status: "running" }, timeoutSeconds: timeout, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}) } };
+					job.error = job.abortController?.signal.aborted ? "aborted" : error instanceof Error ? error.message : String(error);
+				}).finally(() => signal?.removeEventListener("abort", onParentAbort));
+				return { content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${executionContext.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })` }], details: { async: { jobId: job.jobId, type: "bash", state: "running", command: executionContext.command, status: "running" }, timeoutSeconds: timeout, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}) } };
 			}
 			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });
 			let acceptingOutput = true;

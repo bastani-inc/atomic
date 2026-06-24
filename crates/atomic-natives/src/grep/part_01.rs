@@ -39,6 +39,7 @@ use crate::{fs_cache, glob_util, task};
 
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const SMALL_FILE_READ_BYTES: u64 = 128 * 1024;
+const DEFAULT_NATIVE_GREP_MAX_COUNT: u64 = 100_000;
 
 /// Output mode for [`search`] and [`grep`] (string values match JS callers).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

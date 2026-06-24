@@ -13,8 +13,9 @@ function listen(server: Server): Promise<number> { return new Promise((resolve) 
 
 describe("resource URL read parity", () => {
 	let testDir: string;
-	beforeEach(() => { testDir = join(tmpdir(), `atomic-resource-url-${Date.now()}-${Math.random().toString(36).slice(2)}`); mkdirSync(testDir, { recursive: true }); });
-	afterEach(() => rmSync(testDir, { recursive: true, force: true }));
+	let previousPrivateUrlAllowance: string | undefined;
+	beforeEach(() => { previousPrivateUrlAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS; process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = "1"; testDir = join(tmpdir(), `atomic-resource-url-${Date.now()}-${Math.random().toString(36).slice(2)}`); mkdirSync(testDir, { recursive: true }); });
+	afterEach(() => { if (previousPrivateUrlAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS; else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previousPrivateUrlAllowance; rmSync(testDir, { recursive: true, force: true }); });
 
 	it("applies line selectors and reader extraction to URL reads", async () => {
 		const server = createServer((req, res) => {

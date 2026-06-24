@@ -79,6 +79,28 @@ describe("bash interceptor parity", () => {
 		expect(execCwd).toBe(join(dir, "sub"));
 	});
 
+	it("executes semicolon separated leading cd with the stripped cwd", async () => {
+		const dir = await createTempDir();
+		let execCommand = "";
+		let execCwd = "";
+		const bash = createBashToolDefinition(dir, {
+			interceptor: (context) => context.command === "pwd" ? { operations: { exec: async (command, cwd, { onData }) => { execCommand = command; execCwd = cwd; onData(Buffer.from(cwd)); return { exitCode: 0 }; } } } : undefined,
+		});
+		await bash.execute("bash-cd-semicolon", { command: "cd sub; pwd" }, undefined, undefined, {} as ExtensionContext);
+		expect(execCommand).toBe("pwd");
+		expect(execCwd).toBe(join(dir, "sub"));
+	});
+
+	it("does not rewrite leading cd paths that require shell expansion", async () => {
+		const dir = await createTempDir();
+		let execCommand = "";
+		let execCwd = "";
+		const bash = createBashToolDefinition(dir, { operations: { exec: async (command, cwd, { onData }) => { execCommand = command; execCwd = cwd; onData(Buffer.from("ok")); return { exitCode: 0 }; } } });
+		await bash.execute("bash-shell-expanded-cd", { command: "cd \"$PROJECT\" && pwd" }, undefined, undefined, {} as ExtensionContext);
+		expect(execCommand).toBe("cd \"$PROJECT\" && pwd");
+		expect(execCwd).toBe(dir);
+	});
+
 
 	it("does not rewrite leading cd when cwd is explicit", async () => {
 		const dir = await createTempDir();
@@ -95,6 +117,20 @@ describe("bash interceptor parity", () => {
 		const bash = createBashToolDefinition(dir, { interceptorEnabled: true, interceptorRules: [{ pattern: "artifact://secret", tool: "read", message: "raw internal URL blocked" }], operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } } });
 		const ctx = { resolveInternalUrl: (url: string) => url === "artifact://secret" ? join(dir, "secret.txt") : undefined };
 		await expect(bash.execute("bash-raw-intercept", { command: "echo artifact://secret" }, undefined, undefined, ctx as ExtensionContext)).rejects.toThrow(/raw internal URL blocked/);
+	});
+
+	it("checks built-in interceptor rules after internal URL expansion", async () => {
+		const dir = await createTempDir();
+		const secret = join(dir, "secret.txt");
+		const bash = createBashToolDefinition(dir, { interceptorEnabled: true, interceptorRules: [{ pattern: "secret\\.txt", tool: "read", message: "expanded internal URL blocked" }], operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } } });
+		const ctx = { resolveInternalUrl: (url: string) => url === "artifact://secret" ? secret : undefined };
+		await expect(bash.execute("bash-expanded-intercept", { command: "echo artifact://secret" }, undefined, undefined, ctx as ExtensionContext)).rejects.toThrow(/expanded internal URL blocked/);
+	});
+
+	it("checks built-in interceptor rules despite command prefixes", async () => {
+		const dir = await createTempDir();
+		const bash = createBashToolDefinition(dir, { commandPrefix: "echo setup", interceptorEnabled: true, operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } } });
+		await expect(bash.execute("bash-prefix-intercept", { command: "cat file.txt" }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Use the read tool/);
 	});
 	it("expands internal URLs in command cwd and env before execution", async () => {
 		const dir = await createTempDir();

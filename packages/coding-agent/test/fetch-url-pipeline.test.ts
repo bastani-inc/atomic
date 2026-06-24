@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { getReadUrlCacheKey, isReadableUrlPath, parseReadUrlTarget, repairCollapsedScheme } from "../src/core/tools/fetch-url.ts";
+import { getReadUrlCacheKey, isReadableUrlPath, loadPage, parseReadUrlTarget, repairCollapsedScheme } from "../src/core/tools/fetch-url.ts";
 
 // Network rendering (HTML→markdown, caching, llms.txt discovery, artifact
 // persistence) is exercised through the read-tool integration path; these
@@ -31,6 +31,39 @@ test("parses URL targets with raw and line-range selectors", () => {
 	expect(parseReadUrlTarget("https://example.com:8080/")?.url).toBe("https://example.com:8080/");
 	// Bare www is recognized; scheme normalization happens at fetch time.
 	expect(parseReadUrlTarget("www.example.com")?.url).toBe("www.example.com");
+});
+
+test("rejects invalid URL line selectors", () => {
+	expect(() => parseReadUrlTarget("https://example.com/doc:0")).toThrow("Invalid URL line selector");
+	expect(() => parseReadUrlTarget("https://example.com/doc:3+0")).toThrow("Invalid URL line selector");
+});
+
+test("blocks private URL reads by default", async () => {
+	const previous = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	try {
+		await expect(loadPage("http://127.0.0.1:1/", 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
+		await expect(loadPage("http://localhost:1/", 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
+	} finally {
+		if (previous === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previous;
+	}
+});
+
+test("revalidates redirect targets before fetching them", async () => {
+	const previousAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	const previousFetch = globalThis.fetch;
+	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+	let calls = 0;
+	globalThis.fetch = (async () => { calls++; return new Response("", { status: 302, headers: { Location: "http://127.0.0.1/secret" } }); }) as typeof fetch;
+	try {
+		await expect(loadPage("http://93.184.216.34/", 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
+		expect(calls).toBe(1);
+	} finally {
+		globalThis.fetch = previousFetch;
+		if (previousAllowance === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
+		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previousAllowance;
+	}
 });
 
 test("cache keys are scoped and split raw vs rendered", () => {

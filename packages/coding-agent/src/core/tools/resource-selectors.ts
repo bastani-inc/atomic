@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { deflateRawSync, gunzipSync, gzipSync, inflateRawSync } from "node:zlib";
 import { loadNativeSearchBinding } from "./search-native.ts";
 
@@ -55,12 +55,13 @@ export function readZipEntriesFromBuffer(buf: Buffer, label: string): Map<string
 	let ptr = buf.readUInt32LE(eocd + 16); const total = buf.readUInt16LE(eocd + 10);
 	for (let n = 0; n < total; n++) {
 		if (buf.readUInt32LE(ptr) !== 0x02014b50) throw new Error(`Invalid zip central directory: ${label}`);
-		const method = buf.readUInt16LE(ptr + 10), compressedSize = buf.readUInt32LE(ptr + 20), nameLen = buf.readUInt16LE(ptr + 28), extraLen = buf.readUInt16LE(ptr + 30), commentLen = buf.readUInt16LE(ptr + 32), localOffset = buf.readUInt32LE(ptr + 42);
+		const method = buf.readUInt16LE(ptr + 10), compressedSize = buf.readUInt32LE(ptr + 20), size = buf.readUInt32LE(ptr + 24), nameLen = buf.readUInt16LE(ptr + 28), extraLen = buf.readUInt16LE(ptr + 30), commentLen = buf.readUInt16LE(ptr + 32), localOffset = buf.readUInt32LE(ptr + 42);
 		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen;
 		if (name.endsWith("/")) continue;
+		if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${name}`);
 		const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28);
 		const start = localOffset + 30 + localNameLen + localExtraLen; const data = buf.subarray(start, start + compressedSize);
-		entries.set(name, method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })());
+		entries.set(name, method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES }) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })());
 	}
 	return entries;
 }
@@ -81,7 +82,8 @@ function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
 function parseTar(path: string): Map<string, Buffer> {
 	const raw = readFileSync(path);
 	if (raw.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
-	const buf = isGzipTar(path) ? gunzipSync(raw) : raw;
+	const buf = isGzipTar(path) ? gunzipSync(raw, { maxOutputLength: MAX_TAR_ARCHIVE_BYTES }) : raw;
+	if (buf.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
 	const entries = new Map<string, Buffer>();
 	for (let offset = 0; offset + 512 <= buf.length;) {
 		const header = buf.subarray(offset, offset + 512);
@@ -92,7 +94,10 @@ function parseTar(path: string): Map<string, Buffer> {
 		const size = Number.parseInt(header.subarray(124, 136).toString().replace(/\0.*$/, "").trim() || "0", 8);
 		const type = String.fromCharCode(header[156] ?? 48);
 		const dataStart = offset + 512;
-		if (type !== "5" && fullName) entries.set(fullName, Buffer.from(buf.subarray(dataStart, dataStart + size)));
+		if (type !== "5" && fullName) {
+			if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${fullName}`);
+			entries.set(fullName, Buffer.from(buf.subarray(dataStart, dataStart + size)));
+		}
 		offset = dataStart + Math.ceil(size / 512) * 512;
 	}
 	return entries;
@@ -123,7 +128,7 @@ function readZipSelector(path: string, memberPath: string): string {
 		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen; if (name.endsWith("/")) continue; names.push(name); if (memberPath && name !== memberPath) continue;
 		if (!memberPath) continue; if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${memberPath}`);
 		const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28), start = localOffset + 30 + localNameLen + localExtraLen, data = buf.subarray(start, start + compressedSize);
-		return (method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })()).toString("utf8");
+		return (method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data, { maxOutputLength: MAX_ARCHIVE_MEMBER_BYTES }) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })()).toString("utf8");
 	}
 	const listing = listArchiveDirectory(names, memberPath);
 	if (listing) return listing;
@@ -216,9 +221,16 @@ async function resolveViaRouter(value: string, cwd: string, context?: InternalRe
 	const resolved = await context?.resolveInternalUrl?.(value); if (resolved) return resolved;
 	return resolveInternalSelector(value, cwd);
 }
+function resolveContainedLocalPath(cwd: string, pathValue: string): string {
+	const resolved = resolve(cwd, pathValue);
+	const rel = relative(cwd, resolved);
+	if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return resolved;
+	throw new Error(`local:// resource escapes the workspace: ${pathValue}`);
+}
+
 function fallbackInternalPath(value: string, cwd: string): string | undefined {
 	const skill = value.match(/^skill:\/\/([^/]+)\/?(.*)$/); if (skill) { const rest = skill[2] || "SKILL.md"; return [resolve(cwd, ".agents", "skills", skill[1] ?? "", rest), resolve(cwd, "packages", "subagents", "skills", skill[1] ?? "", rest), resolve(cwd, "packages", "workflows", "skills", skill[1] ?? "", rest)].find((candidate) => existsSync(candidate)); }
-	const local = value.match(/^local:\/\/(.+)$/); if (local) return resolve(cwd, local[1] ?? "");
+	const local = value.match(/^local:\/\/(.+)$/); if (local) return resolveContainedLocalPath(cwd, local[1] ?? "");
 	return undefined;
 }
 export function resolveInternalSelector(value: string, cwd: string): string | undefined { return fallbackInternalPath(value, cwd); }
@@ -257,12 +269,18 @@ function validateSqliteWhere(where: string | undefined): string | undefined {
 }
 function rowsToJsonLines(rows: Record<string, SqliteValue>[]): string { return rows.map((row) => JSON.stringify(row)).join("\n"); }
 
+function validateRawSqliteQuery(query: string): string {
+	const trimmed = query.trim();
+	if (!/^select\b/i.test(trimmed) || /[;]|--|\/\*|\*\//.test(trimmed) || /\b(attach|detach|pragma|insert|update|delete|drop|alter|create|replace|vacuum|reindex|load_extension)\b/i.test(trimmed) || /\bsqlite_/i.test(trimmed)) throw new Error("Invalid raw SQLite query");
+	return trimmed;
+}
+
 function sqlitePrimaryKey(db: SqliteDatabase, table: string): string { return (db.query(`pragma table_info(${quoteSqliteIdent(table)})`).all() as Array<{ name?: string; pk?: number }>).find((row) => row.pk === 1)?.name ?? "rowid"; }
 export function readSqliteSelector(selector: SqliteSelector): string {
 	const Database = sqliteDatabase();
 	const db = new Database(selector.databasePath, { readonly: true });
 	try {
-		if (selector.query) return rowsToJsonLines(db.query(selector.query).all().slice(0, 1000));
+		if (selector.query) return rowsToJsonLines(db.query(validateRawSqliteQuery(selector.query)).all().slice(0, 1000));
 		if (!selector.table) {
 			const tables = db.query("select name from sqlite_master where type='table' and name not like 'sqlite_%' order by name").all().slice(0, 500);
 			return tables.map((row) => {

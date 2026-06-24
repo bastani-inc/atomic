@@ -104,7 +104,7 @@ impl Drop for StreamingGrepVisitor<'_> {
 			return;
 		}
 		let results = std::mem::take(&mut self.results);
-		self.shared_results.lock().expect("grep result collection lock poisoned").push(results);
+		self.shared_results.lock().unwrap_or_else(|poison| poison.into_inner()).push(results);
 	}
 }
 
@@ -113,7 +113,7 @@ impl ParallelVisitor for StreamingGrepVisitor<'_> {
 		if self.visited == 0 || self.visited >= 128 {
 			self.visited = 0;
 			if let Err(err) = self.ct.heartbeat() {
-				*self.error.lock().expect("error lock poisoned") = Some(err.to_string());
+				*self.error.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(err.to_string());
 				return WalkState::Quit;
 			}
 		}
@@ -247,14 +247,14 @@ fn run_streaming_grep(
 	ct.heartbeat()?;
 	builder.build_parallel().visit(&mut visitor_builder);
 
-	let walk_error = error.lock().expect("error lock poisoned").take();
+	let walk_error = error.lock().unwrap_or_else(|poison| poison.into_inner()).take();
 	if let Some(error) = walk_error {
 		return Err(Error::from_reason(error));
 	}
 
 	let mut results: Vec<FileSearchResult> = shared_results
 		.lock()
-		.expect("grep result collection lock poisoned")
+		.unwrap_or_else(|poison| poison.into_inner())
 		.drain(..)
 		.flatten()
 		.collect();
