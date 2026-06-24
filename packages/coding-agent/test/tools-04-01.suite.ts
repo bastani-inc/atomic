@@ -107,6 +107,34 @@ describe("Coding Agent Tools", () => {
 				expect(fullOutput).toContain("3998\n3999\n4000");
 			}
 		});
+		it("should preserve full output for truncated async jobs", async () => {
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					for (let i = 1; i <= 12000; i++) onData(Buffer.from(`${i}\n`, "utf-8"));
+					return { exitCode: 0 };
+				},
+			};
+			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
+			const started = await bash.execute("async-large-start", { command: "chatty", async: true });
+			const jobId = started.details?.async?.jobId;
+			expect(jobId).toBeDefined();
+
+			let polled = started;
+			let fullOutput = "";
+			for (let i = 0; i < 100; i++) {
+				polled = await bash.execute("async-large-poll", { command: `__atomic_bash_job ${jobId}` });
+				const fullOutputPath = polled.details?.fullOutputPath;
+				if (fullOutputPath && existsSync(fullOutputPath)) fullOutput = readFileSync(fullOutputPath, "utf-8");
+				if (polled.details?.async?.state === "completed" && fullOutput.includes("12000\n")) break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+
+			const output = getTextOutput(polled);
+			expect(output).toContain("Output truncated");
+			expect(output).toContain("Full output:");
+			expect(polled.details?.fullOutputPath).toBeDefined();
+			expect(fullOutput).toContain("12000\n");
+		});
 		it("should throw error when cwd does not exist", async () => {
 			const nonexistentCwd = "/this/directory/definitely/does/not/exist/12345";
 

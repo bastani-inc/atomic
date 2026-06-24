@@ -62,12 +62,17 @@ describe("isPrivateIpAddress — IPv6", () => {
 		{ address: "::", expected: true, note: "unspecified" },
 		{ address: "0:0:0:0:0:0:0:1", expected: true, note: "expanded loopback" },
 		{ address: "fe80::1", expected: true, note: "link-local" },
+		{ address: "fe9f::1", expected: true, note: "link-local fe80::/10 middle" },
+		{ address: "febf::1", expected: true, note: "link-local fe80::/10 upper bound" },
+		{ address: "fec0::1", expected: false, note: "outside link-local fe80::/10" },
 		{ address: "fd00::1", expected: true, note: "ULA fd::/8" },
 		{ address: "fc00::1", expected: true, note: "ULA fc::/8" },
 		{ address: "2001:4860:4860::8888", expected: false, note: "public" },
 		// 6to4 (2002::/16) and NAT64 (64:ff9b::/96) embed an IPv4 tail.
 		{ address: "2002:7f00:1::", expected: true, note: "6to4 embedding 127.0.0.1" },
 		{ address: "64:ff9b::169.254.169.254", expected: true, note: "NAT64 embedding metadata" },
+		{ address: "::7f00:1", expected: true, note: "IPv4-compatible embedding 127.0.0.1" },
+		{ address: "::808:808", expected: false, note: "IPv4-compatible embedding public" },
 		{ address: "64:ff9b::8.8.8.8", expected: false, note: "NAT64 embedding public" },
 	];
 	for (const { address, expected, note } of cases) {

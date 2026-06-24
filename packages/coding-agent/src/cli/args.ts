@@ -412,7 +412,6 @@ ${chalk.bold("Built-in Tool Names:")}
   search            - Search file contents with regex (default)
   ask_user_question - Ask structured questions in the TUI (default)
   todo              - Manage file-based todos (default)
-  grep              - Legacy content search helper (read-only, off by default)
   ls                - Legacy directory listing helper (read-only, off by default)
 `);
 }

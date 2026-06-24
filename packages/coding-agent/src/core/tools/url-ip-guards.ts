@@ -63,15 +63,26 @@ function embeddedPrivateIpv4(address: string): boolean {
 	// re-checked against the IPv4 private predicates, not just the compressed
 	// `::ffff:` literals handled by isPrivateIpAddress.
 	if (hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
+	if (hextets.slice(0, 6).every((part) => part === 0)) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
 	if (hextets[0] === 0x2002) return isPrivateIpAddress(ipv4FromHextets(hextets[1]!, hextets[2]!));
 	if (hextets[0] === 0x64 && hextets[1] === 0xff9b && hextets.slice(2, 6).every((part) => part === 0)) return isPrivateIpAddress(ipv4FromHextets(hextets[6]!, hextets[7]!));
 	return false;
 }
 
+function isPrivateIpv6Address(address: string): boolean {
+	const hextets = expandIpv6(address);
+	if (!hextets) return false;
+	const h0 = hextets[0]!;
+	return hextets.every((part) => part === 0)
+		|| hextets.slice(0, 7).every((part) => part === 0) && hextets[7] === 1
+		|| (h0 & 0xffc0) === 0xfe80
+		|| (h0 & 0xfe00) === 0xfc00;
+}
+
 export function isPrivateIpAddress(address: string): boolean {
 	if (address.includes(":")) {
 		const lower = address.toLowerCase();
-		if (lower === "::" || lower === "::1" || lower === "0:0:0:0:0:0:0:1" || lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) return true;
+		if (isPrivateIpv6Address(lower)) return true;
 		const mapped = lower.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
 		const hexMapped = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
 		if (hexMapped) {

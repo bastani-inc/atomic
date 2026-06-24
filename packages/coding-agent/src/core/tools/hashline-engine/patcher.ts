@@ -7,9 +7,11 @@
  * result back through the same {@link Filesystem}.
  *
  * Two layers:
- *
- * - {@link Patcher.apply} — high-level, all-or-nothing. Preflights every
- *   section in memory before any write hits disk, then commits in order.
+ * - {@link Patcher.apply} — high-level, preflight-atomic. It validates and
+ *   applies every section in memory before any write hits disk, then commits
+ *   in order. It is not write-transactional: a mid-batch filesystem failure
+ *   can leave earlier sections already written, and the thrown error reports
+ *   which sections landed.
  * - {@link Patcher.prepare} / {@link Patcher.commit} — granular primitives
  *   for callers that need per-section control (e.g. batched LSP flush,
  *   custom interleaving). `prepare` performs all the read-side work,
@@ -17,9 +19,8 @@
  *   edits in memory. `commit` writes the prepared result and records a
  *   fresh snapshot.
  *
- * Because `prepare` already runs the full apply, a multi-section batch is
- * naturally all-or-nothing: by the time any `commit` runs, every section
- * has been validated.
+ * Because `prepare` already runs the full apply, a multi-section batch fails
+ * before any write when parsing, stale-tag validation, or in-memory apply fails.
  *
  * The patcher itself is stateless across calls; reuse one instance per
  * filesystem configuration.
@@ -198,8 +199,10 @@ export class Patcher {
 	/**
 	 * Apply every section in `patch`. `prepare` runs the full apply for each
 	 * section in memory before any write hits the filesystem, so a
-	 * multi-section batch is naturally all-or-nothing. Returns one
-	 * {@link PatchSectionResult} per section in the original patch order.
+	 * multi-section batch fails before writing on parse/validation/apply errors.
+	 * Write commits are sequential rather than transactional; if a write fails,
+	 * earlier sections may already be on disk and are listed in the thrown error.
+	 * Returns one {@link PatchSectionResult} per section in the original patch order.
 	 */
 	async apply(patch: Patch): Promise<PatcherApplyResult> {
 		// Single-section fast path.
@@ -389,7 +392,13 @@ export class Patcher {
 	}): ApplyResult {
 		const { section, canonicalPath, exists, normalized, edits } = args;
 		const expected = exists ? section.fileHash : undefined;
-		const liveMatches = expected !== undefined && computeFileHash(normalized) === expected;
+		const expectedSnapshot = expected === undefined ? null : this.snapshots.byHash(canonicalPath, expected);
+		const liveHashMatches = expected !== undefined && computeFileHash(normalized) === expected;
+		const liveSnapshot = expected === undefined ? null : this.snapshots.byHashAndText(canonicalPath, expected, normalized);
+		const liveMatches = liveHashMatches && liveSnapshot !== null;
+		if (liveHashMatches && !liveMatches) {
+			throw this.#mismatchError(section, canonicalPath, normalized, expected, expectedSnapshot !== null);
+		}
 
 		// Resolve `replace block N:` edits to concrete ranges before recovery
 		// runs. Block anchors are expressed against the snapshot the section tag
@@ -405,7 +414,7 @@ export class Patcher {
 		let resolved: readonly Edit[] = edits;
 		if (hasBlockEdit(edits)) {
 			const baseText =
-				expected === undefined || liveMatches ? normalized : this.snapshots.byHash(canonicalPath, expected)?.text;
+				expected === undefined || liveMatches ? normalized : expectedSnapshot?.text;
 			if (baseText === undefined) {
 				throw this.#mismatchError(section, canonicalPath, normalized, expected ?? "", false);
 			}
@@ -445,7 +454,7 @@ export class Patcher {
 			edits: resolved,
 		});
 		if (recovered) return withResolveWarnings(recoveryToApplyResult(recovered));
-		const hashRecognized = this.snapshots.byHash(canonicalPath, expected) !== null;
+		const hashRecognized = expectedSnapshot !== null;
 		throw this.#mismatchError(section, canonicalPath, normalized, expected, hashRecognized);
 	}
 }

@@ -1,7 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { chmod as fsChmod, mkdir as fsMkdir, readFile as fsReadFile, readdir as fsReaddir, stat as fsStat, writeFile as fsWriteFile } from "fs/promises";
-import { dirname } from "path";
+import { dirname, join } from "path";
 import { type Static, Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.ts";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.ts";
@@ -36,7 +36,7 @@ export interface WriteOperations {
 
 async function findConflictBlocks(root: string, limit = 100): Promise<ConflictBlock[]> {
 	const out: ConflictBlock[] = [];
-	async function walk(dir: string): Promise<void> { for (const entry of await fsReaddir(dir, { withFileTypes: true }).catch(() => [])) { if (out.length >= limit || entry.name === ".git" || entry.name === "node_modules") continue; const full = `${dir}/${entry.name}`; if (entry.isDirectory()) await walk(full); else if (entry.isFile()) { const text = await fsReadFile(full, "utf8").catch(() => ""); if (text.includes("<<<<<<<") && text.includes("=======") && text.includes(">>>>>>>")) out.push(...parseConflictBlocks(full, text)); } } }
+	async function walk(dir: string): Promise<void> { for (const entry of await fsReaddir(dir, { withFileTypes: true }).catch(() => [])) { if (out.length >= limit || entry.name === ".git" || entry.name === "node_modules") continue; const full = join(dir, entry.name); if (entry.isDirectory()) await walk(full); else if (entry.isFile()) { const text = await fsReadFile(full, "utf8").catch(() => ""); if (text.includes("<<<<<<<") && text.includes("=======") && text.includes(">>>>>>>")) out.push(...parseConflictBlocks(full, text)); } } }
 	await walk(root); return out;
 }
 /**

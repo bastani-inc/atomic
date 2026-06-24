@@ -104,6 +104,6 @@ export function loadNativeSearchBinding(): NativeBinding | null {
 	}
 }
 
-export function invalidateNativeSearchCache(_path?: string): void {
-	loadNativeSearchBinding()?.invalidateFsScanCache?.(null);
+export function invalidateNativeSearchCache(path?: string): void {
+	loadNativeSearchBinding()?.invalidateFsScanCache?.(path ?? null);
 }

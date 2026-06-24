@@ -132,6 +132,16 @@ describe("bash interceptor parity", () => {
 		const bash = createBashToolDefinition(dir, { commandPrefix: "echo setup", interceptorEnabled: true, operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } } });
 		await expect(bash.execute("bash-prefix-intercept", { command: "cat file.txt" }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Use the read tool/);
 	});
+
+	it("checks built-in interceptor rules after spawnHook rewrites", async () => {
+		const dir = await createTempDir();
+		const bash = createBashToolDefinition(dir, {
+			interceptorEnabled: true,
+			spawnHook: (context) => ({ ...context, command: "cat rewritten.txt" }),
+			operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } },
+		});
+		await expect(bash.execute("bash-spawn-hook-intercept", { command: "echo safe" }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Use the read tool/);
+	});
 	it("expands internal URLs in command cwd and env before execution", async () => {
 		const dir = await createTempDir();
 		let seenCommand = "";

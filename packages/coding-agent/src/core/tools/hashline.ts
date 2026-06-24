@@ -1,5 +1,5 @@
 import { computeFileHash, formatHashlineHeader, formatNumberedLines, InMemorySnapshotStore, type SnapshotStore } from "./hashline-engine/index.ts";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, normalize as normalizePath, relative, sep } from "node:path";
 
 export interface HashlineSnapshot {
 	absolutePath: string;
@@ -38,10 +38,11 @@ export function createHashlineSnapshotStore(): HashlineSnapshotStore {
 	return {
 		snapshots,
 		record(absolutePath: string, cwd: string, content: string): HashlineSnapshot {
+			const normalizedPath = normalizePath(absolutePath);
 			const normalized = normalizeHashlineContent(content);
-			const displayPath = hashlineDisplayPath(absolutePath, cwd);
-			const tag = snapshots.record(absolutePath, normalized);
-			const snapshot = { absolutePath, displayPath, tag, content: normalized };
+			const displayPath = hashlineDisplayPath(normalizedPath, cwd);
+			const tag = snapshots.record(normalizedPath, normalized);
+			const snapshot = { absolutePath: normalizedPath, displayPath, tag, content: normalized };
 			headers.set(`${displayPath}\0${tag}`, snapshot);
 			return snapshot;
 		},

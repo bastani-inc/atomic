@@ -256,6 +256,29 @@ describe("hashline file tool parity", () => {
 		expect(await readFile(file, "utf8")).toBe("\uFEFFone\nTWO");
 	});
 
+	it("keeps colliding hashline tags tied to matching snapshot text", async () => {
+		const dir = await createTempDir();
+		const store = createHashlineSnapshotStore();
+		const file = join(dir, "collision.txt");
+		const first = "collision-389\n";
+		const second = "collision-445\n";
+		const firstTag = store.record(file, dir, first).tag;
+		const secondTag = store.record(file, dir, second).tag;
+		expect(secondTag).toBe(firstTag);
+		expect(store.snapshots.head(file)?.text).toBe(second);
+		await writeFile(file, second, "utf8");
+		const knownEdit = createEditToolDefinition(dir, { hashlineStore: store });
+		await knownEdit.execute("edit-known-collision", { input: `[collision.txt#${firstTag}]\nreplace 1..1:\n+known` }, undefined, undefined, {} as ExtensionContext);
+		expect(await readFile(file, "utf8")).toBe("known\n");
+
+		const editStore = createHashlineSnapshotStore();
+		const staleTag = editStore.record(file, dir, first).tag;
+		await writeFile(file, second, "utf8");
+		const edit = createEditToolDefinition(dir, { hashlineStore: editStore });
+		await expect(edit.execute("edit-collision", { input: `[collision.txt#${staleTag}]\nreplace 1..1:\n+changed` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/file changed between read and edit|Stale hashline tag/);
+		expect(await readFile(file, "utf8")).toBe(second);
+	});
+
 	it("preflights all multi-file edit staleness before writing", async () => {
 		const dir = await createTempDir();
 		const store = createHashlineSnapshotStore();
@@ -374,9 +397,10 @@ describe("hashline file tool parity", () => {
 		expect(written).not.toContain("# sub/");
 	});
 
-	it("applies content-hash tags across snapshot stores", async () => {
+	it("rejects hashline tags from another snapshot store even when the live hash matches", async () => {
 		const dir = await createTempDir();
-		await writeFile(join(dir, "scoped.txt"), "one\ntwo", "utf8");
+		const file = join(dir, "scoped.txt");
+		await writeFile(file, "one\ntwo", "utf8");
 		const storeA = createHashlineSnapshotStore();
 		const storeB = createHashlineSnapshotStore();
 		const readA = createReadToolDefinition(dir, { hashlineStore: storeA });
@@ -384,8 +408,7 @@ describe("hashline file tool parity", () => {
 		const output = text(await readA.execute("read-a", { path: "scoped.txt" }, undefined, undefined, {} as ExtensionContext));
 		const tag = output.match(/#([0-9A-F]{4})/)?.[1];
 		expect(tag).toBeTruthy();
-		// Content-hash tags are global fingerprints: a tag matching the live file applies regardless of which store recorded it.
-		await editB.execute("edit-b", { input: `[scoped.txt#${tag}]\nreplace 1..1:\n+ONE` }, undefined, undefined, {} as ExtensionContext);
-		expect(await readFile(join(dir, "scoped.txt"), "utf8")).toBe("ONE\ntwo");
+		await expect(editB.execute("edit-b", { input: `[scoped.txt#${tag}]\nreplace 1..1:\n+ONE` }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/not from this session/);
+		expect(await readFile(file, "utf8")).toBe("one\ntwo");
 	});
 });

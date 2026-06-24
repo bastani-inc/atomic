@@ -88,6 +88,8 @@ function markFileLimit(details: SearchToolDetails, limit: number): void {
 	details.meta = { ...(details.meta ?? {}), limits: { ...(details.meta?.limits ?? {}), fileLimit: limit } };
 }
 function fileLimitDetails(limit: number): SearchToolDetails { const details: SearchToolDetails = {}; markFileLimit(details, limit); return details; }
+function continuationHint(limit: number, skip: number): string { return `[${limit} matching files shown. Use skip=${skip + limit} to view more.]`; }
+function internalCapHint(): string { return `[Search collected the first ${INTERNAL_SKIP_LIMIT} matches before pagination; refine the pattern or path for later results.]`; }
 function hasFileLimit(details: unknown): boolean { return typeof details === "object" && details !== null && (details as { fileLimitReached?: unknown }).fileLimitReached === true; }
 
 function isResourceSelector(value: string): boolean {
@@ -209,8 +211,14 @@ function formatSearchGroups(groups: SearchOutputGroup[], limit: number, perFileL
 }
 
 function dedupeRenderedSearchOutput(content: string): string {
-	const out: string[] = [], seen = new Set<string>(); let header = "";
-	for (const line of content.split("\n")) { const h = line.match(/^\[([^\]#]+)#[0-9A-F]{4}\]$/); if (h) header = h[1]!; const m = header ? line.match(/^[* ]?(\d+):/) : undefined; const key = m ? `${header}:${m[1]}` : ""; if (key && seen.has(key)) continue; if (key) seen.add(key); out.push(line); }
+	const out: string[] = [], seen = new Set<string>(); let header = "", sawContinuationHint = false, sawCapHint = false;
+	for (const line of content.split("\n")) {
+		const h = line.match(/^\[([^\]#]+)#[0-9A-F]{4}\]$/); if (h) header = h[1]!;
+		if (/^\[\d+ matching files shown\. Use skip=\d+ to view more\.\]$/.test(line)) { if (sawContinuationHint) continue; sawContinuationHint = true; }
+		if (line.startsWith("[Search collected the first ")) { if (sawCapHint) continue; sawCapHint = true; }
+		const m = header ? line.match(/^[* ]?(\d+):/) : undefined;
+		const key = m ? `${header}:${m[1]}` : ""; if (key && seen.has(key)) continue; if (key) seen.add(key); out.push(line);
+	}
 	return out.join("\n");
 }
 function formatSearchCall(
@@ -267,7 +275,7 @@ export function createSearchToolDefinition(
 			const groups: PagedSearchOutputGroup[] = [];
 			const skippedMissingPaths: string[] = [];
 			const scopePath = targets.map((target) => target.path).join(", ") || ".";
-			let pageFullWithMore = false;
+			let pageFullWithMore = false, internalSearchCapped = false;
 			let remaining = limit;
 			const targetHasMatch = async (target: SearchTarget): Promise<boolean> => {
 				if (target.archive || target.sqlite || target.internal) {
@@ -292,7 +300,7 @@ export function createSearchToolDefinition(
 					else if (outputGroups.length > 0) {
 						const hadMore = outputGroups.length > remaining;
 						text = formatSearchGroups(outputGroups, remaining);
-						if (hadMore) { text += `\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]`; pageFullWithMore = true; }
+						if (hadMore) { text += `\n\n${continuationHint(limit, skip)}`; pageFullWithMore = true; }
 						remaining -= Math.min(remaining, outputGroups.length);
 					} else if (text && text !== "No matches found") {
 						remaining--;
@@ -312,7 +320,7 @@ export function createSearchToolDefinition(
 					results.push(result);
 					const outputGroups = groupSearchOutput(text);
 					if (skip > 0) groups.push(...outputGroups.map((group) => ({ targetPath: target.path, virtual: false, group })));
-					else if (!isSingleFileSearch && outputGroups.length > 0) { const hadMore = outputGroups.length > remaining; text = formatSearchGroups(outputGroups, remaining); if (hadMore) { text += `\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]`; result.details = fileLimitDetails(limit); } remaining -= Math.min(remaining, outputGroups.length); result.content = [{ type: "text", text }]; }
+					else if (!isSingleFileSearch && outputGroups.length > 0) { const hadMore = outputGroups.length > remaining; text = formatSearchGroups(outputGroups, remaining); if (hadMore) { result.details = fileLimitDetails(limit); pageFullWithMore = true; } remaining -= Math.min(remaining, outputGroups.length); result.content = [{ type: "text", text }]; }
 					continue;
 				}
 				const result = await grepDefinition.execute(
@@ -333,6 +341,7 @@ export function createSearchToolDefinition(
 					ctx,
 				);
 				results.push(result);
+				if (result.details?.matchLimitReached) internalSearchCapped = true;
 				let text = result.content
 					.map((item) => (item.type === "text" ? item.text : undefined))
 					.filter((text): text is string => typeof text === "string")
@@ -344,7 +353,7 @@ export function createSearchToolDefinition(
 				else if (!isSingleFileSearch && outputGroups.length > 0) {
 					const hadMore = outputGroups.length > remaining;
 					text = formatSearchGroups(outputGroups, remaining);
-					if (hadMore) { text += `\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]`; result.details = { ...(result.details ?? {}), ...fileLimitDetails(limit) }; }
+					if (hadMore) { result.details = { ...(result.details ?? {}), ...fileLimitDetails(limit) }; pageFullWithMore = true; }
 					remaining -= Math.min(remaining, outputGroups.length);
 				}
 				result.content = [{ type: "text", text }];
@@ -368,8 +377,10 @@ export function createSearchToolDefinition(
 					if (raw) renderedPages.push(item.virtual ? raw : await addHashlineHeadersToSearchOutput(raw, cwd, item.targetPath, hashlineStore));
 				}
 				const hasMorePages = groups.slice(skip + limit).length > 0;
-				const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]` : ""}`;
-				if (hasMorePages) markFileLimit(details, limit);
+				const cappedBeforeRequestedPage = internalSearchCapped && skip >= groups.length;
+				const capNotice = internalSearchCapped && !hasMorePages ? `\n\n${internalCapHint()}` : "";
+				const output = `${renderedPages.join("\n\n") || `No more results (skip=${skip})`}${hasMorePages ? `\n\n${continuationHint(limit, skip)}` : ""}${capNotice}`;
+				if (hasMorePages || cappedBeforeRequestedPage || capNotice) markFileLimit(details, limit);
 				const truncation = truncateHead(output, { maxLines: Number.MAX_SAFE_INTEGER });
 				let content = truncation.content;
 				if (truncation.truncated) {
@@ -393,7 +404,7 @@ export function createSearchToolDefinition(
 				if (isSingleFileSearch && text !== "No matches found") text = formatSearchGroups(groupSearchOutput(text), limit, limit);
 				if (text && text !== "No matches found") {
 					const renderedText = isVirtualSearchTarget(targets[0]) ? text : await addHashlineHeadersToSearchOutput(text, cwd, targets[0]?.path ?? ".", hashlineStore);
-					const pagedText = hasFileLimit(result.details) ? `${renderedText}\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]` : renderedText;
+					const pagedText = hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText;
 					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated) return { ...result, content: [{ type: "text", text: `${truncation.content}\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]` }], details: buildSearchDetails({ ...(result.details ?? {}), truncation }, truncation.content, cwd, scopePath, skippedMissingPaths) };
 					return { ...result, content: [{ type: "text", text: pagedText }], details: buildSearchDetails(result.details, pagedText, cwd, scopePath, skippedMissingPaths) };
@@ -411,8 +422,8 @@ export function createSearchToolDefinition(
 				if (!text || text === "No matches found") return `# ${targets[index]?.path ?? "."}\n${text}`;
 				return isVirtualSearchTarget(targets[index]) ? text : await addHashlineHeadersToSearchOutput(text, cwd, targets[index]?.path ?? ".", hashlineStore);
 			}));
-			const content = dedupeRenderedSearchOutput(`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n[${limit} matching files shown. Use skip=${skip + limit} to view more.]` : ""}`);
-			if (pageFullWithMore) markFileLimit(details, limit);
+			const content = dedupeRenderedSearchOutput(`${renderedResults.join("\n\n")}${skippedMissingPaths.length > 0 ? `\n\n[Skipped missing paths: ${skippedMissingPaths.join(", ")}]` : ""}${pageFullWithMore ? `\n\n${continuationHint(limit, skip)}` : ""}${internalSearchCapped && !pageFullWithMore ? `\n\n${internalCapHint()}` : ""}`);
+			if (pageFullWithMore || internalSearchCapped) markFileLimit(details, limit);
 			const truncation = truncateHead(content, { maxLines: Number.MAX_SAFE_INTEGER });
 			let output = truncation.content;
 			if (truncation.truncated) {

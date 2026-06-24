@@ -12,9 +12,9 @@
  * Producers (typically `read` / `search` / `write` tools) call
  * {@link SnapshotStore.record} with the full normalized text they observed.
  * The store hashes it, dedups against the per-path history, and returns the
- * tag. Consumers (the patcher) resolve a stale tag back to the recorded full
- * text via {@link SnapshotStore.byHash} and 3-way-merge the would-be edit onto
- * the live content.
+ * tag. Consumers (the patcher) resolve an unambiguous stale tag back to the
+ * recorded full text via {@link SnapshotStore.byHash} and 3-way-merge the
+ * would-be edit onto the live content.
  *
  * The abstract base class lets callers plug in whatever storage they like
  * (LRU, persistent SQLite, etc.). {@link InMemorySnapshotStore} ships as a
@@ -49,8 +49,14 @@ export abstract class SnapshotStore {
 	/** Most-recently recorded version for `path`, or `null` if none. */
 	abstract head(path: string): Snapshot | null;
 
-	/** Recorded version for `path` whose tag equals `hash`, or `null`. */
+	/** Recorded unambiguous version for `path` whose tag equals `hash`, or `null`. */
 	abstract byHash(path: string, hash: string): Snapshot | null;
+
+	/** Recorded version for `path` whose tag and full text both match, or `null`. */
+	byHashAndText(path: string, hash: string, text: string): Snapshot | null {
+		const snapshot = this.byHash(path, hash);
+		return snapshot?.text === text ? snapshot : null;
+	}
 
 	/** Record the full normalized text of `path` and return its content tag. */
 	abstract record(path: string, fullText: string): string;
@@ -112,18 +118,26 @@ export class InMemorySnapshotStore extends SnapshotStore {
 	}
 
 	byHash(path: string, hash: string): Snapshot | null {
-		const history = this.#versions.get(path);
-		return history?.find(version => version.hash === hash) ?? null;
+		const matches = this.#versions.get(path)?.filter(version => version.hash === hash) ?? [];
+		// A 4-hex tag can collide. Recovery only proceeds when the tag maps to a
+		// single retained snapshot; otherwise the caller must re-read.
+		return matches.length === 1 ? matches[0]! : null;
+	}
+
+	override byHashAndText(path: string, hash: string, text: string): Snapshot | null {
+		return this.#versions.get(path)?.find(version => version.hash === hash && version.text === text) ?? null;
 	}
 
 	record(path: string, fullText: string): string {
 		const hash = computeFileHash(fullText);
 		// `get` refreshes LRU recency for `path`.
 		const history = this.#versions.get(path) ?? [];
-		const existing = history.find(version => version.hash === hash);
+		const existing = history.find(version => version.hash === hash && version.text === fullText);
 		if (existing) {
 			// Same content state observed again: refresh recency and promote to
-			// head (it is the current file content), then reuse the tag.
+			// head (it is the current file content), then reuse the tag. Hash
+			// collisions with different text must be retained as distinct
+			// snapshots; the 4-hex tag is only a lookup key, not proof of identity.
 			existing.recordedAt = Date.now();
 			if (history[0] !== existing) {
 				this.#versions.set(path, [existing, ...history.filter(version => version !== existing)]);

@@ -4,6 +4,7 @@ export interface ManagedBashJob {
 	cwd: string;
 	status: "running" | "completed" | "failed";
 	output: string;
+	fullOutputPath?: string;
 	exitCode?: number | null;
 	error?: string;
 	startedAt: number;
