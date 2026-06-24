@@ -79,7 +79,7 @@ describe("Coding Agent Tools", () => {
 			]) {
 				const operations: BashOperations = {
 					exec: async (_command, _cwd, { onData }) => {
-						for (let i = 1; i <= 3000; i++) {
+						for (let i = 1; i <= 4000; i++) {
 							onData(Buffer.from(`${i}\n`, "utf-8"));
 						}
 						throw new Error(testCase.error);
@@ -104,7 +104,7 @@ describe("Coding Agent Tools", () => {
 				expect(existsSync(fullOutputPath!)).toBe(true);
 				const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 				expect(fullOutput).toContain("1\n2\n3");
-				expect(fullOutput).toContain("2998\n2999\n3000");
+				expect(fullOutput).toContain("3998\n3999\n4000");
 			}
 		});
 		it("should throw error when cwd does not exist", async () => {
@@ -254,10 +254,10 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(result.details?.truncation?.totalLines).toBe(4000);
-			expect(result.details?.truncation?.outputLines).toBe(2000);
-			expect(output).toContain("line-2001");
+			expect(result.details?.truncation?.outputLines).toBe(3000);
+			expect(output).toContain("line-1001");
 			expect(output).toContain("line-4000");
-			expect(output).toMatch(/\[Showing lines 2001-4000 of 4000\. Full output: /);
+			expect(output).toMatch(/\[Showing lines 1001-4000 of 4000\. Full output: /);
 			expect(output).not.toContain("4001");
 		});
 		it("should decode UTF-8 characters split across output chunks", async () => {
@@ -299,7 +299,7 @@ describe("Coding Agent Tools", () => {
 		});
 		it("should persist full output when truncation happens by line count only", async () => {
 			const bash = createBashTool(testDir);
-			const result = await bash.execute("test-call-line-truncation", { command: "seq 3000" });
+			const result = await bash.execute("test-call-line-truncation", { command: "seq 4000" });
 			const output = getTextOutput(result);
 			const fullOutputPath = result.details?.fullOutputPath;
 
@@ -317,10 +317,10 @@ describe("Coding Agent Tools", () => {
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 			expect(fullOutput).toContain("1\n2\n3");
-			expect(fullOutput).toContain("2998\n2999\n3000");
+			expect(fullOutput).toContain("3998\n3999\n4000");
 		});
 		it("executeBash should persist full output when truncation happens by line count only", async () => {
-			const result = await executeBashWithOperations("seq 3000", process.cwd(), createLocalBashOperations());
+			const result = await executeBashWithOperations("seq 4000", process.cwd(), createLocalBashOperations());
 			const fullOutputPath = result.fullOutputPath;
 
 			expect(result.truncated).toBe(true);
@@ -334,7 +334,7 @@ describe("Coding Agent Tools", () => {
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 			expect(fullOutput).toContain("1\n2\n3");
-			expect(fullOutput).toContain("2998\n2999\n3000");
+			expect(fullOutput).toContain("3998\n3999\n4000");
 		});
 	});
 });

@@ -321,7 +321,7 @@ describe("hashline file tool parity", () => {
 
 	it("strips copied truncated read output with showing-lines footer before write", async () => {
 		const dir = await createTempDir();
-		await writeFile(join(dir, "big.txt"), Array.from({ length: 2001 }, (_, i) => `line ${i + 1}`).join("\n"), "utf8");
+		await writeFile(join(dir, "big.txt"), Array.from({ length: 3001 }, (_, i) => `line ${i + 1}`).join("\n"), "utf8");
 		const copied = text(await createReadToolDefinition(dir, { hashlineStore }).execute("read-truncated-copy", { path: "big.txt" }, undefined, undefined, {} as ExtensionContext));
 		expect(copied).toContain("[Showing lines ");
 		await createWriteToolDefinition(dir, { hashlineStore }).execute("write-truncated-copy", { path: "copy.txt", content: copied }, undefined, undefined, {} as ExtensionContext);

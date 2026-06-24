@@ -29,7 +29,10 @@ describe("resource URL read parity", () => {
 			expect(textOutput(await read.execute("url-read", { path: `http://127.0.0.1:${port}/:3-3` }, undefined, undefined, {} as never))).toContain("three");
 			const raw = textOutput(await read.execute("url-raw", { path: `http://127.0.0.1:${port}/:raw` }, undefined, undefined, {} as never));
 			expect(raw).toContain("<html>"); expect(raw).not.toContain("URL:");
-			expect(textOutput(await read.execute("url-big", { path: `http://127.0.0.1:${port}/big.txt` }, undefined, undefined, {} as never))).toContain("File read blocked");
+			const big = await read.execute("url-big", { path: `http://127.0.0.1:${port}/big.txt` }, undefined, undefined, {} as never);
+			expect(textOutput(big)).toContain("Showing first");
+			expect(big.details?.truncation?.truncated).toBe(true);
+			expect(big.details?.meta?.truncation?.truncated).toBe(true);
 			expect(textOutput(await read.execute("url-ipynb", { path: `http://127.0.0.1:${port}/notebook.ipynb` }, undefined, undefined, {} as never))).toContain("# %% [code] cell:0");
 			expect(textOutput(await read.execute("url-ipynb-content-type", { path: `http://127.0.0.1:${port}/download` }, undefined, undefined, {} as never))).toContain("# %% [code] cell:0");
 			const rtf = textOutput(await read.execute("url-rtf-query", { path: `http://127.0.0.1:${port}/file.rtf?download` }, undefined, undefined, {} as never));

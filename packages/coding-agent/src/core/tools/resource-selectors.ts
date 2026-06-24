@@ -23,6 +23,9 @@ function sqliteDatabase(): SqliteDatabaseConstructor {
 function existingSqliteFile(path: string): boolean | undefined { if (!existsSync(path)) return undefined; return readFileSync(path).subarray(0, 16).toString("binary") === "SQLite format 3\0"; }
 export function sqliteSelectorForPath(value: string, cwd: string): SqliteSelector | undefined { const selector = parseSqliteSelector(value); if (!selector) return undefined; const absolute = resolve(cwd, selector.databasePath); if (existingSqliteFile(absolute) !== true) return undefined; return { ...selector, databasePath: absolute }; }
 
+const MAX_TAR_ARCHIVE_BYTES = 256 * 1024 * 1024;
+const MAX_ARCHIVE_MEMBER_BYTES = 64 * 1024 * 1024;
+const MAX_ARCHIVE_DIRECTORY_ENTRIES = 500;
 
 export function parseArchiveSelector(value: string): ArchiveSelector | undefined {
 	const match = value.match(/^(.+\.(?:zip|jar|tar|tgz|tar\.gz|gz)):(.*)$/i);
@@ -76,12 +79,20 @@ function writeZipEntries(path: string, entries: Map<string, Buffer>): void {
 	writeFileSync(path, Buffer.concat([...locals, ...centrals, eocd]));
 }
 function parseTar(path: string): Map<string, Buffer> {
-	const raw = readFileSync(path); const buf = isGzipTar(path) ? gunzipSync(raw) : raw; const entries = new Map<string, Buffer>();
+	const raw = readFileSync(path);
+	if (raw.length > MAX_TAR_ARCHIVE_BYTES) throw new Error(`Archive too large: ${path}`);
+	const buf = isGzipTar(path) ? gunzipSync(raw) : raw;
+	const entries = new Map<string, Buffer>();
 	for (let offset = 0; offset + 512 <= buf.length;) {
-		const header = buf.subarray(offset, offset + 512); if (header.every((byte) => byte === 0)) break;
-		const name = header.subarray(0, 100).toString().replace(/\0.*$/, ""); const prefix = header.subarray(345, 500).toString().replace(/\0.*$/, "");
-		const fullName = prefix ? `${prefix}/${name}` : name; const size = Number.parseInt(header.subarray(124, 136).toString().replace(/\0.*$/, "").trim() || "0", 8); const type = String.fromCharCode(header[156] ?? 48);
-		const dataStart = offset + 512; if (type !== "5" && fullName) entries.set(fullName, Buffer.from(buf.subarray(dataStart, dataStart + size)));
+		const header = buf.subarray(offset, offset + 512);
+		if (header.every((byte) => byte === 0)) break;
+		const name = header.subarray(0, 100).toString().replace(/\0.*$/, "");
+		const prefix = header.subarray(345, 500).toString().replace(/\0.*$/, "");
+		const fullName = prefix ? `${prefix}/${name}` : name;
+		const size = Number.parseInt(header.subarray(124, 136).toString().replace(/\0.*$/, "").trim() || "0", 8);
+		const type = String.fromCharCode(header[156] ?? 48);
+		const dataStart = offset + 512;
+		if (type !== "5" && fullName) entries.set(fullName, Buffer.from(buf.subarray(dataStart, dataStart + size)));
 		offset = dataStart + Math.ceil(size / 512) * 512;
 	}
 	return entries;
@@ -99,7 +110,7 @@ function listArchiveDirectory(names: Iterable<string>, memberPath: string): stri
 	const prefix = memberPath ? `${memberPath.replace(/\/+$/g, "")}/` : "";
 	const children = new Set<string>();
 	for (const name of names) { if (!name.startsWith(prefix) || name === prefix) continue; const rest = name.slice(prefix.length); const [first, ...more] = rest.split("/"); if (first) children.add(more.length > 0 ? `${first}/` : first); }
-	return [...children].sort().join("\n");
+	return [...children].sort().slice(0, MAX_ARCHIVE_DIRECTORY_ENTRIES).join("\n");
 }
 
 function readZipSelector(path: string, memberPath: string): string {
@@ -110,7 +121,7 @@ function readZipSelector(path: string, memberPath: string): string {
 		if (buf.readUInt32LE(ptr) !== 0x02014b50) throw new Error(`Invalid zip central directory: ${path}`);
 		const method = buf.readUInt16LE(ptr + 10), compressedSize = buf.readUInt32LE(ptr + 20), size = buf.readUInt32LE(ptr + 24), nameLen = buf.readUInt16LE(ptr + 28), extraLen = buf.readUInt16LE(ptr + 30), commentLen = buf.readUInt16LE(ptr + 32), localOffset = buf.readUInt32LE(ptr + 42);
 		const name = buf.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen; if (name.endsWith("/")) continue; names.push(name); if (memberPath && name !== memberPath) continue;
-		if (!memberPath) continue; if (size > 10 * 1024 * 1024) throw new Error(`Archive member too large: ${memberPath}`);
+		if (!memberPath) continue; if (size > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${memberPath}`);
 		const localNameLen = buf.readUInt16LE(localOffset + 26), localExtraLen = buf.readUInt16LE(localOffset + 28), start = localOffset + 30 + localNameLen + localExtraLen, data = buf.subarray(start, start + compressedSize);
 		return (method === 0 ? Buffer.from(data) : method === 8 ? inflateRawSync(data) : (() => { throw new Error(`Unsupported zip compression method ${method} for ${name}`); })()).toString("utf8");
 	}
@@ -124,7 +135,7 @@ export function readArchiveSelector(selector: ArchiveSelector): string {
 	if (isZipArchive(selector.archivePath)) return readZipSelector(selector.archivePath, selector.memberPath);
 	const entries = parseTar(selector.archivePath);
 	if (!selector.memberPath) return listArchiveDirectory(entries.keys(), "");
-	const data = entries.get(selector.memberPath); if (data) return data.toString("utf8");
+	const data = entries.get(selector.memberPath); if (data) { if (data.length > MAX_ARCHIVE_MEMBER_BYTES) throw new Error(`Archive member too large: ${selector.memberPath}`); return data.toString("utf8"); }
 	const listing = listArchiveDirectory(entries.keys(), selector.memberPath); if (listing) return listing;
 	throw new Error(`Archive member not found: ${selector.memberPath}`);
 }
@@ -153,7 +164,7 @@ export function writeArchiveSelector(selector: ArchiveSelector, content: string)
 	const entries = existsSync(selector.archivePath) ? parseTar(selector.archivePath) : new Map<string, Buffer>();
 	entries.set(selector.memberPath, Buffer.from(content)); writeTar(selector.archivePath, entries);
 }
-const SEARCH_LINE_LIMIT = 2000;
+const SEARCH_LINE_LIMIT = 512;
 function truncateSearchLine(line: string): string {
 	return line.length > SEARCH_LINE_LIMIT ? `${line.slice(0, SEARCH_LINE_LIMIT)}… [truncated]` : line;
 }

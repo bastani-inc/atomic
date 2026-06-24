@@ -109,6 +109,16 @@ describe("find/search edge parity", () => {
 
 
 
+	it("uses oh-my-pi's 512-character search line cap", async () => {
+		writeFileSync(join(testDir, "long.txt"), `needle ${"x".repeat(700)}\n`);
+		const output = textOutput(await createSearchToolDefinition(testDir).execute("search-long-line", { pattern: "needle", paths: "long.txt" }));
+		const matchLine = output.split("\n").find((line) => line.startsWith("*1:"));
+		expect(matchLine).toBeDefined();
+		const payload = matchLine!.slice(3);
+		expect(payload.endsWith("...") || payload.endsWith("... [truncated]") || payload.endsWith("… [truncated]")).toBe(true);
+		expect(payload.length).toBe(512);
+	});
+
 	it("skips missing explicit targets after a full search page", async () => {
 		const paths: string[] = [];
 		for (let index = 1; index <= 20; index++) { const name = `full-${String(index).padStart(2, "0")}.txt`; paths.push(name); writeFileSync(join(testDir, name), "needle\n"); }

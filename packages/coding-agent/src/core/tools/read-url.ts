@@ -35,7 +35,14 @@ export async function readUrlBranch(args: ReadUrlBranchArgs): Promise<ReadUrlBra
 	if (!effectiveRanges && !effectiveOffset && effectiveLimit === undefined) {
 		const result = await executeReadUrl(scope, { path: effectivePath, raw: rawOutput }, artifactsDir, signal);
 		const artifactId = result.artifactId ?? result.details.meta?.artifactId;
-		return { content: [{ type: "text", text: result.content }], details: { meta: { source: effectivePath, sourcePath: effectivePath, ...(artifactId ? { artifactId } : {}) } } };
+		const truncation = result.details.meta?.truncation;
+		return {
+			content: [{ type: "text", text: result.content }],
+			details: {
+				...(truncation ? { truncation } : {}),
+				meta: { ...(result.details.meta ?? {}), source: effectivePath, sourcePath: effectivePath, ...(artifactId ? { artifactId } : {}) },
+			},
+		};
 	}
 	const response = await fetch(/^www\./i.test(effectivePath) ? `https://${effectivePath}` : effectivePath, { signal });
 	const textContent = rawOutput ? await response.text() : await decodeReadableUrl(response, effectivePath);

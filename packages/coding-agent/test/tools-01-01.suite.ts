@@ -73,16 +73,16 @@ describe("Coding Agent Tools", () => {
 		});
 		it("should truncate files exceeding line limit", async () => {
 			const testFile = join(testDir, "large.txt");
-			const lines = Array.from({ length: 2500 }, (_, i) => `Line ${i + 1}`);
+			const lines = Array.from({ length: 3500 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-3", { path: testFile });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 2000");
-			expect(output).not.toContain("Line 2001");
-			expect(output).toContain("[Showing lines 1-2000 of 2500. Continue with path selector :2001.]");
+			expect(output).toContain("Line 3000");
+			expect(output).not.toContain("Line 3001");
+			expect(output).toContain("[Showing lines 1-3000 of 3500. Continue with path selector :3001.]");
 		});
 		it("should truncate when byte limit exceeded", async () => {
 			const testFile = join(testDir, "large-bytes.txt");
@@ -314,7 +314,7 @@ describe("Coding Agent Tools", () => {
 		});
 		it("should include truncation details when truncated", async () => {
 			const testFile = join(testDir, "large-file.txt");
-			const lines = Array.from({ length: 2500 }, (_, i) => `Line ${i + 1}`);
+			const lines = Array.from({ length: 3500 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-9", { path: testFile });
@@ -323,8 +323,8 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.truncation).toBeDefined();
 			expect(result.details?.truncation?.truncated).toBe(true);
 			expect(result.details?.truncation?.truncatedBy).toBe("lines");
-			expect(result.details?.truncation?.totalLines).toBe(2500);
-			expect(result.details?.truncation?.outputLines).toBe(2000);
+			expect(result.details?.truncation?.totalLines).toBe(3500);
+			expect(result.details?.truncation?.outputLines).toBe(3000);
 		});
 		it("should detect image MIME type from file magic (not extension)", async () => {
 			const png1x1Base64 =

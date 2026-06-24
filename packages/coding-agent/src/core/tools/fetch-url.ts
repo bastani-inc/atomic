@@ -18,6 +18,7 @@ import { LRUCache } from "lru-cache";
 import TurndownService from "turndown";
 import { getArtifactManager } from "./artifacts.ts";
 import { extractDocumentMarkdown, isDocumentPath } from "./read-document-extract.ts";
+import type { TruncationResult } from "./truncate.ts";
 
 export const FETCH_DEFAULT_MAX_LINES = 300;
 export const READ_URL_CACHE_MAX_ENTRIES = 100;
@@ -41,7 +42,7 @@ export interface ReadUrlToolDetails {
 	method: string;
 	truncated: boolean;
 	notes: string[];
-	meta?: { artifactId?: string; truncation?: { outputLines: number; totalLines: number; outputBytes: number; maxBytes: number; truncated: boolean } };
+	meta?: { artifactId?: string; truncation?: TruncationResult };
 }
 
 interface ReadUrlCacheEntry {
@@ -353,11 +354,28 @@ export async function executeReadUrl(scope: string, params: { path: string; raw?
 	const lines = entry.output.split("\n");
 	const visibleLines = lines.slice(0, FETCH_DEFAULT_MAX_LINES);
 	let content = visibleLines.join("\n");
-	const truncated = lines.length > FETCH_DEFAULT_MAX_LINES || Buffer.byteLength(content, "utf8") > fetchDefaultBytes;
-	if (Buffer.byteLength(content, "utf8") > fetchDefaultBytes) { content = content.slice(0, fetchDefaultBytes); }
+	const bytesBeforeByteClamp = Buffer.byteLength(content, "utf8");
+	const byteTruncated = bytesBeforeByteClamp > fetchDefaultBytes;
+	const lineTruncated = lines.length > FETCH_DEFAULT_MAX_LINES;
+	if (byteTruncated) content = content.slice(0, fetchDefaultBytes);
+	const truncated = lineTruncated || byteTruncated;
 	let artifactId = entry.artifactId;
 	if (truncated && !artifactId) artifactId = persistReadUrlArtifact(artifactsDir, entry.output);
-	const details: ReadUrlToolDetails = { ...entry.details, truncated, meta: { ...(entry.details.meta ?? {}), ...(artifactId ? { artifactId } : {}), ...(truncated ? { truncation: { outputLines: visibleLines.length, totalLines: lines.length, outputBytes: Buffer.byteLength(content, "utf8"), maxBytes: fetchDefaultBytes, truncated } } : {}) } };
+	const outputLines = content.length === 0 ? 0 : content.split("\n").length;
+	const truncation: TruncationResult | undefined = truncated ? {
+		content,
+		truncated: true,
+		truncatedBy: byteTruncated ? "bytes" : "lines",
+		totalLines: lines.length,
+		totalBytes: Buffer.byteLength(entry.output, "utf8"),
+		outputLines,
+		outputBytes: Buffer.byteLength(content, "utf8"),
+		lastLinePartial: byteTruncated,
+		firstLineExceedsLimit: false,
+		maxLines: FETCH_DEFAULT_MAX_LINES,
+		maxBytes: fetchDefaultBytes,
+	} : undefined;
+	const details: ReadUrlToolDetails = { ...entry.details, truncated, meta: { ...(entry.details.meta ?? {}), ...(artifactId ? { artifactId } : {}), ...(truncation ? { truncation } : {}) } };
 	if (truncated) content += `\n\n[Showing first ${visibleLines.length} of ${lines.length} lines.${artifactId ? ` Full output: artifact://${artifactId}` : ""}]`;
 	return { content, details, artifactId };
 }
