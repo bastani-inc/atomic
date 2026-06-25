@@ -28,6 +28,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed durable stage lifecycle persistence so workflow completion waits for pending backend checkpoint writes (including DBOS async writes) and reports a failed run when those writes fail instead of acknowledging success before checkpoints are durable. Cached `ctx.task` replay now also records a completed replay node in the workflow graph/store, matching cached `ctx.stage` visibility. ([#1498](https://github.com/bastani-inc/atomic/issues/1498))
 - Fixed the builtin `open-claude-design` continuation loop so generator stages fork only from prior generator sessions and user-feedback stages fork only from prior feedback sessions; the first feedback stage now starts its own chain instead of inheriting generator context.
+- Fixed workflow config loading and user-global discovery to honor `ATOMIC_CODING_AGENT_DIR` isolation instead of reading `~/.atomic/agent` when an isolated agent dir is configured.
 
 ## [0.9.2] - 2026-06-23
 
@@ -44,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
 - Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
 - Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
+
 ## [0.9.1] - 2026-06-23
 
 ### Changed

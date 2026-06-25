@@ -11,6 +11,18 @@ declare module "./interactive-mode-base.ts" {
   createBaseAutocompleteProvider(): AutocompleteProvider;
   setupAutocompleteProvider(): void;
   showStartupNoticesIfNeeded(): void;
+  hadLastChangelogVersionAtStartup: boolean;
+  firstRunOnboardingHeaderComponents: Component[];
+  firstRunOnboardingSeedInFlight: boolean;
+  pendingFirstRunOnboardingSeed: string | undefined;
+  isFirstRunOnboardingEligible(): boolean;
+  isFirstRunOnboardingReadyForHandoff(): boolean;
+  stashFirstRunOnboardingSeed(seed: string): void;
+  resumePendingFirstRunOnboardingSeed(): Promise<void>;
+  clearPendingFirstRunOnboardingSeed(): void;
+  clearFirstRunOnboardingUi(): void;
+  completeFirstRunOnboarding(): void;
+  handleOnboardingWorkflowSeed(seed: string): Promise<void>;
   init(): Promise<void>;
   updateTerminalTitle(): void;
   run(): Promise<void>;

@@ -8,7 +8,7 @@
  *   Project-local:
  *     <projectRoot>/.atomic/extensions/workflow/config.json
  *   User-global:
- *     <homeDir>/.atomic/agent/extensions/workflow/config.json
+ *     <agentDir>/extensions/workflow/config.json
  * Invalid JSON or invalid shape → CONFIG_INVALID diagnostic (not silent success).
  * Missing file → silently skipped (not an error).
  *
@@ -17,8 +17,7 @@
  */
 
 import { join, isAbsolute } from "node:path";
-import { homedir } from "node:os";
-import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getAgentDir, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
 import { loadConfigFile } from "./config-file-loader.js";
 
@@ -82,7 +81,7 @@ export interface ConfigLoadResult {
    */
   readonly config: WorkflowExtensionConfig | null;
   /**
-   * Pre-merge global config (from <homeDir>/.atomic/agent/extensions/workflow/config.json).
+   * Pre-merge global config (from <agentDir>/extensions/workflow/config.json).
    * null when the global file is absent or invalid. Absent on results from callers
    * that constructed ConfigLoadResult before this field was added.
    */
@@ -108,10 +107,15 @@ export interface LoadWorkflowConfigOpts {
    */
   readonly projectRoot?: string;
   /**
-   * User home directory. Defaults to os.homedir().
-   * Global config is resolved relative to this path.
+   * User home directory. When set, preserves legacy test/compat resolution
+   * relative to <homeDir>/.atomic/agent and <homeDir>/.pi/agent.
    */
   readonly homeDir?: string;
+  /**
+   * User agent config directories in precedence order. Defaults to Atomic's
+   * configured agent directories, honoring ATOMIC_CODING_AGENT_DIR.
+   */
+  readonly agentDirs?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -242,10 +246,15 @@ export interface ScopedDiscoveryConfigOpts {
    */
   readonly projectRoot: string;
   /**
-   * User home directory. Relative paths in globalConfig.workflows are
-   * resolved relative to <homeDir>/.atomic/agent.
+   * User home directory. When set, relative paths in globalConfig.workflows
+   * resolve relative to <homeDir>/.atomic/agent.
    */
-  readonly homeDir: string;
+  readonly homeDir?: string;
+  /**
+   * User agent config directory. Defaults to Atomic's configured agent dir,
+   * honoring ATOMIC_CODING_AGENT_DIR.
+   */
+  readonly agentDir?: string;
 }
 
 export interface ScopedDiscoveryConfig {
@@ -275,12 +284,21 @@ function resolveWorkflowPaths(
   );
 }
 
+function workflowAgentDirs(opts: Pick<LoadWorkflowConfigOpts, "agentDirs" | "homeDir">): readonly string[] {
+  if (opts.agentDirs !== undefined) return opts.agentDirs;
+  if (opts.homeDir !== undefined) {
+    const homeDir = opts.homeDir;
+    return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+  }
+  return getAgentDirs();
+}
+
 /**
  * Build a scope-aware DiscoveryConfig from the pre-merge global and project configs.
  *
  * Scope rules:
  *   - globalConfig.workflows entries → DiscoveryConfig.globalWorkflows
- *     Relative paths are resolved under <homeDir>/.atomic/agent.
+ *     Relative paths are resolved under the configured Atomic agent dir.
  *   - projectConfig.workflows entries → DiscoveryConfig.projectWorkflows
  *     Relative paths are resolved under projectRoot.
  *   - When both configs define the same workflow key, the project entry wins
@@ -294,7 +312,8 @@ export function toScopedDiscoveryConfig(
   projectConfig: WorkflowExtensionConfig | null,
   opts: ScopedDiscoveryConfigOpts,
 ): ScopedDiscoveryConfig {
-  const globalBase = join(opts.homeDir, CONFIG_DIR_NAME, "agent");
+  const globalBase = opts.agentDir
+    ?? (opts.homeDir === undefined ? getAgentDir() : join(opts.homeDir, CONFIG_DIR_NAME, "agent"));
   const projectBase = opts.projectRoot;
 
   const result: ScopedDiscoveryConfig = {};
@@ -328,7 +347,7 @@ export function toScopedDiscoveryConfig(
  *
  * Candidate paths (in resolution order):
  *   Global (lowest priority):
- *     <homeDir>/.atomic/agent/extensions/workflow/config.json
+ *     <agentDir>/extensions/workflow/config.json
  *   Project-local (highest priority, first existing wins):
  *     <projectRoot>/.atomic/extensions/workflow/config.json
  * Merge: project-local overrides global. Key-level merge for `workflows` map.
@@ -338,12 +357,13 @@ export async function loadWorkflowConfig(
   opts: LoadWorkflowConfigOpts = {},
 ): Promise<ConfigLoadResult> {
   const projectRoot = opts.projectRoot ?? process.cwd();
-  const home = opts.homeDir ?? homedir();
 
   const diagnostics: ConfigDiagnostic[] = [];
 
-  // Global config paths (primary Atomic first, then legacy pi)
-  const globalCandidates = CONFIG_DIR_NAMES.map((name) => join(home, name, "agent", "extensions", "workflow", "config.json"));
+  // Global config paths (primary Atomic first, then legacy pi/defaults).
+  const globalCandidates = workflowAgentDirs(opts).map((agentDir) =>
+    join(agentDir, "extensions", "workflow", "config.json")
+  );
 
   // Project-local config paths (primary Atomic first, then legacy pi)
   const projectCandidates: string[] = getProjectConfigPaths(projectRoot, "extensions", "workflow", "config.json");

@@ -1,6 +1,110 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
+import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
+
+const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
+
+function findLastAtMentionDelimiter(text: string): number {
+  for (let index = text.length - 1; index >= 0; index -= 1) {
+    if (AT_MENTION_PATH_DELIMITERS.has(text[index] ?? "")) return index;
+  }
+  return -1;
+}
+
+function isAtMentionTokenStart(text: string, index: number): boolean {
+  return index === 0 || AT_MENTION_PATH_DELIMITERS.has(text[index - 1] ?? "");
+}
+
+function findUnclosedAtMentionQuoteStart(text: string): number | null {
+  let quoteStart = -1;
+  let inQuotes = false;
+  for (let index = 0; index < text.length; index += 1) {
+    if (text[index] === '"') {
+      inQuotes = !inQuotes;
+      if (inQuotes) quoteStart = index;
+    }
+  }
+  return inQuotes ? quoteStart : null;
+}
+
+function extractAtMentionPrefix(textBeforeCursor: string): string | null {
+  const quoteStart = findUnclosedAtMentionQuoteStart(textBeforeCursor);
+  if (quoteStart !== null && quoteStart > 0 && textBeforeCursor[quoteStart - 1] === "@") {
+    return isAtMentionTokenStart(textBeforeCursor, quoteStart - 1)
+      ? textBeforeCursor.slice(quoteStart - 1)
+      : null;
+  }
+  const lastDelimiterIndex = findLastAtMentionDelimiter(textBeforeCursor);
+  const tokenStart = lastDelimiterIndex === -1 ? 0 : lastDelimiterIndex + 1;
+  return textBeforeCursor[tokenStart] === "@" ? textBeforeCursor.slice(tokenStart) : null;
+}
+
+function atMentionPrefixToPathPrefix(atPrefix: string): string {
+  return atPrefix.startsWith('@"') ? `"${atPrefix.slice(2)}` : atPrefix.slice(1);
+}
+
+function toAtMentionCompletion(item: AutocompleteItem): AutocompleteItem {
+  return {
+    ...item,
+    value: item.value.startsWith("@") ? item.value : `@${item.value}`,
+  };
+}
+
+class AtMentionFallbackAutocompleteProvider implements AutocompleteProvider {
+  private readonly primary: AutocompleteProvider;
+  private readonly pathFallback: AutocompleteProvider;
+
+  constructor(primary: AutocompleteProvider, pathFallback: AutocompleteProvider) {
+    this.primary = primary;
+    this.pathFallback = pathFallback;
+  }
+
+  async getSuggestions(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    options: { signal: AbortSignal; force?: boolean },
+  ): Promise<AutocompleteSuggestions | null> {
+    const primarySuggestions = await this.primary.getSuggestions(lines, cursorLine, cursorCol, options);
+    if (primarySuggestions || options.signal.aborted) return primarySuggestions;
+
+    const currentLine = lines[cursorLine] ?? "";
+    const textBeforeCursor = currentLine.slice(0, cursorCol);
+    const atPrefix = extractAtMentionPrefix(textBeforeCursor);
+    if (!atPrefix) return null;
+
+    const pathPrefix = atMentionPrefixToPathPrefix(atPrefix);
+    const prefixStart = cursorCol - atPrefix.length;
+    const fallbackLines = [...lines];
+    fallbackLines[cursorLine] = `${currentLine.slice(0, prefixStart)}${pathPrefix}${currentLine.slice(cursorCol)}`;
+    const fallbackSuggestions = await this.pathFallback.getSuggestions(
+      fallbackLines,
+      cursorLine,
+      prefixStart + pathPrefix.length,
+      { ...options, force: true },
+    );
+    if (!fallbackSuggestions) return null;
+
+    return {
+      prefix: atPrefix,
+      items: fallbackSuggestions.items.map(toAtMentionCompletion),
+    };
+  }
+
+  applyCompletion(
+    lines: string[],
+    cursorLine: number,
+    cursorCol: number,
+    item: AutocompleteItem,
+    prefix: string,
+  ): { lines: string[]; cursorLine: number; cursorCol: number } {
+    return this.primary.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+  }
+
+  shouldTriggerFileCompletion(lines: string[], cursorLine: number, cursorCol: number): boolean {
+    return this.primary.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+  }
+}
 
 InteractiveModeBase.prototype.getAutocompleteSourceTag = function(this: InteractiveModeBase, sourceInfo?: SourceInfo): string | undefined {
     if (!sourceInfo) {
@@ -161,15 +265,16 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
       }
     }
 
-    return new CombinedAutocompleteProvider(
-      [
-        ...slashCommands,
-        ...templateCommands,
-        ...extensionCommands,
-        ...skillCommandList,
-      ],
-      this.sessionManager.getCwd(),
-      this.fdPath,
+    const commands = [
+      ...slashCommands,
+      ...templateCommands,
+      ...extensionCommands,
+      ...skillCommandList,
+    ];
+    const cwd = this.sessionManager.getCwd();
+    return new AtMentionFallbackAutocompleteProvider(
+      new CombinedAutocompleteProvider(commands, cwd, this.fdPath),
+      new CombinedAutocompleteProvider(commands, cwd, null),
     );
   };
 

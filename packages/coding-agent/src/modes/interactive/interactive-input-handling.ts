@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
+import { NORMAL_CHAT_TRANSITION_COPY, isCwdLocalExistingPathSeed, isExistingAbsolutePathSeed } from "./interactive-onboarding.ts";
 
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
     // Set up handlers on defaultEditor - they use this.editor for text access
@@ -100,9 +101,53 @@ InteractiveModeBase.prototype.handleClipboardImagePaste = async function(this: I
   };
 
 InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: InteractiveModeBase): void {
+    const submitFirstRunOnboardingSeed = async (text: string): Promise<void> => {
+      if (this.firstRunOnboardingSeedInFlight) return;
+      this.editor.addToHistory?.(text);
+      this.editor.setText("");
+      const readyForHandoff = typeof this.isFirstRunOnboardingReadyForHandoff === "function"
+        ? this.isFirstRunOnboardingReadyForHandoff()
+        : true;
+      if (!readyForHandoff) {
+        this.stashFirstRunOnboardingSeed(text);
+        return;
+      }
+      this.firstRunOnboardingSeedInFlight = true;
+      try {
+        await this.handleOnboardingWorkflowSeed(text);
+      } catch (error: unknown) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.showError(errorMessage);
+        this.editor.setText(text);
+      } finally {
+        this.firstRunOnboardingSeedInFlight = false;
+      }
+    };
+
     this.defaultEditor.onSubmit = async (text: string) => {
       text = text.trim();
       if (!text) return;
+
+      if (this.firstRunOnboardingActive && (text === "/chat" || text.startsWith("/chat "))) {
+        const chatMessage = text.slice(5).trim();
+        this.completeFirstRunOnboarding();
+        this.showStatus(NORMAL_CHAT_TRANSITION_COPY);
+        this.editor.setText("");
+        if (!chatMessage) return;
+        this.flushPendingBashComponents();
+        if (this.onInputCallback) {
+          this.onInputCallback(chatMessage);
+        } else {
+          this.pendingUserInputs.push(chatMessage);
+        }
+        this.editor.addToHistory?.(text);
+        return;
+      }
+
+      if (this.firstRunOnboardingActive && text.startsWith("/") && (isCwdLocalExistingPathSeed(text, this.sessionManager.getCwd()) || isExistingAbsolutePathSeed(text))) {
+        await submitFirstRunOnboardingSeed(text);
+        return;
+      }
 
       // Handle commands
       if (text === "/settings") {
@@ -268,6 +313,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
           this.updateEditorBorderColor();
           return;
         }
+      }
+
+      if (this.firstRunOnboardingActive && !text.startsWith("/")) {
+        await submitFirstRunOnboardingSeed(text);
+        return;
       }
 
       // Queue input during compaction (extension commands execute immediately)

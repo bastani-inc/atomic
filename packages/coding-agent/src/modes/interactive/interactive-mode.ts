@@ -4,6 +4,7 @@
  */
 
 import "./interactive-autocomplete.ts";
+import "./interactive-onboarding.ts";
 import "./interactive-startup.ts";
 import "./interactive-resource-paths.ts";
 import "./interactive-resource-disclosure.ts";

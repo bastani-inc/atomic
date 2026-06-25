@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type Api, type Model } from "@earendil-works/pi-ai";
 import { type AutocompleteProvider, CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AutocompleteProviderFactory } from "../src/core/extensions/types.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 describe("InteractiveMode.createExtensionUIContext addAutocompleteProvider", () => {
@@ -256,6 +259,80 @@ describe("InteractiveMode /fast autocomplete", () => {
 });
 
 describe("InteractiveMode.createBaseAutocompleteProvider", () => {
+	const tempDirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of tempDirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	function createAutocompleteProvider(cwd: string, fdPath: string | null = null): AutocompleteProvider {
+		type AutocompleteHost = {
+			session: {
+				scopedModels: [];
+				modelRegistry: { getAvailable: () => [] };
+				promptTemplates: [];
+				extensionRunner: { getRegisteredCommands: () => [] };
+				resourceLoader: { getSkills: () => { skills: [] } };
+			};
+			settingsManager: { getEnableSkillCommands: () => boolean };
+			skillCommands: Map<string, string>;
+			sessionManager: { getCwd: () => string };
+			fdPath: string | null;
+		};
+		const createBaseAutocompleteProvider = (
+			InteractiveMode as unknown as {
+				prototype: { createBaseAutocompleteProvider(this: AutocompleteHost): AutocompleteProvider };
+			}
+		).prototype.createBaseAutocompleteProvider;
+		const fakeThis: AutocompleteHost = {
+			session: {
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => [] },
+				promptTemplates: [],
+				extensionRunner: { getRegisteredCommands: () => [] },
+				resourceLoader: { getSkills: () => ({ skills: [] }) },
+			},
+			settingsManager: { getEnableSkillCommands: () => false },
+			skillCommands: new Map(),
+			sessionManager: { getCwd: () => cwd },
+			fdPath,
+		};
+		Object.setPrototypeOf(fakeThis, (InteractiveMode as unknown as { prototype: object }).prototype);
+		return createBaseAutocompleteProvider.call(fakeThis);
+	}
+
+	test("falls back to path completion for @ file mentions before fd is ready", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-at-autocomplete-"));
+		tempDirs.push(dir);
+		writeFileSync(join(dir, "spec.md"), "# Spec\n");
+		writeFileSync(join(dir, "other.txt"), "Other\n");
+		const provider = createAutocompleteProvider(dir);
+
+		const suggestions = await provider.getSuggestions(["@sp"], 0, 3, {
+			signal: new AbortController().signal,
+		});
+
+		expect(suggestions?.prefix).toBe("@sp");
+		expect(suggestions?.items.map((item) => item.value)).toEqual(["@spec.md"]);
+	});
+
+	test("preserves @ quoting when fallback completion targets paths with spaces", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-at-autocomplete-"));
+		tempDirs.push(dir);
+		writeFileSync(join(dir, "task brief.md"), "# Task\n");
+		const provider = createAutocompleteProvider(dir);
+		const line = 'please read @"task';
+
+		const suggestions = await provider.getSuggestions([line], 0, line.length, {
+			signal: new AbortController().signal,
+		});
+
+		expect(suggestions?.prefix).toBe('@"task');
+		expect(suggestions?.items.map((item) => item.value)).toEqual(['@"task brief.md"']);
+	});
+
 	test("matches model command arguments across provider/model order", async () => {
 		type TestModel = { id: string; provider: string; name: string };
 		type FakeInteractiveMode = {
