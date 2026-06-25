@@ -325,12 +325,12 @@ export function createWorkflowStageFactory(input: {
     // workflow-exit cleanup and removes the stage from the fail-fast active set.
     // Later paths must not overwrite the terminal skippedReason; they only abort
     // and release idempotent live handles.
-    const skipForParallelFailFast = (): void => {
+    const skipForParallelFailFast = async (): Promise<void> => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();
-      void finalizeStageSnapshot();
-      void innerCtx.abort().catch(() => {});
-      void dropStageControlForCompletion().catch(() => {});
+      await finalizeStageSnapshot();
+      await innerCtx.abort().catch(() => {});
+      await dropStageControlForCompletion().catch(() => {});
     };
     stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
     runtime.unregisterWorkflowExitCleanup = input.exit.registerWorkflowExitCleanup(stageId, {

@@ -19,7 +19,7 @@ export interface DurableStageDeps {
 
 export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   if (stage.status !== "completed") return false;
-  const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
+  const replayKey = stage.replayKey ?? deps.replayKeyForCompletedStage?.(stage) ?? deps.nextReplayKey(stage.name);
   if (deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined) return false;
   const checkpoint: DurableStageCheckpoint = {
     kind: "stage",
@@ -48,7 +48,15 @@ export function createDurableStagePrimitive(input: {
       input.recordCachedStage?.(name, replayKey, cached);
       return createCachedStageContext(name, cached);
     }
-    return input.stage(name, options, replayKey);
+    const live = input.stage(name, options, replayKey);
+    if (options?.schema === undefined) return live;
+    return wrapSchemaStageForDurability({
+      stage: live,
+      workflowId: input.workflowId,
+      backend: input.backend,
+      replayKey,
+      name,
+    });
   };
 }
 
@@ -78,6 +86,35 @@ export function createDurableTaskPrimitive(input: {
     });
     return result;
   };
+}
+
+function wrapSchemaStageForDurability(input: {
+  readonly stage: StageContext;
+  readonly workflowId: string;
+  readonly backend: DurableWorkflowBackend;
+  readonly replayKey: string;
+  readonly name: string;
+}): StageContext {
+  const stage = input.stage;
+  const wrapped = Object.create(stage) as StageContext;
+  Object.defineProperty(wrapped, "prompt", {
+    value: async (text: string, options?: Parameters<StageContext["prompt"]>[1]) => {
+      const result = await stage.prompt(text, options);
+      if (typeof result !== "string") {
+        await recordCheckpointDurably(input.backend, {
+          kind: "stage",
+          workflowId: input.workflowId,
+          checkpointId: stableCheckpointId("stage", input.replayKey),
+          name: input.name,
+          replayKey: input.replayKey,
+          output: result as WorkflowSerializableValue,
+          completedAt: Date.now(),
+        });
+      }
+      return result;
+    },
+  });
+  return wrapped;
 }
 
 function createCachedStageContext(name: string, output: WorkflowSerializableValue): StageContext {

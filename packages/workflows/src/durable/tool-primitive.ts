@@ -140,14 +140,26 @@ async function executeWithRetries<T>(
   throw lastError ?? new Error("ctx.tool: retries exhausted");
 }
 
-function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(signal?.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
+    let settled = false;
+    const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
     };
+    const fail = (err: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(err);
+    };
+    const timer = setTimeout(finish, ms);
+    const onAbort = (): void => fail(signal?.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }

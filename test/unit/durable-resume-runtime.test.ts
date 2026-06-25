@@ -7,8 +7,11 @@
  *
  * cross-ref: issue #1498 — /workflow resume by top-level workflow id.
  */
-import { describe, test, beforeEach } from "bun:test";
+import { describe, test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { WorkflowDefinition } from "../../packages/workflows/src/shared/types.js";
@@ -67,6 +70,7 @@ describe("resumeDurableWorkflow", () => {
   let store: ReturnType<typeof createStore>;
   let cancellation: ReturnType<typeof createCancellationRegistry>;
   let jobs: ReturnType<typeof createJobTracker>;
+  let tmpDir: string;
 
   beforeEach(() => {
     backend = new InMemoryDurableBackend();
@@ -74,7 +78,10 @@ describe("resumeDurableWorkflow", () => {
     store = createStore();
     cancellation = createCancellationRegistry();
     jobs = createJobTracker();
+    tmpDir = mkdtempSync(join(tmpdir(), "durable-resume-"));
   });
+
+  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
 
   function makeDef(): WorkflowDefinition {
     return workflow({
@@ -156,6 +163,28 @@ describe("resumeDurableWorkflow", () => {
     }
     // Backend status flipped back to running.
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
+  });
+
+  test("scan-only prepared catalog carries session-cache entry through resume", async () => {
+    const entry = {
+      type: "workflow.durable.checkpoint",
+      workflowId: "wf-scan-only",
+      name: "resumable-pipeline",
+      inputs: { topic: "from-session" },
+      status: "running" as const,
+      completedCheckpoints: 2,
+      pendingPrompts: 0,
+      ts: Date.now(),
+    };
+    writeFileSync(join(tmpDir, "session.jsonl"), JSON.stringify({ type: "custom", customType: "workflow.durable.checkpoint", data: entry }) + "\n");
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    assert.equal(catalog.length, 1);
+    assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
+
+    const result = resumeDurableWorkflow("wf-scan-only", deps(), catalog);
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.runId, "wf-scan-only");
+    assert.equal(backend.getWorkflow("wf-scan-only")?.inputs["topic"], "from-session");
   });
 
   test("prepareRuntimeDurableResumable hydrates fresh persistent backend before resume", async () => {

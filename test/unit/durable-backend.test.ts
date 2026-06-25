@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
-import { createToolPrimitive, createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { createToolPrimitive, createCheckpointIdGenerator, sleepOrAbort } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 
 const WORKFLOW_ID = "wf-test-001";
@@ -317,6 +317,29 @@ describe("ctx.tool primitive (durable caching)", () => {
     }, { retriesAllowed: true, maxAttempts: 3, intervalMs: 50 });
     await assert.rejects(() => pending, /cancelled/);
     assert.equal(attempts, 1);
+  });
+
+  test("sleepOrAbort removes abort listener after normal completion", async () => {
+    class CountingSignal extends EventTarget implements AbortSignal {
+      aborted = false;
+      reason: Error | undefined;
+      onabort: ((this: AbortSignal, ev: Event) => unknown) | null = null;
+      listenerCount = 0;
+      throwIfAborted(): void {
+        if (this.aborted) throw this.reason ?? new Error("aborted");
+      }
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: AddEventListenerOptions | boolean): void {
+        if (type === "abort") this.listenerCount++;
+        super.addEventListener(type, listener, options);
+      }
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null, options?: EventListenerOptions | boolean): void {
+        if (type === "abort") this.listenerCount--;
+        super.removeEventListener(type, listener, options);
+      }
+    }
+    const signal = new CountingSignal();
+    await sleepOrAbort(1, signal);
+    assert.equal(signal.listenerCount, 0);
   });
 
   test("awaits async checkpoint persistence before returning side-effect result", async () => {

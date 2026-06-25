@@ -101,7 +101,7 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 }
 
 export interface ParallelFailFastStage {
-  readonly skip: () => void;
+  readonly skip: () => Promise<void>;
 }
 
 export interface ParallelFailFastScope {

@@ -94,7 +94,6 @@ export interface ExtensionRuntimeOpts {
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
-
 export type ResumeFailedRunResult =
   | { ok: true; runId: string; sourceRunId: string; resumeFromStageId: string; message: string }
   | { ok: false; reason: "run_not_found" | "not_resumable" | "workflow_not_found" | "insufficient_state"; message: string };
@@ -164,6 +163,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
   const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability disabled: ${err instanceof Error ? err.message : String(err)}`));
   const ensureDbosReady = async (): Promise<void> => { await dbosReady; };
+  let preparedDurableCatalog: readonly ResumableWorkflowEntry[] = [];
 
   function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =
@@ -478,7 +478,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         baseRunOpts: runOptions({ workflow: "", inputs: {} }, options?.policy),
         durableBackend: getDurableBackend(),
       };
-      return resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps);
+      return resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps, preparedDurableCatalog);
     },
 
     listDurableResumable(sessionDir?: string): readonly ResumableWorkflowEntry[] {
@@ -493,7 +493,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
 
     async prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
       await ensureDbosReady();
-      return prepareRuntimeDurableResumable(getDurableBackend, () => resolveDefaultStageSessionDir?.(), workflowIdOrPrefix, sessionDir);
+      preparedDurableCatalog = await prepareRuntimeDurableResumable(getDurableBackend, () => resolveDefaultStageSessionDir?.(), workflowIdOrPrefix, sessionDir);
+      return preparedDurableCatalog;
     },
   };
 }

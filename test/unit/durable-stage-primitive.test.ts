@@ -60,10 +60,11 @@ describe("recordStageCheckpoint", () => {
     assert.equal(backend.getStageOutput(WORKFLOW_ID, replayKey), "analysis output");
   });
 
-  test("prefers stage.replayKey when present", async () => {
-    const stage = makeStage({ replayKey: "continuation:analyze:1" });
-    await recordStageCheckpoint(deps(), stage);
-    assert.equal(backend.getStageOutput(WORKFLOW_ID, "continuation:analyze:1"), "analysis output");
+  test("prefers stage.replayKey over completed-stage map when present", async () => {
+    const stage = makeStage({ replayKey: "explicit:analyze:1" });
+    await recordStageCheckpoint({ ...deps(), replayKeyForCompletedStage: () => "mapped:analyze:1" }, stage);
+    assert.equal(backend.getStageOutput(WORKFLOW_ID, "explicit:analyze:1"), "analysis output");
+    assert.equal(backend.getStageOutput(WORKFLOW_ID, "mapped:analyze:1"), undefined);
   });
 
   test("skips non-completed stages", async () => {
@@ -84,6 +85,64 @@ describe("recordStageCheckpoint", () => {
     await recordStageCheckpoint(deps(), stage);
     const output = backend.getStageOutput(WORKFLOW_ID, "rk-2");
     assert.deepEqual(output, { status: "completed", stageId: "stage-1" });
+  });
+
+  test("schema-backed live stage records structured prompt output", async () => {
+    const replayKey = "stage:structured:1";
+    const stage = createDurableStagePrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextReplayKey: () => replayKey,
+      stage: () => ({
+        name: "structured",
+        prompt: async () => ({ summary: "ok", count: 2 }),
+        complete: async () => "unused",
+        steer: async () => {},
+        followUp: async () => {},
+        subscribe: () => () => {},
+        sessionFile: undefined,
+        sessionId: "s1",
+        setModel: async () => {},
+        setThinkingLevel: () => {},
+        cycleModel: async () => undefined,
+        cycleThinkingLevel: () => undefined,
+        agent: undefined,
+        model: undefined,
+        thinkingLevel: undefined,
+        messages: [],
+        isStreaming: false,
+        navigateTree: async () => {},
+        compact: async () => {},
+        abortCompaction: () => {},
+        abort: async () => {},
+      } as never),
+    });
+
+    const result = await stage("structured", { schema: Type.Object({ summary: Type.String(), count: Type.Number() }) }).prompt("structured");
+    assert.deepEqual(result, { summary: "ok", count: 2 });
+    assert.deepEqual(backend.getStageOutput(WORKFLOW_ID, replayKey), { summary: "ok", count: 2 });
+  });
+
+  test("schema-backed replay returns structured prompt output", async () => {
+    const replayKey = "stage:structured:1";
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: WORKFLOW_ID,
+      checkpointId: `stage:${replayKey}`,
+      name: "structured",
+      replayKey,
+      output: { summary: "cached", count: 3 },
+      completedAt: Date.now(),
+    });
+    const stage = createDurableStagePrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextReplayKey: () => replayKey,
+      stage: () => { throw new Error("live stage should not run"); },
+    });
+
+    const result = await stage("structured", { schema: Type.Object({ summary: Type.String(), count: Type.Number() }) }).prompt("structured");
+    assert.deepEqual(result, { summary: "cached", count: 3 });
   });
 
   test("replayed stage invokes recordCachedStage for graph/store visibility", async () => {

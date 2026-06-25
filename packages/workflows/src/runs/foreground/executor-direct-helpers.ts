@@ -67,7 +67,7 @@ export async function mapParallelSteps<T>(
   concurrency: number | undefined,
   failFast: boolean | undefined,
   mapper: (step: WorkflowTaskStep) => Promise<T>,
-  onFirstFailure?: (error: unknown) => void,
+  onFirstFailure?: (error: unknown) => void | Promise<void>,
   control?: {
     readonly beforeDequeue?: () => void;
     readonly beforeMap?: () => void;
@@ -92,11 +92,11 @@ export async function mapParallelSteps<T>(
     controlSignal = error;
     if (failFastEnabled) rejectFirstFailure(error);
   };
-  const recordFailure = (index: number, error: unknown): void => {
+  const recordFailure = async (index: number, error: unknown): Promise<void> => {
     failures.push({ index, error });
     if (firstFailure === undefined) {
       firstFailure = error;
-      onFirstFailure?.(error);
+      await onFirstFailure?.(error);
       if (failFastEnabled) rejectFirstFailure(error);
     }
   };
@@ -112,7 +112,7 @@ export async function mapParallelSteps<T>(
           selectControlSignal(err);
           return;
         }
-        recordFailure(nextIndex, err);
+        await recordFailure(nextIndex, err);
         return;
       }
       if (controlSignal !== undefined) return;
@@ -128,7 +128,7 @@ export async function mapParallelSteps<T>(
           selectControlSignal(err);
           return;
         }
-        recordFailure(index, err);
+        await recordFailure(index, err);
         if (failFastEnabled) return;
       }
     }
