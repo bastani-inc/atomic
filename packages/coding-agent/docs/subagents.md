@@ -142,7 +142,7 @@ A small custom read-only inspection agent:
 ---
 name: strict-inspector
 description: Inspect code for correctness and regressions
-tools: read, grep, bash
+tools: read, search, bash
 model: anthropic/claude-sonnet-4
 fallbackModels: openai/gpt-5-mini
 inheritProjectContext: true
@@ -186,7 +186,7 @@ Set the reasoning (thinking) effort for each model candidate with a `model_name:
 ---
 name: deep-reviewer
 description: Adversarial reviewer for risky diffs
-tools: read, grep, bash
+tools: read, search, bash
 model: anthropic/claude-sonnet-4:high
 fallbackModels: openai/gpt-5:medium, anthropic/claude-haiku-4-5:off
 ---

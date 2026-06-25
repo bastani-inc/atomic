@@ -21,8 +21,8 @@ pub fn force_rescan(
 
 	let scan_epoch = cache_epoch();
 	let entries = collect_entries(root, options, ct)?;
-	if store && cache_epoch() == scan_epoch {
-		FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), entries: entries.clone() });
+	if store {
+		FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), epoch: scan_epoch, entries: entries.clone() });
 		evict_oldest();
 	}
 	Ok(entries)

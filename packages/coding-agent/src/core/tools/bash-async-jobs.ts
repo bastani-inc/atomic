@@ -1,3 +1,5 @@
+import { rmSync } from "node:fs";
+
 export interface ManagedBashJob {
 	jobId: string;
 	command: string;
@@ -22,13 +24,17 @@ export function formatAsyncJobError(error: unknown): string {
 	if (message.startsWith("timeout:")) return `Command timed out after ${message.slice("timeout:".length)} seconds`;
 	return message;
 }
+function deleteJobOutput(job: ManagedBashJob): void {
+	if (!job.fullOutputPath) return;
+	try { rmSync(job.fullOutputPath, { force: true }); } catch { /* best-effort temp cleanup */ }
+}
 
 function cleanupManagedBashJobs(now = Date.now()): void {
-	for (const [jobId, job] of managedBashJobs) if (job.status !== "running" && job.endedAt !== undefined && now - job.endedAt > COMPLETED_JOB_TTL_MS) managedBashJobs.delete(jobId);
+	for (const [jobId, job] of managedBashJobs) if (job.status !== "running" && job.endedAt !== undefined && now - job.endedAt > COMPLETED_JOB_TTL_MS) { deleteJobOutput(job); managedBashJobs.delete(jobId); }
 	while (managedBashJobs.size > MAX_MANAGED_BASH_JOBS) {
 		const oldest = [...managedBashJobs.values()].sort((a, b) => (a.endedAt ?? a.startedAt) - (b.endedAt ?? b.startedAt))[0];
 		if (!oldest) break;
-		if (oldest.status === "running") oldest.abortController?.abort();
+		if (oldest.status === "running") oldest.abortController?.abort(); else deleteJobOutput(oldest);
 		managedBashJobs.delete(oldest.jobId);
 	}
 }

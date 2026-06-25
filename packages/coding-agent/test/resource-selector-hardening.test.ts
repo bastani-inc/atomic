@@ -25,6 +25,16 @@ describe("resource selector hardening", () => {
 		await expect(read.execute("raw-sqlite-splice", { path: "data.sqlite?q=select \"sqlite\"\"_master\" from t" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid raw SQLite query/);
 	});
 
+	it("rejects SQLite where filters that contain subqueries or internal functions", async () => {
+		const mod = sqlite(); if (!mod) return;
+		const dir = await tempDir(); const dbPath = join(dir, "data.sqlite"); const db = new mod.Database(dbPath);
+		try { db.run("create table t (id integer primary key, name text)"); } finally { db.close(); }
+		const read = createReadToolDefinition(dir);
+		await expect(read.execute("where-subselect", { path: "data.sqlite:t?where=exists(select%201)" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid SQLite where filter/);
+		await expect(read.execute("where-load-extension", { path: "data.sqlite:t?where=load_extension('x')" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid SQLite where filter/);
+		await expect(read.execute("where-sqlite-internal", { path: "data.sqlite:t?where=sqlite_master%3D1" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid SQLite where filter/);
+	});
+
 	it("rejects malformed zip central directory offsets during selective writes", async () => {
 		const dir = await tempDir(); const archivePath = join(dir, "bad.zip");
 		const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(1000, 16);

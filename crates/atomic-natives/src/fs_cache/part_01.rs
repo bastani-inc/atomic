@@ -124,6 +124,7 @@ pub struct ScanOptions {
 #[derive(Clone)]
 struct CacheEntry {
 	created_at: Instant,
+	epoch: u64,
 	entries: Vec<GlobMatch>,
 }
 
@@ -453,8 +454,9 @@ pub fn get_or_scan(
 
 	let now = Instant::now();
 	if let Some(entry) = FS_CACHE.get(&key) {
+		let current_epoch = cache_epoch();
 		let age = now.duration_since(entry.created_at);
-		if age < Duration::from_millis(ttl) {
+		if entry.epoch == current_epoch && age < Duration::from_millis(ttl) {
 			return Ok(ScanResult {
 				entries: entry.entries.clone(),
 				cache_age_ms: age.as_millis() as u64,
@@ -466,9 +468,7 @@ pub fn get_or_scan(
 
 	let scan_epoch = cache_epoch();
 	let entries = collect_entries(root, options, ct)?;
-	if cache_epoch() == scan_epoch {
-		FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), entries: entries.clone() });
-		evict_oldest();
-	}
+	FS_CACHE.insert(key, CacheEntry { created_at: Instant::now(), epoch: scan_epoch, entries: entries.clone() });
+	evict_oldest();
 	Ok(ScanResult { entries, cache_age_ms: 0 })
 }

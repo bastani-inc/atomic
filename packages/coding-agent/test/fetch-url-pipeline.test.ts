@@ -58,7 +58,7 @@ test("rejects invalid URL line selectors", () => {
 	expect(() => parseReadUrlTarget("https://example.com/doc:3+0")).toThrow("Invalid URL line selector");
 });
 
-test("blocks private URL reads by default", async () => {
+test.sequential("blocks private URL reads by default", async () => {
 	const previous = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	try {
@@ -70,13 +70,16 @@ test("blocks private URL reads by default", async () => {
 		for (const host of ["[64:ff9b::a9fe:a9fe]", "[2002:a9fe:a9fe::]", "[0:0:0:0:0:ffff:169.254.169.254]", "[::ffff:7f00:1]"]) {
 			await expect(loadPage(`http://${host}/`, 100)).rejects.toThrow("Refusing to fetch private or metadata URL");
 		}
+		process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = "1";
+		await expect(loadPage("file:///etc/passwd", 100)).rejects.toThrow("Unsupported URL protocol");
+		delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	} finally {
 		if (previous === undefined) delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 		else process.env.ATOMIC_ALLOW_PRIVATE_URL_READS = previous;
 	}
 });
 
-test("revalidates redirect targets before fetching them", async () => {
+test.sequential("revalidates redirect targets before fetching them", async () => {
 	const previousAllowance = process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;
 	const previousFetch = globalThis.fetch;
 	delete process.env.ATOMIC_ALLOW_PRIVATE_URL_READS;

@@ -3,7 +3,6 @@ export interface BashInterceptorRule {
 	flags?: string;
 	tool: string;
 	message: string;
-	allowSubcommands?: string[];
 }
 
 export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [

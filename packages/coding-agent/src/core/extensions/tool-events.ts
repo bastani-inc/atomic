@@ -10,6 +10,8 @@ import type {
 	LsToolInput,
 	ReadToolDetails,
 	ReadToolInput,
+	SearchToolDetails,
+	SearchToolInput,
 	WriteToolInput,
 } from "../tools/index.ts";
 
@@ -47,6 +49,11 @@ export interface FindToolCallEvent extends ToolCallEventBase {
 	input: FindToolInput;
 }
 
+export interface SearchToolCallEvent extends ToolCallEventBase {
+	toolName: "search";
+	input: SearchToolInput;
+}
+
 export interface LsToolCallEvent extends ToolCallEventBase {
 	toolName: "ls";
 	input: LsToolInput;
@@ -69,6 +76,7 @@ export type ToolCallEvent =
 	| EditToolCallEvent
 	| WriteToolCallEvent
 	| FindToolCallEvent
+	| SearchToolCallEvent
 	| LsToolCallEvent
 	| CustomToolCallEvent;
 
@@ -105,6 +113,11 @@ export interface FindToolResultEvent extends ToolResultEventBase {
 	details: FindToolDetails | undefined;
 }
 
+export interface SearchToolResultEvent extends ToolResultEventBase {
+	toolName: "search";
+	details: SearchToolDetails | undefined;
+}
+
 export interface LsToolResultEvent extends ToolResultEventBase {
 	toolName: "ls";
 	details: LsToolDetails | undefined;
@@ -122,6 +135,7 @@ export type ToolResultEvent =
 	| EditToolResultEvent
 	| WriteToolResultEvent
 	| FindToolResultEvent
+	| SearchToolResultEvent
 	| LsToolResultEvent
 	| CustomToolResultEvent;
 
@@ -140,6 +154,9 @@ export function isWriteToolResult(e: ToolResultEvent): e is WriteToolResultEvent
 }
 export function isFindToolResult(e: ToolResultEvent): e is FindToolResultEvent {
 	return e.toolName === "find";
+}
+export function isSearchToolResult(e: ToolResultEvent): e is SearchToolResultEvent {
+	return e.toolName === "search";
 }
 export function isLsToolResult(e: ToolResultEvent): e is LsToolResultEvent {
 	return e.toolName === "ls";
@@ -170,6 +187,7 @@ export function isToolCallEventType(toolName: "read", event: ToolCallEvent): eve
 export function isToolCallEventType(toolName: "edit", event: ToolCallEvent): event is EditToolCallEvent;
 export function isToolCallEventType(toolName: "write", event: ToolCallEvent): event is WriteToolCallEvent;
 export function isToolCallEventType(toolName: "find", event: ToolCallEvent): event is FindToolCallEvent;
+export function isToolCallEventType(toolName: "search", event: ToolCallEvent): event is SearchToolCallEvent;
 export function isToolCallEventType(toolName: "ls", event: ToolCallEvent): event is LsToolCallEvent;
 export function isToolCallEventType<TName extends string, TInput extends Record<string, unknown>>(
 	toolName: TName,

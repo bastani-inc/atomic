@@ -274,7 +274,8 @@ export function createSearchToolDefinition(
 			const isSingleFileSearch = targets.length === 1 && await fsStat(resolveToCwd(targets[0]!.path, cwd)).then((stat) => stat.isFile()).catch(() => false);
 			const limit = isSingleFileSearch ? SINGLE_FILE_MATCHES : DEFAULT_LIMIT;
 			let skip = normalizeSkip(params.skip);
-			if (skip > 0 && isSingleFileSearch) skip = 0;
+			const singleFileSkipIgnored = skip > 0 && isSingleFileSearch;
+			if (singleFileSkipIgnored) skip = 0;
 			for (const target of targets) {
 				if (target.archive || target.sqlite || target.internal) continue;
 				if (target.lineRanges && !await fsStat(resolveToCwd(target.path, cwd)).then((stat) => stat.isFile()).catch(() => false)) {
@@ -411,10 +412,11 @@ export function createSearchToolDefinition(
 					.join("\n");
 				text = filterSearchOutputByLineRange(text, targets[0]?.lineRanges, contextBefore, contextAfter);
 				if (!isVirtualSearchTarget(targets[0]) && text !== "No matches found") text = applyDefaultSearchContext(text, contextBefore, contextAfter) || "No matches found";
+				const skipNotice = singleFileSkipIgnored ? "\n\n[skip is ignored for single-file search; refine the pattern/path or search a directory to page matching files.]" : "";
 				if (isSingleFileSearch && text !== "No matches found") text = formatSearchGroups(groupSearchOutput(text), limit, limit);
 				if (text && text !== "No matches found") {
 					const renderedText = isVirtualSearchTarget(targets[0]) ? text : await addHashlineHeadersToSearchOutput(text, cwd, targets[0]?.path ?? ".", hashlineStore);
-					const pagedText = hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText;
+					const pagedText = `${hasFileLimit(result.details) ? `${renderedText}\n\n${continuationHint(limit, skip)}` : renderedText}${skipNotice}`;
 					const truncation = truncateHead(pagedText, { maxLines: Number.MAX_SAFE_INTEGER });
 					if (truncation.truncated) return { ...result, content: [{ type: "text", text: `${truncation.content}\n\n[${formatSize(DEFAULT_MAX_BYTES)} combined output limit reached]` }], details: buildSearchDetails({ ...(result.details ?? {}), truncation }, truncation.content, cwd, scopePath, skippedMissingPaths) };
 					return { ...result, content: [{ type: "text", text: pagedText }], details: buildSearchDetails(result.details, pagedText, cwd, scopePath, skippedMissingPaths) };

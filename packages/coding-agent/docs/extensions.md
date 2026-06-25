@@ -736,7 +736,7 @@ Behavior guarantees:
 import { isToolCallEventType } from "@bastani/atomic";
 
 pi.on("tool_call", async (event, ctx) => {
-  // event.toolName - "bash", "read", "write", "edit", etc.
+  // event.toolName - "bash", "read", "write", "edit", "find", "search", etc.
   // event.toolCallId
   // event.input - tool parameters (mutable)
 
@@ -753,6 +753,11 @@ pi.on("tool_call", async (event, ctx) => {
   if (isToolCallEventType("read", event)) {
     // event.input is { path: string }
     console.log(`Reading: ${event.input.path}`);
+  }
+
+  if (isToolCallEventType("search", event)) {
+    // event.input is typed as SearchToolInput
+    event.input.paths ??= ".";
   }
 });
 ```
@@ -793,7 +798,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
-import { isBashToolResult } from "@bastani/atomic";
+import { isBashToolResult, isSearchToolResult } from "@bastani/atomic";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
@@ -801,6 +806,10 @@ pi.on("tool_result", async (event, ctx) => {
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
+  }
+
+  if (isSearchToolResult(event)) {
+    // event.details is typed as SearchToolDetails | undefined
   }
 
   const response = await fetch("https://example.com/summarize", {

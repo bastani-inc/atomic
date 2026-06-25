@@ -35,6 +35,7 @@ export {
 	isEditToolResult,
 	isFindToolResult,
 	isLsToolResult,
+	isSearchToolResult,
 	isReadToolResult,
 	isToolCallEventType,
 	isWriteToolResult,

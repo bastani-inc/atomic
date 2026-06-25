@@ -561,7 +561,7 @@ const { session } = await createAgentSession({
 // Or pick specific tools for custom cwd
 const { session } = await createAgentSession({
   cwd,
-  tools: ["read", "bash", "grep"],
+  tools: ["read", "bash", "search"],
   sessionManager: SessionManager.inMemory(cwd),
 });
 ```

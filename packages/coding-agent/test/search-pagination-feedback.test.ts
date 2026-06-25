@@ -51,4 +51,12 @@ describe("search pagination feedback", () => {
 		const output = text(await search.execute("search-context-lines", { pattern: "needle", paths: "." }, undefined, undefined, {} as never));
 		expect(output).toContain("needle 5");
 	});
+
+	it("explains that skip is ignored for single-file search", async () => {
+		const dir = await tempDir();
+		await writeFile(join(dir, "one.txt"), "needle\n", "utf8");
+		const search = createSearchToolDefinition(dir);
+		const output = text(await search.execute("single-skip", { pattern: "needle", paths: "one.txt", skip: 20 }, undefined, undefined, {} as never));
+		expect(output).toContain("skip is ignored for single-file search");
+	});
 });

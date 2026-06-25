@@ -82,6 +82,7 @@ export function isReadableUrlPath(readPath: string): boolean {
 
 function normalizeUrlForCache(url: string): string {
 	const repaired = repairCollapsedScheme(url);
+	if (/^[a-z][a-z0-9+.-]*:\/\//i.test(repaired)) return repaired;
 	return /^https?:\/\//i.test(repaired) ? repaired : `https://${repaired}`;
 }
 const RANGE_TOKEN_RE = /^(raw|\d+(?:\+(?:\d+)|(?:-|\.\.)\d+)?)$/i;
@@ -209,9 +210,9 @@ async function pinnedFetch(url: string, dispatcher: Dispatcher, options: { signa
 
 
 async function assertSafeFetchUrl(url: string): Promise<SafeFetchAddress | undefined> {
-	if (process.env.ATOMIC_ALLOW_PRIVATE_URL_READS === "1") return undefined;
 	const parsed = new URL(url);
 	if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+	if (process.env.ATOMIC_ALLOW_PRIVATE_URL_READS === "1") return undefined;
 	const hostname = parsed.hostname.replace(/^\[|\]$/g, "").replace(/\.$/, "").toLowerCase();
 	if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname === "metadata.google.internal") throw new Error(`Refusing to fetch private or metadata URL: ${url}`);
 	const literalAddress = normalizeIpLiteralHost(hostname);

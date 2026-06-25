@@ -1,7 +1,7 @@
 ---
 name: codebase-pattern-finder
 description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
-tools: read, grep, find, ls
+tools: read, search, find, ls
 model: openai/gpt-5.4-mini:low
 fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low
 ---
@@ -32,7 +32,7 @@ You are a specialist at finding code patterns and examples in the codebase. Your
 
 ### Content / Path Search
 
-- `grep` for exact text matches (error messages, config values, import paths) and regex — your primary tool for "find every place that uses X."
+- `search` for exact text matches (error messages, config values, import paths) and regex — your primary tool for "find every place that uses X."
 - `find` for filename / extension patterns; sorted by mtime so recently touched files surface first.
 - `ls` to enumerate directories that look like they cluster related patterns.
 
@@ -48,7 +48,7 @@ What to look for based on request:
 
 ### Step 2: Search!
 
-- Use `grep`, `find`, and `read` to locate candidates. Narrow `paths` first — never scan the whole repo when a subtree will do.
+- Use `search`, `find`, and `read` to locate candidates. Narrow `paths` first — never scan the whole repo when a subtree will do.
 
 ### Step 3: Read and Extract
 

@@ -297,11 +297,11 @@ function formatSqliteOrder(order: string | undefined): string {
 		return `${quoteSqliteIdent(column)} ${dir}`;
 	}).join(", ");
 }
-const FORBIDDEN_WHERE_KEYWORDS = new Set(["limit", "offset", "union", "intersect", "except", "attach", "detach", "pragma"]);
+const FORBIDDEN_WHERE_KEYWORDS = new Set(["limit", "offset", "union", "intersect", "except", "attach", "detach", "pragma", "select", "load_extension"]);
 function validateSqliteWhere(where: string | undefined): string | undefined {
 	const trimmed = where?.trim(); if (!trimmed) return undefined;
 	let quote = "", token = "";
-	const flush = () => { const lower = token.toLowerCase(); if (token && (FORBIDDEN_WHERE_KEYWORDS.has(lower) || lower.startsWith("pragma_"))) throw new Error("Invalid SQLite where filter"); token = ""; };
+	const flush = () => { const lower = token.toLowerCase(); if (token && (FORBIDDEN_WHERE_KEYWORDS.has(lower) || lower.startsWith("pragma_") || lower.startsWith("sqlite_"))) throw new Error("Invalid SQLite where filter"); token = ""; };
 	for (let i = 0; i < trimmed.length; i++) { const ch = trimmed[i], next = trimmed[i + 1]; if (quote === "'") { if (ch === "'" && next === "'") { i++; continue; } if (ch === "'") quote = ""; continue; } if (quote === "\"") { if (ch === "\"" && next === "\"") { i++; continue; } if (ch === "\"") { quote = ""; flush(); continue; } if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); token = ch; continue; } if (ch === "'" || ch === "\"") { flush(); quote = ch; continue; } if (ch === ";" || ch === "-" && next === "-" || ch === "/" && next === "*" || ch === "*" && next === "/") throw new Error("Invalid SQLite where filter"); if (ch && /[A-Za-z0-9_]/.test(ch)) { token += ch; continue; } flush(); }
 	flush();
 	return trimmed;

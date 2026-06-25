@@ -22,6 +22,7 @@ import { OutputAccumulator } from "./output-accumulator.ts";
 import { expandShellInternalUrls, type InternalResourceContext } from "./resource-selectors.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
+import { invalidateNativeSearchCache } from "./search-native.ts";
 import { DEFAULT_MAX_BYTES, formatSize, type TruncationResult } from "./truncate.ts";
 const envSchema = Type.Unsafe<Record<string, string>>({ type: "object", description: "Environment variables to add or override.", additionalProperties: { type: "string" }, propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_]*$" } });
 const bashBaseSchema = Type.Object({ command: Type.String({ description: "Shell command to execute." }), env: Type.Optional(envSchema), timeout: Type.Optional(Type.Number({ description: "Timeout in seconds." })), cwd: Type.Optional(Type.String({ description: "Working directory for the command." })), pty: Type.Optional(Type.Boolean({ description: "Run with PTY handling." })) }, { additionalProperties: false });
@@ -341,7 +342,7 @@ export function createBashToolDefinition(
 						job.exitCode = exitCode;
 						job.status = exitCode && exitCode !== 0 ? "failed" : "completed";
 					}
-					job.endedAt = Date.now(); signal?.removeEventListener("abort", onParentAbort);
+					job.endedAt = Date.now(); invalidateNativeSearchCache(); signal?.removeEventListener("abort", onParentAbort);
 				})();
 				return { content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${executionContext.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })` }], details: { async: { jobId: job.jobId, type: "bash", state: "running", command: executionContext.command, status: "running" }, timeoutSeconds: timeout, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}) } };
 			}
@@ -451,9 +452,7 @@ export function createBashToolDefinition(
 					return { content: [{ type: "text", text: appendStatus(outputText, `Command exited with code ${exitCode}`) }], details: { ...withTiming(details), exitCode }, isError: true };
 				}
 				return { content: [{ type: "text", text: outputText }], details: withTiming(details) };
-			} finally {
-				clearUpdateTimer();
-			}
+			} finally { invalidateNativeSearchCache(); clearUpdateTimer(); }
 		},
 		renderCall(args, _theme, context) {
 			const state = context.state;

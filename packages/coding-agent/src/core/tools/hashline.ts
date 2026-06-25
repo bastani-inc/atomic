@@ -72,7 +72,7 @@ export function stripKnownHashlineCopiedContentWithMeta(content: string, _absolu
 	const snapshot = store.findByHeader(header[1] ?? "", header[2] ?? "");
 	if (!snapshot) return { content, stripped: false };
 	const body = lines.slice(headerIndex + 1);
-	if (body.length === 0) return { content: "", stripped: true };
+	if (body.length === 0) return { content: snapshot.content, stripped: true };
 	const stripped: string[] = [];
 	const snapshotLines = snapshot.content.split("\n");
 	let sawRow = false;

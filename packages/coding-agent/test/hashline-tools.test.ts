@@ -341,6 +341,9 @@ describe("hashline file tool parity", () => {
 		const knownCopy = firstOutput.slice(firstOutput.indexOf("[copy.txt#"));
 		await write.execute("write-2", { path: "copy.txt", content: knownCopy }, undefined, undefined, {} as ExtensionContext);
 		expect(await readFile(join(dir, "copy.txt"), "utf8")).toBe("alpha\nbeta");
+		const headerOnly = knownCopy.split("\n")[0]!;
+		await write.execute("write-header-only", { path: "copy.txt", content: headerOnly }, undefined, undefined, {} as ExtensionContext);
+		expect(await readFile(join(dir, "copy.txt"), "utf8")).toBe("alpha\nbeta");
 
 		const searchCopy = firstOutput.slice(firstOutput.indexOf("[copy.txt#")).replace("1:alpha", "*1:alpha").replace("2:beta", " 2:beta");
 		await write.execute("write-3", { path: "other.txt", content: searchCopy }, undefined, undefined, {} as ExtensionContext);

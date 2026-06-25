@@ -135,6 +135,25 @@ describe("Coding Agent Tools", () => {
 			expect(polled.details?.fullOutputPath).toBeDefined();
 			expect(fullOutput).toContain("12000\n");
 		});
+		it("should decode and sanitize async output chunks", async () => {
+			const euro = Buffer.from("\u001b[31m€\u001b[0m\r\n", "utf-8");
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => { onData(euro.subarray(0, 5)); onData(euro.subarray(5)); return { exitCode: 0 }; },
+			};
+			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
+			const started = await bash.execute("async-utf-start", { command: "utf", async: true });
+			const jobId = started.details?.async?.jobId;
+			let polled = started;
+			for (let i = 0; i < 20; i++) {
+				polled = await bash.execute("async-utf-poll", { command: `__atomic_bash_job ${jobId}` });
+				if (polled.details?.async?.state === "completed") break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			const output = getTextOutput(polled);
+			expect(output).toContain("€\n");
+			expect(output).not.toContain("�");
+			expect(output).not.toContain("\u001b[");
+		});
 		it("should throw error when cwd does not exist", async () => {
 			const nonexistentCwd = "/this/directory/definitely/does/not/exist/12345";
 
