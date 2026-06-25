@@ -1,3 +1,5 @@
+// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
+// DO NOT EDIT directly; update the vendored source and re-split.
 fn build_matcher(
 	pattern: &str,
 	ignore_case: bool,

@@ -1,3 +1,5 @@
+// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
+// DO NOT EDIT directly; update the vendored source and re-split.
 fn search_sync(content: &[u8], options: SearchOptions) -> SearchResult {
 	let ignore_case = options.ignore_case.unwrap_or(false);
 	let multiline = options.multiline.unwrap_or(false);

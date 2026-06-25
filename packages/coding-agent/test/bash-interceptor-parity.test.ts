@@ -142,6 +142,16 @@ describe("bash interceptor parity", () => {
 		});
 		await expect(bash.execute("bash-spawn-hook-intercept", { command: "echo safe" }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Use the read tool/);
 	});
+
+	it("surfaces invalid custom interceptor regexes", async () => {
+		const dir = await createTempDir();
+		const bash = createBashToolDefinition(dir, {
+			interceptorEnabled: true,
+			interceptorRules: [{ pattern: "(", tool: "read", message: "bad" }],
+			operations: { exec: async (_command, _cwd, { onData }) => { onData(Buffer.from("unexpected")); return { exitCode: 0 }; } },
+		});
+		await expect(bash.execute("bash-invalid-rule", { command: "echo safe" }, undefined, undefined, {} as ExtensionContext)).rejects.toThrow(/Invalid bash interceptor rule/);
+	});
 	it("expands internal URLs in command cwd and env before execution", async () => {
 		const dir = await createTempDir();
 		let seenCommand = "";

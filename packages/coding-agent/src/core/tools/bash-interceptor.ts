@@ -22,11 +22,12 @@ export function checkBashInterception(
 ): string | undefined {
 	for (const rule of rules) {
 		if (!availableTools.includes(rule.tool)) continue;
-		try {
-			if (new RegExp(rule.pattern, rule.flags).test(command.trim())) {
-				return `Blocked: ${rule.message}\n\nOriginal command: ${command}`;
-			}
-		} catch {}
+		let matcher: RegExp;
+		try { matcher = new RegExp(rule.pattern, rule.flags); }
+		catch (error) { throw new Error(`Invalid bash interceptor rule for ${rule.tool}: ${error instanceof Error ? error.message : String(error)}`); }
+		if (matcher.test(command.trim())) {
+			return `Blocked: ${rule.message}\n\nOriginal command: ${command}`;
+		}
 	}
 	return undefined;
 }

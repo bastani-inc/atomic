@@ -1,3 +1,5 @@
+// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
+// DO NOT EDIT directly; update the vendored source and re-split.
 /// Force a fresh scan, replacing any existing cache entry.
 ///
 /// Use when a cached query produced zero matches and the cache was old enough

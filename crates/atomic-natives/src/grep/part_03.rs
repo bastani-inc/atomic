@@ -1,3 +1,5 @@
+// @generated split fragment copied from can1357/oh-my-pi for Atomic issue #1483 parity.
+// DO NOT EDIT directly; update the vendored source and re-split.
 #[cfg(test)]
 mod tests {
 	#[cfg(unix)]

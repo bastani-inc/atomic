@@ -1,30 +1,14 @@
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
-
-const cliPath = resolve(__dirname, "../src/cli.ts");
-
-// The CLI is TypeScript source that uses the repo-wide `.js`->`.ts` import
-// convention, which only resolves under Bun. Launch it with Bun explicitly so
-// these tests pass regardless of whether the Vitest worker runs under Bun or
-// Node (where `process.execPath` would be Node and ESM resolution would fail).
-function bunExecutable(): string {
-	const npmExecPath = process.env.npm_execpath;
-	if (npmExecPath?.endsWith("bun") || npmExecPath?.endsWith("bun.exe")) {
-		return npmExecPath;
-	}
-	return "bun";
-}
+import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	removeTempDirs(tempDirs);
 });
 
 function createTempDir(): string {
@@ -77,8 +61,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 }
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
-	let stderr = "";
-	const child = spawn(bunExecutable(), [cliPath, ...args], {
+	const result = await runCliProcess(args, {
 		cwd: dirs.projectDir,
 		env: {
 			...process.env,
@@ -86,25 +69,8 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 			ATOMIC_OFFLINE: "1",
 			TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
 		},
-		stdio: ["ignore", "ignore", "pipe"],
 	});
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk.toString();
-	});
-
-	return new Promise((resolvePromise, reject) => {
-		const timeout = setTimeout(() => {
-			child.kill("SIGKILL");
-		}, 30_000);
-		child.on("error", (error) => {
-			clearTimeout(timeout);
-			reject(error);
-		});
-		child.on("close", (code, signal) => {
-			clearTimeout(timeout);
-			resolvePromise({ code, signal, stderr });
-		});
-	});
+	return { code: result.code, signal: result.signal, stderr: result.stderr };
 }
 
 function setup(): CliDirs {
