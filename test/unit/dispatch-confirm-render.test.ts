@@ -8,9 +8,7 @@
  *    badge.
  *  - Inputs wrap to a second body row only when row 1's interior cannot
  *    hold them; the body row uses the same overflow rules.
- *  - Non-onboarding runs keep one hint row: `▸ /workflow connect <short-id>   watch, attach & steer`.
- *  - Goal / Ralph onboarding targets also show `/workflow status <short-id>`
- *    and a plain-chat steering hint for first-time users.
+ *  - Runs keep one hint row: `▸ /workflow connect <short-id>   watch, attach & steer`.
  *
  * Explicitly removed (was in the legacy 7-row layout): the `✓ submitted`
  * echo, the `[ DISPATCHED ]` band, the `run id` muted caption beside the
@@ -169,10 +167,10 @@ describe("renderDispatchConfirm — plain", () => {
     // Inputs present (inline on wide terminal).
     assert.match(out, /prompt="hello"/);
 
-    // First-run onboarding targets expose both quick inspection and attach flows.
-    assert.match(out, /▸ \/workflow status abc12345\s+check progress/);
+    // All workflows keep the dispatch card focused on attach/steer.
     assert.match(out, /▸ \/workflow connect abc12345\s+watch, attach & steer/);
-    assert.match(out, /Ask here anytime for status or to steer this run\./);
+    assert.doesNotMatch(out, /▸ \/workflow status abc12345/);
+    assert.doesNotMatch(out, /Ask here anytime for status or to steer this run\./);
 
     // Legacy chrome MUST be gone in plain mode too.
     assert.doesNotMatch(out, /✓ submitted/);

@@ -7,11 +7,8 @@
  *  - One status-coloured rounded run card:
  *      title: runId8 · workflowName · ● running
  *      body: compact `k=v · k=v · +N more` input summary when present
- *  - For goal / ralph onboarding runs, compact next-step hints:
- *      ▸ /workflow status <id>   check progress
+ *  - One compact next-step hint:
  *      ▸ /workflow connect <id>  watch, attach & steer
- *      Ask here anytime for status or to steer this run.
- *  - Other workflows keep the existing connect-only hint.
  *
  * What we deliberately do NOT emit (was in the legacy 7-row layout):
  *  - the `✓ submitted · /workflow <name>` echo line — pi already shows
@@ -23,10 +20,9 @@
  *    an 8-char hex string visually communicates "identifier";
  *  - the `status starting…` body row — the `● running` badge on row 1
  *    occupies the same semantic slot;
- *  - the second hint row `▸ /workflow status` for non-onboarding
- *    workflows — that is a separate intent (list other in-flight runs),
- *    already discoverable from a bare `/workflow` invocation and the
- *    picker's confirm panel.
+ *  - the second hint row `▸ /workflow status` — that is a separate intent
+ *    (list other in-flight runs), already discoverable from a bare `/workflow`
+ *    invocation and the picker's confirm panel.
  *
  * Plain mode drops ANSI; the rounded panel/card layout shape is preserved.
  *
@@ -75,9 +71,7 @@ export interface RenderDispatchConfirmOpts {
 /**
  * Render the post-dispatch confirmation: one rounded panel containing a
  * rounded run card with runId, workflow name, inputs summary, and a
- * `● running` status badge, followed by workflow-control hints. Goal
- * and Ralph runs include extra first-time-user guidance because those
- * are the first-run onboarding targets.
+ * `● running` status badge, followed by a workflow-control hint.
  */
 export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
   const width = effectiveWidth(opts.width);
@@ -148,23 +142,15 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
     : [`   ${titleSuffix ?? "started in background"} `];
   const titleLine = ` ●  ${tag}  ${opts.workflowName}  ${trailing.text} `;
 
-  const onboardingGuidance = isOnboardingWorkflow(opts.workflowName);
-  const hintRows = onboardingGuidance
-    ? [
-        { command: `/workflow status ${tag}`, hint: "check progress" },
-        { command: `/workflow connect ${tag}`, hint: "watch, attach & steer" },
-      ]
-    : [{ command: `/workflow connect ${tag}`, hint: "watch, attach & steer" }];
-  const hints = renderHintRows(hintRows, theme)
+  const hints = renderHintRows([
+    { command: `/workflow connect ${tag}`, hint: "watch, attach & steer" },
+  ], theme)
     .split("\n")
     .map((line) => ` ${line} `);
-  const guidanceRows = onboardingGuidance
-    ? [renderAskHereGuidance(theme)]
-    : [];
 
   return renderRoundedBox({
     title: "DISPATCHED",
-    bodyLines: [titleLine, ...inputRows, "", ...hints, ...guidanceRows],
+    bodyLines: [titleLine, ...inputRows, "", ...hints],
     accent,
     theme,
     width,
@@ -174,16 +160,6 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
 /** First 8 chars of the run UUID — the canonical short form. */
 function shortRunId(runId: string): string {
   return runId.length > SHORT_ID_LEN ? runId.slice(0, SHORT_ID_LEN) : runId;
-}
-
-function isOnboardingWorkflow(workflowName: string): boolean {
-  return workflowName === "goal" || workflowName === "ralph";
-}
-
-function renderAskHereGuidance(theme?: GraphTheme): string {
-  const text = "Ask here anytime for status or to steer this run.";
-  if (!theme) return `   ${text} `;
-  return `   ${hexToAnsi(theme.dim)}${text}${RESET} `;
 }
 
 interface InputsSegment {
