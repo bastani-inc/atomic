@@ -21,8 +21,10 @@ function tryCurlyQuoteVariant(filePath: string): string {
 
 function tryShellEscapedPath(filePath: string): string {
 	// Terminal paste often preserves POSIX shell escaping, e.g. `Screenshot\ 2026.png`.
-	// Try the literal path first; only use this as a fallback for paths that did not exist.
-	return filePath.includes("\\") ? filePath.replace(/\\(?=.)/g, "") : filePath;
+	// Windows paths use backslashes as separators, so only apply POSIX-style
+	// shell unescaping on platforms where backslashes are not path separators.
+	if (process.platform === "win32" || !filePath.includes("\\")) return filePath;
+	return filePath.replace(/\\(?=[\\\s"'()])/g, "");
 }
 
 function addUniqueCandidate(candidates: string[], filePath: string): void {

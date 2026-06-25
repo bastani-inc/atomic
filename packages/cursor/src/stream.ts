@@ -1,17 +1,25 @@
-import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
+import { randomUUID as nodeRandomUUID } from "node:crypto";
 import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
+import { deriveCursorBridgeKeyFromSessionId, deriveCursorConversationIdentity, deriveCursorWireConversationIdFromSessionId } from "./conversation-identity.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
+import { hasCurrentUserImageInput, hasToolResultImageInput, hasUserImageInput } from "./image-input-predicates.js";
 import { resolveCursorModelVariant } from "./model-mapper.js";
 import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
 
 export interface CursorStreamAdapterOptions {
-	readonly transport: CursorAgentTransport; readonly conversationState?: CursorConversationStateStore; readonly uuid?: () => string;
-	readonly pausedTurnIdleTimeoutMs?: number; readonly streamReadTimeoutMs?: number;
+	readonly transport: CursorAgentTransport;
+	readonly conversationState?: CursorConversationStateStore;
+	readonly uuid?: () => string;
+	readonly pausedTurnIdleTimeoutMs?: number;
+	readonly streamReadTimeoutMs?: number;
 }
 interface CursorStreamRuntime {
-	readonly transport: CursorAgentTransport; readonly conversationState: CursorConversationStateStore; readonly uuid: () => string;
-	readonly pausedTurnIdleTimeoutMs: number; readonly streamReadTimeoutMs: number;
+	readonly transport: CursorAgentTransport;
+	readonly conversationState: CursorConversationStateStore;
+	readonly uuid: () => string;
+	readonly pausedTurnIdleTimeoutMs: number;
+	readonly streamReadTimeoutMs: number;
 }
 
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -338,63 +346,6 @@ function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 }
 function textFromToolResult(message: Extract<Context["messages"][number], { readonly role: "toolResult" }>): string {
 	return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
-}
-function textFromMessage(message: Context["messages"][number]): string {
-	if (message.role === "user") {
-		if (typeof message.content === "string") return message.content;
-		return message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
-	}
-	if (message.role === "assistant") {
-		return message.content.map((part) => {
-			if (part.type === "text") return part.text;
-			if (part.type === "thinking") return part.thinking;
-			return `toolCall:${part.id}:${part.name}:${JSON.stringify(part.arguments)}`;
-		}).join("\n");
-	}
-	return textFromToolResult(message);
-}
-interface CursorConversationIdentity {
-	readonly activeKey: string;
-	readonly wireConversationId: string;
-}
-function deriveCursorConversationIdentity(context: Context, sessionId: string | undefined): CursorConversationIdentity {
-	const bridgeKey = deriveCursorConversationKey("bridge", context, sessionId);
-	const conversationKey = deriveCursorConversationKey("conv", context, sessionId);
-	return { activeKey: bridgeKey, wireConversationId: deterministicCursorConversationId(conversationKey) };
-}
-function deriveCursorBridgeKeyFromSessionId(sessionId: string): string {
-	return hashCursorKey("bridge", sessionId);
-}
-function deriveCursorWireConversationIdFromSessionId(sessionId: string): string {
-	return deterministicCursorConversationId(hashCursorKey("conv", sessionId));
-}
-function deriveCursorConversationKey(prefix: "bridge" | "conv", context: Context, sessionId: string | undefined): string {
-	const trimmedSessionId = sessionId?.trim();
-	if (trimmedSessionId) return hashCursorKey(prefix, trimmedSessionId);
-	const firstUserMessage = context.messages.find((message) => message.role === "user");
-	const firstUserText = firstUserMessage ? textFromMessage(firstUserMessage).slice(0, 200) : "";
-	return hashCursorKey(prefix, firstUserText);
-}
-function hashCursorKey(prefix: "bridge" | "conv", value: string): string {
-	return createHash("sha256").update(`${prefix}:${value}`).digest("hex").slice(0, 16);
-}
-function deterministicCursorConversationId(conversationKey: string): string {
-	const hex = createHash("sha256").update(`cursor-conv-id:${conversationKey}`).digest("hex").slice(0, 32);
-	const variantNibble = (0x8 | (Number.parseInt(hex[16] ?? "0", 16) & 0x3)).toString(16);
-	return [
-		hex.slice(0, 8),
-		hex.slice(8, 12),
-		`4${hex.slice(13, 16)}`,
-		`${variantNibble}${hex.slice(17, 20)}`,
-		hex.slice(20, 32),
-	].join("-");
-}
-function hasUserImageInput(context: Context): boolean {
-	return context.messages.some((message) => message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image"));
-}
-function hasCurrentUserImageInput(context: Context): boolean { for (let index = context.messages.length - 1; index >= 0; index--) { const message = context.messages[index]; if (!message || message.role === "assistant" || message.role === "toolResult") break; if (message.role === "user" && typeof message.content !== "string" && message.content.some((content) => content.type === "image")) return true; } return false; }
-function hasToolResultImageInput(context: Context): boolean {
-	return context.messages.some((message) => message.role === "toolResult" && message.content.some((content) => content.type === "image"));
 }
 function appendTextDelta(stream: AssistantMessageEventStream, output: AssistantMessage, existingIndex: number | undefined, delta: string): number {
 	const contentIndex = existingIndex ?? output.content.length;

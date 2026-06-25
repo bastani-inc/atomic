@@ -62,7 +62,7 @@ export function formatCursorH2NativeLoadFailure(result: Extract<CursorH2NativeLo
 	return [
 		result.error.message,
 		`Install or rebuild ${result.packageName} so its NAPI-RS optional dependency for ${process.platform}-${process.arch} is available.`,
-		"If you installed Atomic from npm/Bun, reinstall @bastani/atomic. If you are developing locally, run `bun run --cwd packages/natives build`."
+		"If you installed Atomic from npm/Bun, reinstall @bastani/atomic. If you are developing locally, run `bun --cwd packages/natives run build`."
 	].join("\n");
 }
 
