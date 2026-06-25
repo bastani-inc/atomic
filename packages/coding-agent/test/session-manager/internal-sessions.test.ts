@@ -204,3 +204,89 @@ describe("isInternalHeader helper", () => {
 		expect(isInternalHeader(null)).toBe(false);
 	});
 });
+
+describe("readSessionHeader decoder flush after newline", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("does not corrupt a >1MiB header when a newline is found mid-buffer", () => {
+		// Build a header line larger than 1MiB so it spans multiple read chunks.
+		const longStageName = "y".repeat(1024 * 1024);
+		const header: SessionHeader = {
+			type: "session",
+			version: 3,
+			id: "big-header-1",
+			timestamp: new Date().toISOString(),
+			cwd: dir,
+			internal: true,
+			workflow: { runId: "r", stageId: "s", stageName: longStageName },
+		};
+		const path = writeSessionFile(dir, header, [
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:01Z","message":{"role":"user","content":"second-line","timestamp":1}}',
+		]);
+		const read = readSessionHeader(path);
+		expect(read?.id).toBe("big-header-1");
+		expect(read?.internal).toBe(true);
+		expect(read?.workflow?.stageName).toBe(longStageName);
+	});
+
+	it("reads a header when there is no trailing newline (single-line file)", () => {
+		const header: SessionHeader = {
+			type: "session",
+			version: 3,
+			id: "no-newline-1",
+			timestamp: new Date().toISOString(),
+			cwd: dir,
+			internal: true,
+			workflow: { runId: "r", stageId: "s", stageName: "n" },
+		};
+		// Write header only, no newline, no body.
+		const path = join(dir, "no-newline.jsonl");
+		writeFileSync(path, JSON.stringify(header));
+		const read = readSessionHeader(path);
+		expect(read?.id).toBe("no-newline-1");
+		expect(read?.internal).toBe(true);
+	});
+});
+
+describe("header prefiltering skips internal sessions before transcript parse", () => {
+	let dir: string;
+	const cwd = "/project";
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("skips internal sessions with malformed bodies by default without throwing", async () => {
+		// Internal workflow session with a body that would break JSON parsing if
+		// buildSessionInfo ran on it. The header prefilter must skip it entirely.
+		const header = workflowHeader("wf-malformed", cwd);
+		const path = writeSessionFile(dir, header, ["{this is not valid json}"]);
+		// Sanity: header is readable.
+		expect(readSessionHeader(path)?.id).toBe("wf-malformed");
+		// Default listing must not throw and must exclude the malformed internal session.
+		const sessions = await SessionManager.list(cwd, dir);
+		expect(sessions).toHaveLength(0);
+	});
+
+	it("includes the malformed internal session via includeInternal", async () => {
+		const header = workflowHeader("wf-malformed-2", cwd);
+		writeSessionFile(dir, header, ["{this is not valid json}"]);
+		const sessions = await SessionManager.list(cwd, dir, undefined, { includeInternal: true });
+		// The unparseable body line is skipped by parseSessionEntries, so the
+		// session is still surfaced with includeInternal (0 messages). The key
+		// guarantee is that it does not throw.
+		expect(sessions).toHaveLength(1);
+		expect(sessions[0]?.id).toBe("wf-malformed-2");
+		expect(sessions[0]?.internal).toBe(true);
+	});
+});

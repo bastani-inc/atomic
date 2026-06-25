@@ -80,6 +80,7 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 			const decoder = new StringDecoder("utf8");
 			const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
 			let pending = "";
+			let foundNewline = false;
 			while (true) {
 				const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
 				if (bytesRead === 0) break;
@@ -87,10 +88,16 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 				const newlineIndex = pending.indexOf("\n");
 				if (newlineIndex !== -1) {
 					pending = pending.slice(0, newlineIndex);
+					foundNewline = true;
 					break;
 				}
 			}
-			pending += decoder.end();
+			// Only flush the decoder when we hit EOF without a newline. Once a
+			// newline was found, any remaining decoder bytes belong to data after
+			// the header line; flushing them would corrupt the parsed header.
+			if (!foundNewline) {
+				pending += decoder.end();
+			}
 			const firstLine = pending.split("\n")[0];
 			if (!firstLine) return null;
 			const header = JSON.parse(firstLine) as Record<string, unknown>;

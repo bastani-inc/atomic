@@ -8,6 +8,8 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
+	isInternalHeader,
+	readSessionHeader,
 	sessionCwdMatches,
 } from "./session-manager-storage.ts";
 import type {
@@ -160,6 +162,13 @@ export async function listSessionsFromDir(
 		let loaded = 0;
 		const results = await Promise.all(
 			files.map(async (file) => {
+				// Prefilter via the header so hidden/internal sessions are skipped
+				// before the expensive full-transcript parse in buildSessionInfo.
+				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
+					loaded++;
+					onProgress?.(progressOffset + loaded, total);
+					return null;
+				}
 				const info = await buildSessionInfo(file);
 				loaded++;
 				onProgress?.(progressOffset + loaded, total);
@@ -237,6 +246,13 @@ export async function listAllSessions(
 
 		const results = await Promise.all(
 			allFiles.map(async (file) => {
+				// Prefilter via the header so hidden/internal sessions are skipped
+				// before the expensive full-transcript parse in buildSessionInfo.
+				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
+					loaded++;
+					progress?.(loaded, totalFiles);
+					return null;
+				}
 				const info = await buildSessionInfo(file);
 				loaded++;
 				progress?.(loaded, totalFiles);
