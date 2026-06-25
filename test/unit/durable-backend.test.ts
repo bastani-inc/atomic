@@ -272,4 +272,27 @@ describe("ctx.tool primitive (durable caching)", () => {
       /cancelled/,
     );
   });
+
+  test("awaits async checkpoint persistence before returning side-effect result", async () => {
+    class AsyncBackend extends InMemoryDurableBackend {
+      persisted = false;
+      async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+        await Promise.resolve();
+        super.recordCheckpoint(checkpoint);
+        this.persisted = true;
+      }
+    }
+    const asyncBackend = new AsyncBackend();
+    asyncBackend.registerWorkflow({ workflowId: WORKFLOW_ID, name: "async", inputs: {}, createdAt: Date.now(), status: "running" });
+    const tool = createToolPrimitive({
+      workflowId: WORKFLOW_ID,
+      backend: asyncBackend,
+      nextCheckpointId: createCheckpointIdGenerator(),
+      throwIfCancelled: () => {},
+    });
+
+    const result = await tool("side-effect", {}, async () => "done");
+    assert.equal(result, "done");
+    assert.equal(asyncBackend.persisted, true);
+  });
 });

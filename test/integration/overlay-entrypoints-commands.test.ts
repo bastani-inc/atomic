@@ -43,6 +43,7 @@ describe("/workflow resume — overlay integration", () => {
   });
 
   test("resume with no runId prints usage", async () => {
+    singletonStore.clear();
     const { pi, commands } = buildMockPi();
     factory(pi);
 
@@ -55,6 +56,31 @@ describe("/workflow resume — overlay integration", () => {
       messages.some((m) => m.includes("Usage")),
       true,
     );
+  });
+
+  test("resume with no runId opens live picker when paused runs exist", async () => {
+    singletonStore.clear();
+    const runId = `test-paused-picker-${Date.now()}`;
+    singletonStore.recordRunStart({
+      id: runId,
+      name: "paused-wf",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: Date.now(),
+    });
+    singletonStore.recordRunPaused(runId);
+    const { pi, commands, customCalls } = buildMockPi();
+    factory(pi);
+    const wfCmd = commands["workflow"]!;
+    const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
+
+    void wfCmd.options.handler("resume", ctx);
+    await Promise.resolve();
+
+    assert.equal(customCalls.length, 0);
+    assert.ok(realCustomCalls.length >= 1);
+    assert.equal(realCustomCalls[0]!.options.overlay, false);
   });
 
   test("resume subcommand is listed in argument completions", async () => {

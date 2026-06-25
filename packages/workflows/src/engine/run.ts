@@ -40,7 +40,7 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
-import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import { cachedStageId, createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 
@@ -316,6 +316,18 @@ export async function run<
   // cross-ref: issue #1498 — durable ctx.ui response/pending prompt state.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
 
+  const recordCachedStage = (name: string, replayKey: string, output: import("../shared/types.js").WorkflowSerializableValue): void => {
+    const now = Date.now();
+    const stageId = cachedStageId(runId, replayKey);
+    const result = typeof output === "string" ? output : JSON.stringify(output);
+    const snapshot: StageSnapshot = {
+      id: stageId, name, status: "completed", parentIds: [], startedAt: now, endedAt: now, durationMs: 0, result,
+      replayKey, replayed: true, skippedReason: "durable checkpoint replay", toolEvents: [], attachable: false,
+    };
+    activeStore.recordStageStart(runId, snapshot);
+    activeStore.recordStageEnd(runId, snapshot);
+    completedStageReplayKeys.set(stageId, replayKey);
+  };
   let durableFailureResumable = false;
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
@@ -343,6 +355,7 @@ export async function run<
       workflowId: runId,
       backend: durableBackend,
       nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+      recordCachedStage,
       stage: (name, options, replayKey) => {
         const stage = runtime.stage(name, options);
         const stageId = activeStore.runs().find((r) => r.id === runId)?.stages.at(-1)?.id;
@@ -355,6 +368,7 @@ export async function run<
       backend: durableBackend,
       nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
       task: taskRunners.task,
+      recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
     }),
     chain: taskRunners.chain,
     parallel: taskRunners.parallel,
@@ -386,6 +400,7 @@ export async function run<
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
     assertWorkflowCreatedStage(runSnapshot);
+    await durableBackend.flush?.();
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: "completed", result, ts: Date.now() });
     durableBackend.setWorkflowStatus(runId, "completed");

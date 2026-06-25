@@ -97,7 +97,7 @@ describe("DbosDurableBackend (mock SDK)", () => {
     backend = new DbosDurableBackend(sdk);
   });
 
-  test("registerWorkflow delegates to DBOS startWorkflow", () => {
+  test("registerWorkflow delegates to DBOS startWorkflow", async () => {
     backend.registerWorkflow({
       workflowId: "wf-dbos-1",
       name: "dbos-workflow",
@@ -105,20 +105,22 @@ describe("DbosDurableBackend (mock SDK)", () => {
       createdAt: Date.now(),
       status: "running",
     });
+    await backend.flush();
     assert.equal(sdk.state.starts.length, 1);
     assert.equal(sdk.state.starts[0]!.workflowId, "wf-dbos-1");
     assert.equal(sdk.state.starts[0]!.name, "dbos-workflow");
     assert.equal(backend.getWorkflow("wf-dbos-1")!.name, "dbos-workflow");
   });
 
-  test("recordCheckpoint stores envelope in DBOS", () => {
+  test("recordCheckpoint stores envelope in DBOS", async () => {
     backend.registerWorkflow({ workflowId: "wf-2", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
     const hash = durableHash({ name: "fetch", args: {} });
     const cp: DurableToolCheckpoint = {
       kind: "tool", workflowId: "wf-2", checkpointId: "cp-1", name: "fetch-data", argsHash: hash, output: "result", completedAt: Date.now(),
     };
     backend.recordCheckpoint(cp);
-    assert.equal(sdk.state.steps.size, 1);
+    await backend.flush();
+    assert.equal(sdk.state.steps.size, 2);
     const stored = sdk.state.steps.get("wf-2:checkpoint:cp-1");
     assert.ok(isCheckpointEnvelope(stored));
     const env = stored as DbosCheckpointEnvelope;
@@ -127,17 +129,57 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(env.output, "result");
   });
 
-  test("cancelWorkflow delegates to DBOS cancelWorkflow", () => {
+  test("flush waits for queued async checkpoint writes", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const delayedSdk = createMockSdk();
+    let persisted = false;
+    const baseRecord = delayedSdk.recordStepOutput;
+    const slowSdk: DbosSdkHandle = {
+      ...delayedSdk,
+      async recordStepOutput(workflowId, stepName, output) {
+        await gate;
+        await baseRecord(workflowId, stepName, output);
+        if (stepName === "cp-delayed") persisted = true;
+      },
+    };
+    const slowBackend = new DbosDurableBackend(slowSdk);
+    slowBackend.registerWorkflow({ workflowId: "wf-delay", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
+    const hash = durableHash({ name: "fetch", args: {} });
+    slowBackend.recordCheckpoint({ kind: "tool", workflowId: "wf-delay", checkpointId: "cp-delayed", name: "fetch", argsHash: hash, output: "result", completedAt: Date.now() });
+    const flushed = slowBackend.flush().then(() => "flushed");
+    await Promise.resolve();
+    assert.equal(persisted, false);
+    release();
+    assert.equal(await flushed, "flushed");
+    assert.equal(persisted, true);
+  });
+
+  test("flush propagates queued async checkpoint write failures", async () => {
+    const failingSdk: DbosSdkHandle = {
+      ...sdk,
+      async recordStepOutput() { throw new Error("dbos write failed"); },
+    };
+    const failingBackend = new DbosDurableBackend(failingSdk);
+    failingBackend.registerWorkflow({ workflowId: "wf-fail-write", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
+    const hash = durableHash({ name: "fetch", args: {} });
+    failingBackend.recordCheckpoint({ kind: "tool", workflowId: "wf-fail-write", checkpointId: "cp-fail", name: "fetch", argsHash: hash, output: "result", completedAt: Date.now() });
+    await assert.rejects(() => failingBackend.flush(), /dbos write failed/);
+  });
+
+  test("cancelWorkflow delegates to DBOS cancelWorkflow", async () => {
     backend.registerWorkflow({ workflowId: "wf-3", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
     backend.setWorkflowStatus("wf-3", "cancelled");
+    await backend.flush();
     assert.equal(sdk.state.cancels.length, 1);
     assert.equal(sdk.state.cancels[0], "wf-3");
     assert.equal(backend.getWorkflow("wf-3")!.status, "cancelled");
   });
 
-  test("resume sets running status and delegates to DBOS resumeWorkflow", () => {
+  test("resume sets running status and delegates to DBOS resumeWorkflow", async () => {
     backend.registerWorkflow({ workflowId: "wf-4", name: "test", inputs: {}, createdAt: Date.now(), status: "paused" });
     backend.setWorkflowStatus("wf-4", "running");
+    await backend.flush();
     assert.equal(sdk.state.resumes.length, 1);
     assert.equal(sdk.state.resumes[0], "wf-4");
     assert.equal(backend.getWorkflow("wf-4")!.status, "running");
@@ -224,6 +266,22 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(fresh.getStageOutput("wf-legacy", "legacy-step"), "plain-output");
   });
 
+  test("hydrateResumableWorkflows uses Atomic metadata status instead of DBOS helper completion", async () => {
+    const session1 = new DbosDurableBackend(sdk);
+    session1.registerWorkflow({ workflowId: "wf-meta", name: "meta", inputs: { x: 1 }, createdAt: 10, status: "running" });
+    session1.setWorkflowStatus("wf-meta", "paused");
+    await session1.flush();
+    const dbosInfo = sdk.state.workflows.get("wf-meta")!;
+    sdk.state.workflows.set("wf-meta", { ...dbosInfo, status: "SUCCESS" });
+
+    const fresh = new DbosDurableBackend(sdk);
+    await fresh.hydrateResumableWorkflows();
+    const entry = fresh.listResumableWorkflows().find((e) => e.workflowId === "wf-meta");
+    assert.ok(entry !== undefined);
+    assert.equal(entry.status, "paused");
+    assert.deepEqual(entry.inputs, { x: 1 });
+  });
+
   test("hydrateResumableWorkflows discovers all workflows and checkpoints", async () => {
     const hash = durableHash({ name: "t", args: {} });
     seedMockWorkflow(sdk, { workflowId: "wf-a", name: "wf-a", status: "PENDING", inputs: { x: 1 } });
@@ -267,8 +325,9 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     session1.recordCheckpoint({
       kind: "tool", workflowId: "wf-resume", checkpointId: `tool:${hash}`, name: "expensive", argsHash: hash, output: "COMPUTED", completedAt: Date.now(),
     });
-    // Verify DBOS has the data.
-    assert.equal(sdk.state.steps.size, 1);
+    await session1.flush();
+    // Verify DBOS has the checkpoint and metadata.
+    assert.equal(sdk.state.steps.size, 2);
     assert.ok(sdk.state.workflows.has("wf-resume"));
 
     // Session 2: fresh process — only DBOS state, empty in-memory mirror.

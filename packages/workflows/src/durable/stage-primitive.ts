@@ -4,6 +4,8 @@ import type { StageContext, StageOptions, WorkflowTaskOptions, WorkflowTaskResul
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import { durableHash } from "./backend.js";
+import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableStageCheckpoint } from "./types.js";
 
 export interface DurableStageDeps {
@@ -36,11 +38,15 @@ export function createDurableStagePrimitive(input: {
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (stageName: string) => string;
   readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
+  readonly recordCachedStage?: (name: string, replayKey: string, output: WorkflowSerializableValue) => void;
 }): (name: string, options?: StageOptions) => StageContext {
   return (name: string, options?: StageOptions): StageContext => {
     const replayKey = input.nextReplayKey(name);
     const cached = input.backend.getStageOutput(input.workflowId, replayKey);
-    if (cached !== undefined) return createCachedStageContext(name, cached);
+    if (cached !== undefined) {
+      input.recordCachedStage?.(name, replayKey, cached);
+      return createCachedStageContext(name, cached);
+    }
     return input.stage(name, options, replayKey);
   };
 }
@@ -50,13 +56,17 @@ export function createDurableTaskPrimitive(input: {
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (stageName: string) => string;
   readonly task: (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult>;
+  readonly recordCachedTask?: (name: string, replayKey: string, output: WorkflowTaskResult) => void;
 }): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
   return async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
     const replayKey = input.nextReplayKey(`task:${name}`);
     const cached = input.backend.getStageOutput(input.workflowId, replayKey);
-    if (cached !== undefined && isWorkflowTaskResult(cached)) return cached;
+    if (cached !== undefined && isWorkflowTaskResult(cached)) {
+      input.recordCachedTask?.(name, replayKey, cached);
+      return cached;
+    }
     const result = await input.task(name, options);
-    input.backend.recordCheckpoint({
+    await recordCheckpointDurably(input.backend, {
       kind: "stage",
       workflowId: input.workflowId,
       checkpointId: stableCheckpointId("task", replayKey),
@@ -114,6 +124,10 @@ export function createStageReplayKeyGenerator(_workflowId: string): (stageName: 
 
 export function stableCheckpointId(kind: string, replayKey: string): string {
   return `${kind}:${replayKey}`;
+}
+
+export function cachedStageId(runId: string, replayKey: string): string {
+  return `durable-${durableHash({ runId, replayKey })}`;
 }
 
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {

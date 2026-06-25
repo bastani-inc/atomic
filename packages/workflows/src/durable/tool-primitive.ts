@@ -18,7 +18,7 @@
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
-import type { DurableToolCheckpoint } from "./types.js";
+import type { DurableCheckpoint, DurableToolCheckpoint } from "./types.js";
 
 /**
  * Options for `ctx.tool(name, args, fn)`.
@@ -91,9 +91,18 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
       output: result,
       completedAt: Date.now(),
     };
-    input.backend.recordCheckpoint(checkpoint);
+    await recordCheckpointDurably(input.backend, checkpoint);
     return result;
   };
+}
+
+export async function recordCheckpointDurably(backend: DurableWorkflowBackend, checkpoint: DurableCheckpoint): Promise<void> {
+  if (backend.recordCheckpointAsync !== undefined) {
+    await backend.recordCheckpointAsync(checkpoint);
+    return;
+  }
+  backend.recordCheckpoint(checkpoint);
+  await backend.flush?.();
 }
 
 async function executeWithRetries<T>(

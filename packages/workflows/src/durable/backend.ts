@@ -66,6 +66,16 @@ export interface DurableWorkflowBackend {
   recordCheckpoint(checkpoint: DurableCheckpoint): void;
 
   /**
+   * Optional async checkpoint persistence. DBOS-backed implementations use this
+   * so ctx.tool/ctx.ui can await durable writes before returning side-effect
+   * results to workflow code.
+   */
+  recordCheckpointAsync?(checkpoint: DurableCheckpoint): Promise<void>;
+
+  /** Optional: wait for serialized durable writes to settle. */
+  flush?(): Promise<void>;
+
+  /**
    * Look up a cached tool output by content hash. Returns `undefined` if the
    * tool has not completed. This is how `ctx.tool` avoids re-executing side
    * effects on resume.

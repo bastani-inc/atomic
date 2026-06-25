@@ -68,8 +68,9 @@ function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpoin
     if (!trimmed) continue;
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      if (parsed && parsed["type"] === "workflow.durable.checkpoint") {
-        const entry = parseDurableEntry(parsed);
+      const rawEntry = durablePayloadFromJsonlEntry(parsed);
+      if (rawEntry !== undefined) {
+        const entry = parseDurableEntry(rawEntry);
         if (entry) results.push(entry);
       }
     } catch {
@@ -77,6 +78,14 @@ function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpoin
     }
   }
   return results;
+}
+
+function durablePayloadFromJsonlEntry(parsed: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (parsed["type"] === "workflow.durable.checkpoint") return parsed;
+  if (parsed["type"] !== "custom" || parsed["customType"] !== "workflow.durable.checkpoint") return undefined;
+  const data = parsed["data"];
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return undefined;
+  return data as Record<string, unknown>;
 }
 
 function parseDurableEntry(raw: Record<string, unknown>): DurableCheckpointEntry | undefined {

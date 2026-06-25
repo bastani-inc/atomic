@@ -260,7 +260,8 @@ export async function handleRunControlCommand(
         return true;
       }
       if (action === "resume") {
-        return await handleDurableResume(undefined, ctx, reporter, deps);
+        const liveRuns = topLevelWorkflowRuns(store.runs());
+        if (liveRuns.length === 0) return await handleDurableResume(undefined, ctx, reporter, deps);
       }
       const picked = await openSessionPicker(ui, store, theme, action === "attach" ? "connect" : action);
       if (action === "attach" && picked.kind === "kill") return handleRunControlCommand("kill", [picked.runId, "-y"], ctx, reporter, deps);

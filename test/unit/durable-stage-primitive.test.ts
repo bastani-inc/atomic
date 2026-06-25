@@ -10,8 +10,9 @@ import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
-import { recordStageCheckpoint, createStageReplayKeyGenerator } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { recordStageCheckpoint, createDurableStagePrimitive, createDurableTaskPrimitive, createStageReplayKeyGenerator } from "../../packages/workflows/src/durable/stage-primitive.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+import { assert as exAssert, createStore, run, test as exTest, Type, workflow } from "./executor-shared.js";
 
 const WORKFLOW_ID = "wf-stage-test-001";
 
@@ -85,6 +86,57 @@ describe("recordStageCheckpoint", () => {
     assert.deepEqual(output, { status: "completed", stageId: "stage-1" });
   });
 
+  test("replayed stage invokes recordCachedStage for graph/store visibility", async () => {
+    const replayKey = "stage:analyze:1";
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: WORKFLOW_ID,
+      checkpointId: `stage:${replayKey}`,
+      name: "analyze",
+      replayKey,
+      output: "cached output",
+      completedAt: Date.now(),
+    });
+    const recorded: { name: string; replayKey: string; output: string }[] = [];
+    const stage = createDurableStagePrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextReplayKey: () => replayKey,
+      recordCachedStage: (name, key, output) => recorded.push({ name, replayKey: key, output: String(output) }),
+      stage: () => { throw new Error("live stage should not run"); },
+    });
+
+    const ctx = stage("analyze");
+    assert.equal(await ctx.prompt("ignored"), "cached output");
+    assert.deepEqual(recorded, [{ name: "analyze", replayKey, output: "cached output" }]);
+  });
+
+  test("replayed task invokes recordCachedTask for graph/store visibility", async () => {
+    const replayKey = "stage:task:review:1";
+    const cached = { name: "review", stageName: "review", text: "cached task output" };
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: WORKFLOW_ID,
+      checkpointId: `task:${replayKey}`,
+      name: "review",
+      replayKey,
+      output: cached,
+      completedAt: Date.now(),
+    });
+    const recorded: { name: string; replayKey: string; text: string }[] = [];
+    const task = createDurableTaskPrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextReplayKey: () => replayKey,
+      recordCachedTask: (name, key, output) => recorded.push({ name, replayKey: key, text: output.text }),
+      task: async () => { throw new Error("live task should not run"); },
+    });
+
+    const result = await task("review", { prompt: "ignored" });
+    assert.deepEqual(result, cached);
+    assert.deepEqual(recorded, [{ name: "review", replayKey, text: "cached task output" }]);
+  });
+
   test("replay key generator namespaces by stage name + ordinal", () => {
     const gen = createStageReplayKeyGenerator(WORKFLOW_ID);
     const k1 = gen("analyze", "stage-1");
@@ -92,5 +144,85 @@ describe("recordStageCheckpoint", () => {
     assert.notEqual(k1, k2);
     assert.ok(k1.includes("analyze:1"));
     assert.ok(k2.includes("analyze:2"));
+  });
+});
+
+describe("run durable flush", () => {
+  exTest("cached ctx.task replay records a completed store stage", async () => {
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "wf-task-replay", name: "task", inputs: {}, createdAt: Date.now(), status: "running" });
+    backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: "wf-task-replay",
+      checkpointId: "task:stage:task:cached-task:1",
+      name: "cached-task",
+      replayKey: "stage:task:cached-task:1",
+      output: { name: "cached-task", stageName: "cached-task", text: "cached task text" },
+      completedAt: Date.now(),
+    });
+    const store = createStore();
+    const def = workflow({
+      name: "task-replay-wf",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => ({ result: (await ctx.task("cached-task", { prompt: "ignored" })).text }),
+    });
+
+    const result = await run(def, {}, { runId: "wf-task-replay", store, durableBackend: backend });
+    const stage = store.runs()[0]?.stages[0];
+    exAssert.equal(result.status, "completed");
+    exAssert.equal(result.result?.["result"], "cached task text");
+    exAssert.equal(stage?.name, "cached-task");
+    exAssert.equal(stage?.status, "completed");
+    exAssert.equal(stage?.replayed, true);
+  });
+
+  exTest("workflow completion waits for durable flush", async () => {
+    class FlushBackend extends InMemoryDurableBackend {
+      flushed = false;
+      flushStarted = false;
+      async flush(): Promise<void> {
+        this.flushStarted = true;
+        await Promise.resolve();
+        this.flushed = true;
+      }
+    }
+    const backend = new FlushBackend();
+    backend.registerWorkflow({ workflowId: "wf-flush", name: "flush", inputs: {}, createdAt: Date.now(), status: "running" });
+    backend.recordCheckpoint({ kind: "stage", workflowId: "wf-flush", checkpointId: "stage:stage:cached:1", name: "cached", replayKey: "stage:cached:1", output: "cached", completedAt: Date.now() });
+    const store = createStore();
+    const def = workflow({
+      name: "flush-wf",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
+    });
+
+    const result = await run(def, {}, { runId: "wf-flush", store, durableBackend: backend });
+    exAssert.equal(result.status, "completed");
+    exAssert.equal(backend.flushStarted, true);
+    exAssert.equal(backend.flushed, true);
+  });
+
+  exTest("workflow completion fails when durable flush fails", async () => {
+    class FailingFlushBackend extends InMemoryDurableBackend {
+      async flush(): Promise<void> { throw new Error("durable write failed"); }
+    }
+    const backend = new FailingFlushBackend();
+    backend.registerWorkflow({ workflowId: "wf-flush-fail", name: "flush", inputs: {}, createdAt: Date.now(), status: "running" });
+    backend.recordCheckpoint({ kind: "stage", workflowId: "wf-flush-fail", checkpointId: "stage:stage:cached:1", name: "cached", replayKey: "stage:cached:1", output: "cached", completedAt: Date.now() });
+    const def = workflow({
+      name: "flush-fail-wf",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => ({ result: await ctx.stage("cached").complete("cached") }),
+    });
+
+    const result = await run(def, {}, { runId: "wf-flush-fail", store: createStore(), durableBackend: backend });
+    exAssert.equal(result.status, "failed");
+    exAssert.match(result.error ?? "", /durable write failed/);
   });
 });

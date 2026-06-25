@@ -9,6 +9,7 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
 import type { DurableUiCheckpoint, UiPromptKind } from "./types.js";
+import { recordCheckpointDurably } from "./tool-primitive.js";
 
 export interface DurableUiDeps {
   readonly workflowId: string;
@@ -27,7 +28,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
     return { key: JSON.stringify(identity), hash: durableHash(identity) };
   };
 
-  const record = (kind: UiPromptKind, identity: { key: string; hash: string }, response: WorkflowSerializableValue): void => {
+  const record = async (kind: UiPromptKind, identity: { key: string; hash: string }, response: WorkflowSerializableValue): Promise<void> => {
     const checkpoint: DurableUiCheckpoint = {
       kind: "ui",
       workflowId: deps.workflowId,
@@ -38,7 +39,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       response,
       completedAt: Date.now(),
     };
-    deps.backend.recordCheckpoint(checkpoint);
+    await recordCheckpointDurably(deps.backend, checkpoint);
   };
 
   const cached = (identity: { readonly hash: string }): WorkflowSerializableValue | undefined => deps.backend.getUiResponse(deps.workflowId, identity.hash);
@@ -49,7 +50,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const hit = cached(identity);
       if (typeof hit === "string") return hit;
       const response = await base.input(promptText);
-      record("input", identity, response);
+      await record("input", identity, response);
       return response;
     },
     async confirm(message: string): Promise<boolean> {
@@ -57,7 +58,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const hit = cached(identity);
       if (typeof hit === "boolean") return hit;
       const response = await base.confirm(message);
-      record("confirm", identity, response);
+      await record("confirm", identity, response);
       return response;
     },
     async select<T extends string>(message: string, options: readonly T[]): Promise<T> {
@@ -65,7 +66,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const hit = cached(identity);
       if (typeof hit === "string") return hit as T;
       const response = await base.select<T>(message, options);
-      record("select", identity, response);
+      await record("select", identity, response);
       return response;
     },
     async editor(initial?: string): Promise<string> {
@@ -73,7 +74,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const hit = cached(identity);
       if (typeof hit === "string") return hit;
       const response = await base.editor(initial);
-      record("editor", identity, response);
+      await record("editor", identity, response);
       return response;
     },
     async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
@@ -82,7 +83,7 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
       const hit = cached(identity);
       if (hit !== undefined) return hit as T;
       const response = await base.custom<T>(factory, options);
-      record("custom", identity, response as WorkflowSerializableValue);
+      await record("custom", identity, response as WorkflowSerializableValue);
       return response;
     },
   };

@@ -53,6 +53,18 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
     assert.equal(result[0]!.sessionFile, sessionFile);
   });
 
+  test("reads Atomic custom-entry durable checkpoint shape", () => {
+    const sessionFile = join(tmpDir, "session-custom.jsonl");
+    const entry = makeEntry("wf-custom", "custom-shape", "paused", Date.now());
+    writeFileSync(sessionFile, JSON.stringify({ type: "custom", customType: "workflow.durable.checkpoint", data: entry }) + "\n");
+
+    const result = scanResumableWorkflows(tmpDir);
+    assert.equal(result.length, 1);
+    assert.equal(result[0]!.workflowId, "wf-custom");
+    assert.equal(result[0]!.name, "custom-shape");
+    assert.equal(result[0]!.status, "paused");
+  });
+
   test("excludes completed and cancelled workflows", () => {
     const sessionFile = join(tmpDir, "session-002.jsonl");
     const lines = [
