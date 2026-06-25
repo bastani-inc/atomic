@@ -100,7 +100,11 @@ function wrapSchemaStageForDurability(input: {
   Object.defineProperty(wrapped, "prompt", {
     value: async (text: string, options?: Parameters<StageContext["prompt"]>[1]) => {
       const result = await stage.prompt(text, options);
-      if (typeof result !== "string") {
+      // Checkpoint both structured results AND empty string results so that
+      // a schema-backed stage returning "" is replayed as "" rather than
+      // being dropped (treated as no checkpoint).
+      // cross-ref: issue #1498 — empty string stage outputs must survive durable checkpointing.
+      if (typeof result !== "string" || result.length === 0) {
         await recordCheckpointDurably(input.backend, {
           kind: "stage",
           workflowId: input.workflowId,
@@ -147,7 +151,11 @@ function createCachedStageContext(name: string, output: WorkflowSerializableValu
 }
 
 function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {
-  if (stage.result !== undefined && stage.result.length > 0) return stage.result;
+  // Preserve empty string ("") distinctly from undefined (no result).
+  // A stage that completed with empty assistant text must replay as empty,
+  // not be collapsed into a status object.
+  // cross-ref: issue #1498 — empty string stage outputs must survive durable checkpointing.
+  if (stage.result !== undefined) return stage.result;
   return { status: stage.status, stageId: stage.id };
 }
 
@@ -175,17 +183,38 @@ export function recordCachedStageIntoStore(
   replayKey: string,
   output: WorkflowSerializableValue,
   completedStageReplayKeys: Map<string, string>,
+  parentIds?: readonly string[],
 ): void {
   const now = Date.now();
   const stageId = cachedStageId(runId, replayKey);
   const result = typeof output === "string" ? output : JSON.stringify(output);
   const snapshot: StageSnapshot = {
-    id: stageId, name, status: "completed", parentIds: [], startedAt: now, endedAt: now, durationMs: 0, result,
+    id: stageId, name, status: "completed", parentIds: parentIds !== undefined ? Object.freeze([...parentIds]) : [], startedAt: now, endedAt: now, durationMs: 0, result,
     replayKey, replayed: true, skippedReason: "durable checkpoint replay", toolEvents: [], attachable: false,
   };
   store.recordStageStart(runId, snapshot);
   store.recordStageEnd(runId, snapshot);
   completedStageReplayKeys.set(stageId, replayKey);
+}
+
+/**
+ * Record a cached durable stage into the store AND register it in the graph
+ * frontier tracker so parent/frontier lineage is preserved for subsequent stages.
+ * cross-ref: issue #1498 — replayed durable stages preserve graph lineage.
+ */
+export function recordCachedStageWithTracker(
+  store: import("../shared/store.js").Store,
+  tracker: import("../engine/graph-inference.js").GraphFrontierTracker,
+  runId: string,
+  name: string,
+  replayKey: string,
+  output: WorkflowSerializableValue,
+  completedStageReplayKeys: Map<string, string>,
+): void {
+  const stageId = cachedStageId(runId, replayKey);
+  const parentIds = tracker.onSpawn(stageId, name);
+  recordCachedStageIntoStore(store, runId, name, replayKey, output, completedStageReplayKeys, parentIds);
+  tracker.onSettle(stageId);
 }
 
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {

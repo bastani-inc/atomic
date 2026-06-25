@@ -119,7 +119,7 @@ describe("/workflow resume — overlay integration", () => {
     const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
 
     void wfCmd.options.handler("resume", ctx);
-    await Promise.resolve();
+    await delay(5);
 
     assert.equal(customCalls.length, 0);
     assert.ok(realCustomCalls.length >= 1);
@@ -382,11 +382,66 @@ describe("/workflow attach — top-level command", () => {
     factory(pi);
     const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
     void commands["workflow"]!.options.handler("resume", ctx);
-    await Promise.resolve();
+    await delay(5);
     // Only the live picker (openSessionPicker) should open — no combined.
     assert.equal(customCalls.length, 0);
     assert.ok(realCustomCalls.length >= 1);
     assert.equal(realCustomCalls[0]!.options.overlay, false);
+  });
+
+  // cross-ref: issue #1498 — dismissing combined picker must NOT open a second picker.
+  test("no-arg resume: dismissing combined picker does not open second live picker", async () => {
+    singletonStore.clear();
+    const liveRunId = `live-dismiss-${Date.now()}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-wf-dismiss", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunPaused(liveRunId);
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-dismiss-wf", name: "durable-dismiss", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      // Fire the handler; it will open the combined picker.
+      const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
+      await delay(5);
+      // Combined picker is open.
+      assert.ok(customCalls.length >= 1);
+      const pickerFactory = customCalls[0]!;
+      // Simulate dismissal (Escape).
+      pickerFactory.component.handleInput?.("\u001b");
+      await handlerPromise;
+      // After dismissal: exactly ONE custom call (the combined picker).
+      // No second live-only picker should have opened.
+      assert.equal(customCalls.length, 1);
+    } finally {
+      setDurableBackend(undefined);
+    }
+  });
+
+  // cross-ref: issue #1498 — mixed resume uses async hydrated durable listing.
+  test("no-arg resume: mixed live+durable uses prepareDurableResumable (async hydration)", async () => {
+    singletonStore.clear();
+    const liveRunId = `live-hydrate-${Date.now()}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-hydrate-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunPaused(liveRunId);
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-hydrate-wf", name: "durable-hydrate", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      void commands["workflow"]!.options.handler("resume", ctx);
+      await delay(10);
+      // The combined picker should include the durable entry that was only
+      // discoverable through async prepareDurableResumable (DBOS hydration path).
+      assert.ok(customCalls.length >= 1);
+      const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
+      assert.match(text, /durable-hydrate/);
+    } finally {
+      setDurableBackend(undefined);
+    }
   });
 });
 

@@ -358,10 +358,13 @@ export async function handleRunControlCommand(
         // cross-ref: issue #1498 — /workflow resume selector with live + durable.
         if (liveRuns.length === 0) return await handleDurableResume(undefined, ctx, reporter, deps);
         const runtime = deps.runtimeForContext(ctx);
-        // Quick synchronous check first; if no durable entries are available,
-        // fall through to the normal live picker without async overhead.
+        // Use async prepareDurableResumable so DBOS hydration runs before listing,
+        // ensuring cross-session durable entries discovered from Postgres are
+        // included in the combined selector rather than only the synchronous
+        // in-memory/backend listing.
+        // cross-ref: issue #1498 — mixed resume must use hydrated durable listing.
         let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        try { durableEntries = runtime.listDurableResumable(); } catch { /* best-effort */ }
+        try { durableEntries = await runtime.prepareDurableResumable(undefined); } catch { /* best-effort */ }
         const durableOnly = durableEntries.filter((e) => !liveRuns.some((r) => r.id === e.workflowId));
         if (durableOnly.length > 0) {
           // Combined selector: live + durable together.
@@ -380,8 +383,11 @@ export async function handleRunControlCommand(
             }
             return true;
           }
-          // Dismissed — print summary for reference.
+          // Dismissed — print summary for reference and return without opening
+          // a second live-only picker.
+          // cross-ref: issue #1498 — dismissing combined picker must not open a second picker.
           reporter.info(`${formatResumableWorkflowList(durableOnly)}\n\nResume durable workflow with: /workflow resume <id>`);
+          return true;
         }
       }
       const picked = await openSessionPicker(ui, store, theme, action === "attach" ? "connect" : action);

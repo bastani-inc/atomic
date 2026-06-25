@@ -180,13 +180,25 @@ export function createTrackedStageCaller(input: {
       }
       throw err;
     } finally {
+      // Finalization, handle release, and limiter release are each independent.
+      // If finalizeStageSnapshot() throws, the limiter must still be released
+      // so the concurrency semaphore is not leaked.
+      // cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
       runtime.mcpScope.clear();
       runtime.captureStageSessionMeta();
-      await runtime.finalizeStageSnapshot();
-      if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
-        await runtime.releaseLiveHandle().catch(() => {});
-      } else {
-        await runtime.dropStageControlForCompletion().catch(() => {});
+      try {
+        await runtime.finalizeStageSnapshot();
+      } catch {
+        // Best-effort: finalization failure must not prevent limiter/handle release.
+      }
+      try {
+        if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
+          await runtime.releaseLiveHandle().catch(() => {});
+        } else {
+          await runtime.dropStageControlForCompletion().catch(() => {});
+        }
+      } catch {
+        // Best-effort: handle release failure must not prevent limiter release.
       }
       input.limiter.release();
     }

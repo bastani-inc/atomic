@@ -43,7 +43,7 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
-import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageIntoStore } from "../durable/stage-primitive.js";
+import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
@@ -346,7 +346,7 @@ export async function run<
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
   const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void =>
-    recordCachedStageIntoStore(activeStore, runId, name, replayKey, output, completedStageReplayKeys);
+    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, output, completedStageReplayKeys);
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
     nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
