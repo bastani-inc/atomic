@@ -154,7 +154,7 @@ test("workflow quit confirm fails open when custom UI rejects or never mounts", 
     await openWorkflowQuitConfirm(
       {
         custom: () => {
-          factoryCalls += 0;
+          factoryCalls += 1;
           return undefined;
         },
       },
@@ -163,7 +163,7 @@ test("workflow quit confirm fails open when custom UI rejects or never mounts", 
     ),
     undefined,
   );
-  assert.equal(factoryCalls, 0);
+  assert.equal(factoryCalls, 1);
 });
 
 test("kill confirm cancels safely when custom UI rejects or never mounts", async () => {
@@ -186,7 +186,7 @@ test("kill confirm cancels safely when custom UI rejects or never mounts", async
     await openKillConfirm(
       {
         custom: () => {
-          factoryCalls += 0;
+          factoryCalls += 1;
           return undefined;
         },
       },
@@ -195,7 +195,7 @@ test("kill confirm cancels safely when custom UI rejects or never mounts", async
     ),
     false,
   );
-  assert.equal(factoryCalls, 0);
+  assert.equal(factoryCalls, 1);
 });
 
 test("workflow killed notice renders transparent completion details", () => {
