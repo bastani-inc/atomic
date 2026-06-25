@@ -2,42 +2,48 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
-import * as _bundledPiAi from "@earendil-works/pi-ai";
-import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
-import * as _bundledPiTui from "@earendil-works/pi-tui";
 import { createJiti } from "jiti/static";
-import * as _bundledTypebox from "typebox";
-import * as _bundledTypeboxCompile from "typebox/compile";
-import * as _bundledTypeboxValue from "typebox/value";
 import { isBunBinary } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
-// NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
-// avoiding a circular dependency. Extensions can import from the Atomic package
-// name (or upstream-compatible pi package names).
-import * as _bundledPiCodingAgent from "../../index.ts";
 import type { ExtensionFactory } from "./types.ts";
 
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
-const VIRTUAL_MODULES: Record<string, unknown> = {
-  typebox: _bundledTypebox,
-  "typebox/compile": _bundledTypeboxCompile,
-  "typebox/value": _bundledTypeboxValue,
-  "@sinclair/typebox": _bundledTypebox,
-  "@sinclair/typebox/compile": _bundledTypeboxCompile,
-  "@sinclair/typebox/value": _bundledTypeboxValue,
-  "@earendil-works/pi-agent-core": _bundledPiAgentCore,
-  "@earendil-works/pi-tui": _bundledPiTui,
-  "@earendil-works/pi-ai": _bundledPiAi,
-  "@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
-  "@bastani/atomic": _bundledPiCodingAgent,
-  "@mariozechner/pi-agent-core": _bundledPiAgentCore,
-  "@mariozechner/pi-tui": _bundledPiTui,
-  "@mariozechner/pi-ai": _bundledPiAi,
-  "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
-};
-
 const require = createRequire(import.meta.url);
+let _virtualModules: Record<string, object> | null = null;
+
+/** Modules available to extensions via virtualModules (for compiled Bun binary). */
+async function getVirtualModules(): Promise<Record<string, object>> {
+  if (_virtualModules) return _virtualModules;
+
+  const [typebox, typeboxCompile, typeboxValue, piAgentCore, piTui, piAi, piAiOauth, piCodingAgent] = await Promise.all([
+    import("typebox"),
+    import("typebox/compile"),
+    import("typebox/value"),
+    import("@earendil-works/pi-agent-core"),
+    import("@earendil-works/pi-tui"),
+    import("@earendil-works/pi-ai"),
+    import("@earendil-works/pi-ai/oauth"),
+    import("../../index.ts"),
+  ]);
+
+  _virtualModules = {
+    typebox,
+    "typebox/compile": typeboxCompile,
+    "typebox/value": typeboxValue,
+    "@sinclair/typebox": typebox,
+    "@sinclair/typebox/compile": typeboxCompile,
+    "@sinclair/typebox/value": typeboxValue,
+    "@earendil-works/pi-agent-core": piAgentCore,
+    "@earendil-works/pi-tui": piTui,
+    "@earendil-works/pi-ai": piAi,
+    "@earendil-works/pi-ai/oauth": piAiOauth,
+    "@bastani/atomic": piCodingAgent,
+    "@mariozechner/pi-agent-core": piAgentCore,
+    "@mariozechner/pi-tui": piTui,
+    "@mariozechner/pi-ai": piAi,
+    "@mariozechner/pi-ai/oauth": piAiOauth,
+  };
+  return _virtualModules;
+}
 let _aliases: Record<string, string> | null = null;
 
 let extensionCacheCwd: string | undefined;
@@ -143,7 +149,7 @@ export async function loadExtensionModule(
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
     ...(forceTransformedImports ? { fsCache: false, tryNative: false } : {}),
-    ...(isBunBinary ? { virtualModules: VIRTUAL_MODULES } : { alias: getAliases() }),
+    ...(isBunBinary ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
   });
   const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
   const factory = module as ExtensionFactory;

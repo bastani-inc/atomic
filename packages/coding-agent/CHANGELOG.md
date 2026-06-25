@@ -30,6 +30,7 @@
 
 ### Fixed
 
+- Fixed extension loading in Windows package tests by lazy-initializing compiled-binary virtual modules, avoiding eager source-barrel resolution before Jiti aliases are installed.
 - Fixed the first-run onboarding input placeholder so it uses muted TUI text and still renders a visible cursor while empty, making the startup composer read as an editable field instead of static copy.
 - Fixed `@` file-reference autocomplete in the first-run onboarding editor before the asynchronous `fd` readiness check completes by falling back to the built-in synchronous path completer while preserving `@` prefixes and quoted paths.
 - Fixed workflow config/discovery isolation so `ATOMIC_CODING_AGENT_DIR` prevents home-global workflows from shadowing the bundled first-run onboarding `goal` and `ralph` targets.
