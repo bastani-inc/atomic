@@ -170,9 +170,10 @@ function writeZipEntrySelective(path: string, memberPath: string, data: Buffer):
 		let ptr = source.readUInt32LE(eocd + 16); const total = source.readUInt16LE(eocd + 10);
 		for (let n = 0; n < total; n++) {
 			assertZipRange(source, ptr, 46, path);
-			const start = ptr, nameLen = source.readUInt16LE(ptr + 28), extraLen = source.readUInt16LE(ptr + 30), commentLen = source.readUInt16LE(ptr + 32), localOffset = source.readUInt32LE(ptr + 42), compressedSize = source.readUInt32LE(ptr + 20);
+			const start = ptr, flags = source.readUInt16LE(ptr + 8), nameLen = source.readUInt16LE(ptr + 28), extraLen = source.readUInt16LE(ptr + 30), commentLen = source.readUInt16LE(ptr + 32), localOffset = source.readUInt32LE(ptr + 42), compressedSize = source.readUInt32LE(ptr + 20);
 			assertZipRange(source, ptr + 46, nameLen + extraLen + commentLen, path);
 			const name = source.subarray(ptr + 46, ptr + 46 + nameLen).toString(); ptr += 46 + nameLen + extraLen + commentLen; if (name === memberPath) continue;
+			if ((flags & 0x0008) !== 0) throw new Error(`Unsupported zip data descriptor during selective write: ${name}`);
 			assertZipRange(source, localOffset, 30, path);
 			const localNameLen = source.readUInt16LE(localOffset + 26), localExtraLen = source.readUInt16LE(localOffset + 28), localEnd = localOffset + 30 + localNameLen + localExtraLen + compressedSize;
 			assertZipRange(source, localOffset, localEnd - localOffset, path);

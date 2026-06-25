@@ -15,6 +15,17 @@ async function tempDir(): Promise<string> { const dir = await mkdtemp(join(tmpdi
 
 afterEach(async () => { await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 
+function zipWithDataDescriptor(): Buffer {
+	const name = Buffer.from("old.txt"), data = Buffer.from("old"), descriptor = Buffer.alloc(16);
+	descriptor.writeUInt32LE(0x08074b50, 0); descriptor.writeUInt32LE(data.length, 8); descriptor.writeUInt32LE(data.length, 12);
+	const local = Buffer.alloc(30); local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0008, 6); local.writeUInt16LE(name.length, 26);
+	const localRecord = Buffer.concat([local, name, data, descriptor]);
+	const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x0008, 8); central.writeUInt32LE(data.length, 20); central.writeUInt32LE(data.length, 24); central.writeUInt16LE(name.length, 28);
+	const centralRecord = Buffer.concat([central, name]);
+	const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(centralRecord.length, 12); eocd.writeUInt32LE(localRecord.length, 16);
+	return Buffer.concat([localRecord, centralRecord, eocd]);
+}
+
 describe("resource selector hardening", () => {
 	it("rejects raw SQLite pragma table-valued functions and quoted sqlite internals", async () => {
 		const mod = sqlite(); if (!mod) return;
@@ -40,5 +51,11 @@ describe("resource selector hardening", () => {
 		const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 10); eocd.writeUInt32LE(1000, 16);
 		await writeFile(archivePath, eocd);
 		await expect(createWriteToolDefinition(dir).execute("bad-zip-write", { path: "bad.zip:new.txt", content: "new" }, undefined, undefined, {} as never)).rejects.toThrow(/Invalid zip (archive|entry bounds)/);
+	});
+
+	it("rejects selective zip writes that would drop data descriptors", async () => {
+		const dir = await tempDir();
+		await writeFile(join(dir, "descriptor.zip"), zipWithDataDescriptor());
+		await expect(createWriteToolDefinition(dir).execute("descriptor-zip-write", { path: "descriptor.zip:new.txt", content: "new" }, undefined, undefined, {} as never)).rejects.toThrow(/Unsupported zip data descriptor/);
 	});
 });

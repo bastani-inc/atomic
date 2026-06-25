@@ -256,6 +256,17 @@ describe("hashline file tool parity", () => {
 		expect(await readFile(file, "utf8")).toBe("\uFEFFone\nTWO");
 	});
 
+
+	it("preserves CR-only line endings after hashline edits", async () => {
+		const dir = await createTempDir();
+		const file = join(dir, "classic.txt");
+		await writeFile(file, "one\rtwo\rthree", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const tag = text(await read.execute("read-cr", { path: "classic.txt" }, undefined, undefined, {} as ExtensionContext)).match(/#([0-9A-F]{4})/)?.[1];
+		const edit = createEditToolDefinition(dir, { hashlineStore });
+		await edit.execute("edit-cr", { input: `[classic.txt#${tag}]\nreplace 2..2:\n+TWO` }, undefined, undefined, {} as ExtensionContext);
+		expect(await readFile(file, "utf8")).toBe("one\rTWO\rthree");
+	});
 	it("keeps colliding hashline tags tied to matching snapshot text", async () => {
 		const dir = await createTempDir();
 		const store = createHashlineSnapshotStore();
