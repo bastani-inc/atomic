@@ -129,6 +129,19 @@ export async function createAgentSession(
     options.sessionManager ??
     SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
 
+  // Mark workflow-created sessions as internal so they are excluded from the
+  // standard `/resume` history while remaining resumable via `/workflow resume`.
+  // Only stamped when the orchestration context identifies a workflow stage;
+  // reattaching to an already-marked session preserves its existing marker.
+  if (options.orchestrationContext?.kind === "workflow-stage") {
+    const ctx = options.orchestrationContext;
+    sessionManager.markSessionInternal({
+      runId: ctx.workflowRunId,
+      stageId: ctx.workflowStageId,
+      stageName: ctx.workflowStageName,
+    });
+  }
+
   if (!resourceLoader) {
     resourceLoader = new DefaultResourceLoader({
       cwd,

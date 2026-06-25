@@ -53,6 +53,12 @@ In the picker you can:
 
 When available, Atomic uses the `trash` CLI for deletion instead of permanently removing files.
 
+### Internal (workflow) sessions
+
+Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. This keeps the resume picker focused on your interactive coding sessions. Workflow stage sessions remain fully discoverable and resumable through the workflow-specific path: use `/workflow resume <runId>` (or the workflow tool's resume/status actions) to inspect and continue a workflow run and its stages. A workflow stage session can still be opened directly by passing its file path to `--session`.
+
+Legacy workflow sessions created before this behavior lack the internal marker and will continue to appear in the standard history until they age out or are deleted.
+
 ## Naming Sessions
 
 Use `/name <name>` to set a human-readable session name:

@@ -8,7 +8,7 @@ export {
 } from "./session-manager-history.ts";
 export { migrateSessionEntries, parseSessionEntries } from "./session-manager-migrations.ts";
 export { getDefaultSessionDir } from "./session-manager-paths.ts";
-export { findMostRecentSession, loadEntriesFromFile } from "./session-manager-storage.ts";
+export { findMostRecentSession, isInternalHeader, loadEntriesFromFile } from "./session-manager-storage.ts";
 export { assertValidSessionId } from "./session-manager-validation.ts";
 export { CURRENT_SESSION_VERSION } from "./session-manager-types.ts";
 export type {
@@ -35,5 +35,6 @@ export type {
 	SessionListProgress,
 	SessionMessageEntry,
 	SessionTreeNode,
+	SessionWorkflowMetadata,
 	ThinkingLevelChangeEntry,
 } from "./session-manager-types.ts";

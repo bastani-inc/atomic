@@ -49,6 +49,7 @@ import type {
 	SessionInfo,
 	SessionListProgress,
 	SessionTreeNode,
+	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
 import { assertValidSessionId, createSessionId } from "./session-manager-validation.ts";
 
@@ -136,7 +137,14 @@ export class SessionManager {
 		}
 		this.sessionId = options?.id ?? createSessionId();
 		const timestamp = new Date().toISOString();
-		const header = createSessionHeader(this.sessionId, this.cwd, timestamp, options?.parentSession);
+		const header = createSessionHeader(
+			this.sessionId,
+			this.cwd,
+			timestamp,
+			options?.parentSession,
+			options?.internal,
+			options?.workflow,
+		);
 		this.fileEntries = [header];
 		this.byId.clear();
 		this.labelsById.clear();
@@ -147,6 +155,15 @@ export class SessionManager {
 			this.sessionFile = createSessionFilePath(this.getSessionDir(), timestamp, this.sessionId);
 		}
 		return this.sessionFile;
+	}
+
+	/** Mark the session header as internal (e.g. workflow stage). Preserves an existing full marker on reattach. */
+	markSessionInternal(workflow?: SessionWorkflowMetadata): void {
+		const header = this.fileEntries.find((entry) => entry.type === "session") as SessionHeader | undefined;
+		if (!header || (header.internal && header.workflow)) return;
+		header.internal = true;
+		if (workflow) header.workflow = workflow;
+		if (this.flushed) this._rewriteFile();
 	}
 
 	private _buildIndex(): void {
@@ -424,11 +441,19 @@ export class SessionManager {
 		return new SessionManager(cwd, dir, resolvedPath, true);
 	}
 
-	/** Continue the most recent session, or create new if none. */
-	static continueRecent(cwd: string, sessionDir?: string): SessionManager {
+	/** Continue the most recent session (skips internal workflow sessions unless `includeInternal: true`). */
+	static continueRecent(
+		cwd: string,
+		sessionDir?: string,
+		options?: { includeInternal?: boolean },
+	): SessionManager {
 		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 		const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
-		const mostRecent = findMostRecentSession(dir, filterCwd ? cwd : undefined);
+		const mostRecent = findMostRecentSession(
+			dir,
+			filterCwd ? cwd : undefined,
+			options?.includeInternal === true,
+		);
 		return new SessionManager(cwd, dir, mostRecent ?? undefined, true);
 	}
 
@@ -448,18 +473,28 @@ export class SessionManager {
 		return new SessionManager(forked.cwd, forked.sessionDir, forked.sessionFile, true);
 	}
 
-	/** List all sessions for a directory. */
-	static async list(cwd: string, sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]> {
-		return listProjectSessions(cwd, sessionDir, onProgress);
+	/** List sessions for a directory. Internal (workflow) sessions are excluded unless `includeInternal: true`. */
+	static async list(
+		cwd: string,
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		options?: { includeInternal?: boolean },
+	): Promise<SessionInfo[]> {
+		return listProjectSessions(cwd, sessionDir, onProgress, options?.includeInternal === true);
 	}
 
-	/** List all sessions across all project directories. */
+	/** List sessions across all directories. Internal (workflow) sessions are excluded unless `includeInternal: true`. */
 	static async listAll(onProgress?: SessionListProgress): Promise<SessionInfo[]>;
-	static async listAll(sessionDir?: string, onProgress?: SessionListProgress): Promise<SessionInfo[]>;
+	static async listAll(
+		sessionDir?: string,
+		onProgress?: SessionListProgress,
+		options?: { includeInternal?: boolean },
+	): Promise<SessionInfo[]>;
 	static async listAll(
 		sessionDirOrOnProgress?: string | SessionListProgress,
 		onProgress?: SessionListProgress,
+		options?: { includeInternal?: boolean },
 	): Promise<SessionInfo[]> {
-		return listAllSessions(sessionDirOrOnProgress, onProgress);
+		return listAllSessions(sessionDirOrOnProgress, onProgress, options?.includeInternal === true);
 	}
 }
