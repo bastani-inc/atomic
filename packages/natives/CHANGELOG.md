@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.1] - 2026-06-25
+
 ### Added
 
 - Added a Rust-backed `PtySession` N-API surface using `portable-pty`, enabling Atomic's `bash` tool to execute `pty: true` calls through a real PTY/ConPTY with output streaming, resize, kill, timeout, shell, cwd, and environment support ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).

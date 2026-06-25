@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Real engineering matter. Agents should not just sound confident, they should leave proof. Atomic fights demo hype with explicit stages, artifacts, verification, review, and approval gates.
+  Real engineering matters. Agents should not just sound confident, they should leave proof. Atomic fights demo hype with explicit stages, artifacts, verification, review, and approval gates.
 </p>
 
 <p align="center">

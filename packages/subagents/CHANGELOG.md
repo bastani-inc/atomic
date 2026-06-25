@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.1] - 2026-06-25
+
 ### Changed
 
 - Raised the default and hard maximum subagent nesting budget to five delegated levels, clamping environment, config, and frontmatter values above `5` and extending nested-run observability to the same depth.

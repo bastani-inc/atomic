@@ -18,6 +18,7 @@ import {
 	type SessionHeader,
 	type SessionInfoEntry,
 	type SessionMessageEntry,
+	type SessionWorkflowMetadata,
 	type ThinkingLevelChangeEntry,
 } from "./session-manager-types.ts";
 import { generateId } from "./session-manager-validation.ts";
@@ -35,15 +36,20 @@ export function createSessionHeader(
 	cwd: string,
 	timestamp: string = new Date().toISOString(),
 	parentSession?: string,
+	internal?: boolean,
+	workflow?: SessionWorkflowMetadata,
 ): SessionHeader {
-	return {
+	const header: SessionHeader = {
 		type: "session",
 		version: CURRENT_SESSION_VERSION,
 		id,
 		timestamp,
 		cwd,
-		parentSession,
 	};
+	if (parentSession !== undefined) header.parentSession = parentSession;
+	if (internal) header.internal = true;
+	if (workflow) header.workflow = workflow;
+	return header;
 }
 
 export function createSessionFilePath(sessionDir: string, timestamp: string, sessionId: string): string {

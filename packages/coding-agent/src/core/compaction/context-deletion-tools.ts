@@ -9,13 +9,12 @@ import {
 import {
 	createContextCompactionBudgetDetails,
 	createContextDeletionToolResult,
+	countRemainingImageBlocks,
 	finitePositiveNumber,
 	formatErrorMessage,
+	sumRemainingImageTokens,
 } from "./context-compaction-metrics.ts";
-import {
-	getTranscriptCompactionParameters,
-	normalizeContextCompactionParameters,
-} from "./context-compaction-strategy.ts";
+import { getTranscriptCompactionParameters, normalizeContextCompactionParameters } from "./context-compaction-strategy.ts";
 import {
 	CONTEXT_COMPACTION_BUDGET_TOOL,
 	CONTEXT_DELETE_TOOL,
@@ -47,15 +46,12 @@ import {
 	ContextReadEntryToolParameters,
 	ContextSearchTranscriptToolParameters,
 } from "./context-deletion-tool-definitions.ts";
-import {
-	computeContextCompactionStats,
-	contextDeletionRequestFromObject,
-	validateContextDeletionRequest,
-} from "./context-deletion-application.ts";
+import { computeContextCompactionStats, contextDeletionRequestFromObject, validateContextDeletionRequest } from "./context-deletion-application.ts";
 import {
 	canDeleteTarget,
 	deletionRequestFromTargets,
 	getRecentContextEntryIds,
+	isStaleUserImageOnlyEntry,
 	mergeContextDeletionTargets,
 } from "./context-deletion-targets.ts";
 import { createContextDeletionStore } from "./context-deletion-store.ts";
@@ -101,6 +97,12 @@ export function createContextDeletionTool(
 
 	function canDeleteProtectedTarget(target: ContextDeletionTarget): boolean {
 		return canDeleteTarget(transcript, target);
+	}
+
+	function shouldGrepDeleteContentBlockAsEntry(entryId: string, blockCount: number): boolean {
+		if (blockCount <= 1) return true;
+		const entry = transcript.entries.find((candidate) => candidate.entryId === entryId);
+		return entry !== undefined && isStaleUserImageOnlyEntry(transcript, entry);
 	}
 
 	const tool: AgentTool<typeof ContextDeleteToolParameters, ContextDeletionToolDetails> = {
@@ -196,10 +198,9 @@ export function createContextDeletionTool(
 					} else {
 						for (const block of store.listContentBlocksForGrep()) {
 							if (!matcher.test(block.text)) continue;
-							const candidate: ContextDeletionTarget =
-								block.block_count <= 1
-									? { kind: "entry", entryId: block.entry_id }
-									: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
+							const candidate: ContextDeletionTarget = shouldGrepDeleteContentBlockAsEntry(block.entry_id, block.block_count)
+								? { kind: "entry", entryId: block.entry_id }
+								: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
 							if (recentEntryIds.has(candidate.entryId)) {
 								skipped.push({
 									entryId: block.entry_id,
@@ -465,17 +466,18 @@ export function createContextDeletionTool(
 			return store.transaction(() => {
 				const callCount = store.incrementCallCount();
 				store.clearLastError();
-				const details = createContextCompactionBudgetDetails(currentStats(), callCount, contextWindow, parameters);
+				const liveTargets = readTargets(); // recompute image stats each call (issue #1500)
+				const imageTokensRemaining = sumRemainingImageTokens(transcript, liveTargets);
+				const imageBlocksRemaining = countRemainingImageBlocks(transcript, liveTargets);
+				const details = createContextCompactionBudgetDetails(currentStats(), callCount, contextWindow, parameters, imageTokensRemaining, imageBlocksRemaining);
 				const windowText =
 					details.contextWindowBeforePercent !== undefined
 						? ` Context window fullness: ${details.contextWindowBeforePercent}% before selected deletions, ${details.contextWindowAfterPercent}% after selected deletions.`
 						: " Context window size is unknown for this model, so fullness percentages are unavailable.";
-				const targetText =
-					details.tokensToDeleteForTarget > 0
-						? ` Delete about ${details.tokensToDeleteForTarget} more token(s) to reach the ${details.targetReductionPercent}% reduction target.`
-						: ` The selected deletions meet or exceed the ${details.targetReductionPercent}% reduction target.`;
+				const targetText = details.tokensToDeleteForTarget > 0 ? ` Delete about ${details.tokensToDeleteForTarget} more token(s) to reach the ${details.targetReductionPercent}% reduction target.` : ` The selected deletions meet or exceed the ${details.targetReductionPercent}% reduction target.`;
+				const imageText = details.remainingImageTokens > 0 ? ` Images account for ${details.imageTokenPercent}% of remaining context (${details.remainingImageTokens} tokens across ${details.imageBlockCount} block(s)); prefer deleting stale/superseded image content blocks when images dominate.` : "";
 				return createContextDeletionToolResult(
-					`Current selected deletions reduce context by ${details.currentReductionPercent}% (${details.deletedTokens} token(s)); tokens after selected deletions: ${details.currentTokensAfter}/${details.tokensBefore}.${windowText}${targetText} Keep maximizing useful retained context while aggressively removing low-value blocks.`,
+					`Current selected deletions reduce context by ${details.currentReductionPercent}% (${details.deletedTokens} token(s)); tokens after selected deletions: ${details.currentTokensAfter}/${details.tokensBefore}.${windowText}${targetText}${imageText} Keep maximizing useful retained context while aggressively removing low-value blocks.`,
 					details,
 				);
 			});
@@ -491,7 +493,7 @@ export function createContextDeletionTool(
 		tools: [tool, grepTool, searchTool, readEntryTool, budgetTool],
 		getDeletionRequest: () => deletionRequestFromTargets(readTargets()),
 		getValidatedResult: () => validatedResult,
-	getLastError: () => store.getLastError(),
-	getCallCount: () => store.getCallCount(),
-};
+		getLastError: () => store.getLastError(),
+		getCallCount: () => store.getCallCount(),
+	};
 }

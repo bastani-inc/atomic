@@ -15,6 +15,13 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
+/**
+ * Dedicated small read chunk for header-only reads. Session headers are small
+ * (typically a few KB), so reading in 64KB chunks avoids allocating/transferring
+ * the full 1MiB transcript buffer just to inspect the first line during listing
+ * and resume-history prefiltering.
+ */
+const HEADER_READ_BUFFER_SIZE = 64 * 1024;
 
 function parseSessionEntryLine(line: string): FileEntry | null {
 	if (!line.trim()) return null;
@@ -73,19 +80,53 @@ export function loadEntriesFromFile(filePath: string): FileEntry[] {
 export function readSessionHeader(filePath: string): SessionHeader | null {
 	try {
 		const fd = openSync(filePath, "r");
-		const buffer = Buffer.alloc(512);
-		const bytesRead = readSync(fd, buffer, 0, 512, 0);
-		closeSync(fd);
-		const firstLine = buffer.toString("utf8", 0, bytesRead).split("\n")[0];
-		if (!firstLine) return null;
-		const header = JSON.parse(firstLine) as Record<string, unknown>;
-		if (header.type !== "session" || typeof header.id !== "string") {
-			return null;
+		try {
+			// Read the full first line rather than a fixed 512-byte window so very
+			// long headers (e.g. internal workflow headers carrying stage metadata)
+			// are not truncated and dropped from listing/resume filtering.
+			const decoder = new StringDecoder("utf8");
+			// Use a small dedicated header buffer instead of the 1MiB transcript
+			// buffer so prefiltering internal sessions during listing stays cheap.
+			// The loop still reads in chunks until the first newline (or EOF) so
+			// headers larger than one chunk are handled correctly.
+			const buffer = Buffer.allocUnsafe(HEADER_READ_BUFFER_SIZE);
+			let pending = "";
+			let foundNewline = false;
+			while (true) {
+				const bytesRead = readSync(fd, buffer, 0, buffer.length, null);
+				if (bytesRead === 0) break;
+				pending += decoder.write(buffer.subarray(0, bytesRead));
+				const newlineIndex = pending.indexOf("\n");
+				if (newlineIndex !== -1) {
+					pending = pending.slice(0, newlineIndex);
+					foundNewline = true;
+					break;
+				}
+			}
+			// Only flush the decoder when we hit EOF without a newline. Once a
+			// newline was found, any remaining decoder bytes belong to data after
+			// the header line; flushing them would corrupt the parsed header.
+			if (!foundNewline) {
+				pending += decoder.end();
+			}
+			const firstLine = pending.split("\n")[0];
+			if (!firstLine) return null;
+			const header = JSON.parse(firstLine) as Record<string, unknown>;
+			if (header.type !== "session" || typeof header.id !== "string") {
+				return null;
+			}
+			return header as unknown as SessionHeader;
+		} finally {
+			closeSync(fd);
 		}
-		return header as unknown as SessionHeader;
 	} catch {
 		return null;
 	}
+}
+
+/** Returns true when a session header marks the session as internal (e.g. a workflow stage session). */
+export function isInternalHeader(header: SessionHeader | null | undefined): boolean {
+	return header?.internal === true;
 }
 
 export function getSessionHeaderCwd(header: SessionHeader): string | undefined {
@@ -98,7 +139,7 @@ export function sessionCwdMatches(cwd: string | undefined, resolvedCwd: string):
 }
 
 /** Exported for testing */
-export function findMostRecentSession(sessionDir: string, cwd?: string): string | null {
+export function findMostRecentSession(sessionDir: string, cwd?: string, includeInternal = false): string | null {
 	const resolvedSessionDir = normalizePath(sessionDir);
 	const resolvedCwd = cwd ? resolvePath(cwd) : undefined;
 	try {
@@ -109,7 +150,8 @@ export function findMostRecentSession(sessionDir: string, cwd?: string): string 
 			.filter(
 				(file): file is { path: string; header: SessionHeader } =>
 					file.header !== null &&
-					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)),
+					(!resolvedCwd || sessionCwdMatches(getSessionHeaderCwd(file.header), resolvedCwd)) &&
+					(includeInternal || !isInternalHeader(file.header)),
 			)
 			.map(({ path }) => ({ path, mtime: statSync(path).mtime }))
 			.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());

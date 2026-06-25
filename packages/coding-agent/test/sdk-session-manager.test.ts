@@ -109,4 +109,28 @@ describe("createAgentSession session manager defaults", () => {
 
 		session.dispose();
 	});
+
+	it("marks the session header internal when a workflow-stage orchestration context is supplied", async () => {
+		const model = getModel("anthropic", "claude-sonnet-4-5");
+		expect(model).toBeTruthy();
+
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: model!,
+			orchestrationContext: {
+				kind: "workflow-stage",
+				workflowRunId: "run-42",
+				workflowStageId: "stage-7",
+				workflowStageName: "build",
+				constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
+			},
+		});
+
+		const header = session.sessionManager.getHeader();
+		expect(header?.internal).toBe(true);
+		expect(header?.workflow).toEqual({ runId: "run-42", stageId: "stage-7", stageName: "build" });
+
+		session.dispose();
+	});
 });

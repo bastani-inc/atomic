@@ -1,7 +1,9 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import type { ContextCompactionStats } from "../session-manager.ts";
+import type { ContextCompactionStats, ContextDeletionTarget } from "../session-manager.ts";
+import type { CompactableTranscript } from "./context-compaction-types.ts";
 import type { ContextCompactionBudgetToolDetails } from "./context-deletion-tool-definitions.ts";
 import type { ContextCompactionParameters, ValidatedContextDeletionResult } from "./context-compaction-types.ts";
+import { getDeletedContentBlocks, getDeletedEntryIds } from "./context-deletion-targets.ts";
 
 export function formatErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -36,6 +38,8 @@ export function createContextCompactionBudgetDetails(
 	callCount: number,
 	contextWindow: number | undefined,
 	parameters: ContextCompactionParameters,
+	remainingImageTokens: number,
+	imageBlockCount: number,
 ): ContextCompactionBudgetToolDetails {
 	const targetTokensAfter = Math.max(0, Math.floor(stats.tokensBefore * parameters.compression_ratio));
 	const targetReductionPercent = contextCompactionTargetReductionPercent(parameters);
@@ -55,6 +59,9 @@ export function createContextCompactionBudgetDetails(
 					contextWindowAfterPercent: percentOf(stats.tokensAfter, contextWindow),
 				}
 			: {}),
+		remainingImageTokens,
+		imageBlockCount,
+		imageTokenPercent: percentOf(remainingImageTokens, stats.tokensAfter),
 		callCount,
 	};
 	return details;
@@ -78,4 +85,51 @@ export function contextCompactionProgressKey(result: ValidatedContextDeletionRes
 
 export function contextCompactionProgressPercent(result: ValidatedContextDeletionResult | undefined): number {
 	return result?.stats.percentReduction ?? 0;
+}
+
+/**
+ * Sum the token estimates of image content blocks that remain after applying the
+ * current deletion targets. Deleted entries and individually-deleted image blocks
+ * are excluded so the budget tool always reflects the live working set.
+ */
+export function sumRemainingImageTokens(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): number {
+	const deletedEntryIds = getDeletedEntryIds(targets);
+	const deletedContentBlocks = getDeletedContentBlocks(targets);
+	let imageTokens = 0;
+	for (const entry of transcript.entries) {
+		if (deletedEntryIds.has(entry.entryId)) continue;
+		const deletedBlocks = deletedContentBlocks.get(entry.entryId);
+		for (const block of entry.contentBlocks) {
+			if (block.type !== "image") continue;
+			if (deletedBlocks?.has(block.blockIndex)) continue;
+			imageTokens += block.tokenEstimate;
+		}
+	}
+	return imageTokens;
+}
+
+/**
+ * Count the image content blocks that remain after applying the current deletion
+ * targets. Deleted entries and individually-deleted image blocks are excluded.
+ */
+export function countRemainingImageBlocks(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+): number {
+	const deletedEntryIds = getDeletedEntryIds(targets);
+	const deletedContentBlocks = getDeletedContentBlocks(targets);
+	let count = 0;
+	for (const entry of transcript.entries) {
+		if (deletedEntryIds.has(entry.entryId)) continue;
+		const deletedBlocks = deletedContentBlocks.get(entry.entryId);
+		for (const block of entry.contentBlocks) {
+			if (block.type !== "image") continue;
+			if (deletedBlocks?.has(block.blockIndex)) continue;
+			count += 1;
+		}
+	}
+	return count;
 }

@@ -138,3 +138,124 @@ export function reconstructFlattenedKeys(
   }
   return compactSparseArrays(result) as Record<string, unknown>;
 }
+
+// ---------------------------------------------------------------------------
+// Schema-aware unflattening
+// ---------------------------------------------------------------------------
+//
+// A flattened key with a bracket index (`foo[0]`) is unambiguous and is always
+// reconstructed. A purely dotted key (`parent.child`) is ambiguous: it could be
+// a real nested path *or* a legitimate argument whose name literally contains
+// a dot (for example an MCP tool whose JSON Schema declares a property named
+// `filter.name`). To avoid corrupting such literal dotted keys, a dotted key is
+// only split when the tool's `inputSchema` proves its head segment is an
+// object/array container property. The presence of a bracket-indexed sibling
+// does NOT force a pure dotted key to split — the two are decided per key, so
+// a literal property such as `filter.name` survives intact even when a bracket
+// sibling like `ids[0]` is present (issue #1496). Callers that only want the
+// unambiguous bracket case can omit the schema.
+
+type JsonRecord = Record<string, unknown>;
+
+function isPlainObject(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** A flattened key contains a bracket index like `foo[0]`. */
+function hasBracketIndex(key: string): boolean {
+  return /\[\d+\]/.test(key);
+}
+
+/** A schema node that holds a nested object/array (so dotted keys are real paths). */
+function isContainerSchema(schema: unknown): boolean {
+  if (!isPlainObject(schema)) return false;
+  if (schema.type === "object" || schema.type === "array") return true;
+  if ("properties" in schema || "items" in schema) return true;
+  const union = schema.anyOf ?? schema.oneOf;
+  if (Array.isArray(union)) return union.some((branch) => isContainerSchema(branch));
+  return false;
+}
+
+/** Exact top-level `schema.properties` names (literal property keys). */
+function literalPropertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>();
+  if (!isPlainObject(schema)) return names;
+  const properties = schema.properties;
+  if (!isPlainObject(properties)) return names;
+  for (const name of Object.keys(properties)) names.add(name);
+  return names;
+}
+
+/** Top-level property names whose schema is an object/array container. */
+function containerPropertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>();
+  if (!isPlainObject(schema)) return names;
+  const properties = schema.properties;
+  if (!isPlainObject(properties)) return names;
+  for (const [name, sub] of Object.entries(properties)) {
+    if (isContainerSchema(sub)) names.add(name);
+  }
+  return names;
+}
+
+/** Whether `key` is a pure dotted path (`parent.child`) headed by a container prop. */
+function isDottedContainerKey(key: string, containers: Set<string>): boolean {
+  const dot = key.indexOf(".");
+  if (dot <= 0) return false;
+  return containers.has(key.slice(0, dot));
+}
+
+/**
+ * Decide whether a flattened key should be split into nested path segments.
+ *
+ * - Bracket-indexed keys (`foo[0]`, `foo[0].bar`) always split: they are
+ *   unambiguous evidence of provider flattening.
+ * - Purely dotted keys (`parent.child`) split only when the schema marks their
+ *   head segment as an object/array container property AND the schema does not
+ *   declare the full key as a literal top-level property. The latter guard
+ *   protects a schema that intentionally defines both a literal dotted property
+ *   (e.g. `filter.name`) and a same-head container (e.g. `filter`): the literal
+ *   property wins and is preserved verbatim (reviewer-b P2, issue #1496). The
+ *   presence of a bracket-indexed sibling does NOT force a pure dotted key to
+ *   split, so a literal property name such as `filter.name` is preserved
+ *   verbatim even when a sibling like `ids[0]` is reconstructed.
+ */
+function shouldSplitKey(key: string, containers: Set<string>, literals: Set<string>): boolean {
+  if (hasBracketIndex(key)) return true;
+  if (literals.has(key)) return false; // explicit literal property wins
+  return isDottedContainerKey(key, containers);
+}
+
+/**
+ * Reconstruct flattened tool-call arguments into nested arrays/objects using
+ * schema-aware disambiguation for dotted keys.
+ *
+ * - Bracket-indexed keys (`ids[0]`, `files[0].path`) are always reconstructed.
+ * - Purely dotted keys (`parent.child`) are reconstructed only when the optional
+ *   `schema` marks their head segment as an object/array container property.
+ *   The presence of a bracket-indexed sibling does NOT force a pure dotted key
+ *   to split, so a literal property name such as `filter.name` survives intact
+ *   even when a sibling like `ids[0]` is present (issue #1496).
+ * - Otherwise dotted keys are preserved verbatim — fixing the regression where a
+ *   literal property name like `filter.name` was silently corrupted.
+ *
+ * Returns the original reference unchanged when there is nothing to
+ * reconstruct. Prototype-pollution safety is delegated to
+ * {@link reconstructFlattenedKeys}.
+ */
+export function unflattenArgumentsWithSchema(
+  args: Record<string, unknown>,
+  schema?: unknown,
+): Record<string, unknown> {
+  const keys = Object.keys(args);
+  const literals = literalPropertyNames(schema);
+  const containers = containerPropertyNames(schema);
+  const hasBracket = keys.some((key) => hasBracketIndex(key));
+  // A dotted key needs splitting only if it is not a literal property AND its
+  // head is a schema container. Literal dotted properties are always preserved.
+  const hasSplittableDotted = keys.some(
+    (key) => !literals.has(key) && isDottedContainerKey(key, containers),
+  );
+  if (!hasBracket && !hasSplittableDotted) return args;
+  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, containers, literals));
+}
