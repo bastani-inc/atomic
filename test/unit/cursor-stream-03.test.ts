@@ -126,6 +126,15 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 			assert.doesNotMatch(imageTerminal.error.errorMessage ?? "", /access-secret/u);
 		}
 
+		const toolImageContext: Context = {
+			messages: [{ role: "toolResult", toolCallId: "tool-1", toolName: "ReadImage", content: [{ type: "image", data: "aGk=", mimeType: "image/png" }], isError: false, timestamp: 2 }],
+		};
+		const toolImageEvents = await collectEvents(textOnlyAdapter.streamSimple(model(), toolImageContext, { apiKey: "access-secret" }));
+		const toolImageTerminal = toolImageEvents.at(-1);
+		assert.equal(textOnlyTransport.runs.length, 0);
+		assert.equal(toolImageTerminal?.type, "error");
+		if (toolImageTerminal?.type === "error") assert.match(toolImageTerminal.error.errorMessage ?? "", /does not support image input/u);
+
 		const imageTransport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
 		const imageAdapter = new CursorStreamAdapter({ transport: imageTransport, uuid: () => "run-image" });
 		const allowedEvents = await collectEvents(imageAdapter.streamSimple({ ...model(), id: "claude-4.5-sonnet", input: ["text", "image"] }, imageContext, { apiKey: "access-secret" }));

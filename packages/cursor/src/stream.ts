@@ -216,16 +216,10 @@ export class CursorStreamAdapter {
 	}
 }
 class CursorStreamAbortError extends Error {
-	constructor() {
-		super("Cursor stream aborted.");
-		this.name = "CursorStreamAbortError";
-	}
+	constructor() { super("Cursor stream aborted."); this.name = "CursorStreamAbortError"; }
 }
 class CursorStreamTimeoutError extends Error {
-	constructor() {
-		super("Cursor stream timed out while waiting for provider output.");
-		this.name = "CursorStreamTimeoutError";
-	}
+	constructor() { super("Cursor stream timed out while waiting for provider output."); this.name = "CursorStreamTimeoutError"; }
 }
 interface CursorPendingMessageRead {
 	readonly promise: Promise<IteratorResult<CursorServerMessage>>;

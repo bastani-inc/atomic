@@ -13,7 +13,7 @@ The unavoidable Atomic-specific integration difference is the provider surface: 
 ## Limitations
 
 - Image input is supported only for known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (IDs beginning `claude-`, `composer-`, `gemini-`, `gpt-`, or `kimi-`); text-only Cursor models still reject images.
-- User images and mixed text/image MCP tool results are serialized for image-capable Cursor models.
+- User images and mixed text/image MCP tool results are serialized for image-capable Cursor models. Image payloads must be non-empty standard base64; MIME-style line wrapping whitespace is accepted and stripped before serialization.
 - Cursor's private API may change without notice.
 - HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
 - Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.

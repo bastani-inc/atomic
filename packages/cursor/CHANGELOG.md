@@ -8,7 +8,7 @@
 
 ### Fixed
 
-- Rejected malformed base64 image payloads during Cursor selected-image and MCP image serialization with sanitized local errors.
+- Rejected empty or malformed base64 image payloads during Cursor selected-image and MCP image serialization with sanitized local errors, while accepting valid MIME-wrapped base64 with line whitespace.
 
 ## [0.9.2] - 2026-06-23
 
