@@ -143,6 +143,7 @@ export function createWorkflowExtensionRuntimeState(
     resumeFailedRun(sourceRunId, stageId, options) { return runtimeRef.current.resumeFailedRun(sourceRunId, stageId, options); },
     resumeDurableWorkflow(workflowIdOrPrefix, options) { return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options); },
     listDurableResumable(sessionDir) { return runtimeRef.current.listDurableResumable(sessionDir); },
+    prepareDurableResumable(workflowIdOrPrefix, sessionDir) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix, sessionDir); },
   };
 
   function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {

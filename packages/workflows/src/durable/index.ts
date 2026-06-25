@@ -26,13 +26,22 @@ export {
   createDbosDurableBackend,
   type DbosSdkHandle,
   type DbosWorkflowInfo,
+  type DbosStepRecord,
 } from "./dbos-backend.js";
+export {
+  encodeCheckpoint,
+  decodeToCheckpoint,
+  isCheckpointEnvelope,
+  DBOS_ENVELOPE_VERSION,
+  type DbosCheckpointEnvelope,
+} from "./dbos-envelope.js";
 export {
   getDurableBackend,
   setDurableBackend,
   createInMemoryBackend,
   createDefaultFileBackend,
   createWorkflowFileBackend,
+  initializeDbosDurableBackendFromEnv,
 } from "./factory.js";
 export {
   scanResumableWorkflows,
@@ -49,12 +58,16 @@ export {
 export { wrapUiWithDurable, type DurableUiDeps } from "./ui-primitive.js";
 export {
   recordStageCheckpoint,
+  createDurableStagePrimitive,
+  createDurableTaskPrimitive,
   createStageReplayKeyGenerator,
+  stableCheckpointId,
   type DurableStageDeps,
 } from "./stage-primitive.js";
 export {
   resumeDurableWorkflow,
   resolveDurableEntry,
+  prepareDurableResume,
   type ResumeDurableDeps,
   type ResumeDurableResult,
 } from "./resume-runtime.js";

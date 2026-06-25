@@ -102,6 +102,20 @@ export interface DurableWorkflowBackend {
 
   /** Clear all state (for tests). */
   reset(): void;
+
+  /**
+   * Optional: hydrate a single workflow's checkpoints from the persistent
+   * store (DBOS) into the in-memory mirror. Implementations that do not need
+   * async hydration (in-memory, file) omit this method.
+   */
+  hydrateWorkflow?(workflowId: string): Promise<void>;
+
+  /**
+   * Optional: hydrate all resumable workflows from the persistent store (DBOS)
+   * into the in-memory mirror. Called before listing/resuming in a fresh
+   * process. Implementations that do not need async hydration omit this.
+   */
+  hydrateResumableWorkflows?(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,6 +184,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       pendingPrompts,
       updatedAt,
       ...(handle.label !== undefined ? { label: handle.label } : {}),
+      ...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
+      ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
     };
     if (existing) existing.handle = full;
     else this.workflows.set(handle.workflowId, { handle: full, checkpoints: new Map(), toolByHash: new Map(), uiByHash: new Map(), stageByReplayKey: new Map() });
@@ -217,7 +233,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
     return [...this.workflows.values()]
-      .filter((rec) => isResumableStatus(rec.handle.status))
+      .filter((rec) => isRootWorkflow(rec.handle) && isResumableHandle(rec.handle))
       .map((rec) => toResumableEntry(rec.handle));
   }
 
@@ -234,6 +250,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       completedCheckpoints: h.completedCheckpoints,
       pendingPrompts: h.pendingPrompts,
       ...(h.label !== undefined ? { label: h.label } : {}),
+      ...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),
+      ...(h.resumable !== undefined ? { resumable: h.resumable } : {}),
       ts: h.updatedAt,
     };
   }
@@ -256,19 +274,27 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
   }
 }
 
-function isResumableStatus(status: DurableWorkflowStatus): boolean {
-  return status === "running" || status === "paused" || status === "failed" || status === "blocked";
+function isRootWorkflow(handle: DurableWorkflowHandle): boolean {
+  return handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId;
+}
+
+function isResumableHandle(handle: DurableWorkflowHandle): boolean {
+  if (handle.status === "failed" || handle.status === "blocked") return handle.resumable !== false;
+  return handle.status === "running" || handle.status === "paused";
 }
 
 function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry {
   return {
     workflowId: handle.workflowId,
     name: handle.name,
+    inputs: handle.inputs,
     status: handle.status,
     completedCheckpoints: handle.completedCheckpoints,
     pendingPrompts: handle.pendingPrompts,
     ...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
     ...(handle.label !== undefined ? { label: handle.label } : {}),
+    ...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
+    ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt,
   };

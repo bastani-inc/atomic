@@ -52,7 +52,7 @@ export function scanResumableWorkflows(sessionDir: string): readonly ResumableWo
       }
     }
   }
-  return [...entries.values()].filter((e) => isResumableStatus(e.status)).sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...entries.values()].filter(isResumableEntry).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpointEntry[] {
@@ -96,6 +96,8 @@ function parseDurableEntry(raw: Record<string, unknown>): DurableCheckpointEntry
     completedCheckpoints: typeof raw["completedCheckpoints"] === "number" ? raw["completedCheckpoints"] : 0,
     pendingPrompts: typeof raw["pendingPrompts"] === "number" ? raw["pendingPrompts"] : 0,
     ...(typeof raw["label"] === "string" ? { label: raw["label"] } : {}),
+    ...(typeof raw["rootWorkflowId"] === "string" ? { rootWorkflowId: raw["rootWorkflowId"] } : {}),
+    ...(typeof raw["resumable"] === "boolean" ? { resumable: raw["resumable"] } : {}),
     ts,
   };
 }
@@ -123,18 +125,28 @@ function entryToResumable(entry: DurableCheckpointEntry, sessionFile: string): R
   return {
     workflowId: entry.workflowId,
     name: entry.name,
+    inputs: entry.inputs,
     status: entry.status,
     completedCheckpoints: entry.completedCheckpoints,
     pendingPrompts: entry.pendingPrompts,
     sessionFile,
     ...(entry.label !== undefined ? { label: entry.label } : {}),
+    ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
+    ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
     createdAt: entry.ts,
     updatedAt: entry.ts,
   };
 }
 
 function isResumableStatus(status: DurableWorkflowStatus): boolean {
-  return status === "running" || status === "paused" || status === "failed" || status === "blocked";
+  return status === "running" || status === "paused";
+}
+
+function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
+  const isRoot = entry.rootWorkflowId === undefined || entry.rootWorkflowId === entry.workflowId;
+  if (!isRoot) return false;
+  if (entry.status === "failed" || entry.status === "blocked") return entry.resumable !== false;
+  return isResumableStatus(entry.status);
 }
 
 // ---------------------------------------------------------------------------
@@ -167,6 +179,8 @@ export function persistDurableCacheEntry(
     completedCheckpoints: entry.completedCheckpoints,
     pendingPrompts: entry.pendingPrompts,
     ...(entry.label !== undefined ? { label: entry.label } : {}),
+    ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
+    ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
     ts: entry.ts,
   });
 }

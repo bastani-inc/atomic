@@ -40,6 +40,10 @@ export interface DurableWorkflowHandle {
   readonly pendingPrompts: number;
   /** Optional human-readable label. */
   readonly label?: string;
+  /** Root workflow id. Omitted or equal to workflowId means top-level. */
+  readonly rootWorkflowId?: string;
+  /** Explicit resumability flag for failed/blocked runs. */
+  readonly resumable?: boolean;
 }
 
 export type DurableWorkflowStatus =
@@ -136,6 +140,8 @@ export interface DurableCheckpointEntry {
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;
   readonly label?: string;
+  readonly rootWorkflowId?: string;
+  readonly resumable?: boolean;
   readonly ts: number;
 }
 
@@ -146,11 +152,14 @@ export interface DurableCheckpointEntry {
 export interface ResumableWorkflowEntry {
   readonly workflowId: string;
   readonly name: string;
+  readonly inputs?: WorkflowSerializableObject;
   readonly status: DurableWorkflowStatus;
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;
   readonly sessionFile?: string;
   readonly label?: string;
+  readonly rootWorkflowId?: string;
+  readonly resumable?: boolean;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

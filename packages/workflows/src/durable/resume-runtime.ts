@@ -47,6 +47,37 @@ export interface ResumeDurableDeps {
 }
 
 /**
+ * Prepare a durable resume: hydrate the backend's in-memory mirror from the
+ * persistent store (DBOS) so synchronous reads in {@link resumeDurableWorkflow}
+ * find the workflow and its checkpoints. No-op for backends without hydration.
+ *
+ * Must be awaited before calling {@link resumeDurableWorkflow} when the backend
+ * might be a fresh DBOS process.
+ */
+export async function prepareDurableResume(
+  workflowIdOrPrefix: string | undefined,
+  deps: ResumeDurableDeps,
+): Promise<readonly ResumableWorkflowEntry[]> {
+  const backend = deps.durableBackend ?? getDurableBackend();
+  // Hydrate all resumable workflows first so the catalog is complete.
+  if (backend.hydrateResumableWorkflows !== undefined) {
+    await backend.hydrateResumableWorkflows();
+  }
+  const catalog = backend.listResumableWorkflows();
+  // If a specific target was requested, hydrate that workflow too (it might
+  // be resumable but not yet in the resumable filter — e.g. recently failed).
+  if (workflowIdOrPrefix !== undefined) {
+    const resolved = resolveDurableEntry(workflowIdOrPrefix, catalog);
+    if (resolved !== undefined && !("kind" in resolved)) {
+      if (backend.hydrateWorkflow !== undefined) {
+        await backend.hydrateWorkflow(resolved.workflowId);
+      }
+    }
+  }
+  return backend.listResumableWorkflows();
+}
+
+/**
  * Resolve a durable catalog entry for a workflow id (full or prefix match).
  * Prefers the durable backend's resumable list; falls back to an explicit
  * session-scan catalog when provided by the caller.
@@ -86,7 +117,7 @@ export function resumeDurableWorkflow(
       message: `Ambiguous workflow prefix "${workflowIdOrPrefix}" matches: ${resolved.matches.map((m) => `${m.name} (${m.workflowId.slice(0, 8)})`).join(", ")}`,
     };
   }
-  if (!isResumableStatus(resolved.status)) {
+  if (!isResumableEntry(resolved)) {
     return { ok: false, reason: "not_resumable", message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${resolved.status}, not resumable.` };
   }
 
@@ -102,7 +133,7 @@ export function resumeDurableWorkflow(
   // resume catalog entry (which is a discovery cache). Fall back to empty
   // inputs when the handle is unavailable.
   const handle = backend.getWorkflow(resolved.workflowId);
-  const inputs: Record<string, unknown> = handle !== undefined ? { ...handle.inputs } : {};
+  const inputs: Record<string, unknown> = handle !== undefined ? { ...handle.inputs } : { ...(resolved.inputs ?? {}) };
   try {
     resolveAndValidateInputs(def.inputs, inputs as WorkflowInputValues, `workflow "${def.name}"`);
   } catch (err) {
@@ -128,6 +159,40 @@ export function resumeDurableWorkflow(
   };
 }
 
-function isResumableStatus(status: ResumableWorkflowEntry["status"]): boolean {
-  return status === "running" || status === "paused" || status === "failed" || status === "blocked";
+function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
+  const isRoot = entry.rootWorkflowId === undefined || entry.rootWorkflowId === entry.workflowId;
+  if (!isRoot) return false;
+  if (entry.status === "failed" || entry.status === "blocked") return entry.resumable !== false;
+  return entry.status === "running" || entry.status === "paused";
+}
+
+/**
+ * Runtime-facing async preparation: hydrate the durable backend from DBOS
+ * (when supported) then list resumable workflows with optional session-dir
+ * scan merge. Used by the ExtensionRuntime's `prepareDurableResumable`.
+ */
+export async function prepareRuntimeDurableResumable(
+  getBackend: () => DurableWorkflowBackend,
+  resolveSessionDir: () => string | undefined,
+  workflowIdOrPrefix?: string,
+  sessionDir?: string,
+): Promise<readonly ResumableWorkflowEntry[]> {
+  const backend = getBackend();
+  if (backend.hydrateResumableWorkflows !== undefined) {
+    await backend.hydrateResumableWorkflows();
+  }
+  if (workflowIdOrPrefix !== undefined && backend.hydrateWorkflow !== undefined) {
+    const catalog = backend.listResumableWorkflows();
+    const resolved = resolveDurableEntry(workflowIdOrPrefix, catalog);
+    if (resolved !== undefined && !("kind" in resolved)) {
+      await backend.hydrateWorkflow(resolved.workflowId);
+    }
+  }
+  const live = backend.listResumableWorkflows();
+  const effectiveSessionDir = sessionDir ?? resolveSessionDir();
+  if (effectiveSessionDir === undefined) return live;
+  const { scanResumableWorkflows } = await import("./resume-catalog.js");
+  const scanned = scanResumableWorkflows(effectiveSessionDir);
+  const liveIds = new Set(live.map((e) => e.workflowId));
+  return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId))];
 }

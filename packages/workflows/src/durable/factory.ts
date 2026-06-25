@@ -12,8 +12,10 @@
 import type { DurableWorkflowBackend } from "./backend.js";
 import { InMemoryDurableBackend } from "./backend.js";
 import { FileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
+import { createDbosDurableBackend } from "./dbos-backend.js";
 
 let globalBackend: DurableWorkflowBackend | undefined;
+let dbosInit: Promise<DurableWorkflowBackend | undefined> | undefined;
 
 /**
  * Get the singleton durable backend. Creates one lazily on first call.
@@ -33,9 +35,9 @@ export function getDurableBackend(): DurableWorkflowBackend {
   const durableDir = process.env.ATOMIC_WORKFLOW_DURABLE_DIR;
   const dbosUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
   if ((durableDir && durableDir.length > 0) || (dbosUrl && dbosUrl.length > 0)) {
-    // Opt-in cross-session persistence (file or DBOS). The DBOS adapter is
-    // upgraded by the extension runtime on launch when DBOS_SYSTEM_DATABASE_URL
-    // is set; until then the file backend provides cross-process resume.
+    // Opt-in cross-session persistence. DBOS initialization is async because
+    // the SDK is optional; use the file backend as a safe discovery/cache
+    // fallback until initializeDbosDurableBackendFromEnv() completes.
     globalBackend = createDefaultFileBackend();
   } else {
     // Default: process-local. No filesystem writes; no session-log pollution.
@@ -57,6 +59,17 @@ export function setDurableBackend(backend: DurableWorkflowBackend | undefined): 
  */
 export function createInMemoryBackend(): InMemoryDurableBackend {
   return new InMemoryDurableBackend();
+}
+
+/** Initialize and install the DBOS backend when DBOS_SYSTEM_DATABASE_URL is set. */
+export async function initializeDbosDurableBackendFromEnv(): Promise<DurableWorkflowBackend | undefined> {
+  const dbosUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
+  if (dbosUrl === undefined || dbosUrl.length === 0) return undefined;
+  dbosInit ??= createDbosDurableBackend({ systemDatabaseUrl: dbosUrl }).then((backend) => {
+    setDurableBackend(backend);
+    return backend;
+  });
+  return dbosInit;
 }
 
 /**

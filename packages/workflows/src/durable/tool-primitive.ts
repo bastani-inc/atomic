@@ -85,7 +85,7 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
     const checkpoint: DurableToolCheckpoint = {
       kind: "tool",
       workflowId: input.workflowId,
-      checkpointId: input.nextCheckpointId(),
+      checkpointId: `tool:${argsHash}`,
       name,
       argsHash,
       output: result,

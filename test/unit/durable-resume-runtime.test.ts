@@ -16,10 +16,10 @@ import type { WorkflowRegistry } from "../../packages/workflows/src/workflows/re
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
-import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { InMemoryDurableBackend, type DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { resolveDurableEntry, resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
-import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
+import { prepareRuntimeDurableResumable, resolveDurableEntry, resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import type { DurableCheckpointEntry, ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
   return {
@@ -156,5 +156,34 @@ describe("resumeDurableWorkflow", () => {
     }
     // Backend status flipped back to running.
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
+  });
+
+  test("prepareRuntimeDurableResumable hydrates fresh persistent backend before resume", async () => {
+    class HydratingBackend implements DurableWorkflowBackend {
+      readonly persistent = true;
+      private readonly mem = new InMemoryDurableBackend();
+      hydrated = false;
+      registerWorkflow = this.mem.registerWorkflow.bind(this.mem);
+      recordCheckpoint = this.mem.recordCheckpoint.bind(this.mem);
+      getToolOutput = this.mem.getToolOutput.bind(this.mem);
+      getUiResponse = this.mem.getUiResponse.bind(this.mem);
+      getStageOutput = this.mem.getStageOutput.bind(this.mem);
+      listCheckpoints = this.mem.listCheckpoints.bind(this.mem);
+      getWorkflow = this.mem.getWorkflow.bind(this.mem);
+      setWorkflowStatus = this.mem.setWorkflowStatus.bind(this.mem);
+      listResumableWorkflows = this.mem.listResumableWorkflows.bind(this.mem);
+      toCacheEntry = this.mem.toCacheEntry.bind(this.mem) as (workflowId: string) => DurableCheckpointEntry | undefined;
+      reset = this.mem.reset.bind(this.mem);
+      async hydrateResumableWorkflows(): Promise<void> {
+        this.hydrated = true;
+        this.mem.registerWorkflow({ workflowId: "wf-hydrated", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "running" });
+      }
+    }
+    const hydrating = new HydratingBackend();
+    const catalog = await prepareRuntimeDurableResumable(() => hydrating, () => undefined);
+    assert.equal(hydrating.hydrated, true);
+    assert.equal(catalog.length, 1);
+    const result = resumeDurableWorkflow("wf-hydrated", { ...deps(), durableBackend: hydrating });
+    assert.equal(result.ok, true);
   });
 });

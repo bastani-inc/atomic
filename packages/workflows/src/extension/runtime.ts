@@ -43,8 +43,8 @@ import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
-import { getDurableBackend } from "../durable/factory.js";
+import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, prepareRuntimeDurableResumable, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
+import { getDurableBackend, initializeDbosDurableBackendFromEnv } from "../durable/factory.js";
 import { scanResumableWorkflows } from "../durable/resume-catalog.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
@@ -127,11 +127,8 @@ export interface ExtensionRuntime {
    * cross-ref: issue #1498 — cross-session /workflow resume selector.
    */
   resumeDurableWorkflow(workflowIdOrPrefix: string, options?: RuntimeDispatchOptions): import("../durable/resume-runtime.js").ResumeDurableResult;
-  /**
-   * List durable resumable workflows (session cache + backend) for the
-   * /workflow resume selector.
-   */
   listDurableResumable(sessionDir?: string): readonly import("../durable/types.js").ResumableWorkflowEntry[];
+  prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly import("../durable/types.js").ResumableWorkflowEntry[]>;
 }
 
 export interface RuntimeDispatchOptions {
@@ -168,6 +165,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
+  void initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability disabled: ${err instanceof Error ? err.message : String(err)}`));
 
   function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =
@@ -488,13 +486,15 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     listDurableResumable(sessionDir?: string): readonly ResumableWorkflowEntry[] {
       const backend = getDurableBackend();
       const live = backend.listResumableWorkflows();
-      if (sessionDir === undefined) return live;
-      const scanned = scanResumableWorkflows(sessionDir);
-      // Merge: scanned entries may include workflows not yet loaded into the
-      // live backend (e.g. from a prior session's JSONL cache).
+      const dir = sessionDir ?? resolveDefaultStageSessionDir?.();
+      if (dir === undefined) return live;
+      const scanned = scanResumableWorkflows(dir);
       const liveIds = new Set(live.map((e) => e.workflowId));
-      const extra = scanned.filter((e) => !liveIds.has(e.workflowId));
-      return [...live, ...extra];
+      return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId))];
+    },
+
+    prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
+      return prepareRuntimeDurableResumable(getDurableBackend, () => resolveDefaultStageSessionDir?.(), workflowIdOrPrefix, sessionDir);
     },
   };
 }

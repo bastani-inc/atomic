@@ -920,12 +920,12 @@ Atomic workflows support **cross-session resumability** via a durable workflow b
 
 ### How it works
 
-- **Durable backend seam**: The workflow engine uses a pluggable `DurableWorkflowBackend` interface with three implementations: in-memory (default, process-local), file-backed (opt-in cross-process resume), and DBOS-backed (Postgres). Cross-session resume is **opt-in**: set `ATOMIC_WORKFLOW_DURABLE_DIR` to enable file-backed checkpoint persistence, or set `DBOS_SYSTEM_DATABASE_URL` to upgrade to [DBOS](https://docs.dbos.dev/typescript/programming-guide) with Postgres-backed durable execution. The default in-memory backend checkpoints within a process so live `/workflow resume` still skips completed `ctx.*` work, but does not write to disk.
+- **Durable backend seam**: The workflow engine uses a pluggable `DurableWorkflowBackend` interface with three implementations: in-memory (default, process-local), file-backed (opt-in cross-process resume), and DBOS-backed (Postgres). Cross-session resume is **opt-in**: set `ATOMIC_WORKFLOW_DURABLE_DIR` to enable lock-protected file checkpoint persistence, or set `DBOS_SYSTEM_DATABASE_URL` to lazily load [DBOS](https://docs.dbos.dev/typescript/programming-guide), call `DBOS.launch()`, and use Postgres-backed workflow/control records. The default in-memory backend checkpoints within a process so live `/workflow resume` still skips completed `ctx.*` work, but does not write to disk.
 - **Only `ctx.*` blocks are checkpointed**: Anything outside `ctx.*` (bare `await someFunction()`) is never saved. This matches the principle that checkpoints are effectively only `ctx.*` blocks.
 - **Durable `ctx.tool`**: `ctx.tool(name, args, fn)` runs TypeScript and caches the result by content hash of `name` + `args`. On resume the cached result is returned without re-executing — completed side effects are not repeated.
-- **Durable `ctx.ui`**: Completed `ctx.ui.input` / `confirm` / `select` / `editor` / `custom` responses are cached by prompt identity. On resume an already-answered prompt returns its cached response instead of re-asking the user.
+- **Durable `ctx.ui`**: Completed `ctx.ui.input` / `confirm` / `select` / `editor` / `custom` responses are cached by prompt identity, including prompt kind, label/message, options, and call order so repeated prompts do not collide. On resume an already-answered prompt returns its cached response instead of re-asking the user.
 - **Durable `ctx.stage` / `ctx.task`**: Completed stage outputs are recorded at the stage-end lifecycle boundary. On resume a stage whose output is already cached is skipped.
-- **Session-file cache**: When a persistent backend is enabled, top-level workflow metadata is mirrored as `workflow.durable.checkpoint` entries in the session JSONL so a new session can discover resumable workflows without scanning the durable store directly. The durable backend remains the checkpoint source of truth; the session cache is a discovery index.
+- **Session-file cache**: When a persistent backend is enabled, top-level workflow metadata is mirrored as `workflow.durable.checkpoint` entries in the session JSONL so a new session can discover resumable root workflows without scanning the durable store directly. Child workflows are hidden from this catalog. The durable backend remains the checkpoint source of truth; the session cache is a discovery index.
 
 ### `ctx.tool` — durable cached tool execution
 
@@ -963,7 +963,7 @@ The `/workflow resume` command mirrors `/resume` ergonomics. It first checks liv
 /workflow resume <workflow-id-or-prefix>  # Resume by top-level id; completed checkpoints replay
 ```
 
-The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. When no durable backend is enabled and no live run matches, `/workflow resume` reports that no resumable workflows were found.
+The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history and merges it with the durable backend catalog before showing entries. When no durable backend is enabled and no live run matches, `/workflow resume` reports that no resumable workflows were found.
 
 > Cross-session durable resume requires a persistent backend (`ATOMIC_WORKFLOW_DURABLE_DIR` or `DBOS_SYSTEM_DATABASE_URL`). With the default in-memory backend, `/workflow resume` resumes live runs only.
 
@@ -971,7 +971,7 @@ The selector displays the root workflow name, status, completed checkpoint count
 
 | Scenario | Behavior |
 | --- | --- |
-| **Workflow killed/cancelled** | Marked `cancelled` in durable state. Not auto-resumable; user must explicitly resume via `/workflow resume <id>`. |
+| **Workflow killed/cancelled** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
 | **Stage failure (recoverable)** | Workflow marked `failed` but remains in the resumable list. `/workflow resume <id>` continues from the last completed checkpoint. |
 | **Stage failure (non-recoverable)** | Workflow marked `failed`, not resumable. |
 | **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in the resumable selector. Resume re-executes from the last completed checkpoint. |
@@ -987,7 +987,9 @@ For production-grade durability with Postgres-backed checkpointing:
    ```bash
    export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
    ```
-3. Start Atomic. The workflow engine will automatically use the DBOS-backed durable backend.
+3. Start Atomic. The workflow engine initializes DBOS lazily in the extension runtime; if the optional SDK is unavailable or Postgres cannot be reached, Atomic emits a warning and keeps the file-backed durable cache as the safe fallback.
+
+When `/workflow resume` lists or resumes a DBOS-backed workflow in a fresh process, Atomic first hydrates its in-memory replay mirror from DBOS. Checkpoints are stored as structured DBOS outputs containing the checkpoint kind, id, tool argument hash, UI prompt hash, stage replay key, and completed output, so replay can skip completed `ctx.tool`, `ctx.ui`, and `ctx.stage` work without relying on prior in-process state. Older DBOS records that contain only a raw output are still read as generic stage checkpoints.
 
 For zero-infrastructure cross-process resume without Postgres, point the file backend at a directory:
 

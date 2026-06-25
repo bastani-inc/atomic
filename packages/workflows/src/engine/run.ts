@@ -40,7 +40,7 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
-import { recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 
@@ -188,11 +188,13 @@ export async function run<
   const durableBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
+  const completedStageReplayKeys = new Map<string, string>();
   const durableStageDeps = {
     workflowId: runId,
     backend: durableBackend,
     nextCheckpointId: checkpointIdGenerator,
     nextReplayKey: stageReplayKeyGenerator,
+    replayKeyForCompletedStage: (stage: StageSnapshot) => completedStageReplayKeys.get(stage.id),
   };
   const userOnStageEnd = opts.onStageEnd;
   const durableOnStageEnd = (stageRunId: string, snapshot: StageSnapshot): void => {
@@ -278,22 +280,24 @@ export async function run<
   });
 
   // Durable workflow registration — register this run for cross-session discovery.
-  if (opts.continuation === undefined) {
-    // New run: register it durably so a future session can discover it.
+  if (opts.continuation === undefined && opts.parentRun === undefined) {
+    // New root run: register it durably so a future session can discover it.
     durableBackend.registerWorkflow({
       workflowId: runId,
       name: def.name,
       inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
       createdAt: runSnapshot.startedAt,
       status: "running",
+      rootWorkflowId: runId,
+      resumable: true,
       ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
     });
     if (opts.persistence && durableBackend.persistent) {
       const cacheEntry = durableBackend.toCacheEntry(runId);
       if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
     }
-  } else {
-    // Resuming: mark the workflow as running again in the backend.
+  } else if (opts.parentRun === undefined) {
+    // Resuming a root workflow: mark it as running again in the backend.
     durableBackend.setWorkflowStatus(runId, "running");
   }
   const tool = createToolPrimitive({
@@ -312,6 +316,7 @@ export async function run<
   // cross-ref: issue #1498 — durable ctx.ui response/pending prompt state.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
 
+  let durableFailureResumable = false;
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
     get cwd() { return resolveWorkflowCwd(); },
@@ -334,8 +339,23 @@ export async function run<
         classifyExecutorFailure,
       }),
     }),
-    stage: runtime.stage,
-    task: taskRunners.task,
+    stage: createDurableStagePrimitive({
+      workflowId: runId,
+      backend: durableBackend,
+      nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+      stage: (name, options, replayKey) => {
+        const stage = runtime.stage(name, options);
+        const stageId = activeStore.runs().find((r) => r.id === runId)?.stages.at(-1)?.id;
+        if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
+        return stage;
+      },
+    }),
+    task: createDurableTaskPrimitive({
+      workflowId: runId,
+      backend: durableBackend,
+      nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+      task: taskRunners.task,
+    }),
     chain: taskRunners.chain,
     parallel: taskRunners.parallel,
     workflow,
@@ -399,6 +419,7 @@ export async function run<
 
     if (metadata.failureDisposition === "active_blocked" && metadata.failedStageId !== undefined && metadata.failureRecoverability === "recoverable") {
       for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);
+      durableFailureResumable = true;
       return recordActiveBlockedFailure(runId, runSnapshot, activeStore, opts.persistence, {
         ...metadata,
         failureRecoverability: "recoverable",
@@ -407,6 +428,7 @@ export async function run<
       });
     }
 
+    durableFailureResumable = metadata.resumable === true && metadata.failureRecoverability === "recoverable";
     const recorded = activeStore.recordRunEnd(runId, "failed", undefined, metadata.errorMessage, metadata);
     appendRunEndWhenRecorded(opts.persistence, recorded, {
       runId,
@@ -426,8 +448,17 @@ export async function run<
   } finally {
     // Persist final durable status for cross-session resume discovery.
     // cross-ref: issue #1498
-    if (runSnapshot.status === "failed" || runSnapshot.status === "killed") {
-      durableBackend.setWorkflowStatus(runId, runSnapshot.status === "killed" ? "cancelled" : "failed");
+    if (opts.parentRun === undefined && (runSnapshot.status === "failed" || runSnapshot.status === "killed")) {
+      if (runSnapshot.status === "killed") durableBackend.setWorkflowStatus(runId, "cancelled");
+      else durableBackend.registerWorkflow({
+        workflowId: runId,
+        name: def.name,
+        inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+        createdAt: runSnapshot.startedAt,
+        status: "failed",
+        rootWorkflowId: runId,
+        resumable: durableFailureResumable,
+      });
       if (opts.persistence && durableBackend.persistent) {
         const cacheEntry = durableBackend.toCacheEntry(runId);
         if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);

@@ -85,6 +85,16 @@ describe("InMemoryDurableBackend", () => {
     assert.equal(backend.listResumableWorkflows().length, 0);
   });
 
+  test("listResumableWorkflows filters children and non-recoverable failures", () => {
+    backend.registerWorkflow({ workflowId: "root-failed", name: "root", inputs: {}, createdAt: 1, status: "failed" });
+    backend.registerWorkflow({ workflowId: "root-terminal", name: "terminal", inputs: {}, createdAt: 1, status: "failed", resumable: false });
+    backend.registerWorkflow({ workflowId: "child-run", name: "child", inputs: {}, createdAt: 1, status: "running", rootWorkflowId: WORKFLOW_ID });
+    const ids = backend.listResumableWorkflows().map((entry) => entry.workflowId);
+    assert.ok(ids.includes("root-failed"));
+    assert.ok(!ids.includes("root-terminal"));
+    assert.ok(!ids.includes("child-run"));
+  });
+
   test("setWorkflowStatus updates status and updatedAt", () => {
     const before = backend.getWorkflow(WORKFLOW_ID)!.updatedAt;
     // Ensure updatedAt changes.
@@ -149,6 +159,19 @@ describe("FileDurableBackend", () => {
     assert.equal(resumable.length, 1);
     assert.equal(resumable[0]!.workflowId, WORKFLOW_ID);
     assert.equal(resumable[0]!.status, "paused");
+  });
+
+  test("merges concurrent backend updates instead of losing stale writes", () => {
+    const file = join(tmpDir, "state.json");
+    const backendA = new FileDurableBackend(file);
+    const backendB = new FileDurableBackend(file);
+    const hashA = durableHash({ name: "a", args: {} });
+    const hashB = durableHash({ name: "b", args: {} });
+    backendA.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "a", hashA, "A", "cp-a"));
+    backendB.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "b", hashB, "B", "cp-b"));
+    const reloaded = new FileDurableBackend(file);
+    assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashA), "A");
+    assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashB), "B");
   });
 });
 

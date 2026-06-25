@@ -1,84 +1,122 @@
-/**
- * Durable `ctx.stage` / `ctx.task` checkpoint recorder.
- *
- * Records completed stage outputs as durable {@link DurableStageCheckpoint}
- * records so a cross-session resume can skip re-running stages whose output is
- * already cached. The replay key mirrors the engine's continuation replay
- * identity so durable replay aligns with the existing in-process replay index.
- *
- * Recording happens at the stage-end lifecycle boundary (via `onStageEnd`),
- * which is the natural durable checkpoint surface: a stage that reached
- * `completed` has produced its output and side effects and is safe to cache.
- *
- * cross-ref: issue #1498 — "Wire durable checkpoints for ctx.stage/ctx.task
- * outputs at actual lifecycle boundaries."
- */
+/** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
+import type { StageContext, StageOptions, WorkflowTaskOptions, WorkflowTaskResult } from "../shared/types.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableStageCheckpoint } from "./types.js";
 
-/**
- * Dependencies required to record durable stage checkpoints.
- */
 export interface DurableStageDeps {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
-  /** Monotonic checkpoint id counter source. */
   readonly nextCheckpointId: () => string;
-  /** Replay-key generator (matches engine continuation replay semantics). */
-  readonly nextReplayKey: (stageName: string, stageId: string) => string;
+  readonly nextReplayKey: (stageName: string) => string;
+  readonly replayKeyForCompletedStage?: (stage: StageSnapshot) => string | undefined;
 }
 
-/**
- * Record a completed stage's output durably. No-op for non-completed stages,
- * since only completed stages have stable outputs worth caching.
- *
- * Returns true when a checkpoint was recorded, false otherwise.
- */
 export function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): boolean {
   if (stage.status !== "completed") return false;
-  // Prefer the stage's own replayKey when present (continuation-aligned);
-  // otherwise derive one from the stage identity so resume replay is stable.
-  const replayKey = stage.replayKey ?? deps.nextReplayKey(stage.name, stage.id);
-  // Skip if already cached — the backend is idempotent, but avoiding a redundant
-  // write keeps the pending-prompt/session metadata untouched.
+  const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
   if (deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined) return false;
-  const output = stageOutput(stage);
   const checkpoint: DurableStageCheckpoint = {
     kind: "stage",
     workflowId: deps.workflowId,
-    checkpointId: deps.nextCheckpointId(),
+    checkpointId: stableCheckpointId("stage", replayKey),
     name: stage.name,
     replayKey,
-    output,
+    output: stageOutput(stage),
     completedAt: stage.endedAt ?? Date.now(),
   };
   deps.backend.recordCheckpoint(checkpoint);
   return true;
 }
 
-/**
- * Resolve the serializable output for a stage checkpoint. Prefers the stage's
- * recorded `result` text; falls back to a minimal status marker so the
- * checkpoint still exists for replay-skip decisions.
- */
+export function createDurableStagePrimitive(input: {
+  readonly workflowId: string;
+  readonly backend: DurableWorkflowBackend;
+  readonly nextReplayKey: (stageName: string) => string;
+  readonly stage: (name: string, options: StageOptions | undefined, replayKey: string) => StageContext;
+}): (name: string, options?: StageOptions) => StageContext {
+  return (name: string, options?: StageOptions): StageContext => {
+    const replayKey = input.nextReplayKey(name);
+    const cached = input.backend.getStageOutput(input.workflowId, replayKey);
+    if (cached !== undefined) return createCachedStageContext(name, cached);
+    return input.stage(name, options, replayKey);
+  };
+}
+
+export function createDurableTaskPrimitive(input: {
+  readonly workflowId: string;
+  readonly backend: DurableWorkflowBackend;
+  readonly nextReplayKey: (stageName: string) => string;
+  readonly task: (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult>;
+}): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
+  return async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+    const replayKey = input.nextReplayKey(`task:${name}`);
+    const cached = input.backend.getStageOutput(input.workflowId, replayKey);
+    if (cached !== undefined && isWorkflowTaskResult(cached)) return cached;
+    const result = await input.task(name, options);
+    input.backend.recordCheckpoint({
+      kind: "stage",
+      workflowId: input.workflowId,
+      checkpointId: stableCheckpointId("task", replayKey),
+      name,
+      replayKey,
+      output: result,
+      completedAt: Date.now(),
+    });
+    return result;
+  };
+}
+
+function createCachedStageContext(name: string, output: WorkflowSerializableValue): StageContext {
+  const text = typeof output === "string" ? output : JSON.stringify(output);
+  const unsupported = async (): Promise<never> => { throw new Error(`Stage "${name}" was replayed from a durable checkpoint; live session operations are unavailable.`); };
+  const cached = {
+    name,
+    async prompt() { return output as Awaited<ReturnType<StageContext["prompt"]>>; },
+    async complete() { return text; },
+    async steer() {},
+    async followUp() {},
+    subscribe() { return () => {}; },
+    sessionFile: undefined,
+    sessionId: `durable-replay:${name}`,
+    setModel: unsupported,
+    setThinkingLevel() {},
+    cycleModel: unsupported,
+    cycleThinkingLevel() { return undefined; },
+    agent: undefined,
+    model: undefined,
+    thinkingLevel: undefined,
+    messages: [],
+    isStreaming: false,
+    navigateTree: unsupported,
+    compact: unsupported,
+    abortCompaction() {},
+    abort: async () => {},
+  };
+  return cached as never as StageContext;
+}
+
 function stageOutput(stage: StageSnapshot): WorkflowSerializableValue {
   if (stage.result !== undefined && stage.result.length > 0) return stage.result;
   return { status: stage.status, stageId: stage.id };
 }
 
-/**
- * Build a stable replay-key generator scoped to a workflow run. Replay keys are
- * namespaced by workflow id + stage name + ordinal so two stages sharing a name
- * do not collide.
- */
-export function createStageReplayKeyGenerator(workflowId: string): (stageName: string, stageId: string) => string {
+export function createStageReplayKeyGenerator(_workflowId: string): (stageName: string, stageId?: string) => string {
   const counts = new Map<string, number>();
-  return (stageName: string, stageId: string): string => {
+  return (stageName: string, _stageId?: string): string => {
     const next = (counts.get(stageName) ?? 0) + 1;
     counts.set(stageName, next);
-    return `durable:${workflowId}:${stageName}:${next}:${stageId.slice(0, 8)}`;
+    return `stage:${stageName}:${next}`;
   };
+}
+
+export function stableCheckpointId(kind: string, replayKey: string): string {
+  return `${kind}:${replayKey}`;
+}
+
+function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return typeof (value as Record<string, WorkflowSerializableValue>)["text"] === "string";
 }

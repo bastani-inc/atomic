@@ -46,16 +46,18 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
  * Returns true when the command was handled (resume attempted or list shown).
  * cross-ref: issue #1498 — /workflow resume selector.
  */
-function handleDurableResume(
+async function handleDurableResume(
   target: string | undefined,
   ctx: PiCommandContext,
   reporter: WorkflowCommandReporter,
   deps: WorkflowRunControlDeps,
-): boolean {
+): Promise<boolean> {
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
   const runtime = deps.runtimeForContext(ctx);
-  const durable = runtime.listDurableResumable();
+  // Hydrate the durable backend from DBOS (if configured) before listing so a
+  // fresh process discovers workflows persisted by a prior session.
+  const durable = await runtime.prepareDurableResumable(target);
   if (target !== undefined) {
     // Attempt resume by id/prefix against the durable catalog.
     const result = runtime.resumeDurableWorkflow(target);
@@ -73,7 +75,7 @@ function handleDurableResume(
   }
   // No target: show the durable selector.
   if (durable.length === 0) {
-    fail("No resumable durable workflows found. Use /workflow resume <id> or /resume for live sessions.");
+    fail("No resumable durable workflows found. Usage: /workflow resume <id> (or /resume for Atomic sessions).");
     return true;
   }
   print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
@@ -252,10 +254,13 @@ export async function handleRunControlCommand(
         } else if (action === "attach") {
           fail(`${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`);
         } else {
-          // resume: show live runs + cross-session durable catalog.
-          return handleDurableResume(undefined, ctx, reporter, deps);
+          // resume: show cross-session durable catalog in headless/print mode.
+          return await handleDurableResume(undefined, ctx, reporter, deps);
         }
         return true;
+      }
+      if (action === "resume") {
+        return await handleDurableResume(undefined, ctx, reporter, deps);
       }
       const picked = await openSessionPicker(ui, store, theme, action === "attach" ? "connect" : action);
       if (action === "attach" && picked.kind === "kill") return handleRunControlCommand("kill", [picked.runId, "-y"], ctx, reporter, deps);
@@ -267,7 +272,7 @@ export async function handleRunControlCommand(
         // Not a live run — fall back to the cross-session durable resume catalog.
         // cross-ref: issue #1498 — /workflow resume by top-level workflow id.
         if (action === "resume") {
-          return handleDurableResume(target, ctx, reporter, deps);
+          return await handleDurableResume(target, ctx, reporter, deps);
         }
         fail(`Run not found: ${target}`);
         return true;
