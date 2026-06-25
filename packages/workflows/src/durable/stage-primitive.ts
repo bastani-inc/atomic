@@ -19,7 +19,7 @@ export interface DurableStageDeps {
 
 export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   if (stage.status !== "completed") return false;
-  const replayKey = stage.replayKey ?? deps.replayKeyForCompletedStage?.(stage) ?? deps.nextReplayKey(stage.name);
+  const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
   if (deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined) return false;
   const checkpoint: DurableStageCheckpoint = {
     kind: "stage",
@@ -166,6 +166,26 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
 
 export function cachedStageId(runId: string, replayKey: string): string {
   return `durable-${durableHash({ runId, replayKey })}`;
+}
+
+export function recordCachedStageIntoStore(
+  store: import("../shared/store.js").Store,
+  runId: string,
+  name: string,
+  replayKey: string,
+  output: WorkflowSerializableValue,
+  completedStageReplayKeys: Map<string, string>,
+): void {
+  const now = Date.now();
+  const stageId = cachedStageId(runId, replayKey);
+  const result = typeof output === "string" ? output : JSON.stringify(output);
+  const snapshot: StageSnapshot = {
+    id: stageId, name, status: "completed", parentIds: [], startedAt: now, endedAt: now, durationMs: 0, result,
+    replayKey, replayed: true, skippedReason: "durable checkpoint replay", toolEvents: [], attachable: false,
+  };
+  store.recordStageStart(runId, snapshot);
+  store.recordStageEnd(runId, snapshot);
+  completedStageReplayKeys.set(stageId, replayKey);
 }
 
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {

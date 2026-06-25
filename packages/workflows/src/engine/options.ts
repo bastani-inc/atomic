@@ -37,4 +37,5 @@ export type EngineChildRunOptions = Pick<
   | "stageControlRegistry"
   | "onStageStart"
   | "onStageEnd"
+  | "durableBackend"
 >;

@@ -60,11 +60,11 @@ describe("recordStageCheckpoint", () => {
     assert.equal(backend.getStageOutput(WORKFLOW_ID, replayKey), "analysis output");
   });
 
-  test("prefers stage.replayKey over completed-stage map when present", async () => {
+  test("prefers completed-stage durable map key over snapshot replayKey", async () => {
     const stage = makeStage({ replayKey: "explicit:analyze:1" });
     await recordStageCheckpoint({ ...deps(), replayKeyForCompletedStage: () => "mapped:analyze:1" }, stage);
-    assert.equal(backend.getStageOutput(WORKFLOW_ID, "explicit:analyze:1"), "analysis output");
-    assert.equal(backend.getStageOutput(WORKFLOW_ID, "mapped:analyze:1"), undefined);
+    assert.equal(backend.getStageOutput(WORKFLOW_ID, "mapped:analyze:1"), "analysis output");
+    assert.equal(backend.getStageOutput(WORKFLOW_ID, "explicit:analyze:1"), undefined);
   });
 
   test("skips non-completed stages", async () => {
@@ -384,5 +384,106 @@ describe("run durable flush", () => {
     const result = await run(def, {}, { runId: "wf-status-flush", store: createStore(), durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
     exAssert.equal(result.status, "completed");
     exAssert.equal(backend.flushedCompleted, true);
+  });
+
+  exTest("repeated ctx.workflow(child) calls replay in order without re-execution", async () => {
+    const backend = new InMemoryDurableBackend();
+    let childRuns = 0;
+    const child = workflow({
+      name: "repeated-child",
+      description: "",
+      inputs: {},
+      outputs: { value: Type.String() },
+      run: async (ctx) => { childRuns++; return { value: await ctx.stage("c").complete(`v${childRuns}`) }; },
+    });
+    const parent = workflow({
+      name: "repeated-parent",
+      description: "",
+      inputs: {},
+      outputs: { a: Type.String(), b: Type.String() },
+      run: async (ctx) => {
+        const r1 = await ctx.workflow(child);
+        const r2 = await ctx.workflow(child);
+        if (r1.exited || r2.exited) throw new Error("child exited");
+        return { a: r1.outputs.value, b: r2.outputs.value };
+      },
+    });
+    const store1 = createStore();
+    const first = await run(parent, {}, { runId: "wf-repeated-child", store: store1, durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+    exAssert.equal(first.status, "completed");
+    exAssert.equal(childRuns, 2);
+
+    // Resume with same workflowId — both child calls should replay without re-executing.
+    childRuns = 0;
+    const store2 = createStore();
+    const second = await run(parent, {}, { runId: "wf-repeated-child", store: store2, durableBackend: backend, adapters: { complete: { complete: async () => { throw new Error("should not re-run"); } } } });
+    exAssert.equal(second.status, "completed");
+    exAssert.equal(childRuns, 0);
+    exAssert.equal(second.result?.["a"], first.result?.["a"]);
+    exAssert.equal(second.result?.["b"], first.result?.["b"]);
+  });
+
+  exTest("ctx.exit terminal status persisted to durable metadata", async () => {
+    const backend = new InMemoryDurableBackend();
+    const def = workflow({
+      name: "exit-wf",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => { ctx.exit({ status: "cancelled", reason: "user-abort" }); },
+    });
+    const result = await run(def, {}, { runId: "wf-exit-cancelled", store: createStore(), durableBackend: backend });
+    exAssert.equal(result.status, "cancelled");
+    const handle = backend.getWorkflow("wf-exit-cancelled");
+    exAssert.equal(handle?.status, "cancelled");
+  });
+
+  exTest("ctx.exit blocked status persisted to durable metadata", async () => {
+    const backend = new InMemoryDurableBackend();
+    const def = workflow({
+      name: "blocked-wf",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => { ctx.exit({ status: "blocked", reason: "needs-input" }); },
+    });
+    const result = await run(def, {}, { runId: "wf-exit-blocked", store: createStore(), durableBackend: backend });
+    exAssert.equal(result.status, "blocked");
+    exAssert.equal(backend.getWorkflow("wf-exit-blocked")?.status, "blocked");
+  });
+
+  exTest("child workflow run propagates custom durableBackend", async () => {
+    class TrackingBackend extends InMemoryDurableBackend {
+      registered: string[] = [];
+      registerWorkflow(h: import("../../packages/workflows/src/durable/backend.js").WorkflowRegistrationInput): void {
+        this.registered.push(h.workflowId);
+        super.registerWorkflow(h);
+      }
+    }
+    const backend = new TrackingBackend();
+    const child = workflow({
+      name: "backend-child",
+      description: "",
+      inputs: {},
+      outputs: { v: Type.String() },
+      run: async (ctx) => ({ v: await ctx.stage("cs").complete("cv") }),
+    });
+    const parent = workflow({
+      name: "backend-parent",
+      description: "",
+      inputs: {},
+      outputs: { v: Type.String() },
+      run: async (ctx) => {
+        const r = await ctx.workflow(child);
+        if (r.exited) throw new Error("exited");
+        return { v: r.outputs.v };
+      },
+    });
+    const result = await run(parent, {}, { runId: "wf-backend-prop", store: createStore(), durableBackend: backend, adapters: { complete: { complete: async (t) => t } } });
+    exAssert.equal(result.status, "completed");
+    // Parent and child boundary both checkpointed on the same custom backend.
+    exAssert.equal(backend.registered.includes("wf-backend-prop"), true);
+    const stageCheckpoints = backend.listCheckpoints("wf-backend-prop").filter((c) => c.kind === "stage");
+    exAssert.equal(stageCheckpoints.length > 0, true);
   });
 });

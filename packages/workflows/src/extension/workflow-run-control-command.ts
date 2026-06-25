@@ -291,7 +291,21 @@ export async function handleRunControlCommand(
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.endedAt === undefined || run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
+        // Even when live runs exist, surface durable history so the user can
+        // resume cross-session workflows. This mirrors /resume which shows all
+        // resumable sessions. cross-ref: issue #1498.
         if (liveRuns.length === 0) return await handleDurableResume(undefined, ctx, reporter, deps);
+        // Live runs exist — show the live picker, but also check durable
+        // entries so they are discoverable.
+        const runtime = deps.runtimeForContext(ctx);
+        let durableEntries: readonly ResumableWorkflowEntry[] = [];
+        try { durableEntries = runtime.listDurableResumable(); } catch { /* best-effort */ }
+        const liveRunIds = new Set(liveRuns.map((r) => r.id));
+        const durableOnly = durableEntries.filter((e) => !liveRunIds.has(e.workflowId));
+        if (durableOnly.length > 0) {
+          // Print durable entries as a hint alongside the live picker.
+          reporter.info(`${formatResumableWorkflowList(durableOnly)}\n\nResume durable workflow with: /workflow resume <id>`);
+        }
       }
       const picked = await openSessionPicker(ui, store, theme, action === "attach" ? "connect" : action);
       if (action === "attach" && picked.kind === "kill") return handleRunControlCommand("kill", [picked.runId, "-y"], ctx, reporter, deps);

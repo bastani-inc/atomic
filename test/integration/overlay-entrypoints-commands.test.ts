@@ -140,6 +140,28 @@ describe("/workflow resume — overlay integration", () => {
   });
 
   // RFC regression gate: overlay.open MUST be called when resume succeeds.
+  test("resume with no runId surfaces durable history even when live runs exist", async () => {
+    singletonStore.clear();
+    const liveRunId = `live-run-${Date.now()}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunPaused(liveRunId);
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-alongside-live", name: "durable-cross-session", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const { ctx, messages } = buildPrintCtx();
+      void commands["workflow"]!.options.handler("resume", ctx);
+      await delay(5);
+      // Live picker should open AND durable entries should be surfaced.
+      const combined = messages.join("\n");
+      assert.match(combined, /durable-cross-session/);
+    } finally {
+      setDurableBackend(undefined);
+    }
+  });
+
   test("resume with known completed runId calls overlay.open", async () => {
     const runId = `test-resume-run-${Date.now()}`;
 
