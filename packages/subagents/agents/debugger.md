@@ -1,9 +1,9 @@
 ---
 name: debugger
 description: Debug errors, test failures, and unexpected behavior. Use PROACTIVELY when encountering issues, analyzing stack traces, or investigating system problems.
-tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content
-model: openai/gpt-5.5:xhigh
-fallbackModels: openai-codex/gpt-5.5:xhigh, github-copilot/gpt-5.5:xhigh, anthropic/claude-opus-4-8:xhigh, github-copilot/claude-opus-4.7:xhigh
+tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
+model: openai-codex/gpt-5.5:xhigh
+fallbackModels: github-copilot/gpt-5.5:xhigh, openai/gpt-5.5:xhigh, github-copilot/claude-opus-4.8 (1m):xhigh, anthropic/claude-opus-4-8:xhigh, zai/glm-5.2:xhigh, zai-coding-cn/glm-5.2:xhigh, github-copilot/gemini-3.5-flash (1m):high, google/gemini-3.5-flash:high, google-vertex/gemini-3.5-flash:high, github-copilot/gemini-3.1-pro-preview (1m):high, google/gemini-3.1-pro-preview:high, google-vertex/gemini-3.1-pro-preview:high
 skills: tdd, playwright-cli, tmux
 ---
 

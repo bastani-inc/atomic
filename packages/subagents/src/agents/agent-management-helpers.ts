@@ -1,7 +1,7 @@
 import type { AgentConfig, AgentScope, ChainConfig, ChainStepConfig } from "./agents.ts";
 import { discoverAgentsAll, parsePackageName } from "./agents.ts";
 import { discoverAvailableSkills } from "./skills.ts";
-import type { SubagentToolResult } from "../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH, type SubagentToolResult } from "../shared/types.ts";
 import type { ManagementContext, ManagementScope } from "./agent-management.ts";
 
 export function result(text: string, isError = false): SubagentToolResult {
@@ -302,8 +302,8 @@ export function applyAgentConfig(target: AgentConfig, cfg: Record<string, unknow
 	if (hasKey(cfg, "maxSubagentDepth")) {
 		if (cfg.maxSubagentDepth === false || cfg.maxSubagentDepth === "") target.maxSubagentDepth = undefined;
 		else if (typeof cfg.maxSubagentDepth === "number" && Number.isInteger(cfg.maxSubagentDepth) && cfg.maxSubagentDepth >= 0) {
-			target.maxSubagentDepth = cfg.maxSubagentDepth;
-		} else return "config.maxSubagentDepth must be an integer >= 0 or false when provided.";
+			target.maxSubagentDepth = Math.min(cfg.maxSubagentDepth, MAX_SUBAGENT_NESTING_DEPTH);
+		} else return `config.maxSubagentDepth must be an integer >= 0 or false when provided; values above ${MAX_SUBAGENT_NESTING_DEPTH} are clamped.`;
 	}
 	return undefined;
 }

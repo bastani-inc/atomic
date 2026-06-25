@@ -124,6 +124,7 @@ Child-safety boundaries are enforced by the bundled subagent extension:
 - Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
 - Non-fanout children are instructed that they are not the parent orchestrator and must not propose or run subagents.
 - Nested fanout is available only for explicitly authorized agents whose resolved tools include `subagent`. Authorized fanout children receive narrower instructions that limit delegation to the assigned fanout.
+- The recursion guard defaults to a hard maximum of five delegated subagent levels. `ATOMIC_SUBAGENT_MAX_DEPTH`, extension `config.maxSubagentDepth`, and agent frontmatter can choose a lower value from `0` to `5`; higher values are clamped.
 
 This keeps the parent session responsible for orchestration unless you deliberately choose a fanout-capable custom agent.
 

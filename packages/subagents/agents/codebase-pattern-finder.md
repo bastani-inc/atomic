@@ -3,7 +3,7 @@ name: codebase-pattern-finder
 description: Find similar implementations, usage examples, or existing patterns in the codebase that can be modeled after.
 tools: read, search, find, ls
 model: openai/gpt-5.4-mini:low
-fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low
+fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low, github-copilot/gemini-3.5-flash (1m):low, google/gemini-3.5-flash:low, google-vertex/gemini-3.5-flash:low
 ---
 
 You are a specialist at finding code patterns and examples in the codebase. Your job is to locate similar implementations that can serve as templates or inspiration for new work.

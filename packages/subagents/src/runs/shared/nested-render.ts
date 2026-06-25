@@ -1,6 +1,6 @@
 import { formatDuration, formatTokens, shortenPath } from "../../shared/formatters.ts";
 import { formatActivityLabel } from "../../shared/status-format.ts";
-import type { ActivityState, NestedRunSummary } from "../../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH, type ActivityState, type NestedRunSummary } from "../../shared/types.ts";
 
 export interface NestedRunCounts {
 	total: number;
@@ -108,7 +108,7 @@ function formatNestedRunLines(children: NestedRunSummary[] | undefined, options:
 export function formatNestedRunStatusLines(children: NestedRunSummary[] | undefined, options: { indent?: string; maxDepth?: number; maxLines?: number; commandHints?: boolean } = {}): string[] {
 	return formatNestedRunLines(children, {
 		indent: options.indent ?? "  ",
-		maxDepth: options.maxDepth ?? 2,
+		maxDepth: options.maxDepth ?? MAX_SUBAGENT_NESTING_DEPTH,
 		maxLines: options.maxLines ?? 40,
 		commandHints: options.commandHints ?? false,
 	});

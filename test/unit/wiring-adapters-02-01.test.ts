@@ -292,7 +292,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
             workflowRunId: "run-1",
             workflowStageId: "stage-1",
             workflowStageName: "Implement",
-            constraints: { disableWorkflowTool: true, maxSubagentDepth: 2 },
+            constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
         });
     });
 

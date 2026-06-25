@@ -13,10 +13,11 @@ import { encodeNestedPathEnv, parseNestedPathEnv, type NestedPathEntry } from ".
 import { resolveMcpDirectToolNames } from "./mcp-direct-tool-allowlist.ts";
 import { STRUCTURED_OUTPUT_CAPTURE_ENV, STRUCTURED_OUTPUT_SCHEMA_ENV } from "./structured-output.ts";
 import type { JsonSchemaObject } from "../../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../shared/types-runtime.ts";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const TASK_ARG_LIMIT = 8000;
-export const SUBAGENT_PARENT_MAX_DEPTH = 3;
+export const SUBAGENT_PARENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
 export const PROMPT_RUNTIME_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-prompt-runtime.ts");
 const ENV_PREFIX = APP_NAME.toUpperCase();
 export const FANOUT_CHILD_EXTENSION_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "extension", "fanout-child.ts");

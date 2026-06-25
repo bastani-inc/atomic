@@ -548,7 +548,7 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 - **Forking requires a persisted parent session.** If the current session does not have a persisted session file, forked runs fail.
 - **Forked runs inherit parent history.** They are branched threads, not fresh filtered contexts. Use fresh context for adversarial review unless the user explicitly asks for forked context.
-- **Default subagent nesting depth is 2.** Deeper recursive delegation is blocked unless configured otherwise.
+- **Default subagent nesting depth is 5.** Deeper recursive delegation is blocked, and configured values above 5 are clamped to the hard ceiling.
 - **Attention signals are not lifecycle state.** `needs_attention` means no activity has been observed past the configured threshold. `paused` means the child turn was intentionally interrupted or is awaiting direction; it is not the same as `failed`.
 - **Builtin specialists do not have `intercom`.** They cannot escalate decisions mid-run. Decide what the child should do up front, or use a custom agent with bridge tools when mid-run coordination is required.
 - **Intercom asks are blocking.** A session can only maintain one pending outbound ask wait state at a time.

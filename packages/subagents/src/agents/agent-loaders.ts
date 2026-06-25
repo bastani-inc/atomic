@@ -14,6 +14,7 @@ import {
 	type ChainConfig,
 	type ChainDiscoveryDiagnostic,
 } from "./agent-types.ts";
+import { normalizeMaxSubagentDepth } from "../shared/types.ts";
 
 function listFilesRecursive(dir: string, predicate: (fileName: string) => boolean): string[] {
 	const files: string[] = [];
@@ -111,7 +112,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			if (shouldPreserveAgentExtraField(key)) extraFields[key] = value;
 		}
 
-		const parsedMaxSubagentDepth = Number(frontmatter.maxSubagentDepth);
+		const parsedMaxSubagentDepth = normalizeMaxSubagentDepth(frontmatter.maxSubagentDepth);
 
 		agents.push({
 			name: runtimeName,
@@ -137,10 +138,7 @@ export function loadAgentsFromDir(dir: string, source: AgentSource): AgentConfig
 			defaultReads,
 			defaultProgress: frontmatter.defaultProgress === "true",
 			interactive: frontmatter.interactive === "true",
-			maxSubagentDepth:
-				Number.isInteger(parsedMaxSubagentDepth) && parsedMaxSubagentDepth >= 0
-					? parsedMaxSubagentDepth
-					: undefined,
+			maxSubagentDepth: parsedMaxSubagentDepth,
 			extraFields: Object.keys(extraFields).length > 0 ? extraFields : undefined,
 		});
 	}

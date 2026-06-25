@@ -1,5 +1,5 @@
 import * as path from "node:path";
-import type { AsyncJobState, AsyncJobStep, NestedRunSummary, NestedStepSummary } from "../shared/types.ts";
+import { MAX_SUBAGENT_NESTING_DEPTH, type AsyncJobState, type AsyncJobStep, type NestedRunSummary, type NestedStepSummary } from "../shared/types.ts";
 import { flatToLogicalStepIndex } from "../runs/background/parallel-groups.ts";
 import { formatDuration, formatModelThinking, shortenPath } from "../shared/formatters.ts";
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
@@ -223,7 +223,7 @@ export function formatNestedWidgetLines(children: NestedRunSummary[] | undefined
 		return aggregate ? [theme.fg("dim", `↳ ${aggregate}`)] : [];
 	}
 	const lines: string[] = [];
-	const maxDepth = 2;
+	const maxDepth = MAX_SUBAGENT_NESTING_DEPTH;
 	const append = (items: NestedRunSummary[] | undefined, depth: number, prefix: string): void => {
 		if (!items?.length || lines.length >= lineBudget) return;
 		if (depth > maxDepth) {

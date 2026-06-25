@@ -910,7 +910,7 @@ Session directory precedence is: `params.sessionDir`, then `config.defaultSessio
 { "maxSubagentDepth": 1 }
 ```
 
-Controls nested delegation when no inherited `PI_SUBAGENT_MAX_DEPTH` is already in effect. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
+Controls nested delegation when no inherited `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) is already in effect. Accepted values are `0` through `5`; higher values are clamped to the hard ceiling. Per-agent `maxSubagentDepth` can tighten the limit for that agent’s child runs, but cannot relax an inherited stricter limit.
 
 ### `intercomBridge`
 
@@ -1022,17 +1022,17 @@ This is disabled by default. Session data may contain source code, paths, enviro
 
 Subagents can call `subagent`, which can get expensive and hard to observe. A depth guard prevents unbounded nesting.
 
-By default, nesting is limited to two levels: main session → subagent → sub-subagent. Deeper calls are blocked with guidance to complete the current task directly.
+By default, nesting is capped at five delegated subagent levels below the main session. Deeper calls are blocked with guidance to complete the current task directly.
 
-Configure the limit with:
+Configure a lower or equal limit with:
 
-1. `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) before starting Atomic
+1. `ATOMIC_SUBAGENT_MAX_DEPTH` (or legacy `PI_SUBAGENT_MAX_DEPTH`) before starting Atomic; values above `5` are clamped to `5`
 2. `config.maxSubagentDepth`
 3. `maxSubagentDepth` in agent frontmatter, which can only tighten the inherited limit
 
 ```bash
+export ATOMIC_SUBAGENT_MAX_DEPTH=5
 export ATOMIC_SUBAGENT_MAX_DEPTH=3
-export ATOMIC_SUBAGENT_MAX_DEPTH=1
 export ATOMIC_SUBAGENT_MAX_DEPTH=0
 ```
 

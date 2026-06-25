@@ -179,7 +179,7 @@ function makeWorkflowStageOrchestrationContext(meta: StageExecutionMeta): NonNul
     workflowStageName: meta.stageName,
     constraints: {
       disableWorkflowTool: true,
-      maxSubagentDepth: 2,
+      maxSubagentDepth: 5,
     },
   };
 }

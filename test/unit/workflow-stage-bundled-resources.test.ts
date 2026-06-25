@@ -12,6 +12,7 @@ import { createAgentSession, type CreateAgentSessionOptions } from "../../packag
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager, type PackageSource } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { discoverAgentsAll } from "../../packages/subagents/src/agents/agents.js";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
 import {
   prepareAtomicStageSessionOptions,
   type PiCodingAgentSdk,
@@ -100,7 +101,7 @@ async function createWorkflowStageSession(options: {
     workflowStageName: "Stage Test",
     constraints: {
       disableWorkflowTool: true,
-      maxSubagentDepth: 2,
+      maxSubagentDepth: MAX_SUBAGENT_NESTING_DEPTH,
     },
   } satisfies CreateAgentSessionOptions["orchestrationContext"];
   const excludedTools = Array.from(new Set([...(options.excludedTools ?? []), "workflow"]));
