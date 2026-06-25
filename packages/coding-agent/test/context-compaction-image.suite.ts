@@ -338,5 +338,44 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			expect(result.details.imageTokenPercent).toBe(0);
 			expect(result.content[0]?.type === "text" ? result.content[0].text : "").not.toContain("Images account for");
 		});
+
+		it("recomputes image stats after deleting image content blocks (issue #1500 reviewer fix)", async () => {
+			resetIds();
+			const task = entry(user("Task"));
+			const call = entry(assistantToolCall("live-image-tool"));
+			const imageResult = entry(toolResultWithImages("live-image-tool", "text", 2));
+			const entries: SessionEntry[] = [task, call, imageResult, ...recentTail(6)];
+			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+			const controller = createContextDeletionTool(preparation.transcript);
+
+			// Before any deletions: both image blocks are present.
+			const before = await controller.budgetTool.execute("toolu_budget_before", {});
+			expect(before.details.imageBlockCount).toBe(2);
+			expect(before.details.imageTokensBefore).toBe(2 * ESTIMATED_IMAGE_TOKENS);
+			expect(before.details.imageTokenPercent).toBeGreaterThan(0);
+
+			// Delete one image content block.
+			await controller.tool.execute("toolu_delete", {
+				deletions: [{ kind: "content_block", entryId: imageResult.id, blockIndex: 1 }],
+			});
+
+			// After deleting one image block: budget reflects the reduced live image set.
+			const afterOne = await controller.budgetTool.execute("toolu_budget_after_one", {});
+			expect(afterOne.details.imageBlockCount).toBe(1);
+			expect(afterOne.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(afterOne.details.imageTokenPercent).toBeLessThan(before.details.imageTokenPercent);
+
+			// Delete the remaining image block too.
+			await controller.tool.execute("toolu_delete_two", {
+				deletions: [{ kind: "content_block", entryId: imageResult.id, blockIndex: 2 }],
+			});
+
+			// All images gone: budget reports zero image stats and drops the image text.
+			const afterAll = await controller.budgetTool.execute("toolu_budget_after_all", {});
+			expect(afterAll.details.imageBlockCount).toBe(0);
+			expect(afterAll.details.imageTokensBefore).toBe(0);
+			expect(afterAll.details.imageTokenPercent).toBe(0);
+			expect(afterAll.content[0]?.type === "text" ? afterAll.content[0].text : "").not.toContain("Images account for");
+		});
 	});
 });

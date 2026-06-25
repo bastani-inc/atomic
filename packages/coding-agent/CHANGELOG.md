@@ -18,6 +18,7 @@
 ### Changed
 
 - Accounted for image content blocks in context-window token accounting and compaction thresholds: image tokens are now estimated through a single shared conservative estimate (1200 tokens per image) used consistently by both the heuristic context-estimate path and the transcript planner, so image-heavy conversations trigger compaction at the correct time. The deletion planner now reports image token share (`imageTokensBefore`, `imageBlockCount`, `imageTokenPercent`) via `context_compaction_budget` and is instructed to prefer deleting stale, superseded, or unrelated image content blocks when images dominate, while preserving task-relevant images in protected user messages and recent entries. Because Verbatim Compaction is deletion-only, compaction never reintroduces image payloads or generates image-bearing summaries ([#1500](https://github.com/bastani-inc/atomic/issues/1500)).
+- Made `context_compaction_budget` image statistics deletion-aware: the `imageTokensBefore`/`imageBlockCount`/`imageTokenPercent` fields are now recomputed from the live deletion-target set on every budget tool call, so they immediately reflect image blocks already deleted within the current compaction run instead of reporting frozen pre-deletion totals ([#1500](https://github.com/bastani-inc/atomic/issues/1500)).
 - Raised the bundled subagent and workflow-stage nesting budget to a hard maximum of five delegated levels, and documented the `0`-to-`5` recursion-guard range.
 
 ### Fixed

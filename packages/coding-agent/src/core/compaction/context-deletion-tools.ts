@@ -9,10 +9,10 @@ import {
 import {
 	createContextCompactionBudgetDetails,
 	createContextDeletionToolResult,
-	countTranscriptImageBlocks,
+	countRemainingImageBlocks,
 	finitePositiveNumber,
 	formatErrorMessage,
-	sumTranscriptImageTokens,
+	sumRemainingImageTokens,
 } from "./context-compaction-metrics.ts";
 import {
 	getTranscriptCompactionParameters,
@@ -83,8 +83,6 @@ export function createContextDeletionTool(
 		inputTranscript.parameters?.query ?? CONTEXT_COMPACTION_AUTO_QUERY,
 	);
 	const transcript: CompactableTranscript = { ...inputTranscript, parameters };
-	const imageTokensBefore = sumTranscriptImageTokens(transcript);
-	const imageBlockCount = countTranscriptImageBlocks(transcript);
 	const store = createContextDeletionStore(transcript);
 	let validatedResult: ValidatedContextDeletionResult | undefined;
 
@@ -469,13 +467,16 @@ export function createContextDeletionTool(
 			return store.transaction(() => {
 				const callCount = store.incrementCallCount();
 				store.clearLastError();
-				const details = createContextCompactionBudgetDetails(currentStats(), callCount, contextWindow, parameters, imageTokensBefore, imageBlockCount);
+				const liveTargets = readTargets(); // recompute image stats each call (issue #1500)
+				const imageTokensRemaining = sumRemainingImageTokens(transcript, liveTargets);
+				const imageBlocksRemaining = countRemainingImageBlocks(transcript, liveTargets);
+				const details = createContextCompactionBudgetDetails(currentStats(), callCount, contextWindow, parameters, imageTokensRemaining, imageBlocksRemaining);
 				const windowText =
 					details.contextWindowBeforePercent !== undefined
 						? ` Context window fullness: ${details.contextWindowBeforePercent}% before selected deletions, ${details.contextWindowAfterPercent}% after selected deletions.`
 						: " Context window size is unknown for this model, so fullness percentages are unavailable.";
 				const targetText = details.tokensToDeleteForTarget > 0 ? ` Delete about ${details.tokensToDeleteForTarget} more token(s) to reach the ${details.targetReductionPercent}% reduction target.` : ` The selected deletions meet or exceed the ${details.targetReductionPercent}% reduction target.`;
-				const imageText = details.imageTokensBefore > 0 ? ` Images account for ${details.imageTokenPercent}% of context (${details.imageTokensBefore} tokens across ${details.imageBlockCount} block(s)); prefer deleting stale/superseded image content blocks when images dominate.` : "";
+				const imageText = details.imageTokensBefore > 0 ? ` Images account for ${details.imageTokenPercent}% of remaining context (${details.imageTokensBefore} tokens across ${details.imageBlockCount} block(s)); prefer deleting stale/superseded image content blocks when images dominate.` : "";
 				return createContextDeletionToolResult(
 					`Current selected deletions reduce context by ${details.currentReductionPercent}% (${details.deletedTokens} token(s)); tokens after selected deletions: ${details.currentTokensAfter}/${details.tokensBefore}.${windowText}${targetText}${imageText} Keep maximizing useful retained context while aggressively removing low-value blocks.`,
 					details,
