@@ -235,7 +235,7 @@ export interface RunOpts {
   readonly parentRun?: WorkflowParentRunLink;
   readonly onRunStart?: (snapshot: RunSnapshot) => void;
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
-  readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
+  readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
   readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 

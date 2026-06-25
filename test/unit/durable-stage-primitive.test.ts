@@ -53,35 +53,35 @@ describe("recordStageCheckpoint", () => {
     };
   }
 
-  test("records completed stage output", () => {
-    const recorded = recordStageCheckpoint(deps(), makeStage());
+  test("records completed stage output", async () => {
+    const recorded = await recordStageCheckpoint(deps(), makeStage());
     assert.equal(recorded, true);
     const replayKey = createStageReplayKeyGenerator(WORKFLOW_ID)("analyze", "stage-1");
     assert.equal(backend.getStageOutput(WORKFLOW_ID, replayKey), "analysis output");
   });
 
-  test("prefers stage.replayKey when present", () => {
+  test("prefers stage.replayKey when present", async () => {
     const stage = makeStage({ replayKey: "continuation:analyze:1" });
-    recordStageCheckpoint(deps(), stage);
+    await recordStageCheckpoint(deps(), stage);
     assert.equal(backend.getStageOutput(WORKFLOW_ID, "continuation:analyze:1"), "analysis output");
   });
 
-  test("skips non-completed stages", () => {
+  test("skips non-completed stages", async () => {
     const stage = makeStage({ status: "running" });
-    assert.equal(recordStageCheckpoint(deps(), stage), false);
+    assert.equal(await recordStageCheckpoint(deps(), stage), false);
   });
 
-  test("idempotent — recording the same stage twice is a no-op", () => {
+  test("idempotent — recording the same stage twice is a no-op", async () => {
     const d = deps();
-    recordStageCheckpoint(d, makeStage({ replayKey: "rk-1" }));
-    recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT" }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1" }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT" }));
     assert.equal(backend.getStageOutput(WORKFLOW_ID, "rk-1"), "analysis output");
     assert.equal(backend.getWorkflow(WORKFLOW_ID)!.completedCheckpoints, 1);
   });
 
-  test("falls back to status marker when result is empty", () => {
+  test("falls back to status marker when result is empty", async () => {
     const stage = makeStage({ result: undefined, replayKey: "rk-2" });
-    recordStageCheckpoint(deps(), stage);
+    await recordStageCheckpoint(deps(), stage);
     const output = backend.getStageOutput(WORKFLOW_ID, "rk-2");
     assert.deepEqual(output, { status: "completed", stageId: "stage-1" });
   });
@@ -148,6 +148,33 @@ describe("recordStageCheckpoint", () => {
 });
 
 describe("run durable flush", () => {
+  exTest("completed stage checkpoint is awaited before next stage starts", async () => {
+    class AsyncStageBackend extends InMemoryDurableBackend {
+      persisted = false;
+      async recordCheckpointAsync(checkpoint: import("../../packages/workflows/src/durable/types.js").DurableCheckpoint): Promise<void> {
+        await Promise.resolve();
+        super.recordCheckpoint(checkpoint);
+        if (checkpoint.kind === "stage" && checkpoint.name === "one") this.persisted = true;
+      }
+    }
+    const backend = new AsyncStageBackend();
+    const store = createStore();
+    const def = workflow({
+      name: "stage-order-wf",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => {
+        await ctx.stage("one").complete("one done");
+        exAssert.equal(backend.persisted, true);
+        await ctx.stage("two").complete("two done");
+        return { result: "ok" };
+      },
+    });
+    const result = await run(def, {}, { runId: "wf-stage-order", store, durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+    exAssert.equal(result.status, "completed");
+  });
+
   exTest("cached ctx.task replay records a completed store stage", async () => {
     const backend = new InMemoryDurableBackend();
     backend.registerWorkflow({ workflowId: "wf-task-replay", name: "task", inputs: {}, createdAt: Date.now(), status: "running" });

@@ -48,7 +48,7 @@ describe("Cross-session durable workflow resume (integration)", () => {
 
     let sideEffectCount = 0;
     const toolArgs = { resource: "dataset-1" };
-    const hash = durableHash({ name: "process-data", args: toolArgs });
+    const hash = durableHash({ name: "process-data", args: toolArgs, ordinal: 1 });
 
     // Record checkpoint manually for test simplicity.
     backendA.recordCheckpoint({

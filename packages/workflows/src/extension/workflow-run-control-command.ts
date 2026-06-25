@@ -8,12 +8,14 @@ import { openKillConfirm, openSessionPicker } from "../tui/session-overlays.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
+import type { PiCustomComponent, PiCustomOverlayFactoryTui } from "./wiring.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
 import {
   formatAlreadyEndedRetainedMessage,
   overlaySurfaceFromContext,
@@ -46,6 +48,26 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
  * Returns true when the command was handled (resume attempted or list shown).
  * cross-ref: issue #1498 — /workflow resume selector.
  */
+async function openDurableWorkflowPicker(ui: PiCommandContext["ui"], entries: readonly ResumableWorkflowEntry[]): Promise<string | undefined> {
+  const custom = ui?.custom;
+  if (typeof custom !== "function") return undefined;
+  let selected = 0;
+  return new Promise((resolve) => {
+    const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
+      render: (width: number) => ["Resumable workflows", "", ...entries.map((e, i) => `${i === selected ? "›" : " "} ${e.workflowId.slice(0, 12)}  ${e.name}  ${e.status}  checkpoints:${e.completedCheckpoints}`)].map((line) => line.slice(0, width)),
+      handleInput: (data: string) => {
+        if (data === "\u001b" || data === "\u0003") { done(undefined); resolve(undefined); return; }
+        if (data === "\r" || data === "\n") { done(undefined); resolve(entries[selected]?.workflowId); return; }
+        if (data === "\u001b[A") selected = Math.max(0, selected - 1);
+        if (data === "\u001b[B") selected = Math.min(entries.length - 1, selected + 1);
+        tui.requestRender?.();
+      },
+      dispose: () => resolve(undefined),
+    });
+    void custom(factory, { overlay: false });
+  });
+}
+
 async function handleDurableResume(
   target: string | undefined,
   ctx: PiCommandContext,
@@ -73,9 +95,15 @@ async function handleDurableResume(
     }
     return true;
   }
-  // No target: show the durable selector.
+  // No target: show the durable selector when interactive, otherwise print.
   if (durable.length === 0) {
     fail("No resumable durable workflows found. Usage: /workflow resume <id> (or /resume for Atomic sessions).");
+    return true;
+  }
+  const picked = await openDurableWorkflowPicker(ctx.ui, durable);
+  if (picked !== undefined) {
+    const result = runtime.resumeDurableWorkflow(picked);
+    result.ok ? print(result.message) : fail(result.message);
     return true;
   }
   print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);

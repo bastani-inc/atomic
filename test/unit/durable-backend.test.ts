@@ -239,6 +239,28 @@ describe("ctx.tool primitive (durable caching)", () => {
     assert.equal(callCount, 2);
   });
 
+  test("same-name same-args calls are distinct within one workflow run", async () => {
+    let callCount = 0;
+    const tool = makeTool();
+    const first = await tool("send-email", { to: "a@example.com" }, async () => { callCount++; return "sent-1"; });
+    const second = await tool("send-email", { to: "a@example.com" }, async () => { callCount++; return "sent-2"; });
+    assert.equal(first, "sent-1");
+    assert.equal(second, "sent-2");
+    assert.equal(callCount, 2);
+    assert.equal(backend.listCheckpoints(WORKFLOW_ID).length, 2);
+  });
+
+  test("same-name same-args calls replay by ordinal after resume", async () => {
+    let callCount = 0;
+    const tool1 = makeTool();
+    await tool1("send-email", { to: "a@example.com" }, async () => { callCount++; return "sent-1"; });
+    await tool1("send-email", { to: "a@example.com" }, async () => { callCount++; return "sent-2"; });
+    const tool2 = makeTool();
+    assert.equal(await tool2("send-email", { to: "a@example.com" }, async () => "bad-1"), "sent-1");
+    assert.equal(await tool2("send-email", { to: "a@example.com" }, async () => "bad-2"), "sent-2");
+    assert.equal(callCount, 2);
+  });
+
   test("retries on failure when retriesAllowed", async () => {
     let attempts = 0;
     const tool = makeTool();
@@ -271,6 +293,30 @@ describe("ctx.tool primitive (durable caching)", () => {
       () => tool("post-cancel", {}, async () => "never"),
       /cancelled/,
     );
+  });
+
+  test("cancellation during retry backoff prevents later attempts", async () => {
+    let attempts = 0;
+    const controller = new AbortController();
+    const tool = createToolPrimitive({
+      workflowId: WORKFLOW_ID,
+      backend,
+      nextCheckpointId: createCheckpointIdGenerator(),
+      signal: controller.signal,
+      throwIfCancelled: () => {
+        if (cancelled) throw new Error("cancelled");
+      },
+    });
+    const pending = tool("flaky", {}, async () => {
+      attempts++;
+      if (attempts === 1) {
+        cancelled = true;
+        controller.abort(new Error("cancelled"));
+      }
+      throw new Error("transient");
+    }, { retriesAllowed: true, maxAttempts: 3, intervalMs: 50 });
+    await assert.rejects(() => pending, /cancelled/);
+    assert.equal(attempts, 1);
   });
 
   test("awaits async checkpoint persistence before returning side-effect result", async () => {

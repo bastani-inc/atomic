@@ -120,7 +120,7 @@ describe("DbosDurableBackend (mock SDK)", () => {
     };
     backend.recordCheckpoint(cp);
     await backend.flush();
-    assert.equal(sdk.state.steps.size, 2);
+    assert.equal([...sdk.state.steps.keys()].filter((k) => k.includes(":checkpoint:__atomic_metadata")).length, 2);
     const stored = sdk.state.steps.get("wf-2:checkpoint:cp-1");
     assert.ok(isCheckpointEnvelope(stored));
     const env = stored as DbosCheckpointEnvelope;
@@ -183,6 +183,23 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(sdk.state.resumes.length, 1);
     assert.equal(sdk.state.resumes[0], "wf-4");
     assert.equal(backend.getWorkflow("wf-4")!.status, "running");
+  });
+
+  test("versioned metadata hydrates latest mutable status and checkpoint count", async () => {
+    backend.registerWorkflow({ workflowId: "wf-meta-update", name: "test", inputs: {}, createdAt: 1, status: "running" });
+    await backend.flush();
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    const hash = durableHash({ name: "tool", args: {}, ordinal: 1 });
+    await backend.recordCheckpointAsync({ kind: "tool", workflowId: "wf-meta-update", checkpointId: `tool:${hash}`, name: "tool", argsHash: hash, output: "done", completedAt: Date.now() });
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    backend.setWorkflowStatus("wf-meta-update", "failed");
+    await backend.flush();
+
+    const fresh = new DbosDurableBackend(sdk);
+    await fresh.hydrateWorkflow("wf-meta-update");
+    const handle = fresh.getWorkflow("wf-meta-update")!;
+    assert.equal(handle.status, "failed");
+    assert.equal(handle.completedCheckpoints, 1);
   });
 
   test("getToolOutput reads from in-memory mirror", () => {
@@ -326,8 +343,8 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
       kind: "tool", workflowId: "wf-resume", checkpointId: `tool:${hash}`, name: "expensive", argsHash: hash, output: "COMPUTED", completedAt: Date.now(),
     });
     await session1.flush();
-    // Verify DBOS has the checkpoint and metadata.
-    assert.equal(sdk.state.steps.size, 2);
+    // Verify DBOS has the checkpoint and versioned metadata.
+    assert.equal([...sdk.state.steps.keys()].filter((k) => k.includes(":checkpoint:__atomic_metadata")).length, 2);
     assert.ok(sdk.state.workflows.has("wf-resume"));
 
     // Session 2: fresh process — only DBOS state, empty in-memory mirror.

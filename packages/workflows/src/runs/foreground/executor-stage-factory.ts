@@ -226,7 +226,7 @@ export function createWorkflowStageFactory(input: {
       });
     };
 
-    const finalizeStageSnapshot = (): boolean => {
+    const finalizeStageSnapshot = async (): Promise<boolean> => {
       if (state.stageFinalized) return false;
       if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
         state.stageFinalized = true;
@@ -242,7 +242,7 @@ export function createWorkflowStageFactory(input: {
       applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
       input.activeStore.recordStageEnd(input.runId, stageSnapshot);
       stageUiBroker.cancelStagePrompt(input.runId, stageId, new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`));
-      input.opts.onStageEnd?.(input.runId, stageSnapshot);
+      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
       if (input.opts.persistence) {
         appendStageStartOnce();
         appendStageEnd(input.opts.persistence, {
@@ -328,7 +328,7 @@ export function createWorkflowStageFactory(input: {
     const skipForParallelFailFast = (): void => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();
-      finalizeStageSnapshot();
+      void finalizeStageSnapshot();
       void innerCtx.abort().catch(() => {});
       void dropStageControlForCompletion().catch(() => {});
     };
@@ -339,7 +339,7 @@ export function createWorkflowStageFactory(input: {
         if (!isTerminalStage(stageSnapshot)) {
           stageSnapshot.status = "skipped";
           stageSnapshot.skippedReason = input.exit.workflowExitSkippedReason(reason);
-          finalizeStageSnapshot();
+          await finalizeStageSnapshot();
         }
         await innerCtx.abort().catch(() => {});
         await releaseLiveHandle().catch(() => {});

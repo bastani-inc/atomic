@@ -91,7 +91,6 @@ export interface ExtensionRuntimeOpts {
   /** Resolve the host's non-default session directory for workflow stage transcripts. */
   resolveDefaultStageSessionDir?: () => string | undefined;
 }
-
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
@@ -130,11 +129,9 @@ export interface ExtensionRuntime {
   listDurableResumable(sessionDir?: string): readonly import("../durable/types.js").ResumableWorkflowEntry[];
   prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly import("../durable/types.js").ResumableWorkflowEntry[]>;
 }
-
 export interface RuntimeDispatchOptions {
   readonly policy?: WorkflowExecutionPolicy;
 }
-
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -165,7 +162,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
-  void initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability disabled: ${err instanceof Error ? err.message : String(err)}`));
+  const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability disabled: ${err instanceof Error ? err.message : String(err)}`));
+  const ensureDbosReady = async (): Promise<void> => { await dbosReady; };
 
   function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =
@@ -198,14 +196,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       cwd: runtimeCwd,
     };
   }
-
   function explicitIntercomDelivery(args: WorkflowToolArgs): WorkflowIntercomDelivery | undefined {
     if (args.intercom?.enabled === false) return "off";
     if (args.intercom?.delivery !== undefined) return args.intercom.delivery;
     if (args.intercom?.enabled === true) return "control-and-result";
     return undefined;
   }
-
   function effectiveIntercomDelivery(args: WorkflowToolArgs, mode: WorkflowDetails["mode"]): WorkflowIntercomDelivery {
     const explicit = explicitIntercomDelivery(args);
     if (explicit !== undefined) return explicit;
@@ -218,7 +214,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     }
     return "off";
   }
-
   function intercomParentSession(args: WorkflowToolArgs): string | undefined {
     if (args.intercom?.parentSession !== undefined) return args.intercom.parentSession;
     if (typeof intercom?.parentSession === "function") return intercom.parentSession();
@@ -387,6 +382,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   }
 
   async function runDirectAsync(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): Promise<WorkflowDetails> {
+    await ensureDbosReady();
     const runId = crypto.randomUUID();
     const mode = directMode(args);
     const delivery = effectiveIntercomDelivery(args, mode);
@@ -439,7 +435,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       return registry;
     },
 
-    dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
+    async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
+      await ensureDbosReady();
       const defaultSessionDir = resolveDefaultStageSessionDir?.();
       return dispatch(args, {
         registry,
@@ -457,7 +454,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       });
     },
 
-    runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
+    async runDirect(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowDetails> {
+      await ensureDbosReady();
       const policy = options?.policy ?? INTERACTIVE_WORKFLOW_POLICY;
       if (args.async === true && policy.awaitTerminalRun !== true) {
         return runDirectAsync(args, policy);
@@ -493,7 +491,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId))];
     },
 
-    prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
+    async prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
+      await ensureDbosReady();
       return prepareRuntimeDurableResumable(getDurableBackend, () => resolveDefaultStageSessionDir?.(), workflowIdOrPrefix, sessionDir);
     },
   };

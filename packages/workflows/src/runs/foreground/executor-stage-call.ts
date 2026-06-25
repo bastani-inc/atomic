@@ -182,7 +182,7 @@ export function createTrackedStageCaller(input: {
     } finally {
       runtime.mcpScope.clear();
       runtime.captureStageSessionMeta();
-      runtime.finalizeStageSnapshot();
+      await runtime.finalizeStageSnapshot();
       if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
         await runtime.releaseLiveHandle().catch(() => {});
       } else {

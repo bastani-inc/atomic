@@ -59,12 +59,15 @@ export interface CreateToolPrimitiveInput {
   readonly nextCheckpointId: () => string;
   /** Abort check; throws if the workflow has been cancelled. */
   readonly throwIfCancelled: () => void;
+  /** Optional signal for aborting retry backoff sleeps. */
+  readonly signal?: AbortSignal;
 }
 
 /**
  * Create the `ctx.tool` primitive wired to a durable backend.
  */
 export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowToolPrimitive {
+  const ordinals = new Map<string, number>();
   return async <T extends WorkflowSerializableValue>(
     name: string,
     args: Readonly<Record<string, WorkflowSerializableValue>>,
@@ -72,14 +75,17 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
     options?: WorkflowToolOptions,
   ): Promise<T> => {
     input.throwIfCancelled();
-    const argsHash = durableHash({ name, args });
+    const callKey = durableHash({ name, args });
+    const ordinal = (ordinals.get(callKey) ?? 0) + 1;
+    ordinals.set(callKey, ordinal);
+    const argsHash = durableHash({ name, args, ordinal });
 
     // Check for cached result — completed side effects are not repeated.
     const cached = input.backend.getToolOutput(input.workflowId, argsHash);
     if (cached !== undefined) return cached as T;
 
     // Execute (with optional retries).
-    const result = await executeWithRetries(fn, options);
+    const result = await executeWithRetries(fn, options, input.throwIfCancelled, input.signal);
 
     // Record the checkpoint durably.
     const checkpoint: DurableToolCheckpoint = {
@@ -107,8 +113,11 @@ export async function recordCheckpointDurably(backend: DurableWorkflowBackend, c
 
 async function executeWithRetries<T>(
   fn: () => Promise<T>,
-  options?: WorkflowToolOptions,
+  options: WorkflowToolOptions | undefined,
+  throwIfCancelled: () => void,
+  signal?: AbortSignal,
 ): Promise<T> {
+  throwIfCancelled();
   if (!options?.retriesAllowed) return fn();
   const maxAttempts = options.maxAttempts ?? 3;
   const intervalMs = options.intervalMs ?? 1000;
@@ -116,17 +125,31 @@ async function executeWithRetries<T>(
   let lastError: Error | undefined;
   let delay = intervalMs;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    throwIfCancelled();
     try {
       return await fn();
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       if (attempt < maxAttempts) {
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await sleepOrAbort(delay, signal);
+        throwIfCancelled();
         delay = Math.min(delay * backoffRate, 3600_000);
       }
     }
   }
   throw lastError ?? new Error("ctx.tool: retries exhausted");
+}
+
+function sleepOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("atomic-workflows: workflow cancelled"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /**

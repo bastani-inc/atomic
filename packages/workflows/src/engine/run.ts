@@ -197,17 +197,15 @@ export async function run<
     replayKeyForCompletedStage: (stage: StageSnapshot) => completedStageReplayKeys.get(stage.id),
   };
   const userOnStageEnd = opts.onStageEnd;
-  const durableOnStageEnd = (stageRunId: string, snapshot: StageSnapshot): void => {
+  const durableOnStageEnd = async (stageRunId: string, snapshot: StageSnapshot): Promise<void> => {
     if (stageRunId === runId && snapshot.status === "completed") {
-      recordStageCheckpoint(durableStageDeps, snapshot);
-      // Refresh the session cache so the checkpoint count stays current for
-      // /workflow resume discovery.
+      await recordStageCheckpoint(durableStageDeps, snapshot);
       if (opts.persistence && durableBackend.persistent) {
         const cacheEntry = durableBackend.toCacheEntry(runId);
         if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
       }
     }
-    userOnStageEnd?.(stageRunId, snapshot);
+    await userOnStageEnd?.(stageRunId, snapshot);
   };
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
@@ -309,6 +307,7 @@ export async function run<
         throw new Error("atomic-workflows: workflow cancelled");
       }
     },
+    signal: ownController.signal,
   });
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed

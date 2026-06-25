@@ -16,7 +16,7 @@ export interface DurableStageDeps {
   readonly replayKeyForCompletedStage?: (stage: StageSnapshot) => string | undefined;
 }
 
-export function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): boolean {
+export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   if (stage.status !== "completed") return false;
   const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
   if (deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined) return false;
@@ -29,7 +29,7 @@ export function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapsh
     output: stageOutput(stage),
     completedAt: stage.endedAt ?? Date.now(),
   };
-  deps.backend.recordCheckpoint(checkpoint);
+  await recordCheckpointDurably(deps.backend, checkpoint);
   return true;
 }
 

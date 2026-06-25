@@ -75,7 +75,7 @@ interface DbosStatic {
   ): (...args: Args) => Promise<WorkflowSerializableValue>;
   startWorkflow<Args extends readonly WorkflowSerializableValue[]>(
     target: (...args: Args) => Promise<WorkflowSerializableValue>,
-    params?: { readonly workflowID?: string; readonly duplicationPolicy?: "reject" | "return-existing" },
+    params?: { readonly workflowID?: string },
   ): (...args: Args) => Promise<DbosWorkflowHandle>;
   retrieveWorkflow(workflowId: string): DbosWorkflowHandle;
   resumeWorkflow(workflowId: string): Promise<DbosWorkflowHandle>;
@@ -122,7 +122,11 @@ function createRealDbosHandle(
     launch: () => dbos.launch(),
     shutdown: () => dbos.shutdown(),
     async startWorkflow(workflowId, name, inputs) {
-      await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId, duplicationPolicy: "return-existing" })(name, { ...inputs });
+      try {
+        await dbos.startWorkflow(mainWorkflow, { workflowID: workflowId })(name, { ...inputs });
+      } catch (err) {
+        if (!isDbosDuplicateWorkflowError(err)) throw err;
+      }
     },
     async retrieveWorkflow(workflowId) {
       const statuses = await dbos.listWorkflows({ workflowIDs: [workflowId], loadInput: true, limit: 1 });
@@ -152,9 +156,14 @@ function createRealDbosHandle(
       return records;
     },
     async recordStepOutput(workflowId, stepName, output) {
-      await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName), duplicationPolicy: "return-existing" })(workflowId, stepName, output);
+      await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName) })(workflowId, stepName, output);
     },
   };
+}
+
+function isDbosDuplicateWorkflowError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /duplicate|conflict|already/i.test(msg);
 }
 
 function statusToInfo(status: DbosStatus, fallbackId: string): DbosWorkflowInfo {
@@ -257,7 +266,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
    * checkpoints. Safe to call before synchronous replay reads.
    */
   async hydrateWorkflow(workflowId: string): Promise<void> {
-    if (this.hydrated.has(workflowId) && this.mem.listCheckpoints(workflowId).length > 0) return;
+    if (this.hydrated.has(workflowId) && this.mem.getWorkflow(workflowId) !== undefined) return;
     const info = await this.sdk.retrieveWorkflow(workflowId);
     if (info !== undefined && this.mem.getWorkflow(workflowId) === undefined) {
       this.mem.registerWorkflow({
@@ -271,7 +280,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     const stepRecords = await this.sdk.listStepRecords(workflowId);
     this.applyMetadata(workflowId, stepRecords);
     for (const rec of stepRecords) {
-      if (rec.stepName === METADATA_STEP_NAME) continue;
+      if (isMetadataStep(rec.stepName)) continue;
       const cp = decodeToCheckpoint(workflowId, rec.stepName, rec.output);
       if (cp !== undefined) this.mem.recordCheckpoint(cp);
     }
@@ -299,7 +308,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
         const stepRecords = await this.sdk.listStepRecords(info.workflowId);
         this.applyMetadata(info.workflowId, stepRecords);
         for (const rec of stepRecords) {
-          if (rec.stepName === METADATA_STEP_NAME) continue;
+          if (isMetadataStep(rec.stepName)) continue;
           const cp = decodeToCheckpoint(info.workflowId, rec.stepName, rec.output);
           if (cp !== undefined) this.mem.recordCheckpoint(cp);
         }
@@ -321,13 +330,16 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   private async writeMetadata(workflowId: string): Promise<void> {
     const entry = this.mem.toCacheEntry(workflowId);
     if (entry === undefined) return;
-    await this.sdk.recordStepOutput(workflowId, METADATA_STEP_NAME, encodeMetadata(entry));
+    await this.sdk.recordStepOutput(workflowId, metadataStepName(entry.ts), encodeMetadata(entry));
   }
 
   private applyMetadata(workflowId: string, records: readonly DbosStepRecord[]): void {
-    const metadata = records.find((r) => r.stepName === METADATA_STEP_NAME);
-    if (metadata === undefined) return;
-    const entry = decodeMetadata(metadata.output);
+    const entries = records
+      .filter((r) => isMetadataStep(r.stepName))
+      .map((r) => decodeMetadata(r.output))
+      .filter((entry): entry is DurableCheckpointEntry => entry !== undefined)
+      .sort((a, b) => a.ts - b.ts);
+    const entry = entries.at(-1);
     if (entry === undefined) return;
     this.mem.registerWorkflow({
       workflowId,
@@ -345,8 +357,16 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 }
 
-const METADATA_STEP_NAME = "__atomic_metadata";
+const METADATA_STEP_PREFIX = "__atomic_metadata";
 const METADATA_VERSION = 1;
+
+function metadataStepName(ts: number): string {
+  return `${METADATA_STEP_PREFIX}:${ts}:${crypto.randomUUID()}`;
+}
+
+function isMetadataStep(stepName: string): boolean {
+  return stepName === METADATA_STEP_PREFIX || stepName.startsWith(`${METADATA_STEP_PREFIX}:`);
+}
 
 interface DbosMetadataEnvelope {
   readonly __atomicDurableMetadata: true;

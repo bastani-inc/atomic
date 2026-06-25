@@ -1,5 +1,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import {
   buildGraphOverlayAdapter,
   buildInteractiveHostCustomUi,
@@ -56,6 +58,26 @@ describe("/workflow resume — overlay integration", () => {
       messages.some((m) => m.includes("Usage")),
       true,
     );
+  });
+
+  test("resume with no runId opens durable picker when only durable entries exist", async () => {
+    singletonStore.clear();
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-picker-run", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const wfCmd = commands["workflow"]!;
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      void wfCmd.options.handler("resume", ctx);
+      await delay(5);
+      assert.equal(customCalls.length, 1);
+      assert.equal(customCalls[0]!.options.overlay, false);
+      assert.match(visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " "), /Resumable workflows.*durable-wf/);
+    } finally {
+      setDurableBackend(undefined);
+    }
   });
 
   test("resume with no runId opens live picker when paused runs exist", async () => {
