@@ -47,10 +47,13 @@ export type CursorControlMessage =
 
 export type CursorProtocolMessage = CursorServerMessage | CursorControlMessage;
 
+export type CursorToolResultContent = Extract<Context["messages"][number], { role: "toolResult" }>["content"][number];
+
 export interface CursorToolResultMessage {
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly text: string;
+	readonly content?: readonly CursorToolResultContent[];
 	readonly isError: boolean;
 	readonly execId?: string;
 	readonly execNumericId?: number;

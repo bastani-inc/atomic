@@ -31,8 +31,8 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 
 		assert.equal(transport.runs.length, 1);
 		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [
-			{ toolCallId: "tool-1", toolName: "Read", text: "file contents", isError: false, execId: "exec-1", execNumericId: 7 },
-			{ toolCallId: "tool-2", toolName: "List", text: "listing", isError: false, execId: "exec-2", execNumericId: 8 },
+			{ toolCallId: "tool-1", toolName: "Read", text: "file contents", content: [{ type: "text", text: "file contents" }], isError: false, execId: "exec-1", execNumericId: 7 },
+			{ toolCallId: "tool-2", toolName: "List", text: "listing", content: [{ type: "text", text: "listing" }], isError: false, execId: "exec-2", execNumericId: 8 },
 		]);
 		assert.equal(secondEvents.some((event) => event.type === "text_delta"), true);
 		assert.equal(secondEvents.at(-1)?.type, "done");
@@ -53,7 +53,7 @@ describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls
 		const secondEvents = await collectEvents(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-1" }));
 
 		assert.equal(transport.runs.length, 1);
-		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [{ toolCallId: "tool-1", toolName: "Read", text: "file contents", isError: false, execId: "exec-1", execNumericId: 7 }]);
+		assert.deepEqual(transport.runs[0]?.stream.writtenToolResults, [{ toolCallId: "tool-1", toolName: "Read", text: "file contents", content: [{ type: "text", text: "file contents" }], isError: false, execId: "exec-1", execNumericId: 7 }]);
 		assert.equal(secondEvents.some((event) => event.type === "text_delta"), true);
 		assert.equal(secondEvents.at(-1)?.type, "done");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });

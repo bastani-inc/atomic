@@ -88,8 +88,8 @@ export class CursorStreamAdapter {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
-			if (hasImageInput(context)) {
-				throw new Error("Cursor provider currently supports text input only; vision/image content is unsupported.");
+			if (hasImageInput(context) && !model.input.includes("image")) {
+				throw new Error(`Cursor model ${model.id} does not support image input.`);
 			}
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();
@@ -329,7 +329,7 @@ function getTrailingToolResults(context: Context): CursorToolResultMessage[] {
 	for (let index = context.messages.length - 1; index >= 0; index--) {
 		const message = context.messages[index];
 		if (!message || message.role !== "toolResult") break;
-		results.unshift({ toolCallId: message.toolCallId, toolName: message.toolName, text: textFromToolResult(message), isError: message.isError });
+		results.unshift({ toolCallId: message.toolCallId, toolName: message.toolName, text: textFromToolResult(message), content: message.content, isError: message.isError });
 	}
 	return results;
 }

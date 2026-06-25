@@ -22,6 +22,8 @@ export interface CursorModelCatalog {
 	readonly models: readonly CursorUsableModel[];
 }
 
+export type CursorModelInput = ["text"] | ["text", "image"];
+
 export interface CursorProviderModelDefinition {
 	readonly id: string;
 	readonly name: string;
@@ -29,7 +31,7 @@ export interface CursorProviderModelDefinition {
 	readonly baseUrl?: string;
 	readonly reasoning: boolean;
 	readonly thinkingLevelMap?: ThinkingLevelMap;
-	readonly input: ["text"];
+	readonly input: CursorModelInput;
 	readonly cost: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
 	readonly contextWindow: number;
 	readonly maxTokens: number;
@@ -95,7 +97,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			baseUrl: CURSOR_API_BASE_URL,
 			reasoning: supportsReasoning,
 			thinkingLevelMap: supportsEffort ? buildThinkingLevelMap(effortVariants, group.primaryId) : undefined,
-			input: ["text"],
+			input: cursorModelInput(group.primaryId),
 			cost: subscriptionCost(),
 			contextWindow: chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? ESTIMATED_CONTEXT_WINDOW,
 			maxTokens: chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? ESTIMATED_MAX_TOKENS,
@@ -248,6 +250,15 @@ function chooseDisplayName(variants: readonly CursorVariant[], baseId: string, p
 		?? variants.find((variant) => !variant.effort)?.displayName
 		?? variants[0]?.displayName
 		?? titleCaseModelId(baseId);
+}
+
+function cursorModelInput(id: string): CursorModelInput {
+	return supportsImageInputModelId(id) ? ["text", "image"] : ["text"];
+}
+
+function supportsImageInputModelId(id: string): boolean {
+	const variant = parseCursorVariant({ id });
+	return /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
 }
 
 function supportsReasoningModelId(id: string): boolean {

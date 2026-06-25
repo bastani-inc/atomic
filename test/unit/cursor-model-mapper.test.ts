@@ -30,7 +30,7 @@ describe("Cursor model mapper", () => {
 		assert.equal(composer?.id, "composer-2");
 		assert.equal(composer?.name, "Composer 2");
 		assert.equal(composer?.reasoning, true);
-		assert.deepEqual(composer?.input, ["text"]);
+		assert.deepEqual(composer?.input, ["text", "image"]);
 		assert.equal(composer?.contextWindow, 200);
 		assert.equal(composer?.maxTokens, 20);
 		assert.deepEqual(composer?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
@@ -48,9 +48,13 @@ describe("Cursor model mapper", () => {
 		const models = mapCursorCatalogToProviderModels(createEstimatedCursorCatalog(123));
 		const ids = models.map((model) => model.id);
 		const composer = models.find((model) => model.id === "composer-2");
+		const kimi = models.find((model) => model.id === "kimi-k2.5");
 		assert.ok(composer);
+		assert.ok(kimi);
 		assert.match(composer.name, /estimated/u);
 		assert.equal(composer.reasoning, true);
+		assert.deepEqual(composer.input, ["text", "image"]);
+		assert.deepEqual(kimi.input, ["text", "image"]);
 		assert.deepEqual(composer.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 		assert.equal(models.length, 37);
 		for (const id of ["gpt-5.4", "gpt-5.4-fast", "gpt-5.4-mini", "claude-4.6-opus", "gpt-5.1-codex-max", "kimi-k2.5"]) {
@@ -66,8 +70,34 @@ describe("Cursor model mapper", () => {
 
 		assert.equal(composer?.id, "composer-2.5");
 		assert.equal(composer?.reasoning, true);
+		assert.deepEqual(composer?.input, ["text", "image"]);
 		assert.equal(composer?.thinkingLevelMap, undefined);
 		assert.equal(resolveCursorModelVariant("composer-2.5", composer?.thinkingLevelMap, "high"), "composer-2.5");
+	});
+
+	test("marks only known multimodal Cursor families as image-capable", () => {
+		const models = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "claude-4.5-sonnet", displayName: "Claude Sonnet" },
+				{ id: "gemini-3.1-pro", displayName: "Gemini Pro" },
+				{ id: "gpt-5.2", displayName: "GPT" },
+				{ id: "composer-2", displayName: "Composer" },
+				{ id: "kimi-k2.5", displayName: "Kimi" },
+				{ id: "grok-4-20", displayName: "Grok" },
+				{ id: "default", displayName: "Default" },
+			],
+		});
+
+		const inputFor = (id: string) => models.find((entry) => entry.id === id)?.input;
+		assert.deepEqual(inputFor("claude-4.5-sonnet"), ["text", "image"]);
+		assert.deepEqual(inputFor("gemini-3.1-pro"), ["text", "image"]);
+		assert.deepEqual(inputFor("gpt-5.2"), ["text", "image"]);
+		assert.deepEqual(inputFor("composer-2"), ["text", "image"]);
+		assert.deepEqual(inputFor("kimi-k2.5"), ["text", "image"]);
+		assert.deepEqual(inputFor("grok-4-20"), ["text"]);
+		assert.deepEqual(inputFor("default"), ["text"]);
 	});
 
 	test("parses and reconstructs effort variants before fast/thinking suffixes", () => {

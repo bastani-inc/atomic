@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added scoped Cursor image-input support for known multimodal Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), including selected-image request serialization and mixed text/image MCP tool-result serialization.
+
+### Fixed
+
+- Rejected malformed base64 image payloads during Cursor selected-image and MCP image serialization with sanitized local errors.
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

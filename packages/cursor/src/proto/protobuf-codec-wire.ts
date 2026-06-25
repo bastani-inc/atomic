@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { create, toBinary } from "@bufbuild/protobuf";
-import type { CursorControlMessage, CursorProtocolMessage, CursorServerMessage } from "../transport.js";
+import type { CursorControlMessage, CursorProtocolMessage, CursorServerMessage, CursorToolResultContent } from "../transport.js";
 import {
 	AgentClientMessageSchema,
 	BackgroundShellSpawnResultSchema,
@@ -17,6 +17,7 @@ import {
 	LsRejectedSchema,
 	LsResultSchema,
 	McpErrorSchema,
+	McpImageContentSchema,
 	McpResultSchema,
 	McpSuccessSchema,
 	McpTextContentSchema,
@@ -40,6 +41,7 @@ import {
 	type KvServerMessage,
 	type McpToolDefinition,
 } from "./agent_pb.js";
+import { decodeStrictBase64ImageData } from "./protobuf-codec-base64.js";
 import { decodeMcpArgsMap } from "./protobuf-codec-json.js";
 
 const NATIVE_EXEC_REJECT_REASON = "Tool not available in this environment. Use the MCP tools provided instead.";
@@ -203,29 +205,44 @@ export function encodeExecClientMessage(execNumericId: number | undefined, execI
 	return toBinary(AgentClientMessageSchema, clientMessage);
 }
 
-export function createMcpToolResult(text: string, isError: boolean): ReturnType<typeof create<typeof McpResultSchema>> {
+export function createMcpToolResult(content: string | readonly CursorToolResultContent[], isError: boolean, fallbackText = ""): ReturnType<typeof create<typeof McpResultSchema>> {
+	const text = typeof content === "string" ? content : fallbackText;
 	if (isError) {
 		return create(McpResultSchema, { result: { case: "error", value: create(McpErrorSchema, { error: text }) } });
 	}
 	return create(McpResultSchema, {
 		result: {
 			case: "success",
-			value: createMcpSuccess(text),
+			value: createMcpSuccess(content, fallbackText),
 		},
 	});
 }
 
-export function createMcpToolCallResult(text: string, isError: boolean): ReturnType<typeof create<typeof McpToolResultSchema>> {
+export function createMcpToolCallResult(content: string | readonly CursorToolResultContent[], isError: boolean, fallbackText = ""): ReturnType<typeof create<typeof McpToolResultSchema>> {
+	const text = typeof content === "string" ? content : fallbackText;
 	if (isError) {
 		return create(McpToolResultSchema, { result: { case: "error", value: create(McpToolErrorSchema, { error: text }) } });
 	}
-	return create(McpToolResultSchema, { result: { case: "success", value: createMcpSuccess(text) } });
+	return create(McpToolResultSchema, { result: { case: "success", value: createMcpSuccess(content, fallbackText) } });
 }
 
-function createMcpSuccess(text: string): ReturnType<typeof create<typeof McpSuccessSchema>> {
+function createMcpSuccess(content: string | readonly CursorToolResultContent[], fallbackText: string): ReturnType<typeof create<typeof McpSuccessSchema>> {
+	const items = typeof content === "string"
+		? [createTextContentItem(content)]
+		: content.map((part, index) => part.type === "text" ? createTextContentItem(part.text) : createImageContentItem(part.data, part.mimeType, index));
 	return create(McpSuccessSchema, {
-		content: [create(McpToolResultContentItemSchema, { content: { case: "text", value: create(McpTextContentSchema, { text }) } })],
+		content: items.length > 0 ? items : [createTextContentItem(fallbackText)],
 		isError: false,
+	});
+}
+
+function createTextContentItem(text: string): ReturnType<typeof create<typeof McpToolResultContentItemSchema>> {
+	return create(McpToolResultContentItemSchema, { content: { case: "text", value: create(McpTextContentSchema, { text }) } });
+}
+
+function createImageContentItem(data: string, mimeType: string, index: number): ReturnType<typeof create<typeof McpToolResultContentItemSchema>> {
+	return create(McpToolResultContentItemSchema, {
+		content: { case: "image", value: create(McpImageContentSchema, { data: decodeStrictBase64ImageData(data, { kind: "MCP image", mimeType, index }), mimeType }) },
 	});
 }
 
