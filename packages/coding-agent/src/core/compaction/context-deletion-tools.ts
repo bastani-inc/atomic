@@ -14,10 +14,7 @@ import {
 	formatErrorMessage,
 	sumRemainingImageTokens,
 } from "./context-compaction-metrics.ts";
-import {
-	getTranscriptCompactionParameters,
-	normalizeContextCompactionParameters,
-} from "./context-compaction-strategy.ts";
+import { getTranscriptCompactionParameters, normalizeContextCompactionParameters } from "./context-compaction-strategy.ts";
 import {
 	CONTEXT_COMPACTION_BUDGET_TOOL,
 	CONTEXT_DELETE_TOOL,
@@ -49,15 +46,12 @@ import {
 	ContextReadEntryToolParameters,
 	ContextSearchTranscriptToolParameters,
 } from "./context-deletion-tool-definitions.ts";
-import {
-	computeContextCompactionStats,
-	contextDeletionRequestFromObject,
-	validateContextDeletionRequest,
-} from "./context-deletion-application.ts";
+import { computeContextCompactionStats, contextDeletionRequestFromObject, validateContextDeletionRequest } from "./context-deletion-application.ts";
 import {
 	canDeleteTarget,
 	deletionRequestFromTargets,
 	getRecentContextEntryIds,
+	isStaleUserImageOnlyEntry,
 	mergeContextDeletionTargets,
 } from "./context-deletion-targets.ts";
 import { createContextDeletionStore } from "./context-deletion-store.ts";
@@ -103,6 +97,12 @@ export function createContextDeletionTool(
 
 	function canDeleteProtectedTarget(target: ContextDeletionTarget): boolean {
 		return canDeleteTarget(transcript, target);
+	}
+
+	function shouldGrepDeleteContentBlockAsEntry(entryId: string, blockCount: number): boolean {
+		if (blockCount <= 1) return true;
+		const entry = transcript.entries.find((candidate) => candidate.entryId === entryId);
+		return entry !== undefined && isStaleUserImageOnlyEntry(transcript, entry);
 	}
 
 	const tool: AgentTool<typeof ContextDeleteToolParameters, ContextDeletionToolDetails> = {
@@ -198,10 +198,9 @@ export function createContextDeletionTool(
 					} else {
 						for (const block of store.listContentBlocksForGrep()) {
 							if (!matcher.test(block.text)) continue;
-							const candidate: ContextDeletionTarget =
-								block.block_count <= 1
-									? { kind: "entry", entryId: block.entry_id }
-									: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
+							const candidate: ContextDeletionTarget = shouldGrepDeleteContentBlockAsEntry(block.entry_id, block.block_count)
+								? { kind: "entry", entryId: block.entry_id }
+								: { kind: "content_block", entryId: block.entry_id, blockIndex: block.block_index };
 							if (recentEntryIds.has(candidate.entryId)) {
 								skipped.push({
 									entryId: block.entry_id,

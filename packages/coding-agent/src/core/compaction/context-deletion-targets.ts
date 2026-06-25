@@ -332,24 +332,29 @@ export function isRecentTarget(transcript: CompactableTranscript, target: Contex
 	return entry !== undefined && isRecentContextEntry(entry, transcript);
 }
 
+export function isStaleUserImageOnlyEntry(transcript: CompactableTranscript, entry: CompactableTranscriptEntry): boolean {
+	if (entry.role !== "user" || isRecentContextEntry(entry, transcript)) return false;
+	if (entry.contentBlocks.length === 0 || !entry.contentBlocks.every((block) => block.type === "image")) return false;
+	return transcript.entries.some((candidate) => candidate.entryId !== entry.entryId && isTaskBearingEntry(candidate));
+}
+
 export function canDeleteStaleUserImageContentBlock(
 	transcript: CompactableTranscript,
 	target: ContextDeletionTarget,
 ): boolean {
 	if (target.kind !== "content_block") return false;
 	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
-	if (!entry || entry.role !== "user") return false;
-	if (isRecentTarget(transcript, target)) return false;
+	if (!entry || entry.role !== "user" || isRecentTarget(transcript, target)) return false;
 	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
 	if (!block || block.type !== "image") return false;
-	return entry.contentBlocks.length > 1;
+	return entry.contentBlocks.some((candidate) => candidate.blockIndex !== target.blockIndex && candidate.type !== "image");
 }
 
 export function canDeleteTarget(transcript: CompactableTranscript, target: ContextDeletionTarget): boolean {
 	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
 	if (!entry) return false;
 	if (isRecentTarget(transcript, target)) return false;
-	if (target.kind === "entry") return !entry.protected;
+	if (target.kind === "entry") return isStaleUserImageOnlyEntry(transcript, entry) || !entry.protected;
 	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
 	if (!block) return false;
 	if (canDeleteStaleUserImageContentBlock(transcript, target)) return true;

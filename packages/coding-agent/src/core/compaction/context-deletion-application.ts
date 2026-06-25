@@ -253,7 +253,7 @@ export function validateContextDeletionRequest(
 			if (recentEntryIds.has(deletion.entryId)) {
 				throw new Error(formatRecentContextDeletionError(transcript, normalized));
 			}
-			if (entry.protected) {
+			if (!canDeleteTarget(transcript, normalized)) {
 				throw new Error(formatProtectedDeletionError(transcript, normalized));
 			}
 		}
