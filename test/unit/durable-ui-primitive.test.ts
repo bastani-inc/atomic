@@ -29,9 +29,9 @@ function makeBaseUi(overrides: Partial<WorkflowUIContext> = {}): WorkflowUIConte
 }
 
 /** A factory stub typed to satisfy WorkflowCustomUiFactory<T> (never invoked by the mock base). */
-function customFactory(): WorkflowCustomUiFactory<string> {
-  // The mock base.custom never calls this; the cast keeps the test type-clean.
-  return (() => ({})) as unknown as WorkflowCustomUiFactory<string>;
+function customFactory<T = string>(): WorkflowCustomUiFactory<T> {
+  // The mock base.custom never calls this; the component is only for typing.
+  return () => ({ render: () => [], invalidate: () => undefined });
 }
 
 describe("wrapUiWithDurable", () => {
@@ -119,6 +119,31 @@ describe("wrapUiWithDurable", () => {
     const uiB = wrap(baseB);
     const result = await uiB.custom(factory, { replayIdentity: "design-picker" });
     assert.equal(result, "custom-result");
+    assert.equal(baseB.calls.custom, 0);
+  });
+
+  test("custom prompt caches void response", async () => {
+    const factory = customFactory<void>();
+    const baseA = makeBaseUi({
+      async custom<T>(): Promise<T> {
+        baseA.calls.custom++;
+        return undefined as T;
+      },
+    });
+    const uiA = wrap(baseA);
+    const first = await uiA.custom(factory, { replayIdentity: "void-picker" });
+    assert.equal(first, undefined);
+    assert.equal(baseA.calls.custom, 1);
+
+    const baseB = makeBaseUi({
+      async custom<T>(): Promise<T> {
+        baseB.calls.custom++;
+        return "should-not-run" as T;
+      },
+    });
+    const uiB = wrap(baseB);
+    const replayed = await uiB.custom(factory, { replayIdentity: "void-picker" });
+    assert.equal(replayed, undefined);
     assert.equal(baseB.calls.custom, 0);
   });
 

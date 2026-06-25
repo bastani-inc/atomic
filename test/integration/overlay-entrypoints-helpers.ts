@@ -208,10 +208,15 @@ export function buildMockUi(mockOpts: MockUiOpts = {}): {
             ? { rows: mockOpts.rows, columns: mockOpts.columns }
             : undefined,
       };
-      const component = factoryArg(tui, {}, {}, () => undefined);
-      if (component instanceof Promise) {
+      let component: PiCustomComponent | undefined;
+      const done = () => {
+        component?.dispose?.();
+      };
+      const mounted = factoryArg(tui, {}, {}, done);
+      if (mounted instanceof Promise) {
         throw new Error("test factory should be sync");
       }
+      component = mounted;
       calls.push({ factory: factoryArg, options, component, handle });
       return undefined;
     },

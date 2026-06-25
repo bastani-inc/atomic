@@ -86,17 +86,23 @@ async function openCombinedResumePicker(
   const items = [...liveItems, ...durableItems];
   if (items.length === 0) return undefined;
   let selected = 0;
+  let settled = false;
   return new Promise((resolve) => {
+    const settle = (value: CombinedPickerItem | undefined): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
       render: (width: number) => ["Resumable workflows (live + cross-session)", "", ...items.map((item, i) => `${i === selected ? "\u203a" : " "} ${item.kind === "durable" ? "\u25c7" : "\u25cf"} ${item.id.slice(0, 12)}  ${item.name}  ${item.status}  ${item.detail}`)].map((line) => line.slice(0, width)),
       handleInput: (data: string) => {
-        if (data === "\u001b" || data === "\u0003") { done(undefined); resolve(undefined); return; }
-        if (data === "\r" || data === "\n") { done(undefined); resolve(items[selected]); return; }
+        if (data === "\u001b" || data === "\u0003") { settle(undefined); done(undefined); return; }
+        if (data === "\r" || data === "\n") { settle(items[selected]); done(undefined); return; }
         if (data === "\u001b[A") selected = Math.max(0, selected - 1);
         if (data === "\u001b[B") selected = Math.min(items.length - 1, selected + 1);
         tui.requestRender?.();
       },
-      dispose: () => resolve(undefined),
+      dispose: () => settle(undefined),
     });
     void custom(factory, { overlay: false });
   });
@@ -105,17 +111,23 @@ async function openDurableWorkflowPicker(ui: PiCommandContext["ui"], entries: re
   const custom = ui?.custom;
   if (typeof custom !== "function") return undefined;
   let selected = 0;
+  let settled = false;
   return new Promise((resolve) => {
+    const settle = (value: string | undefined): void => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
     const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
       render: (width: number) => ["Resumable workflows", "", ...entries.map((e, i) => `${i === selected ? "›" : " "} ${e.workflowId.slice(0, 12)}  ${e.name}  ${e.status}  checkpoints:${e.completedCheckpoints}`)].map((line) => line.slice(0, width)),
       handleInput: (data: string) => {
-        if (data === "\u001b" || data === "\u0003") { done(undefined); resolve(undefined); return; }
-        if (data === "\r" || data === "\n") { done(undefined); resolve(entries[selected]?.workflowId); return; }
+        if (data === "\u001b" || data === "\u0003") { settle(undefined); done(undefined); return; }
+        if (data === "\r" || data === "\n") { settle(entries[selected]?.workflowId); done(undefined); return; }
         if (data === "\u001b[A") selected = Math.max(0, selected - 1);
         if (data === "\u001b[B") selected = Math.min(entries.length - 1, selected + 1);
         tui.requestRender?.();
       },
-      dispose: () => resolve(undefined),
+      dispose: () => settle(undefined),
     });
     void custom(factory, { overlay: false });
   });
@@ -136,7 +148,7 @@ async function handleDurableResume(
   const durable = await runtime.prepareDurableResumable(target);
   if (target !== undefined) {
     // Attempt resume by id/prefix against the durable catalog.
-    const result = runtime.resumeDurableWorkflow(target);
+    const result = runtime.resumeDurableWorkflow(target, { policy });
     if (result.ok) {
       print(result.message);
       // Open/connect the overlay to the resumed run, analogous to live resume.
@@ -158,7 +170,7 @@ async function handleDurableResume(
   }
   const picked = await openDurableWorkflowPicker(ctx.ui, durable);
   if (picked !== undefined) {
-    const result = runtime.resumeDurableWorkflow(picked);
+    const result = runtime.resumeDurableWorkflow(picked, { policy });
     if (result.ok) {
       print(result.message);
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -374,12 +386,21 @@ export async function handleRunControlCommand(
               // Resume the durable workflow and open the overlay.
               return await handleDurableResume(picked.id, ctx, reporter, deps);
             }
-            // Live run selected — resume it directly.
+            // Live run selected — resume failed recoverable runs through the
+            // continuation path; otherwise open the retained/live snapshot.
             const resolved = resolveRunIdPrefix(picked.id);
             if (resolved.kind === "exact") {
-              const result = resumeRun(resolved.runId, {});
-              if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-              result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.id}`);
+              const run = store.runs().find((r) => r.id === resolved.runId);
+              const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+              const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+              if (isResumableContinuation) {
+                const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
+                continuation.ok ? print(continuation.message) : fail(continuation.message);
+              } else {
+                const result = resumeRun(resolved.runId, {});
+                if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.id}`);
+              }
             }
             return true;
           }

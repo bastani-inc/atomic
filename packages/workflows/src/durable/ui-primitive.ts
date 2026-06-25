@@ -44,6 +44,12 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
 
   const cached = (identity: { readonly hash: string }): WorkflowSerializableValue | undefined => deps.backend.getUiResponse(deps.workflowId, identity.hash);
 
+  const cachedCustom = (identity: { readonly hash: string }): { readonly found: boolean; readonly response?: WorkflowSerializableValue } => {
+    const hit = deps.backend.listCheckpoints(deps.workflowId)
+      .find((checkpoint) => checkpoint.kind === "ui" && checkpoint.promptHash === identity.hash);
+    return hit?.kind === "ui" ? { found: true, response: hit.response } : { found: false };
+  };
+
   return {
     async input(promptText: string): Promise<string> {
       const identity = nextIdentity("input", promptText);
@@ -80,8 +86,8 @@ export function wrapUiWithDurable(base: WorkflowUIContext, deps: DurableUiDeps):
     async custom<T>(factory: WorkflowCustomUiFactory<T>, options?: WorkflowCustomUiOptions): Promise<T> {
       const replayIdentity = options?.replayIdentity ?? factory?.name ?? "custom";
       const identity = nextIdentity("custom", replayIdentity, { replayIdentity });
-      const hit = cached(identity);
-      if (hit !== undefined) return hit as T;
+      const hit = cachedCustom(identity);
+      if (hit.found) return hit.response as T;
       const response = await base.custom<T>(factory, options);
       await record("custom", identity, response as WorkflowSerializableValue);
       return response;

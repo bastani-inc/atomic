@@ -1,4 +1,4 @@
-import { describe, test } from "bun:test";
+import { beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -32,6 +32,9 @@ void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, build
 
 
 describe("/workflow resume — overlay integration", () => {
+  beforeEach(() => {
+    setDurableBackend(new InMemoryDurableBackend());
+  });
   test("resume with unknown runId prints not-found, does NOT call custom", () => {
     const { pi, commands, customCalls } = buildMockPi();
     factory(pi);
@@ -59,6 +62,7 @@ describe("/workflow resume — overlay integration", () => {
       true,
     );
   });
+
 
   test("resume with no runId opens durable picker when only durable entries exist", async () => {
     singletonStore.clear();
@@ -418,6 +422,7 @@ describe("/workflow attach — top-level command", () => {
       setDurableBackend(undefined);
     }
   });
+
 
   // cross-ref: issue #1498 — mixed resume uses async hydrated durable listing.
   test("no-arg resume: mixed live+durable uses prepareDurableResumable (async hydration)", async () => {

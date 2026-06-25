@@ -186,10 +186,11 @@ export function createTrackedStageCaller(input: {
       // cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
       runtime.mcpScope.clear();
       runtime.captureStageSessionMeta();
+      let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
       try {
         await runtime.finalizeStageSnapshot();
-      } catch {
-        // Best-effort: finalization failure must not prevent limiter/handle release.
+      } catch (err) {
+        finalizationError = { thrown: true, error: err };
       }
       try {
         if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
@@ -201,6 +202,7 @@ export function createTrackedStageCaller(input: {
         // Best-effort: handle release failure must not prevent limiter release.
       }
       input.limiter.release();
+      if (finalizationError !== undefined) throw finalizationError.error;
     }
   };
 }
