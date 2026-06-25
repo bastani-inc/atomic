@@ -133,7 +133,17 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
-const ESTIMATED_IMAGE_CHARS = 4800;
+/**
+ * Shared image-token estimation used by every compaction/context-accounting path.
+ *
+ * Providers fold image tokens into their reported prompt/input usage, so usage-based
+ * accounting already captures actual image cost. For heuristic paths (trailing
+ * messages without usage, transcript content-block estimates) a single conservative
+ * fixed estimate keeps both the context-window threshold check and the transcript
+ * planner consistent.
+ */
+export const ESTIMATED_IMAGE_CHARS = 4800;
+export const ESTIMATED_IMAGE_TOKENS = Math.ceil(ESTIMATED_IMAGE_CHARS / 4);
 
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
@@ -149,6 +159,25 @@ function estimateTextAndImageContentChars(content: string | Array<{ type: string
 		}
 	}
 	return chars;
+}
+
+/**
+ * Count image content blocks in a message content array (text or block array).
+ */
+export function countImageContentBlocks(content: string | Array<{ type: string }>): number {
+	if (typeof content === "string") return 0;
+	let count = 0;
+	for (const block of content) {
+		if (block.type === "image") count += 1;
+	}
+	return count;
+}
+
+/**
+ * Estimate the token cost of only the image content blocks in a message content array.
+ */
+export function estimateImageContentTokens(content: string | Array<{ type: string }>): number {
+	return countImageContentBlocks(content) * ESTIMATED_IMAGE_TOKENS;
 }
 
 /**

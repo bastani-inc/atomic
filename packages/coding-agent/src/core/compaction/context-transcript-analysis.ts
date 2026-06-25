@@ -11,7 +11,7 @@ import {
 	type SessionEntry,
 } from "../session-manager.ts";
 import type { CompactionSettings } from "./compaction.ts";
-import { estimateTokens } from "./compaction.ts";
+import { ESTIMATED_IMAGE_TOKENS, estimateTokens } from "./compaction.ts";
 import {
 	CONTEXT_COMPACTION_AUTO_QUERY,
 	type CompactableContentBlock,
@@ -90,16 +90,13 @@ export function assistantEntryHasThinkingContentBlock(entry: CompactableTranscri
 	);
 }
 
-const IMAGE_BLOCK_CHAR_ESTIMATE = 4800;
-const IMAGE_BLOCK_TOKEN_ESTIMATE = Math.ceil(IMAGE_BLOCK_CHAR_ESTIMATE / 4);
-
 function estimateTextTokens(text: string): number {
 	return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function estimateContentBlockTokens(block: unknown, text: string): number {
 	if (block && typeof block === "object" && (block as { type?: unknown }).type === "image") {
-		return IMAGE_BLOCK_TOKEN_ESTIMATE;
+		return ESTIMATED_IMAGE_TOKENS;
 	}
 	return estimateTextTokens(text);
 }

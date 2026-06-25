@@ -42,7 +42,7 @@ function createContextCompactionTargetNudgeMessage(
 	const currentReductionPercent = contextCompactionProgressPercent(result);
 	const targetLabel = contextCompactionTargetLabel(parameters);
 	const tokensToDelete = result
-		? createContextCompactionBudgetDetails(result.stats, 0, undefined, parameters).tokensToDeleteForTarget
+		? createContextCompactionBudgetDetails(result.stats, 0, undefined, parameters, 0, 0).tokensToDeleteForTarget
 		: undefined;
 	const remainingText = tokensToDelete !== undefined ? ` Delete about ${tokensToDelete} more token(s) if safe candidates exist.` : "";
 	return {

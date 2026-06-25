@@ -48,6 +48,7 @@ What Gets Deleted:
 - Exploratory dead ends: irrelevant files read, unhelpful or empty searches.
 - Verbose boilerplate: license headers, import blocks the agent isn't modifying, configuration files read for reference.
 - Superseded information: earlier versions of files that have since been edited, old error messages from bugs already fixed.
+- Stale/superseded image context: image content blocks (shown as type "image" / text "[image]") in older tool results or custom messages that the agent has already inspected and no longer needs. Image blocks are large (each costs far more tokens than its "[image]" text preview suggests, as reported by context_compaction_budget imageTokenPercent). When images dominate the context, prefer deleting these stale image content blocks before removing useful recent text. Use context_grep_delete with the literal pattern "[image]" and target "content_block" to find image candidates, then confirm they are stale with context_read_entry before deleting.
 
 What Survives:
 - Active file paths and line numbers: Any reference the agent might need to navigate.
@@ -55,6 +56,7 @@ What Survives:
 - Reasoning decisions: Why the agent chose approach A over B. An agent's chain of thought (why it chose this file, what pattern it noticed, what fix it decided on) carries more information-per-token than the raw grep output or file content that informed those decisions.
 - Recent tool calls and their results: The last 3-5 operations.
 - User instructions: The original task and any clarifications.
+- Task-relevant images: Images that are part of the active user task (for example, a screenshot the user just asked about, or the most recent image-bearing result the agent is still acting on). User messages always remain protected, so their images are retained automatically. Recent tool results are also protected by preserve_recent, so do not delete images the agent still needs.
 
 Conditionally Deleted:
 - Old Reasoning decisions: If there is nothing else to remove and the target reduction is not met, you can remove entire stale assistant entries, EXCEPT do not delete individual content blocks from any retained assistant message that contains thinking or redacted_thinking blocks. Thinking-bearing assistant messages are all-or-nothing for replay safety.

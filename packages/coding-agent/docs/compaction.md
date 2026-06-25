@@ -98,6 +98,21 @@ By default, `reserveTokens` is 16384 tokens. Configure it in `~/.atomic/agent/se
 
 You can also trigger compaction manually with `/compact`. Custom summary instructions are not accepted because Verbatim Compaction is deletion-only and retained transcript content stays verbatim.
 
+### Image Context and Compaction
+
+Image content blocks (screenshots, pasted images, image-bearing tool results) are expensive: providers fold image tokens into their reported prompt/input usage, so image-heavy conversations reach the compaction threshold sooner. Atomic accounts for this in two complementary ways:
+
+- **Token accounting includes images.** When provider usage is available (after a normal assistant response), the actual image token cost is already captured in the reported input/prompt tokens. For heuristic estimates of trailing messages without usage (for example, on an error fallback), each image content block contributes a single shared conservative estimate of `1200` tokens. This same estimate is used by the transcript planner, so the threshold check and the planner agree on how costly images are.
+- **Irrelevant images can be deleted.** The deletion planner can remove stale, superseded, or unrelated image content blocks from older, non-protected entries using `context_delete` with `kind: "content_block"` or `context_grep_delete` matching the `[image]` placeholder. When images dominate the context, the `context_compaction_budget` tool reports the image token share (`imageTokenPercent`) and the planner is instructed to prefer deleting stale image blocks before removing useful recent text.
+
+Task-relevant images are preserved automatically:
+
+- **User messages are always protected**, so images the user pasted as part of the active task are never deleted.
+- **Recent entries** (the last `preserve_recent`, default `2`) are protected, keeping the most recent image-bearing results the agent is still acting on.
+- **Custom/branch-summary messages** are protected as task-bearing context.
+
+Because Verbatim Compaction is deletion-only, compaction never generates summaries, paraphrases, or replacement content. Deleted image blocks are simply omitted from the rebuilt active context; surviving content stays byte-for-byte identical. No image payload data is ever reintroduced, and image payloads never appear in the compaction prompt (images are surfaced as the `[image]` placeholder with their token estimate).
+
 ### How It Works
 
 The diagram below is intentionally a block diagram, not a flowchart DSL. Read it left to right first, then use the lower diagrams to inspect the tool loop, validation airlock, dependency repair, and persistence path.
@@ -545,7 +560,7 @@ The compaction assistant can only compact by using these internal tools. Exact d
 | `context_delete` | Record exact entry/content-block deletion targets. |
 | `context_grep_delete` | Bulk-delete matching entries or content blocks with guardrails. |
 
-The planner is prompted to call `context_compaction_budget` before deleting and after deletion batches. The tool reports the current transcript token estimate as a percentage of the selected model's context window, the configured `compression_ratio`, the projected percentage after selected deletions, current reduction percentage, and how many more estimated tokens must be removed to reach the strict target. With the default `compression_ratio: 0.5`, the strict target is a 50% token reduction.
+The planner is prompted to call `context_compaction_budget` before deleting and after deletion batches. The tool reports the current transcript token estimate as a percentage of the selected model's context window, the configured `compression_ratio`, the projected percentage after selected deletions, current reduction percentage, how many more estimated tokens must be removed to reach the strict target, and the image token share (`imageTokensBefore`, `imageBlockCount`, `imageTokenPercent`) so the planner can prioritize deleting stale image context when images dominate. With the default `compression_ratio: 0.5`, the strict target is a 50% token reduction.
 
 `context_grep_delete` supports literal or regex matching, skips already-deleted or disallowed context, enforces a per-call `maxMatches` safety cap, can require `expectedMatchCount` when the planner wants an exact-match safety check, and routes every accepted match through the same validation pipeline as exact deletions. Disallowed matches are ignored before `matches`, `expectedMatchCount`, deletion stats, and selected targets are calculated, so a broad regex can still remove safe blocks without counting rejected candidates as removed. This includes the universal latest-retained assistant guard: if the latest retained assistant message contains `thinking` or `redacted_thinking`, neither `context_delete` nor `context_grep_delete` may remove any content block from that assistant message, even a visible text sibling block. `maxMatches` limits only one tool call; there is no cumulative deletion cap across repeated `context_delete` or `context_grep_delete` calls. Exact deletion attempts that target disallowed entries/blocks return an explicit non-terminating tool error with correction guidance. Exact deletion payloads that include unsupported fields such as transcript `text`, block `content`, summaries, or replacement data are rejected as non-id-only requests.
 

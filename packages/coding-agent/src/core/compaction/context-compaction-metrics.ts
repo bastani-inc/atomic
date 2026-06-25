@@ -1,5 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ContextCompactionStats } from "../session-manager.ts";
+import type { CompactableTranscript } from "./context-compaction-types.ts";
 import type { ContextCompactionBudgetToolDetails } from "./context-deletion-tool-definitions.ts";
 import type { ContextCompactionParameters, ValidatedContextDeletionResult } from "./context-compaction-types.ts";
 
@@ -36,6 +37,8 @@ export function createContextCompactionBudgetDetails(
 	callCount: number,
 	contextWindow: number | undefined,
 	parameters: ContextCompactionParameters,
+	imageTokensBefore: number,
+	imageBlockCount: number,
 ): ContextCompactionBudgetToolDetails {
 	const targetTokensAfter = Math.max(0, Math.floor(stats.tokensBefore * parameters.compression_ratio));
 	const targetReductionPercent = contextCompactionTargetReductionPercent(parameters);
@@ -55,6 +58,9 @@ export function createContextCompactionBudgetDetails(
 					contextWindowAfterPercent: percentOf(stats.tokensAfter, contextWindow),
 				}
 			: {}),
+		imageTokensBefore,
+		imageBlockCount,
+		imageTokenPercent: percentOf(imageTokensBefore, stats.tokensBefore),
 		callCount,
 	};
 	return details;
@@ -78,4 +84,32 @@ export function contextCompactionProgressKey(result: ValidatedContextDeletionRes
 
 export function contextCompactionProgressPercent(result: ValidatedContextDeletionResult | undefined): number {
 	return result?.stats.percentReduction ?? 0;
+}
+
+/**
+ * Sum the token estimates of every image content block still present in the transcript
+ * (ignoring already-deleted blocks). Used so the planner can see when image context
+ * dominates and prioritize deleting stale/superseded images.
+ */
+export function sumTranscriptImageTokens(transcript: CompactableTranscript): number {
+	let imageTokens = 0;
+	for (const entry of transcript.entries) {
+		for (const block of entry.contentBlocks) {
+			if (block.type === "image") imageTokens += block.tokenEstimate;
+		}
+	}
+	return imageTokens;
+}
+
+/**
+ * Count the image content blocks still present in the transcript.
+ */
+export function countTranscriptImageBlocks(transcript: CompactableTranscript): number {
+	let count = 0;
+	for (const entry of transcript.entries) {
+		for (const block of entry.contentBlocks) {
+			if (block.type === "image") count += 1;
+		}
+	}
+	return count;
 }

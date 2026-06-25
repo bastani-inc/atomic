@@ -238,6 +238,12 @@ export interface ContextCompactionBudgetToolDetails {
 	tokensToDeleteForTarget: number;
 	contextWindowBeforePercent?: number;
 	contextWindowAfterPercent?: number;
+	/** Total estimated tokens consumed by image content blocks still in the transcript. */
+	imageTokensBefore: number;
+	/** Number of image content blocks still in the transcript. */
+	imageBlockCount: number;
+	/** Image tokens as a percentage of total transcript tokens. */
+	imageTokenPercent: number;
 	callCount: number;
 }
 
