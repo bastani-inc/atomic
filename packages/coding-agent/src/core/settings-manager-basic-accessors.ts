@@ -8,6 +8,10 @@ import type { ContextWindowSetting, TransportSetting } from "./settings-types.ts
 interface SettingsManagerBasicAccessors {
 	getLastChangelogVersion(): string | undefined;
 	setLastChangelogVersion(version: string): void;
+	getFirstRunOnboardingStartedVersion(): string | undefined;
+	setFirstRunOnboardingStartedVersion(version: string): void;
+	getOnboardedVersion(): string | undefined;
+	setOnboardedVersion(version: string): void;
 	getSessionDir(): string | undefined;
 	getDefaultProvider(): string | undefined;
 	getDefaultModel(): string | undefined;
@@ -80,6 +84,28 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.lastChangelogVersion = version;
 		state.markModified("lastChangelogVersion");
+		state.save();
+	},
+
+	getFirstRunOnboardingStartedVersion() {
+		return settingsInternals(this).settings.firstRunOnboardingStartedVersion;
+	},
+
+	setFirstRunOnboardingStartedVersion(version) {
+		const state = settingsInternals(this);
+		state.globalSettings.firstRunOnboardingStartedVersion = version;
+		state.markModified("firstRunOnboardingStartedVersion");
+		state.save();
+	},
+
+	getOnboardedVersion() {
+		return settingsInternals(this).settings.onboardedVersion;
+	},
+
+	setOnboardedVersion(version) {
+		const state = settingsInternals(this);
+		state.globalSettings.onboardedVersion = version;
+		state.markModified("onboardedVersion");
 		state.save();
 	},
 

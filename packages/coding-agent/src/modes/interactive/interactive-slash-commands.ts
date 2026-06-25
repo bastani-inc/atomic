@@ -161,6 +161,14 @@ InteractiveModeBase.prototype.handleImportCommand = async function(this: Interac
       return;
     }
 
+    const finishSuccessfulImport = () => {
+      this.renderCurrentSessionState();
+      if (this.firstRunOnboardingActive) {
+        this.clearFirstRunOnboardingUi();
+      }
+      this.showStatus(`Session imported from: ${inputPath}`);
+    };
+
     try {
       if (this.loadingAnimation) {
         this.loadingAnimation.stop();
@@ -172,8 +180,7 @@ InteractiveModeBase.prototype.handleImportCommand = async function(this: Interac
         this.showStatus("Import cancelled");
         return;
       }
-      this.renderCurrentSessionState();
-      this.showStatus(`Session imported from: ${inputPath}`);
+      finishSuccessfulImport();
     } catch (error: unknown) {
       if (error instanceof MissingSessionCwdError) {
         const selectedCwd = await this.promptForMissingSessionCwd(error);
@@ -189,8 +196,7 @@ InteractiveModeBase.prototype.handleImportCommand = async function(this: Interac
           this.showStatus("Import cancelled");
           return;
         }
-        this.renderCurrentSessionState();
-        this.showStatus(`Session imported from: ${inputPath}`);
+        finishSuccessfulImport();
         return;
       }
       if (error instanceof SessionImportFileNotFoundError) {

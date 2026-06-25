@@ -59,6 +59,8 @@ InteractiveModeBase.prototype.completeProviderAuthentication = async function(th
         void this.maybeWarnAboutAnthropicSubscriptionAuth();
       }
     }
+
+    await this.resumePendingFirstRunOnboardingSeed();
   };
 
 InteractiveModeBase.prototype.showBedrockSetupDialog = function(this: InteractiveModeBase, providerId: string, providerName: string): void {

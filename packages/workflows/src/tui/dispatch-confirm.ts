@@ -7,7 +7,8 @@
  *  - One status-coloured rounded run card:
  *      title: runId8 · workflowName · ● running
  *      body: compact `k=v · k=v · +N more` input summary when present
- *  - One hint row: ▸ /workflow connect <id>   attach & watch
+ *  - One compact next-step hint:
+ *      ▸ /workflow connect <id>  watch, attach & steer
  *
  * What we deliberately do NOT emit (was in the legacy 7-row layout):
  *  - the `✓ submitted · /workflow <name>` echo line — pi already shows
@@ -19,9 +20,9 @@
  *    an 8-char hex string visually communicates "identifier";
  *  - the `status starting…` body row — the `● running` badge on row 1
  *    occupies the same semantic slot;
- *  - the second hint row `▸ /workflow status` — that is a separate
- *    intent (list other in-flight runs), already discoverable from a
- *    bare `/workflow` invocation and the picker's confirm panel.
+ *  - the second hint row `▸ /workflow status` — that is a separate intent
+ *    (list other in-flight runs), already discoverable from a bare `/workflow`
+ *    invocation and the picker's confirm panel.
  *
  * Plain mode drops ANSI; the rounded panel/card layout shape is preserved.
  *
@@ -70,8 +71,7 @@ export interface RenderDispatchConfirmOpts {
 /**
  * Render the post-dispatch confirmation: one rounded panel containing a
  * rounded run card with runId, workflow name, inputs summary, and a
- * `● running` status badge, followed by one hint row pointing at
- * `/workflow connect <id>`.
+ * `● running` status badge, followed by a workflow-control hint.
  */
 export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
   const width = effectiveWidth(opts.width);
@@ -142,10 +142,11 @@ export function renderDispatchConfirm(opts: RenderDispatchConfirmOpts): string {
     : [`   ${titleSuffix ?? "started in background"} `];
   const titleLine = ` ●  ${tag}  ${opts.workflowName}  ${trailing.text} `;
 
-  const hints = renderHintRows(
-    [{ command: `/workflow connect ${tag}`, hint: "attach & watch" }],
-    theme,
-  ).split("\n").map((line) => ` ${line} `);
+  const hints = renderHintRows([
+    { command: `/workflow connect ${tag}`, hint: "watch, attach & steer" },
+  ], theme)
+    .split("\n")
+    .map((line) => ` ${line} `);
 
   return renderRoundedBox({
     title: "DISPATCHED",

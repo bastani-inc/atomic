@@ -80,6 +80,8 @@ See [Providers](/providers) for all supported providers, environment variables, 
 
 ## First session
 
+On a fresh install with no prior Atomic startup state, Atomic starts with a first-run workflow prompt. Returning users with prior startup state are marked onboarded automatically and continue directly into the normal chat UI; stored credentials by themselves do not skip onboarding. Paste a ticket description, GitHub issue, path to a spec, or task prompt and Atomic hands it to the normal coding-agent session. The handoff raises the selected model to high reasoning when supported and first asks the parent agent to estimate scope from the seed text alone: tickets, issues, and especially specs often list enough work items, files, tests, docs, migrations, or acceptance criteria to classify likely size without immediately inspecting the repo. That text-only pass is treated as a routing confidence signal, not final planning. If the task is clearly tiny/small and high-confidence, the parent can route directly; if the seed references context that must be read or the scope is medium, large, unclear, or risky, it inspects only the necessary issue/spec/path/repo area and can use targeted read-only subagents such as `codebase-locator`, `codebase-analyzer`, and `codebase-pattern-finder` at their normal defaults. It then chooses `goal` for focused work or `ralph` for broader/riskier work, starts the selected workflow, and continues normally. If you paste the task before logging in or selecting a usable model, Atomic keeps only an in-memory copy, asks you to run `/login`, and resumes with the latest saved task after login or `/model` selection makes the session ready; `/new` starts a fresh unresolved onboarding session and drops that saved in-memory task. If you want normal chat instead, type `/chat` or `/chat <message>`; other slash commands such as `/login`, `/model`, and `/atomic` still work and do not dismiss onboarding.
+
 Once Atomic starts, the fastest way to get value is to kick off a built-in workflow or invoke a skill. Atomic turns repeatable engineering loops into executable stages with inspectable evidence instead of relying on a markdown checklist the model may or may not follow.
 
 For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overview`, `/atomic workflows`, and `/atomic example` walk through the same flow in more depth.
@@ -92,7 +94,7 @@ Atomic ships with four workflows you can run immediately. Use `/workflow list` t
 |---|---|---|
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
 | `goal` | Bounded one-off changes when you already know the work surface, exact outcome, and validation — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run focused with a goal ledger, reviewer gates, final status `complete`, `blocked`, or `needs_human`, and optional final-stage PR creation with `create_pr=true` after approval. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when the build passes"` |
-| `ralph` | Planned or broad implementation work from a spec file, GitHub issue, or crisp ticket description. Ralph refines the prompt, researches as needed, delegates implementation through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, iterates, and optionally lets only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic returns 429"` |
+| `ralph` | Planned or broad implementation work from a spec file, GitHub issue, or crisp ticket description. Ralph researches as needed, delegates implementation through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, iterates, and optionally lets only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic returns 429"` |
 | `open-claude-design` | UI and design-system work with separate forked generate and feedback chains; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
@@ -117,11 +119,12 @@ For smaller one-off tasks, use `goal` with a concrete task description that name
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get a run id; use it to inspect, attach, pause, or resume:
+Named workflow runs execute in the background. After launch you get a run id; use it to inspect, attach, pause, or resume. First-run `goal`/`ralph` handoffs show the exact `/workflow status <run-id>` and `/workflow connect <run-id>` commands in the dispatched card, and you can also ask in the current chat for status or to steer the run at any point.
 
 ```text
+/workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # open the graph viewer (F2 also opens the latest)
+/workflow connect <run-id>        # watch, attach to stages, or steer (F2 also opens latest)
 /workflow attach <run-id> <stage> # chat with one stage
 /workflow interrupt <run-id>      # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
@@ -213,7 +216,7 @@ Restart Atomic, or run `/reload`, after changing context files.
 
 ### Reference files
 
-Type `@` in the editor to fuzzy-search files, or pass files on the command line:
+Type `@` in any interactive editor, including first-run onboarding, to fuzzy-search files; or pass files on the command line:
 
 ```bash
 atomic @README.md "Summarize this"

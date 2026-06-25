@@ -225,23 +225,78 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 	});
 
 	describe("delete-context preserves task-relevant images", () => {
-		it("refuses to delete image blocks from protected user messages", () => {
+		it("deletes a stale user image content block while preserving user text", () => {
 			resetIds();
-			const imageUser = entry(userWithImage("analyze this screenshot"));
+			const imageUser = entry(userWithImage("old screenshot text that must remain"));
 			const entries: SessionEntry[] = [imageUser, entry(assistantText("ack")), ...recentTail(6)];
 			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
 			const userEntry = preparation.transcript.entries.find((item) => item.entryId === imageUser.id)!;
 			expect(userEntry.protected).toBe(true);
-			const imageBlock = userEntry.contentBlocks.find((block) => block.type === "image")!;
-			expect(imageBlock.protected).toBe(true);
+			expect(userEntry.contentBlocks.map((block) => block.type)).toEqual(["text", "image"]);
+
+			const validated = validateContextDeletionRequest(
+				{ deletions: [{ kind: "content_block", entryId: imageUser.id, blockIndex: 1 }] },
+				preparation.transcript,
+			);
+
+			expect(validated.stats.tokensBefore - validated.stats.tokensAfter).toBe(ESTIMATED_IMAGE_TOKENS);
+			const rebuilt = buildSessionContext([...entries, contextEntry(validated.deletedTargets)]);
+			const rebuiltUser = rebuilt.messages.find((message) => message.role === "user") as AgentMessage | undefined;
+			expect(Array.isArray(rebuiltUser?.content)).toBe(true);
+			const content = Array.isArray(rebuiltUser?.content) ? rebuiltUser.content : [];
+			expect(content).toEqual([{ type: "text", text: "old screenshot text that must remain" }]);
+		});
+
+		it("grep-deletes old user images via the [image] placeholder", async () => {
+			resetIds();
+			const imageUser = entry(userWithImage("old pasted screenshot"));
+			const entries: SessionEntry[] = [imageUser, entry(assistantText("ack")), ...recentTail(6)];
+			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+			const controller = createContextDeletionTool(preparation.transcript);
+
+			const result = await controller.grepTool.execute("toolu_grep_user_image", {
+				pattern: "[image]",
+				target: "content_block",
+				maxMatches: 5,
+			});
+
+			expect(result.details.deletedTargets).toEqual([
+				{ kind: "content_block", entryId: imageUser.id, blockIndex: 1 },
+			]);
+			expect(result.details.stats.tokensBefore - result.details.stats.tokensAfter).toBe(ESTIMATED_IMAGE_TOKENS);
+		});
+
+		it("keeps recent user image blocks protected", () => {
+			resetIds();
+			const imageUser = entry(userWithImage("current screenshot for the active task"));
+			const entries: SessionEntry[] = [entry(user("Task")), entry(assistantText("ack")), imageUser];
+			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
 
 			expect(() =>
 				validateContextDeletionRequest(
 					{ deletions: [{ kind: "content_block", entryId: imageUser.id, blockIndex: 1 }] },
 					preparation.transcript,
 				),
-			).toThrow(/protected/);
+			).toThrow(/last \d+ context entries|recent/);
+		});
+
+		it("rejects deleting the only block of an old user image entry", () => {
+			resetIds();
+			const imageOnlyUser = entry({
+				role: "user",
+				content: [{ type: "image", data: IMAGE_DATA, mimeType: "image/png" }],
+				timestamp: Date.now(),
+			});
+			const entries: SessionEntry[] = [imageOnlyUser, entry(assistantText("ack")), ...recentTail(6)];
+			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+
+			expect(() =>
+				validateContextDeletionRequest(
+					{ deletions: [{ kind: "content_block", entryId: imageOnlyUser.id, blockIndex: 0 }] },
+					preparation.transcript,
+				),
+			).toThrow(/protected|only content block/);
 		});
 
 		it("retains a task-relevant image-bearing tool result when it is recent", () => {

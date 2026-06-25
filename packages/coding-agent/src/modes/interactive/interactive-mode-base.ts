@@ -114,6 +114,21 @@ export class InteractiveModeBase {
   anthropicSubscriptionWarningShown = false;
 
 
+  firstRunOnboardingActive = false;
+
+
+  firstRunOnboardingSeedInFlight = false;
+
+
+  pendingFirstRunOnboardingSeed: string | undefined = undefined;
+
+
+  hadLastChangelogVersionAtStartup = false;
+
+
+  firstRunOnboardingHeaderComponents: Component[] = [];
+
+
   autoTrustOnReloadCwd: string | undefined;
 
 

@@ -19,7 +19,7 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 | Feature | How |
 |---------|-----|
-| File reference | Type `@` to fuzzy-search project files |
+| File reference | Type `@` to fuzzy-search project files, including during first-run onboarding |
 | Path completion | Press Tab to complete paths |
 | Multi-line input | SHIFT+Enter, or CTRL+Enter on Windows Terminal |
 | Images | Paste with CTRL+V, ALT+V on Windows, or drag into the terminal |

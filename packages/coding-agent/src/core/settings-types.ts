@@ -88,6 +88,8 @@ export interface BashInterceptorSettings {
 
 export interface Settings {
 	lastChangelogVersion?: string;
+	firstRunOnboardingStartedVersion?: string;
+	onboardedVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";

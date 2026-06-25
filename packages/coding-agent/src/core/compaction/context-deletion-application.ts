@@ -264,14 +264,14 @@ export function validateContextDeletionRequest(
 			if (recentEntryIds.has(deletion.entryId)) {
 				throw new Error(formatRecentContextDeletionError(transcript, normalized));
 			}
-			if (entry.protected) {
-				throw new Error(formatProtectedDeletionError(transcript, normalized));
-			}
 			const block = entry.contentBlocks.find((item) => item.blockIndex === deletion.blockIndex);
 			if (!block) {
+				if (entry.protected) {
+					throw new Error(formatProtectedDeletionError(transcript, normalized));
+				}
 				throw new Error(`Unknown content block ${deletion.blockIndex} for entry ${deletion.entryId}`);
 			}
-			if (block.protected) {
+			if (!canDeleteTarget(transcript, normalized)) {
 				throw new Error(formatProtectedDeletionError(transcript, normalized));
 			}
 			if (entry.contentBlocks.length <= 1) {

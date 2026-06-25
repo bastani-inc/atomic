@@ -155,6 +155,9 @@ InteractiveModeBase.prototype.handleClearCommand = async function(this: Interact
       if (result.cancelled) {
         return;
       }
+      if (this.firstRunOnboardingActive) {
+        this.clearPendingFirstRunOnboardingSeed();
+      }
       this.renderCurrentSessionState();
       this.chatContainer.addChild(new Spacer(1));
       this.chatContainer.addChild(

@@ -8,12 +8,11 @@
  *    badge.
  *  - Inputs wrap to a second body row only when row 1's interior cannot
  *    hold them; the body row uses the same overflow rules.
- *  - One hint row: `▸ /workflow connect <short-id>   attach & watch`.
+ *  - Runs keep one hint row: `▸ /workflow connect <short-id>   watch, attach & steer`.
  *
  * Explicitly removed (was in the legacy 7-row layout): the `✓ submitted`
  * echo, the `[ DISPATCHED ]` band, the `run id` muted caption beside the
- * tag, the `status starting…` body row, and the second `▸ /workflow
- * status` hint row.
+ * tag, and the `status starting…` body row.
  *
  * cross-ref: src/tui/dispatch-confirm.ts · src/tui/chat-surface.ts
  *            · ui/dispatch-mockup.html
@@ -49,8 +48,8 @@ describe("renderDispatchConfirm — themed", () => {
     assert.match(plain, /prompt="map the codebase"/);
     assert.match(plain, /max_partitions=4/);
 
-    // One hint row, connect-only.
-    assert.match(plain, /▸ \/workflow connect 0391c9c1\s+attach & watch/);
+    // Non-onboarding workflows keep one hint row, connect-only.
+    assert.match(plain, /▸ \/workflow connect 0391c9c1\s+watch, attach & steer/);
 
     // Legacy chrome MUST be gone.
     assert.doesNotMatch(plain, /✓ submitted/);
@@ -168,15 +167,16 @@ describe("renderDispatchConfirm — plain", () => {
     // Inputs present (inline on wide terminal).
     assert.match(out, /prompt="hello"/);
 
-    // One hint, connect-only.
-    assert.match(out, /▸ \/workflow connect abc12345\s+attach & watch/);
+    // All workflows keep the dispatch card focused on attach/steer.
+    assert.match(out, /▸ \/workflow connect abc12345\s+watch, attach & steer/);
+    assert.doesNotMatch(out, /▸ \/workflow status abc12345/);
+    assert.doesNotMatch(out, /Ask here anytime for status or to steer this run\./);
 
     // Legacy chrome MUST be gone in plain mode too.
     assert.doesNotMatch(out, /✓ submitted/);
     assert.doesNotMatch(out, /\[ DISPATCHED \]/);
     assert.doesNotMatch(out, /\brun id\b/);
     assert.doesNotMatch(out, /\bstarting…/);
-    assert.doesNotMatch(out, /▸ \/workflow status/);
   });
 
   test("zero inputs in plain mode renders just identity row + hint", () => {

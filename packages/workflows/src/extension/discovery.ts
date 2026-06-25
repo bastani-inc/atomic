@@ -11,17 +11,17 @@
  *   1. settings-project — paths listed in config.projectWorkflows
  *   2. project-local    — {cwd}/.atomic/workflows/*.{ts,js,mjs,cjs}
  *   3. settings-global  — paths listed in config.globalWorkflows
- *   4. user-global      — {homeDir}/.atomic/agent/workflows/*.{ts,js,mjs,cjs}
+ *   4. user-global      — {agentDir}/workflows/*.{ts,js,mjs,cjs}
  *   5. package          — workflow files supplied by Atomic/pi packages
  *   6. bundled          — shipped workflows (skipped when includeBundled=false)
  *
  * Usage:
  *   // Full discovery (all sources):
- *   const result = await discoverWorkflows({ cwd: process.cwd(), homeDir: os.homedir() });
+ *   const result = await discoverWorkflows({ cwd: process.cwd() });
  */
 
 import { join } from "node:path";
-import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
+import { CONFIG_DIR_NAMES, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
@@ -38,7 +38,7 @@ import { loadFromDir, loadFromPaths, type WorkflowModuleCandidateRecord } from "
  *
  *   bundled          — shipped with the workflows package
  *   project-local    — found in {cwd}/.atomic/workflows/
- *   user-global      — found in {homeDir}/.atomic/agent/workflows/
+ *   user-global      — found in {agentDir}/workflows/
  *   settings-project — listed in DiscoveryConfig.projectWorkflows
  *   settings-global  — listed in DiscoveryConfig.globalWorkflows
  *   package          — supplied by Atomic/pi package workflow resources
@@ -121,8 +121,10 @@ export interface DiscoveryConfig {
 export interface DiscoveryOptions {
   /** Working directory; used as root for project-local discovery. Default: process.cwd() */
   cwd: string;
-  /** User's home directory; used as root for user-global discovery. Default: os.homedir() */
+  /** User's home directory; when set, preserves legacy test/compat user-global discovery roots. */
   homeDir: string;
+  /** User agent config directories in precedence order. Defaults to Atomic's configured agent directories. */
+  agentDirs?: readonly string[];
   /** Optional extra paths from project/global config. */
   config?: DiscoveryConfig;
   /** Workflow files supplied by installed Atomic/pi packages. */
@@ -144,6 +146,15 @@ export interface DiscoveryResult {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function workflowAgentDirs(options: Partial<DiscoveryOptions> | undefined): readonly string[] {
+  if (options?.agentDirs !== undefined) return options.agentDirs;
+  if (options?.homeDir !== undefined) {
+    const homeDir = options.homeDir;
+    return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+  }
+  return getAgentDirs();
+}
 
 /**
  * Validate DiscoveryConfig shape.
@@ -273,7 +284,7 @@ function applyBatchShapeOnly(
  *   1. settings-project — config.projectWorkflows paths
  *   2. project-local    — {cwd}/.atomic/workflows/*.{ts,js,mjs,cjs}
  *   3. settings-global  — config.globalWorkflows paths
- *   4. user-global      — {homeDir}/.atomic/agent/workflows/*.{ts,js,mjs,cjs}
+ *   4. user-global      — {agentDir}/workflows/*.{ts,js,mjs,cjs}
  *   5. package          — package-supplied workflow files
  *   6. bundled          — shipped workflows (omitted when includeBundled=false)
  */
@@ -282,6 +293,7 @@ export async function discoverWorkflows(
 ): Promise<DiscoveryResult> {
   const cwd = options?.cwd ?? process.cwd();
   const homeDir = options?.homeDir ?? (await defaultHomeDir());
+  const agentDirs = workflowAgentDirs(options);
   const config = options?.config;
   const packageWorkflowPaths = options?.packageWorkflowPaths;
   const includeBundled = options?.includeBundled !== false;
@@ -332,8 +344,8 @@ export async function discoverWorkflows(
     }
   }
 
-  // 4. user-global — canonical Atomic path plus legacy pi path
-  for (const dir of CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent", "workflows")).reverse()) {
+  // 4. user-global — configured Atomic agent dir plus legacy/defaults when applicable.
+  for (const dir of agentDirs.map((agentDir) => join(agentDir, "workflows")).reverse()) {
     const candidates = await loadFromDir(dir, "user-global", diagnostics);
     registry = await applyBatch(candidates, registry, sources, diagnostics);
   }

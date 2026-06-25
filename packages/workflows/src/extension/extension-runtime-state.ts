@@ -201,11 +201,10 @@ export function createWorkflowExtensionRuntimeState(
     }
     const configResult = await loadWorkflowConfig();
     configLoadRef.current = configResult;
-    const { homedir } = await import("node:os");
     const hasGlobal = configResult.globalConfig != null;
     const hasProject = configResult.projectConfig != null;
     const discoveryConfig = hasGlobal || hasProject
-      ? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, { projectRoot: process.cwd(), homeDir: homedir() })
+      ? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, { projectRoot: process.cwd() })
       : undefined;
     const result = await discoverWorkflows({ config: discoveryConfig, packageWorkflowPaths: await loadPackageWorkflowPaths() });
     discoveryRef.current = result;

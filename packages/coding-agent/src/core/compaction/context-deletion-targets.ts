@@ -332,14 +332,28 @@ export function isRecentTarget(transcript: CompactableTranscript, target: Contex
 	return entry !== undefined && isRecentContextEntry(entry, transcript);
 }
 
+export function canDeleteStaleUserImageContentBlock(
+	transcript: CompactableTranscript,
+	target: ContextDeletionTarget,
+): boolean {
+	if (target.kind !== "content_block") return false;
+	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
+	if (!entry || entry.role !== "user") return false;
+	if (isRecentTarget(transcript, target)) return false;
+	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
+	if (!block || block.type !== "image") return false;
+	return entry.contentBlocks.length > 1;
+}
+
 export function canDeleteTarget(transcript: CompactableTranscript, target: ContextDeletionTarget): boolean {
 	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
 	if (!entry) return false;
 	if (isRecentTarget(transcript, target)) return false;
-	if (entry.protected) return false;
-	if (target.kind === "entry") return true;
+	if (target.kind === "entry") return !entry.protected;
 	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
 	if (!block) return false;
+	if (canDeleteStaleUserImageContentBlock(transcript, target)) return true;
+	if (entry.protected) return false;
 	return !block.protected;
 }
 
