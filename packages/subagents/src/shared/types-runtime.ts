@@ -93,7 +93,8 @@ export const SLASH_SUBAGENT_UPDATE_EVENT = "subagent:slash:update";
 export const SLASH_SUBAGENT_CANCEL_EVENT = "subagent:slash:cancel";
 export const POLL_INTERVAL_MS = 250;
 export const MAX_WIDGET_JOBS = 4;
-export const DEFAULT_SUBAGENT_MAX_DEPTH = 2;
+export const MAX_SUBAGENT_NESTING_DEPTH = 5;
+export const DEFAULT_SUBAGENT_MAX_DEPTH = MAX_SUBAGENT_NESTING_DEPTH;
 export const SUBAGENT_ACTIONS = ["list", "get", "create", "update", "delete", "status", "interrupt", "resume", "doctor"] as const;
 
 export const DEFAULT_FORK_PREAMBLE =

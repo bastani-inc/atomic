@@ -9,11 +9,11 @@ import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
 	createEditTool,
 	createFindTool,
-	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
+import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -89,13 +89,14 @@ describe("Coding Agent Tools", () => {
 		it("should treat flag-like patterns as search text", async () => {
 			const marker = join(testDir, "grep-injection-marker");
 			const payload = join(testDir, "payload.sh");
+			const payloadPattern = payload.replace(/\\/g, "/");
 			const testFile = join(testDir, "target.txt");
 			writeFileSync(payload, `#!/bin/sh\necho executed > ${marker}\ncat "$1"\n`);
 			chmodSync(payload, 0o755);
 			writeFileSync(testFile, "target\n");
 
 			const result = await grepTool.execute("test-call-grep-injection", {
-				pattern: `--pre=${payload}`,
+				pattern: `--pre=${payloadPattern}`,
 				path: testDir,
 			});
 

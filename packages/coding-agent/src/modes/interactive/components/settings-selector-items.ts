@@ -133,6 +133,13 @@ export function buildSettingsItems(config: SettingsConfig, callbacks: SettingsCa
 			values: HTTP_IDLE_TIMEOUT_CHOICES.map((choice) => choice.label),
 		},
 		{
+			id: "bash-interceptor",
+			label: "Bash Interceptor",
+			description: "Block shell commands that have dedicated tools",
+			currentValue: config.bashInterceptorEnabled ? "true" : "false",
+			values: ["true", "false"],
+		},
+		{
 			id: "hide-thinking",
 			label: "Hide thinking",
 			description: "Hide thinking blocks in assistant responses",

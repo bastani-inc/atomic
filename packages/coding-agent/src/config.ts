@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { normalizePath } from "./utils/paths.ts";
+import { getHomeDir, normalizePath } from "./utils/paths.ts";
 
 // =============================================================================
 // Package Detection
@@ -338,12 +337,12 @@ export function getAgentDir(): string {
 	if (envDir) {
 		return expandTildePath(envDir);
 	}
-	return join(homedir(), CONFIG_DIR_NAME, "agent");
+	return join(getHomeDir(), CONFIG_DIR_NAME, "agent");
 }
 
 /** Get the legacy pi agent config directory (e.g., ~/.pi/agent/) */
 export function getLegacyAgentDir(): string {
-	return join(homedir(), LEGACY_CONFIG_DIR_NAME, "agent");
+	return join(getHomeDir(), LEGACY_CONFIG_DIR_NAME, "agent");
 }
 
 /** Get agent config directories in precedence order (primary first, then legacy). */
@@ -358,7 +357,7 @@ export function getAgentDirs(): string[] {
 
 /** Get user config root directories in precedence order (primary first, then legacy). */
 export function getUserConfigDirs(): string[] {
-	return CONFIG_DIR_NAMES.map((name) => join(homedir(), name));
+	return CONFIG_DIR_NAMES.map((name) => join(getHomeDir(), name));
 }
 
 /** Get project config directories in precedence order (primary first, then legacy). */

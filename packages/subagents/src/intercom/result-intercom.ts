@@ -10,6 +10,7 @@ import {
 	type SubagentResultIntercomPayload,
 	type SubagentResultStatus,
 	type SubagentRunMode,
+	MAX_SUBAGENT_NESTING_DEPTH,
 	SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT,
 	SUBAGENT_RESULT_INTERCOM_EVENT,
 } from "../shared/types.ts";
@@ -69,7 +70,7 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 		...(run.parentStepIndex !== undefined ? { parentStepIndex: run.parentStepIndex } : {}),
 		...(run.parentAgent ? { parentAgent: run.parentAgent } : {}),
 		depth: run.depth,
-		path: run.path.slice(0, 4).map((part) => ({
+		path: run.path.slice(0, MAX_SUBAGENT_NESTING_DEPTH + 1).map((part) => ({
 			runId: part.runId,
 			...(part.stepIndex !== undefined ? { stepIndex: part.stepIndex } : {}),
 			...(part.agent ? { agent: part.agent } : {}),
@@ -114,9 +115,9 @@ function compactNestedRun(run: NestedRunSummary | PublicNestedRunSummary, depth 
 			...(step.startedAt !== undefined ? { startedAt: step.startedAt } : {}),
 			...(step.endedAt !== undefined ? { endedAt: step.endedAt } : {}),
 			...(step.error ? { error: step.error } : {}),
-			...(depth < 2 && step.children?.length ? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
+			...(depth < MAX_SUBAGENT_NESTING_DEPTH && step.children?.length ? { children: step.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
 		})) } : {}),
-		...(depth < 2 && run.children?.length ? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
+		...(depth < MAX_SUBAGENT_NESTING_DEPTH && run.children?.length ? { children: run.children.slice(0, 8).map((child) => compactNestedRun(child, depth + 1)) } : {}),
 	};
 }
 

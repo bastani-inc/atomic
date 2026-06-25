@@ -4,7 +4,7 @@
 
 import type { ExtensionContext } from "@bastani/atomic";
 import { APP_NAME, getEnvValue, WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
-import { DEFAULT_SUBAGENT_MAX_DEPTH } from "./types-runtime.ts";
+import { DEFAULT_SUBAGENT_MAX_DEPTH, MAX_SUBAGENT_NESTING_DEPTH } from "./types-runtime.ts";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
 const SUBAGENT_MAX_DEPTH_ENV = `${ENV_PREFIX}_SUBAGENT_MAX_DEPTH`;
@@ -16,7 +16,7 @@ export { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV };
 export function normalizeMaxSubagentDepth(value: unknown): number | undefined {
 	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
 	if (!Number.isInteger(parsed) || parsed < 0) return undefined;
-	return parsed;
+	return Math.min(parsed, MAX_SUBAGENT_NESTING_DEPTH);
 }
 
 export function resolveCurrentMaxSubagentDepth(configMaxDepth?: number): number {
@@ -45,9 +45,9 @@ export function resolveWorkflowStageMaxSubagentDepth(
 ): number {
 	const maxDepth = resolveCurrentMaxSubagentDepth(configMaxDepth);
 	return isWorkflowStageOrchestrationContext(ctx)
-		// Workflow stages use the same two-hop default as main chat. A 0-depth
-		// constraint still preserves one child-subagent hop so configured workflow
-		// stages can delegate at least once.
+		// Workflow stages receive an explicit host constraint, clamped by the
+		// inherited/global nesting ceiling. A 0-depth workflow constraint still
+		// preserves one child-subagent hop so configured stages can delegate once.
 		? Math.min(maxDepth, Math.max(1, ctx.orchestrationContext?.constraints.maxSubagentDepth ?? 1))
 		: maxDepth;
 }

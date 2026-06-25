@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
 import * as _bundledPiAi from "@earendil-works/pi-ai";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
@@ -72,6 +72,13 @@ function isCurrentCacheToken(cacheToken: ExtensionCacheToken | undefined): cache
   );
 }
 
+function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCacheToken | undefined): string {
+  const url = pathToFileURL(extensionPath);
+  const cacheKey = cacheToken ? `${cacheToken.generation}:${cacheToken.cwd}` : `${Date.now()}:${Math.random()}`;
+  url.searchParams.set("atomicExtensionCache", cacheKey);
+  return url.href;
+}
+
 /**
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
@@ -132,12 +139,13 @@ export async function loadExtensionModule(
     if (cachedFactory) return cachedFactory;
   }
 
+  const forceTransformedImports = isBunBinary || process.platform === "win32";
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
-    ...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+    ...(forceTransformedImports ? { fsCache: false, tryNative: false } : {}),
+    ...(isBunBinary ? { virtualModules: VIRTUAL_MODULES } : { alias: getAliases() }),
   });
-
-  const module = await jiti.import(extensionPath, { default: true });
+  const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
   const factory = module as ExtensionFactory;
   if (typeof factory !== "function") return undefined;
   if (isCurrentCacheToken(cacheToken)) {

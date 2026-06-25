@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the default and hard maximum subagent nesting budget to five delegated levels, clamping environment, config, and frontmatter values above `5` and extending nested-run observability to the same depth.
+
+### Fixed
+
+- Filtered direct MCP child-agent allowlists against the builtin `search` tool name so unprefixed MCP tools named `search` do not collide with Atomic's builtin search tool ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
+- Updated bundled subagent definitions and docs to use the builtin `search`/`find` tools instead of the legacy `grep` helper ([#1490](https://github.com/bastani-inc/atomic/pull/1490)).
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

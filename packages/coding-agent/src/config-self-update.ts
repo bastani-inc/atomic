@@ -1,7 +1,7 @@
 import { accessSync, constants, existsSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { basename, dirname, join, resolve, sep, win32 } from "path";
-import { spawnProcessSync } from "./utils/child-process.ts";
+import { shouldUseWindowsShell, spawnProcessSync } from "./utils/child-process.ts";
 
 export interface SelfUpdateRuntime {
 	isBunBinary: boolean;
@@ -60,9 +60,6 @@ export function detectInstallMethodForRuntime(runtime: SelfUpdateRuntime): Insta
 	}
 	if (resolvedPath.includes("/npm/") || resolvedPath.includes("/node_modules/")) {
 		return "npm";
-	}
-	if (runtime.isBunRuntime) {
-		return "bun";
 	}
 
 	return "unknown";
@@ -169,6 +166,8 @@ function readCommandOutput(
 	const result = spawnProcessSync(command, args, {
 		encoding: "utf-8",
 		stdio: ["ignore", "pipe", "pipe"],
+		env: process.env,
+		shell: shouldUseWindowsShell(command),
 	});
 	if (result.status === 0) return result.stdout.trim() || undefined;
 	if (options.requireSuccess) {

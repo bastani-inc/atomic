@@ -5,7 +5,12 @@ import {
   compactNestedResultChildren,
   resolveSubagentResultStatus,
 } from "../../packages/subagents/src/intercom/result-intercom.js";
-import type { NestedRunSummary, SubagentResultIntercomChild } from "../../packages/subagents/src/shared/types.js";
+import {
+  MAX_SUBAGENT_NESTING_DEPTH,
+  type NestedRunSummary,
+  type PublicNestedRunSummary,
+  type SubagentResultIntercomChild,
+} from "../../packages/subagents/src/shared/types.js";
 
 function nested(id: string, parentRunId = "root", parentStepIndex?: number, children: NestedRunSummary[] = []): NestedRunSummary {
   return {
@@ -18,6 +23,15 @@ function nested(id: string, parentRunId = "root", parentStepIndex?: number, chil
     agent: id,
     children,
   };
+}
+
+function nestedChain(level: number, maxLevel: number): NestedRunSummary {
+  return nested(
+    `level${level}`,
+    level === 0 ? "root" : `level${level - 1}`,
+    undefined,
+    level < maxLevel ? [nestedChain(level + 1, maxLevel)] : [],
+  );
 }
 
 describe("subagent result intercom helpers", () => {
@@ -42,16 +56,16 @@ describe("subagent result intercom helpers", () => {
     assert.deepEqual(attached.map((child) => child.children?.map((run) => run.id)), [["nested-a"], ["nested-b"]]);
   });
 
-  test("compacts nested result trees to bounded breadth and depth", () => {
-    const deep = nested("level0", "root", undefined, [
-      nested("level1", "level0", undefined, [
-        nested("level2", "level1", undefined, [nested("level3", "level2")]),
-      ]),
-    ]);
+  test("compacts nested result trees to bounded breadth and five-level depth", () => {
+    const deep = nestedChain(0, MAX_SUBAGENT_NESTING_DEPTH + 1);
     const compact = compactNestedResultChildren(Array.from({ length: 20 }, (_, index) => ({ ...deep, id: `run${index}` })));
 
     assert.equal(compact?.length, 16);
-    assert.equal(compact?.[0]?.children?.[0]?.children?.[0]?.id, "level2");
-    assert.equal(compact?.[0]?.children?.[0]?.children?.[0]?.children, undefined);
+    let cursor: PublicNestedRunSummary | undefined = compact?.[0];
+    for (let level = 1; level <= MAX_SUBAGENT_NESTING_DEPTH; level++) {
+      cursor = cursor?.children?.[0];
+      assert.equal(cursor?.id, `level${level}`);
+    }
+    assert.equal(cursor?.children, undefined);
   });
 });

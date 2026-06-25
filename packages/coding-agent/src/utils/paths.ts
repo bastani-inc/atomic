@@ -11,12 +11,22 @@ export interface PathInputOptions {
 	trim?: boolean;
 	/** Expand leading `~` to a home directory. Defaults to true. */
 	expandTilde?: boolean;
-	/** Home directory used for `~` expansion. Defaults to `os.homedir()`. */
+	/** Home directory used for `~` expansion. Defaults to the live home environment or `os.homedir()`. */
 	homeDir?: string;
 	/** Strip a leading `@`, used for CLI @file paths. */
 	stripAtPrefix?: boolean;
 	/** Normalize unicode space variants to regular spaces. */
 	normalizeUnicodeSpaces?: boolean;
+}
+
+export function getHomeDir(): string {
+	if (process.platform === "win32") {
+		if (process.env.USERPROFILE) return process.env.USERPROFILE;
+		if (process.env.HOMEDRIVE && process.env.HOMEPATH) return `${process.env.HOMEDRIVE}${process.env.HOMEPATH}`;
+		if (process.env.HOME) return process.env.HOME;
+		return homedir();
+	}
+	return process.env.HOME || process.env.USERPROFILE || homedir();
 }
 
 /**
@@ -64,7 +74,7 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 	}
 
 	if (options.expandTilde ?? true) {
-		const home = options.homeDir ?? homedir();
+		const home = options.homeDir ?? getHomeDir();
 		if (normalized === "~") return home;
 		if (normalized.startsWith("~/") || (process.platform === "win32" && normalized.startsWith("~\\"))) {
 			return join(home, normalized.slice(2));
@@ -72,6 +82,7 @@ export function normalizePath(input: string, options: PathInputOptions = {}): st
 	}
 
 	if (/^file:\/\//.test(normalized)) {
+		decodeURI(normalized);
 		return fileURLToPath(normalized);
 	}
 

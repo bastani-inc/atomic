@@ -95,7 +95,7 @@ Atomic ships with four workflows you can run immediately. Use `/workflow list` t
 | `deep-research-codebase` | Broad, cross-cutting research before you decide what to change. Scout → research-history → parallel specialist waves → aggregator. | `/workflow deep-research-codebase prompt="How do payment retries work end to end?"` |
 | `goal` | Bounded one-off changes when you already know the work surface, exact outcome, and validation — for example tests, lint/typecheck, docs builds, or observable behavior. Keeps the run focused with a goal ledger, reviewer gates, final status `complete`, `blocked`, or `needs_human`, and optional final-stage PR creation with `create_pr=true` after approval. | `/workflow goal objective="Update the CLI docs for --json, include one example, run the docs build, and finish when the build passes"` |
 | `ralph` | Planned or broad implementation work from a spec file, GitHub issue, or crisp ticket description. Ralph researches as needed, delegates implementation through sub-agents, reviews, records a QA proof video for UI/full-stack changes when practical, iterates, and optionally lets only the final stage attempt PR creation with `create_pr=true`. | `/workflow ralph prompt="Implement specs/2026-03-rate-limit.md and validate burst traffic returns 429"` |
-| `open-claude-design` | UI and design-system work with a forked generate/user-feedback loop; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
+| `open-claude-design` | UI and design-system work with separate forked generate and feedback chains; renders a live `preview.html` you can iterate against. | `/workflow open-claude-design prompt="Refresh the settings page hierarchy as a page"` |
 
 <p align="center"><img src="images/workflow-list.png" alt="Workflow List" width="600" /></p>
 
@@ -186,10 +186,12 @@ By default, Atomic gives the model these tools:
 - `bash` - run shell commands
 - `edit` - patch files
 - `write` - create or overwrite files
+- `find` - discover files by glob pattern
+- `search` - search file contents
 - `ask_user_question` - ask structured questions in the TUI
 - `todo` - manage file-based todos
 
-Additional built-in read-only tools (`grep`, `find`, `ls`) are available through tool options. Atomic runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
+Normal coding sessions include file discovery and content search through `find` and `search` in addition to `read`, `bash`, `edit`, and `write`. Atomic runs in your current working directory and can modify files there. Use git or another checkpointing workflow if you want easy rollback.
 
 ## Give Atomic project instructions
 

@@ -370,7 +370,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.doesNotMatch(orchestratorPrompt, /<pr_policy>/);
         assert.match(
             orchestratorPrompt,
-            /Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes\./,
+            /Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes for the complete requested outcome\./,
         );
     });
 

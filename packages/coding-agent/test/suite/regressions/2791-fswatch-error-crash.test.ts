@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
@@ -12,9 +13,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
  * treats it as an uncaught exception and terminates the process.
  *
  * We test this by spawning a child process that:
- * 1. Sets up a custom theme with the watcher enabled
- * 2. Finds the FSWatcher via process._getActiveHandles()
- * 3. Emits a synthetic 'error' event on it
+ * 1. Wraps node:fs.watch to capture the watcher returned by the theme code
+ * 2. Sets up a custom theme with the watcher enabled
+ * 3. Emits a synthetic 'error' event on the captured watcher
  * 4. If the watcher has no error handler -> crash (exit != 0) -> bug present
  * 5. If the watcher has an error handler -> clean exit (exit 0) -> bug fixed
  */
@@ -39,8 +40,8 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 	});
 
 	it("process should survive an error event on the theme FSWatcher", () => {
-		const themeModulePath = join(__dirname, "../../../src/modes/interactive/theme/theme.js").replace(/\\/g, "/");
-		const agentDir = join(tempRoot, "agent").replace(/\\/g, "/");
+		const themeModuleUrl = pathToFileURL(join(__dirname, "../../../src/modes/interactive/theme/theme.ts")).href;
+		const agentDir = join(tempRoot, "agent");
 
 		// Script that sets up the watcher and emits a synthetic error on it.
 		// If no .on('error') handler is attached, EventEmitter.emit('error')
@@ -49,18 +50,27 @@ describe("issue #2791 fs.watch error event crashes process", () => {
 		writeFileSync(
 			scriptPath,
 			`
-import { setTheme, stopThemeWatcher } from "${themeModulePath}";
+import { mock } from "bun:test";
+import * as realFs from "node:fs";
 
-process.env.ATOMIC_CODING_AGENT_DIR = "${agentDir}";
+const realWatch = realFs.watch;
+let fsWatcher;
 
+mock.module("node:fs", () => ({
+	...realFs,
+	watch: (...args) => {
+		fsWatcher = realWatch(...args);
+		return fsWatcher;
+	},
+}));
+
+process.env.ATOMIC_CODING_AGENT_DIR = ${JSON.stringify(agentDir)};
+
+const { setTheme, stopThemeWatcher } = await import(${JSON.stringify(themeModuleUrl)});
 setTheme("custom-test", true);
 
-// Find the FSWatcher among active handles
-const handles = (process as any)._getActiveHandles();
-const fsWatcher = handles.find((h: any) => h.constructor?.name === "FSWatcher");
-
 if (!fsWatcher) {
-	process.stderr.write("no FSWatcher found among active handles\\n");
+	process.stderr.write("theme fs.watch was not called\\n");
 	process.exit(2);
 }
 
@@ -87,7 +97,7 @@ process.exit(0);
 		let stderr = "";
 		let exitCode: number;
 		try {
-			_stdout = execFileSync("npx", ["tsx", scriptPath], {
+			_stdout = execFileSync("bun", [scriptPath], {
 				timeout: 10000,
 				encoding: "utf-8",
 				env: { ...process.env, ATOMIC_CODING_AGENT_DIR: agentDir },

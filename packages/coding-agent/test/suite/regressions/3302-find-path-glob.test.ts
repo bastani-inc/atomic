@@ -36,15 +36,18 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 		const def = createFindToolDefinition(tempRoot);
 		// The find tool implementation does not touch ctx; pass a minimal stub.
 		const ctx = {} as Parameters<typeof def.execute>[4];
-		const result = (await def.execute("call-1", { pattern }, undefined, undefined, ctx)) as {
+		const result = (await def.execute("call-1", { paths: [pattern] }, undefined, undefined, ctx)) as {
 			content: Array<{ type: string; text?: string }>;
 		};
 		const text = result.content[0]?.text ?? "";
 		if (text === "No files found matching pattern") return [];
-		return text
-			.split("\n")
-			.map((l) => l.trim())
-			.filter((l) => l.length > 0 && !l.startsWith("["));
+		const stack: string[] = [];
+		return text.split("\n").map((l) => l.trim()).filter(Boolean).flatMap((line) => {
+			const header = line.match(/^(#+)\s+(.+\/)$/);
+			if (header) { stack.length = header[1]!.length - 1; stack[header[1]!.length - 1] = header[2]!; return []; }
+			if (line.startsWith("[")) return [];
+			return `${stack.join("")}${line}`;
+		});
 	}
 
 	it("basename pattern still matches (regression-safe)", async () => {
@@ -55,8 +58,8 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 	it("directory-prefixed pattern with ** tail matches subtree", async () => {
 		const files = await runFind("some/parent/child/**");
 		// Matches files (and possibly directories) under the subtree. Assert the two files are present.
-		expect(files).toContain("some/parent/child/file.ext");
-		expect(files).toContain("some/parent/child/test.spec.ts");
+		expect(files).toContain("file.ext");
+		expect(files).toContain("test.spec.ts");
 	});
 
 	it("leading ** wildcard with path segments matches", async () => {
@@ -67,6 +70,6 @@ describe("issue #3302 find returns no results for path-based glob patterns", () 
 
 	it("src/**/*.spec.ts matches nested spec file", async () => {
 		const files = await runFind("src/**/*.spec.ts");
-		expect(files).toEqual(["src/foo/bar/example.spec.ts"]);
+		expect(files).toEqual(["foo/bar/example.spec.ts"]);
 	});
 });

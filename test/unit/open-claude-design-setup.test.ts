@@ -146,7 +146,7 @@ describe("open-claude-design setup", () => {
             assert.ok(prompt.includes("/tmp/run/preview.html"));
         });
 
-        test("per-iteration prompt labels the iteration", () => {
+        test("per-iteration prompt does not leak the iteration counter", () => {
             const prompt = buildLivePreviewDisplayPrompt({
                 previewPath: "/tmp/run/preview.html",
                 previewFileUrl: "file:///tmp/run/preview.html",
@@ -154,7 +154,8 @@ describe("open-claude-design setup", () => {
                 iteration: 2,
                 maxRefinements: 3,
             });
-            assert.match(prompt, /iteration 2\/3/);
+            assert.match(prompt, /the revised preview/);
+            assert.doesNotMatch(prompt, /iteration \d+\/\d+/);
         });
 
         test("final-mode prompt is read-only: it does not solicit actionable feedback", () => {

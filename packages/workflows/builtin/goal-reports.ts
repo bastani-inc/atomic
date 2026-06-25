@@ -4,7 +4,7 @@ export function formatReviewReport(reviews: readonly ReviewRecord[]): string {
   if (reviews.length === 0) return "No reviewer decisions were recorded.";
   return reviews
     .map((review) => [
-      `### ${review.reviewer} (turn ${review.turn})`,
+      `### ${review.reviewer}`,
       "",
       `Decision: ${review.decision}`,
       `Artifact: ${review.artifact_path}`,
@@ -21,7 +21,7 @@ export function renderFinalReport(
   const receiptLines = ledger.receipts.length > 0
     ? ledger.receipts.map(
         (receipt) =>
-          `- Turn ${receipt.turn}: ${receipt.summary} (artifact: ${receipt.artifact_path})`,
+          `- ${receipt.summary} (artifact: ${receipt.artifact_path})`,
       )
     : ["- No receipts captured."];
 
@@ -37,9 +37,6 @@ export function renderFinalReport(
     "",
     "## Final status",
     ledger.status,
-    "",
-    "## Turns completed",
-    String(ledger.turns),
     "",
     "## Ledger artifact",
     ledgerPath,

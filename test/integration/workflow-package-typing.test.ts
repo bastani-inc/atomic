@@ -48,7 +48,7 @@ describe("standalone workflow package typing", () => {
               allowImportingTsExtensions: true,
               allowArbitraryExtensions: true,
               ignoreDeprecations: "6.0",
-              baseUrl: ".",
+              baseUrl: ".", typeRoots: [join(repoRoot, "node_modules", "@types")],
               paths: {
                 "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
                 "@earendil-works/pi-tui": [join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts")],

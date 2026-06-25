@@ -145,6 +145,6 @@ describe("goal create_pr", () => {
         const prReads = readPaths(ctx.calls.taskOptions["pull-request"]?.[0]);
         assert.ok(prReads.includes(result["ledger_path"] as string));
         assert.ok(prReads.includes(result["review_report_path"] as string));
-        assert.ok(prReads.some((path) => path.endsWith("work-turn-1.md")));
+        assert.ok(prReads.some((path) => path.endsWith("worker-receipt.md")));
     });
 });

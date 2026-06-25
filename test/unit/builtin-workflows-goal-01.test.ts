@@ -204,9 +204,9 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
         assert.match(
             prompt,
-            /No prior review artifacts; this is the first worker turn\./,
+            /No prior review artifacts are available\./,
         );
-        assert.match(prompt, /This goal persists across turns/);
+        assert.match(prompt, /This goal persists across workflow continuations/);
         assert.match(
             prompt,
             /Use the current worktree and external state as authoritative/,
@@ -217,7 +217,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.match(prompt, /skill: "tmux"/);
         assert.match(
             prompt,
-            /Blocked threshold: same blocker must repeat for at least 3 consecutive turns/,
+            /Blocked threshold: same blocker must repeat for at least 3 controller observations/,
         );
     });
 
@@ -355,7 +355,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(ledger.objective, "Refactor tests");
         assert.equal(Object.hasOwn(ledger, "objective_revision"), false);
         assert.equal(ledger.status, "complete");
-        assert.equal(ledger.turns, 1);
+        assert.equal(Object.hasOwn(ledger, "turns"), false);
         assert.equal(typeof ledger.created_at, "string");
         assert.equal(typeof ledger.updated_at, "string");
         assert.equal(ledger.receipts.length, 1);
@@ -363,7 +363,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         for (const review of ledger.reviews) {
             assert.match(
                 normalizePathSeparators(review.artifact_path),
-                /review-turn-1-[^/]+\.json$/,
+                /review-[a-z-]+-reviewer\.json$/,
             );
             assert.equal(existsSync(review.artifact_path), true);
         }
@@ -386,7 +386,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
         assert.match(
             normalizePathSeparators(ledger.receipts[0]!.artifact_path),
-            /work-turn-1\.md$/,
+            /worker-receipt\.md$/,
         );
         assert.equal(existsSync(ledger.receipts[0]!.artifact_path), true);
     });
@@ -486,7 +486,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             reviews: readonly { reviewer: string; gaps: readonly string[] }[];
         };
         const completionReview = ledger.reviews.find(
-            (review) => review.reviewer === "completion-reviewer-1",
+            (review) => review.reviewer === "completion-reviewer",
         );
         assert.deepEqual(completionReview?.gaps, []);
     });

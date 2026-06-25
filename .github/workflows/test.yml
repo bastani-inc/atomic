@@ -25,6 +25,8 @@ jobs:
         runs-on: ${{ matrix.os }}
         steps:
             - uses: useblacksmith/checkout@v1
+              with:
+                  lfs: true
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
@@ -51,6 +53,11 @@ jobs:
               run: bun run test:unit
             - name: Integration tests
               run: bun run test:integration
+            - name: Build native bindings for package tests
+              run: bun run --cwd packages/natives build
+            - name: coding-agent vitest suite
+              working-directory: packages/coding-agent
+              run: bun run --bun test
             - name: Build native release binary
               shell: bash
               run: ./scripts/build-binaries.sh --platform "${{ matrix.binary_platform }}"

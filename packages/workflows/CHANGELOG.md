@@ -8,7 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Revised the builtin `goal` worker/continuation prompts and the builtin `ralph` orchestrator prompts to emphasize implementing the requested task through full completion ("do not stop until the objective is complete") instead of preparing a partial implementation for incremental review.
+- Removed model-visible current-iteration/turn/loop information from the builtin `goal`, `ralph`, and `open-claude-design` workflows so models are not biased by which iteration they are on. This drops the worker `Turn: N/M` banner, `Implement iteration N/M` / `Research iteration N/M` framing, "first iteration/worker turn" phrasing, and the live-preview `iteration N/M` label; switches model-relayed artifacts to stable non-ordinal names (`worker-receipt.md`, `review-<reviewer>.json`, `review-round-latest.json`, `orchestrator-report.md`); and strips turn fields from the model-facing goal ledger artifact. Internal UI stage names (e.g. `work-turn-2`, `orchestrator-2`) are unchanged, and the `max_turns`/`max_loops` inputs and `turns_completed`/`iterations_completed` outputs are retained.
+- Raised workflow-stage subagent recursion to the shared five-level nesting budget so workflow stages match main-chat delegation depth.
 - Updated the dispatch confirmation for builtin `goal` and `ralph` runs to show first-time-friendly `/workflow status <id>` and `/workflow connect <id>` next steps, describe connect as the place to watch, attach, and steer, and remind users they can ask the current chat for status or steering.
+
+### Fixed
+
+- Fixed the builtin `open-claude-design` continuation loop so generator stages fork only from prior generator sessions and user-feedback stages fork only from prior feedback sessions; the first feedback stage now starts its own chain instead of inheriting generator context.
+- Fixed workflow config loading and user-global discovery to honor `ATOMIC_CODING_AGENT_DIR` isolation instead of reading `~/.atomic/agent` when an isolated agent dir is configured.
 
 ## [0.9.2] - 2026-06-23
 
@@ -25,10 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
 - Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
 - Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
-
-### Fixed
-
-- Fixed workflow config loading and user-global discovery to honor `ATOMIC_CODING_AGENT_DIR` isolation instead of reading `~/.atomic/agent` when an isolated agent dir is configured.
 
 ## [0.9.1] - 2026-06-23
 

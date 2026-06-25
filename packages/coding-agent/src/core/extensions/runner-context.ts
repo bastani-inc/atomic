@@ -1,7 +1,9 @@
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { SessionManager } from "../session-manager.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { createArtifactRouter, registerArtifactDir } from "../tools/artifact-protocol.ts";
 import type {
 	CompactOptions,
 	ContextUsage,
@@ -83,6 +85,14 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 		get model() {
 			source.assertActive();
 			return source.getModel();
+		},
+		get internalResourceRouter() {
+			source.assertActive();
+			const sessionDir = source.getSessionManager().getSessionDir();
+			if (!sessionDir) return undefined;
+			const artifactsDir = join(sessionDir, "artifacts");
+			registerArtifactDir(artifactsDir);
+			return createArtifactRouter(() => [artifactsDir]);
 		},
 		get orchestrationContext() {
 			source.assertActive();

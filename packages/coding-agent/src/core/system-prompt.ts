@@ -10,6 +10,8 @@ const DEFAULT_PROMPT_TOOLS = [
   "bash",
   "edit",
   "write",
+  "find",
+  "search",
   "ask_user_question",
   "todo",
 ] as const;
@@ -26,7 +28,7 @@ export interface SystemPromptModel {
 export interface BuildSystemPromptOptions {
   /** Custom system prompt (replaces default). */
   customPrompt?: string;
-  /** Tools to include in prompt. Default: [read, bash, edit, write, ask_user_question, todo] */
+  /** Tools to include in prompt. Default: [read, bash, edit, write, find, search, ask_user_question, todo] */
   selectedTools?: string[];
   /** Tool names explicitly excluded by the caller and omitted from generated guidance. */
   excludedTools?: string[];
@@ -144,7 +146,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
   };
 
   const hasBash = tools.includes("bash");
-  const hasGrep = tools.includes("grep");
   const hasFind = tools.includes("find");
   const hasLs = tools.includes("ls");
   const hasRead = tools.includes("read");
@@ -155,7 +156,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
     !explicitlyExcludedTools.has("ask_user_question");
 
   // File exploration guidelines
-  if (hasBash && !hasGrep && !hasFind && !hasLs) {
+  if (hasBash && !hasFind && !hasLs) {
     addGuideline("Use bash for file operations like ls, rg, find");
   }
   if (shouldIncludeAskUserFallbackGuidance) {

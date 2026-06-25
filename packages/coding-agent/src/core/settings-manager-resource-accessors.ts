@@ -13,6 +13,10 @@ interface SettingsManagerResourceAccessors {
 	setQuietStartup(quiet: boolean): void;
 	getShellCommandPrefix(): string | undefined;
 	setShellCommandPrefix(prefix: string | undefined): void;
+	getBashInterceptorEnabled(): boolean;
+	setBashInterceptorEnabled(enabled: boolean): void;
+	getSearchContextBefore(): number;
+	getSearchContextAfter(): number;
 	getNpmCommand(): string[] | undefined;
 	setNpmCommand(command: string[] | undefined): void;
 	getCollapseChangelog(): boolean;
@@ -98,6 +102,25 @@ const resourceAccessors: SettingsManagerResourceAccessors = {
 		state.globalSettings.shellCommandPrefix = prefix;
 		state.markModified("shellCommandPrefix");
 		state.save();
+	},
+
+	getBashInterceptorEnabled() {
+		return settingsInternals(this).settings.bashInterceptor?.enabled ?? false;
+	},
+
+	setBashInterceptorEnabled(enabled) {
+		const state = settingsInternals(this);
+		state.globalSettings.bashInterceptor = { ...(state.globalSettings.bashInterceptor ?? {}), enabled };
+		state.markModified("bashInterceptor");
+		state.save();
+	},
+
+	getSearchContextBefore() {
+		return settingsInternals(this).settings.search?.contextBefore ?? 1;
+	},
+
+	getSearchContextAfter() {
+		return settingsInternals(this).settings.search?.contextAfter ?? 3;
 	},
 
 	getNpmCommand() {

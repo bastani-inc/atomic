@@ -9,11 +9,11 @@ import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
 	createEditTool,
 	createFindTool,
-	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
+import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -61,10 +61,10 @@ describe("Coding Agent Tools", () => {
 
 			const result = await readTool.execute("test-call-1", { path: testFile });
 
-			expect(getTextOutput(result)).toBe(content);
+			expect(getTextOutput(result)).toMatch(/\[.*test\.txt#[0-9A-F]{4}\]\n1:Hello, world!\n2:Line 2\n3:Line 3/);
 			// No truncation message since file fits within limits
-			expect(getTextOutput(result)).not.toContain("Use offset=");
-			expect(result.details).toBeUndefined();
+			expect(getTextOutput(result)).not.toContain("Continue with path selector");
+		expect(result.details?.meta?.source).toBe(testFile);
 		});
 		it("should handle non-existent files", async () => {
 			const testFile = join(testDir, "nonexistent.txt");
@@ -73,16 +73,16 @@ describe("Coding Agent Tools", () => {
 		});
 		it("should truncate files exceeding line limit", async () => {
 			const testFile = join(testDir, "large.txt");
-			const lines = Array.from({ length: 2500 }, (_, i) => `Line ${i + 1}`);
+			const lines = Array.from({ length: 3500 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-3", { path: testFile });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 1");
-			expect(output).toContain("Line 2000");
-			expect(output).not.toContain("Line 2001");
-			expect(output).toContain("[Showing lines 1-2000 of 2500. Use offset=2001 to continue.]");
+			expect(output).toContain("Line 3000");
+			expect(output).not.toContain("Line 3001");
+			expect(output).toContain("[Showing lines 1-3000 of 3500. Continue with path selector :3001.]");
 		});
 		it("should truncate when byte limit exceeded", async () => {
 			const testFile = join(testDir, "large-bytes.txt");
@@ -99,7 +99,7 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain("Line 1:");
 			expect(output).not.toContain("File read blocked");
 			// Should show byte limit message
-			expect(output).toMatch(/\[Showing lines 1-\d+ of 300 \(.* limit\)\. Use offset=\d+ to continue\.\]/);
+			expect(output).toMatch(/\[Showing lines 1-\d+ of 300 \(.* limit\)\. Continue with path selector :\d+\.\]/);
 		});
 		it("should allow text reads at the oversized-read char threshold", async () => {
 			const testFile = join(testDir, "threshold-allowed.txt");
@@ -112,8 +112,9 @@ describe("Coding Agent Tools", () => {
 
 			expect(output).not.toContain("File read blocked");
 			expect(result.details?.oversizedRead).toBeUndefined();
-			expect(result.details).toBeUndefined();
-			expect(output).toBe(content);
+		expect(result.details?.meta?.source).toBe(testFile);
+			expect(output).toMatch(/^\[.*threshold-allowed\.txt#[0-9A-F]{4}\]\n1:/);
+			expect(output).toContain(content);
 		});
 		it("should block text reads above the oversized-read char threshold without leaking content", async () => {
 			const testFile = join(testDir, "too-large.txt");
@@ -130,9 +131,8 @@ describe("Coding Agent Tools", () => {
 			expect(output).toContain(testFile);
 			expect(output).toContain(`${content.length.toLocaleString("en-US")} chars`);
 			expect(output).toContain("threshold: 50,000 chars");
-			expect(output).toContain("grep({");
-			expect(output).toContain("\"offset\": 1");
-			expect(output).toContain("\"limit\": 200");
+			expect(output).toContain("search({");
+			expect(output).toContain(":1+200");
 			expect(output).toContain("targeted snippet");
 			expect(output).not.toContain(sentinel);
 			expect(output).not.toContain(fillerPrefix);
@@ -148,9 +148,7 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-range-allowed", {
-				path: testFile,
-				offset: 100,
-				limit: 3,
+				path: `${testFile}:100+3`,
 			});
 			const output = getTextOutput(result);
 
@@ -158,26 +156,26 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.oversizedRead).toBeUndefined();
 			expect(output).toContain("Line 100:");
 			expect(output).toContain("Line 102:");
-			expect(output).not.toContain("Line 103:");
-			expect(output).toContain("[898 more lines in file. Use offset=103 to continue.]");
+			expect(output).not.toContain("Line 106:");
+			expect(output).toContain("[895 more lines in file. Continue with path selector :106.]");
 		});
 		it("should show byte-slice guidance for oversized single-line reads", async () => {
 			const testFile = join(testDir, "single-line-large.txt");
 			const content = "x".repeat(50_001);
 			writeFileSync(testFile, content);
 
-			const result = await readTool.execute("test-call-single-line-blocked", { path: testFile, limit: 1 });
+			const result = await readTool.execute("test-call-single-line-blocked", { path: `${testFile}:1+1` });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("File read blocked");
-			expect(output).toContain("Requested line limit: 1");
+
 			expect(output).toContain("line pagination is not useful");
 			expect(output).toContain(`sed -n '1p' ${shellQuoteForTest(testFile)} | head -c 51200`);
 			expect(output).toContain("tail -c +51201");
 			expect(output).not.toContain('"offset": 120');
 			expect(output).not.toContain("Read a targeted snippet");
 			expect(result.details?.oversizedRead?.byteGuidance).toBe(true);
-			expect(result.details?.oversizedRead?.requestedLimit).toBe(1);
+			expect(result.details?.oversizedRead?.requestedLimit).toBeUndefined();
 		});
 		it("should treat oversized single-line reads with a trailing newline as byte-slice cases", async () => {
 			const testFile = join(testDir, "single-line-large-trailing-newline.txt");
@@ -239,62 +237,84 @@ describe("Coding Agent Tools", () => {
 			expect(rendered).toContain("<toolOutput>File read blocked");
 			expect(rendered).toContain("</toolOutput>");
 		});
-		it("should handle offset parameter", async () => {
+		it("should handle line selectors embedded in path", async () => {
+			const testFile = join(testDir, "selector.txt");
+			writeFileSync(testFile, "one\ntwo\nthree\nfour");
+			const raw = getTextOutput(await readTool.execute("test-call-selector-raw", { path: `${testFile}:raw` }));
+			expect(raw).toBe("one\ntwo\nthree\nfour");
+			const ranged = getTextOutput(await readTool.execute("test-call-selector", { path: `${testFile}:2-3` }));
+			expect(ranged).toContain("1:one");
+			expect(ranged).toContain("2:two");
+			expect(ranged).toContain("3:three");
+			expect(ranged).toContain("4:four");
+			const counted = getTextOutput(await readTool.execute("test-call-selector-plus", { path: `${testFile}:3+1` }));
+			expect(counted).toContain("3:three");
+			expect(counted).toContain("4:four");
+			const outOfRange = getTextOutput(await readTool.execute("test-call-selector-oob", { path: `${testFile}:5-5` }));
+			expect(outOfRange).toContain("Requested line 5 is beyond end of file");
+			const open = getTextOutput(await readTool.execute("test-call-selector-open", { path: `${testFile}:2` }));
+			expect(open).toContain("2:two");
+			expect(open).toContain("4:four");
+			const comma = getTextOutput(await readTool.execute("test-call-selector-comma", { path: `${testFile}:2-2,4-4` }));
+			expect(comma).toContain("1:one");
+			expect(comma).toContain("2:two");
+			expect(comma).toContain("3:three");
+			expect(comma).toContain("4:four");
+		});
+
+		it("should handle open-ended line selector", async () => {
 			const testFile = join(testDir, "offset-test.txt");
 			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
-			const result = await readTool.execute("test-call-5", { path: testFile, offset: 51 });
+			const result = await readTool.execute("test-call-5", { path: `${testFile}:51` });
 			const output = getTextOutput(result);
 
 			expect(output).not.toContain("Line 50");
 			expect(output).toContain("Line 51");
 			expect(output).toContain("Line 100");
 			// No truncation message since file fits within limits
-			expect(output).not.toContain("Use offset=");
+			expect(output).not.toContain("Continue with path selector");
 		});
-		it("should handle limit parameter", async () => {
+		it("should handle counted line selector", async () => {
 			const testFile = join(testDir, "limit-test.txt");
 			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
-			const result = await readTool.execute("test-call-6", { path: testFile, limit: 10 });
+			const result = await readTool.execute("test-call-6", { path: `${testFile}:1+10` });
 			const output = getTextOutput(result);
 
 			expect(output).toContain("Line 1");
 			expect(output).toContain("Line 10");
-			expect(output).not.toContain("Line 11");
-			expect(output).toContain("[90 more lines in file. Use offset=11 to continue.]");
+			expect(output).toContain("Line 13");
+			expect(output).toContain("[87 more lines in file. Continue with path selector :14.]");
 		});
-		it("should handle offset + limit together", async () => {
+		it("should handle counted line selector away from file start", async () => {
 			const testFile = join(testDir, "offset-limit-test.txt");
 			const lines = Array.from({ length: 100 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-7", {
-				path: testFile,
-				offset: 41,
-				limit: 20,
+				path: `${testFile}:41+20`,
 			});
 			const output = getTextOutput(result);
 
-			expect(output).not.toContain("Line 40");
+			expect(output).toContain("Line 40");
 			expect(output).toContain("Line 41");
 			expect(output).toContain("Line 60");
-			expect(output).not.toContain("Line 61");
-			expect(output).toContain("[40 more lines in file. Use offset=61 to continue.]");
+			expect(output).toContain("Line 63");
+			expect(output).toContain("[37 more lines in file. Continue with path selector :64.]");
 		});
-		it("should show error when offset is beyond file length", async () => {
+		it("should show EOF guidance when offset is beyond file length", async () => {
 			const testFile = join(testDir, "short.txt");
 			writeFileSync(testFile, "Line 1\nLine 2\nLine 3");
 
-			await expect(readTool.execute("test-call-8", { path: testFile, offset: 100 })).rejects.toThrow(
-				/Offset 100 is beyond end of file \(3 lines total\)/,
-			);
+			const result = await readTool.execute("test-call-8", { path: `${testFile}:100` });
+			expect(getTextOutput(result)).toContain("beyond end of file");
 		});
 		it("should include truncation details when truncated", async () => {
 			const testFile = join(testDir, "large-file.txt");
-			const lines = Array.from({ length: 2500 }, (_, i) => `Line ${i + 1}`);
+			const lines = Array.from({ length: 3500 }, (_, i) => `Line ${i + 1}`);
 			writeFileSync(testFile, lines.join("\n"));
 
 			const result = await readTool.execute("test-call-9", { path: testFile });
@@ -303,8 +323,8 @@ describe("Coding Agent Tools", () => {
 			expect(result.details?.truncation).toBeDefined();
 			expect(result.details?.truncation?.truncated).toBe(true);
 			expect(result.details?.truncation?.truncatedBy).toBe("lines");
-			expect(result.details?.truncation?.totalLines).toBe(2500);
-			expect(result.details?.truncation?.outputLines).toBe(2000);
+			expect(result.details?.truncation?.totalLines).toBe(3500);
+			expect(result.details?.truncation?.outputLines).toBe(3000);
 		});
 		it("should detect image MIME type from file magic (not extension)", async () => {
 			const png1x1Base64 =

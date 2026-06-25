@@ -38,6 +38,7 @@ export interface ImageSettings {
 	blockImages?: boolean; // default: false - when true, prevents all images from being sent to LLM providers
 }
 
+export interface SearchSettings { contextBefore?: number; contextAfter?: number }
 export interface ThinkingBudgetsSettings {
 	minimal?: number;
 	low?: number;
@@ -81,6 +82,10 @@ export type PackageSource =
 			workflows?: string[];
 	  };
 
+export interface BashInterceptorSettings {
+	enabled?: boolean; // default: false
+}
+
 export interface Settings {
 	lastChangelogVersion?: string;
 	firstRunOnboardingStartedVersion?: string;
@@ -102,6 +107,8 @@ export interface Settings {
 	quietStartup?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
+	bashInterceptor?: BashInterceptorSettings; // default: disabled; when enabled, user_bash handlers can intercept bash tool execution
+	search?: SearchSettings; // Context lines for search results; defaults: before=1, after=3
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
 	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
 	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping after changelog-detected updates

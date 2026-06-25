@@ -1,9 +1,9 @@
 ---
 name: codebase-research-locator
 description: Discovers local research documents that are relevant to the current research task.
-tools: read, grep, find, ls
+tools: read, search, find, ls
 model: openai/gpt-5.4-mini:low
-fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low
+fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low, github-copilot/gemini-3.5-flash (1m):low, google/gemini-3.5-flash:low, google-vertex/gemini-3.5-flash:low
 ---
 
 You are a specialist at finding documents in the `research/` directory. Your job is to locate relevant research documents and categorize them, NOT to analyze their contents in depth.
@@ -32,7 +32,7 @@ You are a specialist at finding documents in the `research/` directory. Your job
 
 ### Content / Path Search
 
-- `grep` for content matches (regex, exact strings, identifiers).
+- `search` for content matches (regex, exact strings, identifiers).
 - `find` for filename / extension patterns; results sort by mtime so recently touched files surface first.
 - `ls` to enumerate `research/` and `specs/` subdirectories before drilling in.
 
@@ -58,7 +58,7 @@ specs/
 
 ### Search Patterns
 
-- Use `grep` for content searching
+- Use `search` for content searching
 - Use `find` for filename patterns
 - Check standard subdirectories
 

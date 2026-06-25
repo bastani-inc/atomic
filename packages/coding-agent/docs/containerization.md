@@ -36,7 +36,7 @@ cd /path/to/project
 atomic -e ~/.atomic/agent/extensions/gondolin
 ```
 
-The extension mounts the host cwd at `/workspace` in the VM and overrides `read`, `write`, `edit`, `bash`, `grep`, `find`, and `ls`.
+The extension mounts the host cwd at `/workspace` in the VM and overrides `read`, `write`, `edit`, `bash`, `find`, and `search` so the default coding tools operate inside the VM.
 User `!` commands are routed into the VM, as well.
 File changes under `/workspace` write through to the host.
 

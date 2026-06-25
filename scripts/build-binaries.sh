@@ -104,9 +104,9 @@ for platform in "${PLATFORMS[@]}"; do
     echo "Building for $platform..."
     mkdir -p "binaries/$platform"
     if [[ "$platform" == windows-* ]]; then
-        bun build --compile --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic.exe"
+        bun build --compile --external mupdf --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic.exe"
     else
-        bun build --compile --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic"
+        bun build --compile --external mupdf --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic"
     fi
 done
 

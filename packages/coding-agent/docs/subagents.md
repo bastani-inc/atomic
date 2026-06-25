@@ -124,6 +124,7 @@ Child-safety boundaries are enforced by the bundled subagent extension:
 - Child context is filtered to remove parent orchestration artifacts, old control/status messages, and prior parent `subagent` tool calls/results.
 - Non-fanout children are instructed that they are not the parent orchestrator and must not propose or run subagents.
 - Nested fanout is available only for explicitly authorized agents whose resolved tools include `subagent`. Authorized fanout children receive narrower instructions that limit delegation to the assigned fanout.
+- The recursion guard defaults to a hard maximum of five delegated subagent levels. `ATOMIC_SUBAGENT_MAX_DEPTH`, extension `config.maxSubagentDepth`, and agent frontmatter can choose a lower value from `0` to `5`; higher values are clamped.
 
 This keeps the parent session responsible for orchestration unless you deliberately choose a fanout-capable custom agent.
 
@@ -142,7 +143,7 @@ A small custom read-only inspection agent:
 ---
 name: strict-inspector
 description: Inspect code for correctness and regressions
-tools: read, grep, bash
+tools: read, search, bash
 model: anthropic/claude-sonnet-4
 fallbackModels: openai/gpt-5-mini
 inheritProjectContext: true
@@ -186,7 +187,7 @@ Set the reasoning (thinking) effort for each model candidate with a `model_name:
 ---
 name: deep-reviewer
 description: Adversarial reviewer for risky diffs
-tools: read, grep, bash
+tools: read, search, bash
 model: anthropic/claude-sonnet-4:high
 fallbackModels: openai/gpt-5:medium, anthropic/claude-haiku-4-5:off
 ---

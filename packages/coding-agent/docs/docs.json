@@ -43,6 +43,7 @@
       {
         "group": "Reference",
         "pages": [
+          "tools",
           "session-format"
         ]
       },

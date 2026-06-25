@@ -12,7 +12,7 @@ import { resourceNameToToolName } from "./resource-tools.ts";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
 import { formatAuthRequiredMessage, unflattenToolArguments } from "./utils.ts";
 
-const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
+const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "search", "ls", "mcp"]);
 
 type DirectAutoAuthResult =
   | { status: "skipped" }

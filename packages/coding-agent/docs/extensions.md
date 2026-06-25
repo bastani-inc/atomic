@@ -736,7 +736,7 @@ Behavior guarantees:
 import { isToolCallEventType } from "@bastani/atomic";
 
 pi.on("tool_call", async (event, ctx) => {
-  // event.toolName - "bash", "read", "write", "edit", etc.
+  // event.toolName - "bash", "read", "write", "edit", "find", "search", etc.
   // event.toolCallId
   // event.input - tool parameters (mutable)
 
@@ -751,8 +751,13 @@ pi.on("tool_call", async (event, ctx) => {
   }
 
   if (isToolCallEventType("read", event)) {
-    // event.input is { path: string; offset?: number; limit?: number }
+    // event.input is { path: string }
     console.log(`Reading: ${event.input.path}`);
+  }
+
+  if (isToolCallEventType("search", event)) {
+    // event.input is typed as SearchToolInput
+    event.input.paths ??= ".";
   }
 });
 ```
@@ -793,7 +798,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
-import { isBashToolResult } from "@bastani/atomic";
+import { isBashToolResult, isSearchToolResult } from "@bastani/atomic";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
@@ -801,6 +806,10 @@ pi.on("tool_result", async (event, ctx) => {
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
+  }
+
+  if (isSearchToolResult(event)) {
+    // event.details is typed as SearchToolDetails | undefined
   }
 
   const response = await fetch("https://example.com/summarize", {
@@ -1861,47 +1870,27 @@ async execute(toolCallId, params) {
 
 **Important:** Use `StringEnum` from `@earendil-works/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
 
-**Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it to mimic an older accepted input shape when Atomic resumes an older session whose stored tool call arguments no longer match the current schema. Return the object you want validated against `parameters`. Keep the public schema strict. Do not add deprecated compatibility fields to `parameters` just to keep old resumed sessions working.
-
-Example: an older session may contain an `edit` tool call with top-level `oldText` and `newText`, while the current schema only accepts `edits: [{ oldText, newText }]`.
+**Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 
 ```typescript
 pi.registerTool({
-  name: "edit",
-  label: "Edit",
-  description: "Edit a single file using exact text replacement",
+  name: "deploy_plan",
+  label: "Deploy Plan",
+  description: "Create a deployment plan for one target environment",
   parameters: Type.Object({
-    path: Type.String(),
-    edits: Type.Array(
-      Type.Object({
-        oldText: Type.String(),
-        newText: Type.String(),
-      }),
-    ),
+    environment: Type.String(),
+    dryRun: Type.Optional(Type.Boolean()),
   }),
   prepareArguments(args) {
     if (!args || typeof args !== "object") return args;
-
-    const input = args as {
-      path?: string;
-      edits?: Array<{ oldText: string; newText: string }>;
-      oldText?: unknown;
-      newText?: unknown;
-    };
-
-    if (typeof input.oldText !== "string" || typeof input.newText !== "string") {
-      return args;
-    }
-
-    return {
-      ...input,
-      edits: [...(input.edits ?? []), { oldText: input.oldText, newText: input.newText }],
-    };
+    const input = args as { env?: unknown; environment?: unknown; dryRun?: unknown };
+    if (typeof input.environment === "string") return args;
+    if (typeof input.env !== "string") return args;
+    return { environment: input.env, dryRun: input.dryRun };
   },
-  async execute(toolCallId, params, signal, onUpdate, ctx) {
-    // params now matches the current schema
+  async execute(toolCallId, params) {
     return {
-      content: [{ type: "text", text: `Applying ${params.edits.length} edit block(s)` }],
+      content: [{ type: "text", text: `Planning deploy to ${params.environment}` }],
       details: {},
     };
   },
@@ -1910,7 +1899,7 @@ pi.registerTool({
 
 ### Overriding Built-in Tools
 
-Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
+Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
 
 ```bash
 # Extension's read tool replaces built-in read

@@ -587,6 +587,15 @@ if (!nativeBinding) {
 
 module.exports = nativeBinding
 module.exports.CursorH2NativeStream = nativeBinding.CursorH2NativeStream
+module.exports.PtySession = nativeBinding.PtySession
+module.exports.blockRangeAt = nativeBinding.blockRangeAt
 module.exports.cursorH2CancelOperation = nativeBinding.cursorH2CancelOperation
 module.exports.cursorH2OpenStream = nativeBinding.cursorH2OpenStream
 module.exports.cursorH2RequestUnary = nativeBinding.cursorH2RequestUnary
+module.exports.FileType = nativeBinding.FileType
+module.exports.glob = nativeBinding.glob
+module.exports.grep = nativeBinding.grep
+module.exports.GrepOutputMode = nativeBinding.GrepOutputMode
+module.exports.hasMatch = nativeBinding.hasMatch
+module.exports.invalidateFsScanCache = nativeBinding.invalidateFsScanCache
+module.exports.search = nativeBinding.search
