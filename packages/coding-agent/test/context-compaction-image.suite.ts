@@ -307,7 +307,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 	});
 
 	describe("budget tool reports image token share", () => {
-		it("reports imageTokensBefore, imageBlockCount, and imageTokenPercent", async () => {
+		it("reports remainingImageTokens, imageBlockCount, and imageTokenPercent", async () => {
 			resetIds();
 			const task = entry(user("Task"));
 			const call = entry(assistantToolCall("budget-image-tool"));
@@ -318,7 +318,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 
 			const before = await controller.budgetTool.execute("toolu_budget", {});
 			expect(before.details.imageBlockCount).toBe(2);
-			expect(before.details.imageTokensBefore).toBe(2 * ESTIMATED_IMAGE_TOKENS);
+			expect(before.details.remainingImageTokens).toBe(2 * ESTIMATED_IMAGE_TOKENS);
 			expect(before.details.imageTokenPercent).toBeGreaterThan(0);
 			expect(
 				before.content[0]?.type === "text" ? before.content[0].text : "",
@@ -333,7 +333,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			const controller = createContextDeletionTool(preparation.transcript);
 
 			const result = await controller.budgetTool.execute("toolu_budget", {});
-			expect(result.details.imageTokensBefore).toBe(0);
+			expect(result.details.remainingImageTokens).toBe(0);
 			expect(result.details.imageBlockCount).toBe(0);
 			expect(result.details.imageTokenPercent).toBe(0);
 			expect(result.content[0]?.type === "text" ? result.content[0].text : "").not.toContain("Images account for");
@@ -351,7 +351,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			// Before any deletions: both image blocks are present.
 			const before = await controller.budgetTool.execute("toolu_budget_before", {});
 			expect(before.details.imageBlockCount).toBe(2);
-			expect(before.details.imageTokensBefore).toBe(2 * ESTIMATED_IMAGE_TOKENS);
+			expect(before.details.remainingImageTokens).toBe(2 * ESTIMATED_IMAGE_TOKENS);
 			expect(before.details.imageTokenPercent).toBeGreaterThan(0);
 
 			// Delete one image content block.
@@ -362,7 +362,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			// After deleting one image block: budget reflects the reduced live image set.
 			const afterOne = await controller.budgetTool.execute("toolu_budget_after_one", {});
 			expect(afterOne.details.imageBlockCount).toBe(1);
-			expect(afterOne.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(afterOne.details.remainingImageTokens).toBe(ESTIMATED_IMAGE_TOKENS);
 			expect(afterOne.details.imageTokenPercent).toBeLessThan(before.details.imageTokenPercent);
 
 			// Delete the remaining image block too.
@@ -373,7 +373,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			// All images gone: budget reports zero image stats and drops the image text.
 			const afterAll = await controller.budgetTool.execute("toolu_budget_after_all", {});
 			expect(afterAll.details.imageBlockCount).toBe(0);
-			expect(afterAll.details.imageTokensBefore).toBe(0);
+			expect(afterAll.details.remainingImageTokens).toBe(0);
 			expect(afterAll.details.imageTokenPercent).toBe(0);
 			expect(afterAll.content[0]?.type === "text" ? afterAll.content[0].text : "").not.toContain("Images account for");
 		});
@@ -392,7 +392,7 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			// Baseline: image share measured against full pre-deletion token total.
 			const before = await controller.budgetTool.execute("toolu_share_before", {});
 			expect(before.details.imageBlockCount).toBe(1);
-			expect(before.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(before.details.remainingImageTokens).toBe(ESTIMATED_IMAGE_TOKENS);
 			expect(before.details.imageTokenPercent).toBeGreaterThan(0);
 
 			// Delete only the text-heavy entry; image blocks are untouched.
@@ -403,12 +403,12 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			// Remaining image token count is unchanged, but the denominator shrank
 			// (currentTokensAfter < tokensBefore), so the image share must rise.
 			const afterText = await controller.budgetTool.execute("toolu_share_after_text", {});
-			expect(afterText.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(afterText.details.remainingImageTokens).toBe(ESTIMATED_IMAGE_TOKENS);
 			expect(afterText.details.imageBlockCount).toBe(1);
 			expect(afterText.details.currentTokensAfter).toBeLessThan(before.details.tokensBefore);
 			expect(afterText.details.imageTokenPercent).toBeGreaterThan(before.details.imageTokenPercent);
 
-			// Sanity: image share equals imageTokensBefore / currentTokensAfter.
+			// Sanity: image share equals remainingImageTokens / currentTokensAfter.
 			const expectedShare = Math.round((ESTIMATED_IMAGE_TOKENS / afterText.details.currentTokensAfter) * 1000) / 10;
 			expect(afterText.details.imageTokenPercent).toBe(expectedShare);
 		});

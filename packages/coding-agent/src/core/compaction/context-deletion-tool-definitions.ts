@@ -239,7 +239,7 @@ export interface ContextCompactionBudgetToolDetails {
 	contextWindowBeforePercent?: number;
 	contextWindowAfterPercent?: number;
 	/** Total estimated tokens consumed by image content blocks still remaining after selected deletions. */
-	imageTokensBefore: number;
+	remainingImageTokens: number;
 	/** Number of image content blocks still remaining after selected deletions. */
 	imageBlockCount: number;
 	/** Image tokens as a percentage of the remaining context (post-deletion token total). */

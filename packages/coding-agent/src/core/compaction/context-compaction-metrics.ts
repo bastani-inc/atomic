@@ -38,7 +38,7 @@ export function createContextCompactionBudgetDetails(
 	callCount: number,
 	contextWindow: number | undefined,
 	parameters: ContextCompactionParameters,
-	imageTokensBefore: number,
+	remainingImageTokens: number,
 	imageBlockCount: number,
 ): ContextCompactionBudgetToolDetails {
 	const targetTokensAfter = Math.max(0, Math.floor(stats.tokensBefore * parameters.compression_ratio));
@@ -59,9 +59,9 @@ export function createContextCompactionBudgetDetails(
 					contextWindowAfterPercent: percentOf(stats.tokensAfter, contextWindow),
 				}
 			: {}),
-		imageTokensBefore,
+		remainingImageTokens,
 		imageBlockCount,
-		imageTokenPercent: percentOf(imageTokensBefore, stats.tokensAfter),
+		imageTokenPercent: percentOf(remainingImageTokens, stats.tokensAfter),
 		callCount,
 	};
 	return details;

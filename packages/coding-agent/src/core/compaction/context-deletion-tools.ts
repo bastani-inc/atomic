@@ -476,7 +476,7 @@ export function createContextDeletionTool(
 						? ` Context window fullness: ${details.contextWindowBeforePercent}% before selected deletions, ${details.contextWindowAfterPercent}% after selected deletions.`
 						: " Context window size is unknown for this model, so fullness percentages are unavailable.";
 				const targetText = details.tokensToDeleteForTarget > 0 ? ` Delete about ${details.tokensToDeleteForTarget} more token(s) to reach the ${details.targetReductionPercent}% reduction target.` : ` The selected deletions meet or exceed the ${details.targetReductionPercent}% reduction target.`;
-				const imageText = details.imageTokensBefore > 0 ? ` Images account for ${details.imageTokenPercent}% of remaining context (${details.imageTokensBefore} tokens across ${details.imageBlockCount} block(s)); prefer deleting stale/superseded image content blocks when images dominate.` : "";
+				const imageText = details.remainingImageTokens > 0 ? ` Images account for ${details.imageTokenPercent}% of remaining context (${details.remainingImageTokens} tokens across ${details.imageBlockCount} block(s)); prefer deleting stale/superseded image content blocks when images dominate.` : "";
 				return createContextDeletionToolResult(
 					`Current selected deletions reduce context by ${details.currentReductionPercent}% (${details.deletedTokens} token(s)); tokens after selected deletions: ${details.currentTokensAfter}/${details.tokensBefore}.${windowText}${targetText}${imageText} Keep maximizing useful retained context while aggressively removing low-value blocks.`,
 					details,

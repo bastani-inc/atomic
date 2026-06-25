@@ -163,6 +163,9 @@ function estimateTextAndImageContentChars(content: string | Array<{ type: string
 
 /**
  * Count image content blocks in a message content array (text or block array).
+ *
+ * Exported as the canonical image-counting contract so tests can verify the
+ * heuristic independently of the transcript-based estimation used in production.
  */
 export function countImageContentBlocks(content: string | Array<{ type: string }>): number {
 	if (typeof content === "string") return 0;
@@ -175,6 +178,9 @@ export function countImageContentBlocks(content: string | Array<{ type: string }
 
 /**
  * Estimate the token cost of only the image content blocks in a message content array.
+ *
+ * Exported as the canonical image-token-estimation contract so tests can verify
+ * the heuristic independently of the transcript-based estimation used in production.
  */
 export function estimateImageContentTokens(content: string | Array<{ type: string }>): number {
 	return countImageContentBlocks(content) * ESTIMATED_IMAGE_TOKENS;
