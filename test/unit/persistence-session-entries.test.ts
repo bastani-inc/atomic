@@ -236,7 +236,6 @@ describe("appendStageEnd", () => {
     assert.equal("durationMs" in p, false);
     assert.equal("summary" in p, false);
   });
-
   test("includes optional failure metadata when provided", () => {
     const api = makeMockApi();
     appendStageEnd(api, {
@@ -262,7 +261,19 @@ describe("appendStageEnd", () => {
     assert.equal(p["retryAfterMs"], 5000);
     assert.equal(p["skippedReason"], "fail-fast");
   });
-
+  test("includes optional session metadata when provided", () => {
+    const api = makeMockApi();
+    appendStageEnd(api, {
+      runId: "r1",
+      stageId: "s1",
+      status: "failed",
+      sessionId: "session-1",
+      sessionFile: "/tmp/session-1.jsonl",
+    });
+    const p = api._entries[0]!.payload;
+    assert.equal(p["sessionId"], "session-1");
+    assert.equal(p["sessionFile"], "/tmp/session-1.jsonl");
+  });
   test("includes optional replay metadata when provided", () => {
     const api = makeMockApi();
     appendStageEnd(api, {
@@ -280,7 +291,6 @@ describe("appendStageEnd", () => {
     assert.equal(p["replayedFromStageId"], "s-old");
     assert.equal(p["replayed"], true);
   });
-
   test("includes optional workflow child replay metadata when provided", () => {
     const api = makeMockApi();
     appendStageEnd(api, {
@@ -304,7 +314,6 @@ describe("appendStageEnd", () => {
       outputs: { summary: "ok" },
     });
   });
-
   test("omits workflow child replay metadata for non-completed stage ends", () => {
     const workflowChild = {
       alias: "child",
@@ -324,7 +333,6 @@ describe("appendStageEnd", () => {
       assert.equal("workflowChild" in api._entries[0]!.payload, false);
     }
   });
-
   test("emitMessage=true calls appendCustomMessageEntry when summary provided", () => {
     const api = makeMockApi();
     appendStageEnd(
@@ -335,30 +343,25 @@ describe("appendStageEnd", () => {
     assert.equal(api._messages.length, 1);
     assert.ok(api._messages[0].includes("fetched 10 files"));
   });
-
   test("emitMessage=true does NOT call appendCustomMessageEntry when summary absent", () => {
     const api = makeMockApi();
     appendStageEnd(api, { runId: "r1", stageId: "s1", status: "completed" }, { emitMessage: true });
     assert.equal(api._messages.length, 0);
   });
-
   test("no-op when appendEntry absent", () => {
     const api: PersistenceAPI = {};
     appendStageEnd(api, { runId: "r1", stageId: "s1", status: "completed" });
   });
 });
-
 // ---------------------------------------------------------------------------
 // appendRunEnd
 // ---------------------------------------------------------------------------
-
 describe("appendRunEnd", () => {
   test("calls appendEntry with workflow.run.end type", () => {
     const api = makeMockApi();
     appendRunEnd(api, { runId: "r1", status: "completed", ts: 999 });
     assert.equal(api._entries[0]!.type, "workflow.run.end");
   });
-
   test("payload contains runId, status, ts", () => {
     const api = makeMockApi();
     appendRunEnd(api, { runId: "r1", status: "failed", ts: 123 });
@@ -367,13 +370,11 @@ describe("appendRunEnd", () => {
     assert.equal(p["status"], "failed");
     assert.equal(p["ts"], 123);
   });
-
   test("includes result when provided", () => {
     const api = makeMockApi();
     appendRunEnd(api, { runId: "r1", status: "completed", result: { out: 42 }, ts: 1 });
     assert.equal((api._entries[0]!.payload["result"] as Record<string, unknown>)["out"], 42);
   });
-
   test("includes optional run failure metadata when provided", () => {
     const api = makeMockApi();
     appendRunEnd(api, {
@@ -401,7 +402,6 @@ describe("appendRunEnd", () => {
     assert.equal(p["resumable"], false);
     assert.equal(p["retryAfterMs"], 7000);
   });
-
   test("strips active-blocked disposition from terminal failed run.end payloads", () => {
     const api = makeMockApi();
     appendRunEnd(api, {
@@ -418,7 +418,6 @@ describe("appendRunEnd", () => {
       retryAfterMs: 1000,
       ts: 1,
     });
-
     const p = api._entries[0]!.payload;
     assert.equal(p["status"], "failed");
     assert.equal(p["failureKind"], "rate_limit");
@@ -428,7 +427,6 @@ describe("appendRunEnd", () => {
     assert.equal(p["resumable"], true);
     assert.equal(p["retryAfterMs"], 1000);
   });
-
   test("normalizes killed run.end payloads to terminal-killed and non-resumable", () => {
     const api = makeMockApi();
     appendRunEnd(api, {
@@ -443,24 +441,20 @@ describe("appendRunEnd", () => {
       resumable: true,
       ts: 1,
     });
-
     const p = api._entries[0]!.payload;
     assert.equal(p["status"], "killed");
     assert.equal(p["failureRecoverability"], "non_recoverable");
     assert.equal(p["failureDisposition"], "terminal_killed");
     assert.equal(p["resumable"], false);
   });
-
   test("no-op when appendEntry absent", () => {
     const api: PersistenceAPI = {};
     appendRunEnd(api, { runId: "r1", status: "completed", ts: 1 });
   });
 });
-
 // ---------------------------------------------------------------------------
 // appendRunBlocked
 // ---------------------------------------------------------------------------
-
 describe("appendRunBlocked", () => {
   test("calls appendEntry with workflow.run.blocked type and metadata", () => {
     const api = makeMockApi();
@@ -477,7 +471,6 @@ describe("appendRunBlocked", () => {
       resumable: true,
       ts: 123,
     });
-
     assert.equal(api._entries[0]!.type, "workflow.run.blocked");
     const p = api._entries[0]!.payload;
     assert.equal(p["runId"], "r1");
@@ -492,7 +485,6 @@ describe("appendRunBlocked", () => {
     assert.equal(p["resumable"], true);
     assert.equal(p["ts"], 123);
   });
-
   test("no-op when appendEntry absent", () => {
     const api: PersistenceAPI = {};
     appendRunBlocked(api, {

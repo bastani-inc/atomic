@@ -1,7 +1,10 @@
 use std::{
 	collections::{BTreeMap, HashMap},
 	future::Future,
+	panic::{AssertUnwindSafe, catch_unwind},
+	pin::Pin,
 	sync::{Arc, OnceLock},
+	task::{Context, Poll},
 	time::Duration,
 };
 
@@ -21,6 +24,43 @@ use tokio::{
 };
 use tokio_rustls::{TlsConnector, client::TlsStream};
 use url::Url;
+
+pub mod block;
+pub mod fs_cache;
+pub mod glob;
+mod glob_util;
+pub mod grep;
+pub mod pty;
+pub mod task;
+
+#[macro_export]
+macro_rules! env_uint {
+	($( $vis:vis static $name:ident : $type:ty = $env:literal or $default:expr => [$min:expr, $max:expr];)*) => {
+		$(
+			$vis static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
+				std::env::var($env)
+					.ok()
+					.and_then(|v| std::str::FromStr::from_str(&v).ok())
+					.unwrap_or($default)
+					.clamp($min, $max)
+			});
+		)*
+	};
+	($( $vis:vis static $name:ident : $type:ty = $env:literal or $default:expr;)*) => {
+		$(
+			$vis static $name: std::sync::LazyLock<$type> = std::sync::LazyLock::new(|| {
+				std::env::var($env)
+					.ok()
+					.and_then(|v| std::str::FromStr::from_str(&v).ok())
+					.unwrap_or($default)
+			});
+		)*
+	};
+}
+
+pub const fn clamp_u32(value: u64) -> u32 {
+	if value > u32::MAX as u64 { u32::MAX } else { value as u32 }
+}
 
 #[derive(Debug, Deserialize)]
 struct CursorH2Config {
@@ -75,42 +115,57 @@ impl CursorH2NativeStream {
 		data: Buffer,
 		#[napi(ts_arg_type = "number | null | undefined")] timeout_ms: Option<u32>,
 	) -> Result<()> {
-		with_timeout(timeout_ms, "Cursor HTTP/2 stream write timed out.", async {
-			let mut sender = self.state.sender.lock().await;
-			let stream =
-				sender.as_mut().ok_or_else(|| napi_error("Cursor HTTP/2 stream input is closed."))?;
-			stream.send_data(Bytes::copy_from_slice(data.as_ref()), false).map_err(to_napi_error)?;
-			Ok(())
+		catch_napi_unwind(async {
+			with_timeout(timeout_ms, "Cursor HTTP/2 stream write timed out.", async {
+				let mut sender = self.state.sender.lock().await;
+				let stream = sender
+					.as_mut()
+					.ok_or_else(|| napi_error("Cursor HTTP/2 stream input is closed."))?;
+				stream
+					.send_data(Bytes::copy_from_slice(data.as_ref()), false)
+					.map_err(to_napi_error)?;
+				Ok(())
+			})
+			.await
 		})
 		.await
 	}
 
 	#[napi(js_name = "finishInput")]
 	pub async fn finish_input(&self) -> Result<()> {
-		let mut sender = self.state.sender.lock().await;
-		if let Some(mut stream) = sender.take() {
-			stream.send_data(Bytes::new(), true).map_err(to_napi_error)?;
-		}
-		Ok(())
+		catch_napi_unwind(async {
+			let mut sender = self.state.sender.lock().await;
+			if let Some(mut stream) = sender.take() {
+				stream.send_data(Bytes::new(), true).map_err(to_napi_error)?;
+			}
+			Ok(())
+		})
+		.await
 	}
 
 	#[napi(js_name = "nextFrame")]
 	pub async fn next_frame(&self) -> Result<Option<Buffer>> {
-		let mut receiver = self.state.receiver.lock().await;
-		match receiver.recv().await {
-			Some(StreamEvent::Data(data)) => Ok(Some(Buffer::from(data))),
-			Some(StreamEvent::Error(message)) => Err(napi_error(message)),
-			None => Ok(None),
-		}
+		catch_napi_unwind(async {
+			let mut receiver = self.state.receiver.lock().await;
+			match receiver.recv().await {
+				Some(StreamEvent::Data(data)) => Ok(Some(Buffer::from(data))),
+				Some(StreamEvent::Error(message)) => Err(napi_error(message)),
+				None => Ok(None),
+			}
+		})
+		.await
 	}
 
 	#[napi]
 	pub async fn cancel(&self) -> Result<()> {
-		let mut sender = self.state.sender.lock().await;
-		if let Some(mut stream) = sender.take() {
-			stream.send_reset(Reason::CANCEL);
-		}
-		Ok(())
+		catch_napi_unwind(async {
+			let mut sender = self.state.sender.lock().await;
+			if let Some(mut stream) = sender.take() {
+				stream.send_reset(Reason::CANCEL);
+			}
+			Ok(())
+		})
+		.await
 	}
 }
 
@@ -119,27 +174,32 @@ pub async fn cursor_h2_request_unary(
 	config_json: String,
 	body: Buffer,
 ) -> Result<CursorH2UnaryResponse> {
-	let config = parse_config(&config_json)?;
-	let operation_id = config.operation_id.clone();
-	let timeout_ms = config.timeout_ms;
-	with_cancellation(operation_id.as_deref(), timeout_ms, async move {
-		let mut client = connect(&config.base_url).await?;
-		let request = build_request(&config)?;
-		let (response_future, mut send_stream) =
-			client.send_request(request, false).map_err(to_napi_error)?;
-		send_stream.send_data(Bytes::copy_from_slice(body.as_ref()), true).map_err(to_napi_error)?;
-		let response = response_future.await.map_err(to_napi_error)?;
-		let status_code = Some(u32::from(response.status().as_u16()));
-		let headers_json = headers_to_json(response.headers())?;
-		let mut body = response.into_body();
-		let mut chunks = Vec::new();
-		while let Some(chunk) = body.data().await {
-			let bytes = chunk.map_err(to_napi_error)?;
-			let byte_len = bytes.len();
-			chunks.extend_from_slice(bytes.as_ref());
-			body.flow_control().release_capacity(byte_len).map_err(to_napi_error)?;
-		}
-		Ok(CursorH2UnaryResponse { status_code, headers_json, body: Buffer::from(chunks) })
+	catch_napi_unwind(async move {
+		let config = parse_config(&config_json)?;
+		let operation_id = config.operation_id.clone();
+		let timeout_ms = config.timeout_ms;
+		with_cancellation(operation_id.as_deref(), timeout_ms, async move {
+			let mut client = connect(&config.base_url).await?;
+			let request = build_request(&config)?;
+			let (response_future, mut send_stream) =
+				client.send_request(request, false).map_err(to_napi_error)?;
+			send_stream
+				.send_data(Bytes::copy_from_slice(body.as_ref()), true)
+				.map_err(to_napi_error)?;
+			let response = response_future.await.map_err(to_napi_error)?;
+			let status_code = Some(u32::from(response.status().as_u16()));
+			let headers_json = headers_to_json(response.headers())?;
+			let mut body = response.into_body();
+			let mut chunks = Vec::new();
+			while let Some(chunk) = body.data().await {
+				let bytes = chunk.map_err(to_napi_error)?;
+				let byte_len = bytes.len();
+				chunks.extend_from_slice(bytes.as_ref());
+				body.flow_control().release_capacity(byte_len).map_err(to_napi_error)?;
+			}
+			Ok(CursorH2UnaryResponse { status_code, headers_json, body: Buffer::from(chunks) })
+		})
+		.await
 	})
 	.await
 }
@@ -149,66 +209,76 @@ pub async fn cursor_h2_open_stream(
 	config_json: String,
 	initial_body: Option<Buffer>,
 ) -> Result<CursorH2NativeStream> {
-	let config = parse_config(&config_json)?;
-	let operation_id = config.operation_id.clone();
-	let timeout_ms = config.timeout_ms;
-	with_cancellation(operation_id.as_deref(), timeout_ms, async move {
-		let mut client = connect(&config.base_url).await?;
-		let request = build_request(&config)?;
-		let (response_future, mut send_stream) =
-			client.send_request(request, false).map_err(to_napi_error)?;
-		if let Some(body) = initial_body {
-			send_stream
-				.send_data(Bytes::copy_from_slice(body.as_ref()), false)
-				.map_err(to_napi_error)?;
-		}
-		let response = response_future.await.map_err(to_napi_error)?;
-		let mut body = response.into_body();
-		let (tx, rx) = mpsc::channel(32);
-		tokio::spawn(async move {
-			while let Some(chunk) = body.data().await {
-				match chunk {
-					Ok(bytes) => {
-						let byte_len = bytes.len();
-						let data = bytes.to_vec();
-						if let Err(error) = body.flow_control().release_capacity(byte_len) {
-							let _ = tx.send(StreamEvent::Error(error.to_string())).await;
-							return;
-						}
-						if tx.send(StreamEvent::Data(data)).await.is_err() {
-							return;
-						}
-					},
-					Err(error) => {
-						let _ = tx.send(StreamEvent::Error(error.to_string())).await;
-						return;
-					},
-				}
+	catch_napi_unwind(async move {
+		let config = parse_config(&config_json)?;
+		let operation_id = config.operation_id.clone();
+		let timeout_ms = config.timeout_ms;
+		with_cancellation(operation_id.as_deref(), timeout_ms, async move {
+			let mut client = connect(&config.base_url).await?;
+			let request = build_request(&config)?;
+			let (response_future, mut send_stream) =
+				client.send_request(request, false).map_err(to_napi_error)?;
+			if let Some(body) = initial_body {
+				send_stream
+					.send_data(Bytes::copy_from_slice(body.as_ref()), false)
+					.map_err(to_napi_error)?;
 			}
-		});
-		Ok(CursorH2NativeStream {
-			state: Arc::new(NativeStreamState {
-				sender: Mutex::new(Some(send_stream)),
-				receiver: Mutex::new(rx),
-			}),
+			let response = response_future.await.map_err(to_napi_error)?;
+			let mut body = response.into_body();
+			let (tx, rx) = mpsc::channel(32);
+			tokio::spawn(async move {
+				let _ = catch_napi_unwind(async move {
+					while let Some(chunk) = body.data().await {
+						match chunk {
+							Ok(bytes) => {
+								let byte_len = bytes.len();
+								let data = bytes.to_vec();
+								if let Err(error) = body.flow_control().release_capacity(byte_len) {
+									let _ = tx.send(StreamEvent::Error(error.to_string())).await;
+									return Ok(());
+								}
+								if tx.send(StreamEvent::Data(data)).await.is_err() {
+									return Ok(());
+								}
+							},
+							Err(error) => {
+								let _ = tx.send(StreamEvent::Error(error.to_string())).await;
+								return Ok(());
+							},
+						}
+					}
+					Ok(())
+				})
+				.await;
+			});
+			Ok(CursorH2NativeStream {
+				state: Arc::new(NativeStreamState {
+					sender: Mutex::new(Some(send_stream)),
+					receiver: Mutex::new(rx),
+				}),
+			})
 		})
+		.await
 	})
 	.await
 }
 
 #[napi(js_name = "cursorH2CancelOperation")]
 pub async fn cursor_h2_cancel_operation(operation_id: String) -> Result<()> {
-	let mut registry = cancellation_registry().lock().await;
-	match registry.remove(&operation_id) {
-		Some(Some(sender)) => {
-			let _ = sender.send(());
-		},
-		Some(None) => {},
-		None => {
-			registry.insert(operation_id, None);
-		},
-	}
-	Ok(())
+	catch_napi_unwind(async move {
+		let mut registry = cancellation_registry().lock().await;
+		match registry.remove(&operation_id) {
+			Some(Some(sender)) => {
+				let _ = sender.send(());
+			},
+			Some(None) => {},
+			None => {
+				registry.insert(operation_id, None);
+			},
+		}
+		Ok(())
+	})
+	.await
 }
 
 async fn with_cancellation<T, F>(
@@ -236,6 +306,30 @@ where
 		return result;
 	}
 	with_timeout(timeout_ms, "Cursor HTTP/2 native operation timed out.", future).await
+}
+
+struct PanicGuard<F>(F);
+
+impl<F: Future> Future for PanicGuard<F> {
+	type Output = std::thread::Result<F::Output>;
+	fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+		let future = unsafe { self.map_unchecked_mut(|guard| &mut guard.0) };
+		match catch_unwind(AssertUnwindSafe(|| future.poll(cx))) {
+			Ok(Poll::Ready(value)) => Poll::Ready(Ok(value)),
+			Ok(Poll::Pending) => Poll::Pending,
+			Err(error) => Poll::Ready(Err(error)),
+		}
+	}
+}
+
+async fn catch_napi_unwind<T, F>(future: F) -> Result<T>
+where
+	F: Future<Output = Result<T>>,
+{
+	match PanicGuard(future).await {
+		Ok(result) => result,
+		Err(_) => Err(napi_error("Native operation panicked.")),
+	}
 }
 
 async fn with_timeout<T, F>(timeout_ms: Option<u32>, message: &'static str, future: F) -> Result<T>

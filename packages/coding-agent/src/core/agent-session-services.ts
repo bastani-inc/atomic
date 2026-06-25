@@ -59,12 +59,13 @@ export interface CreateAgentSessionFromServicesOptions {
 	sessionStartEvent?: SessionStartEvent;
 	model?: Model<Api>;
 	thinkingLevel?: ThinkingLevel;
+	contextWindow?: number;
+	contextWindowStrict?: boolean;
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
 	tools?: CreateAgentSessionOptions["tools"];
 	excludedTools?: CreateAgentSessionOptions["excludedTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
-	bashPolicy?: CreateAgentSessionOptions["bashPolicy"];
 }
 
 /**
@@ -211,12 +212,13 @@ export async function createAgentSessionFromServices(
 		sessionManager: options.sessionManager,
 		model: options.model,
 		thinkingLevel: options.thinkingLevel,
+		contextWindow: options.contextWindow,
+		contextWindowStrict: options.contextWindowStrict,
 		scopedModels: options.scopedModels,
 		tools: options.tools,
 		excludedTools: options.excludedTools,
 		noTools: options.noTools,
 		customTools: options.customTools,
-		bashPolicy: options.bashPolicy,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

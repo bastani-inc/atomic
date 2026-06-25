@@ -7,9 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3-alpha.1] - 2026-06-25
+
+### Fixed
+
+- `unflattenToolArguments` is now schema-aware and no longer corrupts literal dotted top-level argument keys (issue [#1496](https://github.com/bastani-inc/atomic/issues/1496)). Bracket-indexed keys (`ids[0]`, `files[0].path`) are always reconstructed, but a purely dotted key (`filter.name`) is only split into a nested path when the tool's `inputSchema` proves its head segment is an object/array container property **and** the schema does not declare the full dotted key as a literal top-level property. The latter guard preserves a literal property such as `filter.name` verbatim even when the schema also defines a same-head container (e.g. `filter`). The tool `inputSchema` is now threaded through from both the direct-tool and proxy/gateway `callTool` paths. The schema-aware disambiguation is shared with the host runtime via a new canonical `unflattenArgumentsWithSchema` helper in `@bastani/atomic`, so the two paths cannot drift.
+
+## [0.9.2] - 2026-06-23
+
 ### Changed
 
-- Published a synchronized Atomic 0.8.29-alpha.4 prerelease with upstream pi AI/TUI dependencies aligned to `^0.79.3`; no functional changes were made in the MCP extension.
+- Published the stable Atomic 0.9.2 release with MCP extension peer dependencies aligned to upstream pi AI/TUI `^0.79.10`; no MCP extension source changes were needed for this metadata sync.
+
+## [0.9.2-alpha.1] - 2026-06-23
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.10`; no MCP extension source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the MCP extension; no functional MCP changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Fixed
+
+- Fixed MCP tool calls under GitHub Copilot Gemini models by normalizing flattened array/object and dotted arguments at the `callTool` boundary before they reach direct-tool or proxy/gateway MCP servers.
+- Hardened flattened tool-argument reconstruction against prototype pollution by dropping any reconstructed key path that walks through `__proto__`, `constructor`, or `prototype`, using the canonical host implementation shared with `@bastani/atomic`.
+
+### Changed
+
+- Published the stable Atomic 0.9.0 release with MCP peer dependencies aligned through upstream pi AI/TUI `^0.79.9`, so MCP-backed sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming stability, and shared provider/TUI fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.9` so MCP-backed Atomic sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming code-fence stability, and shared provider/TUI compatibility fixes; no MCP extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
+### Fixed
+
+- Hardened `unflattenToolArguments` against prototype pollution: a flattened key whose path walks through `__proto__`, `constructor`, or `prototype` (at any position, including the final segment and a literal plain key) is now dropped instead of being written, so a model-emitted key such as `__proto__.polluted` can no longer reach and mutate `Object.prototype`. The reconstruction logic (parse/assign/compact plus this guard) is now imported from a single canonical implementation in `@bastani/atomic` (`reconstructFlattenedKeys`) instead of being duplicated in `packages/mcp/utils.ts`, so the host-runtime and MCP `callTool` paths can no longer drift (the previous near-duplicate copies had already diverged on the security guard). Behavior for well-formed and ordinary flattened arguments is unchanged.
+- Fixed MCP tool calls failing under GitHub Copilot Gemini models (e.g. `github-copilot/gemini-3.1-pro-preview`). Gemini, served through Copilot's CAPI/GenAI gateway, serializes array/object function-call arguments as flattened indexed keys on the wire — for example `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }` — which MCP servers reject as invalid arguments. The extension now normalizes arguments at the `callTool` boundary (both direct-tool and proxy/gateway paths) via `unflattenToolArguments`, reconstructing `name[i]`, `name[i].sub`, and `parent.child` keys back into proper arrays/objects before they reach the server. The normalizer is provider-agnostic and self-gating (a no-op unless flattened keys are present), so well-formed arguments — including those already normalized by the host runtime — pass through untouched.
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.7` so MCP-backed sessions can use the host's latest provider catalog, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no MCP extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
+
+## [0.8.30] - 2026-06-17
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi AI/TUI `^0.79.4`; no MCP extension code changes were made.
+
+## [0.8.29] - 2026-06-15
+
+### Changed
+
+- Published a synchronized Atomic 0.8.29 stable release with upstream pi AI/TUI dependencies aligned to `^0.79.3`; no functional changes were made in the MCP extension.
 
 ## [0.8.28] - 2026-06-11
 

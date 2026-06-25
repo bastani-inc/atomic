@@ -77,21 +77,34 @@ function getSessionHeaders(model: Model<Api>, sessionId: string | undefined): Re
 	return { "x-opencode-session": sessionId, "x-opencode-client": APP_NAME };
 }
 
+function mergeHeaderSource(
+	merged: Record<string, string>,
+	headers: Record<string, string> | undefined,
+): void {
+	if (!headers) return;
+	for (const [key, value] of Object.entries(headers)) {
+		const normalizedKey = key.toLowerCase();
+		for (const existingKey of Object.keys(merged)) {
+			if (existingKey.toLowerCase() === normalizedKey) {
+				delete merged[existingKey];
+			}
+		}
+		merged[key] = value;
+	}
+}
+
 export function mergeProviderAttributionHeaders(
 	model: Model<Api>,
 	settingsManager: SettingsManager,
 	sessionId: string | undefined,
 	...headerSources: Array<Record<string, string> | undefined>
 ): Record<string, string> | undefined {
-	const merged = {
-		...getSessionHeaders(model, sessionId),
-		...getDefaultAttributionHeaders(model, settingsManager),
-	};
+	const merged: Record<string, string> = {};
+	mergeHeaderSource(merged, getSessionHeaders(model, sessionId));
+	mergeHeaderSource(merged, getDefaultAttributionHeaders(model, settingsManager));
 
 	for (const headers of headerSources) {
-		if (headers) {
-			Object.assign(merged, headers);
-		}
+		mergeHeaderSource(merged, headers);
 	}
 
 	return Object.keys(merged).length > 0 ? merged : undefined;

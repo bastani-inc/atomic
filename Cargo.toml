@@ -3,7 +3,7 @@ members = ["crates/atomic-natives"]
 resolver = "3"
 
 [workspace.package]
-version = "0.8.29-alpha.4"
+version = "0.0.0"
 edition = "2024"
 license = "MIT"
 authors = ["Bastani"]
@@ -15,15 +15,39 @@ strip = "symbols"
 
 [workspace.dependencies]
 bytes = "1"
+dashmap = "6.1"
+globset = "0.4"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 h2 = "0.4"
 http = "1"
-napi = { version = "3", features = ["tokio_rt"] }
+ignore = "0.4"
+libc = "0.2"
+memmap2 = "0.9"
+napi = { version = "3", features = ["napi10", "tokio_rt", "tokio_time"] }
 napi-build = "2"
 napi-derive = "3"
+portable-pty = "0.8"
+rayon = "1.12"
 rustls = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+smallvec = "1.15"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26"
 url = "2"
 webpki-roots = "1.0"
+tree-sitter = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-go = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-css = "0.23"
+tree-sitter-json = "0.24"
+tree-sitter-bash = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-java = "0.23"

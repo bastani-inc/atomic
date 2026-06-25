@@ -1,47 +1,34 @@
+import { compare, valid } from "semver";
 import { ENV_OFFLINE, ENV_SKIP_VERSION_CHECK, PACKAGE_NAME, getEnvValue } from "../config.ts";
 
 const LATEST_VERSION_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
+
+/**
+ * The versionless placeholder stamped on `main` and read from source-tree dev
+ * runs (`bun packages/coding-agent/src/cli.ts`). Real releases never carry it —
+ * `scripts/cut-release.ts` materializes the actual version on the tag commit —
+ * so encountering it means this is a dev build that should not be compared
+ * against the published registry version.
+ */
+const DEV_VERSION_PLACEHOLDER = "0.0.0";
+
+export function isDevVersion(version: string): boolean {
+	return version.trim() === DEV_VERSION_PLACEHOLDER;
+}
 
 export interface LatestPiRelease {
 	version: string;
 	packageName?: string;
 }
 
-interface ParsedVersion {
-	major: number;
-	minor: number;
-	patch: number;
-	prerelease?: string;
-}
-
-function parsePackageVersion(version: string): ParsedVersion | undefined {
-	const match = version.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/);
-	if (!match) {
-		return undefined;
-	}
-	return {
-		major: Number.parseInt(match[1], 10),
-		minor: Number.parseInt(match[2], 10),
-		patch: Number.parseInt(match[3], 10),
-		prerelease: match[4],
-	};
-}
-
 export function comparePackageVersions(leftVersion: string, rightVersion: string): number | undefined {
-	const left = parsePackageVersion(leftVersion);
-	const right = parsePackageVersion(rightVersion);
+	const left = valid(leftVersion.trim());
+	const right = valid(rightVersion.trim());
 	if (!left || !right) {
 		return undefined;
 	}
-
-	if (left.major !== right.major) return left.major - right.major;
-	if (left.minor !== right.minor) return left.minor - right.minor;
-	if (left.patch !== right.patch) return left.patch - right.patch;
-	if (left.prerelease === right.prerelease) return 0;
-	if (!left.prerelease) return 1;
-	if (!right.prerelease) return -1;
-	return left.prerelease.localeCompare(right.prerelease);
+	return compare(left, right);
 }
 
 export function isNewerPackageVersion(candidateVersion: string, currentVersion: string): boolean {
@@ -80,6 +67,12 @@ export async function getLatestPiVersion(
 }
 
 export async function checkForNewPiVersion(currentVersion: string): Promise<string | undefined> {
+	// Dev builds always read the versionless `0.0.0` placeholder, which is older
+	// than any published release, so the registry check would always nag. Skip it
+	// (and the network call) for source-tree/dev runs.
+	if (isDevVersion(currentVersion)) {
+		return undefined;
+	}
 	try {
 		const latestVersion = await getLatestPiVersion();
 		if (latestVersion && isNewerPackageVersion(latestVersion, currentVersion)) {

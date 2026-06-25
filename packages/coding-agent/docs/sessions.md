@@ -17,6 +17,10 @@ atomic --fork <path|id>    # Fork a session file or partial session ID into a ne
 
 Use `/session` in interactive mode to see the current session file, session ID, message count, tokens, and cost.
 
+### Custom session directories
+
+Use `--session-dir <dir>`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or the matching settings override to save the active chat session outside the default `~/.atomic/agent/sessions/` store. When a workflow runs from a session that uses one of these non-default directories, Atomic also writes workflow stage transcripts to that same directory so a headless command such as `atomic --mode json --session-dir <dir> -p '/workflow <name> ...'` captures the main transcript and all stage transcripts together. Workflow definitions can still set a per-stage `sessionDir`; that explicit stage directory wins over the inherited host directory. If the host session uses the default session store, workflow stages keep the previous default behavior and write to the global store unless a stage explicitly sets `sessionDir`.
+
 For the JSONL file format and SessionManager API, see [Session Format](/session-format).
 
 ## Session Commands
@@ -142,6 +146,6 @@ See [Compaction](/compaction) for Verbatim Compaction, branch summarization inte
 
 ## Session Format
 
-Session files are JSONL and contain message entries, model changes, thinking-level changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
+Session files are JSONL and contain message entries, model changes, thinking-level changes, context-window changes, labels, context compactions, branch summaries, extension entries, and retired legacy `type:"compaction"` records from older sessions.
 
 For parsers, extensions, SDK usage, and the full SessionManager API, see [Session Format](/session-format).

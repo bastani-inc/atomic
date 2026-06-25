@@ -1,17 +1,14 @@
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
+import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
 
-const cliPath = resolve(__dirname, "../src/cli.ts");
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	removeTempDirs(tempDirs);
 });
 
 function createTempDir(): string {
@@ -64,8 +61,7 @@ function readSessionInfoNames(sessionFile: string): string[] {
 }
 
 async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
-	let stderr = "";
-	const child = spawn(process.execPath, [cliPath, ...args], {
+	const result = await runCliProcess(args, {
 		cwd: dirs.projectDir,
 		env: {
 			...process.env,
@@ -73,25 +69,8 @@ async function runCli(args: string[], dirs: CliDirs): Promise<CliResult> {
 			ATOMIC_OFFLINE: "1",
 			TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
 		},
-		stdio: ["ignore", "ignore", "pipe"],
 	});
-	child.stderr.on("data", (chunk) => {
-		stderr += chunk.toString();
-	});
-
-	return new Promise((resolvePromise, reject) => {
-		const timeout = setTimeout(() => {
-			child.kill("SIGKILL");
-		}, 10_000);
-		child.on("error", (error) => {
-			clearTimeout(timeout);
-			reject(error);
-		});
-		child.on("close", (code, signal) => {
-			clearTimeout(timeout);
-			resolvePromise({ code, signal, stderr });
-		});
-	});
+	return { code: result.code, signal: result.signal, stderr: result.stderr };
 }
 
 function setup(): CliDirs {

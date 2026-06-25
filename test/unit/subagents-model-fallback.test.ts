@@ -96,7 +96,6 @@ describe("subagent model fallback helpers", () => {
     assert.equal(isRetryableModelFailure({ stopReason: "aborted", status: 599, code: 529 }), false);
     assert.equal(isRetryableModelFailure({ name: "AbortError", statusCode: 520, message: "request aborted" }), false);
     assert.equal(isRetryableModelFailure({ httpStatus: 529, message: "shell command failed" }), false);
-    assert.equal(isRetryableModelFailure("completion guard failed after 599"), false);
   });
 
   test("retry classifier lets nested refusals outrank wrapper structured provider signals", () => {
@@ -120,7 +119,7 @@ describe("subagent model fallback helpers", () => {
         label: "auth wrapper with diagnostic task failure",
         failure: {
           statusCode: 401,
-          diagnostics: [{ error: { message: "completion guard failed after provider wrapper" } }],
+          diagnostics: [{ error: { message: "command failed after provider wrapper" } }],
         },
         expectedKind: "task_failure",
         expectedSource: "diagnostic",
@@ -215,7 +214,6 @@ describe("subagent model fallback helpers", () => {
     assert.equal(isRetryableModelFailure({ stopReason: "aborted", status: 503 }), false);
     assert.equal(isRetryableModelFailure({ name: "AbortError", status: 503, message: "aborted" }), false);
     assert.equal(isRetryableModelFailure({ status: 503, message: "shell command failed" }), false);
-    assert.equal(isRetryableModelFailure("completion guard failed after 429"), false);
     assert.equal(isRetryableModelFailure("command failed: bun test"), false);
   });
 });

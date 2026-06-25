@@ -9,6 +9,7 @@ git clone https://github.com/bastani-inc/atomic
 cd atomic
 bun install
 bun run typecheck
+bun run check:file-length
 ```
 
 This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for npm registry publishing. Run package scripts from the monorepo root or package directory with Bun, for example:
@@ -57,12 +58,15 @@ Never use `__dirname` directly for package assets.
 
 ```bash
 bun run typecheck                 # Type-check the monorepo
+bun run check:file-length         # Enforce the tracked TS/JS/Rust 500-line limit
 bun run test:unit                 # Run unit tests
 bun run test:integration          # Run integration tests
 bun run test:all                  # Run all tests
 # Run package Vitest tests
 bun --cwd packages/coding-agent run test -- test/specific.test.ts
 ```
+
+The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded; there is no grandfather/baseline allowlist for authored files.
 
 ## Project Structure
 

@@ -100,7 +100,6 @@ const NON_RETRYABLE_FAILURE_PATTERNS: readonly RegExp[] = [
 	/shell/i,
 	/missing file/i,
 	/no such file/i,
-	/completion guard/i,
 	/cancel/i,
 	/abort/i,
 	/interrupted/i,
@@ -427,7 +426,6 @@ function structuredSignal(
 		if (isRefusalSignal(diagnosticSignal)) return diagnosticSignal;
 		firstNestedFallbackSignal ??= diagnosticSignal;
 	}
-
 	const cause = causeOf(value);
 	const causeSignal = structuredSignal(cause, nestedSeen, source)
 		?? fallbackSignalFromMessage(cause, source);
@@ -435,38 +433,29 @@ function structuredSignal(
 		if (isRefusalSignal(causeSignal)) return causeSignal;
 		firstNestedFallbackSignal ??= causeSignal;
 	}
-
 	const statusKind = kindFromStatus(statusFrom(value));
 	if (statusKind !== undefined) return makeSignal(statusKind, value, source);
 	if (codeKind !== undefined) return makeSignal(codeKind, value, source);
 	if (nameKind !== undefined) return makeSignal(nameKind, value, source);
-
 	if (firstNestedFallbackSignal !== undefined) return firstNestedFallbackSignal;
-
 	if (stopReason === "error") return makeSignal("provider_unavailable", value, source);
-
 	return undefined;
 }
-
 function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefined {
 	if (value === undefined || value === null || seen.has(value)) return undefined;
 	if (typeof value === "string") return value.trim().length > 0 ? value : undefined;
 	if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
 	if (typeof value === "symbol" || typeof value === "function") return undefined;
 	seen.add(value);
-
 	if (value instanceof Error && value.message.trim().length > 0) return value.message;
 	const directMessage = directMessageFrom(value);
 	if (directMessage !== undefined) return directMessage;
-
 	for (const diagnosticError of diagnosticErrors(value)) {
 		const diagnosticMessage = messageFromUnknown(diagnosticError, seen);
 		if (diagnosticMessage !== undefined) return diagnosticMessage;
 	}
-
 	const causeMessage = messageFromUnknown(causeOf(value), seen);
 	if (causeMessage !== undefined) return causeMessage;
-
 	const stopReason = stopReasonFrom(value);
 	if (stopReason !== undefined) return `Assistant message ended with stopReason:${stopReason}`;
 	const finishReason = finishReasonFrom(value);
@@ -475,21 +464,17 @@ function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefi
 	if (status !== undefined) return `Model request failed with status ${status}`;
 	const code = codeFrom(value);
 	if (code !== undefined) return `Model request failed with code ${String(code)}`;
-
 	return undefined;
 }
-
 export function modelFailureMessage(error: unknown): string {
 	const structuredMessage = messageFromUnknown(error, new Set());
 	if (structuredMessage !== undefined) return structuredMessage;
 	const rendered = String(error);
 	return rendered === "[object Object]" ? "Model request failed" : rendered;
 }
-
 export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailureSignal {
 	const structured = structuredSignal(error, new Set());
 	if (structured !== undefined) return structured;
-
 	const message = modelFailureMessage(error);
 	const name = errorName(error);
 	const fallbackKind = message.trim().length > 0
@@ -502,13 +487,11 @@ export function normalizeModelFailureSignal(error: unknown): ModelFallbackFailur
 		...(name !== undefined ? { name } : {}),
 	};
 }
-
 export function isRetryableModelFailure(error: unknown): boolean {
 	if (error === undefined) return false;
 	const signal = normalizeModelFailureSignal(error);
 	return FALLBACKABLE_FAILURE_KINDS.has(signal.kind);
 }
-
 export function formatModelAttemptNote(attempt: ModelAttemptSummary, nextModel?: string): string {
 	const failure = attempt.error?.trim() || `exit ${attempt.exitCode ?? 1}`;
 	return nextModel

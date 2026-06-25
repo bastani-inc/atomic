@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
+import { unflattenArgumentsWithSchema } from "@bastani/atomic";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import type { McpConfig, ServerEntry } from "./types.ts";
@@ -126,4 +127,39 @@ export function extractToolUiStreamMode(toolMeta: Record<string, unknown> | unde
     return streamMode;
   }
   return undefined;
+}
+
+/**
+ * Reconstruct flattened tool-call arguments into proper nested arrays/objects.
+ *
+ * Some upstream providers — notably GitHub Copilot Gemini models proxied through
+ * Google's GenAI API — serialize array/object function-call arguments as
+ * flattened, indexed keys on the wire. For example a tool called with
+ * `{ keywords: ["a", "b"] }` arrives as `{ "keywords[0]": "a", "keywords[1]": "b" }`,
+ * which an MCP server then rejects as invalid arguments.
+ *
+ * This normalizer runs at the MCP `callTool` boundary so arguments are correct
+ * regardless of how the model/provider serialized them. It is provider-agnostic
+ * and schema-aware:
+ *
+ * - Bracket-indexed keys (`ids[0]`, `files[0].path`) are **always**
+ *   reconstructed — they are unambiguous.
+ * - Purely dotted keys (`parent.child`) are reconstructed only when the tool's
+ *   `inputSchema` proves their head segment is an object/array container
+ *   property. The presence of a bracket-indexed sibling does NOT force a pure
+ *   dotted key to split, so a literal property name such as `filter.name`
+ *   survives intact even when a sibling like `ids[0]` is present (issue #1496).
+ * - Otherwise dotted keys are preserved verbatim — so a literal property name
+ *   such as `filter.name` (a legitimate top-level schema property) is no longer
+ *   silently split into `{ filter: { name } }`.
+ *
+ * When no schema is supplied (the legacy call shape), bracket-indexed payloads
+ * are still reconstructed while pure dotted keys are preserved verbatim.
+ */
+export function unflattenToolArguments(
+  args: Record<string, unknown> | null | undefined,
+  inputSchema?: unknown,
+): Record<string, unknown> {
+  if (args === null || args === undefined) return {};
+  return unflattenArgumentsWithSchema(args, inputSchema);
 }

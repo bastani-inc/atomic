@@ -52,3 +52,10 @@ collect.sh
 # deep-research workflow artifacts written into <cwd>/research during tests and E2E runs
 /research/.deep-research-*/
 /research/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*.md
+
+# Local screenshots / scratch images dropped into the worktree
+Screenshot*.png
+
+# playwright-cli local session artifacts (config + on-disk snapshots)
+.playwright/
+.playwright-cli/

@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAMES } from "../config.ts";
-import { canonicalizePath, resolvePath } from "../utils/paths.ts";
+import { canonicalizePath, getHomeDir, resolvePath } from "../utils/paths.ts";
 
 export type ProjectTrustDecision = boolean | null;
 
@@ -178,7 +177,7 @@ export function hasProjectTrustInputs(cwd: string): boolean {
 	if (hasProjectConfigDir(currentDir)) {
 		return true;
 	}
-	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(homedir(), ".agents", "skills")));
+	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
 	const contextFileNames = ["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
 	while (true) {

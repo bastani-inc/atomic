@@ -1,6 +1,6 @@
 {
   "name": "@bastani/mcp",
-  "version": "0.8.29-alpha.4",
+  "version": "0.0.0",
   "private": true,
   "description": "Atomic extension that adapts MCP (Model Context Protocol) servers into the coding agent. Fork of: https://github.com/nicobailon/pi-mcp-adapter",
   "contributors": [
@@ -32,8 +32,8 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-ai": "^0.79.3",
-    "@earendil-works/pi-tui": "^0.79.3",
+    "@earendil-works/pi-ai": "^0.79.10",
+    "@earendil-works/pi-tui": "^0.79.10",
     "zod": "^3.25.0 || ^4.0.0"
   },
   "peerDependenciesMeta": {

@@ -1,17 +1,4 @@
-/**
- * Subagent Tool
- *
- * Full-featured subagent with sync and async modes.
- * - Sync (default): Streams output, renders markdown, tracks usage
- * - Async: Background execution, emits events when done
- *
- * Modes: single (agent + task), parallel (tasks[]), chain (chain[] with {previous})
- * Toggle: async parameter (default: false, configurable via config.json)
- *
- * Config file: ~/.atomic/agent/extensions/subagent/config.json
- *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
- */
-
+/** Subagent Tool: sync/async orchestration extension. */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -39,35 +26,10 @@ import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi
 import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
-import {
-	type Details,
-	type SubagentState,
-	ASYNC_DIR,
-	DEFAULT_ARTIFACT_CONFIG,
-	RESULTS_DIR,
-	SLASH_RESULT_TYPE,
-	SUBAGENT_ASYNC_COMPLETE_EVENT,
-	SUBAGENT_ASYNC_STARTED_EVENT,
-	SUBAGENT_CONTROL_EVENT,
-	WIDGET_KEY,
-} from "../shared/types.ts";
-import {
-	clearPendingForegroundControlNotices,
-	formatSubagentControlNotice,
-	handleSubagentControlNotice,
-	SUBAGENT_CONTROL_MESSAGE_TYPE,
-	type SubagentControlMessageDetails,
-} from "./control-notices.ts";
-
+import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT, WIDGET_KEY } from "../shared/types.ts";
+import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 export { loadConfig } from "./config.ts";
-
-/**
- * Derive subagent session base directory from parent session file.
- * If parent session is ~/.atomic/agent/sessions/abc123.jsonl,
- * returns ~/.atomic/agent/sessions/abc123/ as the base.
- * Callers add runId to create the actual session root: abc123/{runId}/
- * Falls back to a unique temp directory if no parent session.
- */
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
 		const baseName = path.basename(parentSessionFile, ".jsonl");
@@ -76,18 +38,9 @@ function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	}
 	return fs.mkdtempSync(path.join(os.tmpdir(), `${APP_NAME}-subagent-session-`));
 }
-
 function expandTilde(p: string): string {
 	return p.startsWith("~/") ? path.join(os.homedir(), p.slice(2)) : p;
 }
-
-/**
- * Create a directory and verify it is actually accessible.
- * On Windows with Azure AD/Entra ID, directories created shortly after
- * wake-from-sleep can end up with broken NTFS ACLs (null DACL) when the
- * cloud SID cannot be resolved without network connectivity. This leaves
- * the directory completely inaccessible to the creating user.
- */
 function ensureAccessibleDir(dirPath: string): void {
 	fs.mkdirSync(dirPath, { recursive: true });
 	try {
@@ -96,29 +49,23 @@ function ensureAccessibleDir(dirPath: string): void {
 		try {
 			fs.rmSync(dirPath, { recursive: true, force: true });
 		} catch {
-			// Best effort: retry mkdir/access even if cleanup fails.
 		}
 		fs.mkdirSync(dirPath, { recursive: true });
 		fs.accessSync(dirPath, fs.constants.R_OK | fs.constants.W_OK);
 	}
 }
-
 function isSlashResultRunning(result: { details?: Details }): boolean {
 	return result.details?.progress?.some((entry) => entry.status === "running")
 		|| result.details?.results.some((entry) => entry.progress?.status === "running")
 		|| false;
 }
-
 function isSlashResultError(result: { details?: Details }): boolean {
 	return result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false;
 }
-
 function isStaleExtensionContextError(error: unknown): boolean {
 	return error instanceof Error && error.message.includes("Extension context no longer active");
 }
-
 type SubagentToolRenderState = SubagentResultRenderState;
-
 function rebuildSlashResultContainer(
 	container: Container,
 	result: AgentToolResult<Details>,
@@ -132,7 +79,6 @@ function rebuildSlashResultContainer(
 	box.addChild(renderSubagentResult(result, options, theme));
 	container.addChild(box);
 }
-
 function createSlashResultComponent(
 	details: SlashMessageDetails,
 	options: { expanded: boolean },
@@ -152,7 +98,6 @@ function createSlashResultComponent(
 	};
 	return container;
 }
-
 function parseSubagentNotifyContent(content: string): SubagentNotifyDetails | undefined {
 	const lines = content.split("\n");
 	const header = lines[0] ?? "";
@@ -184,15 +129,12 @@ function parseSubagentNotifyContent(content: string): SubagentNotifyDetails | un
 		...(sessionLabel && sessionValue ? { sessionLabel, sessionValue } : {}),
 	};
 }
-
 class SubagentControlNoticeComponent implements Component {
 	constructor(
 		private readonly details: SubagentControlMessageDetails,
 		private readonly theme: ExtensionContext["ui"]["theme"],
 	) {}
-
 	invalidate(): void {}
-
 	render(width: number): string[] {
 		const eventLabel = this.details.event.type.replaceAll("_", " ");
 		if (width < 3) return [truncateToWidth(`Subagent ${eventLabel}`, width)];
@@ -202,7 +144,6 @@ class SubagentControlNoticeComponent implements Component {
 		const headerText = truncateToWidth(header, bodyWidth, "");
 		const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
 		const lines = [this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`)];
-
 		for (const line of wrapTextWithAnsi(formatSubagentControlNotice(this.details), bodyWidth)) {
 			const text = truncateToWidth(line, bodyWidth, "");
 			const padding = Math.max(0, bodyWidth - visibleWidth(text));
@@ -212,20 +153,6 @@ class SubagentControlNoticeComponent implements Component {
 		return lines;
 	}
 }
-
-export const DEFAULT_PROMPT_GUIDANCE: string[] = [
-	`**Subagent Orchestration**:
-  - To avoid draining your context window, prefer to use subagents for complex tasks all non-trivial operations should be delegated to subagents.
-  - You should delegate running bash commands (particularly ones that are likely to produce lots of output) such as investigating with the \`aws\` CLI, using the \`gh\` CLI, digging through logs to \`bash\` subagents.
-  - You should use separate subagents for separate tasks, and you may launch them in parallel, but do not delegate multiple tasks that are likely to have significant overlap to separate subagents.
-  - Sometimes subagents will take a long time. DO NOT attempt to do the job yourself while waiting for the subagent to respond Instead, use the time to plan out your next steps.
-  - **Debugging**: When a user asks about debugging, spawn a debugger subagent first.
-    - Do not attempt to debug or analyze code yourself without first consulting the debugger subagent.
-    - Explain the debugger's insights to the user clearly and concisely.
-    - Once the user confirms, implement the necessary code changes based on those insights.
-    - If the user has follow-up questions, spawn additional debugger and research subagents as needed.`,
-];
-
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (getEnvValue(SUBAGENT_CHILD_ENV) === "1") {
 		if (getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) === "1") registerFanoutChildSubagentExtension(pi);
@@ -238,20 +165,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		try {
 			previousRuntimeCleanup();
 		} catch {
-			// Best effort cleanup for stale timers from an older reload.
 		}
 	}
-
 	ensureAccessibleDir(RESULTS_DIR);
 	ensureAccessibleDir(ASYNC_DIR);
 	cleanupOldChainDirs();
-
 	const config = loadConfig();
 	const asyncByDefault = config.asyncByDefault === true;
 	const tempArtifactsDir = getArtifactsDir(null);
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 	cleanupOldNestedRuntimeDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
-
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
@@ -271,7 +194,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clear: () => {},
 		},
 	};
-
 	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
 		pi,
 		state,
@@ -280,7 +202,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	);
 	startResultWatcher();
 	primeExistingResults();
-
 	const runtimeCleanup = () => {
 		stopResultWatcher();
 		stopWidgetAnimation();
@@ -292,7 +213,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
-
 	const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 	const executor = createSubagentExecutor({
 		pi,
@@ -304,13 +224,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		expandTilde,
 		discoverAgents,
 	});
-
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
 		return createSlashResultComponent(details, options, theme);
 	});
-
 	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
 		const content = typeof message.content === "string" ? message.content : "";
 		const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
@@ -340,14 +258,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 		return new Text(text, 0, 0);
 	});
-
 	pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
 		const details = message.details as SubagentControlMessageDetails | undefined;
 		if (!details?.event) return undefined;
 		const content = typeof message.content === "string" ? message.content : undefined;
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
-
 	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
 		if (ctx.hasUI) {
 			state.lastUiContext = ctx;
@@ -355,14 +271,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
-
 	const slashBridge = registerSlashSubagentBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
 		execute: (id, params, signal, onUpdate, ctx) =>
 			executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
 	});
-
 	const promptTemplateBridge = registerPromptTemplateDelegationBridge({
 		events: pi.events,
 		getContext: () => state.lastUiContext,
@@ -400,7 +314,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			);
 		},
 	});
-
 	function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
 		if (!tasks || tasks.length === 0) return 0;
 		return tasks.reduce((total, task) => {
@@ -408,26 +321,21 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return total + count;
 		}, 0);
 	}
-
 	const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 		name: "subagent",
 		label: "Subagent",
 		description: `Delegate to subagents or manage agent definitions.
-
 EXECUTION (use exactly ONE mode):
 • Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
 • SINGLE: { agent, task? } - one task; omit task for self-contained agents
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
-
 CHAIN TEMPLATE VARIABLES (use in task strings):
 • {task} - The original task/request from the user
 • {previous} - Text response from the previous step (empty for first step)
 • {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/${APP_NAME}-subagents-<scope>/chain-runs/abc123/)
-
 Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
-
 MANAGEMENT (use action field, omit agent/task/chain/tasks):
 • { action: "list" } - discover executable agents/chains
 • { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
@@ -435,21 +343,17 @@ MANAGEMENT (use action field, omit agent/task/chain/tasks):
 • { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", ... } } - merge
 • { action: "delete", agent: "code-analysis.custom-agent" }
 • Use chainName for chain operations; packaged chains also use dotted runtime names
-
 CONTROL:
 • { action: "status", id: "..." } - inspect an async/background run by id or prefix
 • { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
 • { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live async child or revive a completed async/foreground child from its session
-
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
 		parameters: SubagentParams,
 		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-
 		execute(id, params, signal, onUpdate, ctx) {
 			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
 		},
-
 		renderCall(args, theme) {
 			if (args.action) {
 				const target = args.agent || args.chainName || "";
@@ -479,21 +383,12 @@ DIAGNOSTICS:
 				0,
 			);
 		},
-
 		renderResult(result, options, theme, context) {
-			// Tool-result rows live in chat scrollback. The host keeps context.state
-			// on the ToolExecutionComponent for this row, so foreground updates/ticks
-			// capture an explicit frame timestamp and arbitrary host re-renders reuse
-			// it. Running foreground rows intentionally advance via their own timer;
-			// completed scrollback remains a stable point-in-time snapshot.
 			return renderLiveSubagentResult(result, options, theme, context);
 		},
-
 	};
-
 	pi.registerTool(tool);
 	registerSlashCommands(pi, state);
-
 	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
 	const controlNoticeSeenStoreKey = "__piSubagentVisibleControlNotices";
 	const previousEventUnsubscribes = globalStore[eventUnsubscribeStoreKey];
@@ -503,12 +398,10 @@ DIAGNOSTICS:
 			try {
 				unsubscribe();
 			} catch {
-				// Best effort cleanup for stale handlers from an older reload.
 			}
 		}
 	}
 	registerSubagentNotify(pi);
-
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
 	globalStore[controlNoticeSeenStoreKey] = visibleControlNotices;
@@ -526,7 +419,6 @@ DIAGNOSTICS:
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
 	];
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
-
 	pi.on("tool_result", (event, ctx) => {
 		if (event.toolName !== "subagent") return;
 		if (!ctx.hasUI) return;
@@ -534,7 +426,6 @@ DIAGNOSTICS:
 		hydrateActiveJobs(ctx);
 		if (state.asyncJobs.size > 0) ensurePoller();
 	});
-
 	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
@@ -542,10 +433,8 @@ DIAGNOSTICS:
 				cleanupOldArtifacts(getArtifactsDir(sessionFile), DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 			}
 		} catch {
-			// Cleanup failures should not block session lifecycle events.
 		}
 	};
-
 	const resetSessionState = (ctx: ExtensionContext) => {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
@@ -557,17 +446,14 @@ DIAGNOSTICS:
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		primeExistingResults();
 	};
-
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);
 	});
-
 	pi.on("session_shutdown", () => {
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
 				unsubscribe();
 			} catch {
-				// Best effort cleanup during shutdown.
 			}
 		}
 		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {

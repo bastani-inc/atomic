@@ -1,6 +1,6 @@
 {
   "name": "@bastani/atomic",
-  "version": "0.8.29-alpha.4",
+  "version": "0.0.0",
   "description": "Atomic coding agent CLI with read, bash, edit, write tools and session management",
   "type": "module",
   "atomicConfig": {
@@ -58,8 +58,8 @@
     "dev": "tsgo -p tsconfig.build.json --watch --preserveWatchOutput",
     "build": "tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js && bun run copy-assets",
     "build:binary": "bun --cwd ../tui run build && bun --cwd ../ai run build && bun --cwd ../agent run build && bun run build && bun build --compile ./dist/bun/cli.js ./src/utils/image-resize-worker.ts --outfile dist/atomic && bun run copy-binary-assets",
-    "copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
-    "copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor && shx cp src/core/export-html/template.html dist/export-html/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
+    "copy-assets": "shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor dist/core/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/template-js/*.js dist/core/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/ && bun run copy-builtin-packages",
+    "copy-binary-assets": "shx cp package.json dist/ && shx cp README.md dist/ && shx cp CHANGELOG.md dist/ && shx mkdir -p dist/theme && shx cp src/modes/interactive/theme/*.json dist/theme/ && shx mkdir -p dist/assets && shx cp src/modes/interactive/assets/*.png dist/assets/ && shx mkdir -p dist/export-html/vendor dist/export-html/template-js && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/export-html/ && shx cp src/core/export-html/template-js/*.js dist/export-html/template-js/ && shx cp src/core/export-html/vendor/*.js dist/export-html/vendor/ && shx cp -r docs dist/ && shx cp -r examples dist/ && shx cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm dist/ && bun run copy-builtin-packages",
     "copy-builtin-packages": "bun run scripts/copy-builtin-packages.ts",
     "copy-builtin-workflows": "bun run copy-builtin-packages",
     "docs:check": "bun run scripts/validate-docs-links.ts",
@@ -68,33 +68,35 @@
     "prepublishOnly": "bun run clean && bun run build"
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.8.29-alpha.4",
+    "@bastani/atomic-natives": "0.0.0",
     "@bufbuild/protobuf": "^2.0.0",
-    "@earendil-works/pi-agent-core": "^0.79.3",
-    "@earendil-works/pi-ai": "^0.79.3",
-    "@earendil-works/pi-tui": "^0.79.3",
+    "@earendil-works/pi-agent-core": "^0.79.10",
+    "@earendil-works/pi-ai": "^0.79.10",
+    "@earendil-works/pi-tui": "^0.79.10",
     "@modelcontextprotocol/ext-apps": "^1.7.2",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
-    "@silvia-odwyer/photon-node": "^0.3.4",
-    "chalk": "^5.5.0",
+    "@silvia-odwyer/photon-node": "0.3.4",
+    "chalk": "5.6.2",
     "cross-spawn": "7.0.6",
-    "diff": "^9.0.0",
-    "glob": "^13.0.1",
-    "highlight.js": "^11.11.1",
-    "hosted-git-info": "^10.1.1",
-    "ignore": "^7.0.5",
-    "jiti": "^2.7.0",
+    "diff": "8.0.4",
+    "glob": "13.0.6",
+    "highlight.js": "10.7.3",
+    "hosted-git-info": "9.0.3",
+    "ignore": "7.0.5",
+    "jiti": "2.7.0",
     "linkedom": "^0.18.12",
-    "minimatch": "^10.2.3",
+    "markit-ai": "0.5.3",
+    "minimatch": "10.2.5",
     "open": "^11.0.0",
     "p-limit": "^7.3.0",
-    "proper-lockfile": "^4.1.2",
+    "proper-lockfile": "4.1.2",
+    "semver": "7.8.0",
     "turndown": "^7.2.0",
-    "typebox": "^1.1.24",
-    "undici": "^8.3.0",
+    "typebox": "1.1.38",
+    "undici": "8.5.0",
     "unpdf": "^1.6.2",
-    "yaml": "^2.9.0",
+    "yaml": "2.9.0",
     "zod": "^3.25.0 || ^4.0.0"
   },
   "overrides": {
@@ -104,19 +106,20 @@
     }
   },
   "optionalDependencies": {
-    "@mariozechner/clipboard": "^0.3.9"
+    "@mariozechner/clipboard": "0.3.9"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
-    "@types/diff": "^8.0.0",
-    "@types/hosted-git-info": "^3.0.5",
-    "@types/ms": "^2.1.0",
-    "@types/node": "^25.9.3",
-    "@types/proper-lockfile": "^4.1.4",
+    "@types/diff": "7.0.2",
+    "@types/hosted-git-info": "3.0.5",
+    "@types/ms": "2.1.0",
+    "@types/node": "24.12.4",
+    "@types/proper-lockfile": "4.1.4",
+    "@types/semver": "7.7.1",
     "@typescript/native-preview": "7.0.0-dev.20260511.1",
-    "shx": "^0.4.0",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.7"
+    "shx": "0.4.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
   },
   "keywords": [
     "coding-agent",
@@ -134,6 +137,6 @@
     "directory": "packages/coding-agent"
   },
   "engines": {
-    "node": ">=20.6.0"
+    "node": ">=22.19.0"
   }
 }

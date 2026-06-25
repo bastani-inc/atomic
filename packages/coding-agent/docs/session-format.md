@@ -216,6 +216,16 @@ Emitted when the user changes the thinking/reasoning level.
 {"type":"thinking_level_change","id":"e5f6g7h8","parentId":"d4e5f6g7","timestamp":"2024-12-03T14:06:00.000Z","thinkingLevel":"high"}
 ```
 
+### ContextWindowChangeEntry
+
+Emitted when the user selects a supported context-window size for the active model. The value is a token count, independent of thinking/reasoning level. Explicit startup selections are journaled even when they equal the model's scalar default so the user's budget choice survives later settings changes and resume.
+
+```json
+{"type":"context_window_change","id":"f6g7h8i9","parentId":"e5f6g7h8","timestamp":"2024-12-03T14:07:00.000Z","contextWindow":1000000}
+```
+
+`buildSessionContext()` replays the latest `context_window_change` on the active branch. In-place tree navigation also applies the branch's replayed context window to the active model without appending another `context_window_change` entry or writing context-window defaults to settings. If a historical value is no longer supported by the current model, session creation/navigation falls back to the model default the same way other context-window restore paths do.
+
 ### CompactionEntry
 
 Retired summary-compaction entry. Atomic no longer produces this entry type, does not treat it as an active compaction boundary, and does not inject its generated summary into active LLM context. Historical JSONL files may still contain these lines for audit/export compatibility.
@@ -236,7 +246,7 @@ Created by `/compact`, RPC compaction commands, and auto-compaction. Stores Atom
 {"type":"context_compaction","id":"ctx12345","parentId":"f6g7h8i9","timestamp":"2024-12-03T14:12:00.000Z","promptVersion":1,"deletedTargets":[{"kind":"entry","entryId":"b2c3d4e5"}],"protectedEntryIds":["a1b2c3d4"],"stats":{"objectsBefore":20,"objectsAfter":19,"objectsDeleted":1,"tokensBefore":50000,"tokensAfter":43000,"percentReduction":14},"backupPath":"/path/session.jsonl.2024-12-03T14-12-00-000Z.compact.bak"}
 ```
 
-`deletedTargets` entries are either whole entries (`{ kind: "entry", entryId }`) or content blocks (`{ kind: "content_block", entryId, blockIndex }`). The JSONL file remains append-only; this is logical deletion for active context rebuild.
+`deletedTargets` entries are either whole entries (`{ kind: "entry", entryId }`) or content blocks (`{ kind: "content_block", entryId, blockIndex }`). Content-block targets are not applied to retained assistant messages that contain `thinking` or `redacted_thinking`; those assistant messages are replay-sensitive for Anthropic-compatible extended-thinking providers and are restored as full content arrays during active context rebuild. The JSONL file remains append-only; this is logical deletion for active context rebuild.
 
 ### BranchSummaryEntry
 
@@ -312,7 +322,7 @@ Entries form a tree:
 `buildSessionContext()` walks from the current leaf to the root, producing the message list for the LLM:
 
 1. Collects all entries on the active branch path
-2. Extracts current model and thinking level settings
+2. Extracts current model, thinking level, and context-window settings
 3. Applies every `ContextCompactionEntry` logical deletion on that path, filtering targeted entries/content blocks from active context while leaving retained content unchanged
 4. Converts `BranchSummaryEntry` and `CustomMessageEntry` to appropriate message formats
 5. Ignores retired `CompactionEntry` lines for active LLM context; they remain archival JSONL data only
@@ -358,6 +368,9 @@ for (const line of lines) {
     case "thinking_level_change":
       console.log(`[${entry.id}] Thinking: ${entry.thinkingLevel}`);
       break;
+    case "context_window_change":
+      console.log(`[${entry.id}] Context window: ${entry.contextWindow}`);
+      break;
   }
 }
 ```
@@ -385,6 +398,7 @@ Key methods for working with sessions programmatically.
 ### Instance Methods - Appending (all return entry ID)
 - `appendMessage(message)` - Add message
 - `appendThinkingLevelChange(level)` - Record thinking change
+- `appendContextWindowChange(contextWindow)` - Record context-window selection in tokens
 - `appendModelChange(provider, modelId)` - Record model change
 - `appendContextCompaction(deletedTargets, protectedEntryIds, stats, backupPath?)` - Add logical deletion compaction
 - `appendCustomEntry(customType, data?)` - Extension state (not in context)

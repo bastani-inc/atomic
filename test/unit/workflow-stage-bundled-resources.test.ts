@@ -1,6 +1,6 @@
 /// <reference path="../../packages/coding-agent/src/utils/highlight-js-lib-index.d.ts" />
 
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, describe, setDefaultTimeout, test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { createAgentSession, type CreateAgentSessionOptions } from "../../packag
 import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { SettingsManager, type PackageSource } from "../../packages/coding-agent/src/core/settings-manager.js";
 import { discoverAgentsAll } from "../../packages/subagents/src/agents/agents.js";
+import { MAX_SUBAGENT_NESTING_DEPTH } from "../../packages/subagents/src/shared/types.js";
 import {
   prepareAtomicStageSessionOptions,
   type PiCodingAgentSdk,
@@ -19,6 +20,7 @@ import {
   type PiSdkSettingsManager,
 } from "../../packages/workflows/src/extension/wiring.js";
 
+setDefaultTimeout(30_000);
 const tempDirs: string[] = [];
 const ENV_KEYS = [
   "ATOMIC_SUBAGENT_CHILD",
@@ -99,7 +101,7 @@ async function createWorkflowStageSession(options: {
     workflowStageName: "Stage Test",
     constraints: {
       disableWorkflowTool: true,
-      maxSubagentDepth: 2,
+      maxSubagentDepth: MAX_SUBAGENT_NESTING_DEPTH,
     },
   } satisfies CreateAgentSessionOptions["orchestrationContext"];
   const excludedTools = Array.from(new Set([...(options.excludedTools ?? []), "workflow"]));

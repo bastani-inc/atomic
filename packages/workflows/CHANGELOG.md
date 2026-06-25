@@ -6,6 +6,170 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.3-alpha.1] - 2026-06-25
+
+### Changed
+
+- Revised the builtin `goal` worker/continuation prompts and the builtin `ralph` orchestrator prompts to emphasize implementing the requested task through full completion ("do not stop until the objective is complete") instead of preparing a partial implementation for incremental review.
+- Removed model-visible current-iteration/turn/loop information from the builtin `goal`, `ralph`, and `open-claude-design` workflows so models are not biased by which iteration they are on. This drops the worker `Turn: N/M` banner, `Implement iteration N/M` / `Research iteration N/M` framing, "first iteration/worker turn" phrasing, and the live-preview `iteration N/M` label; switches model-relayed artifacts to stable non-ordinal names (`worker-receipt.md`, `review-<reviewer>.json`, `review-round-latest.json`, `orchestrator-report.md`); and strips turn fields from the model-facing goal ledger artifact. Internal UI stage names (e.g. `work-turn-2`, `orchestrator-2`) are unchanged, and the `max_turns`/`max_loops` inputs and `turns_completed`/`iterations_completed` outputs are retained.
+- Raised workflow-stage subagent recursion to the shared five-level nesting budget so workflow stages match main-chat delegation depth.
+
+### Fixed
+
+- Fixed the builtin `open-claude-design` continuation loop so generator stages fork only from prior generator sessions and user-feedback stages fork only from prior feedback sessions; the first feedback stage now starts its own chain instead of inheriting generator context.
+- Fixed workflow config loading and user-global discovery to honor `ATOMIC_CODING_AGENT_DIR` isolation instead of reading `~/.atomic/agent` when an isolated agent dir is configured.
+
+## [0.9.2] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
+
+## [0.9.2-alpha.1] - 2026-06-23
+
+### Changed
+
+- Removed the initial `prompt-refinement` stage and shared prompt-refinement helper from the builtin `goal` and `ralph` workflows so both now use the raw objective/prompt as the operative task text for their first downstream stages; the now-obsolete refined/original trace outputs were also removed.
+- Updated builtin `goal` and `ralph` reviewer prompts to inspect referenced QA end-to-end video evidence before treating it as proof of user-visible behavior.
+- Aligned the workflows package peer dependency with upstream pi TUI `^0.79.10`; no workflow source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Changed the shared `goal`/`ralph` prompt-refinement stage to use a workflow-neutral, model-only rubric prompt that returns only the refined objective instead of invoking the `prompt-engineer` skill directly.
+
+### Fixed
+
+- Fixed the builtin `ralph` reviewer-c model configuration to use Gemini 3.1 Pro as the third reviewer with Gemini 3.1 provider fallbacks, removing Gemini 3.5 Flash from that slot's fallback chain ([#1484](https://github.com/bastani-inc/atomic/issues/1484)).
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Changed the shared `goal`/`ralph` prompt-refinement stage to use a workflow-neutral, model-only rubric prompt that returns only the refined objective instead of invoking the `prompt-engineer` skill directly.
+
+### Fixed
+
+- Fixed the builtin `ralph` reviewer-c model configuration to use Gemini 3.1 Pro as the third reviewer with Gemini 3.1 provider fallbacks, removing Gemini 3.5 Flash from that slot's fallback chain ([#1484](https://github.com/bastani-inc/atomic/issues/1484)).
+
+## [0.9.0] - 2026-06-22
+
+### Breaking Changes
+
+- Replaced the removed `defineWorkflow(...).run(...).compile()` builder with the single `workflow({ name?, description, inputs, outputs, run })` authoring door; authored workflows now import and export the `workflow` definition directly.
+- Removed the workflow stage/task/direct-mode `bashPolicy` option and schema so workflow-launched `bash` tools match upstream pi behavior; use `tools`/`noTools`, custom tools, or external sandboxing for command scoping.
+- Changed the builtin `open-claude-design` workflow contract by renaming `browse_cli_status` to `playwright_cli_status` and removing the `reference`, `output_type`, and `design_system` inputs in favor of discovery-stage questioning.
+
+### Added
+
+- Added per-model context-window workflow authoring tokens such as `github-copilot/claude-opus-4.8 (1m):xhigh`, plus `contextWindow`/`contextWindowStrict` stage and direct-task options.
+- Added deterministic workflow-stage resume handling that suppresses duplicate readiness prompts after interactive resumes and continues promptable stages exactly once.
+- Added a `playwright-cli` QA proof-video path to the builtin `ralph` workflow and a safe final-stage attachment/link handoff when `create_pr=true`.
+- Added shared initial prompt-refinement stages to the builtin `ralph` and `goal` workflows so raw requests are clarified with the `prompt-engineer` skill before research and orchestration.
+- Added the builtin `goal` workflow's safe-by-default `create_pr` toggle and final `pull-request` stage for GitHub, Azure Repos, GitLab, Bitbucket, Sapling, or Phabricator handoff after reviewer/reducer approval.
+- Restructured the builtin `open-claude-design` workflow around `impeccable` discovery/init, design-system/reference gathering, optional reference discovery, forked generate/user-feedback iterations, and a minimal exporter/final-display phase.
+
+### Changed
+
+- Decomposed the foreground workflow executor behind an internal `EngineRuntime.spawnStage(...)` chokepoint while preserving run, resume, kill, HIL, worktree, model-fallback, graph-frontier, and continuation behavior.
+- Changed builtin `ralph`, `goal`, and `open-claude-design` browser automation guidance from the removed `browser` skill / `browse` CLI to the `playwright-cli` skill and command.
+- Changed builtin `ralph` review fan-out to three independent model-family reviewers with severity-aware unanimous approval, stronger implementation-notes evidence requirements, and non-blocking P3 nit handling.
+- Changed builtin workflows to use long-context GitHub Copilot fallback model tokens where available and to inherit upstream pi TUI `^0.79.9` compatibility fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
+### Fixed
+
+- Fixed workflow stage sessions to inherit the host's non-default session directory in headless/forked runs while preserving explicit per-stage overrides.
+- Fixed manual workflow pause/resume state so attached-stage controls update the main run status the same way `/workflow pause` and `/workflow resume` do.
+- Fixed the builtin `ralph` review loop to stop on deterministic severity-aware unanimous approval instead of treating non-blocking P3 findings or placeholder findings as blockers.
+- Fixed workflow model fallback to reuse the initially loaded credential/model registry, report real credential-store load failures, and resume follow-ups on the settled fallback model instead of replaying from the unavailable primary.
+- Fixed `open-claude-design` user-feedback threading, test artifact placement, browser-unavailable early exits, snapshot copy safety, placeholder filtering, and read-only final display behavior.
+
+## [0.9.0-alpha.4] - 2026-06-22
+
+### Breaking Changes
+
+- Restructured the builtin `open-claude-design` workflow's input contract. Removed the `reference`, `output_type`, and `design_system` inputs; the workflow now gathers those through a new `discovery` interview stage instead. The remaining inputs are `prompt`, `discover_references`, and `max_refinements`. Existing invocations that passed `reference=…`, `output_type=…`, or `design_system=…` should drop those arguments and let the discovery stage ask for the output type and references (or describe them in `prompt`).
+
+### Added
+
+- Restructured the builtin `open-claude-design` workflow around the accessible `impeccable` skill (`/skill:impeccable …`). The current phase order is: (1) **combined discovery/init** — one `discovery` stage runs `/skill:impeccable shape` to confirm the brief, output type, and references, then runs `/skill:impeccable init` so impeccable detects/creates/reconciles `PRODUCT.md` / `DESIGN.md` without a separate init stage; (2) **context/reference phase** — `ds-locator` / `ds-analyzer` / `ds-patterns` first gather project design-system evidence and handle user-provided URL/file reference capture/parsing, then optional `reference-discovery` browses curated galleries using the ds-* evidence and asks the user which curated direction they prefer (or asks for a reference image/screenshot/URL/path if none fit); (3) **forked generate/user-feedback loop** — `generate-1` produces the first `preview.html`, each `user-feedback-*` stage drives `/skill:impeccable live`, and meaningful feedback threads into the next forked `generate-*` stage; (4) **export** — export is now deliberately only `exporter` followed by `final-display`, with no `pre-export-scan`, `forced-fix`, `web-capture-*`, `file-parser-*`, or `design-system-builder` stages. User-provided references take **precedence over `DESIGN.md`/`PRODUCT.md`** through the `REFERENCE_PRECEDENCE` prompt block. Added unit coverage for the trimmed input contract, combined discovery/init stage, direct `ds-*` reference handling, forked generate/user-feedback continuity, removed export/parse/builder/init stages, and feedback persistence/threading.
+- Added a safe-by-default `create_pr` toggle to the builtin `goal` workflow, matching Ralph's final-stage PR handoff behavior. Goal now skips PR/MR/review creation unless `create_pr=true` **and** reviewer quorum plus the reducer mark the run `complete` within the turn budget, omits `pr_report` when disabled or not approved, and runs a provider-aware `pull-request` stage only at the end when explicitly authorized. The final stage reads the goal ledger, worker receipts, latest review artifact, final report, and sanitized `base_branch` before attempting GitHub, Azure Repos, GitLab, Bitbucket, Sapling, or Phabricator handoff tooling. Goal worker/reviewer prompts now include an intermediate-stage guardrail telling them to ignore PR-creation requests because only the final `pull-request` stage may attempt that handoff.
+
+### Fixed
+
+- Fixed the builtin `open-claude-design` workflow feedback threading so `user-feedback-*` live annotations (`user_notes`, `live_changes`, and `annotated_snapshot`) are parsed, persisted under `<artifact_dir>/feedback/iteration-<n>.*`, and required to appear in the next `generate-*` prompt before a revision runs. The old internal critique/screenshot/apply stages were removed, so user feedback is now the sole refinement signal.
+- Fixed the builtin `open-claude-design` workflow polluting the project's `specs/design/` tree with per-run artifact folders during automated test runs; `prepareArtifactDir` now writes to the OS tmpdir when `NODE_ENV=test`.
+- Hardened the builtin `open-claude-design` browser and artifact safety paths: when the `playwright-cli` browser is unavailable the run exits cleanly up front (skipped under the test harness), annotation snapshot copies are constrained to the project/artifact dir, one-character real notes survive placeholder filtering, and the final `final-display` stage is read-only so it only surfaces the exported spec and re-run instructions.
+
+## [0.9.0-alpha.3] - 2026-06-21
+
+### Added
+
+- Added a shared `prompt-refinement` stage to the builtin `ralph` and `goal` workflows. Both now run one `prompt-refinement` stage at the start that invokes the `prompt-engineer` skill (`/skill:prompt-engineer`) to sharpen the raw user request into a clearer, more actionable objective using the Workflow Best Practices prompt anatomy documented in `packages/coding-agent/docs/workflows.md` (`## Workflow Best Practices`). The refined request replaces the original as the operative objective for all downstream stages (research, orchestration, worker/review loops); the original request is preserved for traceability. `ralph` exposes `original_prompt` and `refined_prompt` outputs, and `goal` exposes `original_objective` (omitted when refinement left it unchanged) and records the original objective in the ledger and final report. The stage uses the same model chain as ralph's prompt-engineering stage (`promptEngineerModelConfig`).
+- Renamed the builtin `ralph` workflow's per-iteration `prompt-engineer-${iteration}` stage to `research-prompt-refinement-${iteration}` (`renderPromptEngineerPrompt` → `renderResearchPromptRefinementPrompt`). It now consumes the clarity-refined request as input and continues to transform it into a codebase/online research question for the research stage.
+
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Breaking Changes
+
+- Replaced the removed `defineWorkflow(...).run(...).compile()` builder with the single `workflow({ name?, description, inputs, outputs, run })` authoring door. Authored workflows must import `workflow` from `@bastani/workflows`, import `Type` from `typebox`, provide an `outputs` map, and export the returned definition directly; `.compile()` and the builder types are no longer exported.
+- Removed the workflow stage/task/direct-mode `bashPolicy` option and schema so workflow-launched `bash` tools match upstream pi behavior. Use `tools`/`noTools` to expose or hide `bash`, custom tools for narrow operations, and an OS/container sandbox for command allowlisting.
+
+### Changed
+
+- Decomposed the foreground workflow executor behind an internal, host-injected `EngineRuntime.spawnStage(...)` chokepoint. Agent stages, task/chain/parallel primitives, nested workflow boundary stages, MCP stage scope setup/cleanup, continuation replay wiring, and graph-frontier tracking now live under the engine seams while preserving the existing run, resume, kill, HIL, worktree, and model-fallback behavior.
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.9` so workflow graph, custom UI, prompt-broker, and streamed Markdown surfaces inherit the latest shared TUI compatibility fixes, including stabilized partial code-fence rendering during streaming; no workflows extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
+### Breaking Changes
+
+- Renamed the builtin `open-claude-design` workflow output `browse_cli_status` to `playwright_cli_status` as part of migrating the workflow's preview/review tooling from the removed `browse` CLI to the `playwright-cli` command. Update any workflow-composition consumers that read `browse_cli_status`.
+
+### Added
+
+- Added a deterministic workflow-stage resume stop hook: after an interactive interrupt/pause is resumed with a message, the executor suppresses the #1099/#1264 readiness prompt for that resume-answer turn (including `ask_user_question` turns) and, when the stage remains promptable, sends `Continue where you left off.` in the same stage session once per resume; schema-backed stages that already finalized with `structured_output` consume the token without a second prompt ([#1407](https://github.com/bastani-inc/atomic/issues/1407)).
+- Added a QA end-to-end proof video to the builtin `ralph` workflow. For UI-applicable or full-stack changes, the orchestrator now runs a `playwright-cli` end-to-end QA pass that drives the running app like a user, records a reviewable video (`playwright-cli video-start`/`video-stop`) to a stable run path, references it in the implementation notes (`## QA E2E Video`), and exposes it as the new optional `qa_video_path` output so the proof is available when the orchestrator finishes. When `create_pr=true`, the final `pull-request` stage attaches or links that video to the created PR/MR/review (embedding/linking where the provider supports media uploads, otherwise surfacing the absolute path). When no user-visible UI scenario applies, no video is produced and the notes record why.
+- Added a per-model context-window authoring token to workflow model strings: a parenthesized token in the model-name portion, e.g. `github-copilot/claude-opus-4.8 (1m):xhigh`. The token may precede *or* follow the optional `:reasoning` suffix (`(1m):xhigh` or `:xhigh (1m)`); adopting GitHub Copilot's `Claude Opus 4.8 (1M context)` naming convention keeps the window separate from the reasoning level so the two never collide. Accepted token forms, all selecting the model's long tier when one exists: a generic size-agnostic `(long)` marker, or a rounded size matching the model's long tier (e.g. `(1m)` for claude-opus-4.8's 1M tier or `(1.1m)` for gpt-5.5's 1.05M tier). A request at or below the model's default keeps the default; a request above it selects the long tier (exact match wins, otherwise the smallest advertised window at or above the request, rounding **up** so a rounded marker always reaches the long tier); it falls back to the model's default (short) window when no long tier exists. It applies only to the candidate that carries the token, leaving primary and other fallback models untouched. Without the token, a tiered model now **pins its natural default (short) context window** in workflow stages so a persisted interactive long-context preference does not leak in (a stage-level `contextWindow`/`(long)` token still opts into long context). Also surfaced `contextWindow`/`contextWindowStrict` on `StageOptions` and the workflow tool's direct-task schema for stage-level selection.
+
+### Changed
+
+- Changed the shared `goal`/`ralph` prompt-refinement stage to use a workflow-neutral, model-only rubric prompt that returns only the refined objective instead of invoking the `prompt-engineer` skill directly.
+- Changed the builtin `ralph`, `goal`, and `open-claude-design` workflows and the shared end-to-end verification guidance to drive browsers through the `playwright-cli` skill and `playwright-cli` command instead of the removed `browser` skill / `browse` CLI. Ralph/goal subagents now verify web and full-stack flows with `skill: "playwright-cli"`, and `open-claude-design`'s deterministic setup step now ensures `playwright-cli` (`npm install -g @playwright/cli@latest`) instead of `browse`, with every preview/review stage prompt updated to `playwright-cli open`/`snapshot`/`screenshot --filename`/`resize`/`show --annotate`.
+- Changed the builtin `ralph` workflow review fan-out from two reviewers to three independent reviewers, each running on a different primary model family (Claude Fable 5, GPT-5.5 Codex, and Gemini 3.1 Pro) with shared fallbacks, so the adversarial review gets cross-model coverage instead of repeated passes from one model. The review loop stops only when all three reviewers independently approve (find no issues), so a P0–P3 finding from any single reviewer keeps Ralph iterating instead of being out-voted by a majority quorum. Also strengthened the orchestrator's implementation-notes contract to require verifiable evidence for any claims recorded in the notes and reviewer artifacts.
+- Changed the builtin `deep-research-codebase`, `goal`, `ralph`, and `open-claude-design` workflows to run their GitHub Copilot `claude-opus-4.8` fallbacks at the model's largest advertised long-context (~1M/936K) window via the new `(1m)` token, automatically degrading to the 200K short window when Copilot's long-context tier is unavailable. Other models in each fallback chain are unaffected.
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.7` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI color-scheme, Warp image capability, and compatibility fixes; no workflows extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
+
+### Fixed
+
+- Fixed the builtin `ralph` reviewer-c model configuration to use Gemini 3.1 Pro as the third reviewer and remove Gemini 3.5 Flash from that slot's fallback chain ([#1484](https://github.com/bastani-inc/atomic/issues/1484)).
+- Fixed workflow stage transcripts ignoring the host's resolved non-default session directory in headless runs. Stages without an explicit `sessionDir` now inherit the active main-session directory when it comes from `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, or settings; explicit per-stage `sessionDir` still wins, default host sessions keep writing stages to the global store, and forked stages inherit the non-default directory too ([#1444](https://github.com/bastani-inc/atomic/issues/1444)).
+- Fixed a manual workflow pause/resume not updating the main-chat run status the way the `workflow` tool and `/workflow pause`/`/workflow resume` do. Pausing a stage from the attached stage chat (Escape) or any direct live-handle path recorded only the **stage** as paused (`recordStagePaused`) and never the **run** (`recordRunPaused`), so the below-editor status widget and `/workflow status` kept showing the run as `running` (`●`) even though work was paused; resume had the symmetric gap. The executor stage-control handle now records run-level pause/resume itself — marking the run paused once no stage is still actively running (mirroring `pauseRun`'s all-active-stages-paused rule) and restoring it on resume — so manual and tool-driven pause/resume update the main chat identically. Both run-level transitions are idempotent, so the tool/slash path and cascade re-entry stay safe.
+- Fixed the builtin `ralph` workflow review loop iterating until `max_loops` even when reviewers judged the patch correct. The unanimous-approval gate required a literally empty `findings` array, so a single low-priority **P3** nit — or a placeholder/dummy finding a reviewer appended because it wrongly believed an empty array would fail schema validation — kept the loop spinning despite every reviewer reporting `overall_correctness: "patch is correct"`. Approval is now **severity-aware and deterministic**: a reviewer approves when it judged the patch correct, reported no `reviewer_error`, and filed no *blocking* finding, where blocking = **P0/P1/P2** (priority 0/1/2) and **P3** (priority 3) is a non-blocking nice-to-have; a finding without a determinable priority (`null`/`undefined`) is treated as blocking so ambiguity never silently approves. The decision is computed from finding priorities rather than the reviewer's self-reported `stop_review_loop` flag. Extracted the gate into `builtin/ralph-review-gate.ts` (`reviewDecisionApproved`, `isBlockingFinding`) with unit coverage, and updated the reviewer prompt so an empty `findings` array is explicitly valid and placeholder findings are never fabricated ([#1407](https://github.com/bastani-inc/atomic/issues/1407)).
+- Fixed workflow stage **model fallback misreporting configured providers as `No API key found`**. Each fallback candidate session was created with a fresh `AuthStorage`/`ModelRegistry`, so after a primary model failed (for example the Ralph `reviewer-a` chain hitting an unavailable `anthropic/claude-fable-5` and getting a real provider 404), every fallback candidate re-read `auth.json` from scratch. Under concurrent reviewer stages and OAuth token refreshes holding the `auth.json` lock, that fresh synchronous reload could fail and silently fall back to an empty credential set, reporting `No API key found` for `anthropic`/`openai-codex`/`github-copilot` even while sibling reviewer stages used those exact providers successfully. A stage now captures the `ModelRegistry` (and its already-loaded `AuthStorage`) from its first session and threads it into every subsequent fallback candidate, so a successfully-loaded credential store is reused across the whole fallback chain instead of being discarded and re-loaded per candidate. Combined with the coding-agent change that surfaces a real credential-store load failure instead of `No API key found`, a transient store-read failure remains a recoverable/retryable auth failure ([#1431](https://github.com/bastani-inc/atomic/issues/1431)).
+- Fixed post-completion workflow follow-ups replaying the entire model-fallback chain from an unavailable primary instead of resuming on the model the stage settled on. After model fallback succeeded, the stage kept its working `session` but left `sessionPromise` undefined, and `ensureSession()` only checked `sessionPromise` — so a follow-up (`ctx.followUp`/`ctx.steer`/`ensureAttached`, and post-completion `workflow send`/TUI prompts) created a brand-new session from `candidates[0]` (the primary), discarding the working fallback session. For a chain whose primary 404s (e.g. `anthropic/claude-fable-5`), every follow-up re-ran `primary -> 404 -> ... -> working model` and could leave the stage stuck on the unavailable primary. `ensureSession()` now reuses an already-attached session, and `promptWithFallback()` retries the last-settled model first (for both live retained sessions and disk-reattached sessions), restarting the full chain from the primary only if that model fails again retryably ([#1431](https://github.com/bastani-inc/atomic/issues/1431)).
+
+## [0.8.30] - 2026-06-17
+
+### Changed
+
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.79.4` so workflow graph, custom UI, and prompt-broker integrations consume the latest shared TUI fixes; no workflows extension code changes were made for this metadata sync.
+
+### Fixed
+
+- Fixed workflow stage sessions for workflows loaded through `atomic -e` to build fresh child resource loaders from the parent Atomic resource snapshot, preserving custom extensions/tools, subagents and agent definitions, skills, prompt templates, themes, packages, workflows, trusted borrowed project-local resources, explicit `resourceLoader` overrides, and recursive workflow-extension filtering.
+- Fixed schema-backed workflow stages to send up to three corrective follow-up prompts when a turn finishes without the required `structured_output` call or with an invalid `structured_output` call, echoing the concrete contract/validation error before failing the stage.
+- Fixed failed workflow stages to retain and persist SDK `sessionId`/`sessionFile` metadata, so post-error transcript inspection and follow-up messaging resume from the failed conversation instead of silently creating a fresh empty session.
+- Fixed schema-backed workflow stages with `noTools: "all"` to keep the restrictive allowlist while still exposing the required `structured_output` final-answer tool.
+- Fixed `ctx.parallel` graph inference so queued branches launched under a limited `concurrency` setting keep the same parent frontier as their sibling branches, even when an earlier sibling fails with `failFast: false`, instead of appearing as downstream children of failed siblings.
+
+## [0.8.29] - 2026-06-15
+
 ### Added
 
 - Added opt-in schema-backed workflow item results: `ctx.stage(..., { schema })`, `ctx.task(..., { schema })`, `ctx.chain` items, and `ctx.parallel` items now receive a schema-specific `structured_output` tool only for that item, return the captured value from `ctx.stage().prompt(...)`, and expose parsed task values as `result.structured` while preserving formatted JSON handoff text ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).

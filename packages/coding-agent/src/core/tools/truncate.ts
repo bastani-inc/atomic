@@ -2,15 +2,15 @@
  * Shared truncation utilities for tool outputs.
  *
  * Truncation is based on two independent limits - whichever is hit first wins:
- * - Line limit (default: 2000 lines)
+ * - Line limit (default: 3000 lines)
  * - Byte limit (default: 50KB)
  *
  * Never returns partial lines (except bash tail truncation edge case).
  */
 
-export const DEFAULT_MAX_LINES = 2000;
+export const DEFAULT_MAX_LINES = 3000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
-export const GREP_MAX_LINE_LENGTH = 500; // Max chars per grep match line
+export const GREP_MAX_LINE_LENGTH = 512; // Max chars per grep match line
 
 export interface TruncationResult {
 	/** The truncated content */
@@ -38,7 +38,7 @@ export interface TruncationResult {
 }
 
 export interface TruncationOptions {
-	/** Maximum number of lines (default: 2000) */
+	/** Maximum number of lines (default: 3000) */
 	maxLines?: number;
 	/** Maximum number of bytes (default: 50KB) */
 	maxBytes?: number;

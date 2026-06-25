@@ -20,16 +20,18 @@ describe("issue #3303 nested .gitignore rules leak into sibling directories", ()
 	async function runFind(pattern: string): Promise<string[]> {
 		const def = createFindToolDefinition(tempRoot);
 		const ctx = {} as Parameters<typeof def.execute>[4];
-		const result = (await def.execute("call-1", { pattern }, undefined, undefined, ctx)) as {
+		const result = (await def.execute("call-1", { paths: [pattern] }, undefined, undefined, ctx)) as {
 			content: Array<{ type: string; text?: string }>;
 		};
 		const text = result.content[0]?.text ?? "";
 		if (text === "No files found matching pattern") return [];
-		return text
-			.split("\n")
-			.map((l) => l.trim())
-			.filter((l) => l.length > 0 && !l.startsWith("["))
-			.sort();
+		const stack: string[] = [];
+		return text.split("\n").map((l) => l.trim()).filter(Boolean).flatMap((line) => {
+			const header = line.match(/^(#+)\s+(.+\/)$/);
+			if (header) { stack.length = header[1]!.length - 1; stack[header[1]!.length - 1] = header[2]!; return []; }
+			if (line.startsWith("[")) return [];
+			return `${stack.join("")}${line}`;
+		}).sort();
 	}
 
 	afterEach(() => {

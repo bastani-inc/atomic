@@ -222,6 +222,12 @@ export default async function (pi: ExtensionAPI) {
 
 This pattern makes the fetched models available during normal startup and to `atomic --list-models`.
 
+### Long-lived resources and shutdown
+
+Extension factories may run in invocations that never start a session, such as metadata commands or early configuration checks. Do not start background resources such as processes, sockets, file watchers, or timers from the factory.
+
+Defer background resource startup until `session_start` or the command/tool/event that needs the resource. Register an idempotent `session_shutdown` handler to close any session-scoped resources you start.
+
 ### Extension Styles
 
 **Single file** - simplest, for small extensions:
@@ -442,15 +448,14 @@ Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions
 
 ```typescript
 pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, reason, mode, signal } = event;
+  const { preparation, branchEntries, reason, signal } = event;
   const { transcript } = preparation;
 
   // transcript.entries - compactable entries on the active branch
-  // transcript.protectedEntryIds - entries protected from standard compaction
+  // transcript.protectedEntryIds - entries validation will reject if directly deleted
   // transcript.tokensBefore - token estimate before compaction
   // branchEntries - raw session entries on the current branch
   // reason - "manual" | "threshold" | "overflow"
-  // mode - "standard" | "critical_overflow"
 
   if (signal.aborted) return { cancel: true };
 
@@ -509,7 +514,7 @@ pi.on("session_before_shutdown", async (event, ctx) => {
 
 #### session_shutdown
 
-Fired before an extension runtime is torn down, after any cancellable `session_before_shutdown` handlers have allowed the shutdown to proceed.
+Fired before a started session runtime is torn down, after any cancellable `session_before_shutdown` handlers have allowed the shutdown to proceed. Use this to clean up resources opened from `session_start` or other session-scoped hooks.
 
 ```typescript
 pi.on("session_shutdown", async (event, ctx) => {
@@ -749,7 +754,7 @@ Behavior guarantees:
 import { isToolCallEventType } from "@bastani/atomic";
 
 pi.on("tool_call", async (event, ctx) => {
-  // event.toolName - "bash", "read", "write", "edit", etc.
+  // event.toolName - "bash", "read", "write", "edit", "find", "search", etc.
   // event.toolCallId
   // event.input - tool parameters (mutable)
 
@@ -764,8 +769,13 @@ pi.on("tool_call", async (event, ctx) => {
   }
 
   if (isToolCallEventType("read", event)) {
-    // event.input is { path: string; offset?: number; limit?: number }
+    // event.input is { path: string }
     console.log(`Reading: ${event.input.path}`);
+  }
+
+  if (isToolCallEventType("search", event)) {
+    // event.input is typed as SearchToolInput
+    event.input.paths ??= ".";
   }
 });
 ```
@@ -806,7 +816,7 @@ In parallel tool mode, `tool_result` and `tool_execution_end` may interleave in 
 Use `ctx.signal` for nested async work inside the handler. This lets Escape cancel model calls, `fetch()`, and other abort-aware operations started by the extension.
 
 ```typescript
-import { isBashToolResult } from "@bastani/atomic";
+import { isBashToolResult, isSearchToolResult } from "@bastani/atomic";
 
 pi.on("tool_result", async (event, ctx) => {
   // event.toolName, event.toolCallId, event.input
@@ -814,6 +824,10 @@ pi.on("tool_result", async (event, ctx) => {
 
   if (isBashToolResult(event)) {
     // event.details is typed as BashToolDetails
+  }
+
+  if (isSearchToolResult(event)) {
+    // event.details is typed as SearchToolDetails | undefined
   }
 
   const response = await fetch("https://example.com/summarize", {
@@ -923,6 +937,27 @@ UI methods for user interaction. See [Custom UI](#custom-ui) for full details.
 
 Current working directory.
 
+Use `CONFIG_DIR_NAME` instead of hardcoding `.atomic` (or legacy `.pi`) when constructing project-local config paths. Rebranded distributions can use a different config directory name.
+
+```typescript
+import { CONFIG_DIR_NAME, type ExtensionAPI } from "@bastani/atomic";
+import { join } from "node:path";
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    const projectConfigPath = join(ctx.cwd, CONFIG_DIR_NAME, "my-extension.json");
+    // ...
+  });
+}
+```
+
+### ctx.isProjectTrusted()
+
+Returns whether project-local trust is active for the current session context. This includes temporary trust decisions and CLI trust overrides, not just saved decisions in the global trust store.
+
+Use this before reading project-local extension configuration that should only be honored for trusted projects.
+
+
 ### ctx.sessionManager
 
 Read-only access to session state. See [Session Format](/session-format) for the full SessionManager API and entry types.
@@ -1012,10 +1047,13 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `onComplete` and `onError` for follow-up actions.
+Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `compression_ratio`, `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
+  compression_ratio: 0.5, // fraction to keep: 0.3 aggressive, 0.7 light
+  preserve_recent: 2,    // keep the last N context-eligible messages
+  query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
   },
@@ -1025,7 +1063,7 @@ ctx.compact({
 });
 ```
 
-Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected.
+Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected. The `query` parameter guides relevance-based pruning inside that fixed prompt; it is not replacement summary text.
 
 ### ctx.getSystemPrompt()
 
@@ -1557,24 +1595,25 @@ const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
 
-Manage active tools. This works for both built-in tools and dynamically registered tools.
+Manage active tools. This works for both built-in tools and dynamically registered tools. `pi.getActiveTools()` returns the active tool names as `string[]`; `pi.getAllTools()` returns metadata for all configured tools.
 
 ```typescript
-const active = pi.getActiveTools();
+const active = pi.getActiveTools(); // ["read", "bash", ...]
 const all = pi.getAllTools();
-// [{
+// all = [{
 //   name: "read",
 //   description: "Read file contents...",
-//   parameters: ..., 
+//   parameters: ...,
+//   promptGuidelines: ["Use read to examine files instead of cat or sed."],
 //   sourceInfo: { path: "<builtin:read>", source: "builtin", scope: "temporary", origin: "top-level" }
 // }, ...]
-const names = all.map(t => t.name);
 const builtinTools = all.filter((t) => t.sourceInfo.source === "builtin");
 const extensionTools = all.filter((t) => t.sourceInfo.source !== "builtin" && t.sourceInfo.source !== "sdk");
+pi.setActiveTools([...new Set([...active, "my_custom_tool"])]); // Keep current tools and enable my_custom_tool
 pi.setActiveTools(["read", "bash"]); // Switch to read-only
 ```
 
-`pi.getAllTools()` returns `name`, `description`, `parameters`, and `sourceInfo`.
+`pi.getAllTools()` returns `name`, `description`, `parameters`, `promptGuidelines`, and `sourceInfo`.
 
 Typical `sourceInfo.source` values:
 - `builtin` for built-in tools
@@ -1849,47 +1888,27 @@ async execute(toolCallId, params) {
 
 **Important:** Use `StringEnum` from `@earendil-works/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
 
-**Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it to mimic an older accepted input shape when Atomic resumes an older session whose stored tool call arguments no longer match the current schema. Return the object you want validated against `parameters`. Keep the public schema strict. Do not add deprecated compatibility fields to `parameters` just to keep old resumed sessions working.
-
-Example: an older session may contain an `edit` tool call with top-level `oldText` and `newText`, while the current schema only accepts `edits: [{ oldText, newText }]`.
+**Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 
 ```typescript
 pi.registerTool({
-  name: "edit",
-  label: "Edit",
-  description: "Edit a single file using exact text replacement",
+  name: "deploy_plan",
+  label: "Deploy Plan",
+  description: "Create a deployment plan for one target environment",
   parameters: Type.Object({
-    path: Type.String(),
-    edits: Type.Array(
-      Type.Object({
-        oldText: Type.String(),
-        newText: Type.String(),
-      }),
-    ),
+    environment: Type.String(),
+    dryRun: Type.Optional(Type.Boolean()),
   }),
   prepareArguments(args) {
     if (!args || typeof args !== "object") return args;
-
-    const input = args as {
-      path?: string;
-      edits?: Array<{ oldText: string; newText: string }>;
-      oldText?: unknown;
-      newText?: unknown;
-    };
-
-    if (typeof input.oldText !== "string" || typeof input.newText !== "string") {
-      return args;
-    }
-
-    return {
-      ...input,
-      edits: [...(input.edits ?? []), { oldText: input.oldText, newText: input.newText }],
-    };
+    const input = args as { env?: unknown; environment?: unknown; dryRun?: unknown };
+    if (typeof input.environment === "string") return args;
+    if (typeof input.env !== "string") return args;
+    return { environment: input.env, dryRun: input.dryRun };
   },
-  async execute(toolCallId, params, signal, onUpdate, ctx) {
-    // params now matches the current schema
+  async execute(toolCallId, params) {
     return {
-      content: [{ type: "text", text: `Applying ${params.edits.length} edit block(s)` }],
+      content: [{ type: "text", text: `Planning deploy to ${params.environment}` }],
       details: {},
     };
   },
@@ -1898,7 +1917,7 @@ pi.registerTool({
 
 ### Overriding Built-in Tools
 
-Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
+Extensions can override built-in tools (`read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`) by registering a tool with the same name. Interactive mode displays a warning when this happens.
 
 ```bash
 # Extension's read tool replaces built-in read
@@ -2606,8 +2625,8 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 |---------|-------------|----------|
 | **Tools** |||
 | `hello.ts` | Minimal tool registration | `registerTool` |
-| `question.ts` | Tool with user interaction | `registerTool`, `ui.select` |
-| `questionnaire.ts` | Multi-step wizard tool | `registerTool`, `ui.custom` |
+| `question.ts` | Width-wrapped single-question custom UI with option descriptions and typed answers | `registerTool`, `ui.custom` |
+| `questionnaire.ts` | Width-wrapped multi-step wizard with tab navigation and typed answers | `registerTool`, `ui.custom` |
 | `todo.ts` | Stateful tool with persistence | `registerTool`, `appendEntry`, `renderResult`, session events |
 | `dynamic-tools.ts` | Register tools after startup and during commands | `registerTool`, `session_start`, `registerCommand` |
 | `structured-output.ts` | Opt-in schema-specific `structured_output` tool using the canonical factory | `createStructuredOutputTool`, `registerTool`, terminating tool results |

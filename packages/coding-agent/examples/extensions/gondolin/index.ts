@@ -284,14 +284,11 @@ async function executeGondolinGrep(
 		},
 		signal,
 	);
-
 	if (matchCount === 0) return { content: [{ type: "text", text: "No matches found" }], details: undefined };
-
 	const rawOutput = outputLines.join("\n");
 	const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
 	const notices: string[] = [];
 	let output = truncation.content;
-
 	if (matchLimitReached) {
 		details.matchLimitReached = effectiveLimit;
 		notices.push(`${effectiveLimit} matches limit reached`);
@@ -305,13 +302,11 @@ async function executeGondolinGrep(
 		notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
 	}
 	if (notices.length > 0) output += `\n\n[${notices.join(". ")}]`;
-
 	return {
 		content: [{ type: "text", text: output }],
 		details: Object.keys(details).length > 0 ? details : undefined,
 	};
 }
-
 function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
@@ -320,7 +315,6 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 			const controller = new AbortController();
 			const onAbort = () => controller.abort();
 			signal?.addEventListener("abort", onAbort, { once: true });
-
 			let timedOut = false;
 			const timer =
 				timeout && timeout > 0
@@ -329,7 +323,6 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 							controller.abort();
 						}, timeout * 1000)
 					: undefined;
-
 			try {
 				const proc = vm.exec([shellPath, "-lc", command], {
 					cwd: guestCwd,
@@ -353,7 +346,6 @@ function createGondolinBashOps(vm: VM, localCwd: string, shellPath: string): Bas
 		},
 	};
 }
-
 export default function (pi: ExtensionAPI) {
 	const localCwd = process.cwd();
 	const localRead = createReadTool(localCwd);
@@ -363,11 +355,9 @@ export default function (pi: ExtensionAPI) {
 	const localGrep = createGrepTool(localCwd);
 	const localFind = createFindTool(localCwd);
 	const localLs = createLsTool(localCwd);
-
 	let vm: VM | undefined;
 	let vmStarting: Promise<VM> | undefined;
 	let shellPath = "/bin/sh";
-
 	async function startVm(ctx?: ExtensionContext): Promise<VM> {
 		ctx?.ui.setStatus("gondolin", ctx.ui.theme.fg("accent", `Gondolin: starting ${GUEST_WORKSPACE}`));
 		const created = await VM.create({
@@ -388,7 +378,6 @@ export default function (pi: ExtensionAPI) {
 		ctx?.ui.notify(`Gondolin VM ready. ${localCwd} is mounted at ${GUEST_WORKSPACE}.`, "info");
 		return created;
 	}
-
 	async function ensureVm(ctx?: ExtensionContext): Promise<VM> {
 		if (vm) return vm;
 		if (!vmStarting) {
@@ -398,11 +387,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		return vmStarting;
 	}
-
 	pi.on("session_start", async (_event, ctx) => {
 		await ensureVm(ctx);
 	});
-
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const activeVm = vm;
 		vm = undefined;
@@ -415,7 +402,6 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus("gondolin", undefined);
 		}
 	});
-
 	pi.registerCommand("gondolin", {
 		description: "Show Gondolin VM status",
 		handler: async (_args, ctx) => {
@@ -431,7 +417,6 @@ export default function (pi: ExtensionAPI) {
 			);
 		},
 	});
-
 	pi.registerTool({
 		...localRead,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -442,7 +427,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localWrite,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -453,7 +437,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localEdit,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -464,7 +447,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localBash,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -475,7 +457,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localLs,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -486,7 +467,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localFind,
 		async execute(id, params, signal, onUpdate, ctx) {
@@ -497,7 +477,6 @@ export default function (pi: ExtensionAPI) {
 			return tool.execute(id, params, signal, onUpdate);
 		},
 	});
-
 	pi.registerTool({
 		...localGrep,
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -505,12 +484,10 @@ export default function (pi: ExtensionAPI) {
 			return executeGondolinGrep(activeVm, localCwd, params, signal);
 		},
 	});
-
 	pi.on("user_bash", async (_event, ctx) => {
 		const activeVm = await ensureVm(ctx);
 		return { operations: createGondolinBashOps(activeVm, localCwd, shellPath) };
 	});
-
 	pi.on("before_agent_start", async (event, ctx) => {
 		await ensureVm(ctx);
 		const localLine = `Current working directory: ${localCwd}`;

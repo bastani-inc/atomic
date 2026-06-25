@@ -20,6 +20,8 @@
         "paths": {
             "@bastani/atomic": ["./packages/coding-agent/src/index.ts"],
             "@bastani/workflows": ["./packages/workflows/src/index.ts"],
+            "@bastani/workflows/builtin": ["./packages/workflows/builtin/index.ts"],
+            "@bastani/workflows/builtin/*": ["./packages/workflows/builtin/*"],
             "@bastani/workflows/*": ["./packages/workflows/src/*"],
             "@bastani/subagents": [
                 "./packages/subagents/src/extension/index.ts"
@@ -36,6 +38,7 @@
         }
     },
     "include": [
+        "packages/coding-agent/src/**/*.d.ts",
         "packages/workflows/**/*",
         "test/**/*",
         "examples/**/*",

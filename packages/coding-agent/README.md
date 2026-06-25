@@ -77,7 +77,7 @@ atomic
 /login  # Then select provider
 ```
 
-Then just talk to Atomic. By default, Atomic gives the model four tools: `read`, `write`, `edit`, and `bash`. The model uses these to fulfill your requests. Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
+Then just talk to Atomic. By default, Atomic gives the model six coding tools: `read`, `write`, `edit`, `bash`, `find`, and `search`. The model uses these to fulfill your requests. `read`, `search`, `write`, and successful `edit` calls emit session-scoped hashline anchors (`[path#TAG]` plus `LINE:text`) so the model can make stale-safe line edits; see [docs/tools.md](docs/tools.md). Add capabilities via [skills](#skills), [prompt templates](#prompt-templates), [extensions](#extensions), or [Atomic packages](#atomic-packages).
 
 **Platform notes:** [Windows](docs/windows.md) | [Termux (Android)](docs/termux.md) | [tmux](docs/tmux.md) | [Terminal setup](docs/terminal-setup.md) | [Shell aliases](docs/shell-aliases.md)
 
@@ -385,15 +385,16 @@ atomic install ssh://git@github.com/user/repo@v1    # tag or commit
 atomic remove npm:@foo/atomic-tools
 atomic uninstall npm:@foo/atomic-tools          # alias for remove
 atomic list
-atomic update                               # update Atomic and packages (skips pinned packages)
+atomic update                               # update Atomic only
+atomic update --all                         # update Atomic and packages
 atomic update --extensions                  # update packages only
 atomic update --self                        # update Atomic only
 atomic update --self --force                # reinstall Atomic even if current
-atomic update npm:@foo/atomic-tools             # update one package
+atomic update npm:@foo/atomic-tools         # update one package
 atomic config                               # enable/disable extensions, skills, prompts, themes
 ```
 
-Packages install to `~/.atomic/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.atomic/git/`, `.atomic/npm/`; legacy `.pi/git/` and `.pi/npm/` are compatibility fallbacks). Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
+Packages install to `~/.atomic/agent/git/` (git) or global npm. Use `-l` for project-local installs (`.atomic/git/`, `.atomic/npm/`; legacy `.pi/git/` and `.pi/npm/` are compatibility fallbacks). Git `@ref` values are pinned tags or commits; pinned packages are skipped by `atomic update --extensions` and `atomic update --all`, so use `atomic install git:host/user/repo@new-ref` to move an existing package to a new ref. Git packages install dependencies with `npm install --omit=dev` by default, so runtime deps must be listed under `dependencies`; when `npmCommand` is configured, git packages use plain `install` for compatibility with wrappers. If you use a Node version manager and want package installs to reuse a stable npm context, set `npmCommand` in `settings.json`, for example `["mise", "exec", "node@20", "--", "npm"]`.
 
 Create a package by adding an app-name manifest key to `package.json` (`atomic` for this package). The legacy `pi` key is still accepted as a backwards-compatible shim:
 
@@ -480,16 +481,17 @@ atomic [options] [@files...] [messages...]
 ### Package Commands
 
 ```bash
-atomic install <source> [-l]     # Install package, -l for project-local
-atomic remove <source> [-l]      # Remove package
-atomic uninstall <source> [-l]   # Alias for remove
-atomic update [source|self|atomic]   # Update Atomic and packages (skips pinned packages)
+atomic install <source> [-l]         # Install package, -l for project-local
+atomic remove <source> [-l]          # Remove package
+atomic uninstall <source> [-l]       # Alias for remove
+atomic update [source|self|atomic]   # Update Atomic only, or one package source
+atomic update --all                  # Update Atomic and packages
 atomic update --extensions           # Update packages only
 atomic update --self                 # Update Atomic only
 atomic update --self --force         # Reinstall Atomic even if current
-atomic update --extension <src>  # Update one package
-atomic list                      # List installed packages
-atomic config                    # Enable/disable package resources
+atomic update --extension <src>      # Update one package
+atomic list                          # List installed packages
+atomic config                        # Enable/disable package resources
 ```
 
 ### Modes
@@ -541,7 +543,7 @@ cat README.md | atomic -p "Summarize this text"
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools by default but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools by default |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. `read`/`search`/`write`/`edit` share session-scoped hashline snapshot tags for stale-safe line edits; copied hashline output is stripped by `write` only when it matches a known current-session snapshot. Archive selectors are Bun-native, and internal-resource selectors use the session router when available. Use `--exclude-tools` to disable one or more tools while leaving the rest available.
 
 ### Project Trust Options
 

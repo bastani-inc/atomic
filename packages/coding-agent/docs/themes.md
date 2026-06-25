@@ -37,6 +37,8 @@ Select a theme via `/settings` or in `settings.json`:
 }
 ```
 
+Use `"theme": "light-theme/dark-theme"` for automatic mode. Atomic chooses the first theme when the terminal reports a light color scheme and the second theme for dark terminals, and it follows terminal color-scheme changes when supported.
+
 On first run, Atomic detects your terminal background and defaults to `dark` or `light`.
 
 ## Creating a Custom Theme
@@ -137,7 +139,7 @@ vim ~/.atomic/agent/themes/my-theme.json
 }
 ```
 
-- `name` is required and must be unique.
+- `name` is required, must be unique, and must not contain `/`.
 - `vars` is optional. Define reusable colors here, then reference them in `colors`.
 - `colors` must define all 51 required tokens.
 

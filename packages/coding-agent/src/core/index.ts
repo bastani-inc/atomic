@@ -26,21 +26,6 @@ export {
 	createAgentSessionServices,
 } from "./agent-session-services.ts";
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
-export {
-	evaluateBashCommandPolicy,
-	formatBashCommandPolicyRejection,
-	parseBashCommandSegments,
-	validateBashCommandPolicy,
-	type BashCommandParseError,
-	type BashCommandParseResult,
-	type BashCommandPolicy,
-	type BashCommandPolicyDecision,
-	type BashCommandPolicyMatchMode,
-	type BashCommandPolicyRejection,
-	type BashCommandRule,
-	type BashCommandSegment,
-	type BashCommandSegmentSource,
-} from "./tools/bash-policy.ts";
 export type { ContextCompactionResult } from "./compaction/index.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";

@@ -7,6 +7,45 @@ export declare class CursorH2NativeStream {
   cancel(): Promise<void>
 }
 
+export declare class PtySession {
+  constructor()
+  start(options: PtyStartOptions, onChunk?: ((error: Error | null, chunk: string) => void) | undefined | null): Promise<PtyRunResult>
+  write(data: string): void
+  resize(cols: number, rows: number): void
+  kill(): void
+}
+
+export interface BlockRange {
+  /** 1-indexed inclusive first line of the resolved block. */
+  startLine: number
+  /** 1-indexed inclusive last line of the resolved block. */
+  endLine: number
+}
+
+/**
+ * Resolve the block beginning on `options.line`. Returns `None` when the
+ * language is unrecognized, the line is out of range / blank, no node begins
+ * there, or the resolved subtree contains a syntax error.
+ */
+export declare function blockRangeAt(options: BlockRangeOptions): BlockRange | null
+
+export interface BlockRangeOptions {
+  /** Source code to inspect. */
+  code: string
+  /** File path used to infer the language by extension. */
+  path: string
+  /** 1-indexed source line the block must begin on. */
+  line: number
+}
+
+/** A context line (before or after a match). */
+export interface ContextLine {
+  /** 1-indexed line number in the source file. */
+  lineNumber: number
+  /** Raw line content (trimmed line ending). */
+  line: string
+}
+
 export declare function cursorH2CancelOperation(operationId: string): Promise<void>
 
 export declare function cursorH2OpenStream(configJson: string, initialBody?: Buffer | undefined | null): Promise<CursorH2NativeStream>
@@ -17,4 +56,303 @@ export interface CursorH2UnaryResponse {
   statusCode?: number
   headersJson: string
   body: Buffer
+}
+
+/** Resolved filesystem entry kind for glob filters and match metadata. */
+export declare const enum FileType {
+  /** Regular file. */
+  File = 1,
+  /** Directory. */
+  Dir = 2,
+  /** Symbolic link. */
+  Symlink = 3
+}
+
+/**
+ * Find filesystem entries matching a glob pattern.
+ *
+ * Resolves the search root, scans entries, applies glob and optional file-type
+ * filters, and optionally streams each accepted match through `on_match`.
+ *
+ * If `sortByMtime` is enabled with a finite `maxResults`, uncached scans keep
+ * only the current top results while traversing instead of collecting the full
+ * tree.
+ *
+ * # Errors
+ * Returns an error when the search path cannot be resolved, the path is not a
+ * directory, the glob pattern is invalid, or cancellation/timeout is
+ * triggered.
+ */
+export declare function glob(options: GlobOptions, onMatch?: ((error: Error | null, match: GlobMatch) => void) | undefined | null): Promise<GlobResult>
+
+/** A single filesystem entry from a directory scan. */
+export interface GlobMatch {
+  /** Relative path from the search root, using forward slashes. */
+  path: string
+  /** Resolved filesystem type for the match. */
+  fileType: FileType
+  /**
+   * Modification time in milliseconds since Unix epoch (from
+   * `symlink_metadata`).
+   */
+  mtime?: number
+  /** File size in bytes for regular files. */
+  size?: number
+}
+
+/** Input options for `glob`, including traversal, filtering, and cancellation. */
+export interface GlobOptions {
+  /** Glob pattern to match (e.g., "*.ts"). */
+  pattern: string
+  /** Directory to search. */
+  path: string
+  /**
+   * Filter by file type: "file", "dir", or "symlink". Symlinks are
+   * matched for file/dir filters based on their target type.
+   */
+  fileType?: FileType
+  /** Match simple patterns recursively by default (`*.ts` -> recursive). */
+  recursive?: boolean
+  /** Include hidden files (default: false). */
+  hidden?: boolean
+  /** Maximum number of results to return. */
+  maxResults?: number
+  /** Respect .gitignore files (default: true). */
+  gitignore?: boolean
+  /** Enable shared filesystem scan cache (default: false). */
+  cache?: boolean
+  /** Sort results by mtime (most recent first) before applying limit. */
+  sortByMtime?: boolean
+  /**
+   * Include `node_modules` entries when the pattern does not explicitly
+   * mention them.
+   */
+  includeNodeModules?: boolean
+  /** Abort signal for cancelling the operation. */
+  signal?: unknown
+  /** Timeout in milliseconds for the operation. */
+  timeoutMs?: number
+}
+
+/** Result payload returned by a glob operation. */
+export interface GlobResult {
+  /** Matched filesystem entries. */
+  matches: Array<GlobMatch>
+  /** Number of returned matches (`matches.len()`), clamped to `u32::MAX`. */
+  totalMatches: number
+}
+
+/**
+ * Search files for a regex pattern.
+ *
+ * # Arguments
+ * - `options`: Pattern, path, filters, and output mode.
+ * - `on_match`: Optional callback invoked per match/result.
+ *
+ * # Returns
+ * Aggregated results across matching files.
+ */
+export declare function grep(options: GrepOptions, onMatch?: ((error: Error | null, match: GrepMatch) => void) | undefined | null): Promise<GrepResult>
+
+/** A single match in a grep result. */
+export interface GrepMatch {
+  /** File path for the match (relative for directory searches). */
+  path: string
+  /** 1-indexed line number (0 for count-only entries). */
+  lineNumber: number
+  /** The matched line content (empty for count-only entries). */
+  line: string
+  /** Context lines before the match. */
+  contextBefore?: Array<ContextLine>
+  /** Context lines after the match. */
+  contextAfter?: Array<ContextLine>
+  /** Whether the line was truncated. */
+  truncated?: boolean
+  /** Per-file match count (count mode only). */
+  matchCount?: number
+}
+
+/** Options for searching files on disk. */
+export interface GrepOptions {
+  /** Regex pattern to search for. */
+  pattern: string
+  /** Directory or file to search. */
+  path: string
+  /** Workspace/root used to evaluate path-qualified glob filters for explicit files. */
+  cwd?: string
+  /** Glob filter for filenames (e.g., "*.ts"). */
+  glob?: string
+  /** Filter by file type (e.g., "js", "py", "rust"). */
+  type?: string
+  /** Case-insensitive search. */
+  ignoreCase?: boolean
+  /** Enable multiline matching. */
+  multiline?: boolean
+  /** Include hidden files (default: true). */
+  hidden?: boolean
+  /** Respect .gitignore files (default: true). */
+  gitignore?: boolean
+  /** Enable shared filesystem scan cache (default: false). */
+  cache?: boolean
+  /** Maximum number of matches to return. */
+  maxCount?: number
+  /** Skip first N matches. */
+  offset?: number
+  /** Lines of context before matches. */
+  contextBefore?: number
+  /** Lines of context after matches. */
+  contextAfter?: number
+  /** Lines of context before/after matches (legacy). */
+  context?: number
+  /** Truncate lines longer than this (characters). */
+  maxColumns?: number
+  /** Output mode (content, filesWithMatches, or count). */
+  mode?: GrepOutputMode
+  /**
+   * Maximum matches collected per file (content mode). Keeps one hot file
+   * from exhausting the global `max_count` budget before other files are
+   * reached.
+   */
+  maxCountPerFile?: number
+  /** Abort signal for cancelling the operation. */
+  signal?: unknown
+  /** Timeout in milliseconds for the operation. */
+  timeoutMs?: number
+}
+
+/** Output mode for [`search`] and [`grep`] (string values match JS callers). */
+export declare const enum GrepOutputMode {
+  /** Emit matched lines (and optional context lines). */
+  Content = 'content',
+  /** Emit per-file or total counts instead of line content. */
+  Count = 'count',
+  /** Emit one row per file that matched, without line content. */
+  FilesWithMatches = 'filesWithMatches'
+}
+
+/** Result of searching files. */
+export interface GrepResult {
+  /** Matches or per-file counts, depending on output mode. */
+  matches: Array<GrepMatch>
+  /**
+   * Total matches across all files, or matched file count in filesWithMatches
+   * mode.
+   */
+  totalMatches: number
+  /** Number of files with at least one match. */
+  filesWithMatches: number
+  /** Number of files searched. */
+  filesSearched: number
+  /** Whether the limit/offset stopped the search early. */
+  limitReached?: boolean
+  /** Number of files skipped because they exceed the size limit. */
+  skippedOversized?: number
+}
+
+/**
+ * Quick check if content matches a pattern.
+ *
+ * # Arguments
+ * - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `pattern`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `ignore_case`: Case-insensitive matching.
+ * - `multiline`: Enable multiline regex mode.
+ *
+ * # Returns
+ * True if any match exists; false on no match.
+ */
+export declare function hasMatch(content: string | Uint8Array, pattern: string | Uint8Array, ignoreCase?: boolean | undefined | null, multiline?: boolean | undefined | null): boolean
+
+/**
+ * Invalidate the filesystem scan cache.
+ *
+ * When called with a path, removes entries for roots containing that path.
+ * When called without a path, clears the entire cache.
+ *
+ * Intended to be called after agent file mutations (write, edit, rename,
+ * delete).
+ */
+export declare function invalidateFsScanCache(path?: string | undefined | null): void
+
+/** A single match in the content. */
+export interface Match {
+  /** 1-indexed line number. */
+  lineNumber: number
+  /** The matched line content. */
+  line: string
+  /** Context lines before the match. */
+  contextBefore?: Array<ContextLine>
+  /** Context lines after the match. */
+  contextAfter?: Array<ContextLine>
+  /** Whether the line was truncated. */
+  truncated?: boolean
+}
+
+export interface PtyRunResult {
+  exitCode?: number
+  cancelled: boolean
+  timedOut: boolean
+}
+
+export interface PtyStartOptions {
+  command: string
+  cwd?: string
+  env?: Record<string, string>
+  timeoutMs?: number
+  signal?: unknown
+  cols?: number
+  rows?: number
+  shell?: string
+  shellArgs?: Array<string>
+  commandTransport?: string
+  closeStdinAfterCommand?: boolean
+}
+
+/**
+ * Search content for a pattern (one-shot, compiles pattern each time).
+ * For repeated searches with the same pattern, use [`grep`] with file filters.
+ *
+ * # Arguments
+ * - `content`: `Uint8Array`/`Buffer` (zero-copy) or `string` (UTF-8).
+ * - `options`: Regex settings, context, and output mode.
+ *
+ * # Returns
+ * Match list plus counts/limit status; errors are surfaced in `error`.
+ */
+export declare function search(content: string | Uint8Array, options: SearchOptions): SearchResult
+
+/** Options for searching file content. */
+export interface SearchOptions {
+  /** Regex pattern to search for. */
+  pattern: string
+  /** Case-insensitive search. */
+  ignoreCase?: boolean
+  /** Enable multiline matching. */
+  multiline?: boolean
+  /** Maximum number of matches to return. */
+  maxCount?: number
+  /** Skip first N matches. */
+  offset?: number
+  /** Lines of context before matches. */
+  contextBefore?: number
+  /** Lines of context after matches. */
+  contextAfter?: number
+  /** Lines of context before/after matches (legacy). */
+  context?: number
+  /** Truncate lines longer than this (characters). */
+  maxColumns?: number
+  /** Output mode (content or count). */
+  mode?: GrepOutputMode
+}
+
+/** Result of searching content. */
+export interface SearchResult {
+  /** All matches found. */
+  matches: Array<Match>
+  /** Total number of matches (may exceed `matches.len()` due to offset/limit). */
+  matchCount: number
+  /** Whether the limit was reached. */
+  limitReached: boolean
+  /** Error message, if any. */
+  error?: string
 }

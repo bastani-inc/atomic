@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createEditTool } from "../src/core/tools/edit.ts";
 import { withFileMutationQueue } from "../src/core/tools/file-mutation-queue.ts";
+import { createHashlineSnapshotStore } from "../src/core/tools/hashline.ts";
 import { createWriteTool } from "../src/core/tools/write.ts";
 
 function delay(ms: number): Promise<void> {
@@ -99,12 +100,16 @@ describe("withFileMutationQueue", () => {
 });
 
 describe("built-in edit and write tools", () => {
-	it("preserves both parallel edits on the same file", async () => {
+	it("rejects stale parallel hashline edits without corrupting the file", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "parallel-edit.txt");
-		await writeFile(filePath, "alpha\nbeta\ngamma\n", "utf8");
+		const original = "alpha\nbeta\ngamma\n";
+		await writeFile(filePath, original, "utf8");
+		const store = createHashlineSnapshotStore();
+		const tag = store.record(filePath, dir, original).tag;
 
 		const editTool = createEditTool(dir, {
+			hashlineStore: store,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -119,21 +124,28 @@ describe("built-in edit and write tools", () => {
 			},
 		});
 
-		await Promise.all([
-			editTool.execute("call-1", { path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] }),
-			editTool.execute("call-2", { path: filePath, edits: [{ oldText: "beta", newText: "BETA" }] }),
+		const results = await Promise.allSettled([
+			editTool.execute("call-1", { input: `[parallel-edit.txt#${tag}]\nreplace 1..1:\n+ALPHA` }),
+			editTool.execute("call-2", { input: `[parallel-edit.txt#${tag}]\nreplace 2..2:\n+BETA` }),
 		]);
 
+		expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+		expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
 		const content = await readFile(filePath, "utf8");
-		expect(content).toBe("ALPHA\nBETA\ngamma\n");
+		expect(["ALPHA\nbeta\ngamma\n", "alpha\nBETA\ngamma\n"]).toContain(content);
 	});
 
-	it("shares the queue between edit and write", async () => {
+	it("shares the queue between hashline edit and write", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "mixed.txt");
-		await writeFile(filePath, "original\n", "utf8");
+		const original = "original\n";
+		await writeFile(filePath, original, "utf8");
+		const store = createHashlineSnapshotStore();
+		const tag = store.record(filePath, dir, original).tag;
 
+		const editWriteStarted = createDeferred();
 		const editTool = createEditTool(dir, {
+			hashlineStore: store,
 			operations: {
 				access,
 				readFile: async (path) => {
@@ -142,6 +154,7 @@ describe("built-in edit and write tools", () => {
 					return buffer;
 				},
 				writeFile: async (path, content) => {
+					if (content === "edited\n") editWriteStarted.resolve();
 					await delay(30);
 					await writeFile(path, content, "utf8");
 				},
@@ -157,20 +170,12 @@ describe("built-in edit and write tools", () => {
 			},
 		});
 
-		const editPromise = editTool.execute("call-1", {
-			path: filePath,
-			edits: [{ oldText: "original", newText: "edited" }],
-		});
-		await delay(5);
-		const writePromise = writeTool.execute("call-2", {
-			path: filePath,
-			content: "replacement\n",
-		});
+		const editPromise = editTool.execute("call-1", { input: `[mixed.txt#${tag}]\nreplace 1..1:\n+edited` });
+		await editWriteStarted.promise;
+		const writePromise = writeTool.execute("call-2", { path: filePath, content: "replacement\n" });
 
 		await Promise.all([editPromise, writePromise]);
-
-		const content = await readFile(filePath, "utf8");
-		expect(content).toBe("replacement\n");
+		expect(await readFile(filePath, "utf8")).toBe("replacement\n");
 	});
 
 	it("keeps write queue locked while an aborted write is still in flight", async () => {
@@ -192,7 +197,6 @@ describe("built-in edit and write tools", () => {
 						firstWriteSettled = true;
 						return;
 					}
-
 					if (content === "second\n") {
 						expect(firstWriteSettled).toBe(true);
 						secondWriteStarted.resolve();
@@ -213,21 +217,23 @@ describe("built-in edit and write tools", () => {
 		finishFirstWrite.resolve();
 		await expect(firstWrite).rejects.toThrow("Operation aborted");
 		await secondWrite;
-
-		const content = await readFile(filePath, "utf8");
-		expect(content).toBe("second\n");
+		expect(await readFile(filePath, "utf8")).toBe("second\n");
 	});
 
-	it("keeps edit queue locked while an aborted edit write is still in flight", async () => {
+	it("keeps edit queue locked while an aborted hashline edit write is still in flight", async () => {
 		const dir = await createTempDir();
 		const filePath = join(dir, "abort-edit.txt");
-		await writeFile(filePath, "alpha\nbeta\n", "utf8");
+		const original = "alpha\nbeta\n";
+		await writeFile(filePath, original, "utf8");
+		const store = createHashlineSnapshotStore();
+		const tag = store.record(filePath, dir, original).tag;
 		const firstWriteStarted = createDeferred();
 		const finishFirstWrite = createDeferred();
 		const secondWriteStarted = createDeferred();
 		let firstWriteSettled = false;
 
 		const editTool = createEditTool(dir, {
+			hashlineStore: store,
 			operations: {
 				access,
 				readFile,
@@ -239,8 +245,15 @@ describe("built-in edit and write tools", () => {
 						firstWriteSettled = true;
 						return;
 					}
-
-					if (content === "ALPHA\nBETA\n" || content === "alpha\nBETA\n") {
+					await writeFile(path, content, "utf8");
+				},
+			},
+		});
+		const writeTool = createWriteTool(dir, {
+			operations: {
+				mkdir: async () => {},
+				writeFile: async (path, content) => {
+					if (content === "second\n") {
 						expect(firstWriteSettled).toBe(true);
 						secondWriteStarted.resolve();
 					}
@@ -250,25 +263,16 @@ describe("built-in edit and write tools", () => {
 		});
 
 		const controller = new AbortController();
-		const firstEdit = editTool.execute(
-			"call-1",
-			{ path: filePath, edits: [{ oldText: "alpha", newText: "ALPHA" }] },
-			controller.signal,
-		);
+		const firstEdit = editTool.execute("call-1", { input: `[abort-edit.txt#${tag}]\nreplace 1..1:\n+ALPHA` }, controller.signal);
 		await firstWriteStarted.promise;
 		controller.abort();
 
-		const secondEdit = editTool.execute("call-2", {
-			path: filePath,
-			edits: [{ oldText: "beta", newText: "BETA" }],
-		});
+		const secondWrite = writeTool.execute("call-2", { path: filePath, content: "second\n" });
 		expect(await resolvesWithin(secondWriteStarted.promise, 20)).toBe(false);
 
 		finishFirstWrite.resolve();
 		await expect(firstEdit).rejects.toThrow("Operation aborted");
-		await secondEdit;
-
-		const content = await readFile(filePath, "utf8");
-		expect(content).toBe("ALPHA\nBETA\n");
+		await secondWrite;
+		expect(await readFile(filePath, "utf8")).toBe("second\n");
 	});
 });

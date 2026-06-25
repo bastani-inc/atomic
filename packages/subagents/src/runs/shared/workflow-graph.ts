@@ -5,12 +5,12 @@ export interface WorkflowGraphBuildInput {
 	runId: string;
 	mode?: SubagentRunMode;
 	steps: ChainStep[];
-	results?: Array<Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "error" | "acceptance">>;
+	results?: Array<Pick<SingleResult, "exitCode" | "detached" | "interrupted" | "error">>;
 	currentFlatIndex?: number;
 	currentStepIndex?: number;
 	stepStatuses?: Array<{ status?: string; error?: string }>;
 	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
-	dynamicGroupStatuses?: Record<number, { status: WorkflowNodeStatus; error?: string; acceptance?: SingleResult["acceptance"] }>;
+	dynamicGroupStatuses?: Record<number, { status: WorkflowNodeStatus; error?: string }>;
 }
 
 function normalizeStatus(status: string | undefined): WorkflowNodeStatus | undefined {
@@ -98,7 +98,6 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 					stepIndex,
 					outputName: task.as,
 					structured: Boolean(task.outputSchema),
-					acceptanceStatus: input.results?.[flatIndex]?.acceptance?.status,
 					error: input.stepStatuses?.[flatIndex]?.error ?? input.results?.[flatIndex]?.error,
 				};
 				children.push(child);
@@ -142,7 +141,6 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 					itemKey: task.itemKey,
 					outputName: task.outputName,
 					structured: task.structured,
-					acceptanceStatus: input.results?.[task.flatIndex]?.acceptance?.status,
 					error: input.stepStatuses?.[task.flatIndex]?.error ?? input.results?.[task.flatIndex]?.error ?? task.error,
 				};
 				children.push(child);
@@ -159,7 +157,6 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 				stepIndex,
 				outputName: step.collect.as,
 				structured: Boolean(step.collect.outputSchema),
-				acceptanceStatus: groupOverride?.acceptance?.status,
 				error: groupOverride?.error,
 				dynamic: {
 					sourceOutput: step.expand.from.output,
@@ -188,7 +185,6 @@ export function buildWorkflowGraphSnapshot(input: WorkflowGraphBuildInput): Work
 			stepIndex,
 			outputName: seq.as,
 			structured: Boolean(seq.outputSchema),
-			acceptanceStatus: input.results?.[flatIndex]?.acceptance?.status,
 			error: input.stepStatuses?.[flatIndex]?.error ?? input.results?.[flatIndex]?.error,
 		});
 		pushPhase(phases, seq.phase, id);

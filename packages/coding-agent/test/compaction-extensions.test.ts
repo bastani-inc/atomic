@@ -161,16 +161,19 @@ describe("Compaction extensions", () => {
 		createSession([extension]);
 		populateCompactableSession();
 
-		const result = await session.compact();
+		const result = await session.compact({ compression_ratio: 0.7, preserve_recent: 3, query: "focus on current task" });
 
 		const beforeEvents = capturedEvents.filter((event): event is SessionBeforeCompactEvent => event.type === "session_before_compact");
 		const compactEvents = capturedEvents.filter((event): event is SessionCompactEvent => event.type === "session_compact");
 		expect(beforeEvents).toHaveLength(1);
 		expect(compactEvents).toHaveLength(1);
 		expect(beforeEvents[0].reason).toBe("manual");
-		expect(beforeEvents[0].mode).toBe("standard");
+		expect(beforeEvents[0].parameters).toEqual({ compression_ratio: 0.7, preserve_recent: 3, query: "focus on current task" });
+		expect(beforeEvents[0].preparation.parameters).toEqual(beforeEvents[0].parameters);
 		expect(beforeEvents[0].preparation.transcript.entries.length).toBeGreaterThan(0);
 		expect(compactEvents[0].contextCompactionEntry.type).toBe("context_compaction");
+		expect(compactEvents[0].parameters).toEqual(beforeEvents[0].parameters);
+		expect(compactEvents[0].result.parameters).toEqual(beforeEvents[0].parameters);
 		expect(compactEvents[0].result).toEqual(result);
 		expect(compactEvents[0].fromExtension).toBe(true);
 	});
@@ -244,6 +247,9 @@ describe("Compaction extensions", () => {
 describe("Compaction extension types", () => {
 	it("accepts deletion requests and context compaction result events", () => {
 		const beforeHandler = (event: SessionBeforeCompactEvent): SessionBeforeCompactResult | undefined => {
+			expect(event.parameters.compression_ratio).toBeGreaterThan(0);
+			expect(event.parameters.preserve_recent).toBeGreaterThanOrEqual(0);
+			expect(event.parameters.query.length).toBeGreaterThan(0);
 			const deletable = event.preparation.transcript.entries.find((entry) => !entry.protected);
 			if (!deletable) return undefined;
 			const request: ContextDeletionRequest = { deletions: [{ kind: "entry", entryId: deletable.entryId }] };
@@ -251,6 +257,7 @@ describe("Compaction extension types", () => {
 		};
 		const compactHandler = (event: SessionCompactEvent): AgentMessage | undefined => {
 			expect(event.contextCompactionEntry.type).toBe("context_compaction");
+			expect(event.parameters).toEqual(event.result.parameters);
 			expect(event.result.deletedTargets).toBe(event.contextCompactionEntry.deletedTargets);
 			return undefined;
 		};

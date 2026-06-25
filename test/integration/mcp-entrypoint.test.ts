@@ -23,7 +23,7 @@ import {
 } from "../../packages/workflows/src/extension/index.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { Type } from "typebox";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { McpScopeSetPayload } from "../../packages/workflows/src/extension/mcp.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { waitForRun } from "../support/helpers.ts";
@@ -33,17 +33,21 @@ import type { WorkflowToolResult } from "../../packages/workflows/src/extension/
 // Test workflow fixture: single restricted stage with MCP scoping
 // ---------------------------------------------------------------------------
 
-const mcpRestrictedWorkflow = defineWorkflow("mcp-restricted")
-  .description("Workflow with MCP-scoped restricted stage")
-  .output("done", Type.Boolean())
-  .run(async (ctx) => {
+const mcpRestrictedWorkflow = workflow({
+  name: "mcp-restricted",
+  description: "Workflow with MCP-scoped restricted stage",
+  inputs: {},
+  outputs: {
+    done: Type.Boolean(),
+  },
+  run: async (ctx) => {
     const stage = ctx.stage("restricted", {
       mcp: { allow: ["github"], deny: ["filesystem"] },
     });
     await stage.prompt("go");
     return { done: true };
-  })
-  .compile();
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Shared: noop adapters (no real agent calls needed for MCP scope tests)

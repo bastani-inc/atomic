@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 
 function stage(id: string, parentIds: readonly string[], status: StageSnapshot["status"] = "pending"): StageSnapshot {
   return { id, name: id, parentIds, status, toolEvents: [] };
@@ -93,12 +93,16 @@ describe("cascade pause", () => {
       dispose() {},
       getLastAssistantText() { return undefined; },
     };
-    const def = defineWorkflow("notice")
-      .run(async (ctx) => {
+    const def = workflow({
+      name: "notice",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
         await ctx.stage("A").setModel("haiku" as never);
         return {};
-      })
-      .compile();
+      },
+    });
 
     await run(def, {}, { store, adapters: { agentSession: { create: async () => fakeSession as never } } });
 

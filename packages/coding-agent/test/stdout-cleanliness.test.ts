@@ -1,18 +1,14 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR, VERSION } from "../src/config.ts";
-
-const cliPath = resolve(__dirname, "../src/cli.ts");
+import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	removeTempDirs(tempDirs);
 });
 
 function createTempDir(): string {
@@ -25,31 +21,12 @@ async function runCliInProject(
 	args: string[],
 	options: { agentDir: string; projectDir: string },
 ): Promise<{ stdout: string; stderr: string; code: number | null }> {
-	return await new Promise((resolvePromise, reject) => {
-		// Bun (the supported runtime; process.execPath under `bunx vitest`) runs
-		// TypeScript entrypoints natively, so launch the CLI directly without a
-		// transpiler indirection.
-		const child = spawn(process.execPath, [cliPath, ...args], {
-			cwd: options.projectDir,
-			env: {
-				...process.env,
-				[ENV_AGENT_DIR]: options.agentDir,
-			},
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-
-		let stdout = "";
-		let stderr = "";
-		child.stdout.on("data", (chunk) => {
-			stdout += chunk.toString();
-		});
-		child.stderr.on("data", (chunk) => {
-			stderr += chunk.toString();
-		});
-		child.on("error", reject);
-		child.on("close", (code) => {
-			resolvePromise({ stdout, stderr, code });
-		});
+	return await runCliProcess(args, {
+		cwd: options.projectDir,
+		env: {
+			...process.env,
+			[ENV_AGENT_DIR]: options.agentDir,
+		},
 	});
 }
 

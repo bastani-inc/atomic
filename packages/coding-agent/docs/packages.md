@@ -35,15 +35,18 @@ atomic install ./relative/path/to/package
 
 atomic remove npm:@foo/bar
 atomic list                     # show installed packages from settings
-atomic update                   # update Atomic and all non-pinned packages
-atomic update --extensions      # update all non-pinned packages only
+atomic update                   # update Atomic only
+atomic update --all             # update Atomic, update packages, and reconcile pinned git refs
+atomic update --extensions      # update packages and reconcile pinned git refs only
 atomic update --self            # update Atomic only
 atomic update --self --force    # reinstall Atomic even if current
 atomic update npm:@foo/bar      # update one package
 atomic update --extension npm:@foo/bar
 ```
 
-By default, `install` and `remove` write to global settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall).
+
+By default, `install` and `remove` write to user settings (`~/.atomic/agent/settings.json`). Use `-l` to write to project settings (`.atomic/settings.json`; legacy `.pi/settings.json` is also read) instead. Project settings can be shared with your team, and Atomic installs any missing packages automatically on startup after the project is trusted.
 
 To try a package without installing it, use `--extension` or `-e`. This installs to a temporary directory for the current run only:
 
@@ -53,6 +56,8 @@ atomic -e git:github.com/user/repo
 ```
 
 For local directories, `-e <dir>` also borrows project-local Atomic resources under `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` when present. Because borrowed extensions and workflows can execute code, Atomic resolves trust for that extension source before loading those borrowed project-local resources.
+
+Workflows discovered through `-e` keep that same trusted resource set when they create child stage sessions. Stage agents get fresh resource loaders seeded from the parent snapshot, so package tools/extensions, subagents and agent definitions, skills, prompt templates, themes, workflows, and trusted borrowed project-local resources remain available in workflow stages unless the stage supplies its own explicit `resourceLoader`.
 
 ## Package Sources
 
@@ -65,9 +70,9 @@ npm:@scope/pkg@1.2.3
 npm:pkg
 ```
 
-- Versioned specs are pinned and skipped by package updates (`atomic update`, `atomic update --extensions`).
-- Global installs use the configured npm-compatible package-manager command (npm by default).
-- Project installs go under `.atomic/npm/`.
+- Versioned specs are pinned and skipped by package updates (`atomic update --extensions`, `atomic update --all`).
+- User installs use the configured npm-compatible package-manager command (npm by default) and resolve from the managed Atomic npm area.
+- Project installs go under `.atomic/npm/` (legacy `.pi/npm/` remains a compatibility fallback).
 - Set `npmCommand` in `settings.json` to pin npm package lookup and install operations to a specific wrapper command such as `mise` or `asdf`.
 
 Example:
@@ -92,9 +97,10 @@ ssh://git@github.com/user/repo@v1
 - HTTPS and SSH URLs are both supported.
 - SSH URLs use your configured SSH keys automatically (respects `~/.ssh/config`).
 - For non-interactive runs (for example CI), you can set `GIT_TERMINAL_PROMPT=0` to disable credential prompts and set `GIT_SSH_COMMAND` (for example `ssh -o BatchMode=yes -o ConnectTimeout=5`) to fail fast.
-- Refs pin the package and skip package updates (`atomic update`, `atomic update --extensions`).
-- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project).
-- Runs the configured npm-compatible install command after clone or pull if `package.json` exists.
+- Refs are pinned tags or commits. `atomic update --extensions` and `atomic update --all` do not move them to newer refs, but they do reconcile an existing clone to the configured ref.
+- Use `atomic install git:host/user/repo@new-ref` to update settings and move an existing package to a new pinned ref.
+- Cloned to `~/.atomic/agent/git/<host>/<path>` (global) or `.atomic/git/<host>/<path>` (project; legacy `.pi/git/` remains a compatibility fallback).
+- When reconciliation changes the checkout, Atomic resets and cleans the clone, then runs the configured npm-compatible install command if `package.json` exists.
 
 **SSH examples:**
 ```bash
@@ -168,7 +174,7 @@ If no app manifest (`atomic`, or legacy `pi`) is present, Atomic auto-discovers 
 - `skills/` recursively finds `SKILL.md` folders and loads top-level `.md` files as skills
 - `prompts/` loads `.md` files
 - `themes/` loads `.json` files
-- `workflows/` loads workflow SDK files (`.ts`, `.js`, `.mjs`, `.cjs`); `workflow/` is also accepted as a singular alias. Workflow files should `import { defineWorkflow, Type } from "@bastani/workflows"` and export `defineWorkflow(...).compile()` output. TypeScript package authors do not need a hand-authored `.d.ts`, a `declare module` shim, or a `tsconfig` `paths` alias for the SDK import — the SDK types ship with `@bastani/atomic`. A package that also imports `@bastani/atomic` picks them up automatically; a pure workflow-only package adds one opt-in line (`compilerOptions.types: ["@bastani/atomic/workflows/ambient"]` or a `/// <reference types="@bastani/atomic/workflows/ambient" />` directive). See the workflow SDK typing guidance under Programmatic Usage in the workflows guide.
+- `workflows/` loads workflow SDK files (`.ts`, `.js`, `.mjs`, `.cjs`); `workflow/` is also accepted as a singular alias. Workflow files should `import { workflow } from "@bastani/workflows"`, import `Type` from `typebox`, and export the `workflow({ ... })` result. TypeScript package authors do not need a hand-authored `.d.ts`, a `declare module` shim, or a `tsconfig` `paths` alias for the SDK import — the SDK types ship with `@bastani/atomic`. A package that also imports `@bastani/atomic` picks them up automatically; a pure workflow-only package adds one opt-in line (`compilerOptions.types: ["@bastani/atomic/workflows/ambient"]` or a `/// <reference types="@bastani/atomic/workflows/ambient" />` directive). See the workflow SDK typing guidance under Programmatic Usage in the workflows guide.
 
 When a package manifest exists, declared resource arrays normally define what loads. Workflows are the exception: if `atomic.workflows` / legacy `pi.workflows` is omitted, Atomic still checks conventional `workflows/` and `workflow/` directories.
 
@@ -178,7 +184,7 @@ Third-party runtime dependencies belong in `dependencies` in `package.json`. Dep
 
 Atomic bundles core packages for extensions and skills. If you import any of these, list them in `peerDependencies` with a `"*"` range and do not bundle them: `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, `@bastani/atomic`, `@earendil-works/pi-tui`, `typebox`.
 
-Workflow packages should author workflow files with `import { defineWorkflow, Type } from "@bastani/workflows"` and export definitions produced by `defineWorkflow(...).compile()`. Do not use the removed `runWorkflow` object-form API, and do not hand-roll objects with `__piWorkflow: true`; discovery accepts only compiled definitions. `@bastani/workflows` is not a separate npm package: its types resolve through `@bastani/atomic`, so list `@bastani/atomic` and `typebox` in `peerDependencies` (the workflow SDK's emitted types reference `typebox`). A pure workflow-only package also adds the one-line ambient opt-in noted above; a package that imports `@bastani/atomic` elsewhere picks the types up automatically.
+Workflow packages should author workflow files with `import { workflow } from "@bastani/workflows"`, `import { Type } from "typebox"`, and export definitions produced by `workflow({ ... })`. Do not use the removed `runWorkflow` object-form API, and do not hand-roll objects with `__piWorkflow: true`; discovery accepts only definitions minted by `workflow({ ... })`. `@bastani/workflows` is not a separate npm package: its types resolve through `@bastani/atomic`, so list `@bastani/atomic` and `typebox` in `peerDependencies`. A pure workflow-only package also adds the one-line ambient opt-in noted above; a package that imports `@bastani/atomic` elsewhere picks the types up automatically.
 
 Package-authored workflows should follow the same guiding principles as project workflows mentioned in docs/workflows.md.
 

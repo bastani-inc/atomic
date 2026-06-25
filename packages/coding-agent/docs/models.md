@@ -156,10 +156,12 @@ The `apiKey` and `headers` fields support three formats:
   ```json
   "apiKey": "$MY_API_KEY"
   ```
-- **Literal value:** Used directly; bare strings are not environment variable references
+- **Literal value:** Used directly when the value does not use shell-command or explicit environment-variable syntax. Use `$MY_API_KEY`/`${MY_API_KEY}` for new environment-variable references; legacy uppercase env-var-like values may be migrated as described below.
   ```json
   "apiKey": "sk-..."
   ```
+
+Legacy uppercase env-var-like values in existing `models.json` provider config, such as `MY_API_KEY`, are migrated to `$MY_API_KEY` on startup only when that environment variable is present during migration; otherwise the value is preserved as a literal. New configs should use explicit `$ENV_VAR`/`${ENV_VAR}` syntax for environment variables.
 
 For `models.json`, shell commands are resolved at request time. Atomic intentionally does not apply built-in TTL, stale reuse, or recovery logic for arbitrary commands. Different commands need different caching and failure strategies, and Atomic cannot infer the right one.
 
@@ -191,19 +193,20 @@ If your command is slow, expensive, rate-limited, or should keep using a previou
 | Field              | Required | Default           | Description                                                                                                |
 | ------------------ | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
 | `id`               | Yes      | —                 | Model identifier (passed to the API)                                                                       |
-| `name`             | No       | `id`              | Human-readable model label. Used for matching (`--model` patterns) and shown in model details/status text. |
+| `name`             | No       | `id`              | Human-readable model label. Used for matching (`--model` patterns) and shown as secondary model detail text. |
 | `api`              | No       | provider's `api`  | Override provider's API for this model                                                                     |
 | `reasoning`        | No       | `false`           | Supports extended thinking                                                                                 |
 | `thinkingLevelMap` | No       | omitted           | Maps Atomic thinking levels to provider values and marks unsupported levels (see below)                    |
 | `input`            | No       | `["text"]`        | Input types: `["text"]` or `["text", "image"]`                                                             |
-| `contextWindow`    | No       | `128000`          | Context window size in tokens                                                                              |
+| `contextWindow`    | No       | `128000`          | Default/effective context window size in tokens                                                            |
+| `contextWindowOptions` | No   | omitted           | Additional/selectable context windows in tokens (see below)                                                |
 | `maxTokens`        | No       | `16384`           | Maximum output tokens                                                                                      |
 | `cost`             | No       | all zeros         | `{"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}` (per million tokens)                          |
 | `compat`           | No       | provider `compat` | Provider compatibility overrides. Merged with provider-level `compat` when both are set.                   |
 
 Current behavior:
-- `/model` and `--list-models` list entries by model `id`.
-- The configured `name` is used for model matching and detail/status text.
+- `/model`, `--list-models`, and the interactive footer display entries by model `id`.
+- The configured `name` is used for model matching and secondary model detail text. It does not replace the footer/status-bar model id.
 
 ### Thinking Level Map
 
@@ -246,6 +249,81 @@ Example for a model where thinking cannot be disabled:
 ```
 
 Migration: older configs that used `compat.reasoningEffortMap` should move that mapping to model-level `thinkingLevelMap`. Use `null` for levels that should not appear in the UI.
+
+### Context Window Options
+
+`contextWindow` remains the scalar default and is always valid. Models that support multiple context sizes can also declare `contextWindowOptions` as positive token counts. Atomic hides unsupported choices in the `/model` selection flow and rejects unsupported `--context-window` values for the selected model. The active selection changes Atomic's effective `model.contextWindow`, so local budgeting, compaction, footer/stats, session replay, RPC/SDK state, and extensions all use the selected token budget while the model's scalar default remains unchanged.
+
+```json
+{
+  "id": "long-context-model",
+  "reasoning": true,
+  "contextWindow": 400000,
+  "contextWindowOptions": [400000, 1000000]
+}
+```
+
+Users can select a supported context window independently from thinking level:
+
+```bash
+atomic --model custom/long-context-model --thinking high --context-window 1m
+```
+
+In interactive mode, run `/model` and pick a model; when the chosen model exposes more than one window, Atomic immediately prompts for the context window as a follow-up step — a GitHub Copilot CLI-style picker that lists numbered `Default` and `Long context` tiers with their token counts (for example `272k tokens` / `922k tokens` for `github-copilot/gpt-5.5`, or `200k tokens` / `936k tokens` for the Claude/Gemini long-context models) — so you can choose one of the active model's supported budgets. Persisted interactive selections are stored per model under `defaultContextWindows["provider/modelId"]` (raw token counts and compact labels such as `400k` or `1m` are accepted), so a Copilot-specific prompt cap does not leak into Anthropic, Cursor, or other providers. GitHub Copilot long-context requests treat `1m` as a branded budget request and resolve it to the model's largest advertised long-context tier not exceeding the request (for example `936k` for Copilot Claude Opus), while other providers continue to require one of their own exact supported windows or use their natural scalar default. Successful explicit startup selections are recorded as `context_window_change` entries even when the chosen value equals the scalar default, preserving the user's explicit budget choice across future settings changes and resume.
+
+Use larger context windows deliberately. Some providers charge more for larger windows, and Atomic preserves each model's default unless the user explicitly opts in through `--context-window`, the `/model` selection flow, per-model `defaultContextWindows`, or the optional global `defaultContextWindow` fallback.
+
+#### GitHub Copilot context windows
+
+GitHub Copilot context windows are measured in **input (prompt) tokens**, exactly like every other provider's `contextWindow`, and are derived **dynamically from GitHub's live CAPI model catalog** (`GET {baseUrl}/models`) rather than a hardcoded model list — so models GitHub adds, removes, or retiers are reflected automatically. Atomic fetches the catalog only when you actually have the GitHub Copilot provider authenticated and caches it on disk for 30 minutes.
+
+Each selectable Copilot window is a prompt/input budget. Atomic reads `capabilities.limits.max_prompt_tokens` for the full prompt cap and treats `capabilities.limits.max_context_window_tokens` as the model's total context capacity (prompt plus output reserve) and a compatibility fallback only when the prompt cap is absent. Models with tiered pricing expose their per-tier prompt budgets through `billing.token_prices.<tier>.context_max`: the `default` tier becomes the base window and a larger `long_context` tier is offered as a selectable option. For example `github-copilot/gpt-5.5` resolves to a `272k` default / `922k` long window, and the Claude/Gemini long-context models resolve to `200k` default / `936k` long. When the request is a rounded budget such as `1m`, Atomic selects the largest advertised Copilot long-context prompt tier at or below that budget instead of falling back to the base `200k`/`272k` window. Offline, unauthenticated, or non-Copilot sessions leave the built-in scalar window untouched and show no picker.
+
+Selecting the long-context window does two client-side things:
+
+1. Raises Atomic's local token budget (e.g. `922_000` for `gpt-5.5`) for context collection, compaction thresholds, footer/stats, session replay, and SDK/RPC metadata.
+2. Sends `X-GitHub-Api-Version: 2026-06-01` on Copilot requests so GitHub returns/enforces the absolute long-context limits for eligible accounts.
+
+Atomic does **not** send a request body field, `contextTier`, or model-id variant for Copilot long context. GitHub chooses the larger `long_context` billing tier server-side automatically when the prompt token count exceeds the model's default budget. That tier consumes more Copilot AI credits and requires the account/actor to have Copilot long-context/usage-based billing entitlement enabled. If the account or selected model is still capped by GitHub's server-side limit, the request is rejected (for example, `prompt token count of N exceeds the limit of M`) and Atomic surfaces a friendly entitlement/cost/server-cap hint instead of silently truncating context.
+
+Custom `models.json` entries remain the escape hatch for providers, proxies, or Copilot accounts where the live catalog is unavailable. To adjust an existing built-in model, use `modelOverrides`:
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "modelOverrides": {
+        "gpt-5.5": {
+          "contextWindowOptions": [272000, 922000]
+        },
+        "gemini-3.1-pro-preview": {
+          "contextWindowOptions": [200000, 936000]
+        }
+      }
+    }
+  }
+}
+```
+
+To add a new Copilot model id under the built-in provider, define it in `models`:
+
+```json
+{
+  "providers": {
+    "github-copilot": {
+      "models": [
+        {
+          "id": "my-copilot-model",
+          "contextWindow": 400000,
+          "contextWindowOptions": [1000000]
+        }
+      ]
+    }
+  }
+}
+```
+
+SDK and extension consumers can import the public helper API from the package root: `parseContextWindowValue()`, `formatContextWindow()`, `getSupportedContextWindows()`, `getModelDefaultContextWindow()`, `withContextWindowOptions()`, and `selectContextWindow()` are exported from `@bastani/atomic` alongside their TypeScript helper types. The root export also carries the `Model<Api>` augmentation for `contextWindowOptions` and `defaultContextWindow`.
 
 ## Overriding Built-in Providers
 
@@ -307,7 +385,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `contextWindowOptions`, `maxTokens`, `headers`, `compat`.
 
 Behavior notes:
 - `modelOverrides` are applied to built-in provider models.
@@ -383,14 +461,15 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `requiresAssistantAfterToolResult`            | Insert an assistant message before a user message after tool results                                                                                                                                                                 |
 | `requiresThinkingAsText`                      | Convert thinking blocks to plain text                                                                                                                                                                                                |
 | `requiresReasoningContentOnAssistantMessages` | Include empty `reasoning_content` on all replayed assistant messages when reasoning is enabled                                                                                                                                       |
-| `thinkingFormat`                              | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, or `qwen-chat-template` thinking parameters                                                                                                             |
+| `thinkingFormat`                              | Use `reasoning_effort`, `openrouter`, `deepseek`, `together`, `zai`, `qwen`, `chat-template`, or `qwen-chat-template` thinking parameters                                                                                            |
+| `chatTemplateKwargs`                          | `chat_template_kwargs` values for `thinkingFormat: "chat-template"`; use `{ "$var": "thinking.enabled" }` or `{ "$var": "thinking.effort" }` for Atomic-controlled thinking values                                          |
 | `cacheControlFormat`                          | Use Anthropic-style `cache_control` markers on the system prompt, last tool definition, and last user/assistant text content. Currently only `anthropic` is supported.                                                               |
 | `supportsStrictMode`                          | Include the `strict` field in tool definitions                                                                                                                                                                                       |
 | `supportsLongCacheRetention`                  | Whether the provider accepts long cache retention when cache retention is `long`: `prompt_cache_retention: "24h"` for OpenAI prompt caching, or `cache_control.ttl: "1h"` when `cacheControlFormat` is `anthropic`. Default: `true`. |
 | `openRouterRouting`                           | OpenRouter provider routing preferences. This object is sent as-is in the `provider` field of the [OpenRouter API request](https://openrouter.ai/docs/guides/routing/provider-selection).                                            |
 | `vercelGatewayRouting`                        | Vercel AI Gateway routing config for provider selection (`only`, `order`)                                                                                                                                                            |
 
-`openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking`.
+`openrouter` uses `reasoning: { effort }`. `together` uses `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking` and `preserve_thinking`. Use `chat-template` for vLLM/Hugging Face chat templates that need configurable `chat_template_kwargs`, such as `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }` for DeepSeek V3.x templates.
 
 `cacheControlFormat: "anthropic"` is for OpenAI-compatible providers that expose Anthropic-style prompt caching through `cache_control` markers on text content and tool definitions.
 

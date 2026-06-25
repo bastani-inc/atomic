@@ -1,20 +1,16 @@
-import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } from "../src/authoring.js";
+import type { WorkflowDefinition, WorkflowOutputValues } from "../src/authoring.js";
 
 export type OpenClaudeDesignOutputType = "prototype" | "wireframe" | "page" | "component" | "theme" | "tokens";
 
-export type OpenClaudeDesignWorkflowInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowInputs = {
   readonly prompt: string;
-  readonly reference?: string;
-  readonly output_type: OpenClaudeDesignOutputType;
-  readonly design_system?: string;
+  readonly discover_references: boolean;
   readonly max_refinements: number;
 };
 
-export type OpenClaudeDesignWorkflowRunInputs = WorkflowInputValues & {
+export type OpenClaudeDesignWorkflowRunInputs = {
   readonly prompt: string;
-  readonly reference?: string;
-  readonly output_type?: OpenClaudeDesignOutputType;
-  readonly design_system?: string;
+  readonly discover_references?: boolean;
   readonly max_refinements?: number;
 };
 
@@ -32,6 +28,7 @@ export type OpenClaudeDesignWorkflowOutputs = WorkflowOutputValues & {
   readonly preview_file_url?: string;
   readonly spec_path?: string;
   readonly spec_file_url?: string;
+  readonly playwright_cli_status?: string;
 };
 
 export type OpenClaudeDesignWorkflowDefinition = WorkflowDefinition<

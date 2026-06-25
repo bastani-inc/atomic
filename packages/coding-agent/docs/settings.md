@@ -73,6 +73,8 @@ Use `/fast` in interactive mode to edit these settings. Atomic applies fast mode
 | `defaultProjectTrust` | string | `"ask"` | Fallback project trust behavior: `"ask"`, `"always"`, or `"never"`. Global setting only |
 | `collapseChangelog` | boolean | `false` | Show condensed changelog after updates |
 | `enableInstallTelemetry` | boolean | `true` | Send an anonymous install/update version ping after first install or changelog-detected updates. This does not control update checks |
+| `firstRunOnboardingStartedVersion` | string | - | Internal first-run onboarding start marker used when no prior Atomic startup state identifies the user as returning |
+| `onboardedVersion` | string | - | Internal one-time first-run onboarding completion marker. Returning-user detection from prior startup state, `/chat`, or a successful first-run seed handoff into the normal agent session sets it |
 | `doubleEscapeAction` | string | `"tree"` | Action for double-escape: `"tree"`, `"fork"`, or `"none"` |
 | `treeFilterMode` | string | `"default"` | Default filter for `/tree`: `"default"`, `"no-tools"`, `"user-only"`, `"labeled-only"`, `"all"` |
 | `editorPaddingX` | number | `0` | Horizontal padding for input editor (0-3) |
@@ -203,6 +205,9 @@ The `/settings` picker offers these presets:
 |---------|------|---------|-------------|
 | `shellPath` | string | - | Custom shell path (e.g., for Cygwin on Windows) |
 | `shellCommandPrefix` | string | - | Prefix for every bash command (e.g., `"shopt -s expand_aliases"`) |
+| `bashInterceptor.enabled` | boolean | `false` | When true, block shell commands that have dedicated tools and offer remaining `bash` tool calls to `user_bash` extension handlers before local execution. Also available in `/settings` as **Bash Interceptor**. |
+| `search.contextBefore` | number | `1` | Number of context lines before each `search` match. |
+| `search.contextAfter` | number | `3` | Number of context lines after each `search` match. |
 | `npmCommand` | string[] | - | Command argv used for npm package lookup/install operations (e.g., `["mise", "exec", "node@20", "--", "npm"]`) |
 
 ```json
@@ -210,6 +215,8 @@ The `/settings` picker offers these presets:
   "npmCommand": ["mise", "exec", "node@20", "--", "npm"]
 }
 ```
+
+`bashInterceptor.enabled` is intentionally `false` unless configured. Enable it from `/settings` or set it to `true` in JSON when you want Atomic to steer shell anti-patterns to `read`/`search`/`find`/`edit`/`write` and let extensions intercept model `bash` tool calls through the same `user_bash` event used by interactive `!` commands.
 
 `npmCommand` is used for all npm package-manager operations, including installs, uninstalls, and dependency installs inside git packages. Use argv-style entries exactly as the process should be launched. When `npmCommand` is configured, git package dependency installs use plain `install` to avoid npm-specific flags in wrappers or alternate package managers.
 
@@ -227,17 +234,26 @@ Normally the package manager's global modules location is queried using `root -g
 
 When multiple sources specify a session directory, precedence is `--session-dir`, `ATOMIC_CODING_AGENT_SESSION_DIR`, then `sessionDir` in settings.json.
 
-### Model Cycling
+### Models
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabledModels` | string[] | - | Model patterns for CTRL+P cycling (same format as `--models` CLI flag) |
+| `defaultContextWindow` | number \| string | model default | Optional global fallback context window for models that expose selectable context windows. Accepts raw token counts or compact labels such as `400k` and `1m`. Unsupported values are ignored for models that do not support them. |
+| `defaultContextWindows` | object | `{}` | Per-model preferred context windows keyed as `provider/modelId`. The interactive `/model` context picker writes this setting so a Copilot-specific prompt cap such as `936k` does not leak into Anthropic, Cursor, or other providers. |
 
 ```json
 {
-  "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"]
+  "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"],
+  "defaultContextWindow": "1m",
+  "defaultContextWindows": {
+    "github-copilot/claude-opus-4.8": "936k",
+    "github-copilot/gpt-5.5": "922k"
+  }
 }
 ```
+
+Context-window settings are independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can change the active model's budget through the `/model` selection flow, which prompts for a context window whenever the chosen model supports more than one window and persists the effective selection under `defaultContextWindows["provider/modelId"]`. Atomic treats `defaultContextWindow` as a broad fallback only: if the active model does not support that value, the model's own default is used without a startup warning; targeted `defaultContextWindows` entries still warn when they become unsupported for their exact model. Larger provider context windows can carry higher usage cost. For GitHub Copilot allowlisted long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local prompt budget to the largest advertised long-context tier at or below that rounded request (for example `922k` or `936k`) and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
 
 ### Markdown
 
@@ -297,6 +313,7 @@ See [Atomic packages](/packages) for package management details.
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-20250514",
   "defaultThinkingLevel": "medium",
+  "defaultContextWindow": "400k",
   "theme": "dark",
   "compaction": {
     "enabled": true,

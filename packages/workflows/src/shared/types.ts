@@ -55,10 +55,10 @@ export type WorkflowExitOptions<TOutputs extends WorkflowOutputValues = Workflow
 // ---------------------------------------------------------------------------
 
 /**
- * Inputs and outputs are declared with TypeBox schemas. Authors use
- * `.input(key, Type.String({ ... }))` / `.output(key, Type.Object({ ... }))`;
- * the builder threads the precise `Static<>` types and the runtime validates
- * via TypeBox `Value`.
+ * Inputs and outputs are declared as TypeBox schema maps on
+ * `workflow({ inputs: { ... }, outputs: { ... } })`. Authors import `Type`
+ * from typebox, while the workflow authoring types thread the corresponding
+ * `Static<>` types and the runtime validates via TypeBox `Value`.
  */
 export type WorkflowInputSchemaMap = AuthoringContract.WorkflowInputSchemaMap;
 export type WorkflowOutputSchemaMap = AuthoringContract.WorkflowOutputSchemaMap;
@@ -99,6 +99,18 @@ export interface WorkflowRunChildOptions<TInputs extends WorkflowInputValues = W
   /** Parent boundary stage display name. Defaults to workflow:<workflow-name>. */
   readonly stageName?: string;
 }
+
+type WorkflowRequiredKeys<T extends object> = {
+  [K in keyof T]-?: {} extends Pick<T, K> ? never : K;
+}[keyof T];
+
+export type WorkflowRunChildOptionsArgument<TInputs extends WorkflowInputValues = WorkflowInputValues> = [WorkflowRequiredKeys<TInputs>] extends [never]
+  ? WorkflowRunChildOptions<TInputs>
+  : WorkflowRunChildOptions<TInputs> & { readonly inputs: TInputs };
+
+export type WorkflowRunChildArgs<TInputs extends WorkflowInputValues = WorkflowInputValues> = [WorkflowRequiredKeys<TInputs>] extends [never]
+  ? readonly [options?: WorkflowRunChildOptionsArgument<NoInfer<TInputs>>]
+  : readonly [options: WorkflowRunChildOptionsArgument<NoInfer<TInputs>>];
 
 export type WorkflowCompletedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowCompletedChildResult<TOutputs>;
 export type WorkflowExitedChildResult<TOutputs extends WorkflowOutputValues = WorkflowOutputValues> = AuthoringContract.WorkflowExitedChildResult<TOutputs>;
@@ -359,9 +371,13 @@ export interface WorkflowRunContext<
   /** Run tasks in parallel. Missing step tasks use the first available task as a fallback. */
   parallel(steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions): Promise<WorkflowTaskResult[]>;
   /** Execute a reusable child workflow by compiled workflow definition. */
-  workflow<TChildInputs extends WorkflowInputValues, TChildOutputs extends WorkflowOutputValues>(
-    definition: WorkflowDefinition<TChildInputs, TChildOutputs>,
-    options?: WorkflowRunChildOptions<TChildInputs>,
+  workflow<
+    TChildInputs extends WorkflowInputValues,
+    TChildOutputs extends WorkflowOutputValues,
+    TChildRunInputs extends WorkflowInputValues = TChildInputs,
+  >(
+    definition: WorkflowDefinition<TChildInputs, TChildOutputs, TChildRunInputs>,
+    ...args: WorkflowRunChildArgs<TChildRunInputs>
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
@@ -403,6 +419,7 @@ export type WorkflowDefinitionBrand = { readonly [workflowDefinitionBrand]: true
 export interface WorkflowDefinition<
   TInputs extends WorkflowInputValues = WorkflowInputValues,
   TOutputs extends WorkflowOutputValues = WorkflowOutputValues,
-> extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TInputs, WorkflowDefinitionBrand>, "run" | "__runInputs">, WorkflowDefinitionBrand {
+  TRunInputs extends WorkflowInputValues = TInputs,
+> extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand>, "run">, WorkflowDefinitionBrand {
   readonly run: WorkflowRunFn<TInputs, TOutputs>;
 }

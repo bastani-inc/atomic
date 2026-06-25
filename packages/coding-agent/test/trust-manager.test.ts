@@ -66,7 +66,9 @@ describe("project trust input detection", () => {
 	it("does not treat user-global ~/.agents skills as project trust inputs", () => {
 		const home = createTempProject();
 		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
 		process.env.HOME = home;
+		process.env.USERPROFILE = home;
 		try {
 			mkdirSync(join(home, ".agents", "skills"), { recursive: true });
 			const project = join(home, "project");
@@ -84,6 +86,11 @@ describe("project trust input detection", () => {
 				delete process.env.HOME;
 			} else {
 				process.env.HOME = previousHome;
+			}
+			if (previousUserProfile === undefined) {
+				delete process.env.USERPROFILE;
+			} else {
+				process.env.USERPROFILE = previousUserProfile;
 			}
 		}
 	});

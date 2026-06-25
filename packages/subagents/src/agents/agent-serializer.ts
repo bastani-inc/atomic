@@ -22,8 +22,13 @@ export const KNOWN_FIELDS = new Set([
 	"defaultProgress",
 	"interactive",
 	"maxSubagentDepth",
-	"completionGuard",
 ]);
+
+const REMOVED_AGENT_FRONTMATTER_FIELDS = new Set<string>([`completion${"Guard"}`]);
+
+export function shouldPreserveAgentExtraField(key: string): boolean {
+	return !KNOWN_FIELDS.has(key) && !REMOVED_AGENT_FRONTMATTER_FIELDS.has(key);
+}
 
 function joinComma(values: string[] | undefined): string | undefined {
 	if (!values || values.length === 0) return undefined;
@@ -74,11 +79,10 @@ export function serializeAgent(config: AgentConfig): string {
 	if (typeof maxSubagentDepth === "number" && Number.isInteger(maxSubagentDepth) && maxSubagentDepth >= 0) {
 		lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
 	}
-	if (config.completionGuard === false) lines.push("completionGuard: false");
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
-			if (KNOWN_FIELDS.has(key)) continue;
+			if (!shouldPreserveAgentExtraField(key)) continue;
 			lines.push(`${key}: ${value}`);
 		}
 	}

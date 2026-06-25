@@ -61,7 +61,7 @@ await loader.reload();
 const { session } = await createAgentSession({ resourceLoader: loader, authStorage, modelRegistry });
 
 // Read-only
-const { session } = await createAgentSession({ tools: ["read", "grep", "find", "ls"], authStorage, modelRegistry });
+const { session } = await createAgentSession({ tools: ["read", "search", "find", "ls"], authStorage, modelRegistry });
 
 // Defaults minus one tool
 const { session } = await createAgentSession({ excludedTools: ["ask_user_question"], authStorage, modelRegistry });

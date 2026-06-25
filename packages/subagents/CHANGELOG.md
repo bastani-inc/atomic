@@ -2,6 +2,93 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.1] - 2026-06-25
+
+### Changed
+
+- Raised the default and hard maximum subagent nesting budget to five delegated levels, clamping environment, config, and frontmatter values above `5` and extending nested-run observability to the same depth.
+
+### Fixed
+
+- Filtered direct MCP child-agent allowlists against the builtin `search` tool name so unprefixed MCP tools named `search` do not collide with Atomic's builtin search tool ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
+- Updated bundled subagent definitions and docs to use the builtin `search`/`find` tools instead of the legacy `grep` helper ([#1490](https://github.com/bastani-inc/atomic/pull/1490)).
+
+## [0.9.2] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.2 release with subagents extension peer dependencies aligned to upstream pi `^0.79.10` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension source changes were needed for this metadata sync.
+
+## [0.9.2-alpha.1] - 2026-06-23
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.10` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension source changes were needed for this metadata sync.
+
+## [0.9.1] - 2026-06-23
+
+### Changed
+
+- Published the stable Atomic 0.9.1 release for the subagents extension; no functional subagents changes were made after 0.9.0.
+
+## [0.9.1-alpha.1] - 2026-06-22
+
+### Changed
+
+- Published a synchronized Atomic 0.9.1-alpha.1 prerelease for the subagents extension; no functional subagents changes were made after 0.9.0.
+
+## [0.9.0] - 2026-06-22
+
+### Added
+
+- Added the `playwright-cli` builtin skill for browser automation, end-to-end UI checks, screenshots, reviewable video recording, and Playwright test workflows.
+- Added the `effective-liteparse` builtin skill for fast, local, model-free text/table/value extraction from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI.
+
+### Changed
+
+- Changed the `debugger` and `codebase-online-researcher` subagents to load `playwright-cli` and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
+- Published the stable Atomic 0.9.0 release with subagents peer dependencies aligned through upstream pi `^0.79.9` runtime packages, so child sessions inherit provider catalog, RPC id handling, model search, theme/color-scheme, Warp image capability, Markdown streaming stability, and shared agent/TUI fixes.
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist.
+
+### Removed
+
+- Removed the bundled `browser` skill and remaining references to its `browse` CLI in favor of `playwright-cli`.
+
+## [0.9.0-alpha.2] - 2026-06-21
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.9` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit chat-template custom-provider thinking controls, GLM-5.2 provider metadata, GitHub Copilot model-availability filtering, Mistral prompt-cache accounting, Markdown streaming code-fence stability, and shared agent/TUI compatibility fixes; no subagents extension source changes were needed for this dependency-covered sync.
+
+## [0.9.0-alpha.1] - 2026-06-20
+
+### Added
+
+- Added the `playwright-cli` builtin skill (browser automation, end-to-end UI checks, screenshots, reviewable video recording, and Playwright test workflows) and the `effective-liteparse` builtin skill (fast, local, model-free text/table/value extraction from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI).
+
+### Changed
+
+- Changed the `debugger` and `codebase-online-researcher` subagents to load the `playwright-cli` skill and drive the `playwright-cli` command for JS-heavy, auth-gated, or interactive web work instead of the removed `browser` skill / `browse` CLI.
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.7` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions can use the host's latest provider catalog, RPC id handling, model-search, theme/color-scheme, Warp image capability, and shared TUI compatibility fixes; no subagents extension code changes were made for this metadata sync ([#1413](https://github.com/bastani-inc/atomic/issues/1413)).
+- Changed contributor validation to include the monorepo-wide file-length gate for tracked TS/JS/Rust files in local `prek` hooks and PR CI, with only documented generated/vendored exclusions and no grandfathered baseline allowlist ([#1445](https://github.com/bastani-inc/atomic/issues/1445)).
+
+### Removed
+
+- Removed the bundled `browser` skill and all references to its `browse` CLI in favor of the `playwright-cli` skill and `playwright-cli` command.
+
+## [0.8.30] - 2026-06-17
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.79.4` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`); no subagents extension code changes were made for this metadata sync.
+- Removed subagent acceptance gates, deterministic task-text acceptance inference, the remaining no-mutation completion guard, acceptance-report prompt injection/parsing, acceptance/completion-guard status metadata, and related tool/schema/config fields; completed child output is now preserved without acceptance or mutation-intent evaluation. Migration guidance now directs users to remove stale acceptance fields from subagent calls/chains/parallel items and move validation requirements into task text; JSON chain rewrites drop legacy acceptance entries ([#1398](https://github.com/bastani-inc/atomic/issues/1398)).
+
+### Fixed
+
+- Fixed `outputSchema` child runs to retry the structured-output contract up to three times before failing, re-running with a corrective prompt that includes the exact missing-output or schema-validation error and validating captured `output.json` against the schema on readback.
+
+## [0.8.29] - 2026-06-15
+
 ### Changed
 
 - Aligned the subagents extension with upstream pi `^0.79.3` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) so child sessions inherit the latest shared agent, provider, and TUI compatibility fixes.

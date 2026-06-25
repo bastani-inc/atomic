@@ -8,7 +8,7 @@
  *   Project-local:
  *     <projectRoot>/.atomic/extensions/workflow/config.json
  *   User-global:
- *     <homeDir>/.atomic/agent/extensions/workflow/config.json
+ *     <agentDir>/extensions/workflow/config.json
  * Invalid JSON or invalid shape → CONFIG_INVALID diagnostic (not silent success).
  * Missing file → silently skipped (not an error).
  *
@@ -17,14 +17,9 @@
  */
 
 import { join, isAbsolute } from "node:path";
-import { homedir } from "node:os";
-import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
-import {
-  WORKFLOW_LIFECYCLE_NOTICE_KINDS,
-  type WorkflowLifecycleNoticeKind,
-} from "./lifecycle-notifications.js";
-
-const WORKFLOW_LIFECYCLE_NOTICE_KIND_SET = new Set<string>(WORKFLOW_LIFECYCLE_NOTICE_KINDS);
+import { CONFIG_DIR_NAME, CONFIG_DIR_NAMES, getAgentDir, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
+import type { WorkflowLifecycleNoticeKind } from "./lifecycle-notifications.js";
+import { loadConfigFile } from "./config-file-loader.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -86,7 +81,7 @@ export interface ConfigLoadResult {
    */
   readonly config: WorkflowExtensionConfig | null;
   /**
-   * Pre-merge global config (from <homeDir>/.atomic/agent/extensions/workflow/config.json).
+   * Pre-merge global config (from <agentDir>/extensions/workflow/config.json).
    * null when the global file is absent or invalid. Absent on results from callers
    * that constructed ConfigLoadResult before this field was added.
    */
@@ -112,176 +107,20 @@ export interface LoadWorkflowConfigOpts {
    */
   readonly projectRoot?: string;
   /**
-   * User home directory. Defaults to os.homedir().
-   * Global config is resolved relative to this path.
+   * User home directory. When set, preserves legacy test/compat resolution
+   * relative to <homeDir>/.atomic/agent and <homeDir>/.pi/agent.
    */
   readonly homeDir?: string;
+  /**
+   * User agent config directories in precedence order. Defaults to Atomic's
+   * configured agent directories, honoring ATOMIC_CODING_AGENT_DIR.
+   */
+  readonly agentDirs?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Attempt to read a file as text.
- * Returns the text content, or null if the file does not exist.
- * Throws on unexpected I/O errors.
- */
-async function tryReadFile(filePath: string): Promise<string | null> {
-  const { readFile } = await import("node:fs/promises");
-  try {
-    return await readFile(filePath, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-}
-
-/**
- * Validate a parsed JSON value as a WorkflowExtensionConfig.
- * Returns null when valid, or a human-readable rejection reason.
- */
-function isWorkflowLifecycleNoticeKind(value: unknown): value is WorkflowLifecycleNoticeKind {
-  return typeof value === "string" && WORKFLOW_LIFECYCLE_NOTICE_KIND_SET.has(value);
-}
-
-function validateConfig(value: unknown): string | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return "config must be a JSON object";
-  }
-  const c = value as Record<string, unknown>;
-
-  if ("maxDepth" in c && (typeof c["maxDepth"] !== "number" || !Number.isInteger(c["maxDepth"]) || (c["maxDepth"] as number) < 0)) {
-    return `"maxDepth" must be a non-negative integer, got ${JSON.stringify(c["maxDepth"])}`;
-  }
-
-  if ("defaultConcurrency" in c && (typeof c["defaultConcurrency"] !== "number" || !Number.isInteger(c["defaultConcurrency"]) || (c["defaultConcurrency"] as number) < 1)) {
-    return `"defaultConcurrency" must be a positive integer, got ${JSON.stringify(c["defaultConcurrency"])}`;
-  }
-
-  if ("persistRuns" in c && typeof c["persistRuns"] !== "boolean") {
-    return `"persistRuns" must be a boolean, got ${JSON.stringify(c["persistRuns"])}`;
-  }
-
-  if ("statusFile" in c && typeof c["statusFile"] !== "boolean") {
-    return `"statusFile" must be a boolean, got ${JSON.stringify(c["statusFile"])}`;
-  }
-
-  if ("resumeInFlight" in c) {
-    const v = c["resumeInFlight"];
-    if (v !== "ask" && v !== "auto" && v !== "never") {
-      return `"resumeInFlight" must be "ask", "auto", or "never", got ${JSON.stringify(v)}`;
-    }
-  }
-
-  if ("workflowNotifications" in c) {
-    const value = c["workflowNotifications"];
-    if (value === null || typeof value !== "object" || Array.isArray(value)) {
-      return `"workflowNotifications" must be a JSON object, got ${JSON.stringify(typeof value)}`;
-    }
-    const notifications = value as Record<string, unknown>;
-    if ("enabled" in notifications && typeof notifications["enabled"] !== "boolean") {
-      return `"workflowNotifications.enabled" must be a boolean, got ${JSON.stringify(notifications["enabled"])}`;
-    }
-    if ("notifyOn" in notifications) {
-      const notifyOn = notifications["notifyOn"];
-      if (!Array.isArray(notifyOn)) {
-        return `"workflowNotifications.notifyOn" must be an array, got ${JSON.stringify(typeof notifyOn)}`;
-      }
-      if (notifyOn.length === 0) {
-        return `"workflowNotifications.notifyOn" must be a non-empty array`;
-      }
-      for (const item of notifyOn) {
-        if (!isWorkflowLifecycleNoticeKind(item)) {
-          return `"workflowNotifications.notifyOn" entries must be "completed", "failed", or "awaiting_input", got ${JSON.stringify(item)}`;
-        }
-      }
-    }
-  }
-
-  if ("workflows" in c) {
-    if (c["workflows"] === null || typeof c["workflows"] !== "object" || Array.isArray(c["workflows"])) {
-      return `"workflows" must be a JSON object, got ${JSON.stringify(typeof c["workflows"])}`;
-    }
-    const wf = c["workflows"] as Record<string, unknown>;
-    for (const [name, entry] of Object.entries(wf)) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-        return `"workflows.${name}" must be an object with a "path" field`;
-      }
-      const e = entry as Record<string, unknown>;
-      if (typeof e["path"] !== "string" || (e["path"] as string).trim().length === 0) {
-        return `"workflows.${name}.path" must be a non-empty string, got ${JSON.stringify(e["path"])}`;
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Parse and validate a config file at the given path.
- * Returns one of three outcomes:
- *   { kind: "missing" }               — file doesn't exist; silently skip
- *   { kind: "ok"; parsed }            — file valid
- *   { kind: "error"; diagnostic }     — file invalid; emit diagnostic
- */
-type LoadFileOutcome =
-  | { kind: "missing" }
-  | { kind: "ok"; parsed: WorkflowExtensionConfig }
-  | { kind: "error"; diagnostic: ConfigDiagnostic };
-
-async function loadConfigFile(filePath: string): Promise<LoadFileOutcome> {
-  let text: string | null;
-  try {
-    text = await tryReadFile(filePath);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      kind: "error",
-      diagnostic: {
-        level: "error",
-        code: "CONFIG_INVALID",
-        message: `Failed to read config file: ${msg}`,
-        source: filePath,
-      },
-    };
-  }
-
-  if (text === null) {
-    return { kind: "missing" };
-  }
-
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return {
-      kind: "error",
-      diagnostic: {
-        level: "error",
-        code: "CONFIG_INVALID",
-        message: `Invalid JSON in config file: ${msg}`,
-        source: filePath,
-      },
-    };
-  }
-
-  const reason = validateConfig(value);
-  if (reason !== null) {
-    return {
-      kind: "error",
-      diagnostic: {
-        level: "error",
-        code: "CONFIG_INVALID",
-        message: `Invalid config shape: ${reason}`,
-        source: filePath,
-      },
-    };
-  }
-
-  return { kind: "ok", parsed: value as WorkflowExtensionConfig };
-}
 
 /**
  * Merge two configs: `override` values win over `base`.
@@ -407,10 +246,15 @@ export interface ScopedDiscoveryConfigOpts {
    */
   readonly projectRoot: string;
   /**
-   * User home directory. Relative paths in globalConfig.workflows are
-   * resolved relative to <homeDir>/.atomic/agent.
+   * User home directory. When set, relative paths in globalConfig.workflows
+   * resolve relative to <homeDir>/.atomic/agent.
    */
-  readonly homeDir: string;
+  readonly homeDir?: string;
+  /**
+   * User agent config directory. Defaults to Atomic's configured agent dir,
+   * honoring ATOMIC_CODING_AGENT_DIR.
+   */
+  readonly agentDir?: string;
 }
 
 export interface ScopedDiscoveryConfig {
@@ -440,12 +284,21 @@ function resolveWorkflowPaths(
   );
 }
 
+function workflowAgentDirs(opts: Pick<LoadWorkflowConfigOpts, "agentDirs" | "homeDir">): readonly string[] {
+  if (opts.agentDirs !== undefined) return opts.agentDirs;
+  if (opts.homeDir !== undefined) {
+    const homeDir = opts.homeDir;
+    return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+  }
+  return getAgentDirs();
+}
+
 /**
  * Build a scope-aware DiscoveryConfig from the pre-merge global and project configs.
  *
  * Scope rules:
  *   - globalConfig.workflows entries → DiscoveryConfig.globalWorkflows
- *     Relative paths are resolved under <homeDir>/.atomic/agent.
+ *     Relative paths are resolved under the configured Atomic agent dir.
  *   - projectConfig.workflows entries → DiscoveryConfig.projectWorkflows
  *     Relative paths are resolved under projectRoot.
  *   - When both configs define the same workflow key, the project entry wins
@@ -459,7 +312,8 @@ export function toScopedDiscoveryConfig(
   projectConfig: WorkflowExtensionConfig | null,
   opts: ScopedDiscoveryConfigOpts,
 ): ScopedDiscoveryConfig {
-  const globalBase = join(opts.homeDir, CONFIG_DIR_NAME, "agent");
+  const globalBase = opts.agentDir
+    ?? (opts.homeDir === undefined ? getAgentDir() : join(opts.homeDir, CONFIG_DIR_NAME, "agent"));
   const projectBase = opts.projectRoot;
 
   const result: ScopedDiscoveryConfig = {};
@@ -493,7 +347,7 @@ export function toScopedDiscoveryConfig(
  *
  * Candidate paths (in resolution order):
  *   Global (lowest priority):
- *     <homeDir>/.atomic/agent/extensions/workflow/config.json
+ *     <agentDir>/extensions/workflow/config.json
  *   Project-local (highest priority, first existing wins):
  *     <projectRoot>/.atomic/extensions/workflow/config.json
  * Merge: project-local overrides global. Key-level merge for `workflows` map.
@@ -503,12 +357,13 @@ export async function loadWorkflowConfig(
   opts: LoadWorkflowConfigOpts = {},
 ): Promise<ConfigLoadResult> {
   const projectRoot = opts.projectRoot ?? process.cwd();
-  const home = opts.homeDir ?? homedir();
 
   const diagnostics: ConfigDiagnostic[] = [];
 
-  // Global config paths (primary Atomic first, then legacy pi)
-  const globalCandidates = CONFIG_DIR_NAMES.map((name) => join(home, name, "agent", "extensions", "workflow", "config.json"));
+  // Global config paths (primary Atomic first, then legacy pi/defaults).
+  const globalCandidates = workflowAgentDirs(opts).map((agentDir) =>
+    join(agentDir, "extensions", "workflow", "config.json")
+  );
 
   // Project-local config paths (primary Atomic first, then legacy pi)
   const projectCandidates: string[] = getProjectConfigPaths(projectRoot, "extensions", "workflow", "config.json");

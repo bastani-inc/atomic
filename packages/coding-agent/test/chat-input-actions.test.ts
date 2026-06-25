@@ -19,8 +19,10 @@ afterEach(() => {
 	}
 });
 
-describe("openExternalEditorForText", () => {
-	if (process.platform !== "win32") it("uses an unpredictable atomic-branded temp file", () => {
+const describeExternalEditor = process.platform === "win32" ? describe.skip : describe;
+
+describeExternalEditor("openExternalEditorForText", () => {
+	it("uses an unpredictable atomic-branded temp file", () => {
 		const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-editor-test-"));
 		createdDirs.push(testDir);
 		const capturedPathFile = path.join(testDir, "captured-path.txt");
@@ -49,7 +51,7 @@ describe("openExternalEditorForText", () => {
 		expect(fs.existsSync(tmpFile)).toBe(false);
 	});
 
-	if (process.platform !== "win32") it("opens quoted editor commands whose paths contain spaces", () => {
+	it("opens quoted editor commands whose paths contain spaces", () => {
 		const testDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic editor test-"));
 		createdDirs.push(testDir);
 		const editorScript = path.join(testDir, "editor with spaces.sh");

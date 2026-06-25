@@ -9,8 +9,10 @@ import {
   verifyPullRequestChecksJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
+  type CommandResult,
   type JsonValue,
 } from "../../.atomic/workflows/lib/publish-release.js";
+import { waitForWorkflowRunSucceeded } from "../../.atomic/workflows/lib/publish-release-run-wait.js";
 
 describe("publish-release version validation", () => {
   test("accepts stable release versions only for release requests", () => {
@@ -253,5 +255,76 @@ describe("publish-release GitHub Actions publish verification", () => {
     assert.equal(result.ok, false);
     assert.match(result.summary, /headBranch was 1\.2\.4, expected 1\.2\.3/u);
     assert.match(result.summary, /conclusion was failure, expected success/u);
+  });
+
+  test("polls a selected publish run until GitHub reports terminal success", async () => {
+    const commands: string[] = [];
+    const sleeps: number[] = [];
+    const runningRun = { ...successfulRun, status: "in_progress", conclusion: null };
+    const responses: CommandResult[] = [
+      {
+        command: "gh run list",
+        exitCode: 0,
+        stdout: JSON.stringify([runningRun]),
+        stderr: "",
+      },
+      {
+        command: "gh run view 987654321",
+        exitCode: 0,
+        stdout: JSON.stringify(runningRun),
+        stderr: "",
+      },
+      {
+        command: "gh run view 987654321",
+        exitCode: 0,
+        stdout: JSON.stringify(successfulRun),
+        stderr: "",
+      },
+    ];
+
+    const result = await waitForWorkflowRunSucceeded("abc123", {
+      workflowFile: "publish.yml",
+      expectedHeadBranch: "1.2.3",
+      listAttempts: 1,
+      viewAttempts: 3,
+      pollIntervalMs: 25,
+      runCommand: (args) => {
+        commands.push(args.join(" "));
+        const response = responses.shift();
+        if (response === undefined) throw new Error(`unexpected command: ${args.join(" ")}`);
+        return { ...response, command: args.join(" ") };
+      },
+      sleep: (durationMs) => {
+        sleeps.push(durationMs);
+        return Promise.resolve();
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(sleeps, [25]);
+    assert.equal(commands.some((command) => command.includes(" run watch ")), false);
+    assert.match(result.summary, /status: completed/u);
+  });
+
+  test("marks a still-running publish run as pending when polling times out", async () => {
+    const runningRun = { ...successfulRun, status: "in_progress", conclusion: null };
+    const result = await waitForWorkflowRunSucceeded("abc123", {
+      workflowFile: "publish.yml",
+      expectedHeadBranch: "1.2.3",
+      listAttempts: 1,
+      viewAttempts: 1,
+      pollIntervalMs: 25,
+      runCommand: (args) => ({
+        command: args.join(" "),
+        exitCode: 0,
+        stdout: JSON.stringify(args.includes("list") ? [runningRun] : runningRun),
+        stderr: "",
+      }),
+      sleep: () => Promise.resolve(),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.pending, true);
+    assert.match(result.summary, /did not reach a terminal status/u);
   });
 });

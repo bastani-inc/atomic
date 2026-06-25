@@ -1,0 +1,85 @@
+import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
+import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import type { Store } from "../shared/store.js";
+import type { StageUiBroker } from "../shared/stage-ui-broker.js";
+import type { GraphTheme } from "./graph-theme.js";
+import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+
+export interface AttachUiStatusSurface {
+  setStatus?: (key: string, value: string | undefined) => void;
+}
+
+export interface WorkflowAttachPaneOpts {
+  store: Store;
+  graphTheme: GraphTheme;
+  runId: string | null;
+  /**
+   * Live stage-control registry. The pane resolves stage handles when
+   * the user attaches to a node. Defaults to the singleton registry.
+   */
+  stageControlRegistry?: StageControlRegistry;
+  /** Broker used to route stage-local custom UI such as ask_user_question into attached chats. */
+  stageUiBroker?: StageUiBroker;
+  /**
+   * Optional UI status surface. When present, attaching/detaching
+   * updates the `pi-workflows` status tag with `<workflow>/<stage>`.
+   */
+  uiStatus?: AttachUiStatusSurface;
+  /** Called when the user closes (Escape in graph mode). */
+  onClose: () => void;
+  /** Called when the user requests the host to hide the popup. */
+  onHide?: () => void;
+  /** Called when the user requests killing the active run (q in graph mode); host confirms and closes after kill. */
+  onKill?: (runId: string) => void;
+  /** Called when the user resolves a HIL prompt via the graph view. */
+  onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
+  /** Live pi-tui host objects used by attached stage chat to reuse coding-agent editor UI. */
+  piTui?: TUI;
+  piTheme?: unknown;
+  piKeybindings?: unknown;
+  /** Host custom editor factory installed by extensions via ctx.ui.setEditorComponent(). */
+  piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
+  /** Parent chat rendering settings and extension renderers, inherited from the host UI. */
+  getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+  /** Parent footer data provider, inherited so attached chats can render the core coding-agent footer. */
+  footerData?: ReadonlyFooterDataProvider;
+  /**
+   * Optional override: pre-select chat mode for a stage on construction.
+   * Used by `/workflow attach <runId> <stageId>` so the popup opens
+   * directly on the node's chat.
+   */
+  initialAttachStageId?: string;
+  /**
+   * Optional accessor returning the current terminal row count. Threaded
+   * into both `GraphView` and `StageChatView` so the overlay renders a
+   * frame that fills the full viewport instead of a fixed 32-row pane.
+   * Returns `undefined` when the host has not surfaced terminal
+   * dimensions; views fall back to their constant row budget.
+   */
+  getViewportRows?: () => number | undefined;
+  /**
+   * Render-tick callback supplied by the overlay host. Forwarded to the
+   * embedded `GraphView` so its 10 FPS animation tick (running-stage
+   * border pulse, duration counter) can request frames without a key
+   * press. The host gates the underlying `tui.requestRender` on overlay
+   * visibility so a hidden pane stays cheap.
+   */
+  requestRender?: () => void;
+  /**
+   * Host hook to re-assert overlay keyboard focus. Threaded into the attached
+   * stage chat so showing a broker custom UI (e.g. the readiness gate) refocuses
+   * the overlay and the UI is not left input-dead (#1120).
+   */
+  requestFocus?: () => void;
+  /**
+   * Host hook for terminal mouse reporting. Graph mode uses wheel input
+   * for canvas scrolling; stage-chat mode uses it for transcript history
+   * scrolling and drops non-wheel mouse bytes before they reach the editor.
+   */
+  setMouseScrollTracking?: (enabled: boolean) => void;
+  /** Optional clock injection for deterministic transition-quarantine tests. */
+  now?: () => number;
+}
+
+export type WorkflowAttachPaneMode = "graph" | "stage-chat";
+

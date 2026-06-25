@@ -1,70 +1,134 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { defineWorkflow } from "../../packages/workflows/src/workflows/define-workflow.js";
-import { Type } from "typebox";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { Type, type TSchema } from "typebox";
 import {
   schemaChoices,
   schemaFieldKind,
 } from "../../packages/workflows/src/shared/schema-introspection.js";
 
-describe("defineWorkflow immutable builder semantics", () => {
-  test("description does not mutate previous builder", () => {
-    const b1 = defineWorkflow("test");
-    const b2 = b1.description("v1");
-    const b3 = b2.description("v2");
+type NamedDefinition = { readonly name: string; readonly normalizedName: string };
 
-    // b2 and b3 are distinct objects
-    assert.notEqual(b2, b3);
+const repoRoot = resolve(import.meta.dir, "../..");
+const workflowModuleUrl = pathToFileURL(join(repoRoot, "packages", "workflows", "src", "authoring", "workflow.ts")).href;
 
-    // Each compiles independently
-    const d2 = b2.run(async () => ({})).compile();
-    const d3 = b3.run(async () => ({})).compile();
+async function importDefaultDefinition(filePath: string): Promise<NamedDefinition> {
+  const imported = await import(pathToFileURL(filePath).href) as { readonly default: NamedDefinition };
+  return imported.default;
+}
 
-    assert.equal(d2.description, "v1");
-    assert.equal(d3.description, "v2");
+describe("workflow config object semantics", () => {
+  test("freezes current schema maps without mutating the source spec", () => {
+    const inputs: Record<string, TSchema> = { a: Type.Optional(Type.String()) };
+    const outputs: Record<string, TSchema> = { from: Type.String() };
+    const def = workflow({
+      name: "test",
+      description: "v1",
+      inputs,
+      outputs,
+      run: async () => ({ from: "fn1" }),
+    });
+
+    inputs.a = Type.Optional(Type.Number());
+    assert.notEqual(def.inputs["a"], inputs.a);
+    assert.equal(Object.isFrozen(def.inputs), true);
+    assert.equal(Object.isFrozen(def.outputs), true);
   });
 
-  test("input does not mutate previous builder", () => {
-    const b1 = defineWorkflow("test");
-    const b2 = b1.input("a", Type.Optional(Type.String()));
-    const b3 = b2.input("b", Type.Optional(Type.Number()));
+  test("run is wrapped as an async definition function", async () => {
+    const fn = () => ({ from: "fn1" });
+    const def = workflow({
+      name: "async-wrapper-test",
+      description: "",
+      inputs: {},
+      outputs: { from: Type.String() },
+      run: fn,
+    });
 
-    assert.notEqual(b2, b3);
-
-    const d2 = b2.run(async () => ({})).compile();
-    const d3 = b3.run(async () => ({})).compile();
-
-    // b2 only has input "a"
-    assert.deepEqual(Object.keys(d2.inputs), ["a"]);
-    // b3 has both
-    assert.deepEqual(Object.keys(d3.inputs).sort(), ["a", "b"]);
+    assert.notEqual(def.run, fn);
+    assert.deepEqual(await def.run({ inputs: {} } as Parameters<typeof def.run>[0]), { from: "fn1" });
   });
 
-  test("run does not mutate previous builder", () => {
-    const fn1 = async () => ({ from: "fn1" });
-    const fn2 = async () => ({ from: "fn2" });
+  test("run captures the current function value before spec mutations", async () => {
+    const spec = {
+      name: "stable-run-capture",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: () => ({ result: "original" }),
+    };
+    const def = workflow(spec);
 
-    const b = defineWorkflow("test").output("from", Type.String());
-    const c1 = b.run(fn1);
-    const c2 = b.run(fn2);
+    spec.run = () => ({ result: "mutated" });
 
-    const d1 = c1.compile();
-    const d2 = c2.compile();
-
-    assert.equal(d1.run, fn1);
-    assert.equal(d2.run, fn2);
+    assert.deepEqual(await def.run({ inputs: {} } as Parameters<typeof def.run>[0]), { result: "original" });
   });
 });
 
-describe("defineWorkflow select input", () => {
+describe("workflow inferred names", () => {
+  test("uses the calling workflow filename when name is omitted", async () => {
+    const fixtureRoot = join(tmpdir(), `workflow-source-name-${randomUUID()}`);
+    try {
+      mkdirSync(fixtureRoot, { recursive: true });
+      const workflowFile = join(fixtureRoot, "source-derived-workflow.ts");
+      writeFileSync(
+        workflowFile,
+        `import { workflow } from ${JSON.stringify(workflowModuleUrl)};\nexport default workflow({ description: "", outputs: {}, run: () => ({}) });\n`,
+      );
+
+      const def = await importDefaultDefinition(workflowFile);
+
+      assert.equal(def.name, "source-derived-workflow");
+      assert.equal(def.normalizedName, "source-derived-workflow");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("skips installed SDK authoring frames when name is omitted", async () => {
+    const fixtureRoot = join(tmpdir(), `workflow-dist-name-${randomUUID()}`);
+    try {
+      const sdkDir = join(fixtureRoot, "dist", "builtin", "workflows", "src", "authoring");
+      mkdirSync(sdkDir, { recursive: true });
+      writeFileSync(
+        join(sdkDir, "workflow.ts"),
+        `import { workflow as realWorkflow } from ${JSON.stringify(workflowModuleUrl)};\nexport function workflow(spec: Parameters<typeof realWorkflow>[0]): ReturnType<typeof realWorkflow> {\n  return realWorkflow(spec);\n}\n`,
+      );
+      const userWorkflowFile = join(fixtureRoot, "actual-user-workflow.ts");
+      writeFileSync(
+        userWorkflowFile,
+        `import { workflow } from "./dist/builtin/workflows/src/authoring/workflow.ts";\nexport default workflow({ description: "", outputs: {}, run: () => ({}) });\n`,
+      );
+
+      const def = await importDefaultDefinition(userWorkflowFile);
+
+      assert.equal(def.name, "actual-user-workflow");
+      assert.equal(def.normalizedName, "actual-user-workflow");
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("workflow select input", () => {
   test("select schema accepted", () => {
-    const def = defineWorkflow("select-test")
-      .input("mode", Type.Union(
-        [Type.Literal("fast"), Type.Literal("thorough"), Type.Literal("balanced")],
-        { description: "analysis mode" },
-      ))
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "select-test",
+      description: "",
+      inputs: {
+        mode: Type.Union(
+          [Type.Literal("fast"), Type.Literal("thorough"), Type.Literal("balanced")],
+          { description: "analysis mode" },
+        ),
+      },
+      outputs: {},
+      run: async () => ({}),
+    });
 
     const schema = def.inputs["mode"];
     assert.equal(schemaFieldKind(schema), "select");
@@ -72,20 +136,28 @@ describe("defineWorkflow select input", () => {
   });
 });
 
-describe("defineWorkflow normalizedName", () => {
-  test("compile sets normalizedName from name", () => {
-    const def = defineWorkflow("Deep Research Codebase")
-      .run(async () => ({}))
-      .compile();
+describe("workflow normalizedName", () => {
+  test("workflow sets normalizedName from name", () => {
+    const def = workflow({
+      name: "Deep Research Codebase",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.equal(def.normalizedName, "deep-research-codebase");
     assert.equal(def.name, "Deep Research Codebase");
   });
 
   test("normalizedName used as registry key", () => {
-    const def = defineWorkflow("My Workflow")
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "My Workflow",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.equal(def.normalizedName, "my-workflow");
   });
@@ -93,10 +165,15 @@ describe("defineWorkflow normalizedName", () => {
 
 describe("WorkflowDefinition deep freeze", () => {
   test("inputs map is frozen", () => {
-    const def = defineWorkflow("freeze-inputs")
-      .input("x", Type.Optional(Type.String()))
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "freeze-inputs",
+      description: "",
+      inputs: {
+        x: Type.Optional(Type.String()),
+      },
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.equal(Object.isFrozen(def.inputs), true);
 
@@ -107,9 +184,13 @@ describe("WorkflowDefinition deep freeze", () => {
   });
 
   test("top-level definition is frozen", () => {
-    const def = defineWorkflow("freeze-top")
-      .run(async () => ({}))
-      .compile();
+    const def = workflow({
+      name: "freeze-top",
+      description: "",
+      inputs: {},
+      outputs: {},
+      run: async () => ({}),
+    });
 
     assert.equal(Object.isFrozen(def), true);
   });

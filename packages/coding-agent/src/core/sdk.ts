@@ -22,167 +22,49 @@ import {
   withCodexFastModePayload,
   withCodexFastModeStreamOptions,
 } from "./codex-fast-mode.ts";
+import { restoreAnthropicReplayThinkingBlocks } from "./anthropic-thinking-guard.ts";
+import { sanitizeCopilotGeminiPayload } from "./copilot-gemini-payload-sanitizer.ts";
+import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.ts";
+import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
+import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
-  LoadExtensionsResult,
-  OrchestrationContext,
-  SessionStartEvent,
-  ToolDefinition,
 } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel, resolveSavedModelReference } from "./model-resolver.ts";
-import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import { time } from "./timings.ts";
-import {
-  createBashTool,
-  createCodingTools,
-  createEditTool,
-  createFindTool,
-  createGrepTool,
-  createLsTool,
-  createReadOnlyTools,
-  createReadTool,
-  STRUCTURED_OUTPUT_TOOL_NAME,
-  createStructuredOutputCapture,
-  createStructuredOutputTool,
-  createWriteTool,
-  defaultToolNames,
-  withFileMutationQueue,
-  type BashCommandPolicy,
-} from "./tools/index.ts";
+import { defaultToolNames } from "./tools/index.ts";
 
-export interface CreateAgentSessionOptions {
-  /** Working directory for project-local discovery. Default: process.cwd() */
-  cwd?: string;
-  /** Global config directory. Default: ~/.atomic/agent */
-  agentDir?: string;
+import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
+export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 
-  /** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
-  authStorage?: AuthStorage;
-  /** Model registry. Default: ModelRegistry.create(authStorage, agentDir/models.json) */
-  modelRegistry?: ModelRegistry;
-
-  /** Model to use. Default: from settings, else first available */
-  model?: Model<Api>;
-  /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
-  thinkingLevel?: ThinkingLevel;
-  /** Models available for cycling (Ctrl+P in interactive mode) */
-  scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
-
-  /**
-   * Optional default tool suppression mode when no explicit allowlist is provided.
-   *
-   * - "all": start with no tools enabled
-   * - "builtin": disable the default built-in tools (read, bash, edit, write,
-   *   ask_user_question, todo) but keep extension/custom tools enabled
-   */
-  noTools?: "all" | "builtin";
-  /**
-   * Optional allowlist of tool names.
-   *
-   * When omitted, pi enables the default built-in tools (read, bash, edit, write,
-   * ask_user_question, todo) and leaves extension/custom tools enabled unless
-   * `noTools` changes that default.
-   * When provided, only the listed tool names are enabled, minus any names in
-   * `excludedTools`.
-   */
-  tools?: string[];
-  /**
-   * Optional blocklist of tool names.
-   *
-   * Matching built-in, extension, and SDK custom tools are omitted from the
-   * final session tool registry and active tool set. Unknown names are ignored.
-   */
-  excludedTools?: string[];
-  /** Custom tools to register (in addition to built-in tools). */
-  customTools?: ToolDefinition[];
-  /** Optional command-level policy for the built-in bash tool. Does not expose bash by itself. */
-  bashPolicy?: BashCommandPolicy;
-
-  /** Resource loader. When omitted, DefaultResourceLoader is used. */
-  resourceLoader?: ResourceLoader;
-
-  /** Session manager. Default: SessionManager.create(cwd) */
-  sessionManager?: SessionManager;
-
-  /** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
-  settingsManager?: SettingsManager;
-  /** Session start event metadata for extension runtime startup. */
-  sessionStartEvent?: SessionStartEvent;
-  /** Session-scoped orchestration policy exposed to extension/tool handlers. */
-  orchestrationContext?: OrchestrationContext;
-}
-
-/** Result from createAgentSession */
-export interface CreateAgentSessionResult {
-  /** The created session */
-  session: AgentSession;
-  /** Extensions result (for UI context setup in interactive mode) */
-  extensionsResult: LoadExtensionsResult;
-  /** Warning if session was restored with a different model than saved */
-  modelFallbackMessage?: string;
-}
-
-// Re-exports
-
-export * from "./agent-session-runtime.ts";
-export type {
-  ExtensionAPI,
-  ExtensionCommandContext,
-  ExtensionContext,
-  ExtensionFactory,
-  SlashCommandInfo,
-  SlashCommandSource,
-  ToolDefinition,
-} from "./extensions/index.ts";
-export type { PromptTemplate } from "./prompt-templates.ts";
-export type { Skill } from "./skills.ts";
-export type {
-  BashCommandParseError,
-  BashCommandParseResult,
-  BashCommandPolicy,
-  BashCommandPolicyDecision,
-  BashCommandPolicyMatchMode,
-  BashCommandPolicyRejection,
-  BashCommandRule,
-  BashCommandSegment,
-  BashCommandSegmentSource,
-  JsonObject,
-  JsonPrimitive,
-  JsonValue,
-  StructuredOutputCapture,
-  StructuredOutputFileCapture,
-  StructuredOutputToolOptions,
-  Tool,
-} from "./tools/index.ts";
-
-export {
-  withFileMutationQueue,
-  STRUCTURED_OUTPUT_TOOL_NAME,
-  // Tool factories (for custom cwd)
-  createCodingTools,
-  createReadOnlyTools,
-  createReadTool,
-  createBashTool,
-  createEditTool,
-  createWriteTool,
-  createGrepTool,
-  createFindTool,
-  createLsTool,
-  createStructuredOutputCapture,
-  createStructuredOutputTool,
-};
+export * from "./sdk-exports.ts";
 
 // Helper Functions
 
 function getDefaultAgentDir(): string {
   return getAgentDir();
+}
+
+type ContextWindowRequestSource = "explicit" | "incoming-model" | "session" | "model-settings" | "global-settings";
+
+const COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS = { allowCopilotLongContextFallback: true } as const;
+
+function getAlreadyAppliedContextWindow(model: Model<Api>): number | undefined {
+  const defaultContextWindow = getModelDefaultContextWindow(model);
+  if (model.contextWindow === defaultContextWindow) {
+    return undefined;
+  }
+
+  return getSupportedContextWindows(model).includes(model.contextWindow)
+    ? model.contextWindow
+    : undefined;
 }
 
 /**
@@ -227,14 +109,19 @@ export async function createAgentSession(
   const agentDir = options.agentDir ? resolvePath(options.agentDir) : getDefaultAgentDir();
   let resourceLoader = options.resourceLoader;
 
-  // Use provided or create AuthStorage and ModelRegistry
+  // Use provided or create AuthStorage and ModelRegistry. When a modelRegistry
+  // is supplied (e.g. a workflow stage reusing one registry across model
+  // fallback candidates), do NOT also build a fresh AuthStorage: its
+  // constructor eagerly calls reload(), which acquires the auth.json file lock
+  // and, under contention, can fail and leave an empty credential set. Reusing
+  // the supplied registry's already-loaded auth avoids that race (issue #1431).
   const authPath = options.agentDir ? join(agentDir, "auth.json") : undefined;
   const modelsPath = options.agentDir
     ? join(agentDir, "models.json")
     : undefined;
-  const authStorage = options.authStorage ?? AuthStorage.create(authPath);
   const modelRegistry =
-    options.modelRegistry ?? ModelRegistry.create(authStorage, modelsPath);
+    options.modelRegistry ??
+    ModelRegistry.create(options.authStorage ?? AuthStorage.create(authPath), modelsPath);
 
   const settingsManager =
     options.settingsManager ?? SettingsManager.create(cwd, agentDir);
@@ -317,6 +204,47 @@ export async function createAgentSession(
     thinkingLevel = clampThinkingLevel(model, thinkingLevel) as ThinkingLevel;
   }
 
+  let selectedContextWindow: number | undefined;
+  let contextWindowWarning: string | undefined;
+  let contextWindowError: string | undefined;
+  const explicitContextWindowSelection = options.contextWindow !== undefined;
+  const incomingModelContextWindow =
+    model && options.model ? getAlreadyAppliedContextWindow(model) : undefined;
+  const sessionContextWindow = hasExistingSession ? existingSession.contextWindow : undefined;
+  const modelSettingsContextWindow = model ? settingsManager.getDefaultContextWindowForModel(model.provider, model.id) : undefined;
+  const globalSettingsContextWindow = settingsManager.getDefaultContextWindow();
+  const contextWindowRequest:
+    | { contextWindow: number; source: ContextWindowRequestSource }
+    | undefined =
+    options.contextWindow !== undefined
+      ? { contextWindow: options.contextWindow, source: "explicit" }
+      : incomingModelContextWindow !== undefined
+        ? { contextWindow: incomingModelContextWindow, source: "incoming-model" }
+        : sessionContextWindow !== undefined
+          ? { contextWindow: sessionContextWindow, source: "session" }
+          : modelSettingsContextWindow !== undefined
+            ? { contextWindow: modelSettingsContextWindow, source: "model-settings" }
+            : globalSettingsContextWindow !== undefined
+              ? { contextWindow: globalSettingsContextWindow, source: "global-settings" }
+              : undefined;
+  if (model && contextWindowRequest !== undefined) {
+    const selected = selectContextWindow(
+      model,
+      contextWindowRequest.contextWindow,
+      COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS,
+    );
+    if ("error" in selected) {
+      if (options.contextWindowStrict) {
+        contextWindowError = selected.error;
+      } else if (contextWindowRequest.source !== "global-settings") {
+        contextWindowWarning = selected.error;
+      }
+    } else {
+      model = selected.model;
+      selectedContextWindow = selected.contextWindow;
+    }
+  }
+
   const allowedToolNames =
     options.tools ?? (options.noTools === "all" ? [] : undefined);
   const initialActiveToolNames: string[] = options.tools
@@ -327,15 +255,18 @@ export async function createAgentSession(
 
   let agent: Agent;
 
+  let lastConvertedLlmMessages: Message[] | undefined;
+
   // Create convertToLlm wrapper that filters images if blockImages is enabled (defense-in-depth)
   const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
     const converted = convertToLlm(messages);
     // Check setting dynamically so mid-session changes take effect
     if (!settingsManager.getBlockImages()) {
+      lastConvertedLlmMessages = converted;
       return converted;
     }
     // Filter out ImageContent from all messages, replacing with text placeholder
-    return converted.map((msg) => {
+    const filtered = converted.map((msg) => {
       if (msg.role === "user" || msg.role === "toolResult") {
         const content = msg.content;
         if (Array.isArray(content)) {
@@ -368,6 +299,8 @@ export async function createAgentSession(
       }
       return msg;
     });
+    lastConvertedLlmMessages = filtered;
+    return filtered;
   };
 
   const extensionRunnerRef: { current?: ExtensionRunner } = {};
@@ -428,11 +361,41 @@ export async function createAgentSession(
     onPayload: async (payload, model) => {
       const fastModeEnabled = isCodexFastModeEnabled(model);
       const guardedPayload = withCodexFastModePayload(payload, fastModeEnabled);
+      const sourceMessages = lastConvertedLlmMessages;
+      const replayGuardedPayload = sourceMessages
+        ? restoreAnthropicReplayThinkingBlocks(guardedPayload, sourceMessages, model)
+        : guardedPayload;
       const runner = extensionRunnerRef.current;
+      let finalPayload: unknown;
       if (!runner?.hasHandlers("before_provider_request")) {
-        return guardedPayload;
+        finalPayload = replayGuardedPayload;
+      } else {
+        const extensionPayload = await runner.emitBeforeProviderRequest(
+          replayGuardedPayload,
+        );
+        finalPayload = sourceMessages
+          ? restoreAnthropicReplayThinkingBlocks(extensionPayload, sourceMessages, model)
+          : extensionPayload;
       }
-      return runner.emitBeforeProviderRequest(guardedPayload);
+      // GitHub Copilot Gemini models are served through CAPI, which translates
+      // the OpenAI request into Google GenAI and rejects tool schemas whose
+      // `anyOf`/`oneOf` wraps a complex object (HTTP 400 invalid request body).
+      // Sanitize tool JSON Schemas into Gemini's supported subset. No-op for
+      // every other provider/model, and runs last so it also covers tools
+      // injected by `before_provider_request` extensions.
+      const schemaSanitized = sanitizeCopilotGeminiPayload(finalPayload, model);
+      // Reconstruct flattened tool-call arguments on replayed assistant
+      // messages (for example `edits[0].newText` -> `edits: [{ newText }]`).
+      // CAPI parses replayed arguments straight into Gemini's FunctionCall,
+      // and a flattened/malformed prior call ends the next turn with
+      // `finish_reason: "error"`. No-op for well-formed args / other models.
+      const replayArgsNormalized = normalizeCopilotGeminiReplayToolArguments(schemaSanitized, model);
+      // CAPI carries Gemini thought signatures in a `reasoning_opaque` field it
+      // reads back off the assistant message on replay. Convert the
+      // `reasoning_details` the client re-emits (captured inbound by the SSE
+      // interceptor) into that field so multi-turn tool use keeps its thought
+      // signature instead of dying on an empty completion. No-op otherwise.
+      return restoreCopilotGeminiReasoningOpaque(replayArgsNormalized, model);
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;
@@ -461,6 +424,15 @@ export async function createAgentSession(
   // Restore messages if session has existing data
   if (hasExistingSession) {
     agent.state.messages = existingSession.messages;
+    const transcriptContextWindow = model
+      ? (existingSession.contextWindow ?? getModelDefaultContextWindow(model))
+      : undefined;
+    if (
+      selectedContextWindow !== undefined &&
+      (explicitContextWindowSelection || selectedContextWindow !== transcriptContextWindow)
+    ) {
+      sessionManager.appendContextWindowChange(selectedContextWindow);
+    }
     if (!hasThinkingEntry) {
       sessionManager.appendThinkingLevelChange(thinkingLevel);
     }
@@ -468,6 +440,12 @@ export async function createAgentSession(
     // Save initial model and thinking level for new sessions so they can be restored on resume
     if (model) {
       sessionManager.appendModelChange(model.provider, model.id);
+      if (
+        selectedContextWindow !== undefined &&
+        (explicitContextWindowSelection || selectedContextWindow !== getModelDefaultContextWindow(model))
+      ) {
+        sessionManager.appendContextWindowChange(selectedContextWindow);
+      }
     }
     sessionManager.appendThinkingLevelChange(thinkingLevel);
   }
@@ -480,7 +458,6 @@ export async function createAgentSession(
     scopedModels: options.scopedModels,
     resourceLoader,
     customTools: options.customTools,
-    bashPolicy: options.bashPolicy,
     modelRegistry,
     initialActiveToolNames,
     allowedToolNames,
@@ -495,5 +472,7 @@ export async function createAgentSession(
     session,
     extensionsResult,
     modelFallbackMessage,
+    contextWindowWarning,
+    contextWindowError,
   };
 }

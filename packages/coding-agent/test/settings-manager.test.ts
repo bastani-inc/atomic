@@ -24,6 +24,118 @@ describe("SettingsManager", () => {
 		}
 	});
 
+	describe("context window settings", () => {
+		it("parses numeric and compact default context windows", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: "1m" }));
+			const compact = SettingsManager.create(projectDir, agentDir);
+			expect(compact.getDefaultContextWindow()).toBe(1_000_000);
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 400_000 }));
+			const numeric = SettingsManager.create(projectDir, agentDir);
+			expect(numeric.getDefaultContextWindow()).toBe(400_000);
+		});
+
+		it("parses and writes model-specific default context windows", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({ defaultContextWindows: { "github-copilot/claude-opus-4.8": "936k" } }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			expect(manager.getDefaultContextWindowForModel("github-copilot", "claude-opus-4.8")).toBe(936_000);
+			expect(manager.getDefaultContextWindowForModel("anthropic", "claude-opus-4.8")).toBeUndefined();
+
+			manager.setDefaultContextWindowForModel("github-copilot", "gpt-5.5", 922_000);
+			await manager.flush();
+			expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toMatchObject({
+				defaultContextWindows: {
+					"github-copilot/claude-opus-4.8": "936k",
+					"github-copilot/gpt-5.5": 922_000,
+				},
+			});
+		});
+
+		it("reports malformed global and project default context windows at load", () => {
+			const globalSettingsPath = join(agentDir, "settings.json");
+			const projectSettingsDir = join(projectDir, ".atomic");
+			mkdirSync(projectSettingsDir, { recursive: true });
+			writeFileSync(globalSettingsPath, JSON.stringify({ defaultContextWindow: "bogus" }));
+			writeFileSync(join(projectSettingsDir, "settings.json"), JSON.stringify({ defaultContextWindow: 0 }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			const errors = manager.drainErrors();
+			expect(errors).toHaveLength(2);
+			expect(errors.map((error) => error.scope).sort()).toEqual(["global", "project"]);
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("defaultContextWindow");
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("bogus");
+			expect(errors.map((error) => error.error.message).join("\n")).toContain("positive integer");
+			expect(manager.drainErrors()).toEqual([]);
+		});
+
+		it("reports malformed default context windows at reload and falls back safely", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 400_000 }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.drainErrors()).toEqual([]);
+			expect(manager.getDefaultContextWindow()).toBe(400_000);
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: -1 }));
+			await manager.reload();
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			let errors = manager.drainErrors();
+			expect(errors).toHaveLength(1);
+			expect(errors[0].scope).toBe("global");
+			expect(errors[0].error.message).toContain("defaultContextWindow");
+			expect(errors[0].error.message).toContain("positive integer");
+
+			writeFileSync(settingsPath, JSON.stringify({ defaultContextWindow: 1.5 }));
+			await manager.reload();
+			expect(manager.getDefaultContextWindow()).toBeUndefined();
+			errors = manager.drainErrors();
+			expect(errors).toHaveLength(1);
+			expect(errors[0].error.message).toContain("positive integer");
+		});
+	});
+
+	describe("compaction settings", () => {
+		it("returns default and configured context compaction parameters", () => {
+			const defaults = SettingsManager.create(projectDir, agentDir);
+			expect(defaults.getCompactionSettings()).toEqual({
+				enabled: true,
+				reserveTokens: 16384,
+				compression_ratio: 0.5,
+				preserve_recent: 2,
+			});
+
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(
+				settingsPath,
+				JSON.stringify({
+					compaction: {
+						enabled: false,
+						reserveTokens: 8192,
+						compression_ratio: 0.3,
+						preserve_recent: 4,
+						query: "focus current migration",
+					},
+				}),
+			);
+			const configured = SettingsManager.create(projectDir, agentDir);
+			expect(configured.getCompactionSettings()).toEqual({
+				enabled: false,
+				reserveTokens: 8192,
+				compression_ratio: 0.3,
+				preserve_recent: 4,
+				query: "focus current migration",
+			});
+		});
+	});
+
 	describe("preserves externally added settings", () => {
 		it("should preserve enabledModels when changing thinking level", async () => {
 			// Create initial settings file
@@ -197,6 +309,24 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("theme setting", () => {
+		it("stores slash-separated automatic theme settings separately from fixed theme names", async () => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ theme: "light/dark" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTheme()).toBeUndefined();
+			expect(manager.getThemeSetting()).toBe("light/dark");
+
+			manager.setTheme("solarized-light/tokyo-night");
+			await manager.flush();
+
+			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(savedSettings.theme).toBe("solarized-light/tokyo-night");
+		});
+	});
+
 	describe("error tracking", () => {
 		it("should collect and clear load errors via drainErrors", () => {
 			const globalSettingsPath = join(agentDir, "settings.json");
@@ -344,27 +474,23 @@ describe("SettingsManager", () => {
 			expect(savedSettings.theme).toBe("light");
 		});
 	});
-
 	describe("getSessionDir", () => {
 		it("should return undefined when not set", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ theme: "dark" }));
 			const manager = SettingsManager.create(projectDir, agentDir);
 			expect(manager.getSessionDir()).toBeUndefined();
 		});
-
 		it("should return global sessionDir", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "/tmp/sessions" }));
 			const manager = SettingsManager.create(projectDir, agentDir);
 			expect(manager.getSessionDir()).toBe("/tmp/sessions");
 		});
-
 		it("should return project sessionDir, overriding global", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "/global/sessions" }));
 			writeFileSync(join(projectDir, ".pi", "settings.json"), JSON.stringify({ sessionDir: "./sessions" }));
 			const manager = SettingsManager.create(projectDir, agentDir);
 			expect(manager.getSessionDir()).toBe("./sessions");
 		});
-
 		it("should expand ~ in sessionDir", () => {
 			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ sessionDir: "~/sessions" }));
 			const manager = SettingsManager.create(projectDir, agentDir);

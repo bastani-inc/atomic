@@ -2,6 +2,7 @@ import { describe, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
+import { subset as semverSubset } from "semver";
 import atomicPackageJson from "../../packages/coding-agent/package.json" with { type: "json" };
 import cursorPackageJson from "../../packages/cursor/package.json" with { type: "json" };
 import intercomPackageJson from "../../packages/intercom/package.json" with { type: "json" };
@@ -38,6 +39,14 @@ interface WorkspacePackageJson extends PackageDependencySections {
 interface WorkspacePackage {
     manifestPath: string;
     packageJson: WorkspacePackageJson;
+}
+
+interface RuntimeDependencyPackageJson {
+    name: string;
+    version: string;
+    engines?: {
+        node?: string;
+    };
 }
 
 async function workspacePackages(): Promise<WorkspacePackage[]> {
@@ -119,6 +128,13 @@ function atomicRuntimeDependencyRange(name: string): string | undefined {
     return ATOMIC_RUNTIME_DEPENDENCIES[name];
 }
 
+async function runtimeDependencyPackageJson(
+    dependencyName: string,
+): Promise<RuntimeDependencyPackageJson> {
+    const manifestPath = join("node_modules", dependencyName, "package.json");
+    return (await Bun.file(manifestPath).json()) as RuntimeDependencyPackageJson;
+}
+
 describe("package metadata", () => {
     test("all workspace packages share the same strict release version", async () => {
         const packages = await workspacePackages();
@@ -193,12 +209,34 @@ describe("package metadata", () => {
                 ["dependencies"],
             )) {
                 if (dependencyName.startsWith("@bastani/")) continue;
-                assert.equal(
-                    atomicRuntimeDependencyRange(dependencyName),
-                    dependencyRange,
-                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name}`,
+                const atomicDependencyRange =
+                    atomicRuntimeDependencyRange(dependencyName);
+                const foundRange = atomicDependencyRange ?? "missing";
+                assert.ok(
+                    atomicDependencyRange !== undefined &&
+                        semverSubset(atomicDependencyRange, dependencyRange),
+                    `@bastani/atomic must directly depend on ${dependencyName} for bundled ${bundledPackageJson.name} with a range equal to or narrower than ${dependencyRange} (found ${foundRange})`,
                 );
             }
+        }
+    });
+
+    test("@bastani/atomic Node.js engine range is no broader than direct runtime dependency engines", async () => {
+        const atomicNodeEngine = atomicPackageJson.engines.node;
+        assert.equal(typeof atomicNodeEngine, "string");
+
+        for (const dependencyName of Object.keys(
+            ATOMIC_RUNTIME_DEPENDENCIES,
+        ).sort()) {
+            const dependencyPackageJson =
+                await runtimeDependencyPackageJson(dependencyName);
+            const dependencyNodeEngine = dependencyPackageJson.engines?.node;
+            if (!dependencyNodeEngine) continue;
+
+            assert.ok(
+                semverSubset(atomicNodeEngine, dependencyNodeEngine),
+                `@bastani/atomic engines.node (${atomicNodeEngine}) must be equal to or narrower than ${dependencyName} engines.node (${dependencyNodeEngine})`,
+            );
         }
     });
 

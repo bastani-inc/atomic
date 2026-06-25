@@ -107,11 +107,14 @@ interface AgentSession {
   sessionFile: string | undefined;
   sessionId: string;
 
-  // Model control
+  // Model, thinking, and context-window control
   setModel(model: Model): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): void;
+  setContextWindow(contextWindow: number, options?: { persistDefault?: boolean }): void;
   cycleModel(): Promise<ModelCycleResult | undefined>;
   cycleThinkingLevel(): ThinkingLevel | undefined;
+  getAvailableContextWindows(): number[];
+  supportsContextWindowSelection(): boolean;
 
   // State access
   agent: Agent;
@@ -121,7 +124,7 @@ interface AgentSession {
   isStreaming: boolean;
 
   // In-place tree navigation within the current session file
-  navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean }>;
+  navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
   // Verbatim Compaction (deletion-only Context Compaction)
   compact(): Promise<ContextCompactionResult>;
@@ -337,9 +340,12 @@ session.subscribe((event) => {
       // event.toolResults: tool results from this turn
       break;
     
-    // Session events (queue, compaction, retry)
+    // Session events (queue, context-window, compaction, retry)
     case "queue_update":
       console.log(event.steering, event.followUp);
+      break;
+    case "context_window_changed":
+      console.log(`Context window: ${event.contextWindow}`);
       break;
     case "compaction_start":
     case "compaction_end":
@@ -412,6 +418,8 @@ const available = await modelRegistry.getAvailable();
 const { session } = await createAgentSession({
   model: opus,
   thinkingLevel: "medium", // off, minimal, low, medium, high, xhigh
+  contextWindow: 1_000_000, // optional; must be supported by the selected model unless non-strict fallback is acceptable
+  contextWindowStrict: true, // optional; return contextWindowError instead of warning/fallback when unsupported
   
   // Models for cycling (CTRL+P in interactive mode)
   scopedModels: [
@@ -428,6 +436,12 @@ If no model is provided:
 1. Tries to restore from session (if continuing)
 2. Uses default from settings
 3. Falls back to first available model
+
+Context-window selection is independent from `thinkingLevel`. `contextWindow` accepts a raw token count such as `400_000` or `1_000_000`; for most providers the value must be present in the model's supported context windows (`model.contextWindowOptions` plus the scalar default). GitHub Copilot is the only provider with rounded long-context budget handling: when a tiered Copilot model advertises a long tier below the branded request (for example `936_000` for a `1_000_000` request), Atomic selects the largest advertised Copilot long tier at or below the request instead of falling back to the short tier. Settings lookup first checks the selected model's `defaultContextWindows["provider/modelId"]` entry, then the optional global `defaultContextWindow` fallback; unsupported model-specific settings keep the model default and return `contextWindowWarning`, while unsupported global fallback values are ignored silently as not applicable to the active model. When you pass `contextWindowStrict: true`, an unsupported explicit selection is reported as `contextWindowError` so callers can fail before prompting. A successful explicit `contextWindow` startup option is journaled as a `context_window_change` entry even when it equals the scalar model default, so the user's explicit budget choice survives future settings changes and resume.
+
+At runtime, use `session.getAvailableContextWindows()` to inspect supported values, `session.supportsContextWindowSelection()` to check whether more than one value is selectable, and `session.setContextWindow(tokens, { persistDefault })` to change the active model budget. `setContextWindow()` journals a `context_window_change` entry only when the active value changes. Passing `{ persistDefault: true }` also writes the effective selected budget to `defaultContextWindows["provider/modelId"]` in settings instead of the global fallback, so a Copilot prompt cap such as `936k` does not leak into Anthropic, Cursor, or other providers. Tree navigation replays the target branch's `context_window_change` state into the active model without adding another journal entry or changing settings. Larger provider context windows may consume more credits/cost, so opt into larger values deliberately. For allowlisted GitHub Copilot long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget to the model's advertised `922k`/`936k` tier and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context tier server-side by prompt token count, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
+
+The package root exports the same context-window helpers and types used by the runtime: `parseContextWindowValue()`, `formatContextWindow()`, `validateContextWindowValue()`, `normalizeContextWindowOptions()`, `getModelDefaultContextWindow()`, `getSupportedContextWindows()`, `withContextWindowOptions()`, `selectContextWindow()`, `ContextWindowParseResult`, `ContextWindowSelection`, `ContextWindowSelectionError`, and `ContextWindowSelectionOptions`. Importing from `@bastani/atomic` also includes the `@earendil-works/pi-ai` `Model<Api>` augmentation for `contextWindowOptions` and `defaultContextWindow`, so SDK consumers can use the helper types without importing internal source paths.
 
 > See [examples/sdk/02-custom-model.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/sdk/02-custom-model.ts)
 
@@ -493,8 +507,8 @@ const { session } = await createAgentSession({ resourceLoader: loader });
 
 Specify which tools to expose by name:
 
-- Built-in tool names: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ask_user_question`, `todo`
-- The default active built-ins include `ask_user_question` and `todo` in addition to file and shell tools.
+- Built-in tool names enabled by default: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`
+- `find` discovers filesystem paths by glob; `search` searches file contents with regex patterns across files, directories, globs, and internal URLs.
 - `tools` is an allowlist: when provided, only the listed built-in, extension, and custom tool names are exposed.
 - `excludedTools` is a blocklist: matching built-in, extension, and custom tool names are omitted from the final registry and active tool set. If both are provided, `tools` is applied first and `excludedTools` subtracts from it.
 - `noTools: "all"` disables all tools
@@ -505,12 +519,12 @@ import { createAgentSession } from "@bastani/atomic";
 
 // Read-only mode
 const { session } = await createAgentSession({
-  tools: ["read", "grep", "find", "ls"],
+  tools: ["read", "search", "find", "ls"],
 });
 
 // Pick specific tools
 const { session } = await createAgentSession({
-  tools: ["read", "bash", "grep"],
+  tools: ["read", "bash", "search"],
 });
 
 // Keep defaults but remove HITL prompts
@@ -525,45 +539,9 @@ const { session } = await createAgentSession({
 });
 ```
 
-#### Bash command policy
+#### Bash tool behavior
 
-`bashPolicy` narrows what the built-in `bash` tool may execute after `tools`/`excludedTools` have already decided that `bash` is exposed. It does not grant shell access by itself.
-
-```typescript
-import { createAgentSession, type BashCommandPolicy } from "@bastani/atomic";
-
-const browseOnly: BashCommandPolicy = {
-  default: "deny",
-  allow: [
-    "which browse",
-    { prefix: "browse " },
-    { prefix: "grep " },
-    { glob: "bun test test/unit/*.test.ts" },
-    { regex: "^rg\\b" },
-  ],
-  deny: [{ regex: "\\brm\\b" }], // deny rules win over allow rules
-  // match defaults to "segments"
-};
-
-const { session } = await createAgentSession({
-  tools: ["read", "bash"],
-  bashPolicy: browseOnly,
-});
-```
-
-Rules match exact command strings, prefixes, command-string globs, or JavaScript regular expressions. `default` defaults to `"allow"` for backward compatibility; set `default: "deny"` for an allowlist-only shell. Omitting `bashPolicy`, passing `{}`, or passing a default-allow policy with no `allow`/`deny` rules is a compatibility no-op and does not parse the command. Empty `allow`/`deny` arrays and match-only default-allow policies are treated the same; malformed policy objects still fail closed.
-
-Glob rules match command target strings, not filesystem path segments. `*` and `?` can match `/`, so `{ glob: "browse *" }` matches `browse http://localhost:3000`, `browse docs/index.html`, and `browse ./preview/output.html`, while still matching the whole target so `echo browse docs/index.html` does not match unless the pattern includes leading wildcards. Backslash escapes the next glob character when you need a literal `*`, `?`, or bracket; inside bracket classes, escaped metacharacters such as `\-`, `\^`, `\]`, `\[`, and `\\` stay literal instead of becoming regex ranges, negation markers, class delimiters, or backslash escapes. Malformed glob bracket classes or ranges, such as `{ glob: "echo [z-a]" }`, fail closed as `invalid-policy` rather than surfacing raw regular-expression errors.
-
-Runtime policy validation is part of enforcement for JavaScript/JSON callers: a provided policy must be a non-null object with only the top-level keys `default`, `allow`, `deny`, and `match`; typoed or extra keys such as `denny` or `extra` are rejected as `invalid-policy` even when the policy otherwise looks like default-allow. `allow`/`deny` must be arrays when present, rules must be non-empty strings or one-variant objects with string values, regex flags must be strings, and invalid regexes, invalid globs, or stateful `g`/`y` flags are rejected as `invalid-policy` before shell execution.
-
-By default, `match: "segments"` parses shell separators and substitutions and requires every executable segment to pass. Separators include pipes, `&&`, `||`, `;`, background `&`, and unquoted line terminators: LF, CRLF, and bare CR are command separators rather than ordinary whitespace. Bash noclobber redirection `>|` is treated as redirection syntax rather than a pipeline separator after a command head, so `echo ok >|/tmp/out` remains one `echo` segment. For example, `browse snapshot | grep title` must satisfy both the `browse` rule and the `grep` rule, and `browse snapshot; rm -rf /` or `browse snapshot\nrm -rf /` is blocked when `rm` is denied or when `default: "deny"` has no matching allow rule. Segment mode also checks command substitutions (`$(...)`, backticks) and process substitutions (`<(...)`, `>(...)`). Syntax Atomic cannot safely segment is rejected before a shell process starts.
-
-Segment mode requires each command head to be a statically identifiable literal word. Literal names such as `grep`, `./script`, `/usr/bin/env`, `bun`, `browse`, and names containing hyphens, underscores, dots, or slashes are accepted when they contain no shell expansion syntax. Atomic conservatively rejects Bash reserved words and compound introducers (`coproc`, `if`, `for`, `while`, `case`, `{`, `}`, `!`), leading redirection syntax (`>file cmd`, `2>file cmd`, `<file cmd`, `&>file cmd`, `>|file cmd`, `<&0 cmd`, `>&2 cmd`), redirection operators attached to the command-head word (`cmd>file`, `cmd>>file`, `cmd>|file`, `cmd2>file`, `cmd>&2`, `cmd</tmp/in`), leading environment assignment words (`PATH=/tmp:$PATH browse snapshot`, `LD_PRELOAD=/tmp/x browse snapshot`, `FOO=bar`), variable or parameter-expanded heads (`$cmd`, `${cmd}`), quote- or escape-constructed heads (`r''m`, `"rm"`, `r\m`), tilde/glob/brace-expanded heads (`~/bin/rm`, `r*m`, `{rm,echo}`), and command/process substitutions or backticks embedded in the head. Substitutions in argument positions are still parsed so nested commands must also pass the policy.
-
-Use `match: "whole"` only when you intentionally want rules to match the raw command string as-is. Whole-command prefix rules can allow shell operators inside the same raw string.
-
-`AgentSession.executeBash()` applies the same session `bashPolicy` before adding any configured command prefix or invoking the execution backend.
+Atomic's built-in `bash` tool matches upstream pi: when `bash` is enabled, commands execute through the configured shell with the Atomic process permissions. Use `tools`, `excludedTools`, or `noTools` to decide whether a session exposes the `bash` tool at all. Atomic no longer provides a command-level allow/deny option for `bash`; use an operating-system/container sandbox or a custom tool/extension when you need command allowlisting or stronger isolation.
 
 #### Tools with Custom cwd
 
@@ -583,7 +561,7 @@ const { session } = await createAgentSession({
 // Or pick specific tools for custom cwd
 const { session } = await createAgentSession({
   cwd,
-  tools: ["read", "bash", "grep"],
+  tools: ["read", "bash", "search"],
   sessionManager: SessionManager.inMemory(cwd),
 });
 ```
@@ -991,6 +969,12 @@ interface CreateAgentSessionResult {
   
   // Warning if session model couldn't be restored
   modelFallbackMessage?: string;
+
+  // Warning if a saved/default context window could not be applied to the selected model
+  contextWindowWarning?: string;
+
+  // Error if an explicit strict context-window selection is unsupported
+  contextWindowError?: string;
 }
 
 interface LoadExtensionsResult {
@@ -1236,7 +1220,8 @@ DefaultResourceLoader
 type ResourceLoader
 createEventBus
 
-// Helpers
+// Constants and helpers
+CONFIG_DIR_NAME
 defineTool
 STRUCTURED_OUTPUT_TOOL_NAME
 createStructuredOutputTool
@@ -1246,6 +1231,9 @@ getPackageDir
 getReadmePath
 getDocsPath
 getExamplesPath
+generateDiffString
+generateUnifiedPatch
+type EditDiffResult
 
 // Session management
 SessionManager
@@ -1260,8 +1248,6 @@ createGrepTool, createFindTool, createLsTool
 // Types
 type CreateAgentSessionOptions
 type CreateAgentSessionResult
-type BashCommandPolicy
-type BashCommandRule
 type StructuredOutputCapture
 type StructuredOutputToolOptions
 type ExtensionFactory

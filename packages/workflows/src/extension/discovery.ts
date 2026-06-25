@@ -11,27 +11,23 @@
  *   1. settings-project — paths listed in config.projectWorkflows
  *   2. project-local    — {cwd}/.atomic/workflows/*.{ts,js,mjs,cjs}
  *   3. settings-global  — paths listed in config.globalWorkflows
- *   4. user-global      — {homeDir}/.atomic/agent/workflows/*.{ts,js,mjs,cjs}
+ *   4. user-global      — {agentDir}/workflows/*.{ts,js,mjs,cjs}
  *   5. package          — workflow files supplied by Atomic/pi packages
  *   6. bundled          — shipped workflows (skipped when includeBundled=false)
  *
  * Usage:
  *   // Full discovery (all sources):
- *   const result = await discoverWorkflows({ cwd: process.cwd(), homeDir: os.homedir() });
+ *   const result = await discoverWorkflows({ cwd: process.cwd() });
  */
 
-import { readdir, stat } from "node:fs/promises";
-import { join, resolve, extname, isAbsolute } from "node:path";
-import { CONFIG_DIR_NAMES, getProjectConfigPaths } from "@bastani/atomic";
+import { join } from "node:path";
+import { CONFIG_DIR_NAMES, getAgentDirs, getProjectConfigPaths } from "@bastani/atomic";
 import type { WorkflowDefinition } from "../shared/types.js";
 import { createRegistry } from "../workflows/registry.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import * as bundledManifest from "../../builtin/index.js";
-import {
-  collectWorkflowModuleCandidates,
-  loadWorkflowModule,
-  validateWorkflowDefinitionShape as validateDefinitionShape,
-} from "./workflow-module-loader.js";
+import { validateWorkflowDefinitionShape as validateDefinitionShape } from "./workflow-module-loader.js";
+import { loadFromDir, loadFromPaths, type WorkflowModuleCandidateRecord } from "./discovery-loaders.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -42,7 +38,7 @@ import {
  *
  *   bundled          — shipped with the workflows package
  *   project-local    — found in {cwd}/.atomic/workflows/
- *   user-global      — found in {homeDir}/.atomic/agent/workflows/
+ *   user-global      — found in {agentDir}/workflows/
  *   settings-project — listed in DiscoveryConfig.projectWorkflows
  *   settings-global  — listed in DiscoveryConfig.globalWorkflows
  *   package          — supplied by Atomic/pi package workflow resources
@@ -125,8 +121,10 @@ export interface DiscoveryConfig {
 export interface DiscoveryOptions {
   /** Working directory; used as root for project-local discovery. Default: process.cwd() */
   cwd: string;
-  /** User's home directory; used as root for user-global discovery. Default: os.homedir() */
+  /** User's home directory; when set, preserves legacy test/compat user-global discovery roots. */
   homeDir: string;
+  /** User agent config directories in precedence order. Defaults to Atomic's configured agent directories. */
+  agentDirs?: readonly string[];
   /** Optional extra paths from project/global config. */
   config?: DiscoveryConfig;
   /** Workflow files supplied by installed Atomic/pi packages. */
@@ -149,13 +147,14 @@ export interface DiscoveryResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-type WorkflowModuleCandidateRecord = {
-  readonly value: unknown;
-  readonly exportKey: string;
-  readonly kind: DiscoveryKind;
-  readonly filePath?: string;
-  readonly configuredName?: string;
-};
+function workflowAgentDirs(options: Partial<DiscoveryOptions> | undefined): readonly string[] {
+  if (options?.agentDirs !== undefined) return options.agentDirs;
+  if (options?.homeDir !== undefined) {
+    const homeDir = options.homeDir;
+    return CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent"));
+  }
+  return getAgentDirs();
+}
 
 /**
  * Validate DiscoveryConfig shape.
@@ -274,108 +273,6 @@ function applyBatchShapeOnly(
   return registry;
 }
 
-/** Scan a directory for .ts/.js/.mjs/.cjs files, returning sorted absolute paths. */
-async function scanWorkflowDir(dir: string): Promise<string[] | null> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const WORKFLOW_EXTS = new Set([".ts", ".js", ".mjs", ".cjs"]);
-    return entries
-      .filter((e) => e.isFile() && WORKFLOW_EXTS.has(extname(e.name)))
-      .map((e) => join(dir, e.name))
-      .sort();
-  } catch {
-    // Directory doesn't exist or isn't readable — not an error, just empty
-    return null;
-  }
-}
-
-async function importWorkflowFile(
-  filePath: string,
-  kind: DiscoveryKind,
-  diagnostics: DiscoveryDiagnostic[],
-): Promise<WorkflowModuleCandidateRecord[]> {
-  let mod: Record<string, unknown>;
-  try {
-    mod = loadWorkflowModule(filePath);
-  } catch (err) {
-    diagnostics.push({
-      level: "error",
-      code: "IMPORT_FAILED",
-      message: `Failed to import "${filePath}": ${err instanceof Error ? err.message : String(err)}`,
-      source: filePath,
-    });
-    return [];
-  }
-
-  return collectWorkflowModuleCandidates(mod).map((candidate) => ({
-    ...candidate,
-    kind,
-    filePath,
-  }));
-}
-
-/** Load workflows from a scanned directory. */
-async function loadFromDir(
-  dir: string,
-  kind: DiscoveryKind,
-  diagnostics: DiscoveryDiagnostic[],
-): Promise<WorkflowModuleCandidateRecord[]> {
-  const files = await scanWorkflowDir(dir);
-  if (files === null) return [];
-
-  const all: WorkflowModuleCandidateRecord[] = [];
-  for (const filePath of files) {
-    const candidates = await importWorkflowFile(filePath, kind, diagnostics);
-    all.push(...candidates);
-  }
-  return all;
-}
-
-/** Load workflows from an explicit path list (from config). */
-async function loadFromPaths(
-  pathsOrMap: string[] | Record<string, string>,
-  kind: DiscoveryKind,
-  baseCwd: string,
-  diagnostics: DiscoveryDiagnostic[],
-): Promise<WorkflowModuleCandidateRecord[]> {
-  const all: WorkflowModuleCandidateRecord[] = [];
-
-  // Normalise to [ { rawPath, configuredName? } ] regardless of input shape
-  const entries: Array<{ rawPath: string; configuredName?: string }> = Array.isArray(pathsOrMap)
-    ? pathsOrMap.map((p) => ({ rawPath: p }))
-    : Object.entries(pathsOrMap).map(([name, p]) => ({ rawPath: p, configuredName: name }));
-
-  for (const { rawPath, configuredName } of entries) {
-    const absPath = isAbsolute(rawPath) ? rawPath : resolve(baseCwd, rawPath);
-
-    // Give a specific PATH_NOT_FOUND when we can detect the file is absent.
-    let pathStats: Awaited<ReturnType<typeof stat>> | undefined;
-    try {
-      pathStats = await stat(absPath);
-    } catch {
-      pathStats = undefined;
-    }
-
-    if (pathStats === undefined) {
-      diagnostics.push({
-        level: "error",
-        code: "PATH_NOT_FOUND",
-        message: `Workflow path not found: "${absPath}"`,
-        source: absPath,
-      });
-      continue;
-    }
-
-    const candidates = pathStats.isDirectory()
-      ? await loadFromDir(absPath, kind, diagnostics)
-      : await importWorkflowFile(absPath, kind, diagnostics);
-    for (const c of candidates) {
-      all.push({ ...c, ...(configuredName !== undefined ? { configuredName } : {}) });
-    }
-  }
-  return all;
-}
-
 // ---------------------------------------------------------------------------
 // Main API
 // ---------------------------------------------------------------------------
@@ -387,7 +284,7 @@ async function loadFromPaths(
  *   1. settings-project — config.projectWorkflows paths
  *   2. project-local    — {cwd}/.atomic/workflows/*.{ts,js,mjs,cjs}
  *   3. settings-global  — config.globalWorkflows paths
- *   4. user-global      — {homeDir}/.atomic/agent/workflows/*.{ts,js,mjs,cjs}
+ *   4. user-global      — {agentDir}/workflows/*.{ts,js,mjs,cjs}
  *   5. package          — package-supplied workflow files
  *   6. bundled          — shipped workflows (omitted when includeBundled=false)
  */
@@ -396,6 +293,7 @@ export async function discoverWorkflows(
 ): Promise<DiscoveryResult> {
   const cwd = options?.cwd ?? process.cwd();
   const homeDir = options?.homeDir ?? (await defaultHomeDir());
+  const agentDirs = workflowAgentDirs(options);
   const config = options?.config;
   const packageWorkflowPaths = options?.packageWorkflowPaths;
   const includeBundled = options?.includeBundled !== false;
@@ -446,8 +344,8 @@ export async function discoverWorkflows(
     }
   }
 
-  // 4. user-global — canonical Atomic path plus legacy pi path
-  for (const dir of CONFIG_DIR_NAMES.map((name) => join(homeDir, name, "agent", "workflows")).reverse()) {
+  // 4. user-global — configured Atomic agent dir plus legacy/defaults when applicable.
+  for (const dir of agentDirs.map((agentDir) => join(agentDir, "workflows")).reverse()) {
     const candidates = await loadFromDir(dir, "user-global", diagnostics);
     registry = await applyBatch(candidates, registry, sources, diagnostics);
   }

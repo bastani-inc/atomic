@@ -7,8 +7,9 @@
  */
 
 import { createJiti } from "jiti/static";
+import * as typeboxModule from "typebox";
 import * as workflowsSdkSurface from "../sdk-surface.js";
-import { isBrandedWorkflowDefinition } from "../workflows/define-workflow.js";
+import { isBrandedWorkflowDefinition } from "../authoring/workflow.js";
 import deepResearchCodebase from "../../builtin/deep-research-codebase.js";
 import goal from "../../builtin/goal.js";
 import openClaudeDesign from "../../builtin/open-claude-design.js";
@@ -16,6 +17,7 @@ import ralph from "../../builtin/ralph.js";
 
 const WORKFLOWS_MODULE_SPECIFIER = "@bastani/workflows";
 const WORKFLOWS_BUILTIN_MODULE_SPECIFIER = `${WORKFLOWS_MODULE_SPECIFIER}/builtin`;
+const TYPEBOX_MODULE_SPECIFIER = "typebox";
 // Keep this in sync with index.ts through sdk-surface.ts.
 const WORKFLOWS_SDK_MODULE: Record<string, unknown> = {
   ...workflowsSdkSurface,
@@ -26,9 +28,13 @@ const WORKFLOWS_BUILTIN_MODULE: Record<string, unknown> = {
   openClaudeDesign,
   ralph,
 };
+const TYPEBOX_MODULE: Record<string, unknown> = {
+  ...typeboxModule,
+};
 const WORKFLOWS_VIRTUAL_MODULES: Record<string, unknown> = {
   [WORKFLOWS_MODULE_SPECIFIER]: WORKFLOWS_SDK_MODULE,
   [WORKFLOWS_BUILTIN_MODULE_SPECIFIER]: WORKFLOWS_BUILTIN_MODULE,
+  [TYPEBOX_MODULE_SPECIFIER]: TYPEBOX_MODULE,
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/deep-research-codebase`]: { default: deepResearchCodebase },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/goal`]: { default: goal },
   [`${WORKFLOWS_BUILTIN_MODULE_SPECIFIER}/open-claude-design`]: { default: openClaudeDesign },
@@ -95,10 +101,10 @@ export function validateWorkflowDefinitionShape(value: unknown): string | null {
   const d = value as Record<string, unknown>;
 
   if (d["__piWorkflow"] !== true) {
-    return "missing or incorrect __piWorkflow sentinel (expected true); export a workflow from defineWorkflow(...).compile()";
+    return "missing or incorrect __piWorkflow sentinel (expected true); export a workflow from workflow({...})";
   }
   if (!isBrandedWorkflowDefinition(value)) {
-    return "workflow definition is not produced by defineWorkflow(...).compile(); hand-rolled __piWorkflow objects are not supported";
+    return "workflow definition is not produced by workflow({...}); hand-rolled __piWorkflow objects are not supported";
   }
   if (typeof d["name"] !== "string" || (d["name"] as string).trim().length === 0) {
     return "name must be a non-empty string";

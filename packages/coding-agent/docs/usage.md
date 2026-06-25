@@ -19,7 +19,7 @@ The editor can be replaced temporarily by built-in UI such as `/settings` or by 
 
 | Feature | How |
 |---------|-----|
-| File reference | Type `@` to fuzzy-search project files |
+| File reference | Type `@` to fuzzy-search project files, including during first-run onboarding |
 | Path completion | Press Tab to complete paths |
 | Multi-line input | SHIFT+Enter, or CTRL+Enter on Windows Terminal |
 | Images | Paste with CTRL+V, ALT+V on Windows, or drag into the terminal |
@@ -131,16 +131,19 @@ atomic [options] [@files...] [messages...]
 ### Package Commands
 
 ```bash
-atomic install <source> [-l]     # Install package, -l for project-local
-atomic remove <source> [-l]      # Remove package
-atomic uninstall <source> [-l]   # Alias for remove
-atomic update [source|self|atomic] # Update Atomic and packages; skips pinned packages
-atomic update --extensions       # Update packages only
-atomic update --self             # Update Atomic only
-atomic update --extension <src>  # Update one package
-atomic list                      # List installed packages
-atomic config                    # Enable/disable package resources
+atomic install <source> [-l]       # Install package, -l for project-local
+atomic remove <source> [-l]        # Remove package
+atomic uninstall <source> [-l]     # Alias for remove
+atomic update [source|self|atomic] # Update Atomic only, or one package source
+atomic update --all                # Update Atomic and packages; reconcile pinned git refs
+atomic update --extensions         # Update packages only; reconcile pinned git refs
+atomic update --self               # Update Atomic only
+atomic update --extension <src>    # Update one package
+atomic list                        # List installed packages
+atomic config                      # Enable/disable package resources
 ```
+
+These commands manage Atomic packages and `atomic update` can update the Atomic CLI installation. To uninstall Atomic itself, see [Quickstart](/quickstart#uninstall). `atomic config` and project package commands accept `--approve`/`--no-approve` to trust or ignore project-local settings for one command. `atomic update` never prompts for project trust.
 
 See [Atomic Packages](/packages) for package sources and security notes.
 
@@ -195,7 +198,7 @@ When a print-mode turn correctly finishes by calling an opt-in terminating struc
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Default built-in tools: `read`, `bash`, `edit`, `write`, `ask_user_question`, `todo`. Additional built-in read-only tools are available through tool options: `grep`, `find`, `ls`. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
+Default built-in tools: `read`, `bash`, `edit`, `write`, `find`, `search`, `ask_user_question`, `todo`. `find.paths` accepts directories, files, or glob paths such as `*.ts` and honors `timeout`; `search` accepts `pattern`, optional `paths`, `i`, `gitignore`, and `skip` for regex content-search pagination. Use `--exclude-tools` to disable one or more tools while leaving the rest available, for example `atomic --exclude-tools ask_user_question`.
 
 ### Project Trust Options
 
@@ -271,7 +274,7 @@ atomic --model sonnet:high "Solve this complex problem"
 atomic --models "claude-*,gpt-4o"
 
 # Read-only mode
-atomic --tools read,grep,find,ls -p "Review the code"
+atomic --tools read,search,find,ls -p "Review the code"
 ```
 
 ### Environment Variables

@@ -27,17 +27,21 @@ function createUsage(totalTokens: number): Usage {
 	};
 }
 
-function createAssistantMessage(text: string, totalTokens: number, timestamp: number): AssistantMessage {
+function createAssistantMessageWithUsage(text: string, usage: Usage, timestamp: number): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text }],
 		api: model.api,
 		provider: model.provider,
 		model: model.id,
-		usage: createUsage(totalTokens),
+		usage,
 		stopReason: "stop",
 		timestamp,
 	};
+}
+
+function createAssistantMessage(text: string, totalTokens: number, timestamp: number): AssistantMessage {
+	return createAssistantMessageWithUsage(text, createUsage(totalTokens), timestamp);
 }
 
 function createUserMessage(text: string, timestamp: number) {
@@ -184,6 +188,39 @@ describe("AgentSession.getSessionStats", () => {
 			expect(stats.contextUsage).toBeDefined();
 			expect(stats.contextUsage?.tokens).toBe(25_000);
 			expect(stats.contextUsage?.percent).toBe((25_000 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
+
+	it("does not double-count mirrored cache buckets in post-compaction context usage", () => {
+		const { session, sessionManager } = createSession();
+
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			sessionManager.appendContextCompaction([], [], createContextCompactionStats(216_006, 81_414));
+			sessionManager.appendMessage(createUserMessage("second", 3));
+			sessionManager.appendMessage(
+				createAssistantMessageWithUsage(
+					"response2",
+					{
+						input: 116_000,
+						output: 500,
+						cacheRead: 116_000,
+						cacheWrite: 0,
+						totalTokens: 232_500,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					4,
+				),
+			);
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.contextUsage).toBeDefined();
+			expect(stats.contextUsage?.tokens).toBe(116_500);
+			expect(stats.contextUsage?.percent).toBe((116_500 / model.contextWindow) * 100);
 		} finally {
 			session.dispose();
 		}

@@ -42,7 +42,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
-import { DynamicBorder, getAgentDir } from "@bastani/atomic";
+import { CONFIG_DIR_NAME, DynamicBorder, getAgentDir } from "@bastani/atomic";
 import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 
 // Preset configuration
@@ -69,7 +69,7 @@ interface PresetsConfig {
  */
 function loadPresets(cwd: string, includeProjectPresets: boolean): PresetsConfig {
 	const globalPath = join(getAgentDir(), "presets.json");
-	const projectPath = join(cwd, ".atomic", "presets.json");
+	const projectPath = join(cwd, CONFIG_DIR_NAME, "presets.json");
 	const legacyProjectPath = join(cwd, ".pi", "presets.json");
 
 	let globalPresets: PresetsConfig = {};
@@ -202,7 +202,10 @@ export default function presetExtension(pi: ExtensionAPI) {
 		const presetNames = Object.keys(presets);
 
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.atomic/agent/presets.json or .atomic/presets.json (legacy .pi/presets.json also works)", "warning");
+			ctx.ui.notify(
+				`No presets defined. Add presets to ${join(getAgentDir(), "presets.json")} or ${join(ctx.cwd, CONFIG_DIR_NAME, "presets.json")} (legacy ${join(ctx.cwd, ".pi", "presets.json")} also works)`,
+				"warning",
+			);
 			return;
 		}
 
@@ -310,7 +313,10 @@ export default function presetExtension(pi: ExtensionAPI) {
 	async function cyclePreset(ctx: ExtensionContext): Promise<void> {
 		const presetNames = getPresetOrder();
 		if (presetNames.length === 0) {
-			ctx.ui.notify("No presets defined. Add presets to ~/.atomic/agent/presets.json or .atomic/presets.json (legacy .pi/presets.json also works)", "warning");
+			ctx.ui.notify(
+				`No presets defined. Add presets to ${join(getAgentDir(), "presets.json")} or ${join(ctx.cwd, CONFIG_DIR_NAME, "presets.json")} (legacy ${join(ctx.cwd, ".pi", "presets.json")} also works)`,
+				"warning",
+			);
 			return;
 		}
 

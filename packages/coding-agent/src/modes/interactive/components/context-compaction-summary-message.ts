@@ -51,7 +51,7 @@ export class ContextCompactionSummaryMessageComponent extends Box {
 			new Text(
 				theme.fg(
 					"customMessageText",
-					`Compacted ${deleted}; ${formatInteger(stats.tokensBefore)} → ${formatInteger(stats.tokensAfter)} tokens (${formatPercent(stats.percentReduction)} reduction, `,
+					`Compacted ${deleted}; est. transcript ${formatInteger(stats.tokensBefore)} → ${formatInteger(stats.tokensAfter)} tokens (${formatPercent(stats.percentReduction)} reduction, `,
 				) +
 					theme.fg("dim", keyText("app.tools.expand")) +
 					theme.fg("customMessageText", " Expand)"),
@@ -74,7 +74,7 @@ export class ContextCompactionSummaryMessageComponent extends Box {
 			"",
 			"Retained transcript content stayed verbatim.",
 			"",
-			`- Tokens: ${formatInteger(stats.tokensBefore)} → ${formatInteger(stats.tokensAfter)} (${formatPercent(stats.percentReduction)} reduction)`,
+			`- Estimated transcript tokens: ${formatInteger(stats.tokensBefore)} → ${formatInteger(stats.tokensAfter)} (${formatPercent(stats.percentReduction)} reduction)`,
 			`- Deleted: ${formatObjectCount(stats.objectsDeleted)}`,
 			`- Protected: ${this.result.protectedEntryIds.length.toLocaleString()} entr${this.result.protectedEntryIds.length === 1 ? "y" : "ies"}`,
 		];

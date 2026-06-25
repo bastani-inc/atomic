@@ -34,6 +34,8 @@ describe("buildSystemPrompt", () => {
 					bash: "Execute bash commands",
 					edit: "Make surgical edits",
 					write: "Create or overwrite files",
+					find: "Find filesystem paths",
+					search: "Search file contents",
 					ask_user_question: "Ask structured user questions",
 					todo: "Manage file-based todos",
 				},
@@ -46,6 +48,8 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("- bash:");
 			expect(prompt).toContain("- edit:");
 			expect(prompt).toContain("- write:");
+			expect(prompt).toContain("- find:");
+			expect(prompt).toContain("- search:");
 			expect(prompt).toContain("- ask_user_question:");
 			expect(prompt).toContain("- todo:");
 		});

@@ -33,7 +33,7 @@ Default to using **Bun**, not Node/npm/yarn/pnpm.
 - Use `bun install` instead of `npm install`, `yarn install`, or `pnpm install`
 - Use `bun run <script>` instead of `npm run <script>`
 - Use `bunx <package> <command>` instead of `npx <package> <command>`
-- Repo commands: `bun run test:unit`, `bun run test:integration`, `bun run test:all`, `bun run typecheck`, `bun run lint`, `bun run hooks:install`, `bun run hooks:run`
+- Repo commands: `bun run test:unit`, `bun run test:integration`, `bun run test:all`, `bun run typecheck`, `bun run check:file-length`, `bun run lint`, `bun run hooks:install`, `bun run hooks:run`
 - Git hooks are configured in `prek.toml`; `bun install` runs the root `prepare` script to install hooks with `prek install --prepare-hooks` using `default_install_hook_types`.
 
 **Exception — publishing:** `npm publish --provenance` is still the registry publish tool because npm's OIDC-signed provenance lives in the npm CLI. Everything else is Bun.
@@ -79,7 +79,8 @@ Set any of the following environment variables to enable AI-friendly output:
 
 ### Code Quality
 
-- Frequently run linters and type checks using `bun run lint` and `bun run typecheck` (both are `tsc --noEmit`).
+- Frequently run linters and type checks using `bun run typecheck` and `bun run lint` (both `tsc --noEmit`), and run `bun run check:file-length` to enforce the 500-line file-length gate.
+- Keep tracked TypeScript, JavaScript, and Rust source-like files at or below 500 physical lines. `bun run check:file-length` enforces `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files with only the documented generated/vendored glob exclusions (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, `*.min.js`, `*.min.mjs`, `packages/workflows/skills/impeccable/**`) and first-five-line generated markers (`@generated`, `auto-generated`, `DO NOT EDIT`, `GENERATED -- do not edit`). Do not add grandfather or baseline allowlists for oversized authored files.
 - Avoid `any` and `unknown` types.
 - Modularize code and avoid re-inventing the wheel. Use functionality of libraries and SDKs whenever possible.
 
@@ -89,7 +90,7 @@ You are bound to run into errors when testing. As you test and run into issues/e
 
 ## Docs
 
-Relevant resources (use your `browser` skill if the information is not available in the local docs):
+Relevant resources (use your `playwright-cli` skill if the information is not available in the local docs):
 
 1. Bun (runtime + test runner): `oven-sh/bun`
     1. [`bun:test`](https://bun.sh/docs/cli/test)
@@ -116,11 +117,21 @@ atomic:
 
 ## Releasing
 
-Atomic mirrors pi's tag-driven release flow: bump versions locally, commit, push a `<version>` git tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`), and CI publishes to npm with OIDC provenance and creates the GitHub Release with cross-compiled binaries attached.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized **only** on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) triggers CI, which publishes to npm with OIDC provenance (stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`) and creates the GitHub Release with cross-compiled binaries attached. Because `main` carries no version, you can cut a stable release and an ahead-of-stable prerelease line from the same trunk without branch gymnastics.
+
+Cut a release with `scripts/cut-release.ts`, which stamps the version onto the off-`main` tag commit and (with `--push`) pushes only the tag:
+
+```sh
+bun run scripts/cut-release.ts 0.8.31            # stable -> @latest
+bun run scripts/cut-release.ts 0.9.0-alpha.1     # prerelease -> @next
+bun run scripts/cut-release.ts 0.8.31 --base main --push
+```
+
+`main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree (the tag keeps the commit alive).
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool.
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. That workflow opens a CHANGELOG-only release-notes PR to `main`, then stamps and tags the release off-`main` via `cut-release.ts` — it never bumps the version on `main`. It also accepts an optional `base_ref` input (default `main`) to release from a maintenance/integration branch instead of `main`, and an optional `from_ref` input to cut an **ephemeral** release from any commit/tag/branch: the workflow auto-creates `release/<version>` (or `prerelease/<version>`) from that ref, gates on that branch's CI, cuts and publishes the tag, then deletes the branch (the changelog lives on the tag only; `main` is untouched).
 
 ## Docs
 
@@ -158,17 +169,20 @@ Use these sections under `## [Unreleased]`:
 - **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
 - **External contributions**: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
 
-## Bumping Versions
+## Versionless main & bumping
 
-Use the top-level `scripts/bump-version.ts` script to update every `packages/*/package.json` version and package README badge:
+`main` is versionless: every `packages/*/package.json` (plus `bun.lock` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on `main`.**
+
+`scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree to materialize the real version on the tagged release commit. You normally never run it directly against `main`; the only direct use is resetting the placeholder if it ever drifts:
 
 ```sh
-# Explicit version
-bun run scripts/bump-version.ts 0.1.0
-bun run scripts/bump-version.ts 0.1.0-alpha.1
-```
+# stamp a real version onto the off-main tag commit (preferred)
+bun run scripts/cut-release.ts 0.1.0
+bun run scripts/cut-release.ts 0.1.0-alpha.1
 
-Run `bun install` afterward to refresh `bun.lock`.
+# low-level: reset main back to the versionless placeholder
+bun run scripts/bump-version.ts 0.0.0 && bun install
+```
 
 ## CI
 

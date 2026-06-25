@@ -14,6 +14,12 @@ const originalPath = process.env.PATH;
 const originalAtomicPackageDir = process.env.ATOMIC_PACKAGE_DIR;
 let tempDir: string | undefined;
 
+const testUnixWritableBits = process.platform === "win32" ? test.skip : test;
+
+function commandFileName(command: string): string {
+	return process.platform === "win32" ? `${command}.cmd` : command;
+}
+
 function setExecPath(value: string): void {
 	Object.defineProperty(process, "execPath", {
 		value,
@@ -44,11 +50,17 @@ afterEach(() => {
 
 function createNpmPrefixInstall(template = "pi-prefix-"): { prefix: string; packageDir: string } {
 	const prefix = mkdtempSync(join(tmpdir(), template));
+	const binDir = join(prefix, "bin");
 	const root = join(prefix, "lib", "node_modules");
 	const scopeDir = join(root, "@bastani");
 	const packageDir = join(scopeDir, "atomic");
+	const npmPath = join(binDir, commandFileName("npm"));
 	mkdirSync(packageDir, { recursive: true });
+	mkdirSync(binDir, { recursive: true });
+	writeFileSync(npmPath, createFakeNpmScript(root));
+	chmodSync(npmPath, 0o755);
 	tempDir = prefix;
+	process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
 	process.env.ATOMIC_PACKAGE_DIR = packageDir;
 	setExecPath(join(packageDir, "dist", "cli.js"));
 	return { prefix, packageDir };
@@ -61,8 +73,8 @@ function createPnpmGlobalInstall(): { root: string; packageDir: string } {
 	const packageDir = join(root, "@bastani", "atomic");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(binDir, { recursive: true });
-	writeFileSync(join(binDir, process.platform === "win32" ? "pnpm.cmd" : "pnpm"), createFakePnpmScript(root));
-	chmodSync(join(binDir, process.platform === "win32" ? "pnpm.cmd" : "pnpm"), 0o755);
+	writeFileSync(join(binDir, commandFileName("pnpm")), createFakePnpmScript(root));
+	chmodSync(join(binDir, commandFileName("pnpm")), 0o755);
 	tempDir = temp;
 	process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
 	process.env.ATOMIC_PACKAGE_DIR = packageDir;
@@ -88,8 +100,8 @@ function createYarnGlobalInstall(): { globalDir: string; packageDir: string } {
 	const packageDir = join(globalDir, "node_modules", "@bastani", "atomic");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(binDir, { recursive: true });
-	writeFileSync(join(binDir, process.platform === "win32" ? "yarn.cmd" : "yarn"), createFakeYarnScript(globalDir));
-	chmodSync(join(binDir, process.platform === "win32" ? "yarn.cmd" : "yarn"), 0o755);
+	writeFileSync(join(binDir, commandFileName("yarn")), createFakeYarnScript(globalDir));
+	chmodSync(join(binDir, commandFileName("yarn")), 0o755);
 	tempDir = temp;
 	process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
 	process.env.ATOMIC_PACKAGE_DIR = packageDir;
@@ -106,13 +118,21 @@ function createBunGlobalInstall(): { packageDir: string } {
 	const packageDir = join(scopeDir, "atomic");
 	mkdirSync(packageDir, { recursive: true });
 	mkdirSync(bunBin, { recursive: true });
-	writeFileSync(join(bunBin, process.platform === "win32" ? "bun.cmd" : "bun"), createFakeBunScript(bunBin));
-	chmodSync(join(bunBin, process.platform === "win32" ? "bun.cmd" : "bun"), 0o755);
+	writeFileSync(join(bunBin, commandFileName("bun")), createFakeBunScript(bunBin));
+	chmodSync(join(bunBin, commandFileName("bun")), 0o755);
 	tempDir = temp;
 	process.env.PATH = `${bunBin}${delimiter}${originalPath ?? ""}`;
 	process.env.ATOMIC_PACKAGE_DIR = packageDir;
 	setExecPath(join(packageDir, "dist", "cli.js"));
 	return { packageDir };
+}
+
+function createFakeNpmScript(root: string): string {
+	if (process.platform === "win32") {
+		return `@echo off\r\nif "%1"=="root" if "%2"=="-g" echo ${root}\r\nif "%1"=="--prefix" if "%3"=="root" if "%4"=="-g" echo ${root}\r\n`;
+	}
+	const escapedRoot = root.replaceAll("'", "'\\''");
+	return `#!/bin/sh\nif [ "$1" = "root" ] && [ "$2" = "-g" ]; then\n\tprintf '%s\\n' '${escapedRoot}'\n\texit 0\nfi\nif [ "$1" = "--prefix" ] && [ "$3" = "root" ] && [ "$4" = "-g" ]; then\n\tprintf '%s\\n' '${escapedRoot}'\n\texit 0\nfi\nexit 1\n`;
 }
 
 function createFakePnpmScript(root: string): string {
@@ -325,7 +345,7 @@ describe("detectInstallMethod", () => {
 		});
 	});
 
-	test("does not self-update when npm install path is not writable", () => {
+	testUnixWritableBits("does not self-update when npm install path is not writable", () => {
 		const { packageDir } = createNpmPrefixInstall();
 		chmodSync(packageDir, 0o500);
 

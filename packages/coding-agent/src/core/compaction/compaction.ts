@@ -9,19 +9,43 @@ import type { SessionEntry } from "../session-manager.ts";
 export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
+	/** Fraction of compactable context to keep. 0.3 is aggressive, 0.7 is light. */
+	compression_ratio: number;
+	/** Number of recent context-eligible messages to preserve in standard mode. */
+	preserve_recent: number;
+	/** Focus query for relevance-based pruning; auto-detected when omitted in settings/options. */
+	query?: string;
 }
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
+	compression_ratio: 0.5,
+	preserve_recent: 2,
 };
 
 /**
- * Calculate total context tokens from usage.
- * Uses the native totalTokens field when available, falls back to computing from components.
+ * Calculate active context-window tokens from provider usage.
+ *
+ * Prefer normalized component fields over `totalTokens`: some providers expose
+ * `totalTokens` as a billing/cumulative total, while the footer needs an active
+ * context estimate. Anthropic-compatible endpoints can also mirror cached input
+ * in both `input` and `cacheRead`/`cacheWrite`; when cache buckets are nearly the
+ * same size as `input`, treat `input` as the full prompt instead of counting the
+ * same cached prompt twice.
  */
 export function calculateContextTokens(usage: Usage): number {
-	return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+	const input = Math.max(0, usage.input || 0);
+	const output = Math.max(0, usage.output || 0);
+	const cacheRead = Math.max(0, usage.cacheRead || 0);
+	const cacheWrite = Math.max(0, usage.cacheWrite || 0);
+	const cacheTokens = cacheRead + cacheWrite;
+	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
+	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
+
+	const cacheMirrorsInput = input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
+	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
+	return promptTokens + output;
 }
 
 /**
@@ -109,7 +133,17 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
-const ESTIMATED_IMAGE_CHARS = 4800;
+/**
+ * Shared image-token estimation used by every compaction/context-accounting path.
+ *
+ * Providers fold image tokens into their reported prompt/input usage, so usage-based
+ * accounting already captures actual image cost. For heuristic paths (trailing
+ * messages without usage, transcript content-block estimates) a single conservative
+ * fixed estimate keeps both the context-window threshold check and the transcript
+ * planner consistent.
+ */
+export const ESTIMATED_IMAGE_CHARS = 4800;
+export const ESTIMATED_IMAGE_TOKENS = Math.ceil(ESTIMATED_IMAGE_CHARS / 4);
 
 function estimateTextAndImageContentChars(content: string | Array<{ type: string; text?: string }>): number {
 	if (typeof content === "string") {
@@ -125,6 +159,31 @@ function estimateTextAndImageContentChars(content: string | Array<{ type: string
 		}
 	}
 	return chars;
+}
+
+/**
+ * Count image content blocks in a message content array (text or block array).
+ *
+ * Exported as the canonical image-counting contract so tests can verify the
+ * heuristic independently of the transcript-based estimation used in production.
+ */
+export function countImageContentBlocks(content: string | Array<{ type: string }>): number {
+	if (typeof content === "string") return 0;
+	let count = 0;
+	for (const block of content) {
+		if (block.type === "image") count += 1;
+	}
+	return count;
+}
+
+/**
+ * Estimate the token cost of only the image content blocks in a message content array.
+ *
+ * Exported as the canonical image-token-estimation contract so tests can verify
+ * the heuristic independently of the transcript-based estimation used in production.
+ */
+export function estimateImageContentTokens(content: string | Array<{ type: string }>): number {
+	return countImageContentBlocks(content) * ESTIMATED_IMAGE_TOKENS;
 }
 
 /**

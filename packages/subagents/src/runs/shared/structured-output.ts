@@ -3,11 +3,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
 import { Compile } from "typebox/compile";
+import type { Message } from "@earendil-works/pi-ai";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();
 export const STRUCTURED_OUTPUT_SCHEMA_ENV = `${ENV_PREFIX}_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA`;
 export const STRUCTURED_OUTPUT_CAPTURE_ENV = `${ENV_PREFIX}_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE`;
+export const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
+export const STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS = 3;
+export const STRUCTURED_OUTPUT_MISSING_ERROR = "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.";
 
 export interface StructuredOutputRuntime {
 	schema: JsonSchemaObject;
@@ -50,12 +54,73 @@ export function validateStructuredOutputValue(schema: JsonSchemaObject, value: u
 	}
 }
 
+function textFromContent(content: unknown): string | undefined {
+	if (!Array.isArray(content)) return undefined;
+	const text = content
+		.map((block) => {
+			if (!block || typeof block !== "object") return "";
+			const record = block as { readonly type?: unknown; readonly text?: unknown };
+			return record.type === "text" && typeof record.text === "string" ? record.text : "";
+		})
+		.join("\n")
+		.trim();
+	return text.length > 0 ? text : undefined;
+}
+
+export function latestStructuredOutputToolErrorFromMessages(messages: readonly Message[] | undefined): string | undefined {
+	if (!messages) return undefined;
+	for (let index = messages.length - 1; index >= 0; index -= 1) {
+		const message = messages[index];
+		if (message?.role !== "toolResult") continue;
+		if (message.toolName !== STRUCTURED_OUTPUT_TOOL_NAME) continue;
+		if (message.isError !== true) continue;
+		return textFromContent(message.content) ?? "structured_output tool call failed schema validation.";
+	}
+	return undefined;
+}
+
+export function isStructuredOutputContractError(error: string | undefined): boolean {
+	if (error === undefined) return false;
+	return error === STRUCTURED_OUTPUT_MISSING_ERROR
+		|| error.startsWith("Structured output validation failed:")
+		|| error.startsWith("Failed to read structured output:");
+}
+
+export function formatStructuredOutputCorrectionPrompt(args: {
+	readonly originalTask: string;
+	readonly error: string;
+	readonly attempt: number;
+	readonly maxAttempts?: number;
+}): string {
+	const maxAttempts = args.maxAttempts ?? STRUCTURED_OUTPUT_MAX_CORRECTIVE_PROMPTS;
+	return [
+		"The previous response failed this subagent's structured-output contract.",
+		"",
+		`Corrective attempt ${args.attempt}/${maxAttempts}.`,
+		"",
+		"Error:",
+		args.error,
+		"",
+		"You must finish by calling the `structured_output` tool exactly once with arguments matching the registered schema.",
+		"Do not answer with plain JSON text, Markdown, or prose. If you attempted `structured_output` and validation failed, correct the tool arguments and call `structured_output` again.",
+		"If the requested work is already complete, do not redo side effects unnecessarily; just report the completed result through `structured_output`.",
+		"",
+		"Original task:",
+		args.originalTask,
+	].join("\n");
+}
+
 export function readStructuredOutput(runtime: StructuredOutputRuntime): { value?: unknown; error?: string } {
 	if (!fs.existsSync(runtime.outputPath)) {
-		return { error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output." };
+		return { error: STRUCTURED_OUTPUT_MISSING_ERROR };
 	}
 	try {
-		return { value: JSON.parse(fs.readFileSync(runtime.outputPath, "utf-8")) as unknown };
+		const value = JSON.parse(fs.readFileSync(runtime.outputPath, "utf-8")) as unknown;
+		const validation = validateStructuredOutputValue(runtime.schema, value);
+		if (validation.status === "invalid") {
+			return { error: `Structured output validation failed: ${validation.message}` };
+		}
+		return { value };
 	} catch (error) {
 		return { error: `Failed to read structured output: ${error instanceof Error ? error.message : String(error)}` };
 	}

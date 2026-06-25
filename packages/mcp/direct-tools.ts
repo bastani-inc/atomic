@@ -10,9 +10,9 @@ import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.ts";
 import { formatToolName, isToolExcluded } from "./types.ts";
 import { resourceNameToToolName } from "./resource-tools.ts";
 import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
-import { formatAuthRequiredMessage } from "./utils.ts";
+import { formatAuthRequiredMessage, unflattenToolArguments } from "./utils.ts";
 
-const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
+const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "search", "ls", "mcp"]);
 
 type DirectAutoAuthResult =
   | { status: "skipped" }
@@ -369,7 +369,11 @@ export function createDirectToolExecutor(
 
       const resultPromise = connection.client.callTool({
         name: spec.originalName,
-        arguments: params ?? {},
+        // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
+        // back into arrays/objects before the MCP server validates them.
+        // Schema-aware: literal dotted property names (e.g. `filter.name`) are
+        // preserved unless the schema proves the head is a container.
+        arguments: unflattenToolArguments(params, spec.inputSchema),
         _meta: uiSession?.requestMeta,
       });
 

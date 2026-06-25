@@ -363,6 +363,14 @@ jobs:
                     exit 1
                   fi
 
+                  # main is versionless: it carries the 0.0.0 development placeholder and the
+                  # real version is materialized only on a tagged "Release X" commit produced by
+                  # scripts/cut-release.ts. Refuse to publish the placeholder if it is ever tagged.
+                  if [ "$version" = "0.0.0" ] || [ "$version" = "0.0.0-dev" ]; then
+                    echo "$PACKAGE_DIR/package.json is at the development placeholder ($version); refusing to publish. Cut a release with: bun run scripts/cut-release.ts <version>" >&2
+                    exit 1
+                  fi
+
                   if [ "$RELEASE_TAG" != "$expected_tag" ]; then
                     echo "Tag $RELEASE_TAG does not match $PACKAGE_DIR/package.json version $version (expected $expected_tag)." >&2
                     exit 1
@@ -588,6 +596,21 @@ jobs:
                     echo "make_latest=true" >> "$GITHUB_OUTPUT"
                   fi
 
+            - name: Generate binary checksums
+              shell: bash
+              working-directory: ${{ env.PACKAGE_DIR }}/binaries
+              run: |
+                  set -euo pipefail
+                  release_assets=(
+                    atomic-darwin-arm64.tar.gz
+                    atomic-darwin-x64.tar.gz
+                    atomic-linux-x64.tar.gz
+                    atomic-linux-arm64.tar.gz
+                    atomic-windows-x64.zip
+                    atomic-windows-arm64.zip
+                  )
+                  sha256sum "${release_assets[@]}" > SHA256SUMS
+
             - name: Create GitHub Release with binaries
               uses: softprops/action-gh-release@v3
               with:
@@ -604,3 +627,4 @@ jobs:
                       packages/coding-agent/binaries/atomic-linux-arm64.tar.gz
                       packages/coding-agent/binaries/atomic-windows-x64.zip
                       packages/coding-agent/binaries/atomic-windows-arm64.zip
+                      packages/coding-agent/binaries/SHA256SUMS
