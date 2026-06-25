@@ -70,6 +70,13 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   runId?: string;
   /** Replay completed stages from a failed source run, then resume at this stage. */
   continuation?: RunContinuationOpts;
+  /**
+   * Durable workflow backend override (for testing). Defaults to the global
+   * backend resolved by `getDurableBackend()`.
+   *
+   * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+   */
+  durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
   /** Internal parent linkage for nested ctx.workflow(...) runs. */
   parentRun?: {
     readonly runId: string;

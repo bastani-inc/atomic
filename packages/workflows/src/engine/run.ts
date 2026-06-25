@@ -37,6 +37,12 @@ import {
 } from "../runs/foreground/executor-lifecycle.js";
 import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
+import { getDurableBackend } from "../durable/factory.js";
+import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
+import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
+import { recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import type { StageSnapshot } from "../shared/store-types.js";
 
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -176,6 +182,31 @@ export async function run<
     classifyExecutorFailure,
     drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
   });
+  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
+  // Declared early so the stage-end recorder can attach to stageOptions.
+  // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+  const durableBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const checkpointIdGenerator = createCheckpointIdGenerator();
+  const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
+  const durableStageDeps = {
+    workflowId: runId,
+    backend: durableBackend,
+    nextCheckpointId: checkpointIdGenerator,
+    nextReplayKey: stageReplayKeyGenerator,
+  };
+  const userOnStageEnd = opts.onStageEnd;
+  const durableOnStageEnd = (stageRunId: string, snapshot: StageSnapshot): void => {
+    if (stageRunId === runId && snapshot.status === "completed") {
+      recordStageCheckpoint(durableStageDeps, snapshot);
+      // Refresh the session cache so the checkpoint count stays current for
+      // /workflow resume discovery.
+      if (opts.persistence && durableBackend.persistent) {
+        const cacheEntry = durableBackend.toCacheEntry(runId);
+        if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+      }
+    }
+    userOnStageEnd?.(stageRunId, snapshot);
+  };
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
     models: opts.models,
@@ -183,7 +214,7 @@ export async function run<
     defaultSessionDir: opts.defaultSessionDir,
     persistence: opts.persistence,
     onStageStart: opts.onStageStart,
-    onStageEnd: opts.onStageEnd,
+    onStageEnd: durableOnStageEnd,
     confirmStageReadiness: opts.confirmStageReadiness,
     usePromptNodesForUi: opts.usePromptNodesForUi,
   };
@@ -246,6 +277,41 @@ export async function run<
     runWorkflow: run,
   });
 
+  // Durable workflow registration — register this run for cross-session discovery.
+  if (opts.continuation === undefined) {
+    // New run: register it durably so a future session can discover it.
+    durableBackend.registerWorkflow({
+      workflowId: runId,
+      name: def.name,
+      inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+      createdAt: runSnapshot.startedAt,
+      status: "running",
+      ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
+    });
+    if (opts.persistence && durableBackend.persistent) {
+      const cacheEntry = durableBackend.toCacheEntry(runId);
+      if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+    }
+  } else {
+    // Resuming: mark the workflow as running again in the backend.
+    durableBackend.setWorkflowStatus(runId, "running");
+  }
+  const tool = createToolPrimitive({
+    workflowId: runId,
+    backend: durableBackend,
+    nextCheckpointId: checkpointIdGenerator,
+    throwIfCancelled: () => {
+      if (ownController.signal.aborted) {
+        throw new Error("atomic-workflows: workflow cancelled");
+      }
+    },
+  });
+
+  // Durable ctx.ui wrapper — caches completed user responses so a resumed
+  // workflow does not re-ask answered prompts.
+  // cross-ref: issue #1498 — durable ctx.ui response/pending prompt state.
+  const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
+
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
     get cwd() { return resolveWorkflowCwd(); },
@@ -253,6 +319,7 @@ export async function run<
     ui: buildExitGatedUiContext({
       opts,
       throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
+      durableUi: durableUiDeps,
       baseFromPromptNodes: () => buildPromptNodeUiAdapter({
         runId,
         activeStore,
@@ -272,6 +339,7 @@ export async function run<
     chain: taskRunners.chain,
     parallel: taskRunners.parallel,
     workflow,
+    tool,
   };
 
   try {
@@ -300,6 +368,11 @@ export async function run<
     assertWorkflowCreatedStage(runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: "completed", result, ts: Date.now() });
+    durableBackend.setWorkflowStatus(runId, "completed");
+    if (opts.persistence && durableBackend.persistent) {
+      const cacheEntry = durableBackend.toCacheEntry(runId);
+      if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+    }
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "completed", result }, opts.onRunEnd);
   } catch (err) {
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
@@ -351,6 +424,15 @@ export async function run<
     });
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);
   } finally {
+    // Persist final durable status for cross-session resume discovery.
+    // cross-ref: issue #1498
+    if (runSnapshot.status === "failed" || runSnapshot.status === "killed") {
+      durableBackend.setWorkflowStatus(runId, runSnapshot.status === "killed" ? "cancelled" : "failed");
+      if (opts.persistence && durableBackend.persistent) {
+        const cacheEntry = durableBackend.toCacheEntry(runId);
+        if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+      }
+    }
     opts.cancellation?.unregister(runId);
   }
 }

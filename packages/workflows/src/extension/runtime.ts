@@ -43,6 +43,10 @@ import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
+import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
+import { getDurableBackend } from "../durable/factory.js";
+import { scanResumableWorkflows } from "../durable/resume-catalog.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
 import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
 
 // ---------------------------------------------------------------------------
@@ -114,6 +118,20 @@ export interface ExtensionRuntime {
 
   /** Start a linked continuation for a failed resumable named workflow run. */
   resumeFailedRun(sourceRunId: string, stageId?: string, options?: RuntimeDispatchOptions): ResumeFailedRunResult;
+
+  /**
+   * Resume a durable workflow by top-level workflow id when no live run exists.
+   * Re-dispatches the workflow with the cached inputs and original workflow id
+   * so durable checkpoints replay (skipping completed side effects).
+   *
+   * cross-ref: issue #1498 — cross-session /workflow resume selector.
+   */
+  resumeDurableWorkflow(workflowIdOrPrefix: string, options?: RuntimeDispatchOptions): import("../durable/resume-runtime.js").ResumeDurableResult;
+  /**
+   * List durable resumable workflows (session cache + backend) for the
+   * /workflow resume selector.
+   */
+  listDurableResumable(sessionDir?: string): readonly import("../durable/types.js").ResumableWorkflowEntry[];
 }
 
 export interface RuntimeDispatchOptions {
@@ -457,5 +475,26 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     },
 
     resumeFailedRun,
+
+    resumeDurableWorkflow(workflowIdOrPrefix: string, options?: RuntimeDispatchOptions): ResumeDurableResult {
+      const adapterDeps: ResumeDurableDeps = {
+        registry,
+        baseRunOpts: runOptions({ workflow: "", inputs: {} }, options?.policy),
+        durableBackend: getDurableBackend(),
+      };
+      return resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps);
+    },
+
+    listDurableResumable(sessionDir?: string): readonly ResumableWorkflowEntry[] {
+      const backend = getDurableBackend();
+      const live = backend.listResumableWorkflows();
+      if (sessionDir === undefined) return live;
+      const scanned = scanResumableWorkflows(sessionDir);
+      // Merge: scanned entries may include workflows not yet loaded into the
+      // live backend (e.g. from a prior session's JSONL cache).
+      const liveIds = new Set(live.map((e) => e.workflowId));
+      const extra = scanned.filter((e) => !liveIds.has(e.workflowId));
+      return [...live, ...extra];
+    },
   };
 }

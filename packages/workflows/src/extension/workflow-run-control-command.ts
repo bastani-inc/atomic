@@ -13,6 +13,7 @@ import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import {
   formatAlreadyEndedRetainedMessage,
   overlaySurfaceFromContext,
@@ -35,6 +36,48 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
   const prefix = exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
   const byName = prefix ?? run.stages.find((s) => s.name === stageTarget);
   return byName?.id ?? false;
+}
+
+/**
+ * Attempt a cross-session durable resume when the target id is not a live run.
+ * Mirrors /resume ergonomics: list durable resumable workflows, then resume by
+ * top-level workflow id so completed checkpoints replay.
+ *
+ * Returns true when the command was handled (resume attempted or list shown).
+ * cross-ref: issue #1498 — /workflow resume selector.
+ */
+function handleDurableResume(
+  target: string | undefined,
+  ctx: PiCommandContext,
+  reporter: WorkflowCommandReporter,
+  deps: WorkflowRunControlDeps,
+): boolean {
+  const print = (msg: string): void => reporter.info(msg);
+  const fail = (msg: string): void => reporter.error(msg);
+  const runtime = deps.runtimeForContext(ctx);
+  const durable = runtime.listDurableResumable();
+  if (target !== undefined) {
+    // Attempt resume by id/prefix against the durable catalog.
+    const result = runtime.resumeDurableWorkflow(target);
+    if (result.ok) {
+      print(result.message);
+      return true;
+    }
+    // Not a durable workflow either — surface the catalog for discovery.
+    if (durable.length > 0) {
+      fail(`${result.message}\n\n${formatResumableWorkflowList(durable)}`);
+    } else {
+      fail(result.message);
+    }
+    return true;
+  }
+  // No target: show the durable selector.
+  if (durable.length === 0) {
+    fail("No resumable durable workflows found. Use /workflow resume <id> or /resume for live sessions.");
+    return true;
+  }
+  print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+  return true;
 }
 
 export async function handleRunControlCommand(
@@ -206,10 +249,11 @@ export async function handleRunControlCommand(
         if (action === "pause") {
           const active = topLevelWorkflowRuns(store.runs()).filter((r) => r.endedAt === undefined);
           fail(active.length === 0 ? "No active runs to pause." : `Picker requires an interactive UI surface. Active runs:\n${active.map((r) => `  ${r.id.slice(0, 8)}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`);
+        } else if (action === "attach") {
+          fail(`${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`);
         } else {
-          fail(action === "attach"
-            ? `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`
-            : "Usage: /workflow resume <runId> [stageId] [message…]");
+          // resume: show live runs + cross-session durable catalog.
+          return handleDurableResume(undefined, ctx, reporter, deps);
         }
         return true;
       }
@@ -220,6 +264,11 @@ export async function handleRunControlCommand(
     } else {
       const resolved = resolveRunIdPrefix(target);
       if (resolved.kind === "not_found") {
+        // Not a live run — fall back to the cross-session durable resume catalog.
+        // cross-ref: issue #1498 — /workflow resume by top-level workflow id.
+        if (action === "resume") {
+          return handleDurableResume(target, ctx, reporter, deps);
+        }
         fail(`Run not found: ${target}`);
         return true;
       }
