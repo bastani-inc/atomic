@@ -252,4 +252,78 @@ describe("run durable flush", () => {
     exAssert.equal(result.status, "failed");
     exAssert.match(result.error ?? "", /durable write failed/);
   });
+
+  exTest("ctx.chain and ctx.parallel replay completed task checkpoints", async () => {
+    const backend = new InMemoryDurableBackend();
+    const def = workflow({
+      name: "durable-chain-parallel",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => {
+        const chain = await ctx.chain([{ name: "a", prompt: "A" }, { name: "b", prompt: "B" }]);
+        const parallel = await ctx.parallel([{ name: "c", prompt: "C" }, { name: "d", prompt: "D" }], { failFast: false });
+        return { result: [...chain, ...parallel].map((r) => r.text).join(",") };
+      },
+    });
+    let prompts = 0;
+    const adapters = { prompt: { prompt: async (text: string) => { prompts += 1; return `out:${text}`; } } };
+    const first = await run(def, {}, { runId: "wf-chain-parallel", store: createStore(), durableBackend: backend, adapters });
+    exAssert.equal(first.status, "completed");
+    exAssert.equal(prompts, 4);
+    const store = createStore();
+    const second = await run(def, {}, { runId: "wf-chain-parallel", store, durableBackend: backend, adapters: { prompt: { prompt: async () => { throw new Error("should not rerun"); } } } });
+    exAssert.equal(second.status, "completed");
+    exAssert.equal(second.result?.["result"], first.result?.["result"]);
+    exAssert.equal(store.runs()[0]?.stages.filter((s) => s.replayed === true).length, 4);
+  });
+
+  exTest("ctx.workflow replays completed child workflow checkpoints", async () => {
+    const backend = new InMemoryDurableBackend();
+    const child = workflow({
+      name: "durable-child",
+      description: "",
+      inputs: {},
+      outputs: { value: Type.String() },
+      run: async (ctx) => ({ value: await ctx.stage("child-stage").complete("child-value") }),
+    });
+    const parent = workflow({
+      name: "durable-parent",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => {
+        const childResult = await ctx.workflow(child);
+        if (childResult.exited) throw new Error("child exited");
+        return { result: childResult.outputs.value };
+      },
+    });
+    const first = await run(parent, {}, { runId: "wf-child-parent", store: createStore(), durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+    exAssert.equal(first.status, "completed");
+    const store = createStore();
+    const second = await run(parent, {}, { runId: "wf-child-parent", store, durableBackend: backend, adapters: { complete: { complete: async () => { throw new Error("child should not rerun"); } } } });
+    exAssert.equal(second.status, "completed");
+    exAssert.equal(second.result?.["result"], "child-value");
+    exAssert.equal(store.runs()[0]?.stages.some((s) => s.name === "workflow:durable-child" && s.replayed === true), true);
+  });
+
+  exTest("terminal completed status is flushed before run returns", async () => {
+    class StatusFlushBackend extends InMemoryDurableBackend {
+      flushedCompleted = false;
+      async flush(): Promise<void> {
+        if (this.getWorkflow("wf-status-flush")?.status === "completed") this.flushedCompleted = true;
+      }
+    }
+    const backend = new StatusFlushBackend();
+    const def = workflow({
+      name: "status-flush-wf",
+      description: "",
+      inputs: {},
+      outputs: { result: Type.String() },
+      run: async (ctx) => ({ result: await ctx.stage("one").complete("ok") }),
+    });
+    const result = await run(def, {}, { runId: "wf-status-flush", store: createStore(), durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+    exAssert.equal(result.status, "completed");
+    exAssert.equal(backend.flushedCompleted, true);
+  });
 });

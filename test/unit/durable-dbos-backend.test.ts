@@ -167,6 +167,19 @@ describe("DbosDurableBackend (mock SDK)", () => {
     await assert.rejects(() => failingBackend.flush(), /dbos write failed/);
   });
 
+  test("recordCheckpointAsync does not update replay mirror before DBOS accepts", async () => {
+    const hash = durableHash({ name: "fetch", args: {}, ordinal: 1 });
+    const failingBackend = new DbosDurableBackend({
+      ...sdk,
+      async recordStepOutput() { throw new Error("dbos write failed"); },
+    });
+    failingBackend.registerWorkflow({ workflowId: "wf-async-fail", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
+    await assert.rejects(() => failingBackend.recordCheckpointAsync!({
+      kind: "tool", workflowId: "wf-async-fail", checkpointId: `tool:${hash}`, name: "fetch", argsHash: hash, output: "result", completedAt: Date.now(),
+    }), /dbos write failed/);
+    assert.equal(failingBackend.getToolOutput("wf-async-fail", hash), undefined);
+  });
+
   test("cancelWorkflow delegates to DBOS cancelWorkflow", async () => {
     backend.registerWorkflow({ workflowId: "wf-3", name: "test", inputs: {}, createdAt: Date.now(), status: "running" });
     backend.setWorkflowStatus("wf-3", "cancelled");

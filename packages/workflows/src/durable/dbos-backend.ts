@@ -223,15 +223,21 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
-    this.mem.recordCheckpoint(checkpoint);
-    await this.enqueueWrite(() => this.persistCheckpoint(checkpoint));
+    await this.enqueueWrite(async () => {
+      await this.persistCheckpointRecord(checkpoint);
+      this.mem.recordCheckpoint(checkpoint);
+      await this.writeMetadata(checkpoint.workflowId);
+    });
   }
 
   private async persistCheckpoint(checkpoint: DurableCheckpoint): Promise<void> {
-    const stepName = checkpoint.kind === "stage" ? checkpoint.replayKey : checkpoint.checkpointId;
-    const envelope = encodeCheckpoint(checkpoint);
-    await this.sdk.recordStepOutput(checkpoint.workflowId, stepName, envelope);
+    await this.persistCheckpointRecord(checkpoint);
     await this.writeMetadata(checkpoint.workflowId);
+  }
+
+  private async persistCheckpointRecord(checkpoint: DurableCheckpoint): Promise<void> {
+    const stepName = checkpoint.kind === "stage" ? checkpoint.replayKey : checkpoint.checkpointId;
+    await this.sdk.recordStepOutput(checkpoint.workflowId, stepName, encodeCheckpoint(checkpoint));
   }
 
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined { return this.mem.getToolOutput(workflowId, argsHash); }

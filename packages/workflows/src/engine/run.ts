@@ -4,6 +4,7 @@ import type {
   WorkflowInputValues,
   WorkflowOutputValues,
   WorkflowRunContext,
+  WorkflowSerializableValue,
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
@@ -17,6 +18,8 @@ import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
+import { createChainPrimitive } from "./primitives/chain.js";
+import { createParallelPrimitive } from "./primitives/parallel.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
@@ -36,11 +39,11 @@ import {
   selectRunFailureDisposition,
 } from "../runs/foreground/executor-lifecycle.js";
 import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
-import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
-import { getDurableBackend } from "../durable/factory.js";
+import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";import { getDurableBackend } from "../durable/factory.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import { cachedStageId, createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator } from "../durable/stage-primitive.js";
+import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 
@@ -310,12 +313,10 @@ export async function run<
     signal: ownController.signal,
   });
 
-  // Durable ctx.ui wrapper — caches completed user responses so a resumed
-  // workflow does not re-ask answered prompts.
-  // cross-ref: issue #1498 — durable ctx.ui response/pending prompt state.
+  // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
 
-  const recordCachedStage = (name: string, replayKey: string, output: import("../shared/types.js").WorkflowSerializableValue): void => {
+  const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void => {
     const now = Date.now();
     const stageId = cachedStageId(runId, replayKey);
     const result = typeof output === "string" ? output : JSON.stringify(output);
@@ -327,6 +328,20 @@ export async function run<
     activeStore.recordStageEnd(runId, snapshot);
     completedStageReplayKeys.set(stageId, replayKey);
   };
+  const durableTask = createDurableTaskPrimitive({
+    workflowId: runId,
+    backend: durableBackend,
+    nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+    task: taskRunners.task,
+    recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
+  });
+  const durableWorkflow = createDurableChildWorkflowPrimitive({
+    workflowId: runId,
+    backend: durableBackend,
+    nextReplayKey: nextWorkflowBoundaryReplayKey,
+    recordCachedStage,
+    workflow,
+  });
   let durableFailureResumable = false;
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
@@ -362,16 +377,10 @@ export async function run<
         return stage;
       },
     }),
-    task: createDurableTaskPrimitive({
-      workflowId: runId,
-      backend: durableBackend,
-      nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
-      task: taskRunners.task,
-      recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
-    }),
-    chain: taskRunners.chain,
-    parallel: taskRunners.parallel,
-    workflow,
+    task: durableTask,
+    chain: createChainPrimitive({ runtime, task: durableTask }),
+    parallel: createParallelPrimitive({ runtime, task: durableTask }),
+    workflow: durableWorkflow,
     tool,
   };
 
@@ -403,6 +412,7 @@ export async function run<
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: "completed", result, ts: Date.now() });
     durableBackend.setWorkflowStatus(runId, "completed");
+    await durableBackend.flush?.();
     if (opts.persistence && durableBackend.persistent) {
       const cacheEntry = durableBackend.toCacheEntry(runId);
       if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
@@ -467,12 +477,18 @@ export async function run<
       else durableBackend.registerWorkflow({
         workflowId: runId,
         name: def.name,
-        inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+        inputs: resolvedInputs as Record<string, WorkflowSerializableValue>,
         createdAt: runSnapshot.startedAt,
         status: "failed",
         rootWorkflowId: runId,
         resumable: durableFailureResumable,
       });
+      try {
+        await durableBackend.flush?.();
+      } catch (flushErr) {
+        const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
+        console.warn(`atomic-workflows: durable terminal status flush failed: ${msg}`);
+      }
       if (opts.persistence && durableBackend.persistent) {
         const cacheEntry = durableBackend.toCacheEntry(runId);
         if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);

@@ -4,6 +4,7 @@ import type { StageContext, StageOptions, WorkflowTaskOptions, WorkflowTaskResul
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import { durableHash } from "./backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 import type { DurableStageCheckpoint } from "./types.js";
@@ -55,17 +56,17 @@ export function createDurableTaskPrimitive(input: {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (stageName: string) => string;
-  readonly task: (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult>;
+  readonly task: (name: string, options: WorkflowTaskOptions, stageFailFastScope?: ParallelFailFastScope) => Promise<WorkflowTaskResult>;
   readonly recordCachedTask?: (name: string, replayKey: string, output: WorkflowTaskResult) => void;
 }): (name: string, options: WorkflowTaskOptions) => Promise<WorkflowTaskResult> {
-  return async (name: string, options: WorkflowTaskOptions): Promise<WorkflowTaskResult> => {
+  return async (name: string, options: WorkflowTaskOptions, stageFailFastScope?: ParallelFailFastScope): Promise<WorkflowTaskResult> => {
     const replayKey = input.nextReplayKey(`task:${name}`);
     const cached = input.backend.getStageOutput(input.workflowId, replayKey);
     if (cached !== undefined && isWorkflowTaskResult(cached)) {
       input.recordCachedTask?.(name, replayKey, cached);
       return cached;
     }
-    const result = await input.task(name, options);
+    const result = await input.task(name, options, stageFailFastScope);
     await recordCheckpointDurably(input.backend, {
       kind: "stage",
       workflowId: input.workflowId,

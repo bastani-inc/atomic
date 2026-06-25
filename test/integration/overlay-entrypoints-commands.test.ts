@@ -80,6 +80,27 @@ describe("/workflow resume — overlay integration", () => {
     }
   });
 
+  test("resume with no runId ignores completed local runs when durable entries exist", async () => {
+    singletonStore.clear();
+    const completedRunId = `completed-local-${Date.now()}`;
+    singletonStore.recordRunStart({ id: completedRunId, name: "done", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunEnd(completedRunId, "completed", {});
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-after-completed", name: "durable-history", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      void commands["workflow"]!.options.handler("resume", ctx);
+      await delay(5);
+      assert.equal(customCalls.length, 1);
+      assert.match(visibleText(customCalls[0]!.component.render(80)), /durable-history/);
+    } finally {
+      setDurableBackend(undefined);
+    }
+  });
+
   test("resume with no runId opens live picker when paused runs exist", async () => {
     singletonStore.clear();
     const runId = `test-paused-picker-${Date.now()}`;
