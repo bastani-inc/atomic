@@ -377,5 +377,40 @@ describe("issue #1500 image token accounting and image context deletion", () => 
 			expect(afterAll.details.imageTokenPercent).toBe(0);
 			expect(afterAll.content[0]?.type === "text" ? afterAll.content[0].text : "").not.toContain("Images account for");
 		});
+
+		it("computes imageTokenPercent against remaining context so text-only deletions increase image share (#1500)", async () => {
+			resetIds();
+			const task = entry(user("Task that must stay while an old image block and old text are removed"));
+			const call = entry(assistantToolCall("share-image-tool"));
+			const imageResult = entry(toolResultWithImage("share-image-tool", "text alongside image"));
+			// A separate deletable text-heavy entry that is not recent-protected.
+			const textResult = entry(toolResult("share-text-tool", "x".repeat(4000)));
+			const entries: SessionEntry[] = [task, call, imageResult, textResult, ...recentTail(6)];
+			const preparation = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!;
+			const controller = createContextDeletionTool(preparation.transcript);
+
+			// Baseline: image share measured against full pre-deletion token total.
+			const before = await controller.budgetTool.execute("toolu_share_before", {});
+			expect(before.details.imageBlockCount).toBe(1);
+			expect(before.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(before.details.imageTokenPercent).toBeGreaterThan(0);
+
+			// Delete only the text-heavy entry; image blocks are untouched.
+			await controller.tool.execute("toolu_delete_text", {
+				deletions: [{ kind: "entry", entryId: textResult.id }],
+			});
+
+			// Remaining image token count is unchanged, but the denominator shrank
+			// (currentTokensAfter < tokensBefore), so the image share must rise.
+			const afterText = await controller.budgetTool.execute("toolu_share_after_text", {});
+			expect(afterText.details.imageTokensBefore).toBe(ESTIMATED_IMAGE_TOKENS);
+			expect(afterText.details.imageBlockCount).toBe(1);
+			expect(afterText.details.currentTokensAfter).toBeLessThan(before.details.tokensBefore);
+			expect(afterText.details.imageTokenPercent).toBeGreaterThan(before.details.imageTokenPercent);
+
+			// Sanity: image share equals imageTokensBefore / currentTokensAfter.
+			const expectedShare = Math.round((ESTIMATED_IMAGE_TOKENS / afterText.details.currentTokensAfter) * 1000) / 10;
+			expect(afterText.details.imageTokenPercent).toBe(expectedShare);
+		});
 	});
 });

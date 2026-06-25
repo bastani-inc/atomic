@@ -61,7 +61,7 @@ export function createContextCompactionBudgetDetails(
 			: {}),
 		imageTokensBefore,
 		imageBlockCount,
-		imageTokenPercent: percentOf(imageTokensBefore, stats.tokensBefore),
+		imageTokenPercent: percentOf(imageTokensBefore, stats.tokensAfter),
 		callCount,
 	};
 	return details;
