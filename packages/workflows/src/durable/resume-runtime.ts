@@ -36,7 +36,7 @@ import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.
 
 export type ResumeDurableResult =
   | { ok: true; runId: string; workflowId: string; name: string; message: string }
-  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "invalid_inputs" | "not_registered"; message: string };
+  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "invalid_inputs" | "not_registered" | "stale"; message: string };
 
 export interface ResumeDurableDeps {
   readonly registry: WorkflowRegistry;
@@ -129,11 +129,22 @@ export function resumeDurableWorkflow(
     return { ok: false, reason: "workflow_not_found", message: workflowDefinitionRequirementMessage("resumeDurableWorkflow", def) };
   }
 
-  // Inputs live on the durable workflow handle (source of truth), not the
-  // resume catalog entry (which is a discovery cache). Fall back to empty
-  // inputs when the handle is unavailable.
+  // Refuse cache-only resume: if the durable backend has no registered handle
+  // for this workflow, the entry was discovered solely from session JSONL
+  // metadata. Resuming would silently re-run from scratch (no checkpoints to
+  // replay), which the issue explicitly forbids. Surface it as stale so the
+  // caller can re-run explicitly instead.
+  // cross-ref: issue #1498 — do not silently re-run from cache-only metadata.
   const handle = backend.getWorkflow(resolved.workflowId);
-  const inputs: Record<string, unknown> = handle !== undefined ? { ...handle.inputs } : { ...(resolved.inputs ?? {}) };
+  if (handle === undefined) {
+    return {
+      ok: false,
+      reason: "stale",
+      message: `Workflow ${resolved.workflowId.slice(0, 8)} has only session-cache metadata and no durable checkpoint state; resume would re-run from scratch. Re-run the workflow to start fresh.`,
+    };
+  }
+
+  const inputs: Record<string, unknown> = { ...handle.inputs };
   try {
     resolveAndValidateInputs(def.inputs, inputs as WorkflowInputValues, `workflow "${def.name}"`);
   } catch (err) {

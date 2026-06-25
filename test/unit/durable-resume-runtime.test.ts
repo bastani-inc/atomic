@@ -165,7 +165,7 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
   });
 
-  test("scan-only prepared catalog carries session-cache entry through resume", async () => {
+  test("scan-only resume is refused as stale when the backend has no checkpoint state", async () => {
     const entry = {
       type: "workflow.durable.checkpoint",
       workflowId: "wf-scan-only",
@@ -182,9 +182,21 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
 
     const result = resumeDurableWorkflow("wf-scan-only", deps(), catalog);
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "stale");
+      assert.match(result.message, /session-cache metadata/);
+    }
+    // Backend was not mutated into a fake resumable handle.
+    assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
+  });
+
+  test("resume succeeds when the backend has durable checkpoint state for the workflow", () => {
+    backend.registerWorkflow({ workflowId: "wf-has-state", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "running" });
+    const result = resumeDurableWorkflow("wf-has-state", deps());
     assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.runId, "wf-scan-only");
-    assert.equal(backend.getWorkflow("wf-scan-only")?.inputs["topic"], "from-session");
+    if (result.ok) assert.equal(result.runId, "wf-has-state");
+    assert.equal(backend.getWorkflow("wf-has-state")?.status, "running");
   });
 
   test("prepareRuntimeDurableResumable hydrates fresh persistent backend before resume", async () => {

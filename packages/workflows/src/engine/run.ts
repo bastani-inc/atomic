@@ -44,8 +44,9 @@ import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/too
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageIntoStore } from "../durable/stage-primitive.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
+import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
+import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import type { DurableWorkflowStatus } from "../durable/types.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 
 function nextEventLoopTurn(): Promise<void> {
@@ -189,7 +190,13 @@ export async function run<
   // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
   // Declared early so the stage-end recorder can attach to stageOptions.
   // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
-  const durableBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  // Child runs with a durable scope route their internal side-effect
+  // checkpoints under the root workflow so interrupted children do not
+  // re-execute completed side effects on parent resume.
+  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
+    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
+    : rootBackend;
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
@@ -286,10 +293,19 @@ export async function run<
     return `workflow:${name}:${next}`;
   };
   const taskRunners = createWorkflowTaskRunners({ runtime });
+  // Durable scope holder: the durable child primitive publishes the scope for
+  // the next child invocation; the child runner consumes it when launching the
+  // run. This routes child internal side-effect checkpoints under the root.
+  let pendingChildDurableScope: DurableScope | undefined;
   const workflow = createChildWorkflowRunner({
     runtime,
     resolveWorkflowCwd,
     nextWorkflowBoundaryReplayKey,
+    consumeDurableScope: () => {
+      const scope = pendingChildDurableScope;
+      pendingChildDurableScope = undefined;
+      return scope;
+    },
     runWorkflow: run,
   });
 
@@ -328,16 +344,17 @@ export async function run<
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
-  const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void => {
+  const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void =>
     recordCachedStageIntoStore(activeStore, runId, name, replayKey, output, completedStageReplayKeys);
-  };
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
     nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
     recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
   });
   const durableWorkflow = createDurableChildWorkflowPrimitive({
-    workflowId: runId, backend: durableBackend, nextReplayKey: nextDurableChildReplayKey, recordCachedStage, workflow,
+    workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
+    nextReplayKey: nextDurableChildReplayKey, setChildDurableScope: (scope) => { pendingChildDurableScope = scope; },
+    recordCachedStage, workflow,
   });
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
@@ -465,34 +482,16 @@ export async function run<
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);
   } finally {
     // Persist final durable status for cross-session resume discovery.
-    // Covers ctx.exit terminal states (cancelled, blocked, skipped) and
-    // failure/kill paths. Normal completion is handled in the try block.
+    // Covers ctx.exit terminal states and failure/kill paths; normal
+    // completion is handled in the try block.
     // cross-ref: issue #1498
-    if (opts.parentRun === undefined) {
-      const status = runSnapshot.status;
-      const isExitTerminal = runSnapshot.exited === true && status !== "running";
-      const needsDurableUpdate = status === "failed" || status === "killed" || isExitTerminal;
-      if (needsDurableUpdate) {
-        const durableStatus: DurableWorkflowStatus | undefined =
-          status === "completed" || status === "skipped" ? "completed"
-          : status === "cancelled" || status === "killed" ? "cancelled"
-          : status === "failed" ? "failed"
-          : status === "blocked" ? "blocked" : undefined;
-        if (durableStatus !== undefined) {
-          durableBackend.setWorkflowStatus(runId, durableStatus);
-        }
-        try {
-          await durableBackend.flush?.();
-        } catch (flushErr) {
-          const msg = flushErr instanceof Error ? flushErr.message : String(flushErr);
-          console.warn(`atomic-workflows: durable terminal status flush failed: ${msg}`);
-        }
-        if (opts.persistence && durableBackend.persistent) {
-          const cacheEntry = durableBackend.toCacheEntry(runId);
-          if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
-        }
-      }
-    }
+    await finalizeDurableTerminalStatus({
+      runId,
+      runSnapshot,
+      isRoot: opts.parentRun === undefined,
+      durableBackend,
+      persistence: opts.persistence,
+    });
     opts.cancellation?.unregister(runId);
   }
 }

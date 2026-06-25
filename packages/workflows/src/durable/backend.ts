@@ -21,6 +21,7 @@
  */
 
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { createHash } from "node:crypto";
 import type {
   DurableCheckpoint,
   DurableCheckpointEntry,
@@ -133,16 +134,18 @@ export interface DurableWorkflowBackend {
 // ---------------------------------------------------------------------------
 
 /**
- * Compute a deterministic content hash for a JSON-serializable value.
- * Uses canonical JSON stringification (sorted keys) for stability.
+ * Compute a deterministic content digest for a JSON-serializable value.
+ * Uses canonical JSON stringification (sorted keys) for stability and SHA-256
+ * for collision resistance. The earlier 32-bit DJB2 hash demonstrably
+ * collided across distinct tool/stage identities and could cause completed
+ * side effects to be skipped (or merged) incorrectly on resume.
+ *
+ * cross-ref: issue #1498 — collision-resistant durable replay identities.
  */
 export function durableHash(value: WorkflowSerializableValue | WorkflowSerializableObject): string {
   const canonical = canonicalJsonString(value);
-  let hash = 0;
-  for (let i = 0; i < canonical.length; i++) {
-    hash = ((hash << 5) - hash + canonical.charCodeAt(i)) | 0;
-  }
-  return `h${(hash >>> 0).toString(36)}`;
+  const digest = createHash("sha256").update(canonical).digest("hex");
+  return `h${digest.slice(0, 32)}`;
 }
 
 function canonicalJsonString(value: unknown): string {

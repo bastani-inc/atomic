@@ -87,6 +87,13 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
     // Execute (with optional retries).
     const result = await executeWithRetries(fn, options, input.throwIfCancelled, input.signal);
 
+    // Re-check cancellation after the tool function resolves but BEFORE the
+    // side-effect result is durably checkpointed/returned. A side effect that
+    // completes concurrently with a cancellation must not be recorded as a
+    // durable checkpoint that a resume would silently replay.
+    // cross-ref: issue #1498.
+    input.throwIfCancelled();
+
     // Record the checkpoint durably.
     const checkpoint: DurableToolCheckpoint = {
       kind: "tool",

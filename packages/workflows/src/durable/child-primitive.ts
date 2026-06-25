@@ -8,13 +8,21 @@ import type {
 } from "../shared/types.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import type { DurableWorkflowBackend } from "./backend.js";
+import type { DurableScope } from "./scoped-backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
   readonly workflowId: string;
+  readonly rootWorkflowId: string;
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (name: string) => string;
   readonly recordCachedStage: (name: string, replayKey: string, output: WorkflowSerializableValue) => void;
+  /**
+   * Publish the durable scope computed for the next child invocation so the
+   * child runner can consume it and route its internal side-effect checkpoints
+   * under the root workflow. Avoids re-deriving the ordinal independently.
+   */
+  readonly setChildDurableScope: (scope: DurableScope) => void;
   readonly workflow: <
     TChildInputs extends WorkflowInputValues,
     TChildOutputs extends WorkflowOutputValues,
@@ -36,6 +44,11 @@ export function createDurableChildWorkflowPrimitive(input: {
     const options = args[0] as { readonly stageName?: string } | undefined;
     const boundaryName = options?.stageName ?? `workflow:${child.normalizedName}`;
     const replayKey = input.nextReplayKey(boundaryName);
+    // Route this child's internal side-effect checkpoints under the root
+    // workflow with a stable boundary key, so an interrupted child does not
+    // re-execute completed side effects on parent resume.
+    // cross-ref: issue #1498.
+    input.setChildDurableScope({ rootWorkflowId: input.rootWorkflowId, scopePrefix: replayKey });
     const cached = input.backend.getStageOutput(input.workflowId, replayKey);
     if (cached !== undefined && isWorkflowChildResult(cached)) {
       input.recordCachedStage(boundaryName, replayKey, cached);

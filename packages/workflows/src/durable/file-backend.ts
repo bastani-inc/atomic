@@ -9,7 +9,7 @@
  * cross-ref: issue #1498 — durable fallback when DBOS/Postgres is unavailable.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DurableCheckpoint, DurableWorkflowHandle } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
@@ -133,11 +133,21 @@ function withFileLock<T>(filePath: string, fn: () => T): T {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const lockDir = `${filePath}.lock`;
   const deadline = Date.now() + 5000;
+  // Stale lock recovery: if a prior process crashed while holding the lock,
+  // the lock directory remains on disk. A lock older than the stale threshold
+  // is assumed abandoned and removed so durability does not wedge permanently
+  // after a crash.
+  // cross-ref: issue #1498 — file-backed durability crash recovery.
+  const STALE_LOCK_MS = 30_000;
   while (true) {
     try {
       mkdirSync(lockDir);
       break;
     } catch {
+      if (isStaleLock(lockDir, STALE_LOCK_MS)) {
+        reclaimStaleLock(lockDir);
+        continue;
+      }
       if (Date.now() > deadline) throw new Error(`Timed out acquiring durable workflow state lock: ${lockDir}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
@@ -146,6 +156,25 @@ function withFileLock<T>(filePath: string, fn: () => T): T {
     return fn();
   } finally {
     rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+function isStaleLock(lockDir: string, staleMs: number): boolean {
+  let stat: { readonly mtimeMs?: number };
+  try {
+    stat = statSync(lockDir);
+  } catch {
+    return false;
+  }
+  const mtime = stat.mtimeMs;
+  return typeof mtime === "number" && Date.now() - mtime > staleMs;
+}
+
+function reclaimStaleLock(lockDir: string): void {
+  try {
+    rmSync(lockDir, { recursive: true, force: true });
+  } catch {
+    // Best-effort; the next acquire loop iteration will retry.
   }
 }
 
