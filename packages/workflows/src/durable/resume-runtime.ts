@@ -178,9 +178,31 @@ function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
 }
 
 /**
+ * Check whether the durable backend records a TERMINAL (non-resumable) status
+ * for the given workflow id. Terminal status suppresses stale session-cache
+ * entries so a completed/cancelled workflow is not resurrected as resumable.
+ *
+ * Returns true only when the backend has a registered handle whose status is
+ * definitively terminal (completed, cancelled, or failed-and-non-resumable).
+ */
+export function isBackendTerminal(backend: DurableWorkflowBackend, workflowId: string): boolean {
+  const handle = backend.getWorkflow(workflowId);
+  if (handle === undefined) return false;
+  const status = handle.status;
+  if (status === "completed" || status === "cancelled") return true;
+  if (status === "failed" || status === "blocked") return handle.resumable === false;
+  return false;
+}
+
+/**
  * Runtime-facing async preparation: hydrate the durable backend from DBOS
  * (when supported) then list resumable workflows with optional session-dir
  * scan merge. Used by the ExtensionRuntime's `prepareDurableResumable`.
+ *
+ * Terminal-state suppression: when the backend knows a workflow is terminal
+ * (completed/cancelled/non-resumable), any stale session-cache entry for the
+ * same workflow id is suppressed so terminal workflows cannot be resurrected
+ * from the JSONL cache. cross-ref: issue #1498.
  */
 export async function prepareRuntimeDurableResumable(
   getBackend: () => DurableWorkflowBackend,
@@ -205,5 +227,10 @@ export async function prepareRuntimeDurableResumable(
   const { scanResumableWorkflows } = await import("./resume-catalog.js");
   const scanned = scanResumableWorkflows(effectiveSessionDir);
   const liveIds = new Set(live.map((e) => e.workflowId));
-  return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId))];
+  // Suppress stale session-cache entries whose backend status is terminal.
+  // The backend is the checkpoint source of truth; JSONL cache entries can
+  // lag behind terminal transitions (completed/cancelled) and would otherwise
+  // resurrect terminal workflows as resumable.
+  const suppressed = scanned.filter((e) => !liveIds.has(e.workflowId) && !isBackendTerminal(backend, e.workflowId));
+  return [...live, ...suppressed];
 }

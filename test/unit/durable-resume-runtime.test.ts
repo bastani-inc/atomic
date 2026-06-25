@@ -21,7 +21,7 @@ import { createCancellationRegistry } from "../../packages/workflows/src/runs/ba
 import { createJobTracker } from "../../packages/workflows/src/runs/background/job-tracker.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
-import { prepareRuntimeDurableResumable, resolveDurableEntry, resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import { prepareRuntimeDurableResumable, resolveDurableEntry, resumeDurableWorkflow, isBackendTerminal } from "../../packages/workflows/src/durable/resume-runtime.js";
 import type { DurableCheckpointEntry, ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 
 function makeEntry(workflowId: string, name: string, status: ResumableWorkflowEntry["status"]): ResumableWorkflowEntry {
@@ -199,6 +199,18 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-has-state")?.status, "running");
   });
 
+  test("successful resume result includes runId for overlay connection (issue #1498)", () => {
+    backend.registerWorkflow({ workflowId: "wf-overlay-connect", name: "resumable-pipeline", inputs: { topic: "overlay" }, createdAt: 1, status: "failed" });
+    const result = resumeDurableWorkflow("wf-overlay-connect", deps());
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      // runId is the original workflow id so the overlay connects to the
+      // re-dispatched run.
+      assert.equal(result.runId, "wf-overlay-connect");
+      assert.equal(result.workflowId, "wf-overlay-connect");
+    }
+  });
+
   test("prepareRuntimeDurableResumable hydrates fresh persistent backend before resume", async () => {
     class HydratingBackend implements DurableWorkflowBackend {
       readonly persistent = true;
@@ -226,5 +238,87 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(catalog.length, 1);
     const result = resumeDurableWorkflow("wf-hydrated", { ...deps(), durableBackend: hydrating });
     assert.equal(result.ok, true);
+  });
+});
+
+describe("terminal cache suppression (issue #1498)", () => {
+  let backend: InMemoryDurableBackend;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    backend = new InMemoryDurableBackend();
+    setDurableBackend(backend);
+  });
+  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  function writeSessionCacheEntry(workflowId: string, name: string, status: string): void {
+    const entry = {
+      type: "workflow.durable.checkpoint",
+      workflowId,
+      name,
+      inputs: { topic: "data" },
+      status,
+      completedCheckpoints: 1,
+      pendingPrompts: 0,
+      ts: Date.now(),
+    };
+    writeFileSync(join(tmpDir, "session.jsonl"), JSON.stringify({ type: "custom", customType: "workflow.durable.checkpoint", data: entry }) + "\n", { flag: "a" });
+  }
+
+  test("stale session-cache entry is suppressed when backend marks workflow completed", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "terminal-cache-"));
+    // Backend knows the workflow is completed (terminal).
+    backend.registerWorkflow({ workflowId: "wf-completed-terminal", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "completed" });
+    // Session cache still has a stale "running" entry for the same workflow.
+    writeSessionCacheEntry("wf-completed-terminal", "resumable-pipeline", "running");
+
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    // The stale entry must NOT appear: backend terminal status wins.
+    assert.equal(catalog.length, 0);
+  });
+
+  test("stale session-cache entry is suppressed when backend marks workflow cancelled", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "terminal-cancel-"));
+    backend.registerWorkflow({ workflowId: "wf-cancelled-terminal", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "cancelled" });
+    writeSessionCacheEntry("wf-cancelled-terminal", "resumable-pipeline", "running");
+
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    assert.equal(catalog.length, 0);
+  });
+
+  test("stale session-cache entry is suppressed when backend marks workflow failed-non-resumable", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "terminal-failed-"));
+    backend.registerWorkflow({ workflowId: "wf-failed-terminal", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "failed", resumable: false });
+    writeSessionCacheEntry("wf-failed-terminal", "resumable-pipeline", "running");
+
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    assert.equal(catalog.length, 0);
+  });
+
+  test("non-terminal backend status does NOT suppress session-cache entries", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "non-terminal-"));
+    // Backend has the workflow as "failed" but resumable (not terminal).
+    backend.registerWorkflow({ workflowId: "wf-failed-resumable", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "failed", resumable: true });
+    writeSessionCacheEntry("wf-failed-resumable", "resumable-pipeline", "running");
+
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    // The backend's own resumable list already includes it (failed+resumable).
+    assert.ok(catalog.length >= 1);
+    assert.ok(catalog.some((e) => e.workflowId === "wf-failed-resumable"));
+  });
+
+  test("isBackendTerminal returns true for completed/cancelled/non-resumable-failed", () => {
+    const b = new InMemoryDurableBackend();
+    b.registerWorkflow({ workflowId: "w1", name: "n", inputs: {}, createdAt: 1, status: "completed" });
+    b.registerWorkflow({ workflowId: "w2", name: "n", inputs: {}, createdAt: 1, status: "cancelled" });
+    b.registerWorkflow({ workflowId: "w3", name: "n", inputs: {}, createdAt: 1, status: "failed", resumable: false });
+    b.registerWorkflow({ workflowId: "w4", name: "n", inputs: {}, createdAt: 1, status: "failed", resumable: true });
+    b.registerWorkflow({ workflowId: "w5", name: "n", inputs: {}, createdAt: 1, status: "running" });
+    assert.equal(isBackendTerminal(b, "w1"), true);
+    assert.equal(isBackendTerminal(b, "w2"), true);
+    assert.equal(isBackendTerminal(b, "w3"), true);
+    assert.equal(isBackendTerminal(b, "w4"), false);
+    assert.equal(isBackendTerminal(b, "w5"), false);
+    assert.equal(isBackendTerminal(b, "w-unknown"), false);
   });
 });

@@ -41,13 +41,66 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
 }
 
 /**
- * Attempt a cross-session durable resume when the target id is not a live run.
- * Mirrors /resume ergonomics: list durable resumable workflows, then resume by
- * top-level workflow id so completed checkpoints replay.
- *
- * Returns true when the command was handled (resume attempted or list shown).
- * cross-ref: issue #1498 — /workflow resume selector.
+ * A unified picker item: either a live run (openable directly) or a durable
+ * workflow (requires cross-session resume). The selector shows both together
+ * so the user can choose from all resumable workflows in one view.
  */
+interface CombinedPickerItem {
+  readonly kind: "live" | "durable";
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly detail: string;
+}
+
+/**
+ * Open a combined selector showing live runs and durable workflows together.
+ * Returns the selected item, or undefined if dismissed. When a durable item
+ * is chosen, the caller resumes it via the durable resume path.
+ * cross-ref: issue #1498 — durable workflows must be selectable alongside live.
+ */
+async function openCombinedResumePicker(
+  ui: PiCommandContext["ui"],
+  liveRuns: readonly { id: string; name: string; status: string }[],
+  durableEntries: readonly ResumableWorkflowEntry[],
+): Promise<CombinedPickerItem | undefined> {
+  const custom = ui?.custom;
+  if (typeof custom !== "function") return undefined;
+  const liveItems: readonly CombinedPickerItem[] = liveRuns.map((r) => ({
+    kind: "live" as const,
+    id: r.id,
+    name: r.name,
+    status: r.status,
+    detail: "live",
+  }));
+  const liveIds = new Set(liveRuns.map((r) => r.id));
+  const durableItems: readonly CombinedPickerItem[] = durableEntries
+    .filter((e) => !liveIds.has(e.workflowId))
+    .map((e) => ({
+      kind: "durable" as const,
+      id: e.workflowId,
+      name: e.name,
+      status: e.status,
+      detail: `${e.completedCheckpoints}cp`,
+    }));
+  const items = [...liveItems, ...durableItems];
+  if (items.length === 0) return undefined;
+  let selected = 0;
+  return new Promise((resolve) => {
+    const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
+      render: (width: number) => ["Resumable workflows (live + cross-session)", "", ...items.map((item, i) => `${i === selected ? "\u203a" : " "} ${item.kind === "durable" ? "\u25c7" : "\u25cf"} ${item.id.slice(0, 12)}  ${item.name}  ${item.status}  ${item.detail}`)].map((line) => line.slice(0, width)),
+      handleInput: (data: string) => {
+        if (data === "\u001b" || data === "\u0003") { done(undefined); resolve(undefined); return; }
+        if (data === "\r" || data === "\n") { done(undefined); resolve(items[selected]); return; }
+        if (data === "\u001b[A") selected = Math.max(0, selected - 1);
+        if (data === "\u001b[B") selected = Math.min(items.length - 1, selected + 1);
+        tui.requestRender?.();
+      },
+      dispose: () => resolve(undefined),
+    });
+    void custom(factory, { overlay: false });
+  });
+}
 async function openDurableWorkflowPicker(ui: PiCommandContext["ui"], entries: readonly ResumableWorkflowEntry[]): Promise<string | undefined> {
   const custom = ui?.custom;
   if (typeof custom !== "function") return undefined;
@@ -77,6 +130,7 @@ async function handleDurableResume(
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
   const runtime = deps.runtimeForContext(ctx);
+  const policy = workflowPolicyFromContext(ctx);
   // Hydrate the durable backend from DBOS (if configured) before listing so a
   // fresh process discovers workflows persisted by a prior session.
   const durable = await runtime.prepareDurableResumable(target);
@@ -85,6 +139,8 @@ async function handleDurableResume(
     const result = runtime.resumeDurableWorkflow(target);
     if (result.ok) {
       print(result.message);
+      // Open/connect the overlay to the resumed run, analogous to live resume.
+      if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
       return true;
     }
     // Not a durable workflow either — surface the catalog for discovery.
@@ -103,7 +159,12 @@ async function handleDurableResume(
   const picked = await openDurableWorkflowPicker(ctx.ui, durable);
   if (picked !== undefined) {
     const result = runtime.resumeDurableWorkflow(picked);
-    result.ok ? print(result.message) : fail(result.message);
+    if (result.ok) {
+      print(result.message);
+      if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+    } else {
+      fail(result.message);
+    }
     return true;
   }
   print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
@@ -291,19 +352,35 @@ export async function handleRunControlCommand(
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.endedAt === undefined || run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
-        // Even when live runs exist, surface durable history so the user can
-        // resume cross-session workflows. This mirrors /resume which shows all
-        // resumable sessions. cross-ref: issue #1498.
+        // Even when live runs exist, durable workflows must be selectable.
+        // Show a combined picker so the user can choose from both live and
+        // cross-session workflows in one view.
+        // cross-ref: issue #1498 — /workflow resume selector with live + durable.
         if (liveRuns.length === 0) return await handleDurableResume(undefined, ctx, reporter, deps);
-        // Live runs exist — show the live picker, but also check durable
-        // entries so they are discoverable.
         const runtime = deps.runtimeForContext(ctx);
+        // Quick synchronous check first; if no durable entries are available,
+        // fall through to the normal live picker without async overhead.
         let durableEntries: readonly ResumableWorkflowEntry[] = [];
         try { durableEntries = runtime.listDurableResumable(); } catch { /* best-effort */ }
-        const liveRunIds = new Set(liveRuns.map((r) => r.id));
-        const durableOnly = durableEntries.filter((e) => !liveRunIds.has(e.workflowId));
+        const durableOnly = durableEntries.filter((e) => !liveRuns.some((r) => r.id === e.workflowId));
         if (durableOnly.length > 0) {
-          // Print durable entries as a hint alongside the live picker.
+          // Combined selector: live + durable together.
+          const picked = await openCombinedResumePicker(ctx.ui, liveRuns, durableEntries);
+          if (picked !== undefined) {
+            if (picked.kind === "durable") {
+              // Resume the durable workflow and open the overlay.
+              return await handleDurableResume(picked.id, ctx, reporter, deps);
+            }
+            // Live run selected — resume it directly.
+            const resolved = resolveRunIdPrefix(picked.id);
+            if (resolved.kind === "exact") {
+              const result = resumeRun(resolved.runId, {});
+              if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+              result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.id}`);
+            }
+            return true;
+          }
+          // Dismissed — print summary for reference.
           reporter.info(`${formatResumableWorkflowList(durableOnly)}\n\nResume durable workflow with: /workflow resume <id>`);
         }
       }

@@ -43,7 +43,7 @@ import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, prepareRuntimeDurableResumable, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
+import { resumeDurableWorkflow as resumeDurableWorkflowAdapter, prepareRuntimeDurableResumable, isBackendTerminal, type ResumeDurableDeps, type ResumeDurableResult } from "../durable/resume-runtime.js";
 import { getDurableBackend, initializeDbosDurableBackendFromEnv } from "../durable/factory.js";
 import { scanResumableWorkflows } from "../durable/resume-catalog.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
@@ -480,7 +480,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       };
       return resumeDurableWorkflowAdapter(workflowIdOrPrefix, adapterDeps, preparedDurableCatalog);
     },
-
     listDurableResumable(sessionDir?: string): readonly ResumableWorkflowEntry[] {
       const backend = getDurableBackend();
       const live = backend.listResumableWorkflows();
@@ -488,7 +487,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       if (dir === undefined) return live;
       const scanned = scanResumableWorkflows(dir);
       const liveIds = new Set(live.map((e) => e.workflowId));
-      return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId))];
+      // Suppress stale session-cache entries whose backend status is terminal.
+      return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId) && !isBackendTerminal(backend, e.workflowId))];
     },
 
     async prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {

@@ -114,6 +114,32 @@ describe("ScopedDurableBackend (child side effects under root)", () => {
     assert.equal(scoped.listResumableWorkflows().length, 0);
     assert.equal(scoped.toCacheEntry(CHILD), undefined);
   });
+
+  test("listCheckpoints excludes sibling scopes (no double-prefix leakage)", () => {
+    // Two siblings write tool checkpoints under the same root with different scopes.
+    const scope1 = "workflow:child:1";
+    const scope2 = "workflow:child:2";
+    const first = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: scope1 });
+    const second = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: scope2 });
+    first.recordCheckpoint(toolCheckpoint(CHILD, "alpha", "first"));
+    second.recordCheckpoint(toolCheckpoint(CHILD, "beta", "second"));
+
+    // listCheckpoints for scope1 must NOT include scope2's checkpoints.
+    const scope1Checkpoints = first.listCheckpoints(CHILD);
+    assert.equal(scope1Checkpoints.length, 1);
+    // The stored checkpointId must start with scope1 prefix, not scope2.
+    assert.ok(scope1Checkpoints[0]!.checkpointId.startsWith(`${scope1}:`), `expected ${scope1Checkpoints[0]!.checkpointId} to start with ${scope1}:`);
+
+    // listCheckpoints for scope2 must NOT include scope1's checkpoints.
+    const scope2Checkpoints = second.listCheckpoints(CHILD);
+    assert.equal(scope2Checkpoints.length, 1);
+    assert.ok(scope2Checkpoints[0]!.checkpointId.startsWith(`${scope2}:`), `expected ${scope2Checkpoints[0]!.checkpointId} to start with ${scope2}:`);
+  });
+
+  test("getWorkflow returns undefined (not never) for scoped child", () => {
+    const scoped = new ScopedDurableBackend(root, { rootWorkflowId: ROOT, scopePrefix: "workflow:child:1" });
+    assert.equal(scoped.getWorkflow(CHILD), undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------

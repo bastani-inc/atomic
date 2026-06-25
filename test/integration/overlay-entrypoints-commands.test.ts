@@ -335,6 +335,59 @@ describe("/workflow attach — top-level command", () => {
     assert.match(messages.join("\n"), /Run not found/);
     assert.equal(customCalls.length, 0);
   });
+
+  test("durable resume <id> does NOT open the overlay when resume fails", async () => {
+    singletonStore.clear();
+    const { pi, commands, customCalls } = buildMockPi();
+    factory(pi);
+    const wfCmd = commands["workflow"]!;
+    const { ctx } = buildPrintCtx();
+    // Unknown id — no durable backend configured.
+    await wfCmd.options.handler("resume not-a-durable-wf", ctx);
+    assert.equal(customCalls.length, 0);
+  });
+
+  test("no-arg resume with live + durable opens combined picker (issue #1498)", async () => {
+    singletonStore.clear();
+    const liveRunId = `live-combined-${Date.now()}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunPaused(liveRunId);
+    const backend = new InMemoryDurableBackend();
+    backend.registerWorkflow({ workflowId: "durable-combined-wf", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused" });
+    setDurableBackend(backend);
+    try {
+      const { pi, commands } = buildMockPi();
+      factory(pi);
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      void commands["workflow"]!.options.handler("resume", ctx);
+      await delay(5);
+      // Combined picker should open showing both live and durable entries.
+      assert.ok(customCalls.length >= 1);
+      assert.equal(customCalls[0]!.options.overlay, false);
+      const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
+      // Both live and durable should be visible.
+      assert.match(text, /live-wf/);
+      assert.match(text, /durable-wf/);
+    } finally {
+      setDurableBackend(undefined);
+    }
+  });
+
+  test("no-arg resume with only live runs opens normal live picker (no combined)", async () => {
+    singletonStore.clear();
+    const liveRunId = `live-only-${Date.now()}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "only-live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    singletonStore.recordRunPaused(liveRunId);
+    const { pi, commands, customCalls } = buildMockPi();
+    factory(pi);
+    const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
+    void commands["workflow"]!.options.handler("resume", ctx);
+    await Promise.resolve();
+    // Only the live picker (openSessionPicker) should open — no combined.
+    assert.equal(customCalls.length, 0);
+    assert.ok(realCustomCalls.length >= 1);
+    assert.equal(realCustomCalls[0]!.options.overlay, false);
+  });
 });
 
 // ---------------------------------------------------------------------------

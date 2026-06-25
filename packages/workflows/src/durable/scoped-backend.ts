@@ -89,12 +89,17 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
   listCheckpoints(_workflowId: string): readonly DurableCheckpoint[] {
     const all = this.inner.listCheckpoints(this.scope.rootWorkflowId);
     const prefix = `${this.scope.scopePrefix}:`;
-    return all.filter((cp) => scopedCheckpointId(cp, this.scope).startsWith(prefix));
+    // Checkpoints are stored with their scope prefix already embedded in their
+    // ids (see remap()). Filter by the stored id directly — NOT by re-prefixing
+    // — so sibling scopes (e.g. "workflow:child:1") are excluded when the
+    // current scope is "workflow:child:2". Re-prefixing would prepend the
+    // current scope prefix to every id, causing sibling ids to falsely match.
+    return all.filter((cp) => storedScopeId(cp).startsWith(prefix));
   }
 
-  getWorkflow(_workflowId: string): never {
+  getWorkflow(_workflowId: string): undefined {
     // Child runs have no independent resumable handle.
-    return undefined as never;
+    return undefined;
   }
 
   setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number): void {
@@ -152,7 +157,11 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
   }
 }
 
-function scopedCheckpointId(cp: DurableCheckpoint, scope: DurableScope): string {
-  const id = cp.kind === "stage" ? cp.replayKey : cp.checkpointId;
-  return `${scope.scopePrefix}:${id}`;
+/**
+ * Return the checkpoint's stored scope-qualified id, which includes any scope
+ * prefix embedded by {@link ScopedDurableBackend.remap}. This is the raw stored
+ * value used for prefix filtering in {@link ScopedDurableBackend.listCheckpoints}.
+ */
+function storedScopeId(cp: DurableCheckpoint): string {
+  return cp.kind === "stage" ? cp.replayKey : cp.checkpointId;
 }
