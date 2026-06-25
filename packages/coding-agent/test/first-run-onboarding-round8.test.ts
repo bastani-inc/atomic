@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import {
   ONBOARDING_HANDOFF_NOTICE,
   ONBOARDING_ROUTING_THINKING_LEVEL,
@@ -21,6 +22,7 @@ function installSubmitHandler(host: Record<string, unknown>): (text: string) => 
 
 const unknownModel = { provider: "unknown", id: "unknown", api: "unknown" };
 const readyModel = { provider: "openai", id: "gpt-5", api: "openai" };
+initTheme("dark");
 
 describe("first-run onboarding pending seed handoff", () => {
   it("stashes a pasted seed in memory when no model/provider is ready", async () => {
@@ -426,5 +428,73 @@ describe("first-run onboarding pending seed handoff", () => {
     expect(host.updateAvailableProviderCount.mock.invocationCallOrder[0]).toBeLessThan(host.resumePendingFirstRunOnboardingSeed.mock.invocationCallOrder[0] ?? 0);
     expect(host.setupAutocompleteProvider.mock.invocationCallOrder[0]).toBeLessThan(host.resumePendingFirstRunOnboardingSeed.mock.invocationCallOrder[0] ?? 0);
     expect(host.resumePendingFirstRunOnboardingSeed).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes pending seeds at successful /model readiness points", async () => {
+    const exactHost = {
+      session: { setModel: vi.fn().mockResolvedValue(undefined) },
+      findExactModelMatch: vi.fn().mockResolvedValue(readyModel),
+      showModelSelector: vi.fn(),
+      footer: { invalidate: vi.fn() },
+      updateEditorBorderColor: vi.fn(),
+      showStatus: vi.fn(),
+      maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+      checkDaxnutsEasterEgg: vi.fn(),
+      resumePendingFirstRunOnboardingSeed: vi.fn().mockResolvedValue(undefined),
+    };
+    const handleModel = Reflect.get(InteractiveMode.prototype, "handleModelCommand") as (this: typeof exactHost, searchTerm?: string) => Promise<void>;
+    await handleModel.call(exactHost, "openai/gpt-5");
+    expect(exactHost.resumePendingFirstRunOnboardingSeed).toHaveBeenCalledTimes(1);
+
+    const showModelSelector = Reflect.get(InteractiveMode.prototype, "showModelSelector") as (this: Record<string, unknown>) => void;
+    const selectModel = async (needsContextWindow: boolean) => {
+      let selector: { onSelectCallback: (model: typeof readyModel) => Promise<void> } | undefined;
+      const host = {
+        ui: { requestRender: vi.fn() },
+        settingsManager: SettingsManager.inMemory(),
+        session: {
+          model: unknownModel,
+          modelRegistry: { refresh: vi.fn(), getError: vi.fn(() => undefined), getAvailable: vi.fn().mockResolvedValue([readyModel]) },
+          scopedModels: [],
+          setModel: vi.fn().mockResolvedValue(undefined),
+          supportsContextWindowSelection: vi.fn(() => needsContextWindow),
+        },
+        showSelector: vi.fn((factory: (done: () => void) => { component: unknown }) => { selector = factory(vi.fn()).component as typeof selector; }),
+        footer: { invalidate: vi.fn() },
+        updateEditorBorderColor: vi.fn(),
+        showStatus: vi.fn(),
+        maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
+        checkDaxnutsEasterEgg: vi.fn(),
+        showContextWindowSelector: vi.fn(),
+        resumePendingFirstRunOnboardingSeed: vi.fn().mockResolvedValue(undefined),
+      };
+      showModelSelector.call(host);
+      await selector?.onSelectCallback(readyModel);
+      return host;
+    };
+
+    const noContextHost = await selectModel(false);
+    expect(noContextHost.showContextWindowSelector).not.toHaveBeenCalled();
+    expect(noContextHost.resumePendingFirstRunOnboardingSeed).toHaveBeenCalledTimes(1);
+
+    const needsContextHost = await selectModel(true);
+    expect(needsContextHost.showContextWindowSelector).toHaveBeenCalledWith(readyModel);
+    expect(needsContextHost.resumePendingFirstRunOnboardingSeed).not.toHaveBeenCalled();
+
+    let contextSelector: { onSelectCallback: (contextWindow: number) => Promise<void> } | undefined;
+    const contextHost = {
+      showSelector: vi.fn((factory: (done: () => void) => { component: unknown }) => { contextSelector = factory(vi.fn()).component as typeof contextSelector; }),
+      session: { model: readyModel, getAvailableContextWindows: vi.fn(() => [200000, 1000000]), setContextWindow: vi.fn() },
+      footer: { invalidate: vi.fn() },
+      usageMeter: { invalidate: vi.fn() },
+      updateEditorBorderColor: vi.fn(),
+      showStatus: vi.fn(),
+      resumePendingFirstRunOnboardingSeed: vi.fn().mockResolvedValue(undefined),
+    };
+    const showContextWindowSelector = Reflect.get(InteractiveMode.prototype, "showContextWindowSelector") as (this: typeof contextHost, model: typeof readyModel) => void;
+    showContextWindowSelector.call(contextHost, readyModel);
+    await contextSelector?.onSelectCallback(1000000);
+    expect(contextHost.session.setContextWindow).toHaveBeenCalledWith(1000000, { persistDefault: true });
+    expect(contextHost.resumePendingFirstRunOnboardingSeed).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
-import { Editor, type EditorOptions, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Editor, type EditorOptions, type EditorTheme, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AppKeybinding, KeybindingsManager } from "../../../core/keybindings.ts";
+import { theme } from "../theme/theme.ts";
 
 export interface CustomEditorOptions extends EditorOptions {
 	promptPrefix?: string;
@@ -66,13 +67,20 @@ export class CustomEditor extends Editor {
 			const prefix = showPrompt ? this.promptPrefix : " ".repeat(promptWidth);
 			let content = line;
 			if (showPrompt && placeholder && this.getText() === "") {
-				content = truncateToWidth(placeholder, editorWidth, "...");
+				content = this.renderPlaceholder(placeholder, editorWidth);
 			}
 			if (inPromptBox) {
 				promptShown = true;
 			}
 			return this.padLine(`${prefix}${content}`, width);
 		});
+	}
+
+	private renderPlaceholder(placeholder: string, editorWidth: number): string {
+		const cursor = `${this.focused ? CURSOR_MARKER : ""}\x1b[7m \x1b[0m`;
+		const placeholderWidth = Math.max(0, editorWidth - 1);
+		const text = truncateToWidth(placeholder, placeholderWidth, "...");
+		return `${cursor}${theme.fg("muted", text)}`;
 	}
 
 	private isEditorBorderLine(line: string): boolean {
