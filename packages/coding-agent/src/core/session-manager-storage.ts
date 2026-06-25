@@ -15,6 +15,13 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { FileEntry, SessionEntry, SessionHeader } from "./session-manager-types.ts";
 
 const SESSION_READ_BUFFER_SIZE = 1024 * 1024;
+/**
+ * Dedicated small read chunk for header-only reads. Session headers are small
+ * (typically a few KB), so reading in 64KB chunks avoids allocating/transferring
+ * the full 1MiB transcript buffer just to inspect the first line during listing
+ * and resume-history prefiltering.
+ */
+const HEADER_READ_BUFFER_SIZE = 64 * 1024;
 
 function parseSessionEntryLine(line: string): FileEntry | null {
 	if (!line.trim()) return null;
@@ -78,7 +85,11 @@ export function readSessionHeader(filePath: string): SessionHeader | null {
 			// long headers (e.g. internal workflow headers carrying stage metadata)
 			// are not truncated and dropped from listing/resume filtering.
 			const decoder = new StringDecoder("utf8");
-			const buffer = Buffer.allocUnsafe(SESSION_READ_BUFFER_SIZE);
+			// Use a small dedicated header buffer instead of the 1MiB transcript
+			// buffer so prefiltering internal sessions during listing stays cheap.
+			// The loop still reads in chunks until the first newline (or EOF) so
+			// headers larger than one chunk are handled correctly.
+			const buffer = Buffer.allocUnsafe(HEADER_READ_BUFFER_SIZE);
 			let pending = "";
 			let foundNewline = false;
 			while (true) {

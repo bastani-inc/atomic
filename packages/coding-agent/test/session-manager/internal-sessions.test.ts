@@ -205,6 +205,40 @@ describe("isInternalHeader helper", () => {
 	});
 });
 
+describe("readSessionHeader reads multi-chunk headers with the small dedicated buffer", () => {
+	let dir: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "internal-sess-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it("reads a header larger than the 64KB header chunk but smaller than 1MiB", () => {
+		// A header that spans more than one 64KB read chunk but is well under
+		// the old 1MiB transcript buffer. This proves the small dedicated header
+		// buffer correctly accumulates across chunks until the first newline.
+		const longStageName = "z".repeat(80 * 1024);
+		const header: SessionHeader = {
+			type: "session",
+			version: 3,
+			id: "smallbuf-multichunk-1",
+			timestamp: new Date().toISOString(),
+			cwd: dir,
+			internal: true,
+			workflow: { runId: "r", stageId: "s", stageName: longStageName },
+		};
+		const path = writeSessionFile(dir, header, [
+			'{"type":"message","id":"1","parentId":null,"timestamp":"2025-01-01T00:00:00Z","message":{"role":"user","content":"after-newline","timestamp":1}}',
+		]);
+		const read = readSessionHeader(path);
+		expect(read?.id).toBe("smallbuf-multichunk-1");
+		expect(read?.internal).toBe(true);
+		expect(read?.workflow?.stageName).toBe(longStageName);
+	});
+});
+
 describe("readSessionHeader decoder flush after newline", () => {
 	let dir: string;
 
