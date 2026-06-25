@@ -175,7 +175,7 @@ describe("AgentSession prompt characterization", () => {
 		expect(userText).not.toContain("@test.png");
 	});
 
-	it("turns pasted absolute image paths into current user image attachments", async () => {
+	it("turns exact whole-message image paths into current user image attachments", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
 		const imagePath = join(harness.tempDir, "atomic-clipboard-test.png");
@@ -195,11 +195,10 @@ describe("AgentSession prompt characterization", () => {
 			},
 		]);
 
-		await harness.session.prompt(`${imagePath} what is this?`);
+		await harness.session.prompt(imagePath);
 
 		expect(sawImage).toBe(true);
 		expect(userText).toContain(`<file name="${imagePath}">`);
-		expect(userText).toContain("what is this?");
 	});
 
 	it("expands skill commands before sending the prompt", async () => {

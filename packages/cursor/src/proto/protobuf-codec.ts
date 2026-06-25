@@ -15,7 +15,7 @@ import {
 	type McpToolDefinition,
 	type ModelDetails,
 } from "./agent_pb.js";
-import { blobKey, buildCursorRequest, buildMcpToolDefinitions, extractCurrentActionImages, extractCurrentActionText, parseHistoricalTurns } from "./protobuf-codec-request.js";
+import { blobKey, buildCursorRequest, buildMcpToolDefinitions, currentActionStartIndex, extractCurrentActionImages, extractCurrentActionText, parseHistoricalTurns } from "./protobuf-codec-request.js";
 import { createMcpToolResult, decodeAgentServerMessage, encodeExecClientMessage, encodeKvClientMessage, encodeNativeExecRejection, encodeRequestContextResult } from "./protobuf-codec-wire.js";
 
 // Cursor protocol codec intentionally follows the MIT-licensed
@@ -61,6 +61,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 	encodeRunRequest(request: CursorRunRequest): Uint8Array {
 		validateCursorImageSerializationContext(request);
 		const currentImages = extractCurrentActionImages(request);
+		const currentStartIndex = currentActionStartIndex(request);
 		const conversationIdValue = request.conversationId ?? request.requestId;
 		const storedState = this.#conversationStates.get(conversationIdValue);
 		const payload = buildCursorRequest(
@@ -68,7 +69,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 			request.context.systemPrompt ?? "",
 			extractCurrentActionText(request),
 			currentImages,
-			parseHistoricalTurns(request.context.messages.slice(0, -1)),
+			parseHistoricalTurns(request.context.messages.slice(0, currentStartIndex)),
 			conversationIdValue,
 			storedState?.checkpoint ?? null,
 			storedState?.blobStore,

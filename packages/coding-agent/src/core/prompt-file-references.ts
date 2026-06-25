@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { ImageContent } from "@earendil-works/pi-ai";
+import { APP_NAME } from "../config.ts";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize.ts";
 import { detectSupportedImageMimeTypeFromFile } from "../utils/mime.ts";
 import { resolveReadPathAsync } from "./tools/path-utils.ts";
@@ -33,14 +34,24 @@ interface PromptImageReplacement {
 	image?: ImageContent;
 }
 
+interface ProtectedRange {
+	start: number;
+	end: number;
+}
+
+interface FileTagRange extends ProtectedRange {
+	attrs: string;
+	text: string;
+	depth: number;
+}
+
 const INLINE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])@(?:"([^"]+)"|'([^']+)'|((?:\\.|[^ \t\r\n\f\v])+))/gu;
-// Bare absolute references intentionally probe the filesystem so clipboard and
-// terminal drag/drop image paths can become current-turn attachments without an
-// explicit `@` prefix. Callers should gate this resolver to image-capable paths.
-const BARE_ABSOLUTE_FILE_REFERENCE_PATTERN = /(^|[\s([{<])(?:"((?:\/|~\/|file:\/\/)[^"]+)"|'((?:\/|~\/|file:\/\/)[^']+)'|((?:\/|~\/|file:\/\/)(?:\\.|[^ \t\r\n\f\v])+))/giu;
-const FILE_TAG_PATTERN = /<file\b[^>]*\bname=(?:"([^"]*)"|'([^']*)')[^>]*>[\s\S]*?<\/file>/giu;
-const UNQUOTED_REFERENCE_START_PATTERN = /(^|[\s([{<])(@?(?:file:\/\/|~\/|\/)|@(?=[^\s"'<>]))/giu;
-const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp)(?=$|[\s),;:!?.\]}>'"])/giu;
+const FILE_TAG_TOKEN_PATTERN = /<file(?=[\s>/])([^>]*)>|<\/file>/giu;
+const FILE_TAG_NAME_ATTRIBUTE_PATTERN = /\bname\s*=\s*(?:"([^"]*)"|'([^']*)')/iu;
+const CLIPBOARD_FILE_NAME_PATTERN = new RegExp(
+	String.raw`${APP_NAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-clipboard-[^\s/\\]*\.(?:png|jpe?g|gif|webp)(?=$|[\s),;:!?\]}>"]|'|\.(?=$|\s))`,
+	"giu",
+);
 const TRAILING_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}", ">"]);
 
 function escapeFileNameAttribute(value: string): string {
@@ -85,35 +96,70 @@ function splitUnquotedCandidate(rawPath: string): CandidatePath[] {
 	];
 }
 
-function lineRemainder(text: string, start: number): string {
-	const newlineIndex = text.indexOf("\n", start);
-	return text.slice(start, newlineIndex === -1 ? undefined : newlineIndex);
+function stripMatchingQuotes(value: string): string {
+	if (value.length < 2) return value;
+	const first = value[0];
+	const last = value[value.length - 1];
+	return (first === last && (first === "\"" || first === "'")) ? value.slice(1, -1) : value;
 }
 
-function addUniqueCandidate(candidates: CandidatePath[], candidate: CandidatePath): void {
-	if (candidate.path && !candidates.some((existing) => existing.path === candidate.path)) {
-		candidates.push(candidate);
-	}
+function wholeMessagePathCandidates(text: string): CandidatePath[] {
+	const trimmed = text.trim();
+	if (!trimmed) return [];
+	const unquoted = stripMatchingQuotes(trimmed);
+	return [{ path: unquoted, suffix: "" }];
 }
 
-function imageExtensionCandidates(rawPathAndSuffix: string): CandidatePath[] {
-	const candidates: CandidatePath[] = [];
-	for (const match of rawPathAndSuffix.matchAll(IMAGE_EXTENSION_PATTERN)) {
-		const end = (match.index ?? 0) + match[0].length;
-		addUniqueCandidate(candidates, {
-			path: rawPathAndSuffix.slice(0, end),
-			suffix: rawPathAndSuffix.slice(end),
-		});
-	}
-	return candidates.sort((left, right) => right.path.length - left.path.length);
+function appendFileTagBodyText(fileTagText: string, bodyText: string): string {
+	return fileTagText.replace(/<\/file>$/iu, `${bodyText}</file>`);
 }
 
-function unquotedPathCandidates(rawPathAndSuffix: string): CandidatePath[] {
-	const candidates = imageExtensionCandidates(rawPathAndSuffix);
-	for (const candidate of splitUnquotedCandidate(rawPathAndSuffix)) {
-		addUniqueCandidate(candidates, candidate);
+function imageOmissionBodyText(replacementText: string): string {
+	const match = /^<file\b[^>]*>([\s\S]*)<\/file>$/iu.exec(replacementText);
+	return match?.[1] ?? "[Image omitted: could not be attached.]";
+}
+
+function clipboardPathStartCandidates(text: string, filenameStart: number): number[] {
+	const starts = new Set<number>();
+	for (let index = 0; index <= filenameStart; index++) {
+		const remainder = text.slice(index, filenameStart);
+		if (
+			(remainder.startsWith("file://") && /[\\/]$/u.test(remainder)) ||
+			(/^(?:\/|\\|~[\\/]|[A-Za-z]:[\\/])/u.test(remainder) && /[\\/]$/u.test(remainder))
+		) {
+			starts.add(index);
+		}
 	}
-	return candidates;
+	return [...starts].sort((left, right) => left - right);
+}
+
+function findFileTagRanges(text: string): FileTagRange[] {
+	const stack: Array<{ start: number; attrs: string; depth: number }> = [];
+	const ranges: FileTagRange[] = [];
+	for (const match of text.matchAll(FILE_TAG_TOKEN_PATTERN)) {
+		const token = match[0];
+		const start = match.index ?? 0;
+		if (/^<file\b/iu.test(token)) {
+			stack.push({ start, attrs: match[1] ?? "", depth: stack.length });
+			continue;
+		}
+		const open = stack.pop();
+		if (!open) continue;
+		const end = start + token.length;
+		ranges.push({ start: open.start, end, attrs: open.attrs, text: text.slice(open.start, end), depth: open.depth });
+	}
+	for (const open of stack) {
+		ranges.push({ start: open.start, end: text.length, attrs: open.attrs, text: text.slice(open.start), depth: open.depth });
+	}
+	return ranges.sort((left, right) => left.start - right.start || right.end - left.end);
+}
+
+function overlapsRange(
+	ranges: readonly ProtectedRange[],
+	start: number,
+	end: number,
+): boolean {
+	return ranges.some((range) => start < range.end && end > range.start);
 }
 
 function overlapsExistingReplacement(
@@ -121,7 +167,7 @@ function overlapsExistingReplacement(
 	start: number,
 	end: number,
 ): boolean {
-	return replacements.some((replacement) => start < replacement.end && end > replacement.start);
+	return overlapsRange(replacements, start, end);
 }
 
 async function addImageReplacementForCandidates(
@@ -130,11 +176,12 @@ async function addImageReplacementForCandidates(
 	consumedLength: number,
 	pathCandidates: readonly CandidatePath[],
 	options: Required<PromptFileReferenceOptions>,
+	protectedRanges: readonly ProtectedRange[] = [],
 ): Promise<void> {
 	for (const candidate of pathCandidates) {
 		if (!candidate.path) continue;
 		const end = start + consumedLength - candidate.suffix.length;
-		if (overlapsExistingReplacement(replacements, start, end)) continue;
+		if (overlapsExistingReplacement(replacements, start, end) || overlapsRange(protectedRanges, start, end)) continue;
 		const resolved = await resolveImageReference(candidate.path, options);
 		if (!resolved) continue;
 
@@ -206,17 +253,22 @@ export async function resolvePromptImageReferences(
 		autoResizeImages: options.autoResizeImages ?? true,
 	};
 	const replacements: PromptImageReplacement[] = [];
+	const fileTagRanges = findFileTagRanges(text);
+	const protectedFileTagRanges: ProtectedRange[] = fileTagRanges;
 
-	for (const match of text.matchAll(FILE_TAG_PATTERN)) {
-		const fullMatch = match[0];
-		const path = decodeFileNameAttribute(match[1] ?? match[2] ?? "");
-		await addImageReplacementForCandidates(
-			replacements,
-			match.index ?? 0,
-			fullMatch.length,
-			[{ path, suffix: "" }],
-			resolvedOptions,
-		);
+	for (const fileTagRange of fileTagRanges) {
+		if (fileTagRange.depth > 0) continue;
+		const nameMatch = FILE_TAG_NAME_ATTRIBUTE_PATTERN.exec(fileTagRange.attrs);
+		if (!nameMatch) continue;
+		const path = decodeFileNameAttribute(nameMatch[1] ?? nameMatch[2] ?? "");
+		const resolved = await resolveImageReference(path, resolvedOptions);
+		if (!resolved) continue;
+		replacements.push({
+			start: fileTagRange.start,
+			end: fileTagRange.end,
+			text: resolved.image ? fileTagRange.text : appendFileTagBodyText(fileTagRange.text, imageOmissionBodyText(resolved.replacementText)),
+			...(resolved.image ? { image: resolved.image } : {}),
+		});
 	}
 
 	for (const match of text.matchAll(INLINE_FILE_REFERENCE_PATTERN)) {
@@ -231,35 +283,35 @@ export async function resolvePromptImageReferences(
 			fullMatch.length - prefix.length,
 			pathCandidates,
 			resolvedOptions,
+			protectedFileTagRanges,
 		);
 	}
 
-	for (const match of text.matchAll(BARE_ABSOLUTE_FILE_REFERENCE_PATTERN)) {
-		const fullMatch = match[0];
-		const prefix = match[1] ?? "";
-		const quotedPath = match[2] ?? match[3];
-		const unquotedPath = match[4];
-		const pathCandidates = quotedPath !== undefined ? [{ path: quotedPath, suffix: "" }] : splitUnquotedCandidate(unquotedPath ?? "");
-		await addImageReplacementForCandidates(
-			replacements,
-			(match.index ?? 0) + prefix.length,
-			fullMatch.length - prefix.length,
-			pathCandidates,
-			resolvedOptions,
-		);
+	for (const match of text.matchAll(CLIPBOARD_FILE_NAME_PATTERN)) {
+		const filenameStart = match.index ?? 0;
+		const filenameEnd = filenameStart + match[0].length;
+		for (const start of clipboardPathStartCandidates(text, filenameStart)) {
+			const replacementCount = replacements.length;
+			await addImageReplacementForCandidates(
+				replacements,
+				start,
+				filenameEnd - start,
+				[{ path: text.slice(start, filenameEnd), suffix: "" }],
+				resolvedOptions,
+				protectedFileTagRanges,
+			);
+			if (replacements.length > replacementCount) break;
+		}
 	}
 
-	for (const match of text.matchAll(UNQUOTED_REFERENCE_START_PATTERN)) {
-		const prefix = match[1] ?? "";
-		const marker = match[2] ?? "";
-		const start = (match.index ?? 0) + prefix.length;
-		const pathStart = start + (marker === "@" ? marker.length : 0);
-		const rawPathAndSuffix = lineRemainder(text, pathStart);
+	if (replacements.length === 0) {
+		const trimmed = text.trim();
+		const trimmedStart = trimmed ? text.indexOf(trimmed) : 0;
 		await addImageReplacementForCandidates(
 			replacements,
-			start,
-			pathStart - start + rawPathAndSuffix.length,
-			unquotedPathCandidates(rawPathAndSuffix),
+			trimmedStart,
+			trimmed.length,
+			wholeMessagePathCandidates(text),
 			resolvedOptions,
 		);
 	}

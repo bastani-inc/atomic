@@ -85,8 +85,8 @@ describe("AgentSession image prompt handling", () => {
 			},
 		]);
 
-		await harness.session.prompt(`${firstImagePath} first image`);
-		await harness.session.prompt(`${secondImagePath} second image`);
+		await harness.session.prompt(firstImagePath);
+		await harness.session.prompt(secondImagePath);
 
 		expect(currentUserImageCounts).toEqual([1, 1]);
 		expect(getMessageText(harness.session.messages[2]!)).toContain(`<file name="${secondImagePath}">`);

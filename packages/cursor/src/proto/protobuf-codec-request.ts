@@ -265,15 +265,25 @@ function appendAssistantTextStep(steps: ParsedTurnStep[], text: string): void {
 	steps.push({ kind: "assistantText", text });
 }
 
+export function currentActionStartIndex(request: CursorRunRequest): number {
+	let index = request.context.messages.length - 1;
+	while (index >= 0 && request.context.messages[index]?.role === "user") index--;
+	return index + 1;
+}
+
+function currentActionUserMessages(request: CursorRunRequest): readonly Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "user" }>[] {
+	return request.context.messages.slice(currentActionStartIndex(request)).filter((message) => message.role === "user");
+}
+
 export function extractCurrentActionText(request: CursorRunRequest): string {
-	const last = request.context.messages.at(-1);
-	return last ? textFromMessage(last) : "";
+	return currentActionUserMessages(request).map(textFromMessage).join("\n");
 }
 
 export function extractCurrentActionImages(request: CursorRunRequest): readonly ImageContent[] {
-	const last = request.context.messages.at(-1);
-	if (last?.role !== "user" || typeof last.content === "string") return [];
-	return last.content.filter((part): part is ImageContent => part.type === "image");
+	return currentActionUserMessages(request).flatMap((message) => {
+		if (typeof message.content === "string") return [];
+		return message.content.filter((part): part is ImageContent => part.type === "image");
+	});
 }
 
 function rawToolResultText(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "toolResult" }>): string {

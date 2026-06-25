@@ -20,6 +20,14 @@ export interface ProcessFileOptions {
 	autoResizeImages?: boolean;
 }
 
+function escapeFileNameAttribute(value: string): string {
+	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeFileBodyContent(value: string): string {
+	return value.replace(/<\/?file(?=[\s>/])/giu, (tagStart) => `&lt;${tagStart.slice(1)}`);
+}
+
 /** Process @file arguments into text content and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
@@ -46,6 +54,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 		}
 
 		const mimeType = await detectSupportedImageMimeTypeFromFile(absolutePath);
+		const escapedPath = escapeFileNameAttribute(absolutePath);
 
 		if (mimeType) {
 			// Handle image file
@@ -57,7 +66,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			if (autoResizeImages) {
 				const resized = await resizeImage(content, mimeType);
 				if (!resized) {
-					text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
+					text += `<file name="${escapedPath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
 					continue;
 				}
 				dimensionNote = formatDimensionNote(resized);
@@ -78,15 +87,15 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 
 			// Add text reference to image with optional dimension note
 			if (dimensionNote) {
-				text += `<file name="${absolutePath}">${dimensionNote}</file>\n`;
+				text += `<file name="${escapedPath}">${dimensionNote}</file>\n`;
 			} else {
-				text += `<file name="${absolutePath}"></file>\n`;
+				text += `<file name="${escapedPath}"></file>\n`;
 			}
 		} else {
 			// Handle text file
 			try {
-				const content = await readFile(absolutePath, "utf-8");
-				text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
+				const content = escapeFileBodyContent(await readFile(absolutePath, "utf-8"));
+				text += `<file name="${escapedPath}">\n${content}\n</file>\n`;
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
 				console.error(chalk.red(`Error: Could not read file ${absolutePath}: ${message}`));

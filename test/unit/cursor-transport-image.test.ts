@@ -163,6 +163,34 @@ describe("Cursor HTTP2 image transport boundary", () => {
 		assert.deepEqual([...selectedImageData(selectedImages[1])], [...currentSecondImage]);
 	});
 
+	test("protobuf codec serializes all images from the trailing user-message run", () => {
+		const codec = new CursorProtobufProtocolCodec();
+		const firstImage = new Uint8Array([9, 8, 7]);
+		const secondImage = new Uint8Array([6, 5, 4]);
+		const encodedRun = codec.encodeRunRequest({
+			accessToken: "secret-token-that-must-not-appear",
+			requestId: "run-trailing-user-images",
+			model,
+			resolvedModelId: "composer-2",
+			experimentalImageInput: true,
+			context: {
+				messages: [
+					{ role: "user", content: "historical text", timestamp: 1 },
+					{ role: "assistant", content: [{ type: "text", text: "ok" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+					{ role: "user", content: [{ type: "text", text: "first current" }, { type: "image", data: Buffer.from(firstImage).toString("base64"), mimeType: "image/png" }], timestamp: 3 },
+					{ role: "user", content: [{ type: "text", text: "second current" }, { type: "image", data: Buffer.from(secondImage).toString("base64"), mimeType: "image/png" }], timestamp: 4 },
+				],
+			},
+		});
+
+		const userMessage = decodeRunUserMessage(encodedRun);
+		assert.equal(userMessage.text, "first current\nsecond current");
+		const selectedImages = userMessage.selectedContext?.selectedImages ?? [];
+		assert.equal(selectedImages.length, 2);
+		assert.deepEqual([...selectedImageData(selectedImages[0])], [...firstImage]);
+		assert.deepEqual([...selectedImageData(selectedImages[1])], [...secondImage]);
+	});
+
 	test("protobuf codec rejects tool-result images anywhere in context under serialization opt-in without leaking payloads", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		assert.throws(
@@ -203,7 +231,8 @@ describe("Cursor HTTP2 image transport boundary", () => {
 			context: {
 				messages: [
 					{ role: "user", content: [{ type: "image", data: "historical-transport-image-is-not-base64", mimeType: "image/png" }], timestamp: 1 },
-					{ role: "user", content: "current text", timestamp: 2 },
+					{ role: "assistant", content: [{ type: "text", text: "ok" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+					{ role: "user", content: "current text", timestamp: 3 },
 				],
 			},
 		});

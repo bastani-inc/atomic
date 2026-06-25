@@ -10,6 +10,7 @@
 
 - Accepted ASCII-whitespace-wrapped base64 image payloads in Cursor's experimental image transport while preserving strict padding, character validation, canonical round-trip checks, and sanitized error messages.
 - Fixed Cursor's image-session guard so a non-empty `sessionId` is required only when the current user message carries images; text-only follow-up turns with historical image context no longer fail before transport.
+- Fixed Cursor protobuf request construction to treat the trailing run of consecutive user messages as the current action for both text and image extraction, so images attached to non-last current user messages are serialized instead of silently becoming historical context.
 - Refreshed Cursor's estimated model catalog and defaults around live Composer 2.5-era model ids, and documented local native-transport build guidance for source checkouts.
 
 ## [0.9.2] - 2026-06-23
