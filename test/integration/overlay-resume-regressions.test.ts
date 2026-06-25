@@ -5,7 +5,7 @@ import { setDurableBackend } from "../../packages/workflows/src/durable/factory.
 import { handleRunControlCommand } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import type { WorkflowExecutionPolicy } from "../../packages/workflows/src/shared/types.js";
-import { buildMockPi, buildPrintCtxWithRealCustom, delay, factory, singletonStore } from "./overlay-entrypoints-helpers.js";
+import { buildMockPi, buildPrintCtxWithRealCustom, delay, factory, singletonStore, type PiCustomOverlayFunction } from "./overlay-entrypoints-helpers.js";
 
 describe("/workflow resume — durable regression coverage", () => {
   beforeEach(() => {
@@ -44,6 +44,48 @@ describe("/workflow resume — durable regression coverage", () => {
 
     assert.equal(capturedPolicy?.mode, "non_interactive");
     assert.equal(messages.some((message) => message.includes("missing")), true);
+  });
+
+  test("headless no-arg durable resume prints catalog without awaiting no-op custom UI", async () => {
+    const runtime = {
+      prepareDurableResumable: async () => [{
+        workflowId: "durable-headless-catalog",
+        name: "headless-wf",
+        status: "paused" as const,
+        completedCheckpoints: 0,
+        pendingPrompts: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    } as unknown as ExtensionRuntime;
+    const messages: string[] = [];
+    let customCalls = 0;
+    const noopCustom: PiCustomOverlayFunction = () => {
+      customCalls++;
+      return undefined;
+    };
+
+    await handleRunControlCommand("resume", [], {
+      hasUI: false,
+      ui: {
+        notify: () => undefined,
+        custom: noopCustom,
+      },
+    }, {
+      info: (message) => messages.push(message),
+      error: (message) => messages.push(message),
+    }, {
+      pi: buildMockPi().pi,
+      overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+      getPersistence: () => undefined,
+      runtimeForContext: () => runtime,
+    });
+
+    const joined = messages.join("\n");
+    assert.equal(customCalls, 0);
+    assert.match(joined, /Resumable workflows/);
+    assert.match(joined, /headless-wf/);
+    assert.match(joined, /Resume with: \/workflow resume <id>/);
   });
 
   test("no-arg durable picker resolves selection before dispose", async () => {

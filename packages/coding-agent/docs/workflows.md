@@ -967,7 +967,7 @@ The `/workflow resume` command mirrors `/resume` ergonomics. With no id, interac
 /workflow resume <workflow-id-or-prefix>  # Resume by top-level id; completed checkpoints replay
 ```
 
-The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history and carries those prepared entries through the actual resume attempt, so session-cache-only workflows can resume even before the backend has an in-memory handle. When no durable backend is enabled and no live run matches, `/workflow resume` reports that no resumable workflows were found.
+The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history for discovery, but the durable backend remains authoritative: entries found only in session JSONL without backend checkpoint state are refused as `stale` instead of being silently re-run from scratch. When no durable backend is enabled and no live run matches, `/workflow resume` reports that no resumable workflows were found.
 
 > Cross-session durable resume requires a persistent backend (`ATOMIC_WORKFLOW_DURABLE_DIR` or `DBOS_SYSTEM_DATABASE_URL`). With the default in-memory backend, `/workflow resume` resumes live runs only.
 

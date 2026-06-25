@@ -168,6 +168,10 @@ async function handleDurableResume(
     fail("No resumable durable workflows found. Usage: /workflow resume <id> (or /resume for Atomic sessions).");
     return true;
   }
+  if (!policy.allowInputPicker) {
+    print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+    return true;
+  }
   const picked = await openDurableWorkflowPicker(ctx.ui, durable);
   if (picked !== undefined) {
     const result = runtime.resumeDurableWorkflow(picked, { policy });
