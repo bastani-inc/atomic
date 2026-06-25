@@ -253,8 +253,9 @@ describe("disk cache", () => {
 
 	test("returns undefined for a missing or corrupt file", () => {
 		assert.equal(readCopilotCatalogCache(join(dir, "missing.json"), { host, now: 0 }), undefined);
-		writeFileSync(path.replace("nested/", ""), "{not json");
-		assert.equal(readCopilotCatalogCache(path.replace("nested/", ""), { host, now: 0 }), undefined);
+		const corruptPath = join(dir, "copilot-models.json");
+		writeFileSync(corruptPath, "{not json");
+		assert.equal(readCopilotCatalogCache(corruptPath, { host, now: 0 }), undefined);
 	});
 });
 

@@ -10,20 +10,25 @@ export function artifactSafeName(value: string): string {
   return safe.length > 0 ? safe : "artifact";
 }
 
+function withoutTurn<T extends { readonly turn: number }>(value: T): Omit<T, "turn"> {
+  const copy = { ...value } as Omit<T, "turn"> & { turn?: number };
+  delete copy.turn;
+  return copy;
+}
+
 export async function writeReviewArtifact(
   artifactDir: string,
-  turn: number,
   reviewer: string,
   decision: ReviewDecision,
   rawText: string,
 ): Promise<string> {
   const artifactPath = join(
     artifactDir,
-    `review-turn-${turn}-${artifactSafeName(reviewer)}.json`,
+    `review-${artifactSafeName(reviewer)}.json`,
   );
   await writeFile(
     artifactPath,
-    `${JSON.stringify({ turn, reviewer, decision, raw_text: rawText }, null, 2)}\n`,
+    `${JSON.stringify({ reviewer, decision, raw_text: rawText }, null, 2)}\n`,
     { encoding: "utf8" },
   );
   return artifactPath;
@@ -31,11 +36,11 @@ export async function writeReviewArtifact(
 
 export async function writeReviewRoundArtifact(
   artifactDir: string,
-  turn: number,
   reviews: readonly ReviewRecord[],
 ): Promise<string> {
-  const artifactPath = join(artifactDir, `review-round-${turn}.json`);
-  await writeFile(artifactPath, `${JSON.stringify({ turn, reviews }, null, 2)}\n`, {
+  const artifactPath = join(artifactDir, "review-round-latest.json");
+  const visibleReviews = reviews.map(withoutTurn);
+  await writeFile(artifactPath, `${JSON.stringify({ reviews: visibleReviews }, null, 2)}\n`, {
     encoding: "utf8",
   });
   return artifactPath;

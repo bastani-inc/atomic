@@ -425,7 +425,7 @@ name: scout
 # Optional: registers this as code-analysis.scout while preserving name: scout
 package: code-analysis
 description: Fast codebase recon
-tools: read, grep, find, ls, bash, mcp:chrome-devtools
+tools: read, search, find, ls, bash, mcp:chrome-devtools
 extensions:
 model: claude-haiku-4-5
 fallbackModels: openai/gpt-5-mini, anthropic/claude-sonnet-4

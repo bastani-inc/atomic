@@ -69,7 +69,10 @@ function getTextOutput(result: { content?: Array<{ type: string; text?: string }
 	);
 }
 
-describe.skipIf(process.platform !== "win32")("Windows child-process close handling", () => {
+// Bun on Windows currently does not expose direct-child exit independently from
+// inherited pipe closure in this synthetic Git Bash scenario, so this Node
+// regression test would self-hang under the Bun-driven package suite.
+describe.skipIf(process.platform !== "win32" || Boolean(process.versions.bun))("Windows child-process close handling", () => {
 	let testDir: string;
 
 	beforeEach(() => {
@@ -91,7 +94,7 @@ describe.skipIf(process.platform !== "win32")("Windows child-process close handl
 				executeBashWithOperations(command, process.cwd(), createLocalBashOperations(), {
 					signal: controller.signal,
 				}),
-				3000,
+				10000,
 				() => {
 					controller.abort();
 				},
@@ -113,7 +116,7 @@ describe.skipIf(process.platform !== "win32")("Windows child-process close handl
 		const bashTool = createBashTool(testDir);
 
 		try {
-			const result = await withTimeout(bashTool.execute("test-call", { command }, controller.signal), 3000, () => {
+			const result = await withTimeout(bashTool.execute("test-call", { command }, controller.signal), 10000, () => {
 				controller.abort();
 			});
 

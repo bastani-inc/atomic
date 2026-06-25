@@ -41,10 +41,12 @@ describe("config value env var syntax migration", () => {
 		const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-legacy-pi-config-value-migration-test-"));
 		tempDirs.push(homeDir);
 		const previousHome = process.env.HOME;
+		const previousUserProfile = process.env.USERPROFILE;
 		const previousAgentDir = process.env[ENV_AGENT_DIR];
 		const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
 		delete process.env[ENV_AGENT_DIR];
 		process.env.HOME = homeDir;
+		process.env.USERPROFILE = homeDir;
 		process.env.ANTHROPIC_API_KEY = "secret";
 		try {
 			const legacyAgentDir = path.join(homeDir, ".pi", "agent");
@@ -70,6 +72,11 @@ describe("config value env var syntax migration", () => {
 				delete process.env.HOME;
 			} else {
 				process.env.HOME = previousHome;
+			}
+			if (previousUserProfile === undefined) {
+				delete process.env.USERPROFILE;
+			} else {
+				process.env.USERPROFILE = previousUserProfile;
 			}
 			if (previousAgentDir === undefined) {
 				delete process.env[ENV_AGENT_DIR];

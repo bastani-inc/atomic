@@ -49,13 +49,22 @@ describe("syntax highlight renderer", () => {
 	});
 });
 
+let previousColorTerm: string | undefined;
+
 describe("theme syntax highlighting", () => {
 	beforeEach(() => {
+		previousColorTerm = process.env.COLORTERM;
+		process.env.COLORTERM = "truecolor";
 		setCapabilities({ images: null, trueColor: true, hyperlinks: false });
 		initTheme("dark");
 	});
 
 	afterEach(() => {
+		if (previousColorTerm === undefined) {
+			delete process.env.COLORTERM;
+		} else {
+			process.env.COLORTERM = previousColorTerm;
+		}
 		resetCapabilitiesCache();
 	});
 

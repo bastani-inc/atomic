@@ -265,7 +265,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         );
         assert.match(
             ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
-            /Continue the same goal-runner worker thread from the previous work turn/i,
+            /Continue the same goal-runner worker thread from the previous worker session/i,
         );
         assert.doesNotMatch(
             ctx.calls.prompts["work-turn-2"]?.[0] ?? "",
@@ -322,18 +322,17 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.doesNotMatch(thirdTurnPrompt, /risk-reviewer-2 gap/);
         assert.match(
             thirdTurnPrompt,
-            /Latest review artifacts from the previous round/,
+            /Latest available review artifacts/,
         );
         const thirdTurnReads = readPaths(
             ctx.calls.taskOptions["work-turn-3"]?.[0],
         );
         assert.equal(
-            thirdTurnReads.some((path) => path.includes("review-turn-1-")),
-            false,
-        );
-        assert.equal(
-            thirdTurnReads.filter((path) => path.includes("review-turn-2-"))
-                .length,
+            thirdTurnReads.filter((path) =>
+                /review-[a-z-]+-reviewer\.json$/.test(
+                    normalizePathSeparators(path),
+                ),
+            ).length,
             3,
         );
     });
@@ -423,7 +422,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(reviewerOptions?.tools?.includes("review_decision"), false);
         assert.match(
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
-            /echo the prior turn's exact blocker string/i,
+            /echo the prior blocker string/i,
         );
         const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);

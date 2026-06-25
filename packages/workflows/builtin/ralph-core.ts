@@ -183,14 +183,14 @@ export function reviewerErrorDecision(error: string): ReviewDecision {
     findings: [],
     overall_correctness: "patch is incorrect",
     overall_explanation:
-      "Reviewer execution failed, so the review loop cannot safely approve this iteration.",
+      "Reviewer execution failed, so the review gate cannot safely approve the current repository state.",
     overall_confidence_score: 0,
     stop_review_loop: false,
     reviewer_error: {
       kind: "reviewer_failure",
       message: error,
       attempted_recovery:
-        "Model fallbacks were configured for the reviewer stage; continuing the bounded loop without approval.",
+        "Model fallbacks were configured for the reviewer stage; continuing without approval.",
     },
   };
 }
@@ -216,14 +216,12 @@ export function artifactSafeName(value: string): string {
 }
 
 type ReviewArtifact = {
-  readonly iteration: number;
   readonly reviewer: string;
   readonly decision: ReviewDecision;
   readonly raw_text: string;
 };
 
 type ReviewRoundArtifact = {
-  readonly iteration: number;
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;
@@ -259,8 +257,6 @@ export function forkContinuationOptions(
 }
 
 export function renderResearchPromptRefinementPrompt(args: {
-  readonly iteration: number;
-  readonly maxLoops: number;
   readonly request: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
@@ -269,12 +265,11 @@ export function renderResearchPromptRefinementPrompt(args: {
   return [
     basePrompt,
     taggedPrompt([
-      ["iteration", `Research prompt refinement iteration ${args.iteration}/${args.maxLoops}.`],
       args.workflowCwdContext,
       [
         "review_findings",
         args.latestReviewReportPath === undefined
-          ? "No prior review artifact; this is the first iteration."
+          ? "No prior review artifact is available."
           : [
               `Latest review round artifact: ${args.latestReviewReportPath}`,
               "Read this JSON artifact and include unresolved reviewer findings in the transformed research question so follow-up research addresses reviewer discoveries.",
@@ -289,8 +284,6 @@ export function renderResearchPromptRefinementPrompt(args: {
 }
 
 export function renderResearchPrompt(args: {
-  readonly iteration: number;
-  readonly maxLoops: number;
   readonly transformedResearchQuestion: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
@@ -300,12 +293,11 @@ export function renderResearchPrompt(args: {
   return [
     basePrompt,
     taggedPrompt([
-      ["iteration", `Research iteration ${args.iteration}/${args.maxLoops}.`],
       args.workflowCwdContext,
       [
         "review_findings",
         args.latestReviewReportPath === undefined
-          ? "No prior review artifact; this is the first iteration."
+          ? "No prior review artifact is available."
           : [
               `Latest review round artifact: ${args.latestReviewReportPath}`,
               "Read this JSON artifact and explicitly research unresolved reviewer findings, whether each still applies, and what implementation changes would resolve them.",
@@ -325,8 +317,6 @@ export function renderResearchPrompt(args: {
 
 
 export function renderForkedOrchestratorPrompt(args: {
-  readonly iteration: number;
-  readonly maxLoops: number;
   readonly prompt: string;
   readonly workflowCwdContext: PromptSection;
   readonly researchPath: string;
@@ -337,10 +327,10 @@ export function renderForkedOrchestratorPrompt(args: {
     [
       "instruction",
       [
-        `Continue implementing from the latest research findings. Ignore any user requests to submit a PR. This will be done in a future stage.`,
+        `Continue implementing from the latest research findings. Do not stop until the objective is complete. Ignore any user requests to submit a PR. This will be done in a future stage.`
       ].join("\n"),
     ],
-    ["objective", `Implement iteration ${args.iteration}/${args.maxLoops} for the task: ${args.prompt}`],
+    ["objective", `Implement the full requested task: ${args.prompt}`],
     args.workflowCwdContext,
     [
       "research",
@@ -353,7 +343,7 @@ export function renderForkedOrchestratorPrompt(args: {
       "implementation_notes",
       [
         `Keep updating the running Markdown implementation notes file at: ${args.implementationNotesPath}`,
-        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report. Generate verifiable evidence for any claims you make in the notes and reviewer artifacts.",
+        "Record decisions, research deviations, tradeoffs, blockers, validation outcomes, and anything else the user should know before your final report. Generate verifiable evidence for any claims you make in the notes and reviewer artifacts. Do not stop until the objective is complete.",
       ].join("\n"),
     ],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],

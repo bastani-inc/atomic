@@ -105,7 +105,7 @@ describe("SDK tool exclusions", () => {
 
 		expect(session.getAllTools().map((tool) => tool.name).sort()).toEqual(["read"]);
 		expect(session.getActiveToolNames()).toEqual(["read"]);
-		expect(session.systemPrompt).toContain("- read: Read file contents");
+		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).not.toContain("- ask_user_question:");
 		expect(session.systemPrompt).toContain("using the ask_user_question tool if available");
 
@@ -120,7 +120,7 @@ describe("SDK tool exclusions", () => {
 
 		expect(session.getAllTools().map((tool) => tool.name).sort()).toEqual(["bash", "read"]);
 		expect(session.getActiveToolNames().sort()).toEqual(["bash", "read"]);
-		expect(session.systemPrompt).toContain("- read: Read file contents");
+		expect(session.systemPrompt).toContain("- read: Read a path selector.");
 		expect(session.systemPrompt).toContain("- bash:");
 		expect(session.systemPrompt).not.toContain("ask_user_question");
 

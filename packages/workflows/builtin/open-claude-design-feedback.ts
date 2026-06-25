@@ -186,7 +186,7 @@ export function hasMeaningfulFeedback(feedback: PreviewFeedback): boolean {
 function feedbackLabel(feedback: PreviewFeedback): string {
   return feedback.iteration === 0
     ? "the initial preview"
-    : `refinement iteration ${feedback.iteration}`;
+    : "the live design review";
 }
 
 /**
@@ -202,7 +202,7 @@ export function buildUserAnnotationsSection(history: readonly PreviewFeedback[])
     .reverse()
     .map((feedback) => {
       const lines = [
-        `### User annotations from ${feedbackLabel(feedback)} (${feedback.stageName})`,
+        `### User annotations from ${feedbackLabel(feedback)}`,
         "",
       ];
       if (hasMeaningfulUserNotes(feedback)) {
@@ -232,7 +232,7 @@ export function userAnnotationsBlock(history: readonly PreviewFeedback[]): {
   if (section.length === 0) {
     return {
       hasNotes: false,
-      text: "No interactive user annotations were captured in the user-feedback stage. There is no user feedback to honor for this iteration.",
+      text: "No interactive user annotations were captured in the user-feedback stage. There is no user feedback to honor for this refinement.",
     };
   }
   return { hasNotes: true, text: section };

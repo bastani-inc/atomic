@@ -9,11 +9,11 @@ import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
 	createEditTool,
 	createFindTool,
-	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
+import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -58,12 +58,14 @@ describe("Coding Agent Tools", () => {
 			const result = await bashTool.execute("test-call-8", { command: "echo 'test output'" });
 
 			expect(getTextOutput(result)).toContain("test output");
-			expect(result.details).toBeUndefined();
+			expect(result.details?.timeoutSeconds).toBe(300);
+			expect(typeof result.details?.wallTimeMs).toBe("number");
 		});
 		it("should handle command errors", async () => {
-			await expect(bashTool.execute("test-call-9", { command: "exit 1" })).rejects.toThrow(
-				/(Command failed|code 1)/,
-			);
+			const result = await bashTool.execute("test-call-9", { command: "exit 1" });
+			expect(result.isError).toBe(true);
+			expect(result.details?.exitCode).toBe(1);
+			expect(getTextOutput(result)).toContain("Command exited with code 1");
 		});
 		it("should respect timeout", async () => {
 			await expect(bashTool.execute("test-call-10", { command: "sleep 5", timeout: 1 })).rejects.toThrow(
@@ -77,7 +79,7 @@ describe("Coding Agent Tools", () => {
 			]) {
 				const operations: BashOperations = {
 					exec: async (_command, _cwd, { onData }) => {
-						for (let i = 1; i <= 3000; i++) {
+						for (let i = 1; i <= 4000; i++) {
 							onData(Buffer.from(`${i}\n`, "utf-8"));
 						}
 						throw new Error(testCase.error);
@@ -102,8 +104,55 @@ describe("Coding Agent Tools", () => {
 				expect(existsSync(fullOutputPath!)).toBe(true);
 				const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 				expect(fullOutput).toContain("1\n2\n3");
-				expect(fullOutput).toContain("2998\n2999\n3000");
+				expect(fullOutput).toContain("3998\n3999\n4000");
 			}
+		});
+		it("should preserve full output for truncated async jobs", async () => {
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => {
+					for (let i = 1; i <= 12000; i++) onData(Buffer.from(`${i}\n`, "utf-8"));
+					return { exitCode: 0 };
+				},
+			};
+			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
+			const started = await bash.execute("async-large-start", { command: "chatty", async: true });
+			const jobId = started.details?.async?.jobId;
+			expect(jobId).toBeDefined();
+
+			let polled = started;
+			let fullOutput = "";
+			for (let i = 0; i < 100; i++) {
+				polled = await bash.execute("async-large-poll", { command: `__atomic_bash_job ${jobId}` });
+				const fullOutputPath = polled.details?.fullOutputPath;
+				if (fullOutputPath && existsSync(fullOutputPath)) fullOutput = readFileSync(fullOutputPath, "utf-8");
+				if (polled.details?.async?.state === "completed" && fullOutput.includes("12000\n")) break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+
+			const output = getTextOutput(polled);
+			expect(output).toContain("Output truncated");
+			expect(output).toContain("Full output:");
+			expect(polled.details?.fullOutputPath).toBeDefined();
+			expect(fullOutput).toContain("12000\n");
+		});
+		it("should decode and sanitize async output chunks", async () => {
+			const euro = Buffer.from("\u001b[31m€\u001b[0m\r\n", "utf-8");
+			const operations: BashOperations = {
+				exec: async (_command, _cwd, { onData }) => { onData(euro.subarray(0, 5)); onData(euro.subarray(5)); return { exitCode: 0 }; },
+			};
+			const bash = createBashTool(testDir, { operations, asyncEnabled: true });
+			const started = await bash.execute("async-utf-start", { command: "utf", async: true });
+			const jobId = started.details?.async?.jobId;
+			let polled = started;
+			for (let i = 0; i < 20; i++) {
+				polled = await bash.execute("async-utf-poll", { command: `__atomic_bash_job ${jobId}` });
+				if (polled.details?.async?.state === "completed") break;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			const output = getTextOutput(polled);
+			expect(output).toContain("€\n");
+			expect(output).not.toContain("�");
+			expect(output).not.toContain("\u001b[");
 		});
 		it("should throw error when cwd does not exist", async () => {
 			const nonexistentCwd = "/this/directory/definitely/does/not/exist/12345";
@@ -252,10 +301,10 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(result.details?.truncation?.totalLines).toBe(4000);
-			expect(result.details?.truncation?.outputLines).toBe(2000);
-			expect(output).toContain("line-2001");
+			expect(result.details?.truncation?.outputLines).toBe(3000);
+			expect(output).toContain("line-1001");
 			expect(output).toContain("line-4000");
-			expect(output).toMatch(/\[Showing lines 2001-4000 of 4000\. Full output: /);
+			expect(output).toMatch(/\[Showing lines 1001-4000 of 4000\. Full output: /);
 			expect(output).not.toContain("4001");
 		});
 		it("should decode UTF-8 characters split across output chunks", async () => {
@@ -297,7 +346,7 @@ describe("Coding Agent Tools", () => {
 		});
 		it("should persist full output when truncation happens by line count only", async () => {
 			const bash = createBashTool(testDir);
-			const result = await bash.execute("test-call-line-truncation", { command: "seq 3000" });
+			const result = await bash.execute("test-call-line-truncation", { command: "seq 4000" });
 			const output = getTextOutput(result);
 			const fullOutputPath = result.details?.fullOutputPath;
 
@@ -315,10 +364,10 @@ describe("Coding Agent Tools", () => {
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 			expect(fullOutput).toContain("1\n2\n3");
-			expect(fullOutput).toContain("2998\n2999\n3000");
+			expect(fullOutput).toContain("3998\n3999\n4000");
 		});
 		it("executeBash should persist full output when truncation happens by line count only", async () => {
-			const result = await executeBashWithOperations("seq 3000", process.cwd(), createLocalBashOperations());
+			const result = await executeBashWithOperations("seq 4000", process.cwd(), createLocalBashOperations());
 			const fullOutputPath = result.fullOutputPath;
 
 			expect(result.truncated).toBe(true);
@@ -332,7 +381,7 @@ describe("Coding Agent Tools", () => {
 			expect(existsSync(fullOutputPath!)).toBe(true);
 			const fullOutput = readFileSync(fullOutputPath!, "utf-8");
 			expect(fullOutput).toContain("1\n2\n3");
-			expect(fullOutput).toContain("2998\n2999\n3000");
+			expect(fullOutput).toContain("3998\n3999\n4000");
 		});
 	});
 });

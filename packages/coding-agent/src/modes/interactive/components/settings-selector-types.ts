@@ -18,6 +18,7 @@ export interface SettingsConfig {
 	followUpMode: QueueDeliveryMode;
 	transport: Transport;
 	httpIdleTimeoutMs: number;
+	bashInterceptorEnabled: boolean;
 	thinkingLevel: ThinkingLevel;
 	availableThinkingLevels: ThinkingLevel[];
 	currentTheme: string;
@@ -49,6 +50,7 @@ export interface SettingsCallbacks {
 	onFollowUpModeChange: (mode: QueueDeliveryMode) => void;
 	onTransportChange: (transport: Transport) => void;
 	onHttpIdleTimeoutChange: (timeoutMs: number) => void;
+	onBashInterceptorEnabledChange: (enabled: boolean) => void;
 	onThinkingLevelChange: (level: ThinkingLevel) => void;
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;

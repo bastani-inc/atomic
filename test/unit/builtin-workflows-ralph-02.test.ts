@@ -168,7 +168,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             secondPromptEngineerReads.some((path) =>
-                /review-round-1\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
             ),
             true,
         );
@@ -177,7 +177,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             secondResearchReads.some((path) =>
-                /review-round-1\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
             ),
             true,
         );
@@ -402,7 +402,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             promptEngineerTwoReads.some((path) =>
-                /review-round-1\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
             ),
             true,
         );
@@ -411,7 +411,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             researchTwoReads.some((path) =>
-                /review-round-1\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
             ),
             true,
         );
@@ -432,7 +432,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.equal(typeof result["review_report_path"], "string");
         assert.match(
             normalizePathSeparators(result["review_report_path"] as string),
-            /review-round-2\.json$/,
+            /review-round-latest\.json$/,
         );
     });
 });

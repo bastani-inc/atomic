@@ -35,14 +35,14 @@ export interface CreateAgentSessionOptions {
    *
    * - "all": start with no tools enabled
    * - "builtin": disable the default built-in tools (read, bash, edit, write,
-   *   ask_user_question, todo) but keep extension/custom tools enabled
+   *   find, search, ask_user_question, todo) but keep extension/custom tools enabled
    */
   noTools?: "all" | "builtin";
   /**
    * Optional allowlist of tool names.
    *
    * When omitted, pi enables the default built-in tools (read, bash, edit, write,
-   * ask_user_question, todo) and leaves extension/custom tools enabled unless
+   * find, search, ask_user_question, todo) and leaves extension/custom tools enabled unless
    * `noTools` changes that default.
    * When provided, only the listed tool names are enabled, minus any names in
    * `excludedTools`.

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a Rust-backed `PtySession` N-API surface using `portable-pty`, enabling Atomic's `bash` tool to execute `pty: true` calls through a real PTY/ConPTY with output streaming, resize, kill, timeout, shell, cwd, and environment support ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
+- Added oh-my-pi-derived native `glob`, `grep`, in-memory `search`, `hasMatch`, and filesystem scan-cache invalidation N-API bindings for Atomic's full-level `find`/`search` tool parity, backed by the Rust `ignore`, `globset`, and ripgrep crates ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

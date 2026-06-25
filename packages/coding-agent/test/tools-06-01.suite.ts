@@ -9,11 +9,11 @@ import { computeEditsDiff } from "../src/core/tools/edit-diff.ts";
 import {
 	createEditTool,
 	createFindTool,
-	createGrepTool,
 	createLsTool,
 	createReadTool,
 	createWriteTool,
 } from "../src/index.ts";
+import { createGrepTool } from "../src/core/tools/grep.ts";
 import { createReadToolDefinition } from "../src/core/tools/read.ts";
 import * as shellModule from "../src/utils/shell.ts";
 
@@ -44,7 +44,7 @@ describe("Coding Agent Tools", () => {
 
 	beforeEach(() => {
 		// Create a unique temporary directory for each test
-		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}`);
+		testDir = join(tmpdir(), `coding-agent-test-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 		mkdirSync(testDir, { recursive: true });
 	});
 
@@ -61,8 +61,7 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(join(testDir, "visible.txt"), "visible");
 
 			const result = await findTool.execute("test-call-13", {
-				pattern: "**/*.txt",
-				path: testDir,
+				paths: [join(testDir, "**/*.txt")],
 			});
 
 			const outputLines = getTextOutput(result)
@@ -71,7 +70,8 @@ describe("Coding Agent Tools", () => {
 				.filter(Boolean);
 
 			expect(outputLines).toContain("visible.txt");
-			expect(outputLines).toContain(".secret/hidden.txt");
+			expect(outputLines).toContain("# .secret/");
+			expect(outputLines).toContain("hidden.txt");
 		});
 		it("should respect .gitignore", async () => {
 			writeFileSync(join(testDir, ".gitignore"), "ignored.txt\n");
@@ -79,8 +79,7 @@ describe("Coding Agent Tools", () => {
 			writeFileSync(join(testDir, "kept.txt"), "kept");
 
 			const result = await findTool.execute("test-call-14", {
-				pattern: "**/*.txt",
-				path: testDir,
+				paths: [join(testDir, "**/*.txt")],
 			});
 
 			const output = getTextOutput(result);
@@ -90,18 +89,14 @@ describe("Coding Agent Tools", () => {
 		it("should surface fd glob parse errors", async () => {
 			await expect(
 				findTool.execute("test-call-15", {
-					pattern: "[",
-					path: testDir,
+					paths: [join(testDir, "[")],
 				}),
 			).rejects.toThrow(/error parsing glob|fd exited with code 1|fd error/i);
 		});
-		it("should treat flag-like patterns as search text", async () => {
-			const result = await findTool.execute("test-call-find-flag-pattern", {
-				pattern: "--help",
-				path: testDir,
-			});
-
-			expect(getTextOutput(result)).toContain("No files found matching pattern");
+		it("should reject a missing single path", async () => {
+			await expect(findTool.execute("test-call-find-missing", {
+				paths: [join(testDir, "--help")],
+			})).rejects.toThrow(/not a directory|No valid search paths|ENOENT/i);
 		});
 	});
 });

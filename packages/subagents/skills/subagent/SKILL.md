@@ -153,14 +153,14 @@ Builtin agents load at the lowest priority. Project agents override user agents,
 
 | Agent                        | Purpose                                                           | Default model         | Thinking | Tools                                                                                  | Notes                                                                                                      |
 | ---------------------------- | ----------------------------------------------------------------- | --------------------- | -------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `codebase-locator`           | Locate files, directories, tests, and configs relevant to a topic | `openai/gpt-5.4-mini` | low      | read, grep, find, ls, bash                                                             | Read-only finder. Returns a categorized file map; no analysis.                                             |
-| `codebase-analyzer`          | Explain how specific code currently works                         | `openai/gpt-5.5`      | low      | read, grep, find, ls, bash                                                             | Read-only. Traces flow with `file:line` references; does not critique.                                     |
-| `codebase-pattern-finder`    | Find similar implementations or conventions                       | `openai/gpt-5.4-mini` | low      | read, grep, find, ls, bash                                                             | Read-only. Returns code snippets with `file:line` references.                                              |
-| `codebase-research-locator`  | Discover prior `research/` and `specs/` docs                      | `openai/gpt-5.4-mini` | low      | read, grep, find, ls, bash                                                             | Read-only. Sorts by date, tiers by recency, flags supersession.                                            |
-| `codebase-research-analyzer` | Extract decisions and constraints from prior docs                 | `openai/gpt-5.5`      | low      | read, grep, find, ls, bash                                                             | Read-only. Filters aggressively for what still applies today.                                              |
-| `codebase-online-researcher` | Web research with authoritative sources                           | `openai/gpt-5.5`      | low      | read, grep, find, ls, bash, write, web_search, fetch_content, get_search_content       | Has the `browser` skill. Persists keepers to `research/web/`.                                       |
-| `code-simplifier`            | Clean up recently changed code without changing behavior          | `openai/gpt-5.5`      | low      | read, edit, write, grep, find, ls, bash                                                | **Writer.** Scopes to recently modified code by default; preserves all observable behavior.                |
-| `debugger`                   | Reproduce, diagnose, and fix failing behavior                     | `openai/gpt-5.5`      | high     | read, edit, write, grep, find, ls, bash, web_search, fetch_content, get_search_content | **Writer.** Has the `tdd` and `browser` skills. Inspect-only mode requires an explicit instruction. |
+| `codebase-locator`           | Locate files, directories, tests, and configs relevant to a topic | `openai/gpt-5.4-mini` | low      | read, search, find, ls, bash                                                             | Read-only finder. Returns a categorized file map; no analysis.                                             |
+| `codebase-analyzer`          | Explain how specific code currently works                         | `openai/gpt-5.5`      | low      | read, search, find, ls, bash                                                             | Read-only. Traces flow with `file:line` references; does not critique.                                     |
+| `codebase-pattern-finder`    | Find similar implementations or conventions                       | `openai/gpt-5.4-mini` | low      | read, search, find, ls, bash                                                             | Read-only. Returns code snippets with `file:line` references.                                              |
+| `codebase-research-locator`  | Discover prior `research/` and `specs/` docs                      | `openai/gpt-5.4-mini` | low      | read, search, find, ls, bash                                                             | Read-only. Sorts by date, tiers by recency, flags supersession.                                            |
+| `codebase-research-analyzer` | Extract decisions and constraints from prior docs                 | `openai/gpt-5.5`      | low      | read, search, find, ls, bash                                                             | Read-only. Filters aggressively for what still applies today.                                              |
+| `codebase-online-researcher` | Web research with authoritative sources                           | `openai/gpt-5.5`      | low      | read, search, find, ls, bash, write, web_search, fetch_content, get_search_content       | Has the `browser` skill. Persists keepers to `research/web/`.                                       |
+| `code-simplifier`            | Clean up recently changed code without changing behavior          | `openai/gpt-5.5`      | low      | read, edit, write, search, find, ls, bash                                                | **Writer.** Scopes to recently modified code by default; preserves all observable behavior.                |
+| `debugger`                   | Reproduce, diagnose, and fix failing behavior                     | `openai/gpt-5.5`      | high     | read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content | **Writer.** Has the `tdd` and `browser` skills. Inspect-only mode requires an explicit instruction. |
 
 Each builtin declares an explicit `model` and `fallbackModels` chain (typically `github-copilot/<same>`, then `anthropic/claude-opus-4-8`, then `github-copilot/claude-opus-4.7`). The current user-selected model is automatically appended as the last fallback and de-duplicated. Override per run with inline config:
 
@@ -479,7 +479,7 @@ subagent({
     systemPrompt: "Your system prompt here.",
     systemPromptMode: "replace",
     model: "openai/gpt-5.5",
-    tools: "read,grep,find,ls,bash"
+    tools: "read,search,find,ls,bash"
   }
 })
 ```
@@ -517,7 +517,7 @@ package: code-analysis
 description: What this agent does
 model: openai/gpt-5.5
 thinking: high
-tools: read, grep, find, ls, bash
+tools: read, search, find, ls, bash
 ---
 
 Your system prompt here.

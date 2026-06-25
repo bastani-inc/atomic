@@ -1,30 +1,14 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ENV_AGENT_DIR } from "../src/config.ts";
-
-const cliPath = resolve(__dirname, "../src/cli.ts");
-
-// The CLI is TypeScript source that uses the repo-wide `.js`->`.ts` import
-// convention, which only resolves under Bun. Launch it with Bun explicitly so
-// these tests pass regardless of whether the Vitest worker runs under Bun or
-// Node (where `process.execPath` would be Node and ESM resolution would fail).
-function bunExecutable(): string {
-	const npmExecPath = process.env.npm_execpath;
-	if (npmExecPath?.endsWith("bun") || npmExecPath?.endsWith("bun.exe")) {
-		return npmExecPath;
-	}
-	return "bun";
-}
+import { runCliProcess, removeTempDirs } from "./cli-test-helpers.ts";
 
 const tempDirs: string[] = [];
 
 afterEach(() => {
-	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	removeTempDirs(tempDirs);
 });
 
 function createTempDir(): string {
@@ -72,32 +56,22 @@ async function runCli(
 	setup?.(dirs);
 	const resolvedArgs = typeof args === "function" ? args(dirs) : args;
 
-	let stderr = "";
-	const code = await new Promise<number | null>((resolvePromise, reject) => {
-		const child = spawn(bunExecutable(), [cliPath, ...resolvedArgs], {
-			cwd: dirs.projectDir,
-			env: {
-				...process.env,
-				[ENV_AGENT_DIR]: dirs.agentDir,
-				ATOMIC_OFFLINE: "1",
-				TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
-			},
-			stdio: ["ignore", "ignore", "pipe"],
-		});
-		child.stderr.on("data", (chunk) => {
-			stderr += chunk.toString();
-		});
-		child.on("error", reject);
-		child.on("close", resolvePromise);
+	const result = await runCliProcess(resolvedArgs, {
+		cwd: dirs.projectDir,
+		env: {
+			...process.env,
+			[ENV_AGENT_DIR]: dirs.agentDir,
+			ATOMIC_OFFLINE: "1",
+			TSX_TSCONFIG_PATH: resolve(__dirname, "../../../tsconfig.json"),
+		},
 	});
-
-	return { code, agentDir: dirs.agentDir, stderr };
+	return { code: result.code, agentDir: dirs.agentDir, stderr: result.stderr };
 }
 
 function writeSession(sessionDir: string, cwd: string, id: string): void {
 	writeFileSync(
 		join(sessionDir, `${id}.jsonl`),
-		`${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd })}\n`,
+		`${JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: realpathSync(cwd) })}\n`,
 	);
 }
 
