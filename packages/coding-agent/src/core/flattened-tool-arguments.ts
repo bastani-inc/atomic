@@ -176,6 +176,16 @@ function isContainerSchema(schema: unknown): boolean {
   return false;
 }
 
+/** Exact top-level `schema.properties` names (literal property keys). */
+function literalPropertyNames(schema: unknown): Set<string> {
+  const names = new Set<string>();
+  if (!isPlainObject(schema)) return names;
+  const properties = schema.properties;
+  if (!isPlainObject(properties)) return names;
+  for (const name of Object.keys(properties)) names.add(name);
+  return names;
+}
+
 /** Top-level property names whose schema is an object/array container. */
 function containerPropertyNames(schema: unknown): Set<string> {
   const names = new Set<string>();
@@ -201,13 +211,18 @@ function isDottedContainerKey(key: string, containers: Set<string>): boolean {
  * - Bracket-indexed keys (`foo[0]`, `foo[0].bar`) always split: they are
  *   unambiguous evidence of provider flattening.
  * - Purely dotted keys (`parent.child`) split only when the schema marks their
- *   head segment as an object/array container property. The presence of a
- *   bracket-indexed sibling does NOT force a pure dotted key to split, so a
- *   literal property name such as `filter.name` is preserved verbatim even when
- *   a sibling like `ids[0]` is reconstructed (issue #1496).
+ *   head segment as an object/array container property AND the schema does not
+ *   declare the full key as a literal top-level property. The latter guard
+ *   protects a schema that intentionally defines both a literal dotted property
+ *   (e.g. `filter.name`) and a same-head container (e.g. `filter`): the literal
+ *   property wins and is preserved verbatim (reviewer-b P2, issue #1496). The
+ *   presence of a bracket-indexed sibling does NOT force a pure dotted key to
+ *   split, so a literal property name such as `filter.name` is preserved
+ *   verbatim even when a sibling like `ids[0]` is reconstructed.
  */
-function shouldSplitKey(key: string, containers: Set<string>): boolean {
+function shouldSplitKey(key: string, containers: Set<string>, literals: Set<string>): boolean {
   if (hasBracketIndex(key)) return true;
+  if (literals.has(key)) return false; // explicit literal property wins
   return isDottedContainerKey(key, containers);
 }
 
@@ -233,9 +248,14 @@ export function unflattenArgumentsWithSchema(
   schema?: unknown,
 ): Record<string, unknown> {
   const keys = Object.keys(args);
+  const literals = literalPropertyNames(schema);
   const containers = containerPropertyNames(schema);
   const hasBracket = keys.some((key) => hasBracketIndex(key));
-  const hasDottedContainer = keys.some((key) => isDottedContainerKey(key, containers));
-  if (!hasBracket && !hasDottedContainer) return args;
-  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, containers));
+  // A dotted key needs splitting only if it is not a literal property AND its
+  // head is a schema container. Literal dotted properties are always preserved.
+  const hasSplittableDotted = keys.some(
+    (key) => !literals.has(key) && isDottedContainerKey(key, containers),
+  );
+  if (!hasBracket && !hasSplittableDotted) return args;
+  return reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, containers, literals));
 }

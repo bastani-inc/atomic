@@ -130,6 +130,24 @@ describe("unflattenGeminiToolArguments", () => {
     expect(result).toEqual({ task: { agent: "researcher" } });
   });
 
+  it("same-head: literal dotted property wins over container (reviewer-b P2)", () => {
+    // Schema declares BOTH a literal dotted property `filter.name` AND a
+    // container property `filter`. The literal property must win, so
+    // `filter.name` is preserved verbatim while `filter.kind` still splits.
+    const schema = {
+      type: "object",
+      properties: {
+        "filter.name": { type: "string" },
+        filter: { type: "object", properties: { kind: { type: "string" } } },
+      },
+    };
+    const result = unflattenGeminiToolArguments(
+      { "filter.name": "status", "filter.kind": "open" },
+      schema,
+    );
+    expect(result).toEqual({ "filter.name": "status", filter: { kind: "open" } });
+  });
+
   describe("prototype pollution safety", () => {
     it("drops a __proto__ path and never reaches Object.prototype", () => {
       // A bracket-indexed proto-pollution attempt is split into a path, then

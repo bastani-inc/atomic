@@ -295,4 +295,34 @@ describe("unflattenToolArguments", () => {
     const result = unflattenToolArguments(args, schema);
     assert.deepEqual(result, { "filter.name": "tony" });
   });
+
+  test("same-head disambiguation: literal dotted property wins over container (reviewer-b P2)", () => {
+    // Schema declares BOTH a literal dotted property `filter.name` AND a
+    // container property `filter`. The literal property must win, so
+    // `filter.name` is preserved verbatim while a sibling `filter.kind` (not a
+    // literal property) still splits into the container. Bracket-indexed `ids`
+    // is reconstructed as usual (issue #1496).
+    const schema = {
+      type: "object",
+      properties: {
+        "filter.name": { type: "string" },
+        filter: {
+          type: "object",
+          properties: { kind: { type: "string" } },
+        },
+        ids: { type: "array", items: { type: "string" } },
+      },
+    };
+    const args = {
+      "filter.name": "status",
+      "filter.kind": "open",
+      "ids[0]": "123",
+    };
+    const result = unflattenToolArguments(args, schema);
+    assert.deepEqual(result, {
+      "filter.name": "status",
+      filter: { kind: "open" },
+      ids: ["123"],
+    });
+  });
 });
