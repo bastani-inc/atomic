@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `unflattenToolArguments` is now schema-aware and no longer corrupts literal dotted top-level argument keys (issue [#1496](https://github.com/bastani-inc/atomic/issues/1496)). Bracket-indexed keys (`ids[0]`, `files[0].path`) are always reconstructed, but a purely dotted key (`filter.name`) is only split into a nested path when the tool's `inputSchema` proves its head segment is an object/array container property. The tool `inputSchema` is now threaded through from both the direct-tool and proxy/gateway `callTool` paths. The schema-aware disambiguation is shared with the host runtime via a new canonical `unflattenArgumentsWithSchema` helper in `@bastani/atomic`, so the two paths cannot drift.
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

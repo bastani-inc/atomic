@@ -18,6 +18,7 @@
 ### Changed
 
 - Raised the bundled subagent and workflow-stage nesting budget to a hard maximum of five delegated levels, and documented the `0`-to-`5` recursion-guard range.
+- Extracted the schema-aware flattened-argument disambiguation into a shared canonical `unflattenArgumentsWithSchema` helper in `core/flattened-tool-arguments.ts` (exported from `@bastani/atomic`), now reused by both the GitHub Copilot Gemini per-tool normalization and the MCP `callTool` boundary so literal dotted argument keys are preserved unless the tool schema proves they are nested paths (issue [#1496](https://github.com/bastani-inc/atomic/issues/1496)).
 
 ### Fixed
 

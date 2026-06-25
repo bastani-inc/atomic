@@ -1,6 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
-import { reconstructFlattenedKeys } from "./flattened-tool-arguments.ts";
+import { unflattenArgumentsWithSchema } from "./flattened-tool-arguments.ts";
 
 /**
  * Normalizes GitHub Copilot Gemini tool-call arguments.
@@ -47,33 +47,6 @@ function isPlainObject(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A flattened key contains a bracket index like `foo[0]`. */
-function hasFlattenedKey(keys: string[]): boolean {
-  return keys.some((key) => /\[\d+\]/.test(key));
-}
-
-/** A schema node that holds a nested object/array (so dotted keys are real paths). */
-function isContainerSchema(schema: unknown): boolean {
-  if (!isPlainObject(schema)) return false;
-  if (schema.type === "object" || schema.type === "array") return true;
-  if ("properties" in schema || "items" in schema) return true;
-  const union = schema.anyOf ?? schema.oneOf;
-  if (Array.isArray(union)) return union.some((branch) => isContainerSchema(branch));
-  return false;
-}
-
-/** Top-level property names whose schema is an object/array container. */
-function containerPropertyNames(schema: unknown): Set<string> {
-  const names = new Set<string>();
-  if (!isPlainObject(schema)) return names;
-  const properties = schema.properties;
-  if (!isPlainObject(properties)) return names;
-  for (const [name, sub] of Object.entries(properties)) {
-    if (isContainerSchema(sub)) names.add(name);
-  }
-  return names;
-}
-
 function schemaTypeIncludes(schema: JsonRecord, type: string): boolean {
   if (schema.type === type) return true;
   return Array.isArray(schema.type) && schema.type.includes(type);
@@ -107,26 +80,6 @@ function fillMissingRequiredArrayProperties(args: JsonRecord, schema: unknown): 
   return next;
 }
 
-/** Whether `key` is a pure dotted path (`parent.child`) headed by a container prop. */
-function isDottedContainerKey(key: string, containers: Set<string>): boolean {
-  const dot = key.indexOf(".");
-  if (dot <= 0) return false;
-  return containers.has(key.slice(0, dot));
-}
-
-/**
- * Decide whether a flattened key should be split into nested path segments.
- * Bracket-indexed keys always split. When a bracket key is present anywhere in
- * the payload, dotted keys split too (they are part of the same flattened
- * object). Otherwise a dotted key only splits when the schema marks its head as
- * a container property, which keeps legitimate dot-containing keys intact.
- */
-function shouldSplitKey(key: string, hasBracket: boolean, containers: Set<string>): boolean {
-  if (/\[\d+\]/.test(key)) return true;
-  if (hasBracket) return true;
-  return isDottedContainerKey(key, containers);
-}
-
 /**
  * Reconstruct flattened Gemini tool-call arguments into proper nested
  * arrays/objects. Returns the original reference unchanged when there is nothing
@@ -137,15 +90,7 @@ function shouldSplitKey(key: string, hasBracket: boolean, containers: Set<string
  */
 export function unflattenGeminiToolArguments(args: unknown, schema?: unknown): unknown {
   if (!isPlainObject(args)) return args;
-  const keys = Object.keys(args);
-  const hasBracket = hasFlattenedKey(keys);
-  const containers = hasBracket ? new Set<string>() : containerPropertyNames(schema);
-  const hasDottedContainer =
-    !hasBracket && keys.some((key) => isDottedContainerKey(key, containers));
-  const reconstructed = hasBracket || hasDottedContainer
-    ? reconstructFlattenedKeys(args, (key) => shouldSplitKey(key, hasBracket, containers))
-    : args;
-
+  const reconstructed = unflattenArgumentsWithSchema(args, schema);
   return isPlainObject(reconstructed)
     ? fillMissingRequiredArrayProperties(reconstructed, schema)
     : reconstructed;

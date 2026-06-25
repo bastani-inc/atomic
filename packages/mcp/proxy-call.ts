@@ -288,7 +288,9 @@ export async function executeCall(
       name: toolMeta.originalName,
       // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
       // back into arrays/objects before the MCP server validates them.
-      arguments: unflattenToolArguments(args),
+      // Schema-aware: literal dotted property names (e.g. `filter.name`) are
+      // preserved unless the schema proves the head is a container.
+      arguments: unflattenToolArguments(args, toolMeta.inputSchema),
       _meta: uiSession?.requestMeta,
     });
 

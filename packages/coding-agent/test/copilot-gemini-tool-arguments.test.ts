@@ -68,11 +68,23 @@ describe("unflattenGeminiToolArguments", () => {
   });
 
   it("reconstructs dotted nested object keys", () => {
+    // `metadata` is an object container in the schema, so the dotted keys are
+    // real nested paths.
+    const schema = {
+      type: "object",
+      properties: {
+        metadata: {
+          type: "object",
+          properties: { confidence: { type: "number" }, tags: { type: "array" } },
+        },
+        name: { type: "string" },
+      },
+    };
     const result = unflattenGeminiToolArguments({
       "metadata.confidence": 0.5,
       "metadata.tags[0]": "x",
       name: "n",
-    });
+    }, schema);
     expect(result).toEqual({ metadata: { confidence: 0.5, tags: ["x"] }, name: "n" });
   });
 
@@ -120,9 +132,9 @@ describe("unflattenGeminiToolArguments", () => {
 
   describe("prototype pollution safety", () => {
     it("drops a __proto__ path and never reaches Object.prototype", () => {
-      // JSON.parse keeps `__proto__` as an own property (the real wire shape),
-      // unlike an object literal which would invoke the prototype setter.
-      const args = JSON.parse('{"x[0]":"a","__proto__.polluted":"yes"}');
+      // A bracket-indexed proto-pollution attempt is split into a path, then
+      // dropped because `__proto__` is an unsafe path segment.
+      const args = JSON.parse('{"x[0]":"a","__proto__[0].polluted":"yes"}');
       const result = unflattenGeminiToolArguments(args) as Record<string, unknown>;
       expect(({} as Record<string, unknown>).polluted).toBeUndefined();
       expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
@@ -138,7 +150,9 @@ describe("unflattenGeminiToolArguments", () => {
     });
 
     it("drops constructor/prototype paths", () => {
-      const args = JSON.parse('{"a[0]":1,"constructor.prototype.polluted":"x"}');
+      // A bracket-indexed constructor.prototype attempt is split and dropped
+      // because `constructor`/`prototype` are unsafe path segments.
+      const args = JSON.parse('{"a[0]":1,"constructor.prototype[0].polluted":"x"}');
       const result = unflattenGeminiToolArguments(args) as Record<string, unknown>;
       expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
       expect(result).toEqual({ a: [1] });
