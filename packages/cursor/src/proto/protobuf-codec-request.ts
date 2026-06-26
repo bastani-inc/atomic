@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { parseJsonObject, type JsonObject } from "../config.js";
-import type { CursorRunRequest } from "../transport.js";
+import type { CursorRunRequest, CursorToolResultContent } from "../transport.js";
 import {
 	AgentClientMessageSchema,
 	AgentConversationTurnStructureSchema,
@@ -16,14 +17,17 @@ import {
 	McpToolDefinitionSchema,
 	ModelDetailsSchema,
 	SelectedContextSchema,
+	SelectedImageSchema,
 	ToolCallSchema,
 	UserMessageActionSchema,
 	UserMessageSchema,
 	type ConversationStateStructure,
 	type McpToolDefinition,
+	type SelectedImage,
 	type UserMessage,
 } from "./agent_pb.js";
 import { encodeMcpArgsMap, encodeProtobufValue, serializableJsonValue } from "./protobuf-codec-json.js";
+import { decodeStrictBase64ImageData } from "./protobuf-codec-base64.js";
 import { createMcpToolCallResult } from "./protobuf-codec-wire.js";
 
 export interface ParsedAssistantTextStep {
@@ -36,13 +40,14 @@ export interface ParsedToolCallStep {
 	readonly toolCallId: string;
 	readonly toolName: string;
 	readonly arguments: JsonObject;
-	result?: { readonly content: string; readonly isError: boolean };
+	result?: { readonly content: string | readonly CursorToolResultContent[]; readonly isError: boolean; readonly fallbackText?: string };
 }
 
 export type ParsedTurnStep = ParsedAssistantTextStep | ParsedToolCallStep;
 
 export interface ParsedTurn {
 	readonly userText: string;
+	readonly userImages: readonly ImageContent[];
 	readonly steps: ParsedTurnStep[];
 }
 
@@ -69,6 +74,7 @@ export function buildCursorRequest(
 	conversationId: string,
 	checkpoint: Uint8Array | null,
 	existingBlobStore?: Map<string, Uint8Array>,
+	userImages: readonly ImageContent[] = [],
 ): { readonly requestBytes: Uint8Array; readonly blobStore: Map<string, Uint8Array> } {
 	const blobStore = new Map<string, Uint8Array>(existingBlobStore ?? []);
 	const systemBlobId = storeAsBlob(textEncoder.encode(JSON.stringify({ role: "system", content: systemPrompt })), blobStore);
@@ -76,7 +82,7 @@ export function buildCursorRequest(
 	const conversationState = checkpoint
 		? fromBinary(ConversationStateStructureSchema, checkpoint)
 		: buildConversationState(turns, blobStore, systemBlobId, selectedContextBlob);
-	const userMessage = createUserMessage(userText, selectedContextBlob);
+	const userMessage = createUserMessage(userText, selectedContextBlob, userImages);
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
 	});
@@ -96,7 +102,7 @@ function buildConversationState(
 ): ConversationStateStructure {
 	const turnBlobIds: Uint8Array[] = [];
 	for (const turn of turns) {
-		const userMessage = createUserMessage(turn.userText, selectedContextBlob);
+		const userMessage = createUserMessage(turn.userText, selectedContextBlob, turn.userImages);
 		const userMessageBlobId = storeAsBlob(toBinary(UserMessageSchema, userMessage), blobStore);
 		const stepBlobIds = turn.steps.map((step) => storeAsBlob(buildTurnStepBytes(step), blobStore));
 		const agentTurn = create(AgentConversationTurnStructureSchema, {
@@ -127,16 +133,37 @@ function buildConversationState(
 	});
 }
 
-function createUserMessage(text: string, selectedContextBlob: Uint8Array): UserMessage {
+function createUserMessage(text: string, selectedContextBlob: Uint8Array, images: readonly ImageContent[] = []): UserMessage {
 	const messageId = randomUUID();
+	const selectedImages = images.map((image, index) => createSelectedImage(image, index));
 	return create(UserMessageSchema, {
 		text,
 		messageId,
-		selectedContext: create(SelectedContextSchema, {}),
+		selectedContext: create(SelectedContextSchema, { selectedImages }),
 		mode: 1,
 		selectedContextBlob,
 		correlationId: messageId,
 	});
+}
+
+function createSelectedImage(image: ImageContent, index: number): SelectedImage {
+	const data = decodeStrictBase64ImageData(image.data, { kind: "selected image", mimeType: image.mimeType, index });
+	const hash = createHash("sha256").update(data).digest("hex").slice(0, 16);
+	return create(SelectedImageSchema, {
+		uuid: randomUUID(),
+		path: `/atomic/inline-images/${hash}-${index}.${extensionForMimeType(image.mimeType)}`,
+		mimeType: image.mimeType,
+		dataOrBlobId: { case: "data", value: data },
+	});
+}
+
+function extensionForMimeType(mimeType: string): string {
+	const normalized = mimeType.toLowerCase();
+	if (normalized === "image/jpeg" || normalized === "image/jpg") return "jpg";
+	if (normalized === "image/png") return "png";
+	if (normalized === "image/gif") return "gif";
+	if (normalized === "image/webp") return "webp";
+	return "img";
 }
 
 function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
@@ -154,7 +181,7 @@ function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
 			providerIdentifier: CURSOR_PROTO_CLIENT_NAME,
 			toolName,
 		}),
-		...(step.result ? { result: createMcpToolCallResult(step.result.content, step.result.isError) } : {}),
+		...(step.result ? { result: createMcpToolCallResult(step.result.content, step.result.isError, step.result.fallbackText ?? "") } : {}),
 	});
 	return toBinary(ConversationStepSchema, create(ConversationStepSchema, {
 		message: {
@@ -166,20 +193,22 @@ function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
 
 export function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["messages"][number][]): readonly ParsedTurn[] {
 	const turns: ParsedTurn[] = [];
-	let currentTurn: { userText: string; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } | undefined;
-	const ensureTurn = (): { userText: string; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } => {
-		currentTurn ??= { userText: "", steps: [], toolCallById: new Map() };
+	let currentTurn: { userText: string; userImages: readonly ImageContent[]; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } | undefined;
+	const ensureTurn = (): { userText: string; userImages: readonly ImageContent[]; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } => {
+		currentTurn ??= { userText: "", userImages: [], steps: [], toolCallById: new Map() };
 		return currentTurn;
 	};
 	const flushTurn = (): void => {
 		if (!currentTurn) return;
-		if (currentTurn.userText || currentTurn.steps.length > 0) turns.push({ userText: currentTurn.userText, steps: currentTurn.steps });
+		if (currentTurn.userText || currentTurn.userImages.length > 0 || currentTurn.steps.length > 0) {
+			turns.push({ userText: currentTurn.userText, userImages: currentTurn.userImages, steps: currentTurn.steps });
+		}
 		currentTurn = undefined;
 	};
 	for (const message of messages) {
 		if (message.role === "user") {
 			flushTurn();
-			currentTurn = { userText: textFromMessage(message), steps: [], toolCallById: new Map() };
+			currentTurn = { userText: textFromMessage(message), userImages: imagesFromUserMessage(message), steps: [], toolCallById: new Map() };
 		} else if (message.role === "assistant") {
 			const turn = ensureTurn();
 			for (const part of message.content) {
@@ -199,7 +228,7 @@ export function parseHistoricalTurns(messages: readonly CursorRunRequest["contex
 				turn.steps.push(step);
 				turn.toolCallById.set(step.toolCallId, step);
 			}
-			step.result = { content: rawToolResultText(message), isError: message.isError };
+			step.result = { content: message.content, isError: message.isError, fallbackText: rawToolResultText(message) };
 		}
 	}
 	flushTurn();
@@ -219,6 +248,17 @@ function appendAssistantTextStep(steps: ParsedTurnStep[], text: string): void {
 export function extractCurrentActionText(request: CursorRunRequest): string {
 	const last = request.context.messages.at(-1);
 	return last ? textFromMessage(last) : "";
+}
+
+export function extractCurrentActionImages(request: CursorRunRequest): readonly ImageContent[] {
+	const last = request.context.messages.at(-1);
+	if (!last || last.role !== "user") return [];
+	return imagesFromUserMessage(last);
+}
+
+function imagesFromUserMessage(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "user" }>): readonly ImageContent[] {
+	if (typeof message.content === "string") return [];
+	return message.content.filter((part): part is ImageContent => part.type === "image");
 }
 
 function rawToolResultText(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "toolResult" }>): string {

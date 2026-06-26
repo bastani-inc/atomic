@@ -111,19 +111,39 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
 	});
 
-	test("rejects image input and missing credentials with sanitized errors", async () => {
-		const adapter = new CursorStreamAdapter({ transport: new CursorMockTransport(), uuid: () => "run-error" });
+	test("rejects image input only when the selected model lacks image capability", async () => {
 		const imageContext: Context = {
 			messages: [{ role: "user", content: [{ type: "image", data: "abc", mimeType: "image/png" }], timestamp: 1 }],
 		};
-		const imageEvents = await collectEvents(adapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
+		const textOnlyTransport = new CursorMockTransport();
+		const textOnlyAdapter = new CursorStreamAdapter({ transport: textOnlyTransport, uuid: () => "run-error" });
+		const imageEvents = await collectEvents(textOnlyAdapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
 		const imageTerminal = imageEvents.at(-1);
+		assert.equal(textOnlyTransport.runs.length, 0);
 		assert.equal(imageTerminal?.type, "error");
 		if (imageTerminal?.type === "error") {
-			assert.match(imageTerminal.error.errorMessage ?? "", /text input only/u);
+			assert.match(imageTerminal.error.errorMessage ?? "", /does not support image input/u);
 			assert.doesNotMatch(imageTerminal.error.errorMessage ?? "", /access-secret/u);
 		}
 
+		const toolImageContext: Context = {
+			messages: [{ role: "toolResult", toolCallId: "tool-1", toolName: "ReadImage", content: [{ type: "image", data: "aGk=", mimeType: "image/png" }], isError: false, timestamp: 2 }],
+		};
+		const toolImageEvents = await collectEvents(textOnlyAdapter.streamSimple(model(), toolImageContext, { apiKey: "access-secret" }));
+		const toolImageTerminal = toolImageEvents.at(-1);
+		assert.equal(textOnlyTransport.runs.length, 0);
+		assert.equal(toolImageTerminal?.type, "error");
+		if (toolImageTerminal?.type === "error") assert.match(toolImageTerminal.error.errorMessage ?? "", /does not support image input/u);
+
+		const imageTransport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+		const imageAdapter = new CursorStreamAdapter({ transport: imageTransport, uuid: () => "run-image" });
+		const allowedEvents = await collectEvents(imageAdapter.streamSimple({ ...model(), id: "claude-4.5-sonnet", input: ["text", "image"] }, imageContext, { apiKey: "access-secret" }));
+		assert.equal(imageTransport.runs.length, 1);
+		assert.equal(allowedEvents.at(-1)?.type, "done");
+	});
+
+	test("reports missing credentials before image capability checks", async () => {
+		const adapter = new CursorStreamAdapter({ transport: new CursorMockTransport(), uuid: () => "run-error" });
 		const missingCredentialEvents = await collectEvents(adapter.streamSimple(model(), context()));
 		const missingTerminal = missingCredentialEvents.at(-1);
 		assert.equal(missingTerminal?.type, "error");

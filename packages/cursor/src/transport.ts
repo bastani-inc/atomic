@@ -18,6 +18,7 @@ export type {
 	CursorRunStream,
 	CursorServerMessage,
 	CursorToolCallMessage,
+	CursorToolResultContent,
 	CursorToolResultMessage,
 	CursorTransportLifecycleSnapshot,
 	CursorWriteOptions,
