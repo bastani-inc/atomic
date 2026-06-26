@@ -20,6 +20,10 @@ describe("executor.run — lifecycle persistence", () => {
         return { persistence, calls };
     }
 
+    function lifecycleTypes(calls: Array<{ type: string }>): string[] {
+        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+    }
+
     test("run.end not appended when recordRunEnd returns false (terminal guard)", async () => {
         const { persistence, calls } = makePersistence();
 
@@ -83,7 +87,7 @@ describe("executor.run — lifecycle persistence", () => {
             },
         );
 
-        const types = calls.map((c) => c.type);
+        const types = lifecycleTypes(calls);
         assert.deepEqual(types, [
             "workflow.run.start",
             "workflow.stage.start",

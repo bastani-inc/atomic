@@ -15,7 +15,7 @@ import {
 	type McpToolDefinition,
 	type ModelDetails,
 } from "./agent_pb.js";
-import { blobKey, buildCursorRequest, buildMcpToolDefinitions, extractCurrentActionText, parseHistoricalTurns } from "./protobuf-codec-request.js";
+import { blobKey, buildCursorRequest, buildMcpToolDefinitions, extractCurrentActionImages, extractCurrentActionText, parseHistoricalTurns } from "./protobuf-codec-request.js";
 import { createMcpToolResult, decodeAgentServerMessage, encodeExecClientMessage, encodeKvClientMessage, encodeNativeExecRejection, encodeRequestContextResult } from "./protobuf-codec-wire.js";
 
 // Cursor protocol codec intentionally follows the MIT-licensed
@@ -67,6 +67,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 			conversationIdValue,
 			storedState?.checkpoint ?? null,
 			storedState?.blobStore,
+			extractCurrentActionImages(request),
 		);
 		this.#blobStores.set(request.requestId, payload.blobStore);
 		this.#toolDefinitions.set(request.requestId, buildMcpToolDefinitions(request));
@@ -141,7 +142,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 	}
 
 	encodeToolResult(result: CursorToolResultMessage): Uint8Array {
-		const mcpResult = createMcpToolResult(result.text, result.isError);
+		const mcpResult = createMcpToolResult(result.content ?? result.text, result.isError, result.text);
 		return encodeExecClientMessage(result.execNumericId, result.execId, "mcpResult", mcpResult);
 	}
 

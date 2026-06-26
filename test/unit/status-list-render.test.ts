@@ -56,6 +56,7 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
     error: over.error,
     exited: over.exited,
     exitReason: over.exitReason,
+    resumable: over.resumable,
   };
 }
 
@@ -133,6 +134,23 @@ describe("renderStatusList — populated", () => {
     // Trailing hint references the most-recently-active run (def456, 42s ago).
     assert.match(plain, /▸ \/workflow status def456/);
     assert.match(plain, /drill into a run/);
+  });
+
+  test("quit run renders as resumable instead of failed", () => {
+    const out = renderStatusList([
+      makeRun({
+        id: "quit123uuid",
+        name: "resume-me",
+        status: "paused",
+        exitReason: "quit",
+        resumable: true,
+      }),
+    ], { width: 120 });
+    const plain = stripAnsi(out);
+    assert.match(plain, /BACKGROUND  1 run  1 quit/);
+    assert.match(plain, /resume-me/);
+    assert.match(plain, /resumable via \/workflow resume/);
+    assert.doesNotMatch(plain, /failed/);
   });
 
   test("mixed running and paused snapshot keeps paused runs out of running counts and labels their rows", () => {

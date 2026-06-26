@@ -1,9 +1,17 @@
-import { describe } from "bun:test";
+import { describe, beforeAll, afterAll } from "bun:test";
 import {
     assert, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 describe("executor.run — lifecycle persistence", () => {
+  // The durable cache-entry append checked below requires a persistent durable
+  // backend. Other test files in this suite mutate the global backend singleton
+  // (bun shares process state across files); reset to the clean default here so
+  // this file is deterministic regardless of execution order, and reset again on
+  // teardown so no in-memory backend leaks into later files.
+  beforeAll(() => setDurableBackend(undefined));
+  afterAll(() => setDurableBackend(undefined));
     function makePersistence() {
         const calls: Array<{ type: string; payload: Record<string, unknown> }> =
             [];
@@ -18,6 +26,10 @@ describe("executor.run — lifecycle persistence", () => {
             setLabel(_entryId: string, _label: string): void {},
         };
         return { persistence, calls };
+    }
+
+    function lifecycleTypes(calls: Array<{ type: string }>): string[] {
+        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
     }
 
     test("appends ordered run.start → stage.start → stage.end → run.end on success", async () => {
@@ -48,13 +60,14 @@ describe("executor.run — lifecycle persistence", () => {
 
         assert.equal(wfResult.status, "completed");
 
-        const types = calls.map((c) => c.type);
+        const types = lifecycleTypes(calls);
         assert.deepEqual(types, [
             "workflow.run.start",
             "workflow.stage.start",
             "workflow.stage.end",
             "workflow.run.end",
         ]);
+        assert.equal(calls.some((c) => c.type === "workflow.durable.checkpoint"), true);
     });
 
     test("run.start payload contains runId, name, inputs, ts", async () => {
@@ -199,7 +212,7 @@ describe("executor.run — lifecycle persistence", () => {
             /completed without creating any workflow stages/,
         );
         assert.deepEqual(
-            calls.map((c) => c.type),
+            lifecycleTypes(calls),
             ["workflow.run.start", "workflow.run.end"],
         );
         const runEnd = calls.find((c) => c.type === "workflow.run.end");
@@ -288,7 +301,7 @@ describe("executor.run — lifecycle persistence", () => {
 
         assert.equal(wfResult.status, "running");
         assert.deepEqual(
-            calls.map((c) => c.type),
+            lifecycleTypes(calls),
             [
                 "workflow.run.start",
                 "workflow.stage.start",

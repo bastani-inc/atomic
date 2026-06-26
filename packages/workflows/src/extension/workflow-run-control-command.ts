@@ -5,6 +5,7 @@ import { store } from "../shared/store.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { renderSessionList } from "../tui/session-list.js";
 import { openKillConfirm, openSessionPicker } from "../tui/session-overlays.js";
+import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
@@ -13,6 +14,8 @@ import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
+import type { ResumableWorkflowEntry } from "../durable/types.js";
 import {
   formatAlreadyEndedRetainedMessage,
   overlaySurfaceFromContext,
@@ -35,6 +38,75 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
   const prefix = exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
   const byName = prefix ?? run.stages.find((s) => s.name === stageTarget);
   return byName?.id ?? false;
+}
+
+function filterSelectorDurableEntries(
+  runtime: ExtensionRuntime,
+  entries: readonly ResumableWorkflowEntry[],
+): readonly ResumableWorkflowEntry[] {
+  const registry = runtime.registry as { has(name: string): boolean } | undefined;
+  if (registry === undefined) return entries;
+  return entries.filter((entry) => {
+    const requiresCurrentDefinition = entry.status === "running" || entry.status === "failed" || entry.status === "blocked";
+    return !requiresCurrentDefinition || registry.has(entry.name);
+  });
+}
+
+
+async function handleDurableResume(
+  target: string | undefined,
+  ctx: PiCommandContext,
+  reporter: WorkflowCommandReporter,
+  deps: WorkflowRunControlDeps,
+): Promise<boolean> {
+  const print = (msg: string): void => reporter.info(msg);
+  const fail = (msg: string): void => reporter.error(msg);
+  const runtime = deps.runtimeForContext(ctx);
+  const policy = workflowPolicyFromContext(ctx);
+  // Hydrate the durable backend from DBOS (if configured) before listing so a
+  // fresh process discovers workflows persisted by a prior session.
+  const prepared = await runtime.prepareDurableResumable(target);
+  const durable = filterSelectorDurableEntries(runtime, prepared);
+  if (target !== undefined) {
+    // Attempt resume by id/prefix against the durable catalog.
+    const result = runtime.resumeDurableWorkflow(target, { policy });
+    if (result.ok) {
+      print(result.message);
+      // Open/connect the overlay to the resumed run, analogous to live resume.
+      if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+      return true;
+    }
+    // Not a durable workflow either — surface the catalog for discovery.
+    if (durable.length > 0) {
+      fail(`${result.message}\n\n${formatResumableWorkflowList(durable)}`);
+    } else {
+      fail(result.message);
+    }
+    return true;
+  }
+  // No target: show the durable selector when interactive, otherwise print.
+  if (durable.length === 0) {
+    fail("No resumable durable workflows found. Usage: /workflow resume <id> (or /resume for Atomic sessions).");
+    return true;
+  }
+  if (!policy.allowInputPicker) {
+    print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+    return true;
+  }
+  const picked = await openWorkflowResumeSelector(ctx.ui, [], durable);
+  if (picked.kind === "durable") {
+    const result = runtime.resumeDurableWorkflow(picked.workflowId, { policy });
+    if (result.ok) {
+      print(result.message);
+      if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+    } else {
+      fail(result.message);
+    }
+  }
+  if (picked.kind !== "durable") {
+    print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+  }
+  return true;
 }
 
 export async function handleRunControlCommand(
@@ -115,7 +187,7 @@ export async function handleRunControlCommand(
     }
     if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
     if (policy.allowInputPicker) deps.overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-    print(`Attached to ${resolved.runId.slice(0, 8)}. h/ctrl+d hide · q kill · esc close.`);
+    print(`Attached to ${resolved.runId.slice(0, 8)}. h/ctrl+d hide · q quit (resumable via /workflow resume) · esc close.`);
     return true;
   }
 
@@ -206,10 +278,64 @@ export async function handleRunControlCommand(
         if (action === "pause") {
           const active = topLevelWorkflowRuns(store.runs()).filter((r) => r.endedAt === undefined);
           fail(active.length === 0 ? "No active runs to pause." : `Picker requires an interactive UI surface. Active runs:\n${active.map((r) => `  ${r.id.slice(0, 8)}  ${r.name}`).join("\n")}\n\nUsage: /workflow pause <runId> [stageId]`);
+        } else if (action === "attach") {
+          fail(`${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`);
         } else {
-          fail(action === "attach"
-            ? `${renderSessionList(store.runs(), { theme, includeAll: true })}\n\nPicker requires an interactive UI surface. Pass a runId: /workflow attach <id> [stageId]`
-            : "Usage: /workflow resume <runId> [stageId] [message…]");
+          // resume: show cross-session durable catalog in headless/print mode.
+          return await handleDurableResume(undefined, ctx, reporter, deps);
+        }
+        return true;
+      }
+      if (action === "resume") {
+        // Only inactive workflows belong in the resume selector. Live runs:
+        // show paused (quit) or recoverably-failed runs; actively-running live
+        // runs are hidden (resuming one that is executing would double-dispatch).
+        const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
+          run.status === "paused" || (run.status === "failed" && run.resumable !== false),
+        );
+        // Durable entries: a `running` durable handle may be a crashed process
+        // (cross-session crash recovery), so it stays selectable UNLESS it
+        // matches an actively-executing live run in this session.
+        const activeLiveIds = new Set(
+          topLevelWorkflowRuns(store.runs())
+            .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
+            .map((run) => run.id),
+        );
+        const runtime = deps.runtimeForContext(ctx);
+        let durableEntries: readonly ResumableWorkflowEntry[] = [];
+        try {
+          const prepared = await runtime.prepareDurableResumable(undefined);
+          durableEntries = filterSelectorDurableEntries(runtime, prepared)
+            .filter((entry) => !activeLiveIds.has(entry.workflowId));
+        } catch (error) {
+          if (liveRuns.length === 0) {
+            const message = error instanceof Error ? error.message : String(error);
+            fail(`Failed to list resumable workflows: ${message}`);
+            return true;
+          }
+        }
+        const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries);
+        if (picked.kind === "durable") return await handleDurableResume(picked.workflowId, ctx, reporter, deps);
+        if (picked.kind === "live") {
+          const resolved = resolveRunIdPrefix(picked.runId);
+          if (resolved.kind !== "exact") {
+            fail(`Run not found: ${picked.runId}`);
+            return true;
+          }
+          const run = store.runs().find((r) => r.id === resolved.runId);
+          const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+          const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+          if (isResumableContinuation) {
+            const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
+            continuation.ok ? print(continuation.message) : fail(continuation.message);
+          } else {
+            const result = resumeRun(resolved.runId, {});
+            if (result.ok && result.mode === "snapshot" && run?.exitReason === "quit") {
+              return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+            }
+            if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+            result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
+          }
         }
         return true;
       }
@@ -220,6 +346,11 @@ export async function handleRunControlCommand(
     } else {
       const resolved = resolveRunIdPrefix(target);
       if (resolved.kind === "not_found") {
+        // Not a live run — fall back to the cross-session durable resume catalog.
+        // cross-ref: issue #1498 — /workflow resume by top-level workflow id.
+        if (action === "resume") {
+          return await handleDurableResume(target, ctx, reporter, deps);
+        }
         fail(`Run not found: ${target}`);
         return true;
       }
@@ -260,6 +391,11 @@ export async function handleRunControlCommand(
     const run = store.runs().find((r) => r.id === stageRunId);
     const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+    const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
+    if (isActivelyRunning && action === "resume") {
+      fail(`Workflow ${stageRunId.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${stageRunId.slice(0, 8)}\` instead of resuming.`);
+      return true;
+    }
     if (isResumableContinuation) {
       const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
       continuation.ok ? print(continuation.message) : fail(continuation.message);
@@ -269,6 +405,9 @@ export async function handleRunControlCommand(
     if (!result.ok) {
       fail(`Run not found: ${stageRunId.slice(0, 8)}`);
       return true;
+    }
+    if (result.mode === "snapshot" && run?.exitReason === "quit" && action === "resume") {
+      return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
     if (!isPaused) {
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));

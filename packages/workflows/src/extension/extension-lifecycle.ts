@@ -1,4 +1,5 @@
 import { killAllRuns } from "../runs/background/status.js";
+import { quitAllRuns } from "../runs/background/quit.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
@@ -99,7 +100,10 @@ export function registerWorkflowLifecycleHandlers(
     deps.intercomControlRef.current?.();
     deps.intercomControlRef.current = null;
     if (reason === "quit") {
-      killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
+      // CLI/orchestrator quit is a resumable process boundary, not explicit
+      // `/workflow kill`. Durable-progress workflows stay available through
+      // `/workflow resume`; stage handles are disposed after being paused.
+      quitAllRuns({ store, stageControlRegistry });
       stageControlRegistry.clear();
     }
     deps.storeWidgetRef.current?.();

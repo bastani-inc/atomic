@@ -193,6 +193,7 @@ export function createWorkflowStageFactory(input: {
       if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
       if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
       if (meta.sessionId !== undefined || meta.sessionFile !== undefined) input.activeStore.recordStageSession(input.runId, stageId, meta);
+      void input.opts.onStageSession?.(input.runId, stageSnapshot);
     };
     const releaseLiveHandle = async (): Promise<void> => {
       if (state.liveHandleReleased) return;
@@ -226,7 +227,7 @@ export function createWorkflowStageFactory(input: {
       });
     };
 
-    const finalizeStageSnapshot = (): boolean => {
+    const finalizeStageSnapshot = async (): Promise<boolean> => {
       if (state.stageFinalized) return false;
       if (stageSnapshot.endedAt !== undefined && isTerminalStage(stageSnapshot)) {
         state.stageFinalized = true;
@@ -242,7 +243,7 @@ export function createWorkflowStageFactory(input: {
       applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
       input.activeStore.recordStageEnd(input.runId, stageSnapshot);
       stageUiBroker.cancelStagePrompt(input.runId, stageId, new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`));
-      input.opts.onStageEnd?.(input.runId, stageSnapshot);
+      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
       if (input.opts.persistence) {
         appendStageStartOnce();
         appendStageEnd(input.opts.persistence, {
@@ -325,12 +326,12 @@ export function createWorkflowStageFactory(input: {
     // workflow-exit cleanup and removes the stage from the fail-fast active set.
     // Later paths must not overwrite the terminal skippedReason; they only abort
     // and release idempotent live handles.
-    const skipForParallelFailFast = (): void => {
+    const skipForParallelFailFast = async (): Promise<void> => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();
-      finalizeStageSnapshot();
-      void innerCtx.abort().catch(() => {});
-      void dropStageControlForCompletion().catch(() => {});
+      await finalizeStageSnapshot();
+      await innerCtx.abort().catch(() => {});
+      await dropStageControlForCompletion().catch(() => {});
     };
     stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
     runtime.unregisterWorkflowExitCleanup = input.exit.registerWorkflowExitCleanup(stageId, {
@@ -339,7 +340,7 @@ export function createWorkflowStageFactory(input: {
         if (!isTerminalStage(stageSnapshot)) {
           stageSnapshot.status = "skipped";
           stageSnapshot.skippedReason = input.exit.workflowExitSkippedReason(reason);
-          finalizeStageSnapshot();
+          await finalizeStageSnapshot();
         }
         await innerCtx.abort().catch(() => {});
         await releaseLiveHandle().catch(() => {});

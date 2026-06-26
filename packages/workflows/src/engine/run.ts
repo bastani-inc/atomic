@@ -4,6 +4,7 @@ import type {
   WorkflowInputValues,
   WorkflowOutputValues,
   WorkflowRunContext,
+  WorkflowSerializableValue,
 } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
@@ -17,6 +18,8 @@ import { buildExitGatedUiContext } from "./primitives/ui.js";
 import { createWorkflowExitManager } from "./primitives/exit.js";
 import { createWorkflowTaskRunners } from "./primitives/task.js";
 import { createChildWorkflowRunner } from "./primitives/workflow.js";
+import { createChainPrimitive } from "./primitives/chain.js";
+import { createParallelPrimitive } from "./primitives/parallel.js";
 import { createRunLimiter } from "../runs/shared/concurrency.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
@@ -37,6 +40,16 @@ import {
 } from "../runs/foreground/executor-lifecycle.js";
 import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
+import { getDurableBackend } from "../durable/factory.js";
+import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
+import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
+import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
+import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
+import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
+import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
+import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
+import type { DurableWorkflowBackend } from "../durable/backend.js";
+import type { StageSnapshot } from "../shared/store-types.js";
 
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -176,6 +189,38 @@ export async function run<
     classifyExecutorFailure,
     drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
   });
+  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
+  // Declared early so the stage-end recorder can attach to stageOptions.
+  // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+  // Child runs with a durable scope route their internal side-effect
+  // checkpoints under the root workflow so interrupted children do not
+  // re-execute completed side effects on parent resume.
+  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
+    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
+    : rootBackend;
+  const checkpointIdGenerator = createCheckpointIdGenerator();
+  const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
+  const completedStageReplayKeys = new Map<string, string>();
+  const durableStageDeps = {
+    workflowId: runId,
+    backend: durableBackend,
+    nextCheckpointId: checkpointIdGenerator,
+    nextReplayKey: stageReplayKeyGenerator,
+    replayKeyForCompletedStage: (stage: StageSnapshot) => completedStageReplayKeys.get(stage.id),
+  };
+  const userOnStageEnd = opts.onStageEnd;
+  const durableOnStageEnd = async (stageRunId: string, snapshot: StageSnapshot): Promise<void> => {
+    if (stageRunId === runId && snapshot.status === "completed") {
+      await recordStageCheckpoint(durableStageDeps, snapshot);
+      if (opts.persistence && durableBackend.persistent) {
+        const cacheEntry = durableBackend.toCacheEntry(runId);
+        if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+      }
+    }
+    await userOnStageEnd?.(stageRunId, snapshot);
+  };
+  const durableOnStageSession = createDurableStageSessionRecorder({ runId, deps: durableStageDeps, backend: durableBackend, persistence: opts.persistence, onStageSession: opts.onStageSession });
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
     models: opts.models,
@@ -183,7 +228,8 @@ export async function run<
     defaultSessionDir: opts.defaultSessionDir,
     persistence: opts.persistence,
     onStageStart: opts.onStageStart,
-    onStageEnd: opts.onStageEnd,
+    onStageEnd: durableOnStageEnd,
+    onStageSession: durableOnStageSession,
     confirmStageReadiness: opts.confirmStageReadiness,
     usePromptNodesForUi: opts.usePromptNodesForUi,
   };
@@ -210,6 +256,8 @@ export async function run<
     stageControlRegistry: opts.stageControlRegistry,
     onStageStart: opts.onStageStart,
     onStageEnd: opts.onStageEnd,
+    onStageSession: opts.onStageSession,
+    durableBackend,
   };
   const runtime = new EngineRuntime({
     runId,
@@ -238,14 +286,77 @@ export async function run<
     workflowBoundaryReplayCounts.set(name, next);
     return `workflow:${name}:${next}`;
   };
+  // Durable child workflow replay keys use a SEPARATE counter so that cache
+  // hits (which do not invoke the inner workflow runner) do not desync the
+  // ordinal sequence. Without this, repeated ctx.workflow(child) calls would
+  // shift replay keys on resume and re-execute completed children.
+  // cross-ref: issue #1498.
+  const durableChildReplayCounts = new Map<string, number>();
+  const nextDurableChildReplayKey = (name: string): string => {
+    const next = (durableChildReplayCounts.get(name) ?? 0) + 1;
+    durableChildReplayCounts.set(name, next);
+    return `workflow:${name}:${next}`;
+  };
   const taskRunners = createWorkflowTaskRunners({ runtime });
+  // Durable scope holder: the durable child primitive publishes the scope for
+  // the next child invocation; the child runner consumes it when launching the
+  // run. This routes child internal side-effect checkpoints under the root.
+  let pendingChildDurableScope: DurableScope | undefined;
   const workflow = createChildWorkflowRunner({
     runtime,
     resolveWorkflowCwd,
     nextWorkflowBoundaryReplayKey,
+    consumeDurableScope: () => {
+      const scope = pendingChildDurableScope;
+      pendingChildDurableScope = undefined;
+      return scope;
+    },
     runWorkflow: run,
   });
 
+  // Durable workflow registration — register this run for cross-session discovery.
+  if (opts.continuation === undefined && opts.parentRun === undefined) {
+    // New root run: register it durably so a future session can discover it.
+    durableBackend.registerWorkflow({
+      workflowId: runId,
+      name: def.name,
+      inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+      createdAt: runSnapshot.startedAt,
+      status: "running",
+      rootWorkflowId: runId,
+      resumable: true,
+      ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
+    });
+  } else if (opts.parentRun === undefined) {
+    // Resuming a root workflow: mark it as running again in the backend.
+    durableBackend.setWorkflowStatus(runId, "running");
+  }
+  const tool = createToolPrimitive({
+    workflowId: runId,
+    backend: durableBackend,
+    nextCheckpointId: checkpointIdGenerator,
+    throwIfCancelled: () => {
+      if (ownController.signal.aborted) {
+        throw new Error("atomic-workflows: workflow cancelled");
+      }
+    },
+    signal: ownController.signal,
+  });
+
+  // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
+  const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
+  const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void =>
+    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, output, completedStageReplayKeys);
+  const durableTask = createDurableTaskPrimitive({
+    workflowId: runId, backend: durableBackend,
+    nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
+    recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
+  });
+  const durableWorkflow = createDurableChildWorkflowPrimitive({
+    workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
+    nextReplayKey: nextDurableChildReplayKey, setChildDurableScope: (scope) => { pendingChildDurableScope = scope; },
+    recordCachedStage, workflow,
+  });
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,
     get cwd() { return resolveWorkflowCwd(); },
@@ -253,6 +364,7 @@ export async function run<
     ui: buildExitGatedUiContext({
       opts,
       throwIfWorkflowExitSelected: exit.throwIfWorkflowExitSelected,
+      durableUi: durableUiDeps,
       baseFromPromptNodes: () => buildPromptNodeUiAdapter({
         runId,
         activeStore,
@@ -267,11 +379,23 @@ export async function run<
         classifyExecutorFailure,
       }),
     }),
-    stage: runtime.stage,
-    task: taskRunners.task,
-    chain: taskRunners.chain,
-    parallel: taskRunners.parallel,
-    workflow,
+    stage: createDurableStagePrimitive({
+      workflowId: runId,
+      backend: durableBackend,
+      nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName),
+      recordCachedStage,
+      stage: (name, options, replayKey) => {
+        const stage = runtime.stage(name, options);
+        const stageId = activeStore.runs().find((r) => r.id === runId)?.stages.at(-1)?.id;
+        if (stageId !== undefined) completedStageReplayKeys.set(stageId, replayKey);
+        return stage;
+      },
+    }),
+    task: durableTask,
+    chain: createChainPrimitive({ runtime, task: durableTask }),
+    parallel: createParallelPrimitive({ runtime, task: durableTask }),
+    workflow: durableWorkflow,
+    tool,
   };
 
   try {
@@ -298,8 +422,15 @@ export async function run<
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
     assertWorkflowCreatedStage(runSnapshot);
+    await durableBackend.flush?.();
     const recorded = activeStore.recordRunEnd(runId, "completed", result);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: "completed", result, ts: Date.now() });
+    durableBackend.setWorkflowStatus(runId, "completed");
+    await durableBackend.flush?.();
+    if (opts.persistence && durableBackend.persistent) {
+      const cacheEntry = durableBackend.toCacheEntry(runId);
+      if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
+    }
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "completed", result }, opts.onRunEnd);
   } catch (err) {
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
@@ -351,6 +482,17 @@ export async function run<
     });
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);
   } finally {
+    // Persist final durable status for cross-session resume discovery.
+    // Covers ctx.exit terminal states and failure/kill paths; normal
+    // completion is handled in the try block.
+    // cross-ref: issue #1498
+    await finalizeDurableTerminalStatus({
+      runId,
+      runSnapshot,
+      isRoot: opts.parentRun === undefined,
+      durableBackend,
+      persistence: opts.persistence,
+    });
     opts.cancellation?.unregister(runId);
   }
 }

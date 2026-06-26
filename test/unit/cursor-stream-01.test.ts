@@ -224,7 +224,7 @@ describe("CursorStreamAdapter", () => {
 		const secondEvents = await collectEventsWithTimeout(adapter.streamSimple(model(), resumeContext, { apiKey: "access-secret", sessionId: "session-timeout-resume" }), 250);
 
 		assert.equal(transport.requests.length, 1);
-		assert.deepEqual(transport.stream.writtenToolResults, [{ toolCallId: "tool-timeout", toolName: "Read", text: "file contents", isError: false, execId: "exec-timeout", execNumericId: 1 }]);
+		assert.deepEqual(transport.stream.writtenToolResults, [{ toolCallId: "tool-timeout", toolName: "Read", text: "file contents", content: [{ type: "text", text: "file contents" }], isError: false, execId: "exec-timeout", execNumericId: 1 }]);
 		assert.deepEqual(secondEvents.filter((event) => event.type === "text_delta").map((event) => event.delta), ["after tool"]);
 		assert.equal(secondEvents.at(-1)?.type, "done");
 	});

@@ -21,8 +21,7 @@ import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bast
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
-import { killRun as defaultKillRun } from "../runs/background/status.js";
-import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
+import { quitRun as defaultQuitRun } from "../runs/background/quit.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -119,11 +118,10 @@ export interface BuildGraphOverlayAdapterOpts {
   /** Broker used to route stage-local custom UI into attached stage chats. */
   stageUiBroker?: StageUiBroker;
   /**
-   * Kill hook used by graph-mode `q`. The extension factory supplies this so
-   * persistence can record a terminal event while retaining the run for
-   * inspection.
+   * Quit hook used by graph-mode `q`. This is intentionally distinct from
+   * `/workflow kill`: panel quit leaves durable-progress runs resumable.
    */
-  onKillRun?: (runId: string) => void;
+  onQuitRun?: (runId: string) => void;
   /** Optional clock injection for deterministic attach-pane transition tests. */
   now?: () => number;
 }
@@ -135,8 +133,8 @@ export function buildGraphOverlayAdapter(
 ): GraphOverlayPort {
   const registry = buildOpts.stageControlRegistry ?? defaultStageControlRegistry;
   const stageUiBroker = buildOpts.stageUiBroker;
-  const killRun = buildOpts.onKillRun ?? ((id: string): void => {
-    defaultKillRun(id, { store, cancellation: cancellationRegistry });
+  const quitRun = buildOpts.onQuitRun ?? ((id: string): void => {
+    defaultQuitRun(id, { store, stageControlRegistry: registry });
   });
   let currentView: WorkflowAttachPane | null = null;
   // pi-tui returns an OverlayHandle via `options.onHandle`. We hold onto
@@ -329,7 +327,7 @@ export function buildGraphOverlayAdapter(
         uiStatus,
         onClose: finish,
         onHide: hideMounted,
-        onKill: killRun,
+        onQuit: quitRun,
         initialAttachStageId: stageId,
         piTui: tui,
         piTheme: theme,

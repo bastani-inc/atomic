@@ -139,6 +139,18 @@ describe("renderWidgetLines — standard form", () => {
     assert.ok(lines[2]!.includes("single"), "line 2 should describe mode");
   });
 
+  test("quit run renders resumable quit badge and note", () => {
+    const run: RunSnapshot = {
+      ...makeRun("quit1234", "resume-me", "paused"),
+      exitReason: "quit",
+      resumable: true,
+    };
+    const lines = renderWidgetLines(makeSnap([run]), 120).map(stripAnsi);
+    const joined = lines.join("\n");
+    assert.ok(lines[0]!.includes("BACKGROUND  1 run  1 quit"));
+    assert.ok(joined.includes("quit · resumable via /workflow resume"));
+  });
+
   test("running run shows chain mode when multi-stage", () => {
     const run = makeRun("xyz000aaaa", "deep-research", "running", [
       makeStage("s1", "scout", "completed"),

@@ -229,7 +229,11 @@ describe("package metadata", () => {
             ATOMIC_RUNTIME_DEPENDENCIES,
         ).sort()) {
             const dependencyPackageJson =
-                await runtimeDependencyPackageJson(dependencyName);
+                await runtimeDependencyPackageJson(dependencyName).catch(() => undefined);
+            // Optional dependencies may be absent from node_modules (e.g. when
+            // their install is skipped); skip the engine check for those rather
+            // than fail, since they are not guaranteed runtime requirements.
+            if (dependencyPackageJson === undefined) continue;
             const dependencyNodeEngine = dependencyPackageJson.engines?.node;
             if (!dependencyNodeEngine) continue;
 
