@@ -95,6 +95,7 @@ export class StageChatView implements Component, Focusable {
   private promptScrollOffset!: StageChatViewContext["promptScrollOffset"];
   private promptMaxScroll!: StageChatViewContext["promptMaxScroll"];
   private localPaused!: StageChatViewContext["localPaused"];
+  private mouseScrollCaptureEnabled!: StageChatViewContext["mouseScrollCaptureEnabled"];
   private seenNoticeIds!: StageChatViewContext["seenNoticeIds"];
   private _unsubscribeStore!: StageChatViewContext["_unsubscribeStore"];
   private _unsubscribeHandle!: StageChatViewContext["_unsubscribeHandle"];
@@ -177,7 +178,18 @@ export class StageChatView implements Component, Focusable {
   }
 
   wantsMouseScrollTracking(): boolean {
-    return true;
+    return this.mouseScrollCaptureEnabled;
+  }
+
+  setMouseScrollCaptureEnabled(enabled: boolean): void {
+    if (this.mouseScrollCaptureEnabled === enabled) return;
+    this.mouseScrollCaptureEnabled = enabled;
+    this.requestRender?.();
+  }
+
+  toggleMouseScrollCapture(): boolean {
+    this.setMouseScrollCaptureEnabled(!this.mouseScrollCaptureEnabled);
+    return this.mouseScrollCaptureEnabled;
   }
 
   handleInput(data: string): boolean {
@@ -220,6 +232,7 @@ export class StageChatView implements Component, Focusable {
     void this.promptEditorSubmitFromEnter;
     void this.promptScrollOffset;
     void this.promptMaxScroll;
+    void this.mouseScrollCaptureEnabled;
     void this.seenNoticeIds;
     void this._unsubscribeStore;
     void this._unsubscribeHandle;

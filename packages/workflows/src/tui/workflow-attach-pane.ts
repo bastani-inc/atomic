@@ -19,7 +19,6 @@
  *  - src/tui/stage-chat-view.ts (chat mode Component)
  *  - src/runs/foreground/stage-control-registry.ts (live handles)
  */
-
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
@@ -39,7 +38,6 @@ import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
-
 /**
  * Surface used to write Pi's footer/status tag while the attach pane is
  * mounted. Passing `undefined` clears the slot — required on dispose so
@@ -50,7 +48,6 @@ import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
  */
 import type { AttachUiStatusSurface, WorkflowAttachPaneMode, WorkflowAttachPaneOpts } from "./workflow-attach-pane-types.js";
 const ENTER_TRANSITION_QUARANTINE_MS = 200;
-
 export class WorkflowAttachPane implements Component {
   private store: Store;
   private theme: GraphTheme;
@@ -73,7 +70,6 @@ export class WorkflowAttachPane implements Component {
   private getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
   private footerData?: ReadonlyFooterDataProvider;
   private now: () => number;
-
   private mode: WorkflowAttachPaneMode = "graph";
   private visible = true;
   private graphView: GraphView;
@@ -366,7 +362,11 @@ export class WorkflowAttachPane implements Component {
     if (!this.visible) return false;
     if (this.mode === "stage-chat" && this.chatView) {
       if (this._shouldQuarantineStagePromptEnter(data)) return true;
-      return this.chatView.handleInput(data);
+      const beforeMouseTracking = this.chatView.wantsMouseScrollTracking();
+      const handled = this.chatView.handleInput(data);
+      const afterMouseTracking = this.chatView?.wantsMouseScrollTracking();
+      if (afterMouseTracking !== undefined && afterMouseTracking !== beforeMouseTracking) this._syncMouseScrollTracking();
+      return handled;
     }
     if (this._shouldQuarantineGraphEnter(data)) return true;
     return this.graphView.handleInput(data);

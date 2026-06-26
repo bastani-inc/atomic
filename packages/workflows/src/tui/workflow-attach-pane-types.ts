@@ -73,8 +73,9 @@ export interface WorkflowAttachPaneOpts {
   requestFocus?: () => void;
   /**
    * Host hook for terminal mouse reporting. Graph mode uses wheel input
-   * for canvas scrolling; stage-chat mode uses it for transcript history
-   * scrolling and drops non-wheel mouse bytes before they reach the editor.
+   * for canvas scrolling. Stage-chat mode leaves reporting off by default
+   * so terminal text selection works, and enables it only while the user
+   * explicitly toggles mouse-scroll capture for transcript/prompt scrolling.
    */
   setMouseScrollTracking?: (enabled: boolean) => void;
   /** Optional clock injection for deterministic transition-quarantine tests. */

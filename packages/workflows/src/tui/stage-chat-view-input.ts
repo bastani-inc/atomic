@@ -30,6 +30,11 @@ export function handleStageChatInput(
   ctx: StageChatViewContext,
   data: string,
 ): boolean {
+  if (matchesKey(data, Key.ctrl("t"))) {
+    ctx.mouseScrollCaptureEnabled = !ctx.mouseScrollCaptureEnabled;
+    ctx.requestRender?.();
+    return true;
+  }
   if (ctx.mountedCustomUi) {
     return handleMountedCustomUiInput(ctx, data);
   }

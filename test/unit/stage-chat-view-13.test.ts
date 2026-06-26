@@ -10,6 +10,62 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
+    test("does not request terminal mouse tracking so text stays selectable", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle();
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+        });
+
+        assert.equal(view.wantsMouseScrollTracking(), false);
+        view.dispose();
+    });
+
+    test("ctrl+t toggles explicit mouse-scroll capture mode for terminal key encodings", () => {
+        const ctrlTInputs = [
+            "\x14",
+            "\x1b[116;5u",
+            "\x1b[116;5:1u",
+            "\x1b[27;5;116~",
+        ];
+
+        for (const input of ctrlTInputs) {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a");
+            const { handle } = makeHandle();
+            let renderRequests = 0;
+            const view = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {},
+                requestRender: () => {
+                    renderRequests++;
+                },
+            });
+
+            assert.equal(view.wantsMouseScrollTracking(), false);
+            assert.equal(view.handleInput(input), true);
+            assert.equal(view.wantsMouseScrollTracking(), true);
+            assert.equal(view.handleInput(input), true);
+            assert.equal(view.wantsMouseScrollTracking(), false);
+            assert.equal(renderRequests, 2);
+            view.dispose();
+        }
+    });
+
     test("expands the chat surface to the reported viewport row count", () => {
         // Full-screen overlay: when the host surfaces terminal.rows
         // through `getViewportRows`, the renderer must paint that many

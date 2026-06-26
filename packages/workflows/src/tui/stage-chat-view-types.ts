@@ -19,6 +19,7 @@ export const VIEW_LINE_COUNT = 32;
 export const PROMPT_SCROLL_STEP_ROWS = 4;
 export const HEADER_ROWS = 1;
 export const SEP_ROWS = 1;
+export const STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL = "ctrl+t";
 
 export function isReadOnlyArchiveStatus(status: StageStatus): boolean {
   return status === "completed" || status === "failed" || status === "skipped";
@@ -144,6 +145,7 @@ export interface StageChatViewContext {
   promptScrollOffset: number;
   promptMaxScroll: number;
   localPaused: boolean;
+  mouseScrollCaptureEnabled: boolean;
   seenNoticeIds: Set<string>;
   _unsubscribeStore: (() => void) | null;
   _unsubscribeHandle: (() => void) | null;
