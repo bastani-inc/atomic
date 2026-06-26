@@ -181,17 +181,6 @@ export class StageChatView implements Component, Focusable {
     return this.mouseScrollCaptureEnabled;
   }
 
-  setMouseScrollCaptureEnabled(enabled: boolean): void {
-    if (this.mouseScrollCaptureEnabled === enabled) return;
-    this.mouseScrollCaptureEnabled = enabled;
-    this.requestRender?.();
-  }
-
-  toggleMouseScrollCapture(): boolean {
-    this.setMouseScrollCaptureEnabled(!this.mouseScrollCaptureEnabled);
-    return this.mouseScrollCaptureEnabled;
-  }
-
   handleInput(data: string): boolean {
     return handleStageChatInput(this._ctx(), data);
   }
