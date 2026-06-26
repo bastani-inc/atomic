@@ -54,7 +54,6 @@ import type {
     ExtensionRuntime,
     ChatSurfacePayload,
     SessionEntry,
-    PiCustomComponent,
     PiCustomOverlayFactoryTui,
     PiCustomOverlayFunction,
     PiCustomOverlayOptions,
@@ -63,8 +62,8 @@ import type {
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
 
-describe("/workflow resume <runId> — overlay open + no legacy message", () => {
-    test.serial("seeds active run; /workflow resume calls overlay.open with overlay:true", async () => {
+describe("/workflow resume <runId> — active run is refused", () => {
+    test.serial("resuming an already-running run refuses and points at /workflow connect", async () => {
         const runId = `resume-slash-overlay-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
@@ -72,29 +71,10 @@ describe("/workflow resume <runId> — overlay open + no legacy message", () => 
         const { pi, commands } = buildMockPi();
         addFactoryStubs(pi);
         const customFn: PiCustomOverlayFunction = (
-            factoryArg,
+            _factoryArg,
             options: PiCustomOverlayOptions,
         ) => {
             openCalls.push({ overlay: options.overlay });
-            // Mirror Pi's runtime: invoke the factory and surface a handle
-            // so the adapter has the same control surface it would in prod.
-            const handle: PiOverlayHandle = {
-                hide: () => undefined,
-                setHidden: () => undefined,
-                isHidden: () => false,
-                focus: () => undefined,
-                unfocus: () => undefined,
-                isFocused: () => true,
-            };
-            options.onHandle?.(handle);
-            const tui: PiCustomOverlayFactoryTui = {
-                requestRender: () => undefined,
-            };
-            const component = factoryArg(tui, {}, {}, () => undefined);
-            if (component instanceof Promise)
-                throw new Error("expected sync factory");
-            // Touch render so the GraphView's render path is exercised.
-            (component as PiCustomComponent).render(80);
             return undefined;
         };
         pi.ui = {
@@ -118,8 +98,12 @@ describe("/workflow resume <runId> — overlay open + no legacy message", () => 
 
         await workflowCmd.options.handler(`resume ${runId}`, ctx);
 
-        assert.ok(openCalls.length > 0);
-        assert.equal(openCalls[0].overlay, true);
+        // Active workflows must not be re-resumed: no overlay opens and the
+        // user is steered toward `/workflow connect`.
+        assert.equal(openCalls.length, 0);
+        const joined = msgs.join("\n");
+        assert.match(joined, /already running/);
+        assert.match(joined, /\/workflow connect/);
     });
 
     test.serial("active run resume output does NOT include 'still active — no resume needed'", async () => {

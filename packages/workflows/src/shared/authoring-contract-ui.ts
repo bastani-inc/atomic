@@ -104,6 +104,35 @@ export interface WorkflowRunContext<
     ...args: WorkflowRunChildArgs<TChildRunInputs>
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   readonly ui: WorkflowUIContext;
+  /**
+   * Durable cached tool execution. Runs arbitrary TypeScript code and caches
+   * the result durably so completed side effects are not repeated on resume.
+   * Only `ctx.*` blocks (tool, ui, stage, task, chain, parallel, workflow)
+   * produce durable checkpoints.
+   *
+   * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+   */
+  tool: WorkflowToolPrimitive;
+}
+
+/**
+ * `ctx.tool` primitive signature. Runs an async function and caches the result.
+ */
+export interface WorkflowToolPrimitive {
+  <TValue extends WorkflowSerializableValue>(
+    name: string,
+    args: Readonly<Record<string, WorkflowSerializableValue>>,
+    fn: () => Promise<TValue>,
+    options?: WorkflowToolOptions,
+  ): Promise<TValue>;
+}
+
+/** Options for `ctx.tool`. */
+export interface WorkflowToolOptions {
+  readonly retriesAllowed?: boolean;
+  readonly maxAttempts?: number;
+  readonly intervalMs?: number;
+  readonly backoffRate?: number;
 }
 
 export type WorkflowRunFn<
@@ -206,7 +235,7 @@ export interface RunOpts {
   readonly parentRun?: WorkflowParentRunLink;
   readonly onRunStart?: (snapshot: RunSnapshot) => void;
   readonly onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
-  readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
+  readonly onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
   readonly onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 

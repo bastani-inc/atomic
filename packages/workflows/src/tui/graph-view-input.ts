@@ -133,19 +133,14 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       }
       return true;
     }
-    // `q` requests kill confirmation for a live run. The host closes
-    // only after confirmation; when there is no live target, restore the
-    // legacy close/fall-through behavior instead of swallowing the key.
-    // `h` hides the pane via the overlay's setHidden() flag (not unmount);
-    // Escape/Ctrl+C closes.
+    // `q` requests quit confirmation for a live run. The host closes only
+    // after confirmation; when there is no live target, restore the legacy
+    // close/fall-through behavior instead of swallowing the key. This is a
+    // resumable quit/detach, not the `/workflow kill` terminal path.
     if (matchesKey(data, "q")) {
       const run = this._getCurrentRun();
-      const targetRunId = this._focusedStageTarget()?.runId ?? run?.id;
-      const targetRun = targetRunId !== undefined
-        ? this.currentSnapshot?.runs.find((candidate) => candidate.id === targetRunId)
-        : undefined;
-      if (targetRun && targetRun.endedAt === undefined && this.onKill) {
-        this.onKill(targetRun.id);
+      if (run && run.endedAt === undefined && this.onQuit) {
+        this.onQuit(run.id);
         return true;
       }
       if (this.onClose) {
@@ -283,13 +278,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     };
     this.onStageAttach(target.runId, target.stageId);
     return true;
-  }
-
-  private _focusedStageTarget(): { runId: string; stageId: string } | undefined {
-    const node = this.cachedLayout[this.focusedIndex];
-    if (!node) return undefined;
-    const target = expandedStageTarget(this.expandedGraph, node.stage.id);
-    return target ? { runId: target.runId, stageId: target.stageId } : undefined;
   }
 
   private _setFocusedIndex(index: number): void {

@@ -268,6 +268,10 @@ describe("dispatch run forwards persistence", () => {
     return { persistence, calls };
   }
 
+  function lifecycleTypes(calls: Array<{ type: string }>): string[] {
+    return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+  }
+
   const stageWorkflow = workflow({
     name: "dispatch-persist-test",
     description: "",
@@ -299,7 +303,7 @@ describe("dispatch run forwards persistence", () => {
     }
 
     assert.deepEqual(
-      calls.map((c) => c.type),
+      lifecycleTypes(calls),
       [
         "workflow.run.start",
         "workflow.stage.start",

@@ -408,6 +408,52 @@ test("session_shutdown quit disposes retained completed stage handles", async ()
   assert.equal(stageControlRegistry.get("run-1", "stage-1"), undefined);
 });
 
+test("session_shutdown quit leaves in-flight workflows resumable", async () => {
+  let disposed = 0;
+  store.recordRunStart(workflowRun({
+    id: "quit-run",
+    stages: [{
+      id: "stage-quit",
+      name: "live-stage",
+      status: "running",
+      parentIds: [],
+      startedAt: Date.now(),
+      toolEvents: [],
+    }],
+  }));
+  stageControlRegistry.register({
+    runId: "quit-run",
+    stageId: "stage-quit",
+    stageName: "live-stage",
+    status: "running",
+    sessionId: "session-quit",
+    sessionFile: "/tmp/session-quit.jsonl",
+    isStreaming: true,
+    messages: [],
+    async ensureAttached() {},
+    async prompt() {},
+    async steer() {},
+    async followUp() {},
+    async pause() {},
+    async resume() {},
+    subscribe() { return () => {}; },
+    dispose() { disposed += 1; },
+  });
+
+  const handlers = captureHandlers();
+  const sessionShutdown = handlers.get("session_shutdown");
+  assert.notEqual(sessionShutdown, undefined);
+
+  await sessionShutdown?.({ reason: "quit" });
+
+  const run = store.runs().find((candidate) => candidate.id === "quit-run");
+  assert.equal(run?.endedAt, undefined);
+  assert.equal(run?.status, "paused");
+  assert.equal(run?.exitReason, "quit");
+  assert.equal(run?.resumable, true);
+  assert.equal(disposed, 1);
+});
+
 test("session_start removes ask_user_question but keeps workflow in non-interactive sessions", async () => {
   const { handlers, setCalls } = captureHandlersWithActiveTools([
     "read",

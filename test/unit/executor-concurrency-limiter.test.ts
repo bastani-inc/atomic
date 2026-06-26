@@ -202,6 +202,51 @@ describe("executor.run — concurrency limiter", () => {
         // The "ok" stage ran after the failed stage released its slot
         assert.equal(completedCount, 1);
     });
+
+    test("concurrency limiter releases and rethrows stage finalization failure", async () => {
+        let completedCount = 0;
+
+        const def = workflow({
+          name: "conc-finalize-fail-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
+                const [first, second] = await Promise.allSettled([
+                    ctx.stage("finalize-fails").prompt("first"),
+                    ctx.stage("after-finalize-failure").prompt("second"),
+                ]);
+                assert.equal(first.status, "rejected");
+                assert.match(first.reason instanceof Error ? first.reason.message : String(first.reason), /finalize boom/);
+                if (second.status === "fulfilled") completedCount++;
+                return {};
+            },
+        });
+
+        const result = await run(
+            def,
+            {},
+            {
+                config: {
+                    defaultConcurrency: 1,
+                    maxDepth: 10,
+                    persistRuns: false,
+                    statusFile: false,
+                    resumeInFlight: "never",
+                },
+                store: createStore(),
+                adapters: {
+                    prompt: { prompt: async (text) => text },
+                },
+                onStageEnd: (_runId, stage) => {
+                    if (stage.name === "finalize-fails") throw new Error("finalize boom");
+                },
+            },
+        );
+
+        assert.equal(result.status, "completed");
+        assert.equal(completedCount, 1);
+    });
 });
 
 // ---------------------------------------------------------------------------

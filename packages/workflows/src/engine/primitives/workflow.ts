@@ -17,11 +17,18 @@ import {
   workflowChildReplaySnapshot,
   workflowDefinitionRequirementMessage,
 } from "../../runs/foreground/executor-child-helpers.js";
+import type { DurableScope } from "../../durable/scoped-backend.js";
 
 export function createChildWorkflowRunner(input: {
   readonly runtime: EngineRuntime;
   readonly resolveWorkflowCwd: () => string;
   readonly nextWorkflowBoundaryReplayKey: (name: string) => string;
+  /**
+   * Consume the durable scope published by the durable child primitive for the
+   * current invocation, if any. Routes child internal side-effect checkpoints
+   * under the root workflow.
+   */
+  readonly consumeDurableScope?: () => DurableScope | undefined;
   readonly runWorkflow: <
     TInputs extends WorkflowInputValues,
     TRunInputs extends WorkflowInputValues = TInputs,
@@ -100,6 +107,7 @@ export function createChildWorkflowRunner(input: {
         },
         signal: childController.signal,
         deferWorkflowStart: false,
+        ...(input.consumeDurableScope !== undefined ? { durableScope: input.consumeDurableScope() } : {}),
       });
       boundary.observeChildRun(childRunPromise);
       const childRun = await childRunPromise;

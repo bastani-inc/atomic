@@ -60,7 +60,7 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("kills the focused expanded child workflow run", () => {
+  it("quits the top-level workflow instead of killing a focused child", () => {
     const rootBoundary: StageSnapshot = {
       ...makeStage("workflow:child"),
       status: "running",
@@ -86,19 +86,19 @@ describe("GraphView keyboard navigation", () => {
       notices: [],
       version: 1,
     };
-    const killed: string[] = [];
+    const quit: string[] = [];
     const view = new GraphView({
       mode: "overlay",
       runId: "run-1",
       store: makeStore(snap),
       graphTheme: defaultTheme,
       initialFocusedStageId: "child-first",
-      onKill: (runId) => killed.push(runId),
+      onQuit: (runId) => quit.push(runId),
     });
 
     view.handleInput("q");
 
-    assert.deepEqual(killed, ["child-run"]);
+    assert.deepEqual(quit, ["run-1"]);
     view.dispose();
   });
 

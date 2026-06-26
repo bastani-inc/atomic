@@ -230,17 +230,17 @@ function assertNextGraphEnterAttaches(
 }
 
 describe("WorkflowAttachPane", () => {
-    test("q requests host kill confirmation without closing speculatively", () => {
+    test("q requests host quit confirmation without closing speculatively", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        let requestedKillRunId: string | undefined;
+        let quitRunId: string | undefined;
         let closed = 0;
         const pane = new WorkflowAttachPane({
             store,
             graphTheme: deriveGraphTheme({}),
             runId: "run-1",
-            onKill: (runId) => {
-                requestedKillRunId = runId;
+            onQuit: (runId) => {
+                quitRunId = runId;
             },
             onClose: () => {
                 closed += 1;
@@ -250,7 +250,10 @@ describe("WorkflowAttachPane", () => {
 
         assert.equal(pane.handleInput("q"), true);
 
-        assert.equal(requestedKillRunId, "run-1");
+        // `q` requests a resumable quit/detach and lets the host confirm it.
+        // The pane must not close speculatively before that confirmation path
+        // decides to quit and dismiss the overlay.
+        assert.equal(quitRunId, "run-1");
         assert.equal(closed, 0);
         assert.equal(store.runs().find((run) => run.id === "run-1")?.status, "running");
         assert.equal(pane._mode, "graph");

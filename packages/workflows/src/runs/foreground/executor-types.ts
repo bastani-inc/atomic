@@ -70,6 +70,22 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   runId?: string;
   /** Replay completed stages from a failed source run, then resume at this stage. */
   continuation?: RunContinuationOpts;
+  /**
+   * Durable workflow backend override (for testing). Defaults to the global
+   * backend resolved by `getDurableBackend()`.
+   *
+   * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+   */
+  durableBackend?: import("../../durable/backend.js").DurableWorkflowBackend;
+  /**
+   * Durable scope for a child workflow run. When set, the child's internal
+   * `ctx.tool`/`ctx.ui`/`ctx.stage` checkpoints are routed under the root
+   * workflow id with a stable boundary prefix so an interrupted child does
+   * not re-execute completed side effects on parent resume.
+   *
+   * cross-ref: issue #1498.
+   */
+  durableScope?: import("../../durable/scoped-backend.js").DurableScope;
   /** Internal parent linkage for nested ctx.workflow(...) runs. */
   parentRun?: {
     readonly runId: string;
@@ -78,7 +94,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   };
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
-  onStageEnd?: (runId: string, snapshot: StageSnapshot) => void;
+  onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
+  onStageSession?: (runId: string, snapshot: StageSnapshot) => unknown;
   onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 
@@ -94,7 +111,7 @@ export interface RunResult<TOutputs extends WorkflowOutputValues = WorkflowOutpu
 }
 
 export interface ParallelFailFastStage {
-  readonly skip: () => void;
+  readonly skip: () => Promise<void>;
 }
 
 export interface ParallelFailFastScope {

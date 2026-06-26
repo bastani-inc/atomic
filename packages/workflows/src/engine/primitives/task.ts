@@ -49,10 +49,10 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
         ...(stageFailFastScope !== undefined ? { failFastScope: stageFailFastScope } : {}),
       });
       const stage = stageHandle.context;
-      const rawOutput = await stage.prompt(
-        applyTaskContext(`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`, taskPrevious(resolvedTaskOptions)),
-        taskPromptOptions(resolvedTaskOptions),
-      );
+      const promptText = resolvedTaskOptions.resumeFromSessionFile !== undefined
+        ? "Continue"
+        : applyTaskContext(`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`, taskPrevious(resolvedTaskOptions));
+      const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));
       const structured = typeof rawOutput === "string" ? undefined : rawOutput;
       const text = truncateTaskOutput(structuredTaskOutputText(rawOutput), resolvedTaskOptions.maxOutput);
       const sessionId = (() => {

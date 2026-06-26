@@ -389,6 +389,8 @@ Named runs go to the background. Common controls:
 
 When a paused stage is resumed with a message, Atomic lets the stage answer that resume message, then (if the stage has not already finalized) injects `Continue where you left off.` into the same stage session before normal stage completion/readiness handling. This keeps interrupted work moving without asking you to manually type a second continuation prompt.
 
+Workflow stage sessions are marked as **internal** and excluded from the standard `/resume`, `atomic -r`, and `--continue` history so they do not clutter your interactive session picker. They remain resumable and inspectable through the workflow-specific commands and tool actions shown here (`/workflow resume`, `/workflow attach`, `workflow({ action: "status" | "stages" | "stage" | "resume" })`), which read the run/stage store and its `sessionFile` links directly. Passing a stage session's file path to `--session` still opens it explicitly. Legacy workflow sessions created before this marker behavior lack the signal and will continue to appear in the standard history until they age out.
+
 Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
 
 `ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Inline connected rendering is supported; `overlay: true` is rejected clearly because nested workflow graph overlays are not safely supported yet.
@@ -915,6 +917,88 @@ Control behavior:
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, surface that to the user instead of polling silently.
+
+## Durable Workflows and Cross-Session Resume
+
+Atomic workflows support **cross-session resumability** via a durable workflow backend. When a workflow is started, its `ctx.*` operations (tool, ui, stage, task, chain, parallel, workflow) are checkpointed durably so a new session can resume from the last completed checkpoint without re-running completed work.
+
+### How it works
+
+- **Durable backend seam**: The workflow engine uses a pluggable `DurableWorkflowBackend` interface with three implementations: per-workflow file-backed (default, zero-infrastructure cross-process resume under `~/.atomic/workflow-durable`), DBOS-backed (Postgres), and in-memory (explicit test/custom overrides or privacy opt-out). Cross-session resume is enabled by default; no environment variable is required for normal file-backed checkpoint persistence. If `DBOS_SYSTEM_DATABASE_URL` is set, Atomic lazily loads [DBOS](https://docs.dbos.dev/typescript/programming-guide), calls `DBOS.launch()`, and upgrades to Postgres-backed workflow/control records; if DBOS is unavailable, the file-backed store remains the safe fallback.
+- **Only `ctx.*` blocks are checkpointed**: Anything outside `ctx.*` (bare `await someFunction()`) is never saved. This matches the principle that checkpoints are effectively only `ctx.*` blocks.
+- **Durable `ctx.tool`**: `ctx.tool(name, args, fn)` runs TypeScript and caches the result by stable call order plus content hash of `name` + `args`. Repeated same-name/same-args calls are distinct within one workflow and replay in order after resume. DBOS-backed checkpoint writes are serialized and awaited before the tool returns, so a completed side effect is not exposed to workflow code before its checkpoint is durable; retry backoff observes workflow cancellation before later attempts run.
+- **Durable `ctx.ui`**: Completed `ctx.ui.input` / `confirm` / `select` / `editor` / `custom` responses are cached by prompt identity, including prompt kind, label/message, options, and call order so repeated prompts do not collide. On resume an already-answered prompt returns its cached response instead of re-asking the user, including `ctx.ui.custom` prompts that intentionally complete with `undefined`/void.
+- **Durable `ctx.stage` / `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.workflow`**: Completed stage-like operations are recorded with stable replay keys. `ctx.chain` and `ctx.parallel` reuse the durable task primitive for each item, and child `ctx.workflow` calls checkpoint the completed child result at the parent workflow boundary with a dedicated replay-key counter so repeated same-child calls do not desync ordinal sequencing across resume. Schema-backed `ctx.stage(..., { schema }).prompt(...)` checkpoints preserve the parsed structured value, not just the rendered text. The live stage finalizer awaits durable writes before returning control where practical; if finalization fails, Atomic releases stage handles and concurrency limiter slots before reporting the finalization error instead of marking the workflow completed without a durable checkpoint. Workflow terminal status — including `ctx.exit` terminal states (`cancelled`, `blocked`, `skipped`) — is flushed to durable metadata before the run reports completion. On resume, cached operations are skipped and represented in the workflow graph as completed durable-replay nodes so status/overlay views still show progress.
+- **Session-file cache**: Because the default backend is persistent, top-level workflow metadata is mirrored as Atomic custom entries (`customType: "workflow.durable.checkpoint"`) in the session JSONL so a new session can discover resumable root workflows without scanning the durable store directly. Child workflows are hidden from this catalog. The durable backend remains the checkpoint source of truth; the session cache is a discovery index. `/workflow resume` refuses a cache-only entry as `stale` when a root workflow has session metadata but no checkpoint state in the durable backend, instead of silently re-running from scratch — re-run the workflow explicitly to start fresh.
+- **Child side-effect scoping**: A child workflow launched via `ctx.workflow(child)` checkpoints its internal `ctx.tool`/`ctx.ui`/`ctx.stage` side effects under the parent (root) durable workflow, keyed by a stable child-boundary scope. If the parent is interrupted while a child is mid-flight, resuming the parent re-runs the child but replays the child's already-completed side effects from the root store instead of re-executing them (no split-brain per-run UUID checkpoints).
+- **Crash-safe file backend**: Default file-backed durability stores each root workflow in its own lock-protected JSON file under `~/.atomic/workflow-durable` instead of one shared state file. Completed/cancelled/non-resumable terminal workflow files are pruned, writes use `0700` directories and `0600` state/owner files where the platform supports chmod, and stale locks are reclaimed only when their owner marker belongs to a dead process. If Atomic cannot resolve `HOME`/`USERPROFILE`, it fails closed to in-memory durability instead of writing state under `/tmp`. Durable replay identities use a SHA-256 digest over canonical JSON so distinct tool/stage identities never collide.
+
+**Privacy and retention.** File and DBOS durability persist workflow inputs, completed `ctx.tool` outputs, answered `ctx.ui` responses, stage outputs, and stage-session paths as plaintext durable state so replay can skip completed work. Treat `~/.atomic/workflow-durable` and the configured DBOS database as sensitive. To opt out of cross-session checkpoint persistence for a session, start Atomic with `ATOMIC_WORKFLOW_DURABLE=0` (also accepts `false`, `off`, `memory`, or `in-memory`); workflows then use process-local in-memory durability and cannot be resumed after the process exits.
+
+The default file backend prunes completed, cancelled, and explicitly non-resumable failed/blocked workflow files when terminal status is recorded. Running, paused (quit), and recoverably failed workflows with checkpoint progress are retained indefinitely by design so crash recovery and `/workflow resume` remain available across sessions. Use `/workflow kill <id>` to mark a durable workflow cancelled/non-resumable and remove its file-backed state, or delete the corresponding `workflow-<encoded-id>.json` file under `~/.atomic/workflow-durable` if you intentionally want to discard abandoned resumable state outside Atomic.
+
+**Resume after editing a workflow.** Replay identity is based on workflow id plus each `ctx.*` call's stable content hash and ordinal. Editing a workflow between quit/crash and resume can intentionally invalidate or shift checkpoints: changed prompts/arguments/stage names re-run, and inserted/reordered `ctx.*` calls may not match old ordinal checkpoints. Prefer finishing or killing old durable runs before deploying reordered workflow definitions; otherwise treat resume as best-effort from compatible checkpoint identities.
+
+### `ctx.tool` — durable cached tool execution
+
+The `ctx.tool(name, args, fn, options?)` primitive runs arbitrary TypeScript code and caches the result durably. On resume, if that ordinal tool call already completed (matched by call order plus content hash of `name` + `args`), the cached result is returned without re-executing the function — ensuring completed side effects are not repeated while still allowing two intentional same-name/same-args calls in one workflow.
+
+```ts
+export default workflow({
+  name: "data-pipeline",
+  inputs: { source: Type.String() },
+  run: async (ctx) => {
+    // This side effect is cached durably. On resume, it will NOT re-execute.
+    const data = await ctx.tool(
+      "fetch-dataset",
+      { source: ctx.inputs.source },
+      async () => {
+        const res = await fetch(ctx.inputs.source);
+        return await res.text();
+      },
+      { retriesAllowed: true, maxAttempts: 3 },
+    );
+
+    // Subsequent stages use the cached result.
+    const analysis = await ctx.task("analyze", { prompt: `Analyze: ${data}` });
+    return { summary: analysis.text };
+  },
+});
+```
+
+### `/workflow resume` — cross-session resume selector
+
+The `/workflow resume` command mirrors `/resume` ergonomics and now uses the same Atomic session-selector tree chrome as `/resume` for its interactive picker. With no id, interactive sessions show one `/resume`-style searchable/threaded selector that lists both live/paused runs and compatible cross-session durable workflows together, so the user can choose from all resumable workflows in one view. The selector uses async DBOS hydration (`prepareDurableResumable`) so cross-session durable entries discovered from Postgres are included even when live runs exist. Dismissing the selector returns to chat without opening a second picker, and selecting a failed-but-resumable live run uses the normal continuation path rather than opening a read-only snapshot. On a successful durable resume, the overlay connects to the resumed run automatically (matching live resume behavior). Headless sessions print the filtered durable catalog and durable resume dispatch preserves the same non-interactive tool/UI restrictions as normal workflow dispatch. With a target id, Atomic first checks live runs in the current session; when the target id is not a live run, it falls back to the cross-session durable resume catalog and resumes by top-level workflow id, then opens the overlay. Resume re-dispatches the workflow with its cached inputs and the **original workflow id**, so completed `ctx.tool`, `ctx.ui`, stage/task/chain/parallel items, and child workflow boundaries return cached results instead of re-executing — DBOS-style replay without Postgres. Replayed stages preserve graph parent/frontier lineage so subsequent stages connect correctly. Empty string stage outputs are preserved distinctly from undefined/no-result during checkpointing. Stale session-cache entries with no matching durable backend handle are hidden from the selector because they came from older non-checkpointed workflow engines and cannot resume usefully. Durable `running`/`failed`/`blocked` rows whose workflow definition is no longer registered are also hidden from no-arg discovery, which keeps old test or pre-engine rows out of the picker without changing targeted `/workflow resume <id>` diagnostics. Stale cache entries for workflows the durable backend knows are terminal (completed/cancelled/non-resumable) are also suppressed, so terminal workflows cannot be resurrected from old JSONL cache metadata.
+
+```text
+/workflow resume                       # Show resumable workflows (live + durable)
+/workflow resume <workflow-id-or-prefix>  # Resume by top-level id; completed checkpoints replay
+```
+
+The selector displays workflow rows through the same `/resume` tree UI and lists only **inactive, resume-applicable** workflows: paused (quit) or recoverably-failed durable runs with checkpoint progress, plus any live paused/failed runs. Actively-running workflows are hidden from the selector — resuming one that is already executing (in this or another session) would double-dispatch, so `/workflow resume <running-id>` is refused with an intuitive error pointing at `/workflow connect` (to attach) or `/workflow kill` (to clear a stuck run). Quitting the CLI/panel flips the durable handle from `running` to `paused`, which is what makes a workflow re-enter the resumable set; a fresh dispatch or durable resume flips it back to `running`. Running/paused durable rows appear only after the workflow has at least one durable checkpoint or pending checkpointable prompt, so a just-started workflow with no resumable state does not clutter the picker. Eligible LM stages also write their Atomic/Pi session metadata as soon as the stage session opens; on durable resume, Atomic reopens that exact session file and sends `Continue` instead of replaying the original workflow prompt, so repeated quit/resume cycles append to the active LM chat rather than duplicating prompts or emptying prior chats. Completed tool/UI/stage checkpoints still replay all-or-nothing, and successful completion marks the durable handle `completed`, prunes the file-backed state for that workflow, and removes the row once the whole workflow reaches the end. Quitting the CLI is treated as a resumable process boundary rather than explicit workflow cancellation, so durable-progress workflows remain available to `/workflow resume`; use `/workflow kill` when you want a workflow removed as cancelled/non-resumable. If no resumable workflows remain after filtering, interactive `/workflow resume` still opens the same empty selector rather than printing an error, matching `/resume` behavior. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history for discovery, but the durable backend remains authoritative: cache rows without backend checkpoint state are treated as old incompatible metadata and are hidden instead of prompting a stale resume failure. File-backed durability is enabled by default under `~/.atomic/workflow-durable`, so `/workflow resume` can discover cross-session workflows without any setup.
+
+### Cancellation, failure, and retry semantics
+
+| Scenario | Behavior |
+| --- | --- |
+| **Workflow killed/cancelled** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
+| **Stage failure (recoverable)** | Workflow marked `failed` but remains in the resumable list. `/workflow resume <id>` continues from the last completed checkpoint. |
+| **Stage failure (non-recoverable)** | Workflow marked `failed`, not resumable. |
+| **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in the resumable selector. Resume re-executes from the last completed checkpoint. |
+| **`ctx.tool` retry** | When `retriesAllowed: true`, the tool function is retried with exponential backoff. Cancellation is checked before each attempt and during retry backoff, so later attempts do not run after the workflow is cancelled. After exhausting retries, the error propagates and the workflow fails. |
+| **`ctx.ui` pending prompt** | If a UI prompt was not answered before interruption, resume leaves off on that prompt — the user must answer it to continue. |
+
+### Configuring DBOS/Postgres
+
+File-backed durability is the default and requires no setup. For production-grade Postgres-backed checkpointing, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic. The DBOS SDK ships as an optional dependency of `@bastani/atomic`; if it cannot be loaded or Postgres cannot be reached, Atomic emits a warning and continues using the default per-workflow file-backed durable store under `~/.atomic/workflow-durable`.
+
+```bash
+export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
+```
+
+When `/workflow resume` lists or resumes a DBOS-backed workflow in a fresh process, Atomic first hydrates its in-memory replay mirror from DBOS. Checkpoints are stored as structured DBOS outputs containing the checkpoint kind, id, tool argument hash, UI prompt hash, stage replay key, and completed output, so replay can skip completed `ctx.tool`, `ctx.ui`, `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and `ctx.workflow` work without relying on prior in-process state. Atomic updates the in-memory replay mirror for awaited DBOS checkpoints only after DBOS accepts the write, and root metadata is mirrored as versioned DBOS records where the latest timestamp wins during hydration. Older DBOS records that contain only a raw output are still read as generic stage checkpoints.
+
+The default file backend needs no environment variable or database. It writes one lock-protected JSON state file per root workflow in `~/.atomic/workflow-durable`, making cross-session `/workflow resume` immediately available on a normal Atomic install while avoiding shared-state growth across unrelated workflows.
 
 ## Lifecycle Notices and Human Input
 

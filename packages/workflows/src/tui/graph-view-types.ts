@@ -11,10 +11,11 @@ export interface GraphViewOpts {
   onClose?: () => void;
   /**
    * Invoked when the user presses `q` inside the pane on an in-flight
-   * run. The host owns destructive confirmation and closes the pane only
-   * after a confirmed kill; GraphView does not close speculatively.
+   * run. The host owns quit confirmation and closes the pane only after
+   * a confirmed resumable quit; GraphView does not close speculatively.
+   * This must not use the `/workflow kill` terminal path.
    */
-  onKill?: (runId: string) => void;
+  onQuit?: (runId: string) => void;
   /**
    * Invoked when the user presses `h` inside the pane. Hides without
    * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via

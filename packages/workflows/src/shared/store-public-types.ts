@@ -30,6 +30,10 @@ export interface RunEndMetadata {
   readonly exitReason?: string;
 }
 
+export interface RunPauseMetadata {
+  readonly resumable?: boolean;
+  readonly exitReason?: string;
+}
 export interface RunBlockedMetadata extends RunEndMetadata {
   readonly failureRecoverability: "recoverable";
   readonly failedStageId: string;
@@ -204,8 +208,8 @@ export interface Store {
   recordStageBlocked(runId: string, stageId: string, blockedBy: string): boolean;
   recordStageUnblocked(runId: string, stageId: string): boolean;
   recordStageNotice(runId: string, stageId: string, notice: StageNotice): boolean;
-  /** Mark a run as `paused`. */
-  recordRunPaused(runId: string, pausedAt?: number): boolean;
+  /** Mark a run as `paused`. Optional metadata can annotate resumable quit/detach state. */
+  recordRunPaused(runId: string, pausedAt?: number, metadata?: RunPauseMetadata): boolean;
   /** Restore a run from `paused` back to `running`. */
   recordRunResumed(runId: string, resumedAt?: number): boolean;
   /** Drop every run and notice. */
