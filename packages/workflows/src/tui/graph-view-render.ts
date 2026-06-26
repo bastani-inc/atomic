@@ -37,6 +37,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
   protected _renderOverlay(width: number): string[] {
     const frameWidth = Math.max(40, width);
+    this.lastOverlayFrameWidth = frameWidth;
     const lines: string[] = [];
     const run = this._getCurrentRun();
 

@@ -3,6 +3,7 @@ import {
   GRAPH_SCROLL_STEP_ROWS,
 } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
+import { NODE_H, NODE_W } from "./layout.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import {
   defaultResponseFor,
@@ -80,6 +81,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       return true;
     }
 
+    const clickedNodeIndex = this._graphNodeIndexForClick(data);
+    if (clickedNodeIndex !== undefined) {
+      if (clickedNodeIndex !== null) {
+        this._setFocusedIndex(clickedNodeIndex);
+        this._activateFocusedNode();
+      }
+      return true;
+    }
+
     // Vertical-graph navigation: up/down step between depth levels
     // (col), left/right step between siblings at the same depth (row).
     // j/k preserved as a flat-order fallback for muscle memory.
@@ -115,12 +125,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       return true;
     }
     if (matchesKey(data, Key.enter)) {
-      // Enter attaches the popup interior to the focused stage. The
-      // attach shell swaps in the stage-chat view without remounting
-      // the overlay; without a callback, fall back to the legacy
-      // expand/collapse toggle so non-attach hosts still work.
-      if (this._attachFocusedStage()) return true;
-      this.detailsExpanded = !this.detailsExpanded;
+      this._activateFocusedNode();
       return true;
     }
     // `ctrl+d` detaches the whole popup (host hides the overlay). This
@@ -262,6 +267,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return true;
   }
 
+  private _activateFocusedNode(): void {
+    // Enter and direct node clicks attach the popup interior to the focused
+    // stage. The attach shell swaps in the stage-chat view without remounting
+    // the overlay; without a callback, fall back to the legacy expand/collapse
+    // toggle so non-attach hosts still work.
+    if (this._attachFocusedStage()) return;
+    this.detailsExpanded = !this.detailsExpanded;
+  }
+
   private _attachFocusedStage(): boolean {
     if (!this.onStageAttach) return false;
     const node = this.cachedLayout[this.focusedIndex];
@@ -275,7 +289,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return true;
   }
 
-
   private _setFocusedIndex(index: number): void {
     const max = Math.max(0, this.cachedLayout.length - 1);
     const next = Math.max(0, Math.min(index, max));
@@ -287,6 +300,72 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   private _scrollGraphBy(deltaRows: number): void {
     this.pendingEnsureFocusedVisible = false;
     this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
+  }
+
+  private _graphNodeIndexForClick(data: string): number | null | undefined {
+    const click = this._sgrLeftMousePress(data);
+    if (!click) return undefined;
+    if (this.mode !== "overlay" || this.cachedLayout.length === 0) return null;
+
+    const frameWidth = this.lastOverlayFrameWidth;
+    const panelLineCount = this._overlayPanelLineCount();
+    const bodyRows = this._overlayBodyRows(panelLineCount);
+    const bodyStartRow = this._overlayVerticalMarginRows() + 3;
+    const totalGraphRows = Math.max(
+      1,
+      ...this.cachedLayout.map((node) => node.y + NODE_H),
+    );
+    const topPad =
+      totalGraphRows <= bodyRows
+        ? Math.min(3, Math.max(0, Math.floor((bodyRows - totalGraphRows) / 2)))
+        : 0;
+    const graphStartRow = bodyStartRow + topPad;
+    const visibleGraphRows = Math.min(totalGraphRows, bodyRows - topPad);
+    if (click.row < graphStartRow || click.row >= graphStartRow + visibleGraphRows) {
+      return null;
+    }
+
+    const graphInner = Math.max(1, frameWidth - 4);
+    const canvasWidth = this.cachedLayout.reduce(
+      (max, node) => Math.max(max, node.x + NODE_W),
+      0,
+    );
+    const leftMargin = Math.max(
+      2,
+      canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2,
+    );
+    const viewportWidth = Math.max(1, frameWidth - leftMargin);
+    if (click.col < leftMargin || click.col >= leftMargin + viewportWidth) {
+      return null;
+    }
+
+    const graphRow = click.row - graphStartRow + this.graphScrollOffset;
+    const graphCol = click.col - leftMargin + this.graphScrollColOffset;
+    for (let index = 0; index < this.cachedLayout.length; index++) {
+      const node = this.cachedLayout[index]!;
+      if (
+        graphRow >= node.y &&
+        graphRow < node.y + NODE_H &&
+        graphCol >= node.x &&
+        graphCol < node.x + NODE_W
+      ) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
+    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)M$/);
+    if (!sgr) return null;
+    const buttonCode = Number.parseInt(sgr[1]!, 10);
+    if ((buttonCode & 64) !== 0 || (buttonCode & 32) !== 0 || (buttonCode & 3) !== 0) {
+      return null;
+    }
+    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
+    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
+    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
+    return { col: oneBasedCol - 1, row: oneBasedRow - 1 };
   }
 
   private _mouseWheelDeltaRows(data: string): number {
@@ -320,5 +399,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
   get _graphScrollOffset(): number {
     return this.graphScrollOffset;
+  }
+  get _graphScrollColOffset(): number {
+    return this.graphScrollColOffset;
   }
 }

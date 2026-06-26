@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Added direct mouse-click activation for visible workflow graph nodes: clicking a node now focuses it and opens/attaches it through the same path as pressing Enter, while wheel scrolling and empty-space/chrome clicks remain safe no-ops. ([#1521](https://github.com/bastani-inc/atomic/issues/1521))
 - Fixed `/workflow resume`'s interactive picker to reuse the same Atomic `/resume` session-selector tree chrome for live, paused, failed-resumable, and cross-session durable workflows, replacing the hand-rolled durable/combined picker so the selector is cosmetically consistent across resume flows. ([#1498](https://github.com/bastani-inc/atomic/issues/1498))
 - Matched `/resume` empty-state behavior for interactive `/workflow resume` by opening the shared empty selector when no resumable workflow rows remain after filtering instead of printing an error. ([#1498](https://github.com/bastani-inc/atomic/issues/1498))
 - Hid `/workflow resume` selector entries that only exist as stale session-cache metadata with no matching durable backend handle and hid durable `running`/`failed`/`blocked` rows whose workflow definition is no longer registered, filtering old pre-checkpoint-engine/test workflow runs instead of surfacing rows that can only fail as stale or missing-definition. ([#1498](https://github.com/bastani-inc/atomic/issues/1498))

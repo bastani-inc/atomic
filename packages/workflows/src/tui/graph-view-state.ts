@@ -64,6 +64,7 @@ export abstract class GraphViewState {
   protected currentSnapshot: StoreSnapshot | null = null;
   protected graphScrollOffset = 0;
   protected graphScrollColOffset = 0;
+  protected lastOverlayFrameWidth = 80;
   protected pendingEnsureFocusedVisible = true;
   protected lastAutoFocusedAwaitingInputKey: string | null = null;
 
