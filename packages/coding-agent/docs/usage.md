@@ -58,6 +58,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/exit` | Exit Atomic |
 | `/quit` | Quit Atomic |
 
+When workflows are active, `/exit`, `/quit`, and empty-editor Ctrl+D show an exit confirmation. The prompt defaults to cancel so active workflow runs continue unless you explicitly confirm; confirming quits Atomic and cleans up active workflow work during shutdown.
+
 ## Message Queue
 
 You can submit messages while the agent is still working:

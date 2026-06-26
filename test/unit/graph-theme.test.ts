@@ -48,6 +48,38 @@ describe("deriveGraphThemeFromPiTheme", () => {
         assert.deepEqual(out, MOCHA_DEFAULTS);
     });
 
+    test("maps truecolor Pi tokens from receiver-dependent Pi methods", () => {
+        const piTheme = {
+            fgMap: {
+                border: truecolorFg(84, 125, 167),
+                warning: truecolorFg(154, 115, 38),
+                error: truecolorFg(170, 85, 85),
+            },
+            bgMap: {
+                customMessageBg: truecolorBg(244, 244, 245),
+                toolPendingBg: truecolorBg(250, 250, 250),
+            },
+            getFgAnsi(color: string): string {
+                const out = this.fgMap[color as keyof typeof this.fgMap];
+                if (!out) throw new Error(`Unknown theme color: ${color}`);
+                return out;
+            },
+            getBgAnsi(color: string): string {
+                const out = this.bgMap[color as keyof typeof this.bgMap];
+                if (!out) throw new Error(`Unknown theme background color: ${color}`);
+                return out;
+            },
+        };
+
+        const theme = deriveGraphThemeFromPiTheme(piTheme);
+
+        assert.equal(theme.border, "#547da7");
+        assert.equal(theme.warning, "#9a7326");
+        assert.equal(theme.error, "#aa5555");
+        assert.equal(theme.backgroundPanel, "#fafafa");
+        assert.equal(theme.backgroundElement, "#f4f4f5");
+    });
+
     test("maps truecolor Pi tokens onto GraphTheme roles", () => {
         const fgMap: Record<string, string> = {
             accent: truecolorFg(0x12, 0x34, 0x56),

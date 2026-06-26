@@ -68,7 +68,12 @@ function renderHeader(width: number, theme: GraphTheme): string {
   return renderTitledHeader(width, theme, TITLE);
 }
 
-function renderFooter(width: number, theme: GraphTheme): string {
+function renderFooter(
+  width: number,
+  theme: GraphTheme,
+  confirmLabel = "Kill",
+  focusedButton: KillConfirmState["focusedButton"] = 0,
+): string {
   const inner = Math.max(4, width - 2);
   const border = hexToAnsi(theme.border);
   const dim = hexToAnsi(theme.dim);
@@ -76,10 +81,11 @@ function renderFooter(width: number, theme: GraphTheme): string {
   const muted = hexToAnsi(theme.textMuted);
   const sep = `${dim} \u00b7 ${RESET}`;
   const hint = (key: string, label: string) => `${text}${key}${RESET} ${muted}${label}${RESET}`;
+  const enterLabel = focusedButton === 1 ? confirmLabel : "Cancel";
   const line = [
-    hint("y", "Kill"),
+    hint("y", confirmLabel),
     hint("n", "Cancel"),
-    hint(keyText("tui.select.confirm"), "Confirm"),
+    hint(keyText("tui.select.confirm"), enterLabel),
     hint(keyText("tui.select.cancel"), "Cancel"),
   ].join(sep);
   const leftRule = "\u2500\u2500 ";
@@ -90,9 +96,9 @@ function renderFooter(width: number, theme: GraphTheme): string {
   return `${border}\u2570${RESET}${padTo(innerContent, inner)}${border}\u256f${RESET}`;
 }
 
-function renderBlankRow(inner: number, theme: GraphTheme): string {
+function renderBlankRow(inner: number, theme: GraphTheme, background = theme.bg): string {
   const border = hexToAnsi(theme.border);
-  const panelBg = hexBg(theme.bg);
+  const panelBg = hexBg(background);
   return `${border}│${RESET}${panelBg}${" ".repeat(inner)}${RESET}${border}│${RESET}`;
 }
 
@@ -100,9 +106,10 @@ function renderTextRow(
   inner: number,
   theme: GraphTheme,
   content: string,
+  background = theme.bg,
 ): string {
   const border = hexToAnsi(theme.border);
-  const panelBg = hexBg(theme.bg);
+  const panelBg = hexBg(background);
   return `${border}│${RESET}${panelBg}${padTo(content, inner)}${RESET}${border}│${RESET}`;
 }
 
@@ -114,7 +121,7 @@ function renderButton(label: string, focused: boolean, destructive: boolean, the
     return `${bg}${fg}${BOLD}${inner}${RESET}`;
   }
   const fg = destructive ? hexToAnsi(theme.error) : hexToAnsi(theme.textMuted);
-  const bg = hexBg(theme.surface);
+  const bg = hexBg(theme.backgroundElement);
   return `${bg}${fg}${inner}${RESET}`;
 }
 
@@ -132,11 +139,11 @@ export function renderKillConfirm(opts: KillConfirmRenderOpts): string[] {
   const text = hexToAnsi(theme.text);
   const dim = hexToAnsi(theme.dim);
   const muted = hexToAnsi(theme.textMuted);
-  const panelBg = hexBg(theme.bg);
+  const panelBg = hexBg(theme.backgroundPanel);
 
   const lines: string[] = [];
   lines.push(renderHeader(width, theme));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
 
   // Identity row: ⚠  <name>  ·  <idShort>. Keep the destructive dialog
   // width-safe even for wide workflow names.
@@ -146,27 +153,29 @@ export function renderKillConfirm(opts: KillConfirmRenderOpts): string[] {
   const name = truncateToWidth(run.name, nameBudget, "…");
   const identity =
     `   ${warning}\u26a0${RESET}${panelBg}  ${text}${BOLD}${name}${RESET}${panelBg}  ${dim}\u00b7${RESET}${panelBg}  ${muted}${idShort}${RESET}`;
-  lines.push(renderTextRow(inner, theme, identity));
+  lines.push(renderTextRow(inner, theme, identity, theme.backgroundPanel));
 
   // Status sub-line.
   const statusLine = run.endedAt === undefined
     ? `      ${muted}in-flight ${elapsed}, ${stagesRunning}/${stagesTotal} stages running${RESET}`
     : `      ${muted}${run.status} after ${elapsed}, ${stagesTotal} stages${RESET}`;
-  lines.push(renderTextRow(inner, theme, statusLine));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderTextRow(inner, theme, statusLine, theme.backgroundPanel));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
 
   // Body copy.
   lines.push(renderTextRow(
     inner,
     theme,
     `      ${muted}Aborts in-flight work and marks the run killed.${RESET}`,
+    theme.backgroundPanel,
   ));
   lines.push(renderTextRow(
     inner,
     theme,
     `      ${muted}Retains it in history/status for inspection.${RESET}`,
+    theme.backgroundPanel,
   ));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
 
   // Buttons row, centered.
   const cancelBtn = renderButton("Cancel", state.focusedButton === 0, false, theme);
@@ -178,9 +187,9 @@ export function renderKillConfirm(opts: KillConfirmRenderOpts): string[] {
     `${" ".repeat(leftPad)}${cancelBtn}${panelBg}   ${RESET}${killBtn}${panelBg}${" ".repeat(rightPad)}${RESET}`;
   const border = hexToAnsi(theme.border);
   lines.push(`${border}│${RESET}${panelBg}${padTo(buttonsRow, inner)}${RESET}${border}│${RESET}`);
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
 
-  lines.push(renderFooter(width, theme));
+  lines.push(renderFooter(width, theme, "Kill", state.focusedButton));
   return lines;
 }
 
@@ -207,31 +216,35 @@ export function renderWorkflowQuitConfirm(opts: WorkflowQuitConfirmRenderOpts): 
   const text = hexToAnsi(theme.text);
   const muted = hexToAnsi(theme.textMuted);
   const dim = hexToAnsi(theme.dim);
-  const panelBg = hexBg(theme.bg);
+  const panelBg = hexBg(theme.backgroundPanel);
 
   const lines: string[] = [];
   lines.push(renderTitledHeader(width, theme, QUIT_TITLE));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
   lines.push(renderTextRow(
     inner,
     theme,
     `   ${warning}\u26a0${RESET}${panelBg}  ${text}${BOLD}${count} in-flight ${workflowNoun}${RESET}${panelBg}  ${dim}\u00b7${RESET}${panelBg}  ${muted}${runningStages}/${totalStages} stages running${RESET}`,
+    theme.backgroundPanel,
   ));
   lines.push(renderTextRow(
     inner,
     theme,
     `      ${muted}Oldest active run has been running for ${elapsed}.${RESET}`,
+    theme.backgroundPanel,
   ));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
   lines.push(renderTextRow(
     inner,
     theme,
     `      ${muted}Quitting Atomic will abort active workflow work.${RESET}`,
+    theme.backgroundPanel,
   ));
   lines.push(renderTextRow(
     inner,
     theme,
     `      ${muted}Killed runs are retained in workflow history/status.${RESET}`,
+    theme.backgroundPanel,
   ));
   const names = runs.slice(0, 3).map((run) => `${run.name} (${run.id.slice(0, 8)})`).join(", ");
   const suffix = runs.length > 3 ? `, +${runs.length - 3} more` : "";
@@ -239,8 +252,9 @@ export function renderWorkflowQuitConfirm(opts: WorkflowQuitConfirmRenderOpts): 
     inner,
     theme,
     `      ${muted}${truncateToWidth(`Active: ${names}${suffix}`, Math.max(1, inner - 6), "…")}${RESET}`,
+    theme.backgroundPanel,
   ));
-  lines.push(renderBlankRow(inner, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
 
   const cancelBtn = renderButton("Cancel", state.focusedButton === 0, false, theme);
   const quitBtn = renderButton("\u25c6 Quit & kill", state.focusedButton === 1, true, theme);
@@ -251,8 +265,8 @@ export function renderWorkflowQuitConfirm(opts: WorkflowQuitConfirmRenderOpts): 
     `${" ".repeat(leftPad)}${cancelBtn}${panelBg}   ${RESET}${quitBtn}${panelBg}${" ".repeat(rightPad)}${RESET}`;
   const border = hexToAnsi(theme.border);
   lines.push(`${border}│${RESET}${panelBg}${padTo(buttonsRow, inner)}${RESET}${border}│${RESET}`);
-  lines.push(renderBlankRow(inner, theme));
-  lines.push(renderFooter(width, theme));
+  lines.push(renderBlankRow(inner, theme, theme.backgroundPanel));
+  lines.push(renderFooter(width, theme, "Quit & kill", state.focusedButton));
   return lines;
 }
 

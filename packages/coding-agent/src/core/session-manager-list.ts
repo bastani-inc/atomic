@@ -8,6 +8,8 @@ import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
 import { getDefaultSessionDir, getDefaultSessionDirPath } from "./session-manager-paths.ts";
 import {
+	isInternalHeader,
+	readSessionHeader,
 	sessionCwdMatches,
 } from "./session-manager-storage.ts";
 import type {
@@ -18,6 +20,7 @@ import type {
 	SessionInfoEntry,
 	SessionListProgress,
 	SessionMessageEntry,
+	SessionWorkflowMetadata,
 } from "./session-manager-types.ts";
 
 function isMessageWithContent(message: AgentMessage): message is Message {
@@ -113,6 +116,10 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 
 		const cwd = typeof (header as SessionHeader).cwd === "string" ? (header as SessionHeader).cwd : "";
 		const parentSessionPath = (header as SessionHeader).parentSession;
+		const internal = (header as SessionHeader).internal === true ? true : undefined;
+		const workflowHeader = (header as SessionHeader).workflow as SessionWorkflowMetadata | undefined;
+		const workflow =
+			workflowHeader && typeof workflowHeader.runId === "string" ? workflowHeader : undefined;
 
 		const modified = getSessionModifiedDate(entries, header as SessionHeader, stats.mtime);
 
@@ -122,6 +129,8 @@ async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 			cwd,
 			name,
 			parentSessionPath,
+			...(internal ? { internal } : {}),
+			...(workflow ? { workflow } : {}),
 			created: new Date((header as SessionHeader).timestamp),
 			modified,
 			messageCount,
@@ -138,6 +147,7 @@ export async function listSessionsFromDir(
 	onProgress?: SessionListProgress,
 	progressOffset = 0,
 	progressTotal?: number,
+	includeInternal = false,
 ): Promise<SessionInfo[]> {
 	const sessions: SessionInfo[] = [];
 	if (!existsSync(dir)) {
@@ -152,6 +162,13 @@ export async function listSessionsFromDir(
 		let loaded = 0;
 		const results = await Promise.all(
 			files.map(async (file) => {
+				// Prefilter via the header so hidden/internal sessions are skipped
+				// before the expensive full-transcript parse in buildSessionInfo.
+				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
+					loaded++;
+					onProgress?.(progressOffset + loaded, total);
+					return null;
+				}
 				const info = await buildSessionInfo(file);
 				loaded++;
 				onProgress?.(progressOffset + loaded, total);
@@ -159,7 +176,7 @@ export async function listSessionsFromDir(
 			}),
 		);
 		for (const info of results) {
-			if (info) {
+			if (info && (includeInternal || !info.internal)) {
 				sessions.push(info);
 			}
 		}
@@ -174,11 +191,12 @@ export async function listProjectSessions(
 	cwd: string,
 	sessionDir?: string,
 	onProgress?: SessionListProgress,
+	includeInternal = false,
 ): Promise<SessionInfo[]> {
 	const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
 	const filterCwd = sessionDir !== undefined && dir !== getDefaultSessionDirPath(cwd);
 	const resolvedCwd = resolvePath(cwd);
-	const sessions = (await listSessionsFromDir(dir, onProgress)).filter(
+	const sessions = (await listSessionsFromDir(dir, onProgress, 0, undefined, includeInternal)).filter(
 		(session) => !filterCwd || sessionCwdMatches(session.cwd, resolvedCwd),
 	);
 	sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
@@ -188,12 +206,13 @@ export async function listProjectSessions(
 export async function listAllSessions(
 	sessionDirOrOnProgress?: string | SessionListProgress,
 	onProgress?: SessionListProgress,
+	includeInternal = false,
 ): Promise<SessionInfo[]> {
 	const customSessionDir =
 		typeof sessionDirOrOnProgress === "string" ? normalizePath(sessionDirOrOnProgress) : undefined;
 	const progress = typeof sessionDirOrOnProgress === "function" ? sessionDirOrOnProgress : onProgress;
 	if (customSessionDir) {
-		const sessions = await listSessionsFromDir(customSessionDir, progress);
+		const sessions = await listSessionsFromDir(customSessionDir, progress, 0, undefined, includeInternal);
 		sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 		return sessions;
 	}
@@ -227,6 +246,13 @@ export async function listAllSessions(
 
 		const results = await Promise.all(
 			allFiles.map(async (file) => {
+				// Prefilter via the header so hidden/internal sessions are skipped
+				// before the expensive full-transcript parse in buildSessionInfo.
+				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
+					loaded++;
+					progress?.(loaded, totalFiles);
+					return null;
+				}
 				const info = await buildSessionInfo(file);
 				loaded++;
 				progress?.(loaded, totalFiles);
@@ -235,7 +261,7 @@ export async function listAllSessions(
 		);
 
 		for (const info of results) {
-			if (info) {
+			if (info && (includeInternal || !info.internal)) {
 				sessions.push(info);
 			}
 		}

@@ -6,10 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed interactive quit and graph `q` handling for active workflows: Atomic now shows a host-themed, default-cancel destructive confirmation with accurate Enter-key footer copy before killing in-flight workflow runs, and the graph overlay no longer kills/closes immediately without confirmation ([#1378](https://github.com/bastani-inc/atomic/issues/1378)).
+
 ## [0.9.3-alpha.1] - 2026-06-25
 
 ### Changed
 
+- Workflow stage sessions are now marked as internal and excluded from the standard Atomic `/resume`, `atomic -r`, and `--continue` history, while remaining fully resumable/inspectable through `/workflow resume`, `/workflow attach`, and the `workflow` tool's `status`/`stages`/`stage`/`resume` actions via the run/stage store and its `sessionFile` links ([#1504](https://github.com/bastani-inc/atomic/issues/1504)).
 - Revised the builtin `goal` worker/continuation prompts and the builtin `ralph` orchestrator prompts to emphasize implementing the requested task through full completion ("do not stop until the objective is complete") instead of preparing a partial implementation for incremental review.
 - Removed model-visible current-iteration/turn/loop information from the builtin `goal`, `ralph`, and `open-claude-design` workflows so models are not biased by which iteration they are on. This drops the worker `Turn: N/M` banner, `Implement iteration N/M` / `Research iteration N/M` framing, "first iteration/worker turn" phrasing, and the live-preview `iteration N/M` label; switches model-relayed artifacts to stable non-ordinal names (`worker-receipt.md`, `review-<reviewer>.json`, `review-round-latest.json`, `orchestrator-report.md`); and strips turn fields from the model-facing goal ledger artifact. Internal UI stage names (e.g. `work-turn-2`, `orchestrator-2`) are unchanged, and the `max_turns`/`max_loops` inputs and `turns_completed`/`iterations_completed` outputs are retained.
 - Raised workflow-stage subagent recursion to the shared five-level nesting budget so workflow stages match main-chat delegation depth.
@@ -186,7 +191,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed interactive quit and graph `q` handling for active workflows: Atomic now shows a default-cancel destructive confirmation before killing in-flight workflow runs, and the graph overlay no longer kills/closes immediately without confirmation ([#1378](https://github.com/bastani-inc/atomic/issues/1378)).
 - Fixed direct workflow tool validation so schema-enabled `task`, `tasks`, `chain`, and `parallel` items accept plain JSON Schema objects without additional object-root constraints ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed schema-backed workflow stages to fail with a clear stage-level error when `prompt()` is called more than once on the same `StageContext`, rather than surfacing the lower-level structured-output single-use guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).
 - Fixed schema-backed workflow model fallback so an attempt that already captured a valid terminating `structured_output` result is treated as successful instead of retrying against fallback models and tripping the single-use result guard ([#1350](https://github.com/bastani-inc/atomic/issues/1350)).

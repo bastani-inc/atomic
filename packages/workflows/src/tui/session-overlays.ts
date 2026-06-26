@@ -38,7 +38,7 @@ import type {
   PiOverlayOptions,
 } from "../extension/wiring.js";
 import type { Store } from "../shared/store.js";
-import type { GraphTheme } from "./graph-theme.js";
+import { deriveGraphThemeFromPiTheme, type GraphTheme } from "./graph-theme.js";
 import {
   createSessionPickerState,
   handleSessionPickerInput,
@@ -180,6 +180,12 @@ export interface ConfirmUiSurface extends UiSurface {
   confirm?: (title: string, message: string) => Promise<boolean>;
 }
 
+function hasPiRuntimeTheme(theme: unknown): boolean {
+  if (!theme || typeof theme !== "object") return false;
+  const candidate = theme as { getFgAnsi?: unknown; getBgAnsi?: unknown };
+  return typeof candidate.getFgAnsi === "function" || typeof candidate.getBgAnsi === "function";
+}
+
 function observeCustomMount(
   mount: () => unknown,
   factoryInvoked: () => boolean,
@@ -297,11 +303,14 @@ export function openWorkflowQuitConfirm(
 
     const factory = (
       tui: PiCustomOverlayFactoryTui,
-      _theme: unknown,
+      piTheme: unknown,
       _keys: unknown,
       done: (r: undefined) => void,
     ): PiCustomComponent => {
       factoryInvoked = true;
+      const overlayTheme = hasPiRuntimeTheme(piTheme)
+        ? deriveGraphThemeFromPiTheme(piTheme)
+        : theme;
       const finish = (result: boolean): void => {
         if (settled) return;
         settled = true;
@@ -309,7 +318,7 @@ export function openWorkflowQuitConfirm(
         resolve(result);
       };
       return {
-        render: (width: number) => renderWorkflowQuitConfirm({ width, theme, runs, state }),
+        render: (width: number) => renderWorkflowQuitConfirm({ width, theme: overlayTheme, runs, state }),
         handleInput: (data: string) => {
           const action = handleKillConfirmInput(data, state);
           if (action.kind === "noop") {

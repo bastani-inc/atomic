@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a cancellable `session_before_shutdown` extension lifecycle event so interactive quit flows can be safely aborted before Atomic tears down UI/runtime state ([#1378](https://github.com/bastani-inc/atomic/issues/1378)).
+
 ## [0.9.3-alpha.1] - 2026-06-25
 
 ### Breaking Changes
@@ -13,6 +17,7 @@
 
 - Added one-time first-run onboarding that explains Atomic workflows, uses an onboarding editor placeholder, lets users opt into normal chat with `/chat`, preserves other slash commands, saves a pre-login pasted task in memory only, and hands the first ready ticket/spec/task to the normal coding-agent session with `goal`/`ralph` workflow-routing guidance.
 - Added first-run onboarding routing guidance that raises the parent session to high reasoning when supported, asks the coding agent to first make a text-only scope estimate from tickets/GitHub issues/specs, routes directly when the task is clearly tiny or small with high confidence, and only uses targeted read-only `codebase-locator`/`codebase-analyzer`/`codebase-pattern-finder` probing when referenced context must be read or scope is medium, large, unclear, risky, or not obviously tiny before choosing `goal` or `ralph`.
+- Excluded workflow-created (internal) sessions from the standard `/resume`, `atomic -r`, and `--continue` history by marking their `SessionHeader` with `internal: true` and optional `workflow: { runId, stageId, stageName }` linkage, while keeping them resumable via `/workflow resume`/`workflow({ action: "resume" })` and direct `--session <path>` access; added `includeInternal` opt-ins to `SessionManager.list`/`listAll`/`continueRecent`, a `markSessionInternal` method, robust full-line `readSessionHeader`, and regression tests ([#1504](https://github.com/bastani-inc/atomic/issues/1504)).
 - Added a first-class `search` built-in and exposed `find`/`search` in normal coding sessions ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
 - Added hashline snapshot anchors across `read`, `search`, `write`, and successful `edit` results, plus hashline line-range/block/multi-section edit scripts with stale-tag safety checks and snapshot-based recovery for non-overlapping file drift, empty-replace validation, and fresh post-mutation tags for follow-up edits ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
 - Added disabled-by-default `bashInterceptor.enabled` settings support with built-in shell anti-pattern rules, a `/settings` **Bash Interceptor** toggle, and optional `user_bash` extension routing, without changing the default local-execution behavior ([#1483](https://github.com/bastani-inc/atomic/issues/1483)).
@@ -264,7 +269,6 @@
 
 ### Added
 
-- Added a cancellable `session_before_shutdown` extension lifecycle event so interactive quit flows can be safely aborted before Atomic tears down UI/runtime state ([#1378](https://github.com/bastani-inc/atomic/issues/1378)).
 - Added support for local `-e <dir>` extension sources to borrow project-local Atomic resources from `<dir>/.atomic`, legacy `<dir>/.pi`, and `<dir>/.agents/skills` after resolving trust for that extension source, preserving package-manager provenance and explicit-path workflow forwarding while avoiding untrusted borrowed resources ([#1354](https://github.com/bastani-inc/atomic/issues/1354)).
 - Added a prototype Rust/N-API Cursor HTTP/2 native transport binding through the generated `@bastani/atomic-natives` NAPI-RS package, so Atomic can use an in-process native HTTP/2 client without requiring Node.js on `PATH`.
 - Added the experimental bundled `@bastani/cursor` provider scaffold so `/login` can offer Cursor OAuth, estimated fallback exposes `cursor/composer-2`, and Cursor model mapping/streaming hooks are available behind an isolated HTTP/2 Connect transport boundary with production-default protobuf decoding, buffered Connect frames, write-before-headers Run streaming, stable Cursor conversation ids, schema-correct Cursor MCP tool advertisement, Cursor MCP tool-call decoding with protobuf `Value` or raw UTF-8/JSON arguments and exec-id metadata, same-stream MCP tool-result resume, abort/idle cleanup for paused tool streams, Connect end-stream error classification, exact live model id fidelity without static default injection, fast/thinking catalog grouping, and usage-delta accumulation.

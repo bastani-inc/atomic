@@ -4,6 +4,17 @@ import type { SessionManager } from "./session-manager-core.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
+/**
+ * Workflow linkage persisted on internal (workflow-created) session headers.
+ * Used to exclude workflow stage sessions from the standard `/resume` history
+ * while keeping them resumable through the workflow-specific resume path.
+ */
+export interface SessionWorkflowMetadata {
+	runId: string;
+	stageId: string;
+	stageName: string;
+}
+
 export interface SessionHeader {
 	type: "session";
 	version?: number; // v1 sessions don't have this
@@ -11,11 +22,19 @@ export interface SessionHeader {
 	timestamp: string;
 	cwd: string;
 	parentSession?: string;
+	/** Marks sessions created by automated machinery (e.g. workflow stages) so they can be excluded from standard resume history. */
+	internal?: boolean;
+	/** When internal, links the session to its owning workflow run/stage. */
+	workflow?: SessionWorkflowMetadata;
 }
 
 export interface NewSessionOptions {
 	id?: string;
 	parentSession?: string;
+	/** Mark the new session as internal (e.g. a workflow stage session). */
+	internal?: boolean;
+	/** Workflow run/stage linkage for internal workflow sessions. */
+	workflow?: SessionWorkflowMetadata;
 }
 
 export interface SessionEntryBase {
@@ -182,6 +201,10 @@ export interface SessionInfo {
 	name?: string;
 	/** Path to the parent session (if this session was forked). */
 	parentSessionPath?: string;
+	/** True when this session was created by automated machinery (e.g. a workflow stage). */
+	internal?: boolean;
+	/** Workflow run/stage linkage when the session is an internal workflow session. */
+	workflow?: SessionWorkflowMetadata;
 	created: Date;
 	modified: Date;
 	messageCount: number;

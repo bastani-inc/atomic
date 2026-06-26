@@ -62,6 +62,48 @@ test("openWorkflowQuitConfirm keeps mounted custom UI cancel-by-default behavior
   assert.equal(await openWorkflowQuitConfirm(ui, [workflowRun()], theme), false);
 });
 
+test("openWorkflowQuitConfirm renders with receiver-dependent host custom UI runtime theme", async () => {
+  let rendered = "";
+  const runtimeTheme = {
+    fgMap: {
+      error: "\x1b[38;2;1;2;3m",
+      border: "\x1b[38;2;84;125;167m",
+      warning: "\x1b[38;2;154;115;38m",
+    },
+    bgMap: {
+      toolPendingBg: "\x1b[48;2;250;250;250m",
+      customMessageBg: "\x1b[48;2;244;244;245m",
+    },
+    getFgAnsi(color: string): string {
+      const out = this.fgMap[color as keyof typeof this.fgMap];
+      if (!out) throw new Error(`unknown foreground: ${color}`);
+      return out;
+    },
+    getBgAnsi(color: string): string {
+      const out = this.bgMap[color as keyof typeof this.bgMap];
+      if (!out) throw new Error(`unknown background: ${color}`);
+      return out;
+    },
+  };
+  const ui: UiSurface = {
+    custom: (factory) => {
+      const component = factory({ requestRender: () => undefined }, runtimeTheme, {}, () => undefined);
+      if (component instanceof Promise) throw new Error("test factory should be sync");
+      rendered = component.render(80).join("\n");
+      component.dispose?.();
+      return undefined;
+    },
+  };
+
+  assert.equal(await openWorkflowQuitConfirm(ui, [workflowRun()], theme), false);
+  assert.match(rendered, /\x1b\[38;2;1;2;3m/);
+  assert.match(rendered, /\x1b\[38;2;84;125;167m/);
+  assert.match(rendered, /\x1b\[48;2;250;250;250m/);
+  assert.match(rendered, /\x1b\[48;2;244;244;245m/);
+  assert.doesNotMatch(rendered, /\x1b\[38;2;243;139;168m/);
+  assert.doesNotMatch(rendered, /\x1b\[48;2;30;30;46m/);
+});
+
 test("openKillConfirm resolves false when custom UI rejects before mounting", async () => {
   const ui: ConfirmUiSurface = {
     custom: () => Promise.reject(new Error("custom unavailable")),

@@ -205,23 +205,24 @@ function parsePiAnsiToHex(ansi: string | undefined): string | undefined {
  * throw to overlay mount.
  */
 function tryPiAccessor(
+  theme: PiRuntimeTheme,
   fn: ((color: string) => string) | undefined,
   color: string,
 ): string | undefined {
   if (typeof fn !== "function") return undefined;
   try {
-    return fn(color);
+    return fn.call(theme, color);
   } catch {
     return undefined;
   }
 }
 
 function fgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-  return parsePiAnsiToHex(tryPiAccessor(theme.getFgAnsi, color));
+  return parsePiAnsiToHex(tryPiAccessor(theme, theme.getFgAnsi, color));
 }
 
 function bgHex(theme: PiRuntimeTheme, color: string): string | undefined {
-  return parsePiAnsiToHex(tryPiAccessor(theme.getBgAnsi, color));
+  return parsePiAnsiToHex(tryPiAccessor(theme, theme.getBgAnsi, color));
 }
 
 /**

@@ -17,6 +17,8 @@ import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.t
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const stripAnsi = (s: string): string => s.replace(ANSI_RE, "");
 
 function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
   return {
@@ -75,6 +77,10 @@ test("kill confirm renders run identity and button row", () => {
   assert.match(joined, /abc12345/);
   assert.match(joined, /Cancel/);
   assert.match(joined, /Kill run/);
+  const plain = stripAnsi(joined);
+  assert.match(plain, /y Kill/);
+  assert.match(plain, /enter Cancel/);
+  assert.doesNotMatch(plain, /enter Confirm/);
   assert.match(joined, /1\/2 stages running/);
   assert.match(joined, /marks the run killed/);
   assert.match(joined, /Retains it in history\/status for inspection/);
@@ -97,6 +103,62 @@ test("kill confirm clamps long and wide workflow names to the dialog width", () 
     assert.ok(visibleWidth(line) <= width, `line exceeds ${width}: ${visibleWidth(line)} ${JSON.stringify(line)}`);
   }
   assert.match(lines.join("\n"), /…/);
+});
+
+test("confirm modal rows use panel tokens instead of graph canvas tokens", () => {
+  const theme = deriveGraphTheme({
+    bg: "#010203",
+    surface: "#020304",
+    backgroundPanel: "#fafafa",
+    backgroundElement: "#f4f4f5",
+  });
+  const state = createKillConfirmState();
+  const run = makeRun({
+    id: "abc12345-0000-0000-0000-000000000000",
+    name: "panel-theme",
+    status: "running",
+    startedAt: 1000,
+    stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
+  });
+
+  const kill = renderKillConfirm({ width: 70, theme, run, state, now: 5000 }).join("\n");
+  const quit = renderWorkflowQuitConfirm({ width: 76, theme, state, now: 5000, runs: [run] }).join("\n");
+
+  for (const rendered of [kill, quit]) {
+    assert.match(rendered, /\x1b\[48;2;250;250;250m/);
+    assert.match(rendered, /\x1b\[48;2;244;244;245m/);
+    assert.doesNotMatch(rendered, /\x1b\[48;2;1;2;3m/);
+    assert.doesNotMatch(rendered, /\x1b\[48;2;2;3;4m/);
+  }
+});
+
+test("confirm footers describe Enter as the currently focused button", () => {
+  const theme = deriveGraphTheme({});
+  const run = makeRun({
+    id: "abc12345-0000-0000-0000-000000000000",
+    name: "footer-theme",
+    stages: [{ id: "s1", name: "plan", status: "running", parentIds: [], toolEvents: [] }],
+  });
+
+  const killDefault = createKillConfirmState();
+  const killDefaultPlain = stripAnsi(renderKillConfirm({ width: 80, theme, run, state: killDefault }).join("\n"));
+  assert.match(killDefaultPlain, /enter Cancel/);
+  assert.doesNotMatch(killDefaultPlain, /enter Confirm/);
+
+  const killFocused = createKillConfirmState();
+  handleKillConfirmInput(Key.tab, killFocused);
+  const killFocusedPlain = stripAnsi(renderKillConfirm({ width: 80, theme, run, state: killFocused }).join("\n"));
+  assert.match(killFocusedPlain, /enter Kill/);
+
+  const quitDefault = createKillConfirmState();
+  const quitDefaultPlain = stripAnsi(renderWorkflowQuitConfirm({ width: 84, theme, runs: [run], state: quitDefault }).join("\n"));
+  assert.match(quitDefaultPlain, /enter Cancel/);
+  assert.doesNotMatch(quitDefaultPlain, /enter Confirm/);
+
+  const quitFocused = createKillConfirmState();
+  handleKillConfirmInput(Key.tab, quitFocused);
+  const quitFocusedPlain = stripAnsi(renderWorkflowQuitConfirm({ width: 84, theme, runs: [run], state: quitFocused }).join("\n"));
+  assert.match(quitFocusedPlain, /enter Quit & kill/);
 });
 
 test("workflow quit confirm defaults to cancel and renders active-run summary", () => {
@@ -126,9 +188,14 @@ test("workflow quit confirm defaults to cancel and renders active-run summary", 
   assert.equal(state.focusedButton, 0);
   assert.deepEqual(handleKillConfirmInput(Key.enter, state), { kind: "cancel" });
   const joined = lines.join("\n");
+  const plain = stripAnsi(joined);
   assert.match(joined, /Quit with active workflows/);
   assert.match(joined, /2 in-flight workflows/);
   assert.match(joined, /Quit & kill/);
+  assert.match(plain, /y Quit & kill/);
+  assert.match(plain, /enter Cancel/);
+  assert.doesNotMatch(plain, /enter Confirm/);
+  assert.doesNotMatch(plain, /y Kill/);
   assert.match(joined, /Killed runs are retained/);
   assert.match(joined, /alpha/);
   assert.match(joined, /beta/);
