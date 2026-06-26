@@ -18,6 +18,8 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
 type DisposableRendererComponent = Component & { dispose?: () => void };
+const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
+const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -221,7 +223,10 @@ export class ToolExecutionComponent extends Container {
 		this.disposeRendererComponent(this.resultRendererComponent);
 		this.callRendererComponent = undefined;
 		this.resultRendererComponent = undefined;
-		this.clearRendererStateTimer("subagentResultAnimationTimer");
+		this.clearRendererStateTimer(
+			SUBAGENT_RESULT_ANIMATION_TIMER_KEY,
+			SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY,
+		);
 	}
 
 	override render(width: number): string[] {
@@ -372,11 +377,17 @@ export class ToolExecutionComponent extends Container {
 		(component as DisposableRendererComponent | undefined)?.dispose?.();
 	}
 
-	private clearRendererStateTimer(key: string): void {
-		const timer = this.rendererState[key];
+	private clearRendererStateTimer(timerKey: string, cleanupKey?: string): void {
+		const cleanup = cleanupKey ? this.rendererState[cleanupKey] : undefined;
+		if (typeof cleanup === "function") {
+			cleanup();
+			return;
+		}
+		const timer = this.rendererState[timerKey];
 		if (timer === undefined) return;
 		clearInterval(timer as ReturnType<typeof setInterval>);
-		this.rendererState[key] = undefined;
+		this.rendererState[timerKey] = undefined;
+		if (cleanupKey) this.rendererState[cleanupKey] = undefined;
 	}
 
 	private formatToolExecution(): string {

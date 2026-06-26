@@ -132,5 +132,5 @@ function isToolEntry(entry: ChatSessionHostEntry<ChatTranscriptEntryLike>): entr
 }
 
 function isRecord(value: unknown): value is ObjectRecord {
-  return value !== null && typeof value === "object";
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

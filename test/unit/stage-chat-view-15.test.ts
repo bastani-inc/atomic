@@ -10,7 +10,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 import type { AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
 import type { TSchema } from "typebox";
-import { renderLiveSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import { renderLiveSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
@@ -160,15 +160,18 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
     });
 
     test("terminal cleanup stops the rendered subagent result animation interval", () => {
+        stopResultAnimations();
         const originalSetInterval = globalThis.setInterval;
         const originalClearInterval = globalThis.clearInterval;
         const activeIntervals = new Set<Parameters<typeof clearInterval>[0]>();
+        let clearIntervalCalls = 0;
         globalThis.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
             const timer = originalSetInterval(handler, timeout, ...args);
             activeIntervals.add(timer as Parameters<typeof clearInterval>[0]);
             return timer;
         }) as typeof setInterval;
         globalThis.clearInterval = ((timer?: Parameters<typeof clearInterval>[0]) => {
+            clearIntervalCalls++;
             activeIntervals.delete(timer);
             return originalClearInterval(timer);
         }) as typeof clearInterval;
@@ -191,6 +194,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
             emitRunningSubagent(emit);
             renderText(view);
             assert.equal(activeIntervals.size, 1);
+            assert.equal(clearIntervalCalls, 0);
 
             const runningStage = store.runs()[0]!.stages[0]!;
             store.recordStageEnd("run-1", {
@@ -201,9 +205,13 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
             });
 
             assert.equal(activeIntervals.size, 0);
+            assert.equal(clearIntervalCalls, 1);
+            stopResultAnimations();
+            assert.equal(clearIntervalCalls, 1);
             assert.equal(view._hasAnimationTick, false);
             view.dispose();
         } finally {
+            stopResultAnimations();
             for (const timer of activeIntervals) originalClearInterval(timer);
             globalThis.setInterval = originalSetInterval;
             globalThis.clearInterval = originalClearInterval;

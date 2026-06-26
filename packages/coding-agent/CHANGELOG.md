@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed custom tool renderer disposal to honor renderer-owned cleanup callbacks, preventing stale animation registry entries after terminal workflow tool rows are finalized ([#1518](https://github.com/bastani-inc/atomic/issues/1518)).
+
 ## [0.9.3-alpha.1] - 2026-06-25
 
 ### Breaking Changes

@@ -1,9 +1,6 @@
-import {
-  ChatSessionHost,
-  type ChatSessionHostStyle,
-} from "@bastani/atomic";
+import { ChatSessionHost, type ChatSessionHostStyle } from "@bastani/atomic";
 import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
-import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
+import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
@@ -276,9 +273,10 @@ function absorbStageNotices(
   return changed;
 }
 
-export function currentRun(ctx: StageChatViewContext) {
+export function currentRun(ctx: StageChatViewContext): RunSnapshot | undefined {
   return ctx.store.snapshot().runs.find((r) => r.id === ctx.runId);
 }
+
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {
   return currentRun(ctx)?.stages.find((s) => s.id === ctx.stageId);
 }
