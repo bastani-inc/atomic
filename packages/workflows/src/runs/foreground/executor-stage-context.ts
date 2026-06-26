@@ -1,5 +1,6 @@
 import type { StageContextWithMeta, StageNoticeInput, LiveStageRuntime } from "./executor-stage-types.js";
 import type { InternalStageContext } from "./stage-runner.js";
+import type { TrackedStageCaller } from "./executor-stage-call.js";
 
 function noticeValue(value: unknown): string {
   if (typeof value === "string") return value;
@@ -31,7 +32,7 @@ function compactionMeta(result: unknown): string | undefined {
 
 export function createStageContext(input: {
   readonly runtime: LiveStageRuntime;
-  readonly runTrackedStageCall: <T>(call: () => Promise<T>, eagerSession?: boolean) => Promise<T>;
+  readonly runTrackedStageCall: TrackedStageCaller;
 }): StageContextWithMeta {
   const { runtime } = input;
   const recordStageNotice = (notice: StageNoticeInput): void => {
@@ -43,7 +44,7 @@ export function createStageContext(input: {
   };
 
   const innerCtx: InternalStageContext = runtime.innerCtx;
-  const sendScopedUserMessage: InternalStageContext["sendUserMessage"] = async (text, options) => {
+  const sendStreamingUserMessage: InternalStageContext["sendUserMessage"] = async (text, options) => {
     runtime.mcpScope.apply();
     try {
       await innerCtx.sendUserMessage(text, options);
@@ -68,7 +69,8 @@ export function createStageContext(input: {
     },
     sendUserMessage: (text, options) => {
       runtime.throwIfStageMutationBlocked();
-      return sendScopedUserMessage(text, options);
+      if (innerCtx.isStreaming) return sendStreamingUserMessage(text, options);
+      return input.runTrackedStageCall(() => innerCtx.sendUserMessage(text, options), { allowFinalized: true });
     },
     steer: (text) => {
       runtime.throwIfStageMutationBlocked();

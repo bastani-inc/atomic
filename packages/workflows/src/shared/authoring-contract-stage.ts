@@ -55,6 +55,8 @@ export interface WorkflowModelFallbackFields {
 }
 
 export type WorkflowModelValue = string | object;
+// Standalone authoring contract mirror of shared/types.ts StageUserMessageContent,
+// whose runtime source of truth is derived from AgentSession["sendUserMessage"].
 export interface StageTextContent {
   readonly type: "text";
   readonly text: string;

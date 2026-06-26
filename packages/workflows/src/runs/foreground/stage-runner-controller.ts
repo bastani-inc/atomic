@@ -57,7 +57,9 @@ export class StageSessionController {
   }
 
   get currentSession(): StageSessionRuntime | undefined { return this.session; }
+
   get latestStructuredOutputToolError(): string | undefined { return this.latestStructuredOutputToolErrorValue; }
+
   resetStructuredOutputToolError(): void { this.latestStructuredOutputToolErrorValue = undefined; }
   requireSession(property: string): StageSessionRuntime {
     if (!this.session) unavailableSync(property);
@@ -187,11 +189,13 @@ export class StageSessionController {
   }
 
   isPaused(): boolean { return this.pauseRequest !== null; }
+
   sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined } {
     return { sessionId: this.session?.sessionId, sessionFile: this.session?.sessionFile };
   }
 
   agentSession(): AgentSession | undefined { return asAgentSession(this.session); }
+
   pendingMessageCount(): number {
     return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;
   }
@@ -242,14 +246,10 @@ export class StageSessionController {
           fallbackThinkingLevels: undefined,
         };
     if (resumeOptions?.restoreSavedModel) delete optionsForCandidate.model;
-    // Pin a tiered model's natural default (short) context window when neither
-    // the `(1m)` model-string token nor an explicit stage-level contextWindow
-    // selects one for a fresh (non-resumed) stage session. This prevents a
-    // persisted interactive context-window preference (e.g. a previously
-    // selected long tier) from leaking into workflow stages, so a tiered model
-    // uses its short tier unless the author explicitly opts into the long tier
-    // via the `(1m)` token or the numeric contextWindow option. Single-window
-    // models carry no selectable long tier, so they are left untouched.
+    // Pin a tiered model's short default context window for fresh, non-resumed
+    // stage sessions unless the author selected a long tier via `(1m)` or
+    // contextWindow. This prevents persisted interactive long-tier preferences
+    // from leaking into workflow stages; single-window models are left alone.
     if (
       resumeOptions?.restoreSavedModel !== true &&
       this.reattachSessionFile === undefined &&
