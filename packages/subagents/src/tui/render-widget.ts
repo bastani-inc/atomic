@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@bastani/atomic";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
+import * as path from "node:path";
 import { MAX_WIDGET_JOBS, WIDGET_KEY, type AsyncJobState } from "../shared/types.ts";
 import { getTermWidth, RUNNING_ANIMATION_MS, runningGlyph, truncLine, type Theme } from "./render-layout.ts";
 import { themeBold } from "./render-status-progress.ts";
@@ -64,6 +65,7 @@ let latestWidgetJobs: AsyncJobState[] = [];
 let latestWidgetFrameNow = 0;
 let widgetTimer: ReturnType<typeof setInterval> | undefined;
 let mountedWidgetCtx: ExtensionContext | undefined;
+let mountedWidgetOwnerKey: string | undefined;
 let widgetMounted = false;
 
 function getLatestWidgetJobs(): AsyncJobState[] {
@@ -87,7 +89,28 @@ function clearLatestWidgetState(): void {
 	latestWidgetJobs = [];
 	latestWidgetFrameNow = 0;
 	mountedWidgetCtx = undefined;
+	mountedWidgetOwnerKey = undefined;
 	widgetMounted = false;
+}
+
+function getWidgetOwnerKey(ctx: ExtensionContext): string {
+	let sessionOwner = "session:unknown";
+	try {
+		const sessionFile = ctx.sessionManager.getSessionFile?.();
+		if (sessionFile) sessionOwner = `sessionFile:${path.resolve(sessionFile)}`;
+	} catch {
+		// Fall through to the session id fallback below.
+	}
+	if (sessionOwner === "session:unknown") {
+		try {
+			const sessionId = ctx.sessionManager.getSessionId?.();
+			if (sessionId) sessionOwner = `sessionId:${sessionId}`;
+		} catch {
+			// Keep the unknown marker; cwd still scopes ownership.
+		}
+	}
+	const cwdOwner = ctx.cwd ? path.resolve(ctx.cwd) : "cwd:unknown";
+	return `${sessionOwner}|cwd:${cwdOwner}`;
 }
 
 function requestWidgetRender(ctx: ExtensionContext): void {
@@ -226,10 +249,11 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
  * Render the async jobs widget
  */
 export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
+	const ownerKey = getWidgetOwnerKey(ctx);
 	if (jobs.length === 0) {
-		if (widgetMounted && mountedWidgetCtx !== ctx) {
-			// Empty updates from stale contexts must not clear the active context's
-			// widget. The mounted context owns the eventual teardown.
+		if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
+			// Empty updates from stale logical owners must not clear the active owner's
+			// widget. The mounted owner handles its own eventual teardown.
 			return;
 		}
 		stopWidgetAnimation();
@@ -242,11 +266,12 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	latestWidgetCtx = ctx;
 	latestWidgetJobs = [...jobs];
 	latestWidgetFrameNow = Date.now();
-	if (widgetMounted && mountedWidgetCtx !== ctx) {
-		// Context rebinding can leave the previous host UI alive briefly; clear the
-		// old mount before installing the singleton widget on the new context.
+	if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
+		// Session rebinding can leave the previous host UI alive briefly; clear the
+		// old mount before installing the singleton widget on the new owner/context.
 		unmountWidgetBestEffort(mountedWidgetCtx);
 		mountedWidgetCtx = undefined;
+		mountedWidgetOwnerKey = undefined;
 		widgetMounted = false;
 	}
 	if (!widgetMounted) {
@@ -260,6 +285,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 			placement: "belowEditor",
 		});
 		mountedWidgetCtx = ctx;
+		mountedWidgetOwnerKey = ownerKey;
 		widgetMounted = true;
 	} else {
 		// The mounted widget reads latestWidgetJobs via getLatestWidgetJobs(), so a

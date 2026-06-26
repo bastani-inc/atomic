@@ -21,7 +21,7 @@ describe("async widget animation ticker lifecycle", () => {
         };
     }
 
-    function mockLifecycleWidgetCtx(): {
+    function mockLifecycleWidgetCtx(ownerCwd?: string): {
         ctx: ExtensionContext;
         widgetCalls: Array<{ key: string; content: unknown; options: unknown }>;
         renders: () => number;
@@ -34,6 +34,7 @@ describe("async widget animation ticker lifecycle", () => {
         let renderCount = 0;
         const ctx = {
             hasUI: true,
+            cwd: ownerCwd,
             ui: {
                 setWidget: (
                     key: string,
@@ -153,9 +154,9 @@ describe("async widget animation ticker lifecycle", () => {
         );
     });
 
-    test("visible async widget remounts when the UI context changes", () => {
-        const first = mockLifecycleWidgetCtx();
-        const second = mockLifecycleWidgetCtx();
+    test("visible async widget remounts when the logical owner changes", () => {
+        const first = mockLifecycleWidgetCtx("/tmp/atomic-widget-owner-a");
+        const second = mockLifecycleWidgetCtx("/tmp/atomic-widget-owner-b");
 
         renderWidget(first.ctx, [runningJob()]);
         renderWidget(second.ctx, [runningJob()]);
@@ -163,12 +164,12 @@ describe("async widget animation ticker lifecycle", () => {
         assert.equal(
             first.widgetCalls.length,
             2,
-            "stale context should mount once and then be cleared on context switch",
+            "stale context should mount once and then be cleared on owner switch",
         );
         assert.equal(
             first.widgetCalls[1]?.content,
             undefined,
-            "context switch should unmount the widget from the stale context",
+            "owner switch should unmount the widget from the stale context",
         );
         assert.equal(
             second.widgetCalls.length,
@@ -178,12 +179,12 @@ describe("async widget animation ticker lifecycle", () => {
         assert.equal(
             first.renders(),
             0,
-            "context switch should not request an in-place render on the stale context",
+            "owner switch should not request an in-place render on the stale context",
         );
         assert.equal(
             second.renders(),
             0,
-            "context switch should mount rather than request render before mounting",
+            "owner switch should mount rather than request render before mounting",
         );
 
         renderWidget(first.ctx, []);

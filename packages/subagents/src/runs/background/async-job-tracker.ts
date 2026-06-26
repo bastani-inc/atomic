@@ -395,10 +395,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.foregroundControls?.clear();
 		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
-		if (ctx?.hasUI) {
-			state.lastUiContext = ctx;
-			rerenderWidget(ctx, []);
-		}
+		if (ctx?.hasUI) state.lastUiContext = ctx;
 	};
 
 	return { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs };
