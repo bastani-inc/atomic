@@ -44,7 +44,7 @@ export function buildWorkflowLoopSummary(
   const width = Math.max(0, opts.width ?? DEFAULT_WIDTH);
   const includePrefix = opts.includePrefix ?? true;
   const groups = phaseGroups(source);
-  const specialPhases = builtinPhases(source, groups);
+  const specialPhases = builtinPhases(source);
   const phases = specialPhases ?? (groups.length > 0 ? groups.map(formatPhaseGroup) : fallbackPhases(source));
   const hint = loopHint(source);
   const conditional = conditionalHint(source);
@@ -68,7 +68,7 @@ export function buildWorkflowLoopSummary(
   };
 }
 
-export function fitLoopSummaryText(text: string, width: number): string {
+function fitLoopSummaryText(text: string, width: number): string {
   return truncateToWidth(text, Math.max(0, width), ELLIPSIS);
 }
 
@@ -133,7 +133,7 @@ function coalesceSequentialRepeats(groups: readonly PhaseGroup[]): PhaseGroup[] 
 }
 
 function compactFamilies(labels: readonly string[]): string[] {
-  const roots = labels.map((label) => label.replace(/-(locator|pattern|analyzer|online)$/i, "-$1"));
+  const roots = labels.map((label) => label.replace(/-(locator|pattern|analyzer|online)$/i, ""));
   return [...new Set(roots)];
 }
 
@@ -176,7 +176,7 @@ function formatPhaseGroup(group: PhaseGroup): string {
   return `${group.label} ×${group.count}`;
 }
 
-function builtinPhases(source: WorkflowLoopSource, _groups: readonly PhaseGroup[]): string[] | undefined {
+function builtinPhases(source: WorkflowLoopSource): string[] | undefined {
   if (source.name === "ralph" || source.name === "goal") return fallbackPhases(source);
   if (source.name === "deep-research-codebase") return deepResearchPhases(source);
   if (source.name === "open-claude-design") return fallbackPhases(source);
@@ -187,8 +187,7 @@ function deepResearchPhases(source: WorkflowLoopSource): string[] {
   const partitionCount = maxSuffixForBases(source.stages, new Set(["locator", "pattern", "analyzer", "online"]));
   if (partitionCount === 0) return fallbackPhases(source);
   const phases = ["scout + history", "partition", `locator/pattern ×${partitionCount}`, `analyzer/online ×${partitionCount}`];
-  if (source.stages.some((stage) => normalizeStageName(stage.name) === "aggregator")) phases.push("aggregator");
-  else phases.push("aggregator");
+  phases.push("aggregator");
   return phases;
 }
 
@@ -214,19 +213,44 @@ function referencesDisabled(inputs: Readonly<WorkflowInputValues>): boolean {
 }
 
 function loopHint(source: WorkflowLoopSource): LoopHint | undefined {
-  for (const [key, value] of Object.entries(source.inputs)) {
-    if (!LOOP_INPUT_RE.test(key) || typeof value !== "number" || !Number.isFinite(value)) continue;
-    const max = Math.max(0, Math.floor(value));
-    const completed = completedLoopCount(source, key);
-    return {
-      maxKey: key,
-      max,
-      completed,
-      remaining: Math.max(0, max - completed),
-      noun: loopNoun(key),
-    };
-  }
-  return undefined;
+  const candidate = loopInputCandidates(source.inputs)[0];
+  if (!candidate) return undefined;
+  const max = Math.max(0, Math.floor(candidate.value));
+  const completed = completedLoopCount(source, candidate.key);
+  return {
+    maxKey: candidate.key,
+    max,
+    completed,
+    remaining: Math.max(0, max - completed),
+    noun: loopNoun(candidate.key),
+  };
+}
+
+interface LoopInputCandidate {
+  readonly key: string;
+  readonly value: number;
+}
+
+function loopInputCandidates(inputs: Readonly<WorkflowInputValues>): LoopInputCandidate[] {
+  return Object.entries(inputs)
+    .flatMap(([key, value]) => {
+      if (!LOOP_INPUT_RE.test(key) || typeof value !== "number" || !Number.isFinite(value)) return [];
+      return [{ key, value }];
+    })
+    .sort((left, right) => {
+      const priorityDelta = loopInputPriority(left.key) - loopInputPriority(right.key);
+      return priorityDelta !== 0 ? priorityDelta : left.key.localeCompare(right.key);
+    });
+}
+
+function loopInputPriority(key: string): number {
+  const normalized = key.toLowerCase();
+  if (/^max_turns?$/.test(normalized)) return 0;
+  if (/^max_refinements?$/.test(normalized)) return 1;
+  if (/^max_loops?$/.test(normalized)) return 2;
+  if (/^max_iterations?$/.test(normalized)) return 3;
+  if (/^max_rounds?$/.test(normalized)) return 4;
+  return 5;
 }
 
 function completedLoopCount(source: WorkflowLoopSource, maxKey: string): number {
@@ -398,5 +422,5 @@ function fitLoopLine(
 
   const counted = `${prefix}${context.phaseCount} phases${tails.length > 0 ? ` · ${tails.join(" · ")}` : ""}`;
   if (visibleWidth(counted) <= width) return counted;
-  return truncateToWidth(counted, width, ELLIPSIS);
+  return fitLoopSummaryText(counted, width);
 }

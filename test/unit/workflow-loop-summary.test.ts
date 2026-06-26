@@ -65,6 +65,21 @@ describe("buildWorkflowLoopSummary", () => {
     assert.match(summary.detailLines.join("\n"), /locator\/pattern parallel/);
   });
 
+  test("collapses custom parallel specialist family suffixes", () => {
+    const summary = buildWorkflowLoopSummary(run({
+      stages: [
+        stage("root", "partition", "completed"),
+        stage("api-locator", "api-locator", "running", ["root"]),
+        stage("api-pattern", "api-pattern", "running", ["root"]),
+        stage("api-online", "api-online", "running", ["root"]),
+      ],
+    }));
+
+    assert.match(summary.oneLine, /partition → api ×3/);
+    assert.doesNotMatch(summary.oneLine, /api-locator\/api-pattern\/api-online/);
+    assert.match(summary.detailLines.join("\n"), /api ×3 parallel/);
+  });
+
   test("detects bounded loops from max_loops, max_turns, and max_refinements", () => {
     assert.match(buildWorkflowLoopSummary(run({
       name: "ralph",
@@ -94,6 +109,17 @@ describe("buildWorkflowLoopSummary", () => {
       ],
     })).oneLine;
     assert.match(designLoop, /generate\/feedback · ↻ 1 refinements remain → export/);
+  });
+
+  test("chooses bounded-loop input by deterministic semantic priority", () => {
+    const summary = buildWorkflowLoopSummary(run({
+      inputs: { max_loops: 9, max_turns: 4, max_iterations: 8 },
+      result: { turns_completed: 1, iterations_completed: 6 },
+      stages: [stage("turn", "work-turn-1", "running")],
+    }));
+
+    assert.match(summary.oneLine, /↻ 3 turns remain/);
+    assert.doesNotMatch(summary.oneLine, /rounds|iterations/);
   });
 
   test("uses built-in workflow fallback phases before stages are known", () => {
