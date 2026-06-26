@@ -1,47 +1,79 @@
 /**
- * Tests for durable backend factory opt-in behavior and durable cache
+ * Tests for durable backend factory default persistence and durable cache
  * session-log persistence.
  *
- * Verifies that cross-session file persistence is opt-in (default in-memory)
- * so normal runs do not pollute the session lifecycle log, while an explicit
- * persistent backend writes discovery cache entries.
+ * Verifies that cross-session file persistence is always enabled by default
+ * under ~/.atomic, while tests may still inject a non-persistent in-memory
+ * backend explicitly.
  *
  * cross-ref: issue #1498 — durable state cached on the session file.
  */
 import { describe, test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
+import { FileDurableBackend, defaultDurableStateDir } from "../../packages/workflows/src/durable/file-backend.js";
 import { persistDurableCacheEntry } from "../../packages/workflows/src/durable/resume-catalog.js";
 import type { DurableCheckpointEntry } from "../../packages/workflows/src/durable/types.js";
 
-describe("durable backend factory (opt-in cross-session persistence)", () => {
-  afterEach(() => setDurableBackend(undefined));
+const savedEnv: Record<string, string | undefined> = {};
 
-  test("default backend is in-memory and non-persistent", () => {
+function saveEnv(name: string): void {
+  if (!(name in savedEnv)) savedEnv[name] = process.env[name];
+}
+
+function setEnv(name: string, value: string | undefined): void {
+  saveEnv(name);
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function restoreEnv(): void {
+  for (const [name, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  for (const name of Object.keys(savedEnv)) delete savedEnv[name];
+}
+
+describe("durable backend factory (default cross-session persistence)", () => {
+  afterEach(() => {
     setDurableBackend(undefined);
-    delete process.env.ATOMIC_WORKFLOW_DURABLE_DIR;
-    delete process.env.DBOS_SYSTEM_DATABASE_URL;
-    const backend = getDurableBackend();
-    assert.equal(backend.persistent, false);
-    assert.ok(backend instanceof InMemoryDurableBackend);
+    restoreEnv();
   });
 
-  test("file-backed backend is opt-in via ATOMIC_WORKFLOW_DURABLE_DIR", () => {
-    setDurableBackend(undefined);
-    process.env.ATOMIC_WORKFLOW_DURABLE_DIR = "/tmp/atomic-durable-test";
+  test("default backend is file-backed and persistent under ~/.atomic without opt-in env vars", () => {
+    const tmpHome = mkdtempSync(join(tmpdir(), "atomic-durable-home-"));
+    setEnv("HOME", tmpHome);
+    setEnv("USERPROFILE", undefined);
+    setEnv("DBOS_SYSTEM_DATABASE_URL", undefined);
     try {
+      setDurableBackend(undefined);
       const backend = getDurableBackend();
       assert.equal(backend.persistent, true);
+      assert.ok(backend instanceof FileDurableBackend);
+      assert.equal(defaultDurableStateDir(), `${tmpHome}/.atomic/workflow-durable`);
+
+      backend.registerWorkflow({ workflowId: "wf-default-persist", name: "default-persist", inputs: {}, createdAt: 1, status: "running" });
+      backend.setWorkflowStatus("wf-default-persist", "failed");
+
+      setDurableBackend(undefined);
+      const backend2 = getDurableBackend();
+      const resumable = backend2.listResumableWorkflows();
+      assert.equal(resumable.length, 1);
+      assert.equal(resumable[0]!.workflowId, "wf-default-persist");
+      assert.equal(resumable[0]!.status, "failed");
     } finally {
-      delete process.env.ATOMIC_WORKFLOW_DURABLE_DIR;
+      rmSync(tmpHome, { recursive: true, force: true });
     }
   });
 });
 
 describe("durable cache session-log persistence", () => {
-  test("in-memory backend (non-persistent) skips session-log cache writes", () => {
+  test("explicit in-memory backend remains non-persistent for isolated tests", () => {
     const backend = new InMemoryDurableBackend();
     backend.registerWorkflow({ workflowId: "wf-1", name: "test", inputs: {}, createdAt: 1, status: "running" });
     const appended: string[] = [];
@@ -49,11 +81,7 @@ describe("durable cache session-log persistence", () => {
       appendEntry: (type: string) => { appended.push(type); return "id"; },
     };
     const entry = backend.toCacheEntry("wf-1")!;
-    // persistDurableCacheEntry writes unconditionally to the port; the engine
-    // gates the call on backend.persistent. Here we verify the gate semantics:
-    // a non-persistent backend means the engine would NOT call this.
     assert.equal(backend.persistent, false);
-    // Direct call still works (the port is the contract), but the engine skips it.
     persistDurableCacheEntry(persistence, entry);
     assert.deepEqual(appended, ["workflow.durable.checkpoint"]);
   });

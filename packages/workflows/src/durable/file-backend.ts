@@ -4,7 +4,8 @@
  * Persists durable checkpoints to a JSON file so a new Atomic session/process
  * can resume a workflow started in a prior session without requiring Postgres.
  * Writes use a small lock directory plus read-merge-write to avoid lost updates
- * when multiple Atomic processes update the same durable state file.
+ * when multiple Atomic processes update the same durable state file. This is
+ * the default workflow durability store, rooted under ~/.atomic.
  *
  * cross-ref: issue #1498 — durable fallback when DBOS/Postgres is unavailable.
  */
@@ -191,8 +192,6 @@ function mergeRecords(a: readonly FileDurableRecord[], b: readonly FileDurableRe
 }
 
 export function defaultDurableStateDir(): string {
-  const env = process.env.ATOMIC_WORKFLOW_DURABLE_DIR;
-  if (env && env.length > 0) return env;
   const home = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
   return `${home}/.atomic/workflow-durable`;
 }

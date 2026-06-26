@@ -150,6 +150,10 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
         return { persistence, calls };
     }
 
+    function lifecycleTypes(calls: Array<{ type: string }>): string[] {
+        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+    }
+
     const persistWorkflow = workflow({
       name: "persist-forwarding-test",
       description: "Tests persistence port forwarding through runtime",
@@ -189,7 +193,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
         await waitForRunEnded(activeStore, accepted.runId);
 
         assert.deepEqual(
-            calls.map((c) => c.type),
+            lifecycleTypes(calls),
             [
                 "workflow.run.start",
                 "workflow.stage.start",

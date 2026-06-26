@@ -3,11 +3,12 @@
  *
  * This interface abstracts durable checkpoint storage so the workflow engine
  * can persist `ctx.*` operation results without coupling to a specific storage
- * backend. The default implementation is {@link InMemoryDurableBackend} (used
- * in tests and when DBOS/Postgres is unavailable). A {@link FileDurableBackend}
- * persists checkpoints to a JSON file for simple cross-process resume without
- * Postgres. The {@link DbosDurableBackend} adapter (in dbos-backend.ts) wraps
- * the real `@dbos-inc/dbos-sdk` when configured.
+ * backend. The default implementation is the zero-infrastructure
+ * {@link FileDurableBackend}, rooted under `~/.atomic/workflow-durable`, so
+ * cross-session resume works without user setup. {@link InMemoryDurableBackend}
+ * remains available for isolated tests and explicit custom overrides. The
+ * {@link DbosDurableBackend} adapter (in dbos-backend.ts) wraps the real
+ * `@dbos-inc/dbos-sdk` when configured.
  *
  * Design:
  * - Only `ctx.*` blocks write checkpoints (tool, ui, stage).
@@ -48,9 +49,9 @@ export type WorkflowRegistrationInput =
 
 /**
  * Abstract durable checkpoint store. Implementations:
- * - {@link InMemoryDurableBackend} — process-local; default for tests.
- * - {@link FileDurableBackend} — JSON-file-backed; simple cross-process resume.
+ * - {@link FileDurableBackend} — JSON-file-backed; default cross-process resume.
  * - {@link DbosDurableBackend} — wraps `@dbos-inc/dbos-sdk` + Postgres.
+ * - {@link InMemoryDurableBackend} — process-local; explicit test/custom use.
  */
 export interface DurableWorkflowBackend {
   /**
@@ -173,9 +174,9 @@ function checkpointKey(c: DurableCheckpoint): string {
 }
 
 /**
- * Process-local durable backend. Default implementation used when DBOS/Postgres
- * is not configured. Checkpoints live in memory for the lifetime of the process;
- * for cross-process resume without Postgres, use {@link FileDurableBackend}.
+ * Process-local durable backend for tests and explicit custom overrides.
+ * Checkpoints live in memory for the lifetime of the process; the production
+ * default is the cross-process {@link FileDurableBackend}.
  */
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = false;

@@ -20,29 +20,18 @@ let dbosInit: Promise<DurableWorkflowBackend | undefined> | undefined;
 /**
  * Get the singleton durable backend. Creates one lazily on first call.
  * - If a backend was explicitly set via {@link setDurableBackend}, returns it.
- * - If `DBOS_SYSTEM_DATABASE_URL` is set, the extension runtime upgrades to a
- *   DBOS-backed backend on launch.
- * - If `ATOMIC_WORKFLOW_DURABLE_DIR` is set, returns a file-backed backend for
- *   opt-in cross-process resume without Postgres.
- * - Otherwise returns an {@link InMemoryDurableBackend}. Cross-session resume
- *   is opt-in: a process-local backend avoids writing to the user's home
- *   directory on every run and keeps the session lifecycle log clean. Set
- *   `ATOMIC_WORKFLOW_DURABLE_DIR` or `DBOS_SYSTEM_DATABASE_URL` to enable
- *   cross-session durable resume.
+ * - If `DBOS_SYSTEM_DATABASE_URL` is configured, the extension runtime upgrades
+ *   to a DBOS-backed backend on launch.
+ * - Otherwise returns the zero-infrastructure file-backed backend rooted under
+ *   `~/.atomic/workflow-durable`, so cross-session resume is available by
+ *   default without an opt-in environment variable.
  */
 export function getDurableBackend(): DurableWorkflowBackend {
   if (globalBackend) return globalBackend;
-  const durableDir = process.env.ATOMIC_WORKFLOW_DURABLE_DIR;
-  const dbosUrl = process.env.DBOS_SYSTEM_DATABASE_URL;
-  if ((durableDir && durableDir.length > 0) || (dbosUrl && dbosUrl.length > 0)) {
-    // Opt-in cross-session persistence. DBOS initialization is async because
-    // the SDK is optional; use the file backend as a safe discovery/cache
-    // fallback until initializeDbosDurableBackendFromEnv() completes.
-    globalBackend = createDefaultFileBackend();
-  } else {
-    // Default: process-local. No filesystem writes; no session-log pollution.
-    globalBackend = new InMemoryDurableBackend();
-  }
+  // Always enable cross-session durability by default. DBOS initialization is
+  // async because the SDK is optional; the file backend is the durable baseline
+  // and remains the safe fallback if DBOS is unavailable.
+  globalBackend = createDefaultFileBackend();
   return globalBackend;
 }
 

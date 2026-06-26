@@ -20,6 +20,10 @@ describe("executor.run — lifecycle persistence", () => {
         return { persistence, calls };
     }
 
+    function lifecycleTypes(calls: Array<{ type: string }>): string[] {
+        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+    }
+
     test("appends ordered run.start → stage.start → stage.end → run.end on success", async () => {
         const { persistence, calls } = makePersistence();
 
@@ -48,13 +52,14 @@ describe("executor.run — lifecycle persistence", () => {
 
         assert.equal(wfResult.status, "completed");
 
-        const types = calls.map((c) => c.type);
+        const types = lifecycleTypes(calls);
         assert.deepEqual(types, [
             "workflow.run.start",
             "workflow.stage.start",
             "workflow.stage.end",
             "workflow.run.end",
         ]);
+        assert.equal(calls.some((c) => c.type === "workflow.durable.checkpoint"), true);
     });
 
     test("run.start payload contains runId, name, inputs, ts", async () => {
@@ -199,7 +204,7 @@ describe("executor.run — lifecycle persistence", () => {
             /completed without creating any workflow stages/,
         );
         assert.deepEqual(
-            calls.map((c) => c.type),
+            lifecycleTypes(calls),
             ["workflow.run.start", "workflow.run.end"],
         );
         const runEnd = calls.find((c) => c.type === "workflow.run.end");
@@ -288,7 +293,7 @@ describe("executor.run — lifecycle persistence", () => {
 
         assert.equal(wfResult.status, "running");
         assert.deepEqual(
-            calls.map((c) => c.type),
+            lifecycleTypes(calls),
             [
                 "workflow.run.start",
                 "workflow.stage.start",

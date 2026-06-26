@@ -161,7 +161,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
-  const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability disabled: ${err instanceof Error ? err.message : String(err)}`));
+  const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability unavailable; using file-backed durability: ${err instanceof Error ? err.message : String(err)}`));
   const ensureDbosReady = async (): Promise<void> => { await dbosReady; };
   let preparedDurableCatalog: readonly ResumableWorkflowEntry[] = [];
 

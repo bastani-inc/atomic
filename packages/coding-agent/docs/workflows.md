@@ -924,14 +924,14 @@ Atomic workflows support **cross-session resumability** via a durable workflow b
 
 ### How it works
 
-- **Durable backend seam**: The workflow engine uses a pluggable `DurableWorkflowBackend` interface with three implementations: in-memory (default, process-local), file-backed (opt-in cross-process resume), and DBOS-backed (Postgres). Cross-session resume is **opt-in**: set `ATOMIC_WORKFLOW_DURABLE_DIR` to enable lock-protected file checkpoint persistence, or set `DBOS_SYSTEM_DATABASE_URL` to lazily load [DBOS](https://docs.dbos.dev/typescript/programming-guide), call `DBOS.launch()`, and use Postgres-backed workflow/control records. The default in-memory backend checkpoints within a process so live `/workflow resume` still skips completed `ctx.*` work, but does not write to disk.
+- **Durable backend seam**: The workflow engine uses a pluggable `DurableWorkflowBackend` interface with three implementations: file-backed (default, zero-infrastructure cross-process resume under `~/.atomic/workflow-durable`), DBOS-backed (Postgres), and in-memory (explicit test/custom overrides). Cross-session resume is always enabled by default; no environment variable is required for normal file-backed checkpoint persistence. If `DBOS_SYSTEM_DATABASE_URL` is set, Atomic lazily loads [DBOS](https://docs.dbos.dev/typescript/programming-guide), calls `DBOS.launch()`, and upgrades to Postgres-backed workflow/control records; if DBOS is unavailable, the file-backed store remains the safe fallback.
 - **Only `ctx.*` blocks are checkpointed**: Anything outside `ctx.*` (bare `await someFunction()`) is never saved. This matches the principle that checkpoints are effectively only `ctx.*` blocks.
 - **Durable `ctx.tool`**: `ctx.tool(name, args, fn)` runs TypeScript and caches the result by stable call order plus content hash of `name` + `args`. Repeated same-name/same-args calls are distinct within one workflow and replay in order after resume. DBOS-backed checkpoint writes are serialized and awaited before the tool returns, so a completed side effect is not exposed to workflow code before its checkpoint is durable; retry backoff observes workflow cancellation before later attempts run.
 - **Durable `ctx.ui`**: Completed `ctx.ui.input` / `confirm` / `select` / `editor` / `custom` responses are cached by prompt identity, including prompt kind, label/message, options, and call order so repeated prompts do not collide. On resume an already-answered prompt returns its cached response instead of re-asking the user, including `ctx.ui.custom` prompts that intentionally complete with `undefined`/void.
 - **Durable `ctx.stage` / `ctx.task` / `ctx.chain` / `ctx.parallel` / `ctx.workflow`**: Completed stage-like operations are recorded with stable replay keys. `ctx.chain` and `ctx.parallel` reuse the durable task primitive for each item, and child `ctx.workflow` calls checkpoint the completed child result at the parent workflow boundary with a dedicated replay-key counter so repeated same-child calls do not desync ordinal sequencing across resume. Schema-backed `ctx.stage(..., { schema }).prompt(...)` checkpoints preserve the parsed structured value, not just the rendered text. The live stage finalizer awaits durable writes before returning control where practical; if finalization fails, Atomic releases stage handles and concurrency limiter slots before reporting the finalization error instead of marking the workflow completed without a durable checkpoint. Workflow terminal status — including `ctx.exit` terminal states (`cancelled`, `blocked`, `skipped`) — is flushed to durable metadata before the run reports completion. On resume, cached operations are skipped and represented in the workflow graph as completed durable-replay nodes so status/overlay views still show progress.
-- **Session-file cache**: When a persistent backend is enabled, top-level workflow metadata is mirrored as Atomic custom entries (`customType: "workflow.durable.checkpoint"`) in the session JSONL so a new session can discover resumable root workflows without scanning the durable store directly. Child workflows are hidden from this catalog. The durable backend remains the checkpoint source of truth; the session cache is a discovery index. `/workflow resume` refuses a cache-only entry as `stale` when a root workflow has session metadata but no checkpoint state in the durable backend, instead of silently re-running from scratch — re-run the workflow explicitly to start fresh.
+- **Session-file cache**: Because the default backend is persistent, top-level workflow metadata is mirrored as Atomic custom entries (`customType: "workflow.durable.checkpoint"`) in the session JSONL so a new session can discover resumable root workflows without scanning the durable store directly. Child workflows are hidden from this catalog. The durable backend remains the checkpoint source of truth; the session cache is a discovery index. `/workflow resume` refuses a cache-only entry as `stale` when a root workflow has session metadata but no checkpoint state in the durable backend, instead of silently re-running from scratch — re-run the workflow explicitly to start fresh.
 - **Child side-effect scoping**: A child workflow launched via `ctx.workflow(child)` checkpoints its internal `ctx.tool`/`ctx.ui`/`ctx.stage` side effects under the parent (root) durable workflow, keyed by a stable child-boundary scope. If the parent is interrupted while a child is mid-flight, resuming the parent re-runs the child but replays the child's already-completed side effects from the root store instead of re-executing them (no split-brain per-run UUID checkpoints).
-- **Crash-safe file backend**: File-backed durability (`ATOMIC_WORKFLOW_DURABLE_DIR`) recovers from a stale lock directory left behind by a crashed process (backdated beyond a threshold) rather than wedging until the acquire timeout. Durable replay identities use a SHA-256 digest over canonical JSON so distinct tool/stage identities never collide.
+- **Crash-safe file backend**: Default file-backed durability stores checkpoints under `~/.atomic/workflow-durable` and recovers from a stale lock directory left behind by a crashed process (backdated beyond a threshold) rather than wedging until the acquire timeout. Durable replay identities use a SHA-256 digest over canonical JSON so distinct tool/stage identities never collide.
 
 ### `ctx.tool` — durable cached tool execution
 
@@ -969,9 +969,7 @@ The `/workflow resume` command mirrors `/resume` ergonomics. With no id, interac
 /workflow resume <workflow-id-or-prefix>  # Resume by top-level id; completed checkpoints replay
 ```
 
-The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history for discovery, but the durable backend remains authoritative: entries found only in session JSONL without backend checkpoint state are refused as `stale` instead of being silently re-run from scratch. When no durable backend is enabled and no live run matches, `/workflow resume` reports that no resumable workflows were found.
-
-> Cross-session durable resume requires a persistent backend (`ATOMIC_WORKFLOW_DURABLE_DIR` or `DBOS_SYSTEM_DATABASE_URL`). With the default in-memory backend, `/workflow resume` resumes live runs only.
+The selector displays the root workflow name, status, completed checkpoint count, and pending prompts. In fresh sessions, Atomic scans workflow-specific `workflow.durable.checkpoint` JSONL history for discovery, but the durable backend remains authoritative: entries found only in session JSONL without backend checkpoint state are refused as `stale` instead of being silently re-run from scratch. File-backed durability is enabled by default under `~/.atomic/workflow-durable`, so `/workflow resume` can discover cross-session workflows without any setup.
 
 ### Cancellation, failure, and retry semantics
 
@@ -986,24 +984,15 @@ The selector displays the root workflow name, status, completed checkpoint count
 
 ### Configuring DBOS/Postgres
 
-For production-grade durability with Postgres-backed checkpointing:
+File-backed durability is the default and requires no setup. For production-grade Postgres-backed checkpointing, set `DBOS_SYSTEM_DATABASE_URL` before starting Atomic. The DBOS SDK ships as an optional dependency of `@bastani/atomic`; if it cannot be loaded or Postgres cannot be reached, Atomic emits a warning and continues using the default file-backed durable store under `~/.atomic/workflow-durable`.
 
-1. The DBOS SDK ships as an optional dependency of `@bastani/atomic`. If it is not installed, install it explicitly: `bun add @dbos-inc/dbos-sdk`
-2. Set the environment variable:
-   ```bash
-   export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
-   ```
-3. Start Atomic. The workflow engine initializes DBOS lazily in the extension runtime and awaits that initialization attempt before the first workflow dispatch/list/resume path uses a durable backend. If the optional SDK is unavailable or Postgres cannot be reached, Atomic emits a warning and keeps the file-backed durable cache as the safe fallback.
+```bash
+export DBOS_SYSTEM_DATABASE_URL="postgresql://user:password@localhost:5432/atomic_dbos_sys"
+```
 
 When `/workflow resume` lists or resumes a DBOS-backed workflow in a fresh process, Atomic first hydrates its in-memory replay mirror from DBOS. Checkpoints are stored as structured DBOS outputs containing the checkpoint kind, id, tool argument hash, UI prompt hash, stage replay key, and completed output, so replay can skip completed `ctx.tool`, `ctx.ui`, `ctx.stage`, `ctx.task`, `ctx.chain`, `ctx.parallel`, and `ctx.workflow` work without relying on prior in-process state. Atomic updates the in-memory replay mirror for awaited DBOS checkpoints only after DBOS accepts the write, and root metadata is mirrored as versioned DBOS records where the latest timestamp wins during hydration. Older DBOS records that contain only a raw output are still read as generic stage checkpoints.
 
-For zero-infrastructure cross-process resume without Postgres, point the file backend at a directory:
-
-```bash
-export ATOMIC_WORKFLOW_DURABLE_DIR="~/.atomic/workflow-durable"
-```
-
-Without either option set, the engine uses an in-memory backend that checkpoints within the current process only (no disk writes).
+The default file backend needs no environment variable or database. It writes a lock-protected JSON state file in `~/.atomic/workflow-durable`, making cross-session `/workflow resume` immediately available on a normal Atomic install.
 
 ## Lifecycle Notices and Human Input
 
