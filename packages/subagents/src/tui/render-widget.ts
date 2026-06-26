@@ -94,10 +94,17 @@ function clearLatestWidgetState(): void {
 }
 
 function getWidgetOwnerKey(ctx: ExtensionContext): string {
+	const resolvedCwd = ctx.cwd ? path.resolve(ctx.cwd) : undefined;
+	const cwdOwner = resolvedCwd ?? "cwd:unknown";
 	let sessionOwner = "session:unknown";
 	try {
 		const sessionFile = ctx.sessionManager.getSessionFile?.();
-		if (sessionFile) sessionOwner = `sessionFile:${path.resolve(sessionFile)}`;
+		if (sessionFile) {
+			const resolvedSessionFile = resolvedCwd
+				? path.resolve(resolvedCwd, sessionFile)
+				: path.resolve(sessionFile);
+			sessionOwner = `sessionFile:${resolvedSessionFile}`;
+		}
 	} catch {
 		// Fall through to the session id fallback below.
 	}
@@ -109,7 +116,8 @@ function getWidgetOwnerKey(ctx: ExtensionContext): string {
 			// Keep the unknown marker; cwd still scopes ownership.
 		}
 	}
-	const cwdOwner = ctx.cwd ? path.resolve(ctx.cwd) : "cwd:unknown";
+	// If no session identifier is available, cwd is the best available owner
+	// boundary and may intentionally coalesce concurrent sessions in one folder.
 	return `${sessionOwner}|cwd:${cwdOwner}`;
 }
 
@@ -252,8 +260,9 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	const ownerKey = getWidgetOwnerKey(ctx);
 	if (jobs.length === 0) {
 		if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
-			// Empty updates from stale logical owners must not clear the active owner's
-			// widget. The mounted owner handles its own eventual teardown.
+			// With no visible job frame, stale-owner empty updates and newly-active
+			// empty owners are indistinguishable here. Preserve active-widget safety;
+			// host session disposal owns cross-owner empty-session teardown.
 			return;
 		}
 		stopWidgetAnimation();
@@ -289,7 +298,11 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		widgetMounted = true;
 	} else {
 		// The mounted widget reads latestWidgetJobs via getLatestWidgetJobs(), so a
-		// visible->visible update only needs to ask the host to render in place.
+		// visible->visible update only needs to ask the host to render in place. Keep
+		// teardown pointed at the freshest same-owner wrapper because older wrappers
+		// can go stale after host session/context rebinding.
+		mountedWidgetCtx = ctx;
+		mountedWidgetOwnerKey = ownerKey;
 		requestWidgetRender(ctx);
 	}
 	// Keep the just-rendered ctx/jobs as the last-rendered state; only the ticker

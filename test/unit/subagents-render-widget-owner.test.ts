@@ -112,10 +112,38 @@ describe("subagent render widget logical owner stability", () => {
 		assert.equal(undefinedCalls(fresh.widgetCalls), 0);
 	});
 
-	test("relative and absolute session file wrappers keep the same owner", () => {
+	test("same-owner in-place updates refresh the teardown context", () => {
+		const cwd = makeTempRoot("atomic-widget-owner-cwd-");
+		const sessionFile = path.join(cwd, "session.jsonl");
+		const first = makeCtx(cwd, sessionFile);
+		const fresh = makeCtx(cwd, sessionFile);
+		const empty = makeCtx(cwd, sessionFile);
+
+		renderWidget(first.ctx, [makeJob()]);
+		renderWidget(fresh.ctx, [makeJob()]);
+		renderWidget(empty.ctx, []);
+
+		assert.equal(
+			undefinedCalls(first.widgetCalls),
+			0,
+			"stale wrappers should not receive same-owner teardown",
+		);
+		assert.equal(
+			undefinedCalls(fresh.widgetCalls),
+			1,
+			"teardown should target the freshest same-owner wrapper",
+		);
+		assert.equal(
+			undefinedCalls(empty.widgetCalls),
+			0,
+			"empty wrappers request teardown but do not own the mounted widget",
+		);
+	});
+
+	test("session files relative to ctx.cwd keep the same owner", () => {
 		const cwd = makeTempRoot("atomic-widget-owner-cwd-");
 		const absoluteSessionFile = path.join(cwd, "session.jsonl");
-		const relativeSessionFile = path.relative(process.cwd(), absoluteSessionFile);
+		const relativeSessionFile = path.relative(cwd, absoluteSessionFile);
 		const relative = makeCtx(cwd, relativeSessionFile);
 		const absolute = makeCtx(cwd, absoluteSessionFile);
 
@@ -123,7 +151,11 @@ describe("subagent render widget logical owner stability", () => {
 		renderWidget(absolute.ctx, [makeJob()]);
 
 		assert.equal(mountCalls(relative.widgetCalls), 1);
-		assert.equal(mountCalls(absolute.widgetCalls), 0, "absolute wrapper must not remount after equivalent relative session file");
+		assert.equal(
+			mountCalls(absolute.widgetCalls),
+			0,
+			"ctx.cwd-relative session file must not remount after equivalent absolute file",
+		);
 		assert.equal(undefinedCalls(relative.widgetCalls) + undefinedCalls(absolute.widgetCalls), 0);
 		assert.equal(absolute.renderCount(), 1, "absolute same-owner update should render in place");
 	});
@@ -153,12 +185,28 @@ describe("subagent render widget logical owner stability", () => {
 		renderWidget(status.ctx, [makeJob("running")]);
 		renderWidget(terminal.ctx, [makeJob("complete")]);
 
-		const preEmptyBlankCount = [first, status, terminal].reduce((sum, item) => sum + undefinedCalls(item.widgetCalls), 0);
+		const preEmptyBlankCount = [first, status, terminal].reduce(
+			(sum, item) => sum + undefinedCalls(item.widgetCalls),
+			0,
+		);
 		assert.equal(preEmptyBlankCount, 0, "status and terminal updates should not publish a transient blank");
 		assert.equal(mountCalls(first.widgetCalls) + mountCalls(status.widgetCalls) + mountCalls(terminal.widgetCalls), 1);
 		assert.equal(status.renderCount() + terminal.renderCount(), 2);
 
 		renderWidget(empty.ctx, []);
-		assert.equal(undefinedCalls(first.widgetCalls), 1, "the blank frame is reserved for the no-active transition");
+		const postEmptyBlankCount = [first, status, terminal].reduce(
+			(sum, item) => sum + undefinedCalls(item.widgetCalls),
+			0,
+		);
+		assert.equal(
+			postEmptyBlankCount,
+			1,
+			"the blank frame is reserved for the no-active transition",
+		);
+		assert.equal(
+			undefinedCalls(terminal.widgetCalls),
+			1,
+			"no-active teardown targets the freshest visible same-owner wrapper",
+		);
 	});
 });
