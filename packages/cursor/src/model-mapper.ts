@@ -258,14 +258,14 @@ function cursorModelInput(id: string): CursorModelInput {
 
 function supportsImageInputModelId(id: string): boolean {
 	const variant = parseCursorVariant({ id });
-	return /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
+	return variant.baseId === "grok-4.3" || /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
 }
 
 function supportsReasoningModelId(id: string): boolean {
 	const variant = parseCursorVariant({ id });
 	if (variant.effort || variant.thinking) return true;
 	if (variant.baseId === "default") return true;
-	return /^(claude|composer|gemini|gpt|grok|kimi)(-|$)/iu.test(variant.baseId);
+	return /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
 }
 
 function titleCaseModelId(id: string): string {

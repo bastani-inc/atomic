@@ -4,11 +4,16 @@
 
 ### Added
 
-- Added scoped Cursor image-input support for known multimodal Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), including selected-image request serialization and mixed text/image MCP tool-result serialization.
+- Added scoped Cursor image-input support for known multimodal Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), plus `cursor/grok-4.3`, including selected-image request serialization and mixed text/image MCP tool-result serialization.
+- Added `cursor/grok-4.3` to the estimated fallback catalog.
 
 ### Fixed
 
 - Rejected empty or malformed base64 image payloads during Cursor selected-image and MCP image serialization with sanitized local errors, while accepting valid MIME-wrapped base64 with line whitespace.
+
+### Removed
+
+- Removed outdated Cursor Grok 4.20 entries from the estimated fallback catalog and no longer advertise Grok-family Cursor IDs as image-capable.
 
 ## [0.9.2] - 2026-06-23
 
