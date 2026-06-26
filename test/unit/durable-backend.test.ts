@@ -8,7 +8,7 @@ import { describe, test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FileDurableBackend, WorkflowFileDurableBackend, durableStateFileFor } from "../../packages/workflows/src/durable/file-backend.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
@@ -28,6 +28,11 @@ function makeUiCheckpoint(workflowId: string, promptHash: string, response: stri
 
 function makeStageCheckpoint(workflowId: string, replayKey: string, output: string, checkpointId = "cp-3"): DurableCheckpoint {
   return { kind: "stage", workflowId, checkpointId, name: "stage1", replayKey, output, completedAt: Date.now() };
+}
+
+function assertModeIfSupported(path: string, mode: number): void {
+  if (process.platform === "win32") return;
+  assert.equal(statSync(path).mode & 0o777, mode);
 }
 
 describe("InMemoryDurableBackend", () => {
@@ -245,13 +250,27 @@ describe("WorkflowFileDurableBackend", () => {
     assert.equal(backend.listResumableWorkflows().length, 0);
   });
 
+  test("reset clears workflow files without wiping unrelated durable-root files", () => {
+    const backend = new WorkflowFileDurableBackend(tmpDir);
+    const keepPath = join(tmpDir, "notes.txt");
+    writeFileSync(keepPath, "keep", "utf-8");
+    backend.registerWorkflow({ workflowId: "wf-reset", name: "reset", inputs: {}, createdAt: 1, status: "running" });
+    backend.recordCheckpoint(makeToolCheckpoint("wf-reset", "reset", "hash-reset", "ok", "cp-reset"));
+
+    backend.reset();
+
+    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-reset")), false);
+    assert.equal(existsSync(keepPath), true);
+  });
+
   test("uses restrictive permissions for durable directory and state files", () => {
     const backend = new WorkflowFileDurableBackend(tmpDir);
     backend.registerWorkflow({ workflowId: "wf-secure", name: "secure", inputs: {}, createdAt: 1, status: "running" });
     const filePath = durableStateFileFor(tmpDir, "wf-secure");
+    assert.equal(existsSync(filePath), true);
 
-    assert.equal(statSync(tmpDir).mode & 0o777, 0o700);
-    assert.equal(statSync(filePath).mode & 0o777, 0o600);
+    assertModeIfSupported(tmpDir, 0o700);
+    assertModeIfSupported(filePath, 0o600);
   });
 
   test("merges same-workflow updates through per-workflow locks", () => {

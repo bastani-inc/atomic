@@ -159,53 +159,27 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   }
 
   getToolOutput(workflowId: string, argsHash: string) {
-    for (const backend of this.lookupBackends(workflowId)) {
-      const output = backend.getToolOutput(workflowId, argsHash);
-      if (output !== undefined) return output;
-    }
-    return undefined;
+    return this.backendFor(workflowId).getToolOutput(workflowId, argsHash);
   }
 
   getUiResponse(workflowId: string, promptHash: string) {
-    for (const backend of this.lookupBackends(workflowId)) {
-      const response = backend.getUiResponse(workflowId, promptHash);
-      if (response !== undefined) return response;
-    }
-    return undefined;
+    return this.backendFor(workflowId).getUiResponse(workflowId, promptHash);
   }
 
   getStageOutput(workflowId: string, replayKey: string) {
-    for (const backend of this.lookupBackends(workflowId)) {
-      const output = backend.getStageOutput(workflowId, replayKey);
-      if (output !== undefined) return output;
-    }
-    return undefined;
+    return this.backendFor(workflowId).getStageOutput(workflowId, replayKey);
   }
 
   getStageSession(workflowId: string, replayKey: string) {
-    for (const backend of this.lookupBackends(workflowId)) {
-      const session = backend.getStageSession(workflowId, replayKey);
-      if (session !== undefined) return session;
-    }
-    return undefined;
+    return this.backendFor(workflowId).getStageSession(workflowId, replayKey);
   }
 
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
-    const checkpoints = new Map<string, DurableCheckpoint>();
-    for (const backend of this.lookupBackends(workflowId)) {
-      for (const checkpoint of backend.listCheckpoints(workflowId)) {
-        checkpoints.set(`${checkpoint.kind}:${checkpoint.checkpointId}`, checkpoint);
-      }
-    }
-    return [...checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt);
+    return this.backendFor(workflowId).listCheckpoints(workflowId);
   }
 
   getWorkflow(workflowId: string) {
-    for (const backend of this.lookupBackends(workflowId)) {
-      const handle = backend.getWorkflow(workflowId);
-      if (handle !== undefined) return handle;
-    }
-    return undefined;
+    return this.backendFor(workflowId).getWorkflow(workflowId);
   }
 
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
@@ -226,7 +200,8 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
 
   reset(): void {
     this.fileBackends.clear();
-    rmSync(this.dir, { recursive: true, force: true });
+    for (const filePath of this.stateFiles()) this.removeStateFile(filePath);
+    for (const lockPath of this.lockDirs()) rmSync(lockPath, { recursive: true, force: true });
   }
 
   private backendFor(workflowId: string): FileDurableBackend {
@@ -241,19 +216,20 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     return backend;
   }
 
-  private lookupBackends(workflowId: string): readonly FileDurableBackend[] {
-    const primaryFile = durableStateFileFor(this.dir, workflowId);
-    const backends = [this.backendForFile(primaryFile)];
-    for (const filePath of this.stateFiles()) {
-      if (filePath !== primaryFile) backends.push(this.backendForFile(filePath));
-    }
-    return backends;
-  }
-
   private stateFiles(): readonly string[] {
     try {
       return readdirSync(this.dir, { withFileTypes: true })
         .filter((entry) => entry.isFile() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json"))
+        .map((entry) => `${this.dir}/${entry.name}`);
+    } catch {
+      return [];
+    }
+  }
+
+  private lockDirs(): readonly string[] {
+    try {
+      return readdirSync(this.dir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json.lock"))
         .map((entry) => `${this.dir}/${entry.name}`);
     } catch {
       return [];
@@ -265,7 +241,10 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   }
 
   private removeWorkflowFile(workflowId: string): void {
-    const filePath = durableStateFileFor(this.dir, workflowId);
+    this.removeStateFile(durableStateFileFor(this.dir, workflowId));
+  }
+
+  private removeStateFile(filePath: string): void {
     this.fileBackends.delete(filePath);
     rmSync(filePath, { force: true });
     rmSync(`${filePath}.lock`, { recursive: true, force: true });
