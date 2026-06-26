@@ -18,6 +18,8 @@ export function stripWorkflowOnlyOptions(
     fallbackThinkingLevels: _fallbackThinkingLevels,
     context,
     forkFromSessionFile,
+    resumeFromSessionFile,
+    durableReplayKey: _durableReplayKey,
     sessionDir,
     gitWorktreeDir: _gitWorktreeDir,
     baseBranch: _baseBranch,
@@ -26,7 +28,9 @@ export function stripWorkflowOnlyOptions(
   if (sessionOptions.sessionManager === undefined) {
     const cwd = sessionOptions.cwd ?? process.cwd();
     const effectiveSessionDir = sessionDir ?? defaultSessionDir;
-    if (context === "fork" && forkFromSessionFile !== undefined) {
+    if (resumeFromSessionFile !== undefined) {
+      sessionOptions.sessionManager = SessionManager.open(resumeFromSessionFile, effectiveSessionDir, cwd);
+    } else if (context === "fork" && forkFromSessionFile !== undefined) {
       sessionOptions.sessionManager = SessionManager.forkFrom(forkFromSessionFile, cwd, effectiveSessionDir);
     } else if (effectiveSessionDir !== undefined) {
       sessionOptions.sessionManager = SessionManager.create(cwd, effectiveSessionDir);

@@ -48,7 +48,7 @@ export interface LiveStageRuntime {
   readonly captureStageSessionMeta: () => void;
   readonly applyModelFallbackMeta: (meta: ReturnType<InternalStageContext["__modelFallbackMeta"]>) => void;
   readonly appendStageStartOnce: () => void;
-  readonly finalizeStageSnapshot: () => boolean;
+  readonly finalizeStageSnapshot: () => Promise<boolean>;
   readonly releaseLiveHandle: () => Promise<void>;
   readonly dropStageControlForCompletion: () => Promise<void>;
   readonly markSkippedForParallelFailFast: () => void;

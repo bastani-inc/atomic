@@ -178,6 +178,10 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   scopedModels?: CreateAgentSessionOptions["scopedModels"];
   sessionManager?: SessionManager;
   settingsManager?: SettingsManager;
+  /** Internal durable resume hook: reopen this exact Atomic/Pi session file instead of forking. */
+  resumeFromSessionFile?: string;
+  /** Internal durable replay key used to map a live LM session to durable resume state. */
+  durableReplayKey?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +385,39 @@ export interface WorkflowRunContext<
   ): Promise<WorkflowChildResult<TChildOutputs>>;
   /** HIL primitives for user interaction during a run. */
   readonly ui: WorkflowUIContext;
+  /**
+   * Durable cached tool execution. Runs arbitrary TypeScript code and caches
+   * the result so completed side effects are not repeated on resume.
+   * Only `ctx.*` blocks produce durable checkpoints.
+   *
+   * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+   */
+  tool: WorkflowToolPrimitive;
+}
+
+/**
+ * `ctx.tool` primitive signature. Runs an async function and caches the result
+ * durably via the durable workflow backend.
+ */
+export interface WorkflowToolPrimitive {
+  <TValue extends WorkflowSerializableValue>(
+    name: string,
+    args: Readonly<Record<string, WorkflowSerializableValue>>,
+    fn: () => Promise<TValue>,
+    options?: WorkflowToolOptions,
+  ): Promise<TValue>;
+}
+
+/** Options for `ctx.tool`. */
+export interface WorkflowToolOptions {
+  /** When true, the tool function is retried on failure. Default false. */
+  readonly retriesAllowed?: boolean;
+  /** Max retry attempts when retriesAllowed is true. Default 3. */
+  readonly maxAttempts?: number;
+  /** Initial retry interval in ms. Default 1000. */
+  readonly intervalMs?: number;
+  /** Backoff multiplier. Default 2. */
+  readonly backoffRate?: number;
 }
 
 // ---------------------------------------------------------------------------

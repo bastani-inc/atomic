@@ -133,16 +133,13 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       }
       return true;
     }
-    // `q` kills the active run (no confirm). `h` hides the pane via
-    // the overlay's setHidden() flag (not unmount); Escape/Ctrl+C closes.
+    // `q` quits/detaches the orchestrator view without authoritatively
+    // killing the workflow. The workflow remains resumable via
+    // `/workflow resume`; use `/workflow kill` for non-resumable disposal.
     if (matchesKey(data, "q")) {
       const run = this._getCurrentRun();
-      const targetRunId = this._focusedStageTarget()?.runId ?? run?.id;
-      const targetRun = targetRunId !== undefined
-        ? this.currentSnapshot?.runs.find((candidate) => candidate.id === targetRunId)
-        : undefined;
-      if (targetRun && targetRun.endedAt === undefined && this.onKill) {
-        this.onKill(targetRun.id);
+      if (run && run.endedAt === undefined && this.onQuit) {
+        this.onQuit(run.id);
       }
       this.onClose?.();
       return true;
@@ -278,12 +275,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return true;
   }
 
-  private _focusedStageTarget(): { runId: string; stageId: string } | undefined {
-    const node = this.cachedLayout[this.focusedIndex];
-    if (!node) return undefined;
-    const target = expandedStageTarget(this.expandedGraph, node.stage.id);
-    return target ? { runId: target.runId, stageId: target.stageId } : undefined;
-  }
 
   private _setFocusedIndex(index: number): void {
     const max = Math.max(0, this.cachedLayout.length - 1);

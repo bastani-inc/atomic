@@ -33,11 +33,11 @@ export function createParallelPrimitive(input: {
         taskWithSharedDefaults(taskOptionsFromStep(step, prompt, taskPrevious(step)), options),
         parallelScope,
       );
-    }, (error) => {
+    }, async (error) => {
       if (!failFastEnabled) return;
       parallelScope.failed = true;
       parallelScope.firstFailure = error;
-      for (const stage of parallelScope.activeStages.values()) stage.skip();
+      await Promise.all([...parallelScope.activeStages.values()].map((stage) => stage.skip()));
     }, {
       beforeDequeue: input.runtime.exit.throwIfWorkflowExitSelected,
       beforeMap: input.runtime.exit.throwIfWorkflowExitSelected,
