@@ -148,12 +148,18 @@ export class EngineRuntime {
     const allow = options?.mcp?.allow ?? null;
     const deny = options?.mcp?.deny ?? null;
     const hasScope = allow !== null || deny !== null;
+    let depth = 0;
     return {
       apply: () => {
-        if (this.childRunOptions.mcp && hasScope) this.childRunOptions.mcp.setScope(stageId, allow, deny);
+        if (!this.childRunOptions.mcp || !hasScope) return;
+        if (depth === 0) this.childRunOptions.mcp.setScope(stageId, allow, deny);
+        depth += 1;
       },
       clear: () => {
-        if (this.childRunOptions.mcp && hasScope) this.childRunOptions.mcp.clearScope(stageId);
+        if (!this.childRunOptions.mcp || !hasScope) return;
+        if (depth === 0) return;
+        depth -= 1;
+        if (depth === 0) this.childRunOptions.mcp.clearScope(stageId);
       },
     };
   }

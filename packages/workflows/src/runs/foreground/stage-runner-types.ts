@@ -6,6 +6,8 @@ import type {
 import type {
   CompleteStageOpts,
   StageContext,
+  StageSendUserMessageOptions,
+  StageUserMessageContent,
   StageExecutionMeta,
   StageOptions,
   WorkflowExecutionMode,
@@ -26,6 +28,7 @@ export type WorkflowFastModeSettingsManager = {
 
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
+  sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   subscribe(listener: (event: StageSessionEvent) => void): () => void;

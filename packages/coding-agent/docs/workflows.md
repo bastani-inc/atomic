@@ -1184,6 +1184,22 @@ Migrating an existing file from the removed `defineWorkflow(...).compile()` buil
 
 Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each normal run has graph nodes to inspect, attach to, interrupt, resume, and render. Guard-only workflows may call `ctx.exit(...)` before creating a stage when they intentionally stop early.
 
+### Stage follow-on user messages
+
+`ctx.stage()` returns a `StageContext` with `sendUserMessage(content, options?)` for injecting a normal follow-on user turn into that stage's AgentSession. Use this when workflow code needs to continue an existing stage session after `stage.prompt(...)` has already resolved, including schema-backed stages where `prompt()` is intentionally one-shot because the structured-output tool may be called exactly once.
+
+```ts
+const gate = ctx.stage("review-gate", {
+  schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
+});
+const decision = await gate.prompt("Review the implementation and call structured_output.");
+if (!decision.approved) {
+  await gate.sendUserMessage("Explain the highest-priority changes needed before approval.");
+}
+```
+
+When the stage session is idle, `sendUserMessage()` starts the next user turn immediately. The `content` argument mirrors the Atomic SDK and accepts either a string or text/image content blocks such as `[{ type: "text", text: "Describe this" }, { type: "image", data: "...", mimeType: "image/png" }]` when the underlying stage session supports native user-message delivery. Non-native fallback adapters only support string content and reject text/image block arrays instead of stringifying them. When the stage is already streaming, the message is queued as a follow-up by default; pass `{ deliverAs: "steer" }` to steer the active turn instead, or `{ deliverAs: "followUp" }` to be explicit. Follow-on turns preserve the stage's `mcp.allow` / `mcp.deny` scope for the injected user turn, just like the original `prompt()`. The older `stage.steer(text)` and `stage.followUp(text)` methods are still available for queueing while a turn is active, but they do not start a new idle turn.
+
 ### Early exit with `ctx.exit()`
 
 Use `ctx.exit(options?)` when workflow code intentionally stops the current run from a helper, branch, loop, or precondition guard without classifying the run as failed. `ctx.exit()` throws an executor-owned control signal and is typed as `never`, so code after it is unreachable. In async `run` bodies, prefer `return ctx.exit(...)` when the exit is the only path so TypeScript can see the non-returning branch.
@@ -1734,7 +1750,7 @@ For large handoffs, write artifacts to files, pass their paths with `reads`, and
 Use `ctx.stage(name, options?)` when `ctx.task` is too coarse and you need direct control over the underlying stage session. `StageContext` supports:
 
 - prompting and completion: `prompt(text, options?)`, `complete(text, options?)`
-- live input: `steer(text)`, `followUp(text)`, `subscribe(listener)`
+- live input: `sendUserMessage(content, options?)`, `steer(text)`, `followUp(text)`, `subscribe(listener)`
 - session metadata: `sessionId`, `sessionFile`
 - model controls: `setModel`, `setThinkingLevel`, `cycleModel`, `cycleThinkingLevel`
 - state access: `agent`, `model`, `thinkingLevel`, `messages`, `isStreaming`

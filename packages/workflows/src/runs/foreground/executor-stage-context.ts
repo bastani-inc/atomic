@@ -43,6 +43,19 @@ export function createStageContext(input: {
   };
 
   const innerCtx: InternalStageContext = runtime.innerCtx;
+  const sendScopedUserMessage: InternalStageContext["sendUserMessage"] = async (text, options) => {
+    runtime.mcpScope.apply();
+    try {
+      await innerCtx.sendUserMessage(text, options);
+    } finally {
+      try {
+        runtime.mcpScope.clear();
+      } finally {
+        runtime.captureStageSessionMeta();
+        runtime.applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
+      }
+    }
+  };
   return {
     name: innerCtx.name,
     prompt: (text, promptOptions) => {
@@ -52,6 +65,10 @@ export function createStageContext(input: {
     complete: (text, completeOptions) => {
       runtime.throwIfStageMutationBlocked();
       return input.runTrackedStageCall(() => innerCtx.complete(text, completeOptions));
+    },
+    sendUserMessage: (text, options) => {
+      runtime.throwIfStageMutationBlocked();
+      return sendScopedUserMessage(text, options);
     },
     steer: (text) => {
       runtime.throwIfStageMutationBlocked();

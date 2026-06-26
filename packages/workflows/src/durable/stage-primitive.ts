@@ -181,6 +181,7 @@ function createCachedStageContext(name: string, output: WorkflowSerializableValu
     name,
     async prompt() { return output as Awaited<ReturnType<StageContext["prompt"]>>; },
     async complete() { return text; },
+    sendUserMessage: unsupported,
     async steer() {},
     async followUp() {},
     subscribe() { return () => {}; },

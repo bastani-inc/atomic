@@ -1,10 +1,11 @@
 import { getModelDefaultContextWindow, getSupportedContextWindows, SessionManager, shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
-import type { StageContext, StageExecutionMeta, StageOptions, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
+import type { StageContext, StageExecutionMeta, StageOptions, StageSendUserMessageOptions, StageUserMessageContent, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
 import { buildModelCandidatesFromCatalog, errorMessage, isRetryableModelFailure, workflowModelId, type WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
 import { WorkflowPromptModelFailure, lastAssistantTextFromSession, latestTerminalAssistantFailureSince } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
 import { asAgentSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
+import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 
 type PauseRequest = {
@@ -56,11 +57,8 @@ export class StageSessionController {
   }
 
   get currentSession(): StageSessionRuntime | undefined { return this.session; }
-
   get latestStructuredOutputToolError(): string | undefined { return this.latestStructuredOutputToolErrorValue; }
-
   resetStructuredOutputToolError(): void { this.latestStructuredOutputToolErrorValue = undefined; }
-
   requireSession(property: string): StageSessionRuntime {
     if (!this.session) unavailableSync(property);
     return this.session;
@@ -96,6 +94,10 @@ export class StageSessionController {
     if (this.sessionPromise || this.session) return this.ensureSession(consumer);
     this.reattachSessionFile = sessionFile;
     return this.ensureSession(consumer);
+  }
+
+  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void> {
+    await sendStageUserMessage(await this.ensureSession("prompt"), content, options);
   }
 
   async promptWithFallback(
@@ -185,13 +187,11 @@ export class StageSessionController {
   }
 
   isPaused(): boolean { return this.pauseRequest !== null; }
-
   sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined } {
     return { sessionId: this.session?.sessionId, sessionFile: this.session?.sessionFile };
   }
 
   agentSession(): AgentSession | undefined { return asAgentSession(this.session); }
-
   pendingMessageCount(): number {
     return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;
   }
