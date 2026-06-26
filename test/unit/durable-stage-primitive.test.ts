@@ -168,6 +168,10 @@ describe("recordStageCheckpoint", () => {
 
     const ctx = stage("analyze");
     assert.equal(await ctx.prompt("ignored"), "cached output");
+    await assert.rejects(
+      () => ctx.sendUserMessage("ignored replay follow-on", { deliverAs: "steer" }),
+      /live session operations are unavailable/,
+    );
     assert.deepEqual(recorded, [{ name: "analyze", replayKey, output: "cached output" }]);
   });
 

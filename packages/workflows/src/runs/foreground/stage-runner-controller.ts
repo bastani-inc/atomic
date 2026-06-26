@@ -1,10 +1,11 @@
 import { getModelDefaultContextWindow, getSupportedContextWindows, SessionManager, shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
-import type { StageContext, StageExecutionMeta, StageOptions, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
+import type { StageContext, StageExecutionMeta, StageOptions, StageSendUserMessageOptions, StageUserMessageContent, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
 import { buildModelCandidatesFromCatalog, errorMessage, isRetryableModelFailure, workflowModelId, type WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
 import { WorkflowPromptModelFailure, lastAssistantTextFromSession, latestTerminalAssistantFailureSince } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
 import { asAgentSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
+import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 
 type PauseRequest = {
@@ -60,7 +61,6 @@ export class StageSessionController {
   get latestStructuredOutputToolError(): string | undefined { return this.latestStructuredOutputToolErrorValue; }
 
   resetStructuredOutputToolError(): void { this.latestStructuredOutputToolErrorValue = undefined; }
-
   requireSession(property: string): StageSessionRuntime {
     if (!this.session) unavailableSync(property);
     return this.session;
@@ -96,6 +96,10 @@ export class StageSessionController {
     if (this.sessionPromise || this.session) return this.ensureSession(consumer);
     this.reattachSessionFile = sessionFile;
     return this.ensureSession(consumer);
+  }
+
+  async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void> {
+    await sendStageUserMessage(await this.ensureSession("prompt"), content, options);
   }
 
   async promptWithFallback(
@@ -242,14 +246,10 @@ export class StageSessionController {
           fallbackThinkingLevels: undefined,
         };
     if (resumeOptions?.restoreSavedModel) delete optionsForCandidate.model;
-    // Pin a tiered model's natural default (short) context window when neither
-    // the `(1m)` model-string token nor an explicit stage-level contextWindow
-    // selects one for a fresh (non-resumed) stage session. This prevents a
-    // persisted interactive context-window preference (e.g. a previously
-    // selected long tier) from leaking into workflow stages, so a tiered model
-    // uses its short tier unless the author explicitly opts into the long tier
-    // via the `(1m)` token or the numeric contextWindow option. Single-window
-    // models carry no selectable long tier, so they are left untouched.
+    // Pin a tiered model's short default context window for fresh, non-resumed
+    // stage sessions unless the author selected a long tier via `(1m)` or
+    // contextWindow. This prevents persisted interactive long-tier preferences
+    // from leaking into workflow stages; single-window models are left alone.
     if (
       resumeOptions?.restoreSavedModel !== true &&
       this.reattachSessionFile === undefined &&

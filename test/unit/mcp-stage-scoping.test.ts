@@ -12,6 +12,7 @@ import { run } from "../../packages/workflows/src/runs/foreground/executor.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import type { WorkflowMcpPort } from "../../packages/workflows/src/shared/types.js";
+import { makeMockSession, type AgentSessionAdapter } from "./stage-runner-helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,6 +22,8 @@ type OrderEvent =
   | "stageStart"
   | "mcpSet"
   | "adapterCall"
+  | "prompt"
+  | "sendUserMessage"
   | "mcpClear"
   | "stageEnd";
 
@@ -42,6 +45,33 @@ function makePromptAdapter(order: OrderEvent[]) {
       return "ok";
     },
   };
+}
+
+function makeAgentSessionAdapter(order: OrderEvent[]): AgentSessionAdapter {
+  const { session } = makeMockSession({
+    async prompt() { order.push("prompt"); },
+    async sendUserMessage() { order.push("sendUserMessage"); },
+  });
+  return { create: async () => session };
+}
+
+function makeStreamingAgentSessionAdapter(
+  order: OrderEvent[],
+  releasePrompt: Promise<void>,
+): AgentSessionAdapter & { promptStarted: Promise<void> } {
+  const promptStarted = Promise.withResolvers<void>();
+  const { session } = makeMockSession({
+    async prompt() {
+      order.push("prompt");
+      const mutableSession = session as { isStreaming: boolean };
+      mutableSession.isStreaming = true;
+      promptStarted.resolve();
+      await releasePrompt;
+      mutableSession.isStreaming = false;
+    },
+    async sendUserMessage() { order.push("sendUserMessage"); },
+  });
+  return { create: async () => session, promptStarted: promptStarted.promise };
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +155,74 @@ describe("MCP stage scoping — call order", () => {
     assert.ok(idxAdapterCall > idxMcpSet);
     assert.ok(idxMcpClear > idxAdapterCall);
     assert.ok(idxStageEnd > idxMcpClear);
+  });
+
+  test("sendUserMessage follow-on turns reapply and clear the stage MCP scope", async () => {
+    const order: OrderEvent[] = [];
+
+    const wf = workflow({
+      name: "mcp-send-user-message-wf",
+      description: "sendUserMessage mcp scope test",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
+        const s = ctx.stage("work", { mcp: { allow: ["github"] } });
+        await s.prompt("go");
+        await s.sendUserMessage("follow on");
+        return {};
+      },
+    });
+
+    await run(wf, {}, {
+      store: createStore(),
+      mcp: makeMcpPort(order),
+      adapters: { agentSession: makeAgentSessionAdapter(order) },
+    });
+
+    assert.deepEqual(order.filter((event) => event !== "stageStart" && event !== "stageEnd"), [
+      "mcpSet",
+      "prompt",
+      "mcpClear",
+      "mcpSet",
+      "sendUserMessage",
+      "mcpClear",
+    ]);
+  });
+
+  test("streaming sendUserMessage does not clear the active prompt MCP scope", async () => {
+    const order: OrderEvent[] = [];
+    const releasePrompt = Promise.withResolvers<void>();
+    const adapter = makeStreamingAgentSessionAdapter(order, releasePrompt.promise);
+
+    const wf = workflow({
+      name: "mcp-streaming-send-user-message-wf",
+      description: "streaming sendUserMessage mcp scope test",
+      inputs: {},
+      outputs: {},
+      run: async (ctx) => {
+        const s = ctx.stage("work", { mcp: { allow: ["github"] } });
+        const promptPromise = s.prompt("go");
+        await adapter.promptStarted;
+        await s.sendUserMessage("queue while streaming");
+        assert.deepEqual(order, ["mcpSet", "prompt", "sendUserMessage"]);
+        releasePrompt.resolve();
+        await promptPromise;
+        return {};
+      },
+    });
+
+    await run(wf, {}, {
+      store: createStore(),
+      mcp: makeMcpPort(order),
+      adapters: { agentSession: adapter },
+    });
+
+    assert.deepEqual(order.filter((event) => event !== "stageStart" && event !== "stageEnd"), [
+      "mcpSet",
+      "prompt",
+      "sendUserMessage",
+      "mcpClear",
+    ]);
   });
 
   test("no MCP calls when stage has no mcp options", async () => {

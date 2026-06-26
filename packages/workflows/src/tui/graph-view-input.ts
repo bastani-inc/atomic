@@ -11,6 +11,13 @@ import {
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
 
+interface SgrMouseEvent {
+  buttonCode: number;
+  col: number;
+  row: number;
+  final: "M" | "m";
+}
+
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
   /** Returns true if consumed. */
@@ -80,6 +87,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       return true;
     }
 
+    const clickedNodeIndex = this._graphNodeIndexForClick(data);
+    if (clickedNodeIndex !== undefined) {
+      if (clickedNodeIndex !== null) {
+        this._setFocusedIndex(clickedNodeIndex);
+        this._activateFocusedNode();
+      }
+      return true;
+    }
+
     // Vertical-graph navigation: up/down step between depth levels
     // (col), left/right step between siblings at the same depth (row).
     // j/k preserved as a flat-order fallback for muscle memory.
@@ -115,12 +131,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
       return true;
     }
     if (matchesKey(data, Key.enter)) {
-      // Enter attaches the popup interior to the focused stage. The
-      // attach shell swaps in the stage-chat view without remounting
-      // the overlay; without a callback, fall back to the legacy
-      // expand/collapse toggle so non-attach hosts still work.
-      if (this._attachFocusedStage()) return true;
-      this.detailsExpanded = !this.detailsExpanded;
+      this._activateFocusedNode();
       return true;
     }
     // `ctrl+d` detaches the whole popup (host hides the overlay). This
@@ -267,6 +278,15 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return true;
   }
 
+  private _activateFocusedNode(): void {
+    // Enter and direct node clicks attach the popup interior to the focused
+    // stage. The attach shell swaps in the stage-chat view without remounting
+    // the overlay; without a callback, fall back to the legacy expand/collapse
+    // toggle so non-attach hosts still work.
+    if (this._attachFocusedStage()) return;
+    this.detailsExpanded = !this.detailsExpanded;
+  }
+
   private _attachFocusedStage(): boolean {
     if (!this.onStageAttach) return false;
     const node = this.cachedLayout[this.focusedIndex];
@@ -293,10 +313,55 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
   }
 
+  private _graphNodeIndexForClick(data: string): number | null | undefined {
+    const click = this._sgrLeftMousePress(data);
+    if (!click) return undefined;
+    if (this.mode !== "overlay") return undefined;
+    if (this.cachedLayout.length === 0) return null;
+
+    for (const rect of this.graphNodeHitRects) {
+      if (
+        click.row >= rect.top &&
+        click.row < rect.bottom &&
+        click.col >= rect.left &&
+        click.col < rect.right
+      ) {
+        return rect.index;
+      }
+    }
+    return null;
+  }
+
+  private _parseSgrMouse(data: string): SgrMouseEvent | null {
+    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
+    if (!sgr) return null;
+    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
+    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
+    const final = sgr[4];
+    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
+    if (final !== "M" && final !== "m") return null;
+    return {
+      buttonCode: Number.parseInt(sgr[1]!, 10),
+      col: oneBasedCol - 1,
+      row: oneBasedRow - 1,
+      final,
+    };
+  }
+
+  private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
+    const sgr = this._parseSgrMouse(data);
+    if (!sgr || sgr.final !== "M") return null;
+    const buttonCode = sgr.buttonCode;
+    if ((buttonCode & 64) !== 0 || (buttonCode & 32) !== 0 || (buttonCode & 3) !== 0) {
+      return null;
+    }
+    return { col: sgr.col, row: sgr.row };
+  }
+
   private _mouseWheelDeltaRows(data: string): number {
-    const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
-    if (sgr) {
-      return this._wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
+    const sgr = this._parseSgrMouse(data);
+    if (sgr && sgr.final === "M") {
+      return this._wheelDeltaForButtonCode(sgr.buttonCode);
     }
     if (data.startsWith("\x1b[M") && data.length >= 6) {
       return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
@@ -324,5 +389,8 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
   get _graphScrollOffset(): number {
     return this.graphScrollOffset;
+  }
+  get _graphScrollColOffset(): number {
+    return this.graphScrollColOffset;
   }
 }

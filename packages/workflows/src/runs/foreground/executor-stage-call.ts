@@ -8,6 +8,21 @@ import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
 import { applyFailureToStage } from "./executor-lifecycle.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 
+export interface TrackedStageCallOptions {
+  readonly eagerSession?: boolean;
+  readonly allowFinalized?: boolean;
+}
+
+export type TrackedStageCaller = <T>(
+  call: () => Promise<T>,
+  eagerSessionOrOptions?: boolean | TrackedStageCallOptions,
+) => Promise<T>;
+
+function normalizeTrackedStageCallOptions(input: boolean | TrackedStageCallOptions | undefined): Required<TrackedStageCallOptions> {
+  if (typeof input === "boolean") return { eagerSession: input, allowFinalized: false };
+  return { eagerSession: input?.eagerSession === true, allowFinalized: input?.allowFinalized === true };
+}
+
 export function createTrackedStageCaller(input: {
   readonly runtime: LiveStageRuntime;
   readonly limiter: ConcurrencyLimiter;
@@ -15,7 +30,7 @@ export function createTrackedStageCaller(input: {
   readonly adapters: StageAdapters;
   readonly hasContinuation: boolean;
   readonly hasScopedParents: boolean;
-}): <T>(call: () => Promise<T>, eagerSession?: boolean) => Promise<T> {
+}): TrackedStageCaller {
   const { runtime } = input;
   const readinessGateEnabled = runtime.opts.confirmStageReadiness !== undefined || runtime.opts.usePromptNodesForUi === true;
   const confirmReadiness = async (): Promise<"advance" | "stay"> => {
@@ -68,22 +83,24 @@ export function createTrackedStageCaller(input: {
     return result;
   };
 
-  return async <T>(call: () => Promise<T>, eagerSession = false): Promise<T> => {
+  return async <T>(call: () => Promise<T>, eagerSessionOrOptions?: boolean | TrackedStageCallOptions): Promise<T> => {
+    const callOptions = normalizeTrackedStageCallOptions(eagerSessionOrOptions);
     runtime.exit.throwIfWorkflowExitSelected();
     await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
-    if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+    if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
 
     await input.limiter.acquire();
     try {
       await runtime.scheduler.waitForStageRelease(runtime.stageId, runtime.releaseLiveHandle);
       runtime.exit.throwIfWorkflowExitSelected();
-      if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+      if (runtime.state.stageFinalized && !callOptions.allowFinalized) throw runtime.parallelFailFastError();
     } catch (err) {
       input.limiter.release();
       throw err;
     }
 
-    if (!input.hasContinuation && runtime.stageSnapshot.startedAt === undefined && !input.hasScopedParents) {
+    const trackStageLifecycle = !runtime.state.stageFinalized;
+    if (trackStageLifecycle && !input.hasContinuation && runtime.stageSnapshot.startedAt === undefined && !input.hasScopedParents) {
       const actualParentIds = runtime.scheduler.tracker.currentParents();
       const sameParents = actualParentIds.length === runtime.stageSnapshot.parentIds.length &&
         actualParentIds.every((value) => runtime.stageSnapshot.parentIds.includes(value));
@@ -92,25 +109,29 @@ export function createTrackedStageCaller(input: {
         runtime.scheduler.setStageParentIds(runtime.stageSnapshot, actualParentIds);
       }
     }
-    runtime.stageSnapshot.status = "running";
-    runtime.stageSnapshot.startedAt = Date.now();
-    const hasNoExplicitModelConfig = input.options?.model === undefined && input.options?.fallbackModels === undefined;
-    const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
-    if (eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate({
-      model: input.options?.model,
-      fallbackModels: input.options?.fallbackModels,
-      models: runtime.opts.models,
-    }))) {
-      try {
-        await runtime.innerCtx.__ensureSession();
-        runtime.captureStageSessionMeta();
-      } catch (err) {
-        if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
+    if (trackStageLifecycle) {
+      runtime.stageSnapshot.status = "running";
+      runtime.stageSnapshot.startedAt = Date.now();
+      const hasNoExplicitModelConfig = input.options?.model === undefined && input.options?.fallbackModels === undefined;
+      const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
+      if (callOptions.eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate({
+        model: input.options?.model,
+        fallbackModels: input.options?.fallbackModels,
+        models: runtime.opts.models,
+      }))) {
+        try {
+          await runtime.innerCtx.__ensureSession();
+          runtime.captureStageSessionMeta();
+        } catch (err) {
+          if (!(err instanceof Error && err.message.includes("prompt adapter not configured"))) throw err;
+        }
       }
+      runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
+      runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
+      runtime.appendStageStartOnce();
+    } else {
+      runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
     }
-    runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
-    runtime.activeStore.recordStageStart(runtime.runId, runtime.stageSnapshot);
-    runtime.appendStageStartOnce();
 
     runtime.mcpScope.apply();
 
@@ -158,24 +179,26 @@ export function createTrackedStageCaller(input: {
       }
       runtime.captureStageSessionMeta();
       runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
-      if (runtime.stageFailFastScope?.failed === true && runtime.stageFailFastScope.activeStages.has(runtime.stageId)) {
+      if (trackStageLifecycle && runtime.stageFailFastScope?.failed === true && runtime.stageFailFastScope.activeStages.has(runtime.stageId)) {
         runtime.markSkippedForParallelFailFast();
         throw runtime.parallelFailFastError();
       }
-      if (runtime.state.stageFinalized) throw runtime.parallelFailFastError();
-      runtime.stageSnapshot.status = "completed";
-      const assistantText = runtime.innerCtx.__getLastAssistantText();
-      if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+      if (trackStageLifecycle && runtime.state.stageFinalized) throw runtime.parallelFailFastError();
+      if (trackStageLifecycle) {
+        runtime.stageSnapshot.status = "completed";
+        const assistantText = runtime.innerCtx.__getLastAssistantText();
+        if (assistantText !== undefined) runtime.stageSnapshot.result = assistantText;
+      }
       return result;
     } catch (err) {
       const workflowExitAbort = runtime.signal.aborted ? runtime.exit.currentWorkflowExitAbortReason() : undefined;
       if (workflowExitAbort !== undefined && !runtime.state.skippedForParallelFailFast) {
         runtime.state.stageClosedByWorkflowExit = true;
-        if (!isTerminalStage(runtime.stageSnapshot)) {
+        if (trackStageLifecycle && !isTerminalStage(runtime.stageSnapshot)) {
           runtime.stageSnapshot.status = "skipped";
           runtime.stageSnapshot.skippedReason = runtime.exit.workflowExitSkippedReason(workflowExitAbort.reason);
         }
-      } else if (!runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
+      } else if (trackStageLifecycle && !runtime.signal.aborted && !runtime.state.skippedForParallelFailFast) {
         applyFailureToStage(runtime.stageSnapshot, runtime.classifyExecutorFailure(err));
       }
       throw err;
@@ -187,19 +210,23 @@ export function createTrackedStageCaller(input: {
       runtime.mcpScope.clear();
       runtime.captureStageSessionMeta();
       let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
-      try {
-        await runtime.finalizeStageSnapshot();
-      } catch (err) {
-        finalizationError = { thrown: true, error: err };
-      }
-      try {
-        if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
-          await runtime.releaseLiveHandle().catch(() => {});
-        } else {
-          await runtime.dropStageControlForCompletion().catch(() => {});
+      if (trackStageLifecycle) {
+        try {
+          await runtime.finalizeStageSnapshot();
+        } catch (err) {
+          finalizationError = { thrown: true, error: err };
         }
-      } catch {
-        // Best-effort: handle release failure must not prevent limiter release.
+        try {
+          if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
+            await runtime.releaseLiveHandle().catch(() => {});
+          } else {
+            await runtime.dropStageControlForCompletion().catch(() => {});
+          }
+        } catch {
+          // Best-effort: handle release failure must not prevent limiter release.
+        }
+      } else if (runtime.state.stageClosedByWorkflowExit || runtime.exit.currentWorkflowExitAbortReason() !== undefined) {
+        await runtime.releaseLiveHandle().catch(() => {});
       }
       input.limiter.release();
       if (finalizationError !== undefined) throw finalizationError.error;

@@ -14,5 +14,6 @@ import "./stage-runner-structured-output.test.js";
 import "./stage-runner-model-fallback-1.test.js";
 import "./stage-runner-model-fallback-2.test.js";
 import "./stage-runner-lazy-attach.test.js";
+import "./stage-runner-send-user-message.test.js";
 import "./stage-runner-controlled-pause.test.js";
 import "./stage-runner-reasoning-suffix.test.js";

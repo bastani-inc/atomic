@@ -392,4 +392,106 @@ describe("subagent async widget hydration (issue #1146)", () => {
             "active queued runs should render while terminal history stays out of the widget",
         );
     });
+
+    test("keeps a mounted active widget visible across reset and hydration", () => {
+        const cwd = makeTempRoot("atomic-subagent-widget-cwd-");
+        const asyncRoot = makeTempRoot("atomic-subagent-widget-async-");
+        const resultsDir = makeTempRoot("atomic-subagent-widget-results-");
+        const state = makeState(cwd, "session-current");
+        writeStatus(
+            asyncRoot,
+            "run-visible",
+            makeStatus("run-visible", cwd, { sessionId: "session-current" }),
+        );
+        const first = makeUiContext(cwd);
+        const reset = makeUiContext(cwd);
+        const hydrate = makeUiContext(cwd);
+        const tracker = makeTracker(state, asyncRoot, resultsDir);
+
+        tracker.hydrateActiveJobs(first.ctx);
+        tracker.resetJobs(reset.ctx);
+        tracker.hydrateActiveJobs(hydrate.ctx);
+        const widgetCalls = [
+            ...first.widgetCalls,
+            ...reset.widgetCalls,
+            ...hydrate.widgetCalls,
+        ];
+
+        assert.equal(
+            widgetCalls.filter((call) => call.content === undefined).length,
+            0,
+            "reset before active hydration must not publish a blank widget frame",
+        );
+        assert.equal(
+            widgetCalls.filter(
+                (call) => call.options?.placement === "belowEditor",
+            ).length,
+            1,
+            "active hydration after reset should reuse the mounted widget",
+        );
+        assert.equal(
+            hydrate.renderCount(),
+            1,
+            "active hydration after reset should render in place once",
+        );
+    });
+
+    test("unmounts a mounted widget after reset and hydration finds no active jobs", () => {
+        const cwd = makeTempRoot("atomic-subagent-widget-cwd-");
+        const asyncRoot = makeTempRoot("atomic-subagent-widget-async-");
+        const resultsDir = makeTempRoot("atomic-subagent-widget-results-");
+        const state = makeState(cwd, "session-current");
+        writeStatus(
+            asyncRoot,
+            "run-visible",
+            makeStatus("run-visible", cwd, { sessionId: "session-current" }),
+        );
+        const first = makeUiContext(cwd);
+        const reset = makeUiContext(cwd);
+        const hydrate = makeUiContext(cwd);
+        const tracker = makeTracker(state, asyncRoot, resultsDir);
+
+        tracker.hydrateActiveJobs(first.ctx);
+        writeStatus(
+            asyncRoot,
+            "run-visible",
+            makeStatus("run-visible", cwd, {
+                sessionId: "session-current",
+                state: "complete",
+                endedAt: 3_000,
+                steps: [
+                    {
+                        agent: "worker",
+                        status: "complete",
+                        startedAt: 1_000,
+                        endedAt: 3_000,
+                    },
+                ],
+            }),
+        );
+        tracker.resetJobs(reset.ctx);
+        const afterResetWidgetCalls = [
+            ...first.widgetCalls,
+            ...reset.widgetCalls,
+            ...hydrate.widgetCalls,
+        ];
+        assert.equal(
+            afterResetWidgetCalls.filter((call) => call.content === undefined).length,
+            0,
+            "reset itself should defer empty rendering to hydration",
+        );
+
+        tracker.hydrateActiveJobs(hydrate.ctx);
+        const afterHydrateWidgetCalls = [
+            ...first.widgetCalls,
+            ...reset.widgetCalls,
+            ...hydrate.widgetCalls,
+        ];
+
+        assert.equal(
+            afterHydrateWidgetCalls.filter((call) => call.content === undefined).length,
+            1,
+            "hydrate should still unmount when no active jobs remain",
+        );
+    });
 });

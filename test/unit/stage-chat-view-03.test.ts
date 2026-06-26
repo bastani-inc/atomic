@@ -11,6 +11,7 @@ import {
     flush,
     stripAnsi,
     expectRightAlignedReturnHint,
+    RETURN_HINT_TEXT,
     makePendingPrompt,
     type AgentSession,
     type Component,
@@ -426,7 +427,10 @@ describe("StageChatView", () => {
         const hintIndex = expectRightAlignedReturnHint(renderedLines, 80, 3);
         assert.equal(hintIndex, questionIndex);
         assert.match(renderedLines[hintIndex] ?? "", /^│/);
-        assert.match(renderedLines[hintIndex] ?? "", /  ctrl\+d returns to orchestrator panel  │$/);
+        assert.ok(
+            (renderedLines[hintIndex] ?? "").endsWith(`  ${RETURN_HINT_TEXT}  │`),
+            "expected return/mouse-scroll hint inside the custom UI border",
+        );
         assert.doesNotMatch(renderedLines[hintIndex] ?? "", /^╰/);
 
         // Scroll input (mouse wheel) is consumed by the transcript, not the

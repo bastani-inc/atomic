@@ -1,5 +1,6 @@
 import type { ChatTranscriptEntryLike } from "./chat-transcript.ts";
 import type { ChatSessionHostState } from "./chat-session-host-state.ts";
+import { finalizeTerminalWorkflowToolEntries } from "./chat-session-host-terminal-cleanup.ts";
 import {
   ANIMATION_FRAME_MS,
   STREAMING_RENDER_THROTTLE_MS,
@@ -59,6 +60,19 @@ export function syncChatSessionAnimationTick<
   }
 }
 
+export function clearChatSessionBusyForTerminalWorkflowStage<
+  TExtraEntry extends ChatTranscriptEntryLike,
+>(state: ChatSessionHostState<TExtraEntry>): void {
+  state.sdkBusy = false;
+  state.workingMessage = undefined;
+  if (finalizeTerminalWorkflowToolEntries(state.transcript)) {
+    state.transcriptComponent.invalidate();
+  }
+  state.liveChat.clearPendingTools();
+  state.statusMessage = "";
+  syncChatSessionAnimationTick(state);
+}
+
 export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
   state: ChatSessionHostState<TExtraEntry>,
 ): void {
@@ -70,6 +84,7 @@ export function disposeChatSession<TExtraEntry extends ChatTranscriptEntryLike>(
     clearTimeout(state.renderThrottleTimer);
     state.renderThrottleTimer = undefined;
   }
+  state.transcriptComponent.invalidate();
   state.editor = undefined;
 }
 

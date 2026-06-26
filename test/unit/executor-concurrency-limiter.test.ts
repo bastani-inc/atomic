@@ -1,6 +1,7 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, workflow, run, test, Type,
+    assert, createStore, mockSession, workflow, run, test, Type,
+    type StageSessionRuntime,
 } from "./executor-shared.js";
 
 describe("executor.run — concurrency limiter", () => {
@@ -246,6 +247,62 @@ describe("executor.run — concurrency limiter", () => {
 
         assert.equal(result.status, "completed");
         assert.equal(completedCount, 1);
+    });
+
+    test("defaultConcurrency=1 serializes idle sendUserMessage first turns", async () => {
+        let active = 0;
+        let maxActive = 0;
+
+        const makeSession = (): StageSessionRuntime => ({
+            ...mockSession(),
+            async prompt() {
+                active++;
+                maxActive = Math.max(maxActive, active);
+                await new Promise<void>((resolve) => setTimeout(resolve, 5));
+                active--;
+            },
+        });
+
+        const def = workflow({
+          name: "conc-send-user-message-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
+                await Promise.all([
+                    ctx.stage("s1").sendUserMessage("s1"),
+                    ctx.stage("s2").sendUserMessage("s2"),
+                ]);
+                return {};
+            },
+        });
+
+        const result = await run(
+            def,
+            {},
+            {
+                config: {
+                    defaultConcurrency: 1,
+                    maxDepth: 10,
+                    persistRuns: false,
+                    statusFile: false,
+                    resumeInFlight: "never",
+                },
+                store: createStore(),
+                adapters: {
+                    agentSession: { create: async () => makeSession() },
+                },
+            },
+        );
+
+        assert.equal(result.status, "completed");
+        assert.equal(maxActive, 1);
+        assert.equal(result.stages.length, 2);
+        for (const stage of result.stages) {
+            assert.equal(stage.status, "completed");
+            assert.equal(typeof stage.startedAt, "number");
+            assert.equal(typeof stage.endedAt, "number");
+        }
     });
 });
 

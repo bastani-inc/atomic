@@ -17,9 +17,9 @@ import { releaseMountedCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
   canSubmitPrompt,
   currentStage,
+  isAbortableStreamingSession,
   isBlocked,
   isReadOnlyArchive,
-  isStreaming,
   promptPageSize,
   recordCurrentPromptDraft,
   resolvePromptResponse,
@@ -30,6 +30,11 @@ export function handleStageChatInput(
   ctx: StageChatViewContext,
   data: string,
 ): boolean {
+  if (matchesKey(data, Key.ctrl("t"))) {
+    ctx.mouseScrollCaptureEnabled = !ctx.mouseScrollCaptureEnabled;
+    ctx.requestRender?.();
+    return true;
+  }
   if (ctx.mountedCustomUi) {
     return handleMountedCustomUiInput(ctx, data);
   }
@@ -54,11 +59,15 @@ export function handleStageChatInput(
   if (ctx.chatHost.handleScrollInput(data)) return true;
   if (matchesKey(data, Key.escape)) {
     if (
-      isStreaming(ctx) ||
+      ctx.chatHost.isCompacting() ||
       ctx.chatHost.isBashRunning() ||
       ctx.chatHost.isEditingBashCommand()
     ) {
       return ctx.chatHost.handleInput(data);
+    }
+    if (isAbortableStreamingSession(ctx)) {
+      void ctx.chatHost.interrupt();
+      return true;
     }
     ctx.onClose();
     return true;

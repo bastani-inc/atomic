@@ -10,7 +10,10 @@ import {
   trailingWidgetBorderChar,
   widgetHintTargetLineIndex,
 } from "./stage-chat-view-render-helpers.js";
-import type { StageChatViewContext } from "./stage-chat-view-types.js";
+import {
+  STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL,
+  type StageChatViewContext,
+} from "./stage-chat-view-types.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import { truncateToWidth, visibleWidth } from "./text-helpers.js";
 
@@ -101,10 +104,13 @@ function mergeOrchestratorReturnHintIntoLine(
   width: number,
   options: { preserveTrailingBorder?: boolean; rightMargin?: number } = {},
 ): string {
-  const plain = "ctrl+d returns to orchestrator panel";
+  const scrollState = ctx.mouseScrollCaptureEnabled ? "on" : "off";
+  const plain = `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} mouse scroll ${scrollState}`;
   const styled =
     paint("ctrl+d", ctx.theme.text, { bold: true }) +
-    paint(" returns to orchestrator panel", ctx.theme.textMuted);
+    paint(" graph · ", ctx.theme.textMuted) +
+    paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
+    paint(` mouse scroll ${scrollState}`, ctx.theme.textMuted);
   const trailingBorder = options.preserveTrailingBorder === true
     ? trailingWidgetBorderChar(line)
     : "";

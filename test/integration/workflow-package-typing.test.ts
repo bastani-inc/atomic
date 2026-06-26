@@ -1,7 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -60,9 +59,7 @@ describe("standalone workflow package typing", () => {
           2,
         ),
       );
-      writeFileSync(
-        join(fixtureRoot, "src", "workflow.ts"),
-        `import {
+      writeFileSync(join(fixtureRoot, "src", "workflow.ts"), `import {
   GraphFrontierTracker,
   INTERACTIVE_WORKFLOW_POLICY,
   NON_INTERACTIVE_WORKFLOW_POLICY,
@@ -90,28 +87,12 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type {
   AgentSessionAdapter,
   StageAdapters,
-  StageOptions,
-  StageStatus,
-  WorkflowDefinition,
-  WorkflowExecutionPolicy,
-  WorkflowInputBindings,
-  WorkflowInputSchemaMap,
-  WorkflowMcpPort,
-  WorkflowModelCatalogPort,
-  WorkflowOutputSchemaMap,
-  WorkflowPersistencePort,
-  WorkflowRunOutput,
-  WorkflowRuntimeConfig,
-  WorkflowTaskSessionOptions,
-  WorkflowUIAdapter,
-  WorkflowCustomUiComponent,
-  WorkflowCustomUiFactory,
-  WorkflowCustomUiKeybindings,
-  WorkflowCustomUiOptions,
-  WorkflowCustomUiOverlayHandle,
-  WorkflowCustomUiOverlayOptions,
-  WorkflowCustomUiTheme,
-  WorkflowCustomUiTui,
+  StageOptions, StageSendUserMessageOptions, StageStatus, StageUserMessageContent,
+  WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
+  WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
+  WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowUIAdapter,
+  WorkflowCustomUiComponent, WorkflowCustomUiFactory, WorkflowCustomUiKeybindings, WorkflowCustomUiOptions,
+  WorkflowCustomUiOverlayHandle, WorkflowCustomUiOverlayOptions, WorkflowCustomUiTheme, WorkflowCustomUiTui,
 } from "@bastani/workflows";
 import { runWorkflow } from "@bastani/workflows";
 // @ts-expect-error WorkflowOptions was removed with the object-form runWorkflow API.
@@ -194,6 +175,13 @@ const authoredWorkflow = workflow({
     ctx.stage("invalid-settings-manager", { settingsManager: { getCodexFastModeSettings() { return { enabled: true }; } } });
     // @ts-expect-error custom tools must provide the full runtime tool shape.
     ctx.stage("invalid-custom-tool", { customTools: [{ name: "bad" }] });
+    await typedStage.sendUserMessage("typed follow-on"); await typedStage.sendUserMessage("typed steering", { deliverAs: "steer" });
+    await typedStage.sendUserMessage("typed follow-up", { deliverAs: "followUp" });
+    await typedStage.sendUserMessage([{ type: "text", text: "typed image" }, { type: "image", data: "AA==", mimeType: "image/png" }]);
+    // @ts-expect-error deliverAs must be steer or followUp.
+    await typedStage.sendUserMessage("bad delivery", { deliverAs: "nextTurn" });
+    // @ts-expect-error image blocks require base64 data and mimeType.
+    await typedStage.sendUserMessage([{ type: "image", image: "data:image/png;base64,AA==" }]);
     await typedStage.prompt("typed prompt", {
       output: "typed.md",
       outputMode: "file-only",
@@ -395,6 +383,9 @@ const adapter: AgentSessionAdapter = {
       },
       session: {
       async prompt() {},
+      async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions) { const delivery: "steer" | "followUp" | undefined = options?.deliverAs;
+      // @ts-expect-error adapter sendUserMessage deliverAs must reject unsupported modes.
+      const invalidDelivery: StageSendUserMessageOptions = { deliverAs: "nextTurn" }; void content; void delivery; void invalidDelivery; },
       async steer() {},
       async followUp() {},
       subscribe() { return () => {}; },
@@ -480,8 +471,7 @@ runWorkflow();
 type RemovedWorkflowOptions = WorkflowOptions;
 type RemovedWorkflowRunOptions = WorkflowRunOptions;
 export default workflow;
-`,
-      );
+`);
       const options: ExecFileSyncOptionsWithStringEncoding = {
         cwd: repoRoot,
         stdio: "pipe",

@@ -1,6 +1,7 @@
 import { describe } from "bun:test";
 import {
-    assert, createStore, workflow, run, test
+    assert, createStore, mockSession, waitForPromptCall, workflow, run, test,
+    type StageSessionRuntime,
 } from "./executor-shared.js";
 
 describe("executor.run — abort/kill wiring", () => {
@@ -276,6 +277,59 @@ describe("executor.run — abort/kill wiring", () => {
                 c.payload["status"] === "completed",
         );
         assert.equal(completedEntries.length, 0);
+    });
+
+    test("abort signal aborts in-flight idle sendUserMessage follow-on turn", async () => {
+        const controller = new AbortController();
+        const promptCalls: string[] = [];
+        const followOn = Promise.withResolvers<void>();
+        let abortCalls = 0;
+
+        const session: StageSessionRuntime = {
+            ...mockSession(),
+            async prompt(text: string) {
+                promptCalls.push(text);
+                if (text === "follow-on") await followOn.promise;
+            },
+            async abort() {
+                abortCalls++;
+                followOn.reject(new Error("aborted follow-on"));
+            },
+        };
+
+        const def = workflow({
+          name: "abort-send-user-message-wf",
+          description: "",
+          inputs: {},
+          outputs: {},
+          run: async (ctx) => {
+                const stage = ctx.stage("follow-on");
+                await stage.prompt("initial");
+                await stage.sendUserMessage("follow-on");
+                return {};
+            },
+        });
+
+        const runPromise = run(
+            def,
+            {},
+            {
+                adapters: {
+                    agentSession: { create: async () => session },
+                },
+                store: createStore(),
+                signal: controller.signal,
+            },
+        );
+
+        await waitForPromptCall(promptCalls, "follow-on");
+        controller.abort();
+
+        const result = await runPromise;
+
+        assert.equal(result.status, "killed");
+        assert.equal(result.error, "workflow killed");
+        assert.ok(abortCalls >= 1);
     });
 });
 

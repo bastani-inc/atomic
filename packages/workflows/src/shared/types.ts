@@ -21,6 +21,15 @@ export type { TSchema };
 
 export type { AgentSessionEvent, ContextCompactionResult, ModelCycleResult, PromptOptions };
 
+export type StageUserMessageContent = Parameters<AgentSession["sendUserMessage"]>[0];
+
+export type StageUserMessageDelivery = "steer" | "followUp";
+
+export interface StageSendUserMessageOptions {
+  /** Delivery mode to use when the stage session is already streaming. Defaults to followUp. */
+  readonly deliverAs?: StageUserMessageDelivery;
+}
+
 export type WorkflowModelValue = NonNullable<CreateAgentSessionOptions["model"]> | string;
 export type WorkflowModelUsage = AuthoringContract.WorkflowModelUsage;
 export type WorkflowModelAttempt = AuthoringContract.WorkflowModelAttempt;
@@ -302,6 +311,15 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
   /** Send a prompt and wait for completion. */
   prompt(text: string, options?: StagePromptOptions): Promise<WorkflowStageResult<TSchemaDef>>;
   complete(text: string, options?: CompleteStageOpts): Promise<string>;
+
+  /**
+   * Send a user-authored follow-on message to this stage session.
+   *
+   * When the session is idle this starts a new user turn immediately. When the
+   * session is streaming, the message is queued as a follow-up by default, or
+   * as steering when `deliverAs: "steer"` is provided.
+   */
+  sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
 
   /** Queue messages during streaming. */
   steer(text: string): Promise<void>;

@@ -15,3 +15,5 @@ import "./stage-chat-view-10.test.js";
 import "./stage-chat-view-11.test.js";
 import "./stage-chat-view-12.test.js";
 import "./stage-chat-view-13.test.js";
+import "./stage-chat-view-14.test.js";
+import "./stage-chat-view-15.test.js";

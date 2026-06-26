@@ -37,6 +37,7 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
 
   protected _renderOverlay(width: number): string[] {
     const frameWidth = Math.max(40, width);
+    this.lastOverlayFrameWidth = frameWidth;
     const lines: string[] = [];
     const run = this._getCurrentRun();
 
@@ -58,6 +59,10 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
       frameWidth,
       bodyTarget,
     );
+    this._recordGraphNodeHitRects(
+      this._overlayVerticalMarginRows() + 3 + visibleGraph.topPad,
+      visibleGraph.lines.length,
+    );
     for (let i = 0; i < visibleGraph.topPad; i++)
       lines.push(this._blankRow(frameWidth));
     for (const line of visibleGraph.lines) {
@@ -78,6 +83,8 @@ export abstract class GraphViewRenderer extends GraphViewGraphRenderer {
   }
 
   protected _renderEmptyState(width: number): string[] {
+    this.graphNodeHitRects = [];
+    this.lastGraphViewport = null;
     const t = this.graphTheme;
     const muted = hexToAnsi(t.textMuted);
     const dim = hexToAnsi(t.dim);

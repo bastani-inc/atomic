@@ -16,6 +16,8 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
   protected _renderGraph(width: number): string[] {
     const run = this._getCurrentRun();
     if (!run || this.cachedLayout.length === 0) {
+      this.lastGraphViewport = null;
+      this.graphNodeHitRects = [];
       const dim = hexToAnsi(this.graphTheme.dim);
       return [
         this._centerCanvasContent(
@@ -40,6 +42,7 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
     );
     const viewportWidth = Math.max(1, width - leftMargin);
     const fullCanvasWidth = Math.max(canvasWidth, viewportWidth);
+    this.lastGraphViewport = { leftMargin, viewportWidth };
     this._clampGraphHorizontalScroll(fullCanvasWidth, viewportWidth);
     if (this.pendingEnsureFocusedVisible) {
       this._scrollFocusedColumnIntoView(viewportWidth, fullCanvasWidth);
@@ -127,6 +130,44 @@ export abstract class GraphViewGraphRenderer extends GraphViewRenderHelpers {
       );
       return `${leftPad}${this._padCanvas(sliced, viewportWidth)}`;
     });
+  }
+
+  protected _recordGraphNodeHitRects(
+    graphStartRow: number,
+    visibleRowCount: number,
+  ): void {
+    const viewport = this.lastGraphViewport;
+    if (!viewport || visibleRowCount <= 0) {
+      this.graphNodeHitRects = [];
+      return;
+    }
+
+    const visibleTop = graphStartRow;
+    const visibleBottom = graphStartRow + visibleRowCount;
+    const viewportLeft = viewport.leftMargin;
+    const viewportRight = viewport.leftMargin + viewport.viewportWidth;
+    const rects: typeof this.graphNodeHitRects = [];
+
+    for (let index = 0; index < this.cachedLayout.length; index++) {
+      const node = this.cachedLayout[index]!;
+      const top = graphStartRow + node.y - this.graphScrollOffset;
+      const bottom = top + NODE_H;
+      const left = viewport.leftMargin + node.x - this.graphScrollColOffset;
+      const right = left + NODE_W;
+      const clippedTop = Math.max(visibleTop, top);
+      const clippedBottom = Math.min(visibleBottom, bottom);
+      const clippedLeft = Math.max(viewportLeft, left);
+      const clippedRight = Math.min(viewportRight, right);
+      if (clippedTop >= clippedBottom || clippedLeft >= clippedRight) continue;
+      rects.push({
+        index,
+        top: clippedTop,
+        bottom: clippedBottom,
+        left: clippedLeft,
+        right: clippedRight,
+      });
+    }
+    this.graphNodeHitRects = rects;
   }
 
   protected _visibleGraphLines(

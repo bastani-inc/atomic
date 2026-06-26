@@ -55,6 +55,18 @@ export interface WorkflowModelFallbackFields {
 }
 
 export type WorkflowModelValue = string | object;
+// Standalone authoring contract mirror of shared/types.ts StageUserMessageContent,
+// whose runtime source of truth is derived from AgentSession["sendUserMessage"].
+export interface StageTextContent {
+  readonly type: "text";
+  readonly text: string;
+}
+export interface StageImageContent {
+  readonly type: "image";
+  readonly data: string;
+  readonly mimeType: string;
+}
+export type StageUserMessageContent = string | readonly (StageTextContent | StageImageContent)[];
 export type WorkflowStageResult<TSchemaDef extends TSchema | undefined = undefined> = [TSchemaDef] extends [TSchema]
   ? Static<TSchemaDef>
   : string;
@@ -223,6 +235,7 @@ export interface WorkflowPersistencePort {
 
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
+  sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   subscribe(listener: (event: never) => void): () => void;
@@ -284,10 +297,17 @@ export interface StageAdapters {
   readonly complete?: CompleteAdapter;
 }
 
+export type StageUserMessageDelivery = "steer" | "followUp";
+
+export interface StageSendUserMessageOptions {
+  readonly deliverAs?: StageUserMessageDelivery;
+}
+
 export interface StageContext<TSchemaDef extends TSchema | undefined = undefined> {
   readonly name: string;
   prompt(text: string, options?: StagePromptOptions): Promise<WorkflowStageResult<TSchemaDef>>;
   complete(text: string, options?: CompleteStageOpts): Promise<string>;
+  sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   subscribe(listener: (event: never) => void): () => void;

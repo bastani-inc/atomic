@@ -6,6 +6,10 @@
 
 - Added a cancellable `session_before_shutdown` extension lifecycle event so interactive quit flows can be safely aborted before Atomic tears down UI/runtime state ([#1378](https://github.com/bastani-inc/atomic/issues/1378)).
 
+### Fixed
+
+- Fixed custom tool renderer disposal to honor renderer-owned cleanup callbacks, preventing stale animation registry entries after terminal workflow tool rows are finalized ([#1518](https://github.com/bastani-inc/atomic/issues/1518)).
+
 ## [0.9.3-alpha.1] - 2026-06-25
 
 ### Breaking Changes

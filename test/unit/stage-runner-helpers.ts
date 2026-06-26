@@ -17,6 +17,7 @@ import { createStageContext } from "../../packages/workflows/src/runs/foreground
 import type {
     CompleteStageOpts,
     StageExecutionMeta,
+    StageUserMessageContent,
     WorkflowModelInfo,
 } from "../../packages/workflows/src/shared/types.js";
 
@@ -40,6 +41,7 @@ export type {
     PromptAdapter,
     StageExecutionMeta,
     StageRunnerOpts,
+    StageUserMessageContent,
     StageSessionCreateOptions,
     StageSessionRuntime,
     WorkflowModelInfo,

@@ -17,6 +17,9 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 	isError: boolean;
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
+type DisposableRendererComponent = Component & { dispose?: () => void };
+const SUBAGENT_RESULT_ANIMATION_TIMER_KEY = "subagentResultAnimationTimer";
+const SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY = "subagentResultAnimationCleanup";
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -215,6 +218,17 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	dispose(): void {
+		this.disposeRendererComponent(this.callRendererComponent);
+		this.disposeRendererComponent(this.resultRendererComponent);
+		this.callRendererComponent = undefined;
+		this.resultRendererComponent = undefined;
+		this.clearRendererStateTimer(
+			SUBAGENT_RESULT_ANIMATION_TIMER_KEY,
+			SUBAGENT_RESULT_ANIMATION_CLEANUP_KEY,
+		);
+	}
+
 	override render(width: number): string[] {
 		if (this.hideComponent) {
 			return [];
@@ -357,6 +371,23 @@ export class ToolExecutionComponent extends Container {
 
 	private getTextOutput(): string {
 		return getRenderedTextOutput(this.result, this.showImages);
+	}
+
+	private disposeRendererComponent(component: Component | undefined): void {
+		(component as DisposableRendererComponent | undefined)?.dispose?.();
+	}
+
+	private clearRendererStateTimer(timerKey: string, cleanupKey?: string): void {
+		const cleanup = cleanupKey ? this.rendererState[cleanupKey] : undefined;
+		if (typeof cleanup === "function") {
+			cleanup();
+			return;
+		}
+		const timer = this.rendererState[timerKey];
+		if (timer === undefined) return;
+		clearInterval(timer as ReturnType<typeof setInterval>);
+		this.rendererState[timerKey] = undefined;
+		if (cleanupKey) this.rendererState[cleanupKey] = undefined;
 	}
 
 	private formatToolExecution(): string {

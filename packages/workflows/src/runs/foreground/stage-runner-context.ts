@@ -92,6 +92,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       return lastAssistantText;
     },
 
+    async sendUserMessage(text, options) {
+      await controller.sendUserMessage(text, options);
+    },
+
     async steer(text) {
       await (await controller.ensureSession()).steer(text);
     },

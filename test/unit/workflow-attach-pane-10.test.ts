@@ -264,7 +264,7 @@ describe("WorkflowAttachPane", () => {
         pane.dispose();
     });
 
-    test("keeps mouse scroll tracking active for graph and stage chat scrolling", () => {
+    test("stage chat toggles mouse tracking only for explicit scroll capture", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
         const registry = createStageControlRegistry();
@@ -279,15 +279,26 @@ describe("WorkflowAttachPane", () => {
             setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
         });
 
+        assert.equal(pane.wantsMouseScrollTracking(), true);
         assert.deepEqual(mouseTracking, [true]);
         pane.handleInput(Key.enter);
         assert.equal(pane._mode, "stage-chat");
-        assert.deepEqual(mouseTracking, [true, true]);
+        assert.equal(pane.wantsMouseScrollTracking(), false);
+        assert.deepEqual(mouseTracking, [true, false]);
+
+        pane.handleInput("\x1b[27;5;116~");
+        assert.equal(pane.wantsMouseScrollTracking(), true);
+        assert.deepEqual(mouseTracking, [true, false, true]);
+        pane.handleInput("\x1b[116;5u");
+        assert.equal(pane.wantsMouseScrollTracking(), false);
+        assert.deepEqual(mouseTracking, [true, false, true, false]);
+
         pane.handleInput(Key.ctrl("d"));
         assert.equal(pane._mode, "graph");
-        assert.deepEqual(mouseTracking, [true, true, true]);
+        assert.equal(pane.wantsMouseScrollTracking(), true);
+        assert.deepEqual(mouseTracking, [true, false, true, false, true]);
         pane.dispose();
-        assert.deepEqual(mouseTracking, [true, true, true, false]);
+        assert.deepEqual(mouseTracking, [true, false, true, false, true, false]);
     });
 
     test("forwards getViewportRows to graph mode", () => {

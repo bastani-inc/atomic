@@ -391,7 +391,7 @@ When a paused stage is resumed with a message, Atomic lets the stage answer that
 
 Workflow stage sessions are marked as **internal** and excluded from the standard `/resume`, `atomic -r`, and `--continue` history so they do not clutter your interactive session picker. They remain resumable and inspectable through the workflow-specific commands and tool actions shown here (`/workflow resume`, `/workflow attach`, `workflow({ action: "status" | "stages" | "stage" | "resume" })`), which read the run/stage store and its `sessionFile` links directly. Passing a stage session's file path to `--session` still opens it explicitly. Legacy workflow sessions created before this marker behavior lack the signal and will continue to appear in the standard history until they age out.
 
-Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), focus the node, and press Enter to answer them locally.
+Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, and `ctx.ui.custom<T>` appear as awaiting-input nodes in the workflow graph viewer, not as chat modals — use `/workflow connect <run-id>` (or F2), then press Enter on the focused node or click a visible graph node directly to focus and open/attach it for local answers.
 
 `ctx.ui.custom<T>(factory, options?)` reuses Atomic's TUI component path: the factory receives the same real `(tui, theme, keybindings, done)` types as extension `ctx.ui.custom`, and the workflow resumes with the value passed to `done(value)`. Use `options.label` for a safe display-only graph/status label and `options.replayIdentity` when widget semantics can change without the callsite changing. Do not put secrets in labels or replay identities; only a hash of the identity is stored, and label text is not part of replay identity. Inline connected rendering is supported; `overlay: true` is rejected clearly because nested workflow graph overlays are not safely supported yet.
 
@@ -859,7 +859,7 @@ In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow 
 /workflow reload
 ```
 
-Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `kill` only when the run should be terminated; killed runs are retained in live history/status for read-only inspection. Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process. `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
+Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. Attached stage chats keep terminal mouse reporting off by default so you can drag-select and copy prompts, logs, command text, and model responses like the main chat. Press `ctrl+t` inside an attached stage chat to temporarily capture mouse/trackpad wheel events for transcript or prompt scrolling; press `ctrl+t` again to return to selection-friendly mode. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `kill` only when the run should be terminated; killed runs are retained in live history/status for read-only inspection. Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process. `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
@@ -1183,6 +1183,24 @@ Migrating an existing file from the removed `defineWorkflow(...).compile()` buil
 `prompt` and `task` are aliases for task text. Prefer `prompt` inside authored workflow files because it mirrors lower-level `stage.prompt(...)`; `task` remains useful in direct tool calls and chain examples.
 
 Author workflows to create at least one tracked stage by calling `ctx.task()`, `ctx.chain()`, `ctx.parallel()`, `ctx.stage()`, or `ctx.workflow()` in the run body so each normal run has graph nodes to inspect, attach to, interrupt, resume, and render. Guard-only workflows may call `ctx.exit(...)` before creating a stage when they intentionally stop early.
+
+### Stage follow-on user messages
+
+`ctx.stage()` returns a `StageContext` with `sendUserMessage(content, options?)` for injecting a normal follow-on user turn into that stage's AgentSession. Use this when workflow code needs to continue an existing stage session after `stage.prompt(...)` has already resolved, including schema-backed stages where `prompt()` is intentionally one-shot because the structured-output tool may be called exactly once.
+
+```ts
+const gate = ctx.stage("review-gate", {
+  schema: Type.Object({ approved: Type.Boolean() }, { additionalProperties: false }),
+});
+const decision = await gate.prompt("Review the implementation and call structured_output.");
+if (!decision.approved) {
+  await gate.sendUserMessage("Explain the highest-priority changes needed before approval.");
+}
+```
+
+When the stage session is idle, `sendUserMessage()` starts the next user turn immediately and waits for that turn to finish under the normal workflow stage guard: it observes the stage concurrency limiter, workflow abort/kill signals, MCP scoping, readiness gates, and session metadata capture. If `sendUserMessage()` is the first live call on a `ctx.stage(...)` handle, Atomic records the stage as a normal running/completed graph node. If it is called after a prior `prompt()`/`complete()` has already completed the stage, the follow-on turn still uses abort/kill and concurrency protection while reusing the completed stage session.
+
+The `content` argument mirrors the Atomic SDK and accepts either a string or text/image content blocks such as `[{ type: "text", text: "Describe this" }, { type: "image", data: "...", mimeType: "image/png" }]` when the underlying stage session supports native user-message delivery. Non-native fallback adapters only support string content and reject text/image block arrays instead of stringifying them. Idle non-native fallback delivery sends the follow-on string to the already-selected session directly, so workflow model fallback retries are not re-run for that injected turn. When the stage is already streaming, the message is queued as a follow-up by default; pass `{ deliverAs: "steer" }` to steer the active turn instead, or `{ deliverAs: "followUp" }` to be explicit. `deliverAs` only affects streaming delivery and is a no-op for idle sessions. Follow-on turns preserve the stage's `mcp.allow` / `mcp.deny` scope for the injected user turn, just like the original `prompt()`. The older `stage.steer(text)` and `stage.followUp(text)` methods are still available for queueing while a turn is active, but they do not start a new idle turn.
 
 ### Early exit with `ctx.exit()`
 
@@ -1734,7 +1752,7 @@ For large handoffs, write artifacts to files, pass their paths with `reads`, and
 Use `ctx.stage(name, options?)` when `ctx.task` is too coarse and you need direct control over the underlying stage session. `StageContext` supports:
 
 - prompting and completion: `prompt(text, options?)`, `complete(text, options?)`
-- live input: `steer(text)`, `followUp(text)`, `subscribe(listener)`
+- live input: `sendUserMessage(content, options?)`, `steer(text)`, `followUp(text)`, `subscribe(listener)`
 - session metadata: `sessionId`, `sessionFile`
 - model controls: `setModel`, `setThinkingLevel`, `cycleModel`, `cycleThinkingLevel`
 - state access: `agent`, `model`, `thinkingLevel`, `messages`, `isStreaming`
