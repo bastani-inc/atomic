@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed custom tool renderer disposal to honor renderer-owned cleanup callbacks, preventing stale animation registry entries after terminal workflow tool rows are finalized ([#1518](https://github.com/bastani-inc/atomic/issues/1518)).
+- Hardened session replay and LLM conversion so persisted context-compaction filters cannot leave orphaned `toolResult` messages after deleting their paired assistant `toolCall`, preventing GitHub Copilot Claude/Anthropic replay failures after repeated subagent runs ([#1527](https://github.com/bastani-inc/atomic/issues/1527)).
 
 ## [0.9.3-alpha.1] - 2026-06-25
 

@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createBranchSummaryMessage, createCustomMessage } from "./messages.ts";
 import { contentArrayHasAssistantThinkingBlock } from "./thinking-blocks.ts";
+import { reconcilePersistedToolDependencyFilters } from "./session-manager-tool-dependencies.ts";
 import type {
 	ContextCompactionEntry,
 	ContextDeletionFilters,
@@ -168,7 +169,7 @@ export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): Cont
 		}
 	}
 
-	return effectiveFilters;
+	return reconcilePersistedToolDependencyFilters(path, effectiveFilters);
 }
 
 function filterContentArray<T>(content: T[], deletedBlocks: ReadonlySet<number>): T[] {

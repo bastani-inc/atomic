@@ -111,6 +111,49 @@ export function createCustomMessage(
 	return message;
 }
 
+function collectAssistantToolCallIds(message: Message): Set<string> {
+	const content = (message as { content?: unknown }).content;
+	const ids = new Set<string>();
+	if (!Array.isArray(content)) return ids;
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		const candidate = block as { type?: unknown; id?: unknown };
+		if (candidate.type === "toolCall" && typeof candidate.id === "string") ids.add(candidate.id);
+	}
+	return ids;
+}
+
+function getToolResultCallId(message: Message): string | undefined {
+	if (message.role !== "toolResult") return undefined;
+	const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
+	return typeof toolCallId === "string" ? toolCallId : undefined;
+}
+
+export function repairOrphanToolResults(messages: Message[]): Message[] {
+	let allowedToolCallIds: Set<string> | undefined;
+	let changed = false;
+	const repaired: Message[] = [];
+	for (const message of messages) {
+		if (message.role === "assistant") {
+			allowedToolCallIds = collectAssistantToolCallIds(message);
+			repaired.push(message);
+			continue;
+		}
+		if (message.role === "toolResult") {
+			const toolCallId = getToolResultCallId(message);
+			if (toolCallId && allowedToolCallIds?.has(toolCallId)) {
+				repaired.push(message);
+				continue;
+			}
+			changed = true;
+			continue;
+		}
+		allowedToolCallIds = undefined;
+		repaired.push(message);
+	}
+	return changed ? repaired : messages;
+}
+
 /**
  * Transform AgentMessages (including custom types) to LLM-compatible Messages.
  *
@@ -120,7 +163,7 @@ export function createCustomMessage(
  * - Custom extensions and tools
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
-	return messages
+	const converted = messages
 		.map((m): Message | undefined => {
 			switch (m.role) {
 				case "bashExecution":
@@ -167,4 +210,5 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 			}
 		})
 		.filter((m) => m !== undefined);
+	return repairOrphanToolResults(converted);
 }

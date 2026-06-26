@@ -25,10 +25,24 @@ import {
 	wrapForkTask,
 	type AgentProgress,
 	type ArtifactPaths,
+	type SingleResult,
 	type SubagentToolResult,
 } from "../../shared/types.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun } from "./subagent-executor-status.ts";
+
+function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
+	const error = result.error || "Failed";
+	const output = displayOutput.trim();
+	const lines = [error];
+	if (output && output !== error.trim()) {
+		lines.push("", "Output:", output);
+	}
+	if (result.artifactPaths?.outputPath) {
+		lines.push("", `Output artifact: ${result.artifactPaths.outputPath}`);
+	}
+	return lines.join("\n");
+}
 
 export async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
 	const {
@@ -309,7 +323,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 
 	if (r.exitCode !== 0)
 		return {
-			content: [{ type: "text", text: r.error || "Failed" }],
+			content: [{ type: "text", text: formatFailedSingleRunOutput(r, finalizedOutput.displayOutput) }],
 			details,
 			isError: true,
 		};

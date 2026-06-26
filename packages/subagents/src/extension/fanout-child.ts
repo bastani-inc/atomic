@@ -34,6 +34,7 @@ export function createChildSafeState(): SubagentState {
 		baseCwd: "",
 		currentSessionId: null,
 		asyncJobs: new Map(),
+		subagentInProgress: false,
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
 		lastForegroundControlId: null,

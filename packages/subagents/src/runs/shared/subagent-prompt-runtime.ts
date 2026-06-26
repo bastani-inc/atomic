@@ -31,6 +31,7 @@ export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 const PARENT_ONLY_CUSTOM_MESSAGE_TYPES = new Set([
 	"subagent-orchestration-instructions",
 	"subagent-slash-result",
+	"subagent-slash-text-result",
 	"subagent-notify",
 	"subagent_control_notice",
 	"subagent-control",
@@ -130,14 +131,15 @@ function stripAssistantSubagentToolCallBlocks(message: unknown): unknown | undef
 }
 
 export function stripParentOnlySubagentMessages(messages: unknown[]): unknown[] {
+	const preserveCurrentFanoutToolHistory = process.env[SUBAGENT_FANOUT_CHILD_ENV] === "1";
 	let changed = false;
 	const filtered: unknown[] = [];
 	for (const message of messages) {
-		if (isParentOnlySubagentMessage(message) || isSubagentToolResultMessage(message)) {
+		if (isParentOnlySubagentMessage(message) || (!preserveCurrentFanoutToolHistory && isSubagentToolResultMessage(message))) {
 			changed = true;
 			continue;
 		}
-		const stripped = stripAssistantSubagentToolCallBlocks(message);
+		const stripped = preserveCurrentFanoutToolHistory ? message : stripAssistantSubagentToolCallBlocks(message);
 		if (stripped === undefined) {
 			changed = true;
 			continue;

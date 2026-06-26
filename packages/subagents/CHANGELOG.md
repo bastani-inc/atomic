@@ -6,6 +6,7 @@
 
 - Prevented the async subagent status widget from briefly unmounting during reset-and-hydrate cycles when active background runs are still present, including Atomic host updates that deliver fresh UI context wrappers for the same logical session ([#1517](https://github.com/bastani-inc/atomic/issues/1517)).
 - Fixed live subagent result animation cleanup to register a host-row disposer, so terminal workflow cleanup evicts animation registry entries instead of only clearing intervals ([#1518](https://github.com/bastani-inc/atomic/issues/1518)).
+- Synced recent upstream subagent hardening so compact delegated tool-call summaries are preserved, fanout children keep their live nested subagent call/result history, duplicate concurrent subagent dispatches are rejected, provider-hostile chain schema conditionals are removed, and failed foreground runs include captured child output for diagnostics ([#1527](https://github.com/bastani-inc/atomic/issues/1527)).
 
 ## [0.9.3-alpha.1] - 2026-06-25
 

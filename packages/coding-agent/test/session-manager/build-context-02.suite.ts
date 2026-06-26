@@ -87,6 +87,26 @@ function toolResultMessage(toolCallId: string, text: string): ToolResultMessage 
 	};
 }
 
+function assistantToolCallMessage(toolCallId: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "old.ts" } }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-test",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: 1,
+	};
+}
+
 function branchSummary(id: string, parentId: string | null, summary: string, fromId: string): BranchSummaryEntry {
 	return { type: "branch_summary", id, parentId, timestamp: "2025-01-01T00:00:00Z", summary, fromId };
 }
@@ -194,6 +214,56 @@ describe("buildSessionContext", () => {
 
 			expect(rebuiltAssistant?.content).toEqual([{ type: "text", text: "retain this note" }]);
 			expect(ctx.messages.some((message) => message.role === "toolResult")).toBe(false);
+		});
+		it("drops paired results when persisted compaction removes only non-thinking tool calls", () => {
+			const toolCallId = "toolu_split_call";
+			const task = msg("1", null, "user", "inspect old file");
+			const assistant = messageEntry("2", "1", {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "retain this note" },
+					{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "old.ts" } },
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-test",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: 1,
+			} as AssistantMessage);
+			const result = messageEntry("3", "2", toolResultMessage(toolCallId, "old file contents"));
+			const staleCompaction = contextCompaction("4", "3", [
+				{ kind: "content_block", entryId: assistant.id, blockIndex: 1 },
+			]);
+
+			const ctx = buildSessionContext([task, assistant, result, staleCompaction]);
+			const rebuiltAssistant = ctx.messages.find(
+				(message): message is AssistantMessage => message.role === "assistant",
+			);
+
+			expect(rebuiltAssistant?.content).toEqual([{ type: "text", text: "retain this note" }]);
+			expect(ctx.messages.some((message) => message.role === "toolResult")).toBe(false);
+		});
+		it("drops paired results when persisted compaction removes only tool-call entries", () => {
+			const toolCallId = "toolu_deleted_entry_call";
+			const task = msg("1", null, "user", "inspect old file");
+			const assistant = messageEntry("2", "1", {
+				...assistantToolCallMessage(toolCallId),
+				content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "old.ts" } }],
+			});
+			const result = messageEntry("3", "2", toolResultMessage(toolCallId, "old file contents"));
+			const staleCompaction = contextCompaction("4", "3", [{ kind: "entry", entryId: assistant.id }]);
+
+			const ctx = buildSessionContext([task, assistant, result, staleCompaction]);
+
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
 		});
 		it("uses last entry when leafId not found", () => {
 			const entries: SessionEntry[] = [msg("1", null, "user", "hello"), msg("2", "1", "assistant", "hi")];
