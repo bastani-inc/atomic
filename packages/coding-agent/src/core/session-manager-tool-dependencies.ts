@@ -97,6 +97,13 @@ function restoreResultEntry(filters: ContextDeletionFilters, entryId: string): b
 	return hadEntryDeletion || hadBlockDeletion;
 }
 
+/**
+ * Reconcile persisted context-compaction filters in place so replay never
+ * retains only one side of a tool-call/tool-result pair. Callers should pass a
+ * fresh, unshared filter set; this mutates and returns that same object. The
+ * fixpoint normally converges in one or two passes, while the bounded pass
+ * count is only a non-termination backstop for malformed historical sessions.
+ */
 export function reconcilePersistedToolDependencyFilters(
 	path: SessionEntry[],
 	filters: ContextDeletionFilters,

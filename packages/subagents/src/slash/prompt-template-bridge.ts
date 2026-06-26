@@ -213,35 +213,31 @@ function resolveProgressModel(
 	return firstWithModel?.model;
 }
 
-function toolCallNameFromSummary(summary: { text?: string; expandedText?: string }): string | undefined {
+function toolCallSummaryText(summary: { text?: string; expandedText?: string }): string | undefined {
 	const text = typeof summary.expandedText === "string" && summary.expandedText.trim().length > 0
 		? summary.expandedText.trim()
 		: typeof summary.text === "string"
 			? summary.text.trim()
 			: "";
-	if (!text) return undefined;
-	if (text.startsWith("$ ")) return "bash";
-	return text.match(/^[A-Za-z_][\w.-]*/)?.[0];
+	return text || undefined;
 }
 
 function buildDelegationMessages(
 	result: { messages?: unknown[]; finalOutput?: string; toolCalls?: Array<{ text?: string; expandedText?: string }> },
 	fallbackText?: string,
 ): unknown[] {
-	const toolCallParts = (result.toolCalls ?? []).flatMap((summary) => {
-		const name = toolCallNameFromSummary(summary);
-		return name ? [{ type: "toolCall", name, arguments: { summary: summary.expandedText ?? summary.text ?? "" } }] : [];
-	});
 	if (Array.isArray(result.messages) && result.messages.length > 0) return result.messages;
+	const toolCallSummaries = (result.toolCalls ?? []).flatMap((summary) => {
+		const text = toolCallSummaryText(summary);
+		return text ? [`- ${text}`] : [];
+	});
+	const toolCallText = toolCallSummaries.length > 0 ? `Tool calls:\n${toolCallSummaries.join("\n")}` : undefined;
 	const text = typeof result.finalOutput === "string" && result.finalOutput.trim().length > 0
 		? result.finalOutput.trim()
 		: fallbackText;
-	const content = [
-		...toolCallParts,
-		...(text ? [{ type: "text", text }] : []),
-	];
-	if (content.length === 0) return [];
-	return [{ role: "assistant", content }];
+	const contentText = [toolCallText, text].filter((part): part is string => Boolean(part)).join("\n\n");
+	if (!contentText) return [];
+	return [{ role: "assistant", content: [{ type: "text", text: contentText }] }];
 }
 
 function toDelegationUpdate(requestId: string, update: PromptTemplateBridgeResult): PromptTemplateDelegationUpdate | undefined {

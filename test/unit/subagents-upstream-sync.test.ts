@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { convertToLlm } from "../../packages/coding-agent/src/core/messages.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { createSubagentExecutor } from "../../packages/subagents/src/runs/foreground/subagent-executor.js";
 import { SUBAGENT_FANOUT_CHILD_ENV } from "../../packages/subagents/src/runs/shared/pi-args.js";
@@ -12,6 +13,7 @@ import {
 	PROMPT_TEMPLATE_SUBAGENT_RESPONSE_EVENT,
 	registerPromptTemplateDelegationBridge,
 } from "../../packages/subagents/src/slash/prompt-template-bridge.js";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "../../packages/subagents/src/agents/agent-types.js";
 import type { ExecutorDeps, SubagentExecutorRuntimeDeps } from "../../packages/subagents/src/runs/foreground/subagent-executor-types.js";
 import type { SingleResult, Usage } from "../../packages/subagents/src/shared/types.js";
@@ -175,10 +177,18 @@ describe("recent upstream subagent syncs", () => {
 			cwd: "/repo",
 		});
 
-		const response = await responsePromise as { messages: Array<{ content?: Array<{ type?: string; name?: string; text?: string }> }> };
+		const response = await responsePromise as { messages: Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }> };
 		const content = response.messages[0]?.content ?? [];
-		assert.deepEqual(content.filter((part) => part.type === "toolCall").map((part) => part.name), ["write", "bash"]);
-		assert.equal(content.some((part) => part.type === "text" && part.text === "finished"), true);
+		const text = content.find((part) => part.type === "text")?.text ?? "";
+		assert.equal(content.some((part) => part.type === "toolCall"), false);
+		assert.match(text, /Tool calls:\n- write src\/output\.md\n- \$ bun test/);
+		assert.match(text, /finished/);
+		assert.equal(
+			convertToLlm(response.messages as AgentMessage[]).some(
+				(message) => message.role === "assistant" && message.content.some((part) => part.type === "toolCall"),
+			),
+			false,
+		);
 		bridge.dispose();
 	});
 
@@ -205,6 +215,39 @@ describe("recent upstream subagent syncs", () => {
 		const serialized = JSON.stringify(SubagentParams);
 		for (const keyword of ["allOf", "const", "if", "then", "not"]) {
 			assert.equal(serialized.includes(`\"${keyword}\"`), false, `schema should omit ${keyword}`);
+		}
+	});
+
+	test("returns clear runtime errors for malformed dynamic fanout shapes", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-malformed-chain-"));
+		try {
+			let runCount = 0;
+			const executor = makeExecutor({
+				cwd,
+				agents: [makeAgent("scout"), makeAgent("reviewer")],
+				runSync: async (_parentCwd, _agents, agentName, task) => {
+					runCount += 1;
+					return result(agentName, task);
+				},
+			});
+
+			const output = await executor.execute("malformed-chain", {
+				chain: [
+					{ agent: "scout", task: "Find targets", as: "targets", outputSchema: { type: "object" } },
+					{
+						expand: { from: { output: "targets", path: "/items" }, maxItems: 4 },
+						parallel: [{ agent: "reviewer", task: "Review" }],
+						collect: { as: "reviews" },
+					},
+				] as never,
+			}, new AbortController().signal, undefined, makeContext(cwd));
+			const text = output.content[0]?.type === "text" ? output.content[0].text : "";
+
+			assert.equal(output.isError, true);
+			assert.match(text, /requires expand, a single parallel template object, and collect/);
+			assert.equal(runCount, 0);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
