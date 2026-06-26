@@ -34,6 +34,19 @@ export interface GraphStageCounts {
   skipped: number;
 }
 
+interface GraphNodeHitRect {
+  index: number;
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+interface GraphViewportGeometry {
+  leftMargin: number;
+  viewportWidth: number;
+}
+
 /** Expansion, focus, prompt, and store-backed layout state for GraphView. */
 export abstract class GraphViewState {
   protected mode: GraphViewMode;
@@ -64,6 +77,8 @@ export abstract class GraphViewState {
   protected currentSnapshot: StoreSnapshot | null = null;
   protected graphScrollOffset = 0;
   protected graphScrollColOffset = 0;
+  protected graphNodeHitRects: GraphNodeHitRect[] = [];
+  protected lastGraphViewport: GraphViewportGeometry | null = null;
   protected lastOverlayFrameWidth = 80;
   protected pendingEnsureFocusedVisible = true;
   protected lastAutoFocusedAwaitingInputKey: string | null = null;
@@ -122,6 +137,8 @@ export abstract class GraphViewState {
       this.focusedIndex = 0;
       this.graphScrollOffset = 0;
       this.graphScrollColOffset = 0;
+      this.graphNodeHitRects = [];
+      this.lastGraphViewport = null;
       this.pendingEnsureFocusedVisible = true;
       this.promptState = null;
       return;
@@ -131,6 +148,8 @@ export abstract class GraphViewState {
     const graphStages = this._graphStages(run);
     const nextLayout = computeLayout(graphStages, { orientation: "vertical" });
     this.cachedLayout = nextLayout;
+    this.graphNodeHitRects = [];
+    this.lastGraphViewport = null;
 
     let focusNeedsReveal = this.pendingEnsureFocusedVisible;
     // One-shot: if the host passed `initialFocusedStageId`, snap the

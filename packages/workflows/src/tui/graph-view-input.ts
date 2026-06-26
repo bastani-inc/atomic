@@ -3,7 +3,6 @@ import {
   GRAPH_SCROLL_STEP_ROWS,
 } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
-import { NODE_H, NODE_W } from "./layout.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import {
   defaultResponseFor,
@@ -11,6 +10,13 @@ import {
 } from "./prompt-card.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
+
+interface SgrMouseEvent {
+  buttonCode: number;
+  col: number;
+  row: number;
+  final: "M" | "m";
+}
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
 export abstract class GraphViewInputController extends GraphViewRenderer {
@@ -305,73 +311,52 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   private _graphNodeIndexForClick(data: string): number | null | undefined {
     const click = this._sgrLeftMousePress(data);
     if (!click) return undefined;
-    if (this.mode !== "overlay" || this.cachedLayout.length === 0) return null;
+    if (this.mode !== "overlay") return undefined;
+    if (this.cachedLayout.length === 0) return null;
 
-    const frameWidth = this.lastOverlayFrameWidth;
-    const panelLineCount = this._overlayPanelLineCount();
-    const bodyRows = this._overlayBodyRows(panelLineCount);
-    const bodyStartRow = this._overlayVerticalMarginRows() + 3;
-    const totalGraphRows = Math.max(
-      1,
-      ...this.cachedLayout.map((node) => node.y + NODE_H),
-    );
-    const topPad =
-      totalGraphRows <= bodyRows
-        ? Math.min(3, Math.max(0, Math.floor((bodyRows - totalGraphRows) / 2)))
-        : 0;
-    const graphStartRow = bodyStartRow + topPad;
-    const visibleGraphRows = Math.min(totalGraphRows, bodyRows - topPad);
-    if (click.row < graphStartRow || click.row >= graphStartRow + visibleGraphRows) {
-      return null;
-    }
-
-    const graphInner = Math.max(1, frameWidth - 4);
-    const canvasWidth = this.cachedLayout.reduce(
-      (max, node) => Math.max(max, node.x + NODE_W),
-      0,
-    );
-    const leftMargin = Math.max(
-      2,
-      canvasWidth <= graphInner ? Math.floor((graphInner - canvasWidth) / 2) : 2,
-    );
-    const viewportWidth = Math.max(1, frameWidth - leftMargin);
-    if (click.col < leftMargin || click.col >= leftMargin + viewportWidth) {
-      return null;
-    }
-
-    const graphRow = click.row - graphStartRow + this.graphScrollOffset;
-    const graphCol = click.col - leftMargin + this.graphScrollColOffset;
-    for (let index = 0; index < this.cachedLayout.length; index++) {
-      const node = this.cachedLayout[index]!;
+    for (const rect of this.graphNodeHitRects) {
       if (
-        graphRow >= node.y &&
-        graphRow < node.y + NODE_H &&
-        graphCol >= node.x &&
-        graphCol < node.x + NODE_W
+        click.row >= rect.top &&
+        click.row < rect.bottom &&
+        click.col >= rect.left &&
+        click.col < rect.right
       ) {
-        return index;
+        return rect.index;
       }
     }
     return null;
   }
 
-  private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
-    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)M$/);
+  private _parseSgrMouse(data: string): SgrMouseEvent | null {
+    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
     if (!sgr) return null;
-    const buttonCode = Number.parseInt(sgr[1]!, 10);
+    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
+    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
+    const final = sgr[4];
+    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
+    if (final !== "M" && final !== "m") return null;
+    return {
+      buttonCode: Number.parseInt(sgr[1]!, 10),
+      col: oneBasedCol - 1,
+      row: oneBasedRow - 1,
+      final,
+    };
+  }
+
+  private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
+    const sgr = this._parseSgrMouse(data);
+    if (!sgr || sgr.final !== "M") return null;
+    const buttonCode = sgr.buttonCode;
     if ((buttonCode & 64) !== 0 || (buttonCode & 32) !== 0 || (buttonCode & 3) !== 0) {
       return null;
     }
-    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
-    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
-    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
-    return { col: oneBasedCol - 1, row: oneBasedRow - 1 };
+    return { col: sgr.col, row: sgr.row };
   }
 
   private _mouseWheelDeltaRows(data: string): number {
-    const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
-    if (sgr) {
-      return this._wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
+    const sgr = this._parseSgrMouse(data);
+    if (sgr && sgr.final === "M") {
+      return this._wheelDeltaForButtonCode(sgr.buttonCode);
     }
     if (data.startsWith("\x1b[M") && data.length >= 6) {
       return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
