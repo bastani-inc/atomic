@@ -11,9 +11,9 @@
  */
 import { describe, test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, mkdirSync, utimesSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { Type } from "typebox";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
@@ -29,6 +29,26 @@ const CHILD = "child-wf-002";
 
 function toolCheckpoint(workflowId: string, argsHash: string, output: string): DurableCheckpoint {
   return { kind: "tool", workflowId, checkpointId: `tool:${argsHash}`, name: "t", argsHash, output, completedAt: 1 };
+}
+
+function findUnusedPid(): number {
+  for (let pid = 999_999; pid > 900_000; pid--) {
+    try {
+      process.kill(pid, 0);
+    } catch (err) {
+      if (typeof err === "object" && err !== null && "code" in err && err.code === "ESRCH") return pid;
+    }
+  }
+  return 999_999;
+}
+
+function writeAbandonedLockOwner(lockDir: string): void {
+  writeFileSync(join(lockDir, "owner.json"), JSON.stringify({
+    pid: findUnusedPid(),
+    host: hostname(),
+    token: "test-stale-lock",
+    acquiredAt: 1,
+  }), { encoding: "utf-8", mode: 0o600 });
 }
 
 // ---------------------------------------------------------------------------
@@ -209,10 +229,12 @@ describe("FileDurableBackend stale lock recovery", () => {
     const seed = new FileDurableBackend(file);
     seed.registerWorkflow({ workflowId: ROOT, name: "w", inputs: {}, createdAt: 1, status: "running" });
 
-    // Simulate a crash leaving a stale lock directory.
+    // Simulate a crash leaving a stale lock directory. Stale reclaim requires
+    // an owner marker so a reclaiming process never deletes a freshly-created
+    // live lock by racing a markerless stale rm.
     const lockDir = `${file}.lock`;
     mkdirSync(lockDir);
-    // Backdate its mtime beyond the stale threshold.
+    writeAbandonedLockOwner(lockDir);
     const old = new Date(Date.now() - 60_000);
     utimesSync(lockDir, old, old);
 

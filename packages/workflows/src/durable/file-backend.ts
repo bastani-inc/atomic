@@ -1,18 +1,30 @@
 /**
  * File-backed durable backend.
  *
- * Persists durable checkpoints to a JSON file so a new Atomic session/process
+ * Persists durable checkpoints to JSON files so a new Atomic session/process
  * can resume a workflow started in a prior session without requiring Postgres.
- * Writes use a small lock directory plus read-merge-write to avoid lost updates
- * when multiple Atomic processes update the same durable state file. This is
- * the default workflow durability store, rooted under ~/.atomic.
+ * The default directory backend stores one state file per root workflow to keep
+ * checkpoint writes bounded to that workflow. Each state file still uses a
+ * small lock directory plus read-merge-write to avoid lost updates when multiple
+ * Atomic processes update the same workflow.
  *
  * cross-ref: issue #1498 — durable fallback when DBOS/Postgres is unavailable.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import { dirname } from "node:path";
-import type { DurableCheckpoint, DurableWorkflowHandle } from "./types.js";
+import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
 
 interface FileDurableRecord {
@@ -25,7 +37,16 @@ interface FileDurableState {
   readonly workflows: readonly FileDurableRecord[];
 }
 
+interface LockOwner {
+  readonly pid: number;
+  readonly host: string;
+  readonly token: string;
+  readonly acquiredAt: number;
+}
+
 const FILE_FORMAT_VERSION = 1;
+const LOCK_OWNER_FILE = "owner.json";
+const STALE_LOCK_MS = 30_000;
 
 export class FileDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = true;
@@ -116,6 +137,141 @@ export class FileDurableBackend implements DurableWorkflowBackend {
   }
 }
 
+/**
+ * Directory-backed durable backend that stores each root workflow in its own
+ * JSON file while preserving the same DurableWorkflowBackend interface.
+ */
+export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
+  public readonly persistent = true;
+  private readonly dir: string;
+  private readonly fileBackends = new Map<string, FileDurableBackend>();
+
+  constructor(dir: string) {
+    this.dir = dir;
+  }
+
+  registerWorkflow(handle: Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]): void {
+    this.backendFor(handle.workflowId).registerWorkflow(handle);
+  }
+
+  recordCheckpoint(checkpoint: DurableCheckpoint): void {
+    this.backendFor(checkpoint.workflowId).recordCheckpoint(checkpoint);
+  }
+
+  getToolOutput(workflowId: string, argsHash: string) {
+    for (const backend of this.lookupBackends(workflowId)) {
+      const output = backend.getToolOutput(workflowId, argsHash);
+      if (output !== undefined) return output;
+    }
+    return undefined;
+  }
+
+  getUiResponse(workflowId: string, promptHash: string) {
+    for (const backend of this.lookupBackends(workflowId)) {
+      const response = backend.getUiResponse(workflowId, promptHash);
+      if (response !== undefined) return response;
+    }
+    return undefined;
+  }
+
+  getStageOutput(workflowId: string, replayKey: string) {
+    for (const backend of this.lookupBackends(workflowId)) {
+      const output = backend.getStageOutput(workflowId, replayKey);
+      if (output !== undefined) return output;
+    }
+    return undefined;
+  }
+
+  getStageSession(workflowId: string, replayKey: string) {
+    for (const backend of this.lookupBackends(workflowId)) {
+      const session = backend.getStageSession(workflowId, replayKey);
+      if (session !== undefined) return session;
+    }
+    return undefined;
+  }
+
+  listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
+    const checkpoints = new Map<string, DurableCheckpoint>();
+    for (const backend of this.lookupBackends(workflowId)) {
+      for (const checkpoint of backend.listCheckpoints(workflowId)) {
+        checkpoints.set(`${checkpoint.kind}:${checkpoint.checkpointId}`, checkpoint);
+      }
+    }
+    return [...checkpoints.values()].sort((a, b) => a.completedAt - b.completedAt);
+  }
+
+  getWorkflow(workflowId: string) {
+    for (const backend of this.lookupBackends(workflowId)) {
+      const handle = backend.getWorkflow(workflowId);
+      if (handle !== undefined) return handle;
+    }
+    return undefined;
+  }
+
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
+    const backend = this.backendFor(workflowId);
+    backend.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+    if (isPrunableTerminalStatus(status, resumable)) this.removeWorkflowFile(workflowId);
+  }
+
+  listResumableWorkflows() {
+    const mem = new InMemoryDurableBackend();
+    mem.importAll(mergeRecords([], this.readAllRecords()));
+    return mem.listResumableWorkflows();
+  }
+
+  toCacheEntry(workflowId: string) {
+    return this.backendFor(workflowId).toCacheEntry(workflowId);
+  }
+
+  reset(): void {
+    this.fileBackends.clear();
+    rmSync(this.dir, { recursive: true, force: true });
+  }
+
+  private backendFor(workflowId: string): FileDurableBackend {
+    return this.backendForFile(durableStateFileFor(this.dir, workflowId));
+  }
+
+  private backendForFile(filePath: string): FileDurableBackend {
+    const existing = this.fileBackends.get(filePath);
+    if (existing !== undefined) return existing;
+    const backend = new FileDurableBackend(filePath);
+    this.fileBackends.set(filePath, backend);
+    return backend;
+  }
+
+  private lookupBackends(workflowId: string): readonly FileDurableBackend[] {
+    const primaryFile = durableStateFileFor(this.dir, workflowId);
+    const backends = [this.backendForFile(primaryFile)];
+    for (const filePath of this.stateFiles()) {
+      if (filePath !== primaryFile) backends.push(this.backendForFile(filePath));
+    }
+    return backends;
+  }
+
+  private stateFiles(): readonly string[] {
+    try {
+      return readdirSync(this.dir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json"))
+        .map((entry) => `${this.dir}/${entry.name}`);
+    } catch {
+      return [];
+    }
+  }
+
+  private readAllRecords(): readonly FileDurableRecord[] {
+    return this.stateFiles().flatMap((filePath) => readState(filePath).workflows);
+  }
+
+  private removeWorkflowFile(workflowId: string): void {
+    const filePath = durableStateFileFor(this.dir, workflowId);
+    this.fileBackends.delete(filePath);
+    rmSync(filePath, { force: true });
+    rmSync(`${filePath}.lock`, { recursive: true, force: true });
+  }
+}
+
 function readState(filePath: string): FileDurableState {
   if (!existsSync(filePath)) return { version: FILE_FORMAT_VERSION, workflows: [] };
   try {
@@ -128,32 +284,33 @@ function readState(filePath: string): FileDurableState {
 
 function writeState(filePath: string, state: FileDurableState): void {
   const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  ensureSecureDir(dir);
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state), "utf-8");
+  writeFileSync(tmp, JSON.stringify(state), { encoding: "utf-8", mode: 0o600 });
+  chmodBestEffort(tmp, 0o600);
   renameSync(tmp, filePath);
+  chmodBestEffort(filePath, 0o600);
 }
 
 function withFileLock<T>(filePath: string, fn: () => T): T {
   const dir = dirname(filePath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  ensureSecureDir(dir);
   const lockDir = `${filePath}.lock`;
   const deadline = Date.now() + 5000;
-  // Stale lock recovery: if a prior process crashed while holding the lock,
-  // the lock directory remains on disk. A lock older than the stale threshold
-  // is assumed abandoned and removed so durability does not wedge permanently
-  // after a crash.
-  // cross-ref: issue #1498 — file-backed durability crash recovery.
-  const STALE_LOCK_MS = 30_000;
   while (true) {
     try {
-      mkdirSync(lockDir);
-      break;
-    } catch {
-      if (isStaleLock(lockDir, STALE_LOCK_MS)) {
-        reclaimStaleLock(lockDir);
-        continue;
+      mkdirSync(lockDir, { mode: 0o700 });
+      try {
+        chmodBestEffort(lockDir, 0o700);
+        writeLockOwner(lockDir);
+      } catch (ownerErr) {
+        rmSync(lockDir, { recursive: true, force: true });
+        throw ownerErr;
       }
+      break;
+    } catch (err) {
+      if (errorCode(err) !== "EEXIST") throw err;
+      if (tryReclaimStaleLock(lockDir, STALE_LOCK_MS)) continue;
       if (Date.now() > deadline) throw new Error(`Timed out acquiring durable workflow state lock: ${lockDir}`);
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
@@ -165,23 +322,114 @@ function withFileLock<T>(filePath: string, fn: () => T): T {
   }
 }
 
-function isStaleLock(lockDir: string, staleMs: number): boolean {
-  let stat: { readonly mtimeMs?: number };
+function tryReclaimStaleLock(lockDir: string, staleMs: number): boolean {
+  if (!isStaleLock(lockDir, staleMs)) return false;
+  const owner = readLockOwner(lockDir);
+  if (owner === undefined || !isLockOwnerAbandoned(owner)) return false;
+  const quarantine = `${lockDir}.stale.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
   try {
-    stat = statSync(lockDir);
+    renameSync(lockDir, quarantine);
   } catch {
     return false;
   }
-  const mtime = stat.mtimeMs;
-  return typeof mtime === "number" && Date.now() - mtime > staleMs;
+  const quarantinedOwner = readLockOwner(quarantine);
+  if (!sameLockOwner(owner, quarantinedOwner)) {
+    restoreQuarantinedLock(lockDir, quarantine);
+    return false;
+  }
+  try {
+    rmSync(quarantine, { recursive: true, force: true });
+  } catch {
+    // The stale lock has already been moved away from the active lock path.
+  }
+  return true;
 }
 
-function reclaimStaleLock(lockDir: string): void {
+function isStaleLock(lockDir: string, staleMs: number): boolean {
   try {
-    rmSync(lockDir, { recursive: true, force: true });
+    const stat = statSync(lockDir);
+    return Date.now() - stat.mtimeMs > staleMs;
   } catch {
-    // Best-effort; the next acquire loop iteration will retry.
+    return false;
   }
+}
+
+function writeLockOwner(lockDir: string): void {
+  const owner: LockOwner = {
+    pid: process.pid,
+    host: hostname(),
+    token: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    acquiredAt: Date.now(),
+  };
+  const ownerPath = `${lockDir}/${LOCK_OWNER_FILE}`;
+  writeFileSync(ownerPath, JSON.stringify(owner), { encoding: "utf-8", mode: 0o600 });
+  chmodBestEffort(ownerPath, 0o600);
+}
+
+function readLockOwner(lockDir: string): LockOwner | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(`${lockDir}/${LOCK_OWNER_FILE}`, "utf-8"));
+    if (!isLockOwner(parsed)) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+function isLockOwner(value: unknown): value is LockOwner {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Partial<LockOwner>;
+  return typeof record.pid === "number"
+    && typeof record.host === "string"
+    && typeof record.token === "string"
+    && typeof record.acquiredAt === "number";
+}
+
+function isLockOwnerAbandoned(owner: LockOwner): boolean {
+  if (owner.host !== hostname()) return false;
+  if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;
+  } catch (err) {
+    const code = errorCode(err);
+    return code === "ESRCH";
+  }
+}
+
+function sameLockOwner(a: LockOwner, b: LockOwner | undefined): boolean {
+  return b !== undefined && a.pid === b.pid && a.host === b.host && a.token === b.token;
+}
+
+function restoreQuarantinedLock(lockDir: string, quarantine: string): void {
+  try {
+    if (!existsSync(lockDir)) renameSync(quarantine, lockDir);
+    else rmSync(quarantine, { recursive: true, force: true });
+  } catch {
+    // Best-effort: never delete the active lock path after a failed compare.
+  }
+}
+
+function errorCode(err: unknown): string | undefined {
+  return typeof err === "object" && err !== null && "code" in err ? String(err.code) : undefined;
+}
+
+function ensureSecureDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  chmodBestEffort(dir, 0o700);
+}
+
+function chmodBestEffort(path: string, mode: number): void {
+  try {
+    chmodSync(path, mode);
+  } catch {
+    // chmod is unavailable or unsupported on some filesystems/platforms.
+  }
+}
+
+function isPrunableTerminalStatus(status: DurableWorkflowStatus, resumable?: boolean): boolean {
+  if (status === "completed" || status === "cancelled") return true;
+  return (status === "failed" || status === "blocked") && resumable === false;
 }
 
 function mergeRecords(a: readonly FileDurableRecord[], b: readonly FileDurableRecord[]): readonly FileDurableRecord[] {
@@ -196,11 +444,11 @@ function mergeRecords(a: readonly FileDurableRecord[], b: readonly FileDurableRe
   return [...byWorkflow.values()].map((rec) => ({ handle: rec.handle, checkpoints: [...rec.checkpoints.values()] }));
 }
 
-export function defaultDurableStateDir(): string {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
-  return `${home}/.atomic/workflow-durable`;
+export function defaultDurableStateDir(): string | undefined {
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  return home === undefined || home.length === 0 ? undefined : `${home}/.atomic/workflow-durable`;
 }
 
 export function durableStateFileFor(dir: string, workflowId: string): string {
-  return `${dir}/${workflowId}.json`;
+  return `${dir}/workflow-${encodeURIComponent(workflowId)}.json`;
 }

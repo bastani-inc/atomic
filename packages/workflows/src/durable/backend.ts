@@ -4,7 +4,7 @@
  * This interface abstracts durable checkpoint storage so the workflow engine
  * can persist `ctx.*` operation results without coupling to a specific storage
  * backend. The default implementation is the zero-infrastructure
- * {@link FileDurableBackend}, rooted under `~/.atomic/workflow-durable`, so
+ * per-workflow file backend, rooted under `~/.atomic/workflow-durable`, so
  * cross-session resume works without user setup. {@link InMemoryDurableBackend}
  * remains available for isolated tests and explicit custom overrides. The
  * {@link DbosDurableBackend} adapter (in dbos-backend.ts) wraps the real
@@ -49,7 +49,7 @@ export type WorkflowRegistrationInput =
 
 /**
  * Abstract durable checkpoint store. Implementations:
- * - {@link FileDurableBackend} — JSON-file-backed; default cross-process resume.
+ * - per-workflow file backend — JSON-file-backed; default cross-process resume.
  * - {@link DbosDurableBackend} — wraps `@dbos-inc/dbos-sdk` + Postgres.
  * - {@link InMemoryDurableBackend} — process-local; explicit test/custom use.
  */
@@ -180,7 +180,7 @@ function checkpointKey(c: DurableCheckpoint): string {
 /**
  * Process-local durable backend for tests and explicit custom overrides.
  * Checkpoints live in memory for the lifetime of the process; the production
- * default is the cross-process {@link FileDurableBackend}.
+ * default is the cross-process per-workflow file backend.
  */
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = false;

@@ -10,12 +10,12 @@
  */
 import { describe, test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDurableBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend, defaultDurableStateDir } from "../../packages/workflows/src/durable/file-backend.js";
+import { FileDurableBackend, WorkflowFileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "../../packages/workflows/src/durable/file-backend.js";
 import { persistDurableCacheEntry } from "../../packages/workflows/src/durable/resume-catalog.js";
 import type { DurableCheckpointEntry } from "../../packages/workflows/src/durable/types.js";
 
@@ -45,20 +45,25 @@ describe("durable backend factory (default cross-session persistence)", () => {
     restoreEnv();
   });
 
-  test("default backend is file-backed and persistent under ~/.atomic without opt-in env vars", () => {
+  test("default backend is per-workflow file-backed and persistent under ~/.atomic without opt-in env vars", () => {
     const tmpHome = mkdtempSync(join(tmpdir(), "atomic-durable-home-"));
     setEnv("HOME", tmpHome);
     setEnv("USERPROFILE", undefined);
     setEnv("DBOS_SYSTEM_DATABASE_URL", undefined);
+    setEnv("ATOMIC_WORKFLOW_DURABLE", undefined);
     try {
       setDurableBackend(undefined);
       const backend = getDurableBackend();
       assert.equal(backend.persistent, true);
-      assert.ok(backend instanceof FileDurableBackend);
-      assert.equal(defaultDurableStateDir(), `${tmpHome}/.atomic/workflow-durable`);
+      assert.ok(backend instanceof WorkflowFileDurableBackend);
+      const stateDir = defaultDurableStateDir();
+      assert.equal(stateDir, `${tmpHome}/.atomic/workflow-durable`);
 
       backend.registerWorkflow({ workflowId: "wf-default-persist", name: "default-persist", inputs: {}, createdAt: 1, status: "running" });
       backend.setWorkflowStatus("wf-default-persist", "failed");
+      assert.ok(stateDir !== undefined);
+      assert.equal(existsSync(durableStateFileFor(stateDir, "wf-default-persist")), true);
+      assert.equal(existsSync(join(stateDir, "state.json")), false);
 
       setDurableBackend(undefined);
       const backend2 = getDurableBackend();
@@ -69,6 +74,25 @@ describe("durable backend factory (default cross-session persistence)", () => {
     } finally {
       rmSync(tmpHome, { recursive: true, force: true });
     }
+  });
+
+  test("durability opt-out uses in-memory backend", () => {
+    setEnv("ATOMIC_WORKFLOW_DURABLE", "0");
+    setDurableBackend(undefined);
+    const backend = getDurableBackend();
+    assert.equal(backend.persistent, false);
+    assert.ok(backend instanceof InMemoryDurableBackend);
+  });
+
+  test("missing home directory fails closed to in-memory backend", () => {
+    setEnv("HOME", undefined);
+    setEnv("USERPROFILE", undefined);
+    setEnv("ATOMIC_WORKFLOW_DURABLE", undefined);
+    setDurableBackend(undefined);
+    assert.equal(defaultDurableStateDir(), undefined);
+    const backend = getDurableBackend();
+    assert.equal(backend.persistent, false);
+    assert.ok(backend instanceof InMemoryDurableBackend);
   });
 });
 

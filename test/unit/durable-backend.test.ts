@@ -8,9 +8,9 @@ import { describe, test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
+import { FileDurableBackend, WorkflowFileDurableBackend, durableStateFileFor } from "../../packages/workflows/src/durable/file-backend.js";
 import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
 import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createToolPrimitive, createCheckpointIdGenerator, sleepOrAbort } from "../../packages/workflows/src/durable/tool-primitive.js";
@@ -203,6 +203,67 @@ describe("FileDurableBackend", () => {
     const reloaded = new FileDurableBackend(file);
     assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashA), "A");
     assert.equal(reloaded.getToolOutput(WORKFLOW_ID, hashB), "B");
+  });
+});
+
+describe("WorkflowFileDurableBackend", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "durable-workflow-files-"));
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("stores workflows in separate files and aggregates resume listing", () => {
+    const backend = new WorkflowFileDurableBackend(tmpDir);
+    backend.registerWorkflow({ workflowId: "wf-a", name: "a", inputs: {}, createdAt: 1, status: "running" });
+    backend.recordCheckpoint(makeToolCheckpoint("wf-a", "a", "hash-a", "A", "cp-a"));
+    backend.setWorkflowStatus("wf-a", "paused");
+    backend.registerWorkflow({ workflowId: "wf-b", name: "b", inputs: {}, createdAt: 2, status: "running" });
+    backend.recordCheckpoint(makeToolCheckpoint("wf-b", "b", "hash-b", "B", "cp-b"));
+    backend.setWorkflowStatus("wf-b", "failed");
+
+    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-a")), true);
+    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-b")), true);
+    assert.equal(existsSync(join(tmpDir, "state.json")), false);
+
+    const reloaded = new WorkflowFileDurableBackend(tmpDir);
+    const ids = reloaded.listResumableWorkflows().map((entry) => entry.workflowId).sort();
+    assert.deepEqual(ids, ["wf-a", "wf-b"]);
+  });
+
+  test("prunes completed workflow files", () => {
+    const backend = new WorkflowFileDurableBackend(tmpDir);
+    backend.registerWorkflow({ workflowId: "wf-done", name: "done", inputs: {}, createdAt: 1, status: "running" });
+    backend.recordCheckpoint(makeToolCheckpoint("wf-done", "done", "hash-done", "ok", "cp-done"));
+    backend.setWorkflowStatus("wf-done", "completed");
+
+    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-done")), false);
+    assert.equal(backend.listResumableWorkflows().length, 0);
+  });
+
+  test("uses restrictive permissions for durable directory and state files", () => {
+    const backend = new WorkflowFileDurableBackend(tmpDir);
+    backend.registerWorkflow({ workflowId: "wf-secure", name: "secure", inputs: {}, createdAt: 1, status: "running" });
+    const filePath = durableStateFileFor(tmpDir, "wf-secure");
+
+    assert.equal(statSync(tmpDir).mode & 0o777, 0o700);
+    assert.equal(statSync(filePath).mode & 0o777, 0o600);
+  });
+
+  test("merges same-workflow updates through per-workflow locks", () => {
+    const backendA = new WorkflowFileDurableBackend(tmpDir);
+    const backendB = new WorkflowFileDurableBackend(tmpDir);
+    backendA.registerWorkflow({ workflowId: "wf-merge", name: "merge", inputs: {}, createdAt: 1, status: "running" });
+    backendA.recordCheckpoint(makeToolCheckpoint("wf-merge", "a", "hash-a", "A", "cp-a"));
+    backendB.recordCheckpoint(makeToolCheckpoint("wf-merge", "b", "hash-b", "B", "cp-b"));
+
+    const reloaded = new WorkflowFileDurableBackend(tmpDir);
+    assert.equal(reloaded.getToolOutput("wf-merge", "hash-a"), "A");
+    assert.equal(reloaded.getToolOutput("wf-merge", "hash-b"), "B");
   });
 });
 

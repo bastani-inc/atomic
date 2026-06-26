@@ -19,7 +19,7 @@ export type {
 
 export type { DurableWorkflowBackend } from "./backend.js";
 export { InMemoryDurableBackend, durableHash } from "./backend.js";
-export { FileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
+export { FileDurableBackend, WorkflowFileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
 export {
   isDbosConfigured,
   DbosDurableBackend,
