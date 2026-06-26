@@ -148,14 +148,21 @@ function entryToResumable(entry: DurableCheckpointEntry, sessionFile: string): R
 }
 
 function isResumableStatus(status: DurableWorkflowStatus): boolean {
+  // `running`/`paused` are both resumable at the catalog level. A `running`
+  // durable handle may be a crashed process (cross-session crash recovery);
+  // same-session double-resume is filtered out by the command layer.
   return status === "running" || status === "paused";
 }
+function hasResumeProgress(entry: ResumableWorkflowEntry): boolean {
+  return entry.completedCheckpoints > 0 || entry.pendingPrompts > 0;
+}
+
 
 function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
   const isRoot = entry.rootWorkflowId === undefined || entry.rootWorkflowId === entry.workflowId;
   if (!isRoot) return false;
   if (entry.status === "failed" || entry.status === "blocked") return entry.resumable !== false;
-  return isResumableStatus(entry.status);
+  return isResumableStatus(entry.status) && hasResumeProgress(entry);
 }
 
 // ---------------------------------------------------------------------------

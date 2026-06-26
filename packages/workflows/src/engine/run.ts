@@ -47,6 +47,7 @@ import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageChe
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
+import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 
@@ -219,6 +220,7 @@ export async function run<
     }
     await userOnStageEnd?.(stageRunId, snapshot);
   };
+  const durableOnStageSession = createDurableStageSessionRecorder({ runId, deps: durableStageDeps, backend: durableBackend, persistence: opts.persistence, onStageSession: opts.onStageSession });
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
     models: opts.models,
@@ -227,6 +229,7 @@ export async function run<
     persistence: opts.persistence,
     onStageStart: opts.onStageStart,
     onStageEnd: durableOnStageEnd,
+    onStageSession: durableOnStageSession,
     confirmStageReadiness: opts.confirmStageReadiness,
     usePromptNodesForUi: opts.usePromptNodesForUi,
   };
@@ -253,6 +256,7 @@ export async function run<
     stageControlRegistry: opts.stageControlRegistry,
     onStageStart: opts.onStageStart,
     onStageEnd: opts.onStageEnd,
+    onStageSession: opts.onStageSession,
     durableBackend,
   };
   const runtime = new EngineRuntime({
@@ -323,10 +327,6 @@ export async function run<
       resumable: true,
       ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
     });
-    if (opts.persistence && durableBackend.persistent) {
-      const cacheEntry = durableBackend.toCacheEntry(runId);
-      if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
-    }
   } else if (opts.parentRun === undefined) {
     // Resuming a root workflow: mark it as running again in the backend.
     durableBackend.setWorkflowStatus(runId, "running");

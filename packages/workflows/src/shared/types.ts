@@ -178,6 +178,10 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   scopedModels?: CreateAgentSessionOptions["scopedModels"];
   sessionManager?: SessionManager;
   settingsManager?: SettingsManager;
+  /** Internal durable resume hook: reopen this exact Atomic/Pi session file instead of forking. */
+  resumeFromSessionFile?: string;
+  /** Internal durable replay key used to map a live LM session to durable resume state. */
+  durableReplayKey?: string;
 }
 
 // ---------------------------------------------------------------------------

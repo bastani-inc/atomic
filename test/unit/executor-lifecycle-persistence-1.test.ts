@@ -1,9 +1,17 @@
-import { describe } from "bun:test";
+import { describe, beforeAll, afterAll } from "bun:test";
 import {
     assert, createStore, workflow, run, test, Type,
 } from "./executor-shared.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 describe("executor.run — lifecycle persistence", () => {
+  // The durable cache-entry append checked below requires a persistent durable
+  // backend. Other test files in this suite mutate the global backend singleton
+  // (bun shares process state across files); reset to the clean default here so
+  // this file is deterministic regardless of execution order, and reset again on
+  // teardown so no in-memory backend leaks into later files.
+  beforeAll(() => setDurableBackend(undefined));
+  afterAll(() => setDurableBackend(undefined));
     function makePersistence() {
         const calls: Array<{ type: string; payload: Record<string, unknown> }> =
             [];

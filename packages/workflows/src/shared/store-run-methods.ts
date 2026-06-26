@@ -1,5 +1,5 @@
 import type { WorkflowOutputValues } from "./types.js";
-import type { Store, RunBlockedMetadata, RunEndMetadata } from "./store-public-types.js";
+import type { Store, RunBlockedMetadata, RunEndMetadata, RunPauseMetadata } from "./store-public-types.js";
 import type { RunSnapshot, RunStatus, StoreSnapshot, WorkflowNotice } from "./store-types.js";
 import { accumulatePausedDurationMs, elapsedRunMs } from "./timing.js";
 import { isTopLevelWorkflowRun } from "./run-visibility.js";
@@ -164,14 +164,19 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
       return true;
     },
 
-    recordRunPaused(runId: string, pausedAt?: number): boolean {
+    recordRunPaused(runId: string, pausedAt?: number, metadata?: RunPauseMetadata): boolean {
       const run = context.findRun(runId);
       if (!run) return false;
       if (TERMINAL_STATUSES.has(run.status)) return false;
-      if (run.status === "paused") return false;
-      run.status = "paused";
-      run.pausedAt = pausedAt ?? Date.now();
-      run.resumedAt = undefined;
+      const wasPaused = run.status === "paused";
+      if (!wasPaused) {
+        run.status = "paused";
+        run.pausedAt = pausedAt ?? Date.now();
+        run.resumedAt = undefined;
+      }
+      if (metadata?.resumable !== undefined) run.resumable = metadata.resumable;
+      if (metadata?.exitReason !== undefined) run.exitReason = metadata.exitReason;
+      if (wasPaused && metadata === undefined) return false;
       context.bumpAndNotify();
       return true;
     },
@@ -186,6 +191,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
       run.pausedDurationMs = accumulatePausedDurationMs(run.pausedDurationMs, run.pausedAt, resumedTs);
       run.resumedAt = resumedTs;
       run.pausedAt = undefined;
+      delete run.exitReason;
       context.bumpAndNotify();
       return true;
     },

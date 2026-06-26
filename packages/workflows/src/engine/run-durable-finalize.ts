@@ -37,7 +37,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 
   const durableStatus = toDurableStatus(status);
   if (durableStatus !== undefined) {
-    input.durableBackend.setWorkflowStatus(input.runId, durableStatus);
+    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
   }
   try {
     await input.durableBackend.flush?.();

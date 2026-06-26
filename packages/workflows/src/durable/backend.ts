@@ -94,6 +94,9 @@ export interface DurableWorkflowBackend {
   /** Look up a cached stage output by replay key. */
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined;
 
+  /** Look up resumable stage session metadata by replay key, when available. */
+  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined;
+
   /** List all checkpoints for a workflow (in completion order). */
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[];
 
@@ -101,7 +104,7 @@ export interface DurableWorkflowBackend {
   getWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
 
   /** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number): void;
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
 
   /**
    * List resumable workflows (not completed/cancelled, or explicitly marked
@@ -166,7 +169,8 @@ interface InMemoryWorkflowRecord {
   checkpoints: Map<string, DurableCheckpoint>;
   toolByHash: Map<string, DurableToolCheckpoint>;
   uiByHash: Map<string, DurableUiCheckpoint>;
-  stageByReplayKey: Map<string, DurableStageCheckpoint>;
+  stageOutputByReplayKey: Map<string, DurableStageCheckpoint>;
+  stageSessionByReplayKey: Map<string, DurableStageCheckpoint>;
 }
 
 function checkpointKey(c: DurableCheckpoint): string {
@@ -202,7 +206,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
     };
     if (existing) existing.handle = full;
-    else this.workflows.set(handle.workflowId, { handle: full, checkpoints: new Map(), toolByHash: new Map(), uiByHash: new Map(), stageByReplayKey: new Map() });
+    else this.workflows.set(handle.workflowId, { handle: full, checkpoints: new Map(), toolByHash: new Map(), uiByHash: new Map(), stageOutputByReplayKey: new Map(), stageSessionByReplayKey: new Map() });
   }
 
   recordCheckpoint(checkpoint: DurableCheckpoint): void {
@@ -213,7 +217,15 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     rec.checkpoints.set(key, checkpoint);
     if (checkpoint.kind === "tool") rec.toolByHash.set(checkpoint.argsHash, checkpoint);
     else if (checkpoint.kind === "ui") rec.uiByHash.set(checkpoint.promptHash, checkpoint);
-    else rec.stageByReplayKey.set(checkpoint.replayKey, checkpoint);
+    else {
+      if ("output" in checkpoint) rec.stageOutputByReplayKey.set(checkpoint.replayKey, checkpoint);
+      if (checkpoint.sessionId !== undefined || checkpoint.sessionFile !== undefined) {
+        const existing = rec.stageSessionByReplayKey.get(checkpoint.replayKey);
+        if (existing === undefined || checkpoint.completedAt >= existing.completedAt) {
+          rec.stageSessionByReplayKey.set(checkpoint.replayKey, checkpoint);
+        }
+      }
+    }
     rec.handle = { ...rec.handle, completedCheckpoints: rec.checkpoints.size, updatedAt: checkpoint.completedAt };
   }
 
@@ -226,7 +238,14 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
   }
 
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined {
-    return this.workflows.get(workflowId)?.stageByReplayKey.get(replayKey)?.output;
+    const checkpoint = this.workflows.get(workflowId)?.stageOutputByReplayKey.get(replayKey);
+    return checkpoint !== undefined && "output" in checkpoint ? checkpoint.output : undefined;
+  }
+
+  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+    const checkpoint = this.workflows.get(workflowId)?.stageSessionByReplayKey.get(replayKey);
+    if (checkpoint?.sessionId === undefined && checkpoint?.sessionFile === undefined) return undefined;
+    return { ...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}), ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}) };
   }
 
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
@@ -239,10 +258,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     return this.workflows.get(workflowId)?.handle;
   }
 
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number): void {
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
     const rec = this.workflows.get(workflowId);
     if (!rec) return;
-    rec.handle = { ...rec.handle, status, updatedAt: Date.now(), ...(pendingPrompts !== undefined ? { pendingPrompts } : {}) };
+    rec.handle = { ...rec.handle, status, updatedAt: Date.now(), ...(pendingPrompts !== undefined ? { pendingPrompts } : {}), ...(resumable !== undefined ? { resumable } : {}) };
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -292,9 +311,18 @@ function isRootWorkflow(handle: DurableWorkflowHandle): boolean {
   return handle.rootWorkflowId === undefined || handle.rootWorkflowId === handle.workflowId;
 }
 
+function hasResumeProgress(handle: DurableWorkflowHandle): boolean {
+  return handle.completedCheckpoints > 0 || handle.pendingPrompts > 0;
+}
+
 function isResumableHandle(handle: DurableWorkflowHandle): boolean {
   if (handle.status === "failed" || handle.status === "blocked") return handle.resumable !== false;
-  return handle.status === "running" || handle.status === "paused";
+  // `running`/`paused` are both resumable at the backend level: a `running`
+  // durable handle may belong to a crashed process (no live executor), which
+  // is exactly the cross-session crash-recovery case. Same-session
+  // double-resume is prevented by the command layer, which hides durable
+  // entries that match an active live run.
+  return (handle.status === "running" || handle.status === "paused") && hasResumeProgress(handle);
 }
 
 function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry {

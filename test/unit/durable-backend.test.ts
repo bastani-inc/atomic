@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
+import { finalizeDurableTerminalStatus } from "../../packages/workflows/src/engine/run-durable-finalize.js";
+import type { RunSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { createToolPrimitive, createCheckpointIdGenerator, sleepOrAbort } from "../../packages/workflows/src/durable/tool-primitive.js";
 import type { DurableCheckpoint } from "../../packages/workflows/src/durable/types.js";
 
@@ -79,7 +81,12 @@ describe("InMemoryDurableBackend", () => {
     assert.equal(cps[1]!.checkpointId, "cp-1");
   });
 
-  test("listResumableWorkflows includes running/paused/failed/blocked", () => {
+  test("listResumableWorkflows includes running/paused after checkpoint progress", () => {
+    // A `running` durable handle may belong to a crashed process (cross-session
+    // crash recovery), so it is resumable at the backend level alongside
+    // `paused`. Same-session double-resume is filtered by the command layer.
+    assert.equal(backend.listResumableWorkflows().length, 0);
+    backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     assert.equal(backend.listResumableWorkflows().length, 1);
     backend.setWorkflowStatus(WORKFLOW_ID, "completed");
     assert.equal(backend.listResumableWorkflows().length, 0);
@@ -93,6 +100,29 @@ describe("InMemoryDurableBackend", () => {
     assert.ok(ids.includes("root-failed"));
     assert.ok(!ids.includes("root-terminal"));
     assert.ok(!ids.includes("child-run"));
+  });
+
+  test("non-resumable terminal finalization hides failed durable workflow", async () => {
+    const runSnapshot: RunSnapshot = {
+      id: WORKFLOW_ID,
+      name: "test-workflow",
+      inputs: {},
+      status: "failed",
+      stages: [],
+      startedAt: 1,
+      endedAt: 2,
+      resumable: false,
+    };
+
+    await finalizeDurableTerminalStatus({
+      runId: WORKFLOW_ID,
+      runSnapshot,
+      isRoot: true,
+      durableBackend: backend,
+    });
+
+    assert.equal(backend.getWorkflow(WORKFLOW_ID)?.resumable, false);
+    assert.equal(backend.listResumableWorkflows().length, 0);
   });
 
   test("setWorkflowStatus updates status and updatedAt", () => {
@@ -153,6 +183,7 @@ describe("FileDurableBackend", () => {
   });
 
   test("lists resumable workflows from a new backend instance", () => {
+    backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     backend.setWorkflowStatus(WORKFLOW_ID, "paused");
     const backend2 = new FileDurableBackend(join(tmpDir, "state.json"));
     const resumable = backend2.listResumableWorkflows();

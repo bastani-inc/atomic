@@ -72,6 +72,7 @@ describe("recordStageCheckpoint", () => {
     assert.equal(await recordStageCheckpoint(deps(), stage), false);
   });
 
+
   test("idempotent — recording the same stage twice is a no-op", async () => {
     const d = deps();
     await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1" }));

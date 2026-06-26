@@ -79,6 +79,11 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     return this.mem.getStageOutput(workflowId, replayKey);
   }
 
+  getStageSession(workflowId: string, replayKey: string) {
+    this.ensureLoaded();
+    return this.mem.getStageSession(workflowId, replayKey);
+  }
+
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
     this.ensureLoaded();
     return this.mem.listCheckpoints(workflowId);
@@ -89,9 +94,9 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     return this.mem.getWorkflow(workflowId);
   }
 
-  setWorkflowStatus(workflowId: string, status: Parameters<DurableWorkflowBackend["setWorkflowStatus"]>[1], pendingPrompts?: number): void {
+  setWorkflowStatus(workflowId: string, status: Parameters<DurableWorkflowBackend["setWorkflowStatus"]>[1], pendingPrompts?: number, resumable?: boolean): void {
     this.ensureLoaded();
-    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts);
+    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
     this.persist();
   }
 

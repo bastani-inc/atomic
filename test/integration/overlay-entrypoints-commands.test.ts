@@ -1,4 +1,4 @@
-import { beforeEach, describe, test } from "bun:test";
+import { beforeEach, afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
@@ -35,6 +35,7 @@ describe("/workflow resume — overlay integration", () => {
   beforeEach(() => {
     setDurableBackend(new InMemoryDurableBackend());
   });
+  afterEach(() => setDurableBackend(undefined));
   test("resume with unknown runId prints not-found, does NOT call custom", () => {
     const { pi, commands, customCalls } = buildMockPi();
     factory(pi);
@@ -67,7 +68,7 @@ describe("/workflow resume — overlay integration", () => {
   test("resume with no runId opens durable picker when only durable entries exist", async () => {
     singletonStore.clear();
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-picker-run", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-picker-run", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
@@ -78,7 +79,9 @@ describe("/workflow resume — overlay integration", () => {
       await delay(5);
       assert.equal(customCalls.length, 1);
       assert.equal(customCalls[0]!.options.overlay, false);
-      assert.match(visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " "), /Resumable workflows.*durable-wf/);
+      const rendered = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
+      assert.match(rendered, /Resume Session/);
+      assert.match(rendered, /durable-wf/);
     } finally {
       setDurableBackend(undefined);
     }
@@ -90,7 +93,7 @@ describe("/workflow resume — overlay integration", () => {
     singletonStore.recordRunStart({ id: completedRunId, name: "done", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     singletonStore.recordRunEnd(completedRunId, "completed", {});
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-after-completed", name: "durable-history", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-after-completed", name: "durable-history", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
@@ -150,7 +153,7 @@ describe("/workflow resume — overlay integration", () => {
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     singletonStore.recordRunPaused(liveRunId);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-alongside-live", name: "durable-cross-session", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-alongside-live", name: "durable-cross-session", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
@@ -191,7 +194,7 @@ describe("/workflow resume — overlay integration", () => {
     assert.equal(customCalls[0]!.options.overlay, true);
   });
 
-  test("resume with still-active runId calls overlay.open", async () => {
+  test("resume of an actively-running run is refused (use /workflow connect)", async () => {
     const runId = `test-active-run-${Date.now()}`;
 
     singletonStore.recordRunStart({
@@ -207,24 +210,19 @@ describe("/workflow resume — overlay integration", () => {
     factory(pi);
 
     const wfCmd = commands["workflow"]!;
-    const { ctx } = buildPrintCtx();
+    const { ctx, messages } = buildPrintCtx();
 
     await wfCmd.options.handler(`resume ${runId}`, ctx);
 
-    assert.equal(customCalls.length, 1);
-    assert.equal(customCalls[0]!.options.overlay, true);
+    // Active workflows must not be re-resumed; no overlay opens.
+    assert.equal(customCalls.length, 0);
+    const joined = messages.join("\n");
+    assert.match(joined, /already running/);
+    assert.match(joined, /\/workflow connect/);
   });
 
   test("resume uses real command ctx.ui.custom when top-level pi.ui is absent", async () => {
-    const runId = `test-real-ui-run-${Date.now()}`;
-    singletonStore.recordRunStart({
-      id: runId,
-      name: "real-ui-wf",
-      inputs: {},
-      status: "running",
-      stages: [],
-      startedAt: Date.now(),
-    });
+    singletonStore.clear();
 
     const { pi, commands } = buildMockPi();
     delete pi.ui;
@@ -233,10 +231,13 @@ describe("/workflow resume — overlay integration", () => {
     const wfCmd = commands["workflow"]!;
     const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-    await wfCmd.options.handler(`resume ${runId}`, ctx);
-
-    assert.equal(customCalls.length, 1);
-    assert.equal(customCalls[0]!.options.overlay, true);
+    // No-arg resume opens the shared /resume-style selector through ctx.ui.custom
+    // even when the top-level pi.ui surface is absent.
+    const handlerPromise = wfCmd.options.handler("resume", ctx) as Promise<unknown>;
+    await delay(5);
+    assert.ok(customCalls.length >= 1);
+    customCalls[0]!.component.handleInput?.("\u001b");
+    await handlerPromise;
   });
 
   test("/workflow run does NOT auto-open the overlay (opt-in via F2)", async () => {
@@ -351,13 +352,13 @@ describe("/workflow attach — top-level command", () => {
     assert.equal(customCalls.length, 0);
   });
 
-  test("no-arg resume with live + durable opens combined picker (issue #1498)", async () => {
+  test("no-arg resume with live + durable opens the /resume-style selector (issue #1498)", async () => {
     singletonStore.clear();
     const liveRunId = `live-combined-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     singletonStore.recordRunPaused(liveRunId);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-combined-wf", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-combined-wf", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
@@ -377,7 +378,7 @@ describe("/workflow attach — top-level command", () => {
     }
   });
 
-  test("no-arg resume with only live runs opens normal live picker (no combined)", async () => {
+  test("no-arg resume with only live runs opens the /resume-style selector", async () => {
     singletonStore.clear();
     const liveRunId = `live-only-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "only-live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -387,35 +388,38 @@ describe("/workflow attach — top-level command", () => {
     const { ctx, customCalls: realCustomCalls } = buildPrintCtxWithRealCustom();
     void commands["workflow"]!.options.handler("resume", ctx);
     await delay(5);
-    // Only the live picker (openSessionPicker) should open — no combined.
+    // The resume command should open the shared /resume-style selector directly.
     assert.equal(customCalls.length, 0);
     assert.ok(realCustomCalls.length >= 1);
     assert.equal(realCustomCalls[0]!.options.overlay, false);
+    const text = visibleText(realCustomCalls[0]!.component.render(80));
+    assert.match(text, /Resume Session/);
+    assert.doesNotMatch(text, /Connect to workflow run/);
   });
 
-  // cross-ref: issue #1498 — dismissing combined picker must NOT open a second picker.
-  test("no-arg resume: dismissing combined picker does not open second live picker", async () => {
+  // cross-ref: issue #1498 — dismissing the shared selector must NOT open a second picker.
+  test("no-arg resume: dismissing shared selector does not open second live picker", async () => {
     singletonStore.clear();
     const liveRunId = `live-dismiss-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf-dismiss", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     singletonStore.recordRunPaused(liveRunId);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-dismiss-wf", name: "durable-dismiss", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-dismiss-wf", name: "durable-dismiss", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
       factory(pi);
       const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-      // Fire the handler; it will open the combined picker.
+      // Fire the handler; it will open the shared live+durable selector.
       const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
       await delay(5);
-      // Combined picker is open.
+      // Shared selector is open.
       assert.ok(customCalls.length >= 1);
       const pickerFactory = customCalls[0]!;
       // Simulate dismissal (Escape).
       pickerFactory.component.handleInput?.("\u001b");
       await handlerPromise;
-      // After dismissal: exactly ONE custom call (the combined picker).
+      // After dismissal: exactly ONE custom call (the shared selector).
       // No second live-only picker should have opened.
       assert.equal(customCalls.length, 1);
     } finally {
@@ -431,7 +435,7 @@ describe("/workflow attach — top-level command", () => {
     singletonStore.recordRunStart({ id: liveRunId, name: "live-hydrate-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     singletonStore.recordRunPaused(liveRunId);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-hydrate-wf", name: "durable-hydrate", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "durable-hydrate-wf", name: "durable-hydrate", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();

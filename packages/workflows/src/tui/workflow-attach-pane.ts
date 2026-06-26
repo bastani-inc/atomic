@@ -60,7 +60,7 @@ export class WorkflowAttachPane implements Component {
   private uiStatus: AttachUiStatusSurface | undefined;
   private onClose: () => void;
   private onHide?: () => void;
-  private onKill?: (runId: string) => void;
+  private onQuit?: (runId: string) => void;
   private onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   private getViewportRows?: () => number | undefined;
   private hostRequestRender?: () => void;
@@ -97,7 +97,7 @@ export class WorkflowAttachPane implements Component {
     this.uiStatus = opts.uiStatus;
     this.onClose = opts.onClose;
     this.onHide = opts.onHide;
-    this.onKill = opts.onKill;
+    this.onQuit = opts.onQuit;
     this.onPromptResolve = opts.onPromptResolve;
     this.getViewportRows = opts.getViewportRows;
     this.hostRequestRender = opts.requestRender;
@@ -130,7 +130,7 @@ export class WorkflowAttachPane implements Component {
       graphTheme: this.theme,
       onClose: this.onClose,
       onHide: this.onHide,
-      onKill: this.onKill,
+      onQuit: this.onQuit,
       onPromptResolve: this.onPromptResolve,
       onStageAttach: (runId, stageId) => this._attachToStage(runId, stageId, {
         suppressInitialPromptSubmit: true,

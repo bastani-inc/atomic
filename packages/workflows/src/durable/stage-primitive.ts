@@ -34,6 +34,46 @@ export async function recordStageCheckpoint(deps: DurableStageDeps, stage: Stage
   return true;
 }
 
+export async function recordStageSessionCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
+  const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
+  if (stage.sessionFile === undefined) return false;
+  const current = deps.backend.getStageSession(deps.workflowId, replayKey);
+  if (current?.sessionFile === stage.sessionFile) return false;
+  const checkpoint: DurableStageCheckpoint = {
+    kind: "stage",
+    workflowId: deps.workflowId,
+    checkpointId: stageSessionCheckpointId(replayKey, stage),
+    name: stage.name,
+    replayKey,
+    ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
+    sessionFile: stage.sessionFile,
+    completedAt: Date.now(),
+  };
+  await recordCheckpointDurably(deps.backend, checkpoint);
+  return true;
+}
+
+const MID_SESSION_RESUME_PROMPT = "Continue";
+
+function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: boolean): T {
+  if (!enabled) return stage;
+  // Do NOT spread `stage` (e.g. `{ ...stage, prompt }`). The live StageContext
+  // exposes lazy getters for `sessionId`/`sessionFile`/`messages`/`isStreaming`
+  // that throw until the underlying SDK session has been created, and a spread
+  // would eagerly read them before the first `prompt()` lands. Override
+  // `prompt` in place instead — `prompt` is a normal configurable own property.
+  const originalPrompt = stage.prompt.bind(stage);
+  Object.defineProperty(stage, "prompt", {
+    value: (_text: string, options?: Parameters<StageContext["prompt"]>[1]) =>
+      originalPrompt(MID_SESSION_RESUME_PROMPT, options as never),
+    writable: true,
+    configurable: true,
+    enumerable: true,
+  });
+  return stage;
+}
+
+
 export function createDurableStagePrimitive(input: {
   readonly workflowId: string;
   readonly backend: DurableWorkflowBackend;
@@ -48,7 +88,14 @@ export function createDurableStagePrimitive(input: {
       input.recordCachedStage?.(name, replayKey, cached);
       return createCachedStageContext(name, cached);
     }
-    const live = input.stage(name, options, replayKey);
+    const session = input.backend.getStageSession(input.workflowId, replayKey);
+    const isMidSessionResume = session?.sessionFile !== undefined;
+    const liveOptions: StageOptions | undefined = {
+      ...(options ?? {}),
+      durableReplayKey: replayKey,
+      ...(isMidSessionResume ? { resumeFromSessionFile: session.sessionFile } : {}),
+    };
+    const live = withMidSessionResumePrompt(input.stage(name, liveOptions, replayKey), isMidSessionResume);
     if (options?.schema === undefined) return live;
     return wrapSchemaStageForDurability({
       stage: live,
@@ -74,7 +121,13 @@ export function createDurableTaskPrimitive(input: {
       input.recordCachedTask?.(name, replayKey, cached);
       return cached;
     }
-    const result = await input.task(name, options, stageFailFastScope);
+    const session = input.backend.getStageSession(input.workflowId, replayKey);
+    const taskOptions: WorkflowTaskOptions = {
+      ...options,
+      durableReplayKey: replayKey,
+      ...(session?.sessionFile !== undefined ? { resumeFromSessionFile: session.sessionFile } : {}),
+    };
+    const result = await input.task(name, taskOptions, stageFailFastScope);
     await recordCheckpointDurably(input.backend, {
       kind: "stage",
       workflowId: input.workflowId,
@@ -170,6 +223,13 @@ export function createStageReplayKeyGenerator(_workflowId: string): (stageName: 
 
 export function stableCheckpointId(kind: string, replayKey: string): string {
   return `${kind}:${replayKey}`;
+}
+
+function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot): string {
+  return `${stableCheckpointId("stage-session", replayKey)}:${durableHash({
+    sessionId: stage.sessionId ?? "",
+    sessionFile: stage.sessionFile ?? "",
+  })}`;
 }
 
 export function cachedStageId(runId: string, replayKey: string): string {

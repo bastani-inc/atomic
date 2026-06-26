@@ -56,6 +56,10 @@ export interface RenderStatusListOpts {
   width?: number;
 }
 
+function isQuitRun(run: RunSnapshot): boolean {
+  return run.endedAt === undefined && run.status === "paused" && run.exitReason === "quit";
+}
+
 /**
  * Render a list of run snapshots as the canonical rounded `BACKGROUND`
  * surface: one panel plus one card per run.
@@ -157,6 +161,7 @@ function renderRunEntry(
 
 function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
   if (!theme) return "#000000";
+  if (isQuitRun(run)) return theme.warning;
   switch (run.status) {
     case "completed": return theme.success;
     case "running":   return theme.warning;
@@ -172,6 +177,7 @@ function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
 }
 
 function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
+  if (isQuitRun(run)) return { text: "○ quit", fg: theme?.warning };
   switch (run.status) {
     case "completed": return { text: "✓ completed", fg: theme?.success };
     case "running":   return { text: "● running", fg: theme?.warning };
@@ -205,6 +211,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
       ? fmtDuration(elapsedRunMs(run, now))
       : undefined;
 
+  if (isQuitRun(run)) return "resumable via /workflow resume";
   if (run.status === "running") {
     if (isChain) parts.push(`${done}/${total}`);
     const labels = runningStageLabels(run);
@@ -315,15 +322,17 @@ function effectiveWidth(width?: number): number {
 interface Counts {
   active: number;
   paused: number;
+  quit: number;
   completed: number;
   failed: number;
   pending: number;
 }
 
 function countBuckets(runs: readonly RunSnapshot[]): Counts {
-  const c: Counts = { active: 0, paused: 0, completed: 0, failed: 0, pending: 0 };
+  const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, failed: 0, pending: 0 };
   for (const r of runs) {
-    if (r.endedAt === undefined) {
+    if (isQuitRun(r)) c.quit++;
+    else if (r.endedAt === undefined) {
       if (r.status === "pending") c.pending++;
       else if (r.status === "paused") c.paused++;
       else if (r.status === "running") c.active++;
@@ -343,6 +352,7 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
   // Keep the word label: the pause glyph is less familiar than the other
   // status glyphs, so this intentional asymmetry improves scanability.
   if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused`, fg: theme.warning });
+  if (c.quit > 0) out.push({ text: `${c.quit} quit`, fg: theme.warning });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}`, fg: theme.dim });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}`, fg: theme.error });
   return out;
@@ -355,6 +365,7 @@ function plainBadges(c: Counts): FlatBandBadge[] {
   // Keep the word label: the pause glyph is less familiar than the other
   // status glyphs, so this intentional asymmetry improves scanability.
   if (c.paused > 0) out.push({ text: `❚❚ ${c.paused} paused` });
+  if (c.quit > 0) out.push({ text: `${c.quit} quit` });
   if (c.pending > 0) out.push({ text: `○ ${c.pending}` });
   if (c.failed > 0) out.push({ text: `⊘ ${c.failed}` });
   return out;
@@ -381,6 +392,7 @@ function emptyStateLine(theme?: GraphTheme): string {
 }
 
 function statusIconForRun(run: RunSnapshot): string {
+  if (isQuitRun(run)) return "○";
   switch (run.status) {
     case "completed": return "✓";
     case "skipped": return "⊘";

@@ -130,8 +130,8 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     assert.equal(run!.endedAt, undefined);
   });
 
-  test("`q` on a real custom mount kills and retains the active run (regression gate)", () => {
-    const runId = `q-kill-${Date.now()}`;
+  test("`q` on a real custom mount quits and retains the active run as resumable", () => {
+    const runId = `q-quit-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
       id: runId,
@@ -162,8 +162,10 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
 
     const run = store.runs().find((r) => r.id === runId);
     assert.ok(run, "`q` must retain the run in live history/status for inspection");
-    assert.equal(run.status, "killed");
-    assert.notEqual(run.endedAt, undefined);
+    assert.equal(run.status, "paused");
+    assert.equal(run.exitReason, "quit");
+    assert.equal(run.resumable, true);
+    assert.equal(run.endedAt, undefined);
   });
 });
 

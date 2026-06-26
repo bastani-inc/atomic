@@ -371,6 +371,7 @@ export function buildPrintCtxWithRealCustom(rows?: number): {
   messages: string[];
   customCalls: CapturedCustomCall[];
 } {
+  initTheme("dark");
   const messages: string[] = [];
   const { ui, calls } = buildMockUi({ rows });
   const ctx: PiCommandContext = {

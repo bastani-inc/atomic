@@ -81,7 +81,10 @@ describe("resumeDurableWorkflow", () => {
     tmpDir = mkdtempSync(join(tmpdir(), "durable-resume-"));
   });
 
-  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
+  afterEach(() => {
+    setDurableBackend(undefined);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   function makeDef(): WorkflowDefinition {
     return workflow({
@@ -120,8 +123,8 @@ describe("resumeDurableWorkflow", () => {
   });
 
   test("returns ambiguous when prefix matches multiple", () => {
-    backend.registerWorkflow({ workflowId: "wf-x-1", name: "resumable-pipeline", inputs: { topic: "a" }, createdAt: 1, status: "running" });
-    backend.registerWorkflow({ workflowId: "wf-x-2", name: "resumable-pipeline", inputs: { topic: "b" }, createdAt: 1, status: "running" });
+    backend.registerWorkflow({ workflowId: "wf-x-1", name: "resumable-pipeline", inputs: { topic: "a" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "wf-x-2", name: "resumable-pipeline", inputs: { topic: "b" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-x", deps());
     assert.equal(result.ok, false);
     assert.equal(result.reason, "not_registered");
@@ -139,14 +142,14 @@ describe("resumeDurableWorkflow", () => {
   });
 
   test("returns workflow_not_found when definition is missing", () => {
-    backend.registerWorkflow({ workflowId: "wf-ghost-1", name: "missing-workflow", inputs: {}, createdAt: 1, status: "running" });
+    backend.registerWorkflow({ workflowId: "wf-ghost-1", name: "missing-workflow", inputs: {}, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-ghost-1", deps());
     assert.equal(result.ok, false);
     assert.equal(result.reason, "workflow_not_found");
   });
 
   test("returns invalid_inputs when cached inputs fail schema validation", () => {
-    backend.registerWorkflow({ workflowId: "wf-bad-in-1", name: "resumable-pipeline", inputs: {}, createdAt: 1, status: "running" });
+    backend.registerWorkflow({ workflowId: "wf-bad-in-1", name: "resumable-pipeline", inputs: {}, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-bad-in-1", deps());
     assert.equal(result.ok, false);
     assert.equal(result.reason, "invalid_inputs");
@@ -165,7 +168,7 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
   });
 
-  test("scan-only resume is refused as stale when the backend has no checkpoint state", async () => {
+  test("scan-only resume entries are hidden from prepared selector catalog", async () => {
     const entry = {
       type: "workflow.durable.checkpoint",
       workflowId: "wf-scan-only",
@@ -177,26 +180,91 @@ describe("resumeDurableWorkflow", () => {
       ts: Date.now(),
     };
     writeFileSync(join(tmpDir, "session.jsonl"), JSON.stringify({ type: "custom", customType: "workflow.durable.checkpoint", data: entry }) + "\n");
-    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
-    assert.equal(catalog.length, 1);
+
+    const prepared = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+    assert.equal(prepared.length, 0);
     assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
 
-    const result = resumeDurableWorkflow("wf-scan-only", deps(), catalog);
+    const result = resumeDurableWorkflow("wf-scan-only", deps(), [{
+      workflowId: "wf-scan-only",
+      name: "resumable-pipeline",
+      inputs: { topic: "from-session" },
+      status: "running",
+      completedCheckpoints: 2,
+      pendingPrompts: 0,
+      createdAt: entry.ts,
+      updatedAt: entry.ts,
+    }]);
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.reason, "stale");
       assert.match(result.message, /session-cache metadata/);
     }
-    // Backend was not mutated into a fake resumable handle.
     assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
   });
 
   test("resume succeeds when the backend has durable checkpoint state for the workflow", () => {
-    backend.registerWorkflow({ workflowId: "wf-has-state", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "running" });
+    backend.registerWorkflow({ workflowId: "wf-has-state", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-has-state", deps());
     assert.equal(result.ok, true);
     if (result.ok) assert.equal(result.runId, "wf-has-state");
     assert.equal(backend.getWorkflow("wf-has-state")?.status, "running");
+  });
+
+  test("resume refuses only when a running handle has an active live run in this session", () => {
+    backend.registerWorkflow({ workflowId: "wf-active", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "running", completedCheckpoints: 1 });
+    // No live run → crash recovery: resume is allowed even though the durable
+    // handle says `running`.
+    let result = resumeDurableWorkflow("wf-active", deps());
+    assert.equal(result.ok, true);
+
+    // With an active live run in this session, resume is refused.
+    backend.setWorkflowStatus("wf-active", "running");
+    store.recordRunStart({
+      id: "wf-active",
+      name: "resumable-pipeline",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+    });
+    result = resumeDurableWorkflow("wf-active", deps());
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "not_resumable");
+      assert.match(result.message, /already running/);
+      assert.match(result.message, /\/workflow connect/);
+      assert.match(result.message, /\/workflow kill/);
+    }
+    store.removeRun("wf-active");
+  });
+
+  test("running and paused workflows are both resumable at the catalog level", () => {
+    backend.registerWorkflow({ workflowId: "wf-running", name: "resumable-pipeline", inputs: {}, createdAt: 1, status: "running", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "wf-paused", name: "resumable-pipeline", inputs: {}, createdAt: 1, status: "paused", completedCheckpoints: 1 });
+    const ids = backend.listResumableWorkflows().map((e) => e.workflowId);
+    assert.ok(ids.includes("wf-running"), "running is resumable (crash recovery)");
+    assert.ok(ids.includes("wf-paused"));
+  });
+
+  test("resume removes stale quit store shadow before reusing workflow id", () => {
+    backend.registerWorkflow({ workflowId: "wf-shadow", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
+    store.recordRunStart({
+      id: "wf-shadow",
+      name: "stale-shadow",
+      inputs: {},
+      status: "paused",
+      stages: [],
+      startedAt: 1,
+      exitReason: "quit",
+      resumable: true,
+    });
+
+    const result = resumeDurableWorkflow("wf-shadow", deps());
+    assert.equal(result.ok, true);
+    const matching = store.runs().filter((run) => run.id === "wf-shadow");
+    assert.equal(matching.length, 1);
+    assert.equal(matching[0]?.name, "resumable-pipeline");
   });
 
   test("successful resume result includes runId for overlay connection (issue #1498)", () => {
@@ -221,6 +289,7 @@ describe("resumeDurableWorkflow", () => {
       getToolOutput = this.mem.getToolOutput.bind(this.mem);
       getUiResponse = this.mem.getUiResponse.bind(this.mem);
       getStageOutput = this.mem.getStageOutput.bind(this.mem);
+      getStageSession = this.mem.getStageSession.bind(this.mem);
       listCheckpoints = this.mem.listCheckpoints.bind(this.mem);
       getWorkflow = this.mem.getWorkflow.bind(this.mem);
       setWorkflowStatus = this.mem.setWorkflowStatus.bind(this.mem);
@@ -229,7 +298,7 @@ describe("resumeDurableWorkflow", () => {
       reset = this.mem.reset.bind(this.mem);
       async hydrateResumableWorkflows(): Promise<void> {
         this.hydrated = true;
-        this.mem.registerWorkflow({ workflowId: "wf-hydrated", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "running" });
+        this.mem.registerWorkflow({ workflowId: "wf-hydrated", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
       }
     }
     const hydrating = new HydratingBackend();
@@ -249,7 +318,10 @@ describe("terminal cache suppression (issue #1498)", () => {
     backend = new InMemoryDurableBackend();
     setDurableBackend(backend);
   });
-  afterEach(() => rmSync(tmpDir, { recursive: true, force: true }));
+  afterEach(() => {
+    setDurableBackend(undefined);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   function writeSessionCacheEntry(workflowId: string, name: string, status: string): void {
     const entry = {

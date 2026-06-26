@@ -4,9 +4,12 @@
  * cross-ref: spec §8.1 Phase D — persist-kill-controls, resume-helper
  */
 
-import { describe, test } from "bun:test";
+import { describe, test, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { killRun, killAllRuns, resumeRun, inspectRun } from "../../packages/workflows/src/runs/background/status.js";
+import { quitRun } from "../../packages/workflows/src/runs/background/quit.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 import type { WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
@@ -41,6 +44,26 @@ function makePersistence(): { port: WorkflowPersistencePort; calls: Array<{ type
 // ---------------------------------------------------------------------------
 // killRun — no persistence port
 // ---------------------------------------------------------------------------
+
+describe("quitRun — durable inactive marking", () => {
+  afterEach(() => setDurableBackend(undefined));
+  test("quit flips the durable handle from running to paused", () => {
+    const backend = new InMemoryDurableBackend();
+    setDurableBackend(backend);
+    backend.registerWorkflow({ workflowId: "wf-quit", name: "stress", inputs: {}, createdAt: 1, status: "running" });
+    backend.recordCheckpoint({ kind: "tool", workflowId: "wf-quit", checkpointId: "tool:1", name: "boot", argsHash: "h", output: "ok", completedAt: 2 });
+    assert.equal(backend.getWorkflow("wf-quit")?.status, "running");
+
+    const store = createStore();
+    store.recordRunStart(makeRun({ id: "wf-quit", status: "running" }));
+    quitRun("wf-quit", { store });
+
+    // Quit marks the durable handle inactive so it is unambiguously resumable
+    // in another session (rather than relying on crash-recovery of `running`).
+    assert.equal(backend.getWorkflow("wf-quit")?.status, "paused");
+    assert.equal(backend.listResumableWorkflows().length, 1);
+  });
+});
 
 describe("killRun — no persistence", () => {
   test("returns ok:false not_found for unknown runId", () => {

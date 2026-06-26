@@ -46,7 +46,10 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly message?: string;
   readonly promptHash?: string;
   readonly replayKey?: string;
-  readonly output: WorkflowSerializableValue;
+  readonly output?: WorkflowSerializableValue;
+  readonly hasOutput?: boolean;
+  readonly sessionId?: string;
+  readonly sessionFile?: string;
   readonly completedAt: number;
 }
 
@@ -54,12 +57,14 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
  * Encode a durable checkpoint into a DBOS step-output envelope.
  */
 export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope {
+  const output = checkpointOutputValue(cp);
   const base: DbosCheckpointEnvelope = {
     __dbos_checkpoint__: ENVELOPE_MARKER,
     v: DBOS_ENVELOPE_VERSION,
     kind: cp.kind,
     checkpointId: cp.checkpointId,
-    output: checkpointOutputValue(cp),
+    ...(output !== undefined ? { output } : {}),
+    hasOutput: output !== undefined,
     completedAt: cp.completedAt,
   };
   if (cp.kind === "tool") {
@@ -71,7 +76,13 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
     return { ...base, promptKind: u.promptKind, message: u.message, promptHash: u.promptHash };
   }
   const s = cp as DurableStageCheckpoint;
-  return { ...base, name: s.name, replayKey: s.replayKey };
+  return {
+    ...base,
+    name: s.name,
+    replayKey: s.replayKey,
+    ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
+    ...(s.sessionFile !== undefined ? { sessionFile: s.sessionFile } : {}),
+  };
 }
 
 /**
@@ -98,7 +109,6 @@ export function decodeToCheckpoint(
   value: WorkflowSerializableValue,
 ): DurableCheckpoint | undefined {
   if (isCheckpointEnvelope(value)) return decodeEnvelope(workflowId, value);
-  // Legacy/simple payload: treat as a stage checkpoint keyed by stepName.
   if (value === undefined) return undefined;
   return decodeLegacy(workflowId, stepName, value);
 }
@@ -106,7 +116,7 @@ export function decodeToCheckpoint(
 function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): DurableCheckpoint | undefined {
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
-    if (env.argsHash === undefined) return undefined;
+    if (env.argsHash === undefined || env.output === undefined) return undefined;
     return {
       kind: "tool",
       ...common,
@@ -116,7 +126,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     } as DurableToolCheckpoint;
   }
   if (env.kind === "ui") {
-    if (env.promptHash === undefined || env.promptKind === undefined) return undefined;
+    if (env.promptHash === undefined || env.promptKind === undefined || env.output === undefined) return undefined;
     return {
       kind: "ui",
       ...common,
@@ -126,13 +136,14 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
       response: env.output,
     } as DurableUiCheckpoint;
   }
-  // stage
   return {
     kind: "stage",
     ...common,
     name: env.name ?? "stage",
     replayKey: env.replayKey ?? env.checkpointId,
-    output: env.output,
+    ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
+    ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
+    ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
   } as DurableStageCheckpoint;
 }
 
@@ -152,8 +163,9 @@ function decodeLegacy(
   };
 }
 
-function checkpointOutputValue(cp: DurableCheckpoint): WorkflowSerializableValue {
+function checkpointOutputValue(cp: DurableCheckpoint): WorkflowSerializableValue | undefined {
   if (cp.kind === "tool") return (cp as DurableToolCheckpoint).output;
   if (cp.kind === "ui") return (cp as DurableUiCheckpoint).response;
-  return (cp as DurableStageCheckpoint).output;
+  const stage = cp as DurableStageCheckpoint;
+  return "output" in stage ? stage.output : undefined;
 }

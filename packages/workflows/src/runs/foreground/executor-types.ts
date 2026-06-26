@@ -95,6 +95,7 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   onRunStart?: (snapshot: RunSnapshot) => void;
   onStageStart?: (runId: string, snapshot: StageSnapshot) => void;
   onStageEnd?: (runId: string, snapshot: StageSnapshot) => unknown;
+  onStageSession?: (runId: string, snapshot: StageSnapshot) => unknown;
   onRunEnd?: (runId: string, status: RunStatus, result?: WorkflowOutputValues, error?: string, exitReason?: string) => void;
 }
 

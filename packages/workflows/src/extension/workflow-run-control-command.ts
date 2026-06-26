@@ -5,10 +5,10 @@ import { store } from "../shared/store.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
 import { renderSessionList } from "../tui/session-list.js";
 import { openKillConfirm, openSessionPicker } from "../tui/session-overlays.js";
+import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { emitChatSurface } from "../tui/chat-surface-message.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
-import type { PiCustomComponent, PiCustomOverlayFactoryTui } from "./wiring.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
@@ -40,98 +40,18 @@ function resolveAttachStageId(runId: string, stageTarget: string | undefined): s
   return byName?.id ?? false;
 }
 
-/**
- * A unified picker item: either a live run (openable directly) or a durable
- * workflow (requires cross-session resume). The selector shows both together
- * so the user can choose from all resumable workflows in one view.
- */
-interface CombinedPickerItem {
-  readonly kind: "live" | "durable";
-  readonly id: string;
-  readonly name: string;
-  readonly status: string;
-  readonly detail: string;
+function filterSelectorDurableEntries(
+  runtime: ExtensionRuntime,
+  entries: readonly ResumableWorkflowEntry[],
+): readonly ResumableWorkflowEntry[] {
+  const registry = runtime.registry as { has(name: string): boolean } | undefined;
+  if (registry === undefined) return entries;
+  return entries.filter((entry) => {
+    const requiresCurrentDefinition = entry.status === "running" || entry.status === "failed" || entry.status === "blocked";
+    return !requiresCurrentDefinition || registry.has(entry.name);
+  });
 }
 
-/**
- * Open a combined selector showing live runs and durable workflows together.
- * Returns the selected item, or undefined if dismissed. When a durable item
- * is chosen, the caller resumes it via the durable resume path.
- * cross-ref: issue #1498 — durable workflows must be selectable alongside live.
- */
-async function openCombinedResumePicker(
-  ui: PiCommandContext["ui"],
-  liveRuns: readonly { id: string; name: string; status: string }[],
-  durableEntries: readonly ResumableWorkflowEntry[],
-): Promise<CombinedPickerItem | undefined> {
-  const custom = ui?.custom;
-  if (typeof custom !== "function") return undefined;
-  const liveItems: readonly CombinedPickerItem[] = liveRuns.map((r) => ({
-    kind: "live" as const,
-    id: r.id,
-    name: r.name,
-    status: r.status,
-    detail: "live",
-  }));
-  const liveIds = new Set(liveRuns.map((r) => r.id));
-  const durableItems: readonly CombinedPickerItem[] = durableEntries
-    .filter((e) => !liveIds.has(e.workflowId))
-    .map((e) => ({
-      kind: "durable" as const,
-      id: e.workflowId,
-      name: e.name,
-      status: e.status,
-      detail: `${e.completedCheckpoints}cp`,
-    }));
-  const items = [...liveItems, ...durableItems];
-  if (items.length === 0) return undefined;
-  let selected = 0;
-  let settled = false;
-  return new Promise((resolve) => {
-    const settle = (value: CombinedPickerItem | undefined): void => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
-      render: (width: number) => ["Resumable workflows (live + cross-session)", "", ...items.map((item, i) => `${i === selected ? "\u203a" : " "} ${item.kind === "durable" ? "\u25c7" : "\u25cf"} ${item.id.slice(0, 12)}  ${item.name}  ${item.status}  ${item.detail}`)].map((line) => line.slice(0, width)),
-      handleInput: (data: string) => {
-        if (data === "\u001b" || data === "\u0003") { settle(undefined); done(undefined); return; }
-        if (data === "\r" || data === "\n") { settle(items[selected]); done(undefined); return; }
-        if (data === "\u001b[A") selected = Math.max(0, selected - 1);
-        if (data === "\u001b[B") selected = Math.min(items.length - 1, selected + 1);
-        tui.requestRender?.();
-      },
-      dispose: () => settle(undefined),
-    });
-    void custom(factory, { overlay: false });
-  });
-}
-async function openDurableWorkflowPicker(ui: PiCommandContext["ui"], entries: readonly ResumableWorkflowEntry[]): Promise<string | undefined> {
-  const custom = ui?.custom;
-  if (typeof custom !== "function") return undefined;
-  let selected = 0;
-  let settled = false;
-  return new Promise((resolve) => {
-    const settle = (value: string | undefined): void => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    const factory = (tui: PiCustomOverlayFactoryTui, _theme: unknown, _keys: unknown, done: (r: undefined) => void): PiCustomComponent => ({
-      render: (width: number) => ["Resumable workflows", "", ...entries.map((e, i) => `${i === selected ? "›" : " "} ${e.workflowId.slice(0, 12)}  ${e.name}  ${e.status}  checkpoints:${e.completedCheckpoints}`)].map((line) => line.slice(0, width)),
-      handleInput: (data: string) => {
-        if (data === "\u001b" || data === "\u0003") { settle(undefined); done(undefined); return; }
-        if (data === "\r" || data === "\n") { settle(entries[selected]?.workflowId); done(undefined); return; }
-        if (data === "\u001b[A") selected = Math.max(0, selected - 1);
-        if (data === "\u001b[B") selected = Math.min(entries.length - 1, selected + 1);
-        tui.requestRender?.();
-      },
-      dispose: () => settle(undefined),
-    });
-    void custom(factory, { overlay: false });
-  });
-}
 
 async function handleDurableResume(
   target: string | undefined,
@@ -145,7 +65,8 @@ async function handleDurableResume(
   const policy = workflowPolicyFromContext(ctx);
   // Hydrate the durable backend from DBOS (if configured) before listing so a
   // fresh process discovers workflows persisted by a prior session.
-  const durable = await runtime.prepareDurableResumable(target);
+  const prepared = await runtime.prepareDurableResumable(target);
+  const durable = filterSelectorDurableEntries(runtime, prepared);
   if (target !== undefined) {
     // Attempt resume by id/prefix against the durable catalog.
     const result = runtime.resumeDurableWorkflow(target, { policy });
@@ -172,18 +93,19 @@ async function handleDurableResume(
     print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
     return true;
   }
-  const picked = await openDurableWorkflowPicker(ctx.ui, durable);
-  if (picked !== undefined) {
-    const result = runtime.resumeDurableWorkflow(picked, { policy });
+  const picked = await openWorkflowResumeSelector(ctx.ui, [], durable);
+  if (picked.kind === "durable") {
+    const result = runtime.resumeDurableWorkflow(picked.workflowId, { policy });
     if (result.ok) {
       print(result.message);
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
     } else {
       fail(result.message);
     }
-    return true;
   }
-  print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+  if (picked.kind !== "durable") {
+    print(`${formatResumableWorkflowList(durable)}\n\nResume with: /workflow resume <id>`);
+  }
   return true;
 }
 
@@ -265,7 +187,7 @@ export async function handleRunControlCommand(
     }
     if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
     if (policy.allowInputPicker) deps.overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-    print(`Attached to ${resolved.runId.slice(0, 8)}. h/ctrl+d hide · q kill · esc close.`);
+    print(`Attached to ${resolved.runId.slice(0, 8)}. h/ctrl+d hide · q quit (resumable via /workflow resume) · esc close.`);
     return true;
   }
 
@@ -365,55 +287,57 @@ export async function handleRunControlCommand(
         return true;
       }
       if (action === "resume") {
+        // Only inactive workflows belong in the resume selector. Live runs:
+        // show paused (quit) or recoverably-failed runs; actively-running live
+        // runs are hidden (resuming one that is executing would double-dispatch).
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
-          run.endedAt === undefined || run.status === "paused" || (run.status === "failed" && run.resumable !== false),
+          run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
-        // Even when live runs exist, durable workflows must be selectable.
-        // Show a combined picker so the user can choose from both live and
-        // cross-session workflows in one view.
-        // cross-ref: issue #1498 — /workflow resume selector with live + durable.
-        if (liveRuns.length === 0) return await handleDurableResume(undefined, ctx, reporter, deps);
+        // Durable entries: a `running` durable handle may be a crashed process
+        // (cross-session crash recovery), so it stays selectable UNLESS it
+        // matches an actively-executing live run in this session.
+        const activeLiveIds = new Set(
+          topLevelWorkflowRuns(store.runs())
+            .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
+            .map((run) => run.id),
+        );
         const runtime = deps.runtimeForContext(ctx);
-        // Use async prepareDurableResumable so DBOS hydration runs before listing,
-        // ensuring cross-session durable entries discovered from Postgres are
-        // included in the combined selector rather than only the synchronous
-        // in-memory/backend listing.
-        // cross-ref: issue #1498 — mixed resume must use hydrated durable listing.
         let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        try { durableEntries = await runtime.prepareDurableResumable(undefined); } catch { /* best-effort */ }
-        const durableOnly = durableEntries.filter((e) => !liveRuns.some((r) => r.id === e.workflowId));
-        if (durableOnly.length > 0) {
-          // Combined selector: live + durable together.
-          const picked = await openCombinedResumePicker(ctx.ui, liveRuns, durableEntries);
-          if (picked !== undefined) {
-            if (picked.kind === "durable") {
-              // Resume the durable workflow and open the overlay.
-              return await handleDurableResume(picked.id, ctx, reporter, deps);
-            }
-            // Live run selected — resume failed recoverable runs through the
-            // continuation path; otherwise open the retained/live snapshot.
-            const resolved = resolveRunIdPrefix(picked.id);
-            if (resolved.kind === "exact") {
-              const run = store.runs().find((r) => r.id === resolved.runId);
-              const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
-              const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
-              if (isResumableContinuation) {
-                const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
-                continuation.ok ? print(continuation.message) : fail(continuation.message);
-              } else {
-                const result = resumeRun(resolved.runId, {});
-                if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.id}`);
-              }
-            }
+        try {
+          const prepared = await runtime.prepareDurableResumable(undefined);
+          durableEntries = filterSelectorDurableEntries(runtime, prepared)
+            .filter((entry) => !activeLiveIds.has(entry.workflowId));
+        } catch (error) {
+          if (liveRuns.length === 0) {
+            const message = error instanceof Error ? error.message : String(error);
+            fail(`Failed to list resumable workflows: ${message}`);
             return true;
           }
-          // Dismissed — print summary for reference and return without opening
-          // a second live-only picker.
-          // cross-ref: issue #1498 — dismissing combined picker must not open a second picker.
-          reporter.info(`${formatResumableWorkflowList(durableOnly)}\n\nResume durable workflow with: /workflow resume <id>`);
-          return true;
         }
+        const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries);
+        if (picked.kind === "durable") return await handleDurableResume(picked.workflowId, ctx, reporter, deps);
+        if (picked.kind === "live") {
+          const resolved = resolveRunIdPrefix(picked.runId);
+          if (resolved.kind !== "exact") {
+            fail(`Run not found: ${picked.runId}`);
+            return true;
+          }
+          const run = store.runs().find((r) => r.id === resolved.runId);
+          const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+          const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+          if (isResumableContinuation) {
+            const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
+            continuation.ok ? print(continuation.message) : fail(continuation.message);
+          } else {
+            const result = resumeRun(resolved.runId, {});
+            if (result.ok && result.mode === "snapshot" && run?.exitReason === "quit") {
+              return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+            }
+            if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+            result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
+          }
+        }
+        return true;
       }
       const picked = await openSessionPicker(ui, store, theme, action === "attach" ? "connect" : action);
       if (action === "attach" && picked.kind === "kill") return handleRunControlCommand("kill", [picked.runId, "-y"], ctx, reporter, deps);
@@ -467,6 +391,11 @@ export async function handleRunControlCommand(
     const run = store.runs().find((r) => r.id === stageRunId);
     const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
+    const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
+    if (isActivelyRunning && action === "resume") {
+      fail(`Workflow ${stageRunId.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${stageRunId.slice(0, 8)}\` instead of resuming.`);
+      return true;
+    }
     if (isResumableContinuation) {
       const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
       continuation.ok ? print(continuation.message) : fail(continuation.message);
@@ -476,6 +405,9 @@ export async function handleRunControlCommand(
     if (!result.ok) {
       fail(`Run not found: ${stageRunId.slice(0, 8)}`);
       return true;
+    }
+    if (result.mode === "snapshot" && run?.exitReason === "quit" && action === "resume") {
+      return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
     if (!isPaused) {
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));

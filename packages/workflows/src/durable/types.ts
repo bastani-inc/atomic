@@ -98,7 +98,7 @@ export interface DurableUiCheckpoint {
   readonly completedAt: number;
 }
 
-/** A `ctx.stage(...)` / `ctx.task(...)` completion cached durably. */
+/** A `ctx.stage(...)` / `ctx.task(...)` durable checkpoint or resumable session marker. */
 export interface DurableStageCheckpoint {
   readonly kind: "stage";
   readonly workflowId: string;
@@ -107,8 +107,11 @@ export interface DurableStageCheckpoint {
   readonly name: string;
   /** Stable replay key (matches existing continuation replay semantics). */
   readonly replayKey: string;
-  /** Stage output text or structured result (JSON-serializable). */
-  readonly output: WorkflowSerializableValue;
+  /** Stage output text or structured result when the stage completed. */
+  readonly output?: WorkflowSerializableValue;
+  /** Resumable Atomic/Pi session metadata for in-progress LM stages. */
+  readonly sessionId?: string;
+  readonly sessionFile?: string;
   readonly completedAt: number;
 }
 

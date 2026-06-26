@@ -86,6 +86,10 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return this.inner.getStageOutput(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 
+  getStageSession(_workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+    return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
+  }
+
   listCheckpoints(_workflowId: string): readonly DurableCheckpoint[] {
     const all = this.inner.listCheckpoints(this.scope.rootWorkflowId);
     const prefix = `${this.scope.scopePrefix}:`;
@@ -102,7 +106,7 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return undefined;
   }
 
-  setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number): void {
+  setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number, _resumable?: boolean): void {
     // No-op: child status is reflected via the root workflow boundary.
   }
 

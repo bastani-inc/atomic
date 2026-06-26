@@ -79,9 +79,8 @@ function seedMockWorkflow(sdk: ReturnType<typeof createMockSdk>, info: Partial<D
 }
 
 function seedMockCheckpoint(sdk: ReturnType<typeof createMockSdk>, workflowId: string, cp: DurableCheckpoint): void {
-  const stepName = cp.kind === "stage" ? (cp as DurableStageCheckpoint).replayKey : cp.checkpointId;
   const envelope = encodeCheckpoint(cp);
-  sdk.state.steps.set(`${workflowId}:checkpoint:${stepName}`, envelope);
+  sdk.state.steps.set(`${workflowId}:checkpoint:${cp.checkpointId}`, envelope);
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +298,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
   test("hydrateResumableWorkflows uses Atomic metadata status instead of DBOS helper completion", async () => {
     const session1 = new DbosDurableBackend(sdk);
     session1.registerWorkflow({ workflowId: "wf-meta", name: "meta", inputs: { x: 1 }, createdAt: 10, status: "running" });
+    session1.recordCheckpoint({ kind: "tool", workflowId: "wf-meta", checkpointId: "tool:meta", name: "meta-step", argsHash: "h-meta", output: "ok", completedAt: 11 });
     session1.setWorkflowStatus("wf-meta", "paused");
     await session1.flush();
     const dbosInfo = sdk.state.workflows.get("wf-meta")!;
@@ -325,12 +325,15 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 
     const fresh = new DbosDurableBackend(sdk);
     await fresh.hydrateResumableWorkflows();
-    const resumable = fresh.listResumableWorkflows();
-    assert.equal(resumable.length, 2);
+    // Both workflows and their checkpoints are hydrated. (They hydrate as
+    // `running` from DBOS PENDING, so they are not in the resumable list until
+    // a quit/paused metadata envelope exists; checkpoint discovery is the
+    // property under test here.)
     assert.equal(fresh.getToolOutput("wf-a", hash), 1);
     assert.equal(fresh.getToolOutput("wf-b", hash), 2);
-    // Workflow inputs should be hydrated too.
     assert.deepEqual(fresh.getWorkflow("wf-a")!.inputs, { x: 1 });
+    assert.equal(fresh.listCheckpoints("wf-a").length, 1);
+    assert.equal(fresh.listCheckpoints("wf-b").length, 1);
   });
 
   test("hydration is idempotent (double-hydrate does not duplicate)", async () => {

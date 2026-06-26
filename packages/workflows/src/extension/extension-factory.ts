@@ -1,5 +1,4 @@
-import { killRun } from "../runs/background/status.js";
-import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
+import { quitRun } from "../runs/background/quit.js";
 import { store } from "../shared/store.js";
 import { subscribeIntercomControl } from "../intercom/result-intercom.js";
 import { buildIntercomCallbacks } from "../intercom/intercom-routing.js";
@@ -7,9 +6,8 @@ import { installStoreWidget, installToolExecutionHooks } from "../tui/store-widg
 import { buildGraphOverlayAdapter } from "../tui/overlay-adapter.js";
 import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import { registerInlineFormRenderer } from "../tui/inline-form-overlay.js";
-import { registerChatSurfaceRenderer, emitChatSurface } from "../tui/chat-surface-message.js";
+import { registerChatSurfaceRenderer } from "../tui/chat-surface-message.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
-import type { WorkflowPersistencePort } from "../shared/types.js";
 import { renderRunBanner, renderRunSummary, type RunEndPayload, type RunStartPayload } from "./renderers.js";
 import { buildRuntimeAdapters } from "./wiring.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
@@ -36,15 +34,11 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 
 function buildWorkflowOverlay(
   pi: ExtensionAPI,
-  getPersistence: () => WorkflowPersistencePort | undefined,
 ): GraphOverlayPort {
   return buildGraphOverlayAdapter(pi, store, {
-    onKillRun: (runId) => {
-      const run = store.runs().find((r) => r.id === runId);
-      const result = killRun(runId, { cancellation: cancellationRegistry, persistence: getPersistence() });
-      if (run && result.ok) {
-        emitChatSurface(pi, { kind: "killed", run, previousStatus: result.previousStatus });
-      }
+    onQuitRun: (runId) => {
+      quitRun(runId, { store });
+      pi.ui?.notify?.(`Workflow quit; resume with /workflow resume.`, "info");
     },
   });
 }
@@ -83,7 +77,7 @@ function registerIntercomControl(
 function factory(pi: ExtensionAPI): void {
   const adapters = buildRuntimeAdapters(pi);
   const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
-  const overlay = buildWorkflowOverlay(pi, () => runtimeState.persistenceRef.current);
+  const overlay = buildWorkflowOverlay(pi);
   const workflowCommands = new Map<string, WorkflowCommandHandler>();
   const storeWidgetRef: { current: (() => void) | null } = { current: null };
   const intercomControlRef: { current: (() => void) | null } = { current: null };

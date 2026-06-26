@@ -41,7 +41,7 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
 
   test("reads durable checkpoint entries from session JSONL files", () => {
     const sessionFile = join(tmpDir, "session-001.jsonl");
-    const entry = makeEntry("wf-aaa", "research-workflow", "running", Date.now());
+    const entry = makeEntry("wf-aaa", "research-workflow", "paused", Date.now());
     writeFileSync(sessionFile, JSON.stringify({ type: "workflow.run.start", runId: "wf-aaa" }) + "\n");
     writeFileSync(sessionFile, JSON.stringify(entry) + "\n", { flag: "a" });
 
@@ -49,7 +49,7 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
     assert.equal(result.length, 1);
     assert.equal(result[0]!.workflowId, "wf-aaa");
     assert.equal(result[0]!.name, "research-workflow");
-    assert.equal(result[0]!.status, "running");
+    assert.equal(result[0]!.status, "paused");
     assert.equal(result[0]!.sessionFile, sessionFile);
   });
 
@@ -65,12 +65,13 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
     assert.equal(result[0]!.status, "paused");
   });
 
-  test("excludes completed and cancelled workflows", () => {
+  test("excludes completed and cancelled workflows, includes running (crash recovery) and paused", () => {
     const sessionFile = join(tmpDir, "session-002.jsonl");
     const lines = [
       JSON.stringify(makeEntry("wf-completed", "done", "completed", Date.now())),
       JSON.stringify(makeEntry("wf-cancelled", "aborted", "cancelled", Date.now())),
       JSON.stringify(makeEntry("wf-running", "active", "running", Date.now())),
+      JSON.stringify(makeEntry("wf-paused", "inactive", "paused", Date.now())),
       JSON.stringify(makeEntry("wf-failed", "errored", "failed", Date.now())),
     ];
     writeFileSync(sessionFile, lines.join("\n") + "\n");
@@ -79,7 +80,8 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
     const ids = result.map((e) => e.workflowId);
     assert.ok(!ids.includes("wf-completed"));
     assert.ok(!ids.includes("wf-cancelled"));
-    assert.ok(ids.includes("wf-running"));
+    assert.ok(ids.includes("wf-running"), "running durable workflows are resumable (crash recovery)");
+    assert.ok(ids.includes("wf-paused"));
     assert.ok(ids.includes("wf-failed"));
   });
 
@@ -87,8 +89,8 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
     const sessionFile = join(tmpDir, "session-003.jsonl");
     const t0 = Date.now();
     const lines = [
-      JSON.stringify(makeEntry("wf-old", "old-workflow", "running", t0 - 5000)),
-      JSON.stringify(makeEntry("wf-new", "new-workflow", "running", t0)),
+      JSON.stringify(makeEntry("wf-old", "old-workflow", "paused", t0 - 5000)),
+      JSON.stringify(makeEntry("wf-new", "new-workflow", "paused", t0)),
     ];
     writeFileSync(sessionFile, lines.join("\n") + "\n");
 
@@ -107,7 +109,7 @@ describe("scanResumableWorkflows (session JSONL scanning)", () => {
 
   test("handles malformed JSONL lines gracefully", () => {
     const sessionFile = join(tmpDir, "session-malformed.jsonl");
-    const entry = makeEntry("wf-good", "good", "running", Date.now());
+    const entry = makeEntry("wf-good", "good", "paused", Date.now());
     writeFileSync(sessionFile, "not-json\n" + JSON.stringify(entry) + "\n{bad json\n");
 
     const result = scanResumableWorkflows(tmpDir);
@@ -141,8 +143,8 @@ describe("persistDurableCacheEntry", () => {
 describe("listResumableFromBackend", () => {
   test("lists resumable workflows from an in-memory backend", () => {
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "wf-1", name: "alpha", inputs: {}, createdAt: Date.now(), status: "running" });
-    backend.registerWorkflow({ workflowId: "wf-2", name: "beta", inputs: {}, createdAt: Date.now(), status: "paused" });
+    backend.registerWorkflow({ workflowId: "wf-1", name: "alpha", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "wf-2", name: "beta", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
     backend.registerWorkflow({ workflowId: "wf-3", name: "gamma", inputs: {}, createdAt: Date.now(), status: "completed" });
 
     const result = listResumableFromBackend(backend);
@@ -157,7 +159,7 @@ describe("listResumableFromBackend", () => {
 describe("formatResumableWorkflowList", () => {
   test("formats entries for selector display", () => {
     const entries = [
-      { workflowId: "abcdefgh1234", name: "research", status: "running" as const, completedCheckpoints: 5, pendingPrompts: 0, createdAt: Date.now(), updatedAt: Date.now() },
+      { workflowId: "abcdefgh1234", name: "research", status: "paused" as const, completedCheckpoints: 5, pendingPrompts: 0, createdAt: Date.now(), updatedAt: Date.now() },
     ];
     const text = formatResumableWorkflowList(entries);
     assert.ok(text.includes("abcdefgh"));

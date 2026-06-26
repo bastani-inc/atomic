@@ -236,18 +236,18 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   private async persistCheckpointRecord(checkpoint: DurableCheckpoint): Promise<void> {
-    const stepName = checkpoint.kind === "stage" ? checkpoint.replayKey : checkpoint.checkpointId;
-    await this.sdk.recordStepOutput(checkpoint.workflowId, stepName, encodeCheckpoint(checkpoint));
+    await this.sdk.recordStepOutput(checkpoint.workflowId, checkpoint.checkpointId, encodeCheckpoint(checkpoint));
   }
 
   getToolOutput(workflowId: string, argsHash: string): WorkflowSerializableValue | undefined { return this.mem.getToolOutput(workflowId, argsHash); }
   getUiResponse(workflowId: string, promptHash: string): WorkflowSerializableValue | undefined { return this.mem.getUiResponse(workflowId, promptHash); }
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined { return this.mem.getStageOutput(workflowId, replayKey); }
+  getStageSession(workflowId: string, replayKey: string) { return this.mem.getStageSession(workflowId, replayKey); }
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] { return this.mem.listCheckpoints(workflowId); }
   getWorkflow(workflowId: string): DurableWorkflowHandle | undefined { return this.mem.getWorkflow(workflowId); }
 
-  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number): void {
-    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts);
+  setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
+    this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
     this.enqueueWrite(async () => {
       if (status === "cancelled") await this.sdk.cancelWorkflow(workflowId);
       else if (status === "running") await this.sdk.resumeWorkflow(workflowId);

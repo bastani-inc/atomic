@@ -10,12 +10,11 @@ export interface GraphViewOpts {
   graphTheme: GraphTheme;
   onClose?: () => void;
   /**
-   * Invoked when the user presses `q` inside the pane on an in-flight
-   * run. Fires immediately (no confirm) per the toggle-driven UX:
-   * `h` hides without quitting; `q` is reserved for terminating the
-   * current run.
+   * Invoked when the user presses `q` inside the pane. This quits/detaches
+   * the orchestrator view and leaves the workflow resumable; it must not use
+   * the `/workflow kill` terminal path.
    */
-  onKill?: (runId: string) => void;
+  onQuit?: (runId: string) => void;
   /**
    * Invoked when the user presses `h` inside the pane. Hides without
    * unmounting (overlay-adapter calls `setHidden(true)`). Re-open via

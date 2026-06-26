@@ -193,6 +193,7 @@ export function createWorkflowStageFactory(input: {
       if (meta.sessionId !== undefined) stageSnapshot.sessionId = meta.sessionId;
       if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
       if (meta.sessionId !== undefined || meta.sessionFile !== undefined) input.activeStore.recordStageSession(input.runId, stageId, meta);
+      void input.opts.onStageSession?.(input.runId, stageSnapshot);
     };
     const releaseLiveHandle = async (): Promise<void> => {
       if (state.liveHandleReleased) return;

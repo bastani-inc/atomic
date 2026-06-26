@@ -487,8 +487,8 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       if (dir === undefined) return live;
       const scanned = scanResumableWorkflows(dir);
       const liveIds = new Set(live.map((e) => e.workflowId));
-      // Suppress stale session-cache entries whose backend status is terminal.
-      return [...live, ...scanned.filter((e) => !liveIds.has(e.workflowId) && !isBackendTerminal(backend, e.workflowId))];
+      const compatible = scanned.filter((e) => !liveIds.has(e.workflowId) && backend.getWorkflow(e.workflowId) !== undefined && !isBackendTerminal(backend, e.workflowId));
+      return [...live, ...compatible];
     },
 
     async prepareDurableResumable(workflowIdOrPrefix?: string, sessionDir?: string): Promise<readonly ResumableWorkflowEntry[]> {
