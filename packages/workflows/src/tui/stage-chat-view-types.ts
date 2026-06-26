@@ -11,7 +11,7 @@ import type {
   MountedStageCustomUi,
   StageUiBroker,
 } from "../shared/stage-ui-broker.js";
-import type { StageNotice, StageStatus } from "../shared/store-types.js";
+import type { RunStatus, StageNotice, StageStatus } from "../shared/store-types.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { PromptCardState } from "./prompt-card.js";
 
@@ -146,6 +146,8 @@ export interface StageChatViewContext {
   promptMaxScroll: number;
   localPaused: boolean;
   mouseScrollCaptureEnabled: boolean;
+  lastObservedStageStatus: StageStatus | undefined;
+  lastObservedRunStatus: RunStatus | undefined;
   seenNoticeIds: Set<string>;
   _unsubscribeStore: (() => void) | null;
   _unsubscribeHandle: (() => void) | null;

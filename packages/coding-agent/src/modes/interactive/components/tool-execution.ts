@@ -17,6 +17,7 @@ type RenderableToolResult = Omit<AgentToolResult<unknown>, "details"> & {
 	isError: boolean;
 };
 type RenderableImageContent = Extract<RenderableToolResult["content"][number], { type: "image" }>;
+type DisposableRendererComponent = Component & { dispose?: () => void };
 
 export class ToolExecutionComponent extends Container {
 	private contentBox: Box;
@@ -215,6 +216,14 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	dispose(): void {
+		this.disposeRendererComponent(this.callRendererComponent);
+		this.disposeRendererComponent(this.resultRendererComponent);
+		this.callRendererComponent = undefined;
+		this.resultRendererComponent = undefined;
+		this.clearRendererStateTimer("subagentResultAnimationTimer");
+	}
+
 	override render(width: number): string[] {
 		if (this.hideComponent) {
 			return [];
@@ -357,6 +366,17 @@ export class ToolExecutionComponent extends Container {
 
 	private getTextOutput(): string {
 		return getRenderedTextOutput(this.result, this.showImages);
+	}
+
+	private disposeRendererComponent(component: Component | undefined): void {
+		(component as DisposableRendererComponent | undefined)?.dispose?.();
+	}
+
+	private clearRendererStateTimer(key: string): void {
+		const timer = this.rendererState[key];
+		if (timer === undefined) return;
+		clearInterval(timer as ReturnType<typeof setInterval>);
+		this.rendererState[key] = undefined;
 	}
 
 	private formatToolExecution(): string {

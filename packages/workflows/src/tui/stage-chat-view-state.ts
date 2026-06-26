@@ -2,8 +2,7 @@ import {
   ChatSessionHost,
   type ChatSessionHostStyle,
 } from "@bastani/atomic";
-import { Editor } from "@earendil-works/pi-tui";
-import type { EditorComponent } from "@earendil-works/pi-tui";
+import { Editor, type EditorComponent } from "@earendil-works/pi-tui";
 import type { PendingPrompt, StageSnapshot } from "../shared/store-types.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
@@ -33,7 +32,13 @@ import {
   type StageChatViewOpts,
 } from "./stage-chat-view-types.js";
 import { noticeRow, noticeSummary } from "./stage-chat-view-transcript.js";
+import { applyStageChatLiveHandleEvent } from "./stage-chat-view-live-events.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
+import {
+  isTerminalOrNonStreamingStageChatStatus,
+  isTerminalStageChatState,
+  isTerminalStageChatTransition,
+} from "./stage-chat-view-status.js";
 
 export function initializeStageChatView(
   ctx: StageChatViewContext,
@@ -67,6 +72,8 @@ export function initializeStageChatView(
   ctx.promptMaxScroll = 0;
   ctx.localPaused = false;
   ctx.mouseScrollCaptureEnabled = false;
+  ctx.lastObservedStageStatus = undefined;
+  ctx.lastObservedRunStatus = undefined;
   ctx.seenNoticeIds = new Set<string>();
   ctx._unsubscribeStore = null;
   ctx._unsubscribeHandle = null;
@@ -83,16 +90,18 @@ export function initializeStageChatView(
   });
 
   snapshotMessagesFromHandle(ctx);
-  const initialStage = currentStage(ctx);
+  const initialRun = currentRun(ctx);
+  const initialStage = initialRun?.stages.find((s) => s.id === ctx.stageId);
+  ctx.lastObservedRunStatus = initialRun?.status;
+  ctx.lastObservedStageStatus = initialStage?.status;
   snapshotMessagesFromSessionFile(ctx, initialStage);
   absorbStageNotices(ctx, initialStage);
   syncPromptState(ctx, initialStage?.pendingPrompt);
+  if (isTerminalStageChatState(initialRun?.status) || isTerminalStageChatState(initialStage?.status)) ctx.chatHost.clearBusyForTerminalWorkflowStage();
   ctx._unsubscribeStore = ctx.store.subscribe(() => handleStoreUpdate(ctx));
 
   if (ctx.handle) {
-    ctx._unsubscribeHandle = ctx.handle.subscribe((event) => {
-      ctx.chatHost.applyAgentEvent(event);
-    });
+    ctx._unsubscribeHandle = ctx.handle.subscribe((event) => applyStageChatLiveHandleEvent(ctx, event));
   }
   ctx.chatHost.syncAnimationTick();
 }
@@ -172,7 +181,7 @@ function createChatHost(
     isBashRunning: () => liveHandle(ctx)?.agentSession?.isBashRunning === true,
     requestRender: opts.requestRender,
     getAgentSession: () => liveHandle(ctx)?.agentSession,
-    isStreaming: () => liveHandle(ctx)?.isStreaming === true,
+    isStreaming: () => isLiveHandleStreaming(ctx),
     isPaused: () => isPaused(ctx),
     isDisabled: () => isBlocked(ctx) || !liveHandle(ctx),
     tui: opts.piTui,
@@ -201,7 +210,10 @@ function chatHostStyle(ctx: StageChatViewContext): ChatSessionHostStyle {
 }
 
 function handleStoreUpdate(ctx: StageChatViewContext): void {
-  const stage = currentStage(ctx);
+  const run = currentRun(ctx);
+  const stage = run?.stages.find((s) => s.id === ctx.stageId);
+  const currentRunStatus = run?.status;
+  const currentStageStatus = stage?.status;
   let changed = false;
   if (stage && stage.status === "paused" && !ctx.localPaused) {
     ctx.localPaused = true;
@@ -216,8 +228,15 @@ function handleStoreUpdate(ctx: StageChatViewContext): void {
   if (promptChanged && ctx.promptState && canSubmitPrompt(ctx, ctx.promptState.prompt.id)) {
     ctx.requestFocus?.();
   }
+  if (isTerminalStageChatTransition(ctx.lastObservedStageStatus, currentStageStatus) || isTerminalStageChatTransition(ctx.lastObservedRunStatus, currentRunStatus)) {
+    ctx.chatHost.clearBusyForTerminalWorkflowStage();
+    changed = true;
+  }
+  ctx.lastObservedRunStatus = currentRunStatus;
+  ctx.lastObservedStageStatus = currentStageStatus;
+  const hadAnimationTick = ctx.chatHost.hasAnimationTick();
   ctx.chatHost.syncAnimationTick();
-  if (changed) ctx.requestRender?.();
+  if (changed || hadAnimationTick !== ctx.chatHost.hasAnimationTick()) ctx.requestRender?.();
 }
 
 function snapshotMessagesFromHandle(ctx: StageChatViewContext): void {
@@ -257,10 +276,11 @@ function absorbStageNotices(
   return changed;
 }
 
+export function currentRun(ctx: StageChatViewContext) {
+  return ctx.store.snapshot().runs.find((r) => r.id === ctx.runId);
+}
 export function currentStage(ctx: StageChatViewContext): StageSnapshot | undefined {
-  const snap = ctx.store.snapshot();
-  const run = snap.runs.find((r) => r.id === ctx.runId);
-  return run?.stages.find((s) => s.id === ctx.stageId);
+  return currentRun(ctx)?.stages.find((s) => s.id === ctx.stageId);
 }
 
 export function syncPromptState(
@@ -387,12 +407,27 @@ export function viewLineCount(ctx: StageChatViewContext): number {
   return resolveStageChatViewportRows(reported, VIEW_LINE_COUNT);
 }
 
+export { isTerminalOrNonStreamingStageChatStatus } from "./stage-chat-view-status.js";
+
 export function liveHandle(ctx: StageChatViewContext) {
   return ctx.handle?.isDisposed === true ? undefined : ctx.handle;
 }
 
+export function isLiveHandleStreaming(ctx: StageChatViewContext): boolean {
+  const handle = liveHandle(ctx);
+  if (!handle) return false;
+  if (isTerminalOrNonStreamingStageChatStatus(currentRun(ctx)?.status)) return false;
+  if (isTerminalOrNonStreamingStageChatStatus(currentStage(ctx)?.status)) return false;
+  if (isTerminalOrNonStreamingStageChatStatus(handle.status)) return false;
+  return handle.isStreaming === true;
+}
+
 export function isStreaming(ctx: StageChatViewContext): boolean {
   return ctx.chatHost.isStreaming();
+}
+
+export function isAbortableStreamingSession(ctx: StageChatViewContext): boolean {
+  return isLiveHandleStreaming(ctx) || liveHandle(ctx)?.agentSession?.isStreaming === true;
 }
 
 export function isBlocked(ctx: StageChatViewContext): boolean {

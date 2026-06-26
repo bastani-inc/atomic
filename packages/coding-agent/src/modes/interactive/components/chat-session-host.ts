@@ -25,6 +25,7 @@ import {
   transcriptCacheKey,
 } from "./chat-session-host-rendering.ts";
 import {
+  clearChatSessionBusyForTerminalWorkflowStage,
   disposeChatSession,
   isChatSessionBashRunning,
   isChatSessionStreaming,
@@ -158,6 +159,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
     return this.state.isBashMode;
   }
 
+  isCompacting(): boolean {
+    return this.state.compacting;
+  }
+
   hasInputText(): boolean {
     return this.state.inputBuffer.length > 0;
   }
@@ -188,6 +193,10 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
   syncAnimationTick(): void {
     syncChatSessionAnimationTick(this.state);
+  }
+
+  clearBusyForTerminalWorkflowStage(): void {
+    clearChatSessionBusyForTerminalWorkflowStage(this.state);
   }
 
   dispose(): void {

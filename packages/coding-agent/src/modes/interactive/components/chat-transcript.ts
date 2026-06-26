@@ -39,8 +39,11 @@ interface CachedChatTranscriptBlock<TEntry extends ChatTranscriptEntryLike> {
   readonly entry: TEntry;
   readonly key: string;
   readonly width: number;
+  readonly component: Component;
   readonly lines: readonly string[];
 }
+
+type DisposableComponent = Component & { dispose?: () => void };
 
 interface RowWindowComponent extends Component {
   readonly supportsRowWindow: true;
@@ -153,11 +156,15 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike>
   }
 
   invalidate(): void {
+    for (const block of this.blockCache) disposeComponent(block?.component);
     this.blockCache = [];
   }
 
   private ensureBlockCache(width: number): void {
     if (this.blockCache.length > this.entries.length) {
+      for (let index = this.entries.length; index < this.blockCache.length; index += 1) {
+        disposeComponent(this.blockCache[index]?.component);
+      }
       this.blockCache.length = this.entries.length;
     }
     for (let index = 0; index < this.entries.length; index += 1) {
@@ -173,11 +180,14 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike>
       ) {
         continue;
       }
+      disposeComponent(cached?.component);
+      const component = this.renderEntry(entry);
       this.blockCache[index] = {
         entry,
         key,
         width,
-        lines: this.renderEntryBlock(entry, index, width),
+        component,
+        lines: this.renderEntryBlock(component, entry, index, width),
       };
     }
   }
@@ -186,17 +196,26 @@ export class ChatTranscriptComponent<TEntry extends ChatTranscriptEntryLike>
     const lines: string[] = [];
     for (let index = 0; index < this.entries.length; index += 1) {
       const entry = this.entries[index];
-      if (entry !== undefined) lines.push(...this.renderEntryBlock(entry, index, width));
+      if (entry !== undefined) lines.push(...this.renderEntryBlock(this.renderEntry(entry), entry, index, width));
     }
     return lines;
   }
 
-  private renderEntryBlock(entry: TEntry, index: number, width: number): string[] {
+  private renderEntryBlock(
+    component: Component,
+    entry: TEntry,
+    index: number,
+    width: number,
+  ): string[] {
     const lines: string[] = [];
     if (index > 0 && needsLeadingSpacer(entry.role)) lines.push("");
-    lines.push(...this.renderEntry(entry).render(width));
+    lines.push(...component.render(width));
     return lines;
   }
+}
+
+function disposeComponent(component: Component | undefined): void {
+  (component as DisposableComponent | undefined)?.dispose?.();
 }
 
 const DEFAULT_SCROLL_STEP_ROWS = 4;
