@@ -10,7 +10,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-    test("does not request terminal mouse tracking so text stays selectable", () => {
+    test("requests terminal mouse tracking by default so wheel scroll stays in stage chat", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle } = makeHandle();
@@ -25,11 +25,11 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        assert.equal(view.wantsMouseScrollTracking(), false);
+        assert.equal(view.wantsMouseScrollTracking(), true);
         view.dispose();
     });
 
-    test("ctrl+t toggles explicit mouse-scroll capture mode for terminal key encodings", () => {
+    test("ctrl+t toggles copy mode by disabling and restoring mouse-scroll capture", () => {
         const ctrlTInputs = [
             "\x14",
             "\x1b[116;5u",
@@ -56,11 +56,11 @@ describe("StageChatView", () => {
                 },
             });
 
-            assert.equal(view.wantsMouseScrollTracking(), false);
-            assert.equal(view.handleInput(input), true);
             assert.equal(view.wantsMouseScrollTracking(), true);
             assert.equal(view.handleInput(input), true);
             assert.equal(view.wantsMouseScrollTracking(), false);
+            assert.equal(view.handleInput(input), true);
+            assert.equal(view.wantsMouseScrollTracking(), true);
             assert.equal(renderRequests, 2);
             view.dispose();
         }
@@ -224,4 +224,5 @@ describe("StageChatView", () => {
         assert.equal(view._inputBuffer, before);
         view.dispose();
     });
+
 });

@@ -429,7 +429,7 @@ describe("StageChatView", () => {
         assert.match(renderedLines[hintIndex] ?? "", /^│/);
         assert.ok(
             (renderedLines[hintIndex] ?? "").endsWith(`  ${RETURN_HINT_TEXT}  │`),
-            "expected return/mouse-scroll hint inside the custom UI border",
+            "expected return/copy-mode hint inside the custom UI border",
         );
         assert.doesNotMatch(renderedLines[hintIndex] ?? "", /^╰/);
 

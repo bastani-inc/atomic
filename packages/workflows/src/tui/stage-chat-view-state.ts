@@ -68,7 +68,7 @@ export function initializeStageChatView(
   ctx.promptScrollOffset = 0;
   ctx.promptMaxScroll = 0;
   ctx.localPaused = false;
-  ctx.mouseScrollCaptureEnabled = false;
+  ctx.mouseScrollCaptureEnabled = true;
   ctx.lastObservedStageStatus = undefined;
   ctx.lastObservedRunStatus = undefined;
   ctx.seenNoticeIds = new Set<string>();

@@ -99,8 +99,8 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
   margin: 0,
 };
 
-const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1000l";
+const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
 const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
 const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
 

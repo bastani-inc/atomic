@@ -29,8 +29,55 @@ import {
 } from "./overlay-entrypoints-helpers.js";
 void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
 
+function captureStdoutWrites(action: () => void): string[] {
+  const stdout = process.stdout as typeof process.stdout & { isTTY?: boolean };
+  const originalIsTTY = Object.getOwnPropertyDescriptor(stdout, "isTTY");
+  const originalWrite = stdout.write;
+  const writes: string[] = [];
+  Object.defineProperty(stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  stdout.write = ((chunk: unknown, ...args: unknown[]) => {
+    writes.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk));
+    const callback = args.find((arg): arg is () => void => typeof arg === "function");
+    callback?.();
+    return true;
+  }) as typeof stdout.write;
+  try {
+    action();
+  } finally {
+    stdout.write = originalWrite;
+    if (originalIsTTY) {
+      Object.defineProperty(stdout, "isTTY", originalIsTTY);
+    } else {
+      delete (stdout as { isTTY?: boolean }).isTTY;
+    }
+  }
+  return writes;
+}
 
 describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
+  test("open enables button-event SGR mouse tracking and close disables it", () => {
+    const { ui } = buildMockUi();
+    const store = createStore();
+
+    const writes = captureStdoutWrites(() => {
+      const adapter = buildGraphOverlayAdapter({ ui }, store);
+      adapter.open("run-abc");
+      adapter.close();
+    });
+
+    assert.ok(
+      writes.some((write) => write.includes("\x1b[?1000h\x1b[?1002h\x1b[?1006h")),
+      "expected overlay open to enable normal, button-event, and SGR mouse tracking",
+    );
+    assert.ok(
+      writes.some((write) => write.includes("\x1b[?1006l\x1b[?1002l\x1b[?1000l")),
+      "expected overlay close to disable SGR, button-event, and normal mouse tracking",
+    );
+  });
+
   test("open(runId) calls pi.ui.custom with overlay:true and full-screen overlayOptions", () => {
     const { ui, calls } = buildMockUi();
     const store = createStore();

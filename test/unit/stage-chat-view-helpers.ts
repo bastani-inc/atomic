@@ -237,7 +237,7 @@ export const CTRL_D_VARIANTS = [
     "\x1b[27;5;100~",
 ];
 
-export const RETURN_HINT_TEXT = "ctrl+d graph · ctrl+t mouse scroll off";
+export const RETURN_HINT_TEXT = "ctrl+d graph · ctrl+t copy mode off";
 
 export function expectRightAlignedReturnHint(
     lines: readonly string[],

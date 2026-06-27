@@ -104,13 +104,13 @@ function mergeOrchestratorReturnHintIntoLine(
   width: number,
   options: { preserveTrailingBorder?: boolean; rightMargin?: number } = {},
 ): string {
-  const scrollState = ctx.mouseScrollCaptureEnabled ? "on" : "off";
-  const plain = `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} mouse scroll ${scrollState}`;
+  const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
+  const plain = `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`;
   const styled =
     paint("ctrl+d", ctx.theme.text, { bold: true }) +
     paint(" graph · ", ctx.theme.textMuted) +
     paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
-    paint(` mouse scroll ${scrollState}`, ctx.theme.textMuted);
+    paint(` copy mode ${copyModeState}`, ctx.theme.textMuted);
   const trailingBorder = options.preserveTrailingBorder === true
     ? trailingWidgetBorderChar(line)
     : "";
