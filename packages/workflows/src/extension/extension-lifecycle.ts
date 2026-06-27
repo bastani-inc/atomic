@@ -21,6 +21,13 @@ import type { ExtensionAPI } from "./public-types.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { deAdvertiseAskUserQuestionWhenHeadless, formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 import { inFlightRunCount } from "./workflow-targets.js";
+import type { RunSnapshot } from "../shared/store-types.js";
+
+function blocksAppShutdown(run: RunSnapshot): boolean {
+  if (run.endedAt !== undefined) return false;
+  if (run.exitReason === "quit" && run.status === "paused" && run.resumable === true) return false;
+  return true;
+}
 
 export interface WorkflowLifecycleRegistrationDeps {
   runtimeState: WorkflowExtensionRuntimeState;
@@ -66,7 +73,7 @@ export function registerWorkflowLifecycleHandlers(
       : undefined;
     if (reason !== "quit") return undefined;
 
-    const inFlightRuns = topLevelWorkflowRuns(store.runs()).filter((run) => run.endedAt === undefined);
+    const inFlightRuns = topLevelWorkflowRuns(store.runs()).filter(blocksAppShutdown);
     if (inFlightRuns.length === 0) return undefined;
 
     if (ctx?.hasUI === false || typeof ctx?.ui?.custom !== "function") return undefined;
