@@ -1,3 +1,6 @@
+import { DEFAULT_MAX_TURNS } from "../../builtin/goal-types.js";
+import { DEFAULT_MAX_REFINEMENTS } from "../../builtin/open-claude-design-utils.js";
+import { DEFAULT_MAX_LOOPS } from "../../builtin/ralph-core.js";
 import type { RunStatus, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowInputValues, WorkflowOutputValues, WorkflowSerializableValue } from "../shared/types.js";
 import { ELLIPSIS } from "./chat-surface.js";
@@ -13,10 +16,16 @@ const BUILTIN_COUNTED_BASES = new Set([
   "generate", "user-feedback", "locator", "pattern-finder", "pattern",
   "analyzer", "online-researcher", "online",
 ]);
+// These display fallbacks intentionally mirror the builtin runner defaults.
+// Keep stage-name heuristics and default coverage in the drift-guard test in sync
+// with the builtin runner files when those workflows change.
 const BUILTIN_LOOP_DEFAULTS: Record<string, Record<string, number>> = {
-  ralph: { max_loop: 10, max_loops: 10 },
-  goal: { max_turn: 10, max_turns: 10 },
-  "open-claude-design": { max_refinement: 3, max_refinements: 3 },
+  ralph: { max_loop: DEFAULT_MAX_LOOPS, max_loops: DEFAULT_MAX_LOOPS },
+  goal: { max_turn: DEFAULT_MAX_TURNS, max_turns: DEFAULT_MAX_TURNS },
+  "open-claude-design": {
+    max_refinement: DEFAULT_MAX_REFINEMENTS,
+    max_refinements: DEFAULT_MAX_REFINEMENTS,
+  },
 };
 
 export interface WorkflowLoopSource {
