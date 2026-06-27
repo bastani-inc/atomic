@@ -38,72 +38,81 @@ import {
 } from "./context-compaction-helpers.js";
 
 describe("context compaction", () => {
-		it("adds Copilot long-context guidance to prompt-limit context compaction failures", async () => {
-			resetIds();
-			const rawError = "prompt token count of 500000 exceeds the limit of 400000";
-			const task = entry(user("Retain the task."));
-			const oldOne = entry(assistantText("Old search output that can be deleted."));
-			const oldTwo = entry(assistantText("Old file read that can be deleted."));
-			const recentOne = entry(assistantText("Recent operation one stays protected."));
-			const recentTwo = entry(assistantText("Recent operation two stays protected."));
-			const preparation = prepareContextCompaction(
-				[task, oldOne, oldTwo, recentOne, recentTwo],
-				DEFAULT_COMPACTION_SETTINGS,
-			)!;
-			const faux = registerFauxProvider({ provider: "github-copilot" });
-			faux.setResponses([
-				fauxAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: rawError,
-				}),
-			]);
-	
-			try {
-				await contextCompact(preparation, faux.getModel(), "test-key");
-				throw new Error("Expected context compaction to fail");
-			} catch (error) {
-				if (!(error instanceof Error)) {
-					throw error;
-				}
-				expect(error.message).toContain(rawError);
-				expect(error.message).toContain("Copilot long-context/usage-based billing");
-			} finally {
-				faux.unregister();
-			}
-		});
+	it("adds Copilot long-context guidance to prompt-limit context compaction failures", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const task = entry(user("Retain the task."));
+		const oldOne = entry(assistantText("Old search output that can be deleted."));
+		const oldTwo = entry(assistantText("Old file read that can be deleted."));
+		const recentOne = entry(assistantText("Recent operation one stays protected."));
+		const recentTwo = entry(assistantText("Recent operation two stays protected."));
+		const preparation = prepareContextCompaction(
+			[task, oldOne, oldTwo, recentOne, recentTwo],
+			DEFAULT_COMPACTION_SETTINGS,
+		)!;
+		const faux = registerFauxProvider({ provider: "github-copilot" });
+		faux.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: rawError,
+			}),
+		]);
 
-		it("does not add Copilot guidance to non-Copilot prompt-limit context compaction failures", async () => {
-			resetIds();
-			const rawError = "prompt token count of 500000 exceeds the limit of 400000";
-			const task = entry(user("Retain the task."));
-			const oldOne = entry(assistantText("Old search output that can be deleted."));
-			const oldTwo = entry(assistantText("Old file read that can be deleted."));
-			const recentOne = entry(assistantText("Recent operation one stays protected."));
-			const recentTwo = entry(assistantText("Recent operation two stays protected."));
-			const preparation = prepareContextCompaction(
-				[task, oldOne, oldTwo, recentOne, recentTwo],
-				DEFAULT_COMPACTION_SETTINGS,
-			)!;
-			const faux = registerFauxProvider({ provider: "openai" });
-			faux.setResponses([
-				fauxAssistantMessage("", {
-					stopReason: "error",
-					errorMessage: rawError,
-				}),
-			]);
-	
-			try {
-				await contextCompact(preparation, faux.getModel(), "test-key");
-				throw new Error("Expected context compaction to fail");
-			} catch (error) {
-				if (!(error instanceof Error)) {
-					throw error;
-				}
-				expect(error.message).not.toContain("Copilot long-context/usage-based billing");
-			} finally {
-				faux.unregister();
+		// Tiny context window: even after maximal feasible unprotected deletion the
+		// transcript cannot fit (budget clamps to 1, but the protected mass alone
+		// exceeds it), and the only task-bearing entry (the user task) is the most
+		// recent so it cannot be evicted. The ladder escalates to strict failure,
+		// surfacing the Copilot-formatted provider overflow error.
+		const model = { ...faux.getModel(), contextWindow: 10 };
+		try {
+			await contextCompact(preparation, model, "test-key");
+			throw new Error("Expected context compaction to fail");
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
 			}
-		});
+			expect(error.message).toContain(rawError);
+			expect(error.message).toContain("Copilot long-context/usage-based billing");
+		} finally {
+			faux.unregister();
+		}
+	});
+
+	it("does not add Copilot guidance to non-Copilot prompt-limit context compaction failures", async () => {
+		resetIds();
+		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
+		const task = entry(user("Retain the task."));
+		const oldOne = entry(assistantText("Old search output that can be deleted."));
+		const oldTwo = entry(assistantText("Old file read that can be deleted."));
+		const recentOne = entry(assistantText("Recent operation one stays protected."));
+		const recentTwo = entry(assistantText("Recent operation two stays protected."));
+		const preparation = prepareContextCompaction(
+			[task, oldOne, oldTwo, recentOne, recentTwo],
+			DEFAULT_COMPACTION_SETTINGS,
+		)!;
+		const faux = registerFauxProvider({ provider: "openai" });
+		faux.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: rawError,
+			}),
+		]);
+
+		// Same tiny context window as the Copilot test so the transcript is
+		// genuinely irreducible and the strict failure surfaces the provider error.
+		const model = { ...faux.getModel(), contextWindow: 10 };
+		try {
+			await contextCompact(preparation, model, "test-key");
+			throw new Error("Expected context compaction to fail");
+		} catch (error) {
+			if (!(error instanceof Error)) {
+				throw error;
+			}
+			expect(error.message).not.toContain("Copilot long-context/usage-based billing");
+		} finally {
+			faux.unregister();
+		}
+	});
 
 		it("excludes excludeFromContext entries from context compaction transcript, prompt, recency, and stats", () => {
 			resetIds();

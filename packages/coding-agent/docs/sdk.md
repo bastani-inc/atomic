@@ -139,6 +139,7 @@ interface AgentSession {
 ```
 
 `compact()` accepts no custom summary instructions. It runs the same transcript-bound Verbatim Compaction planner as `/compact`: inspect transcript slices, record exact deletion targets, validate them locally, append a `context_compaction` entry, and rebuild active context with retained content unchanged.
+`compact()` uses feasibility-aware graduated protection: it returns a continuable result whenever the transcript can be made to fit the model's input budget, even when the strict reduction percentage is infeasible, via a deterministic `meet_target` → `best_effort` → `evict_protected` fallback ladder. The accepted strategy is recorded on the result as `fitStrategy` (with `evictedProtectedEntryIds` and `achievedReductionPercent` when applicable). A `prompt()` call that exceeds the budget is refused up front with a `PromptExceedsBudgetError`. See the [Compaction docs](/compaction#graduated-protection-fitting-the-budget) for details.
 
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
 

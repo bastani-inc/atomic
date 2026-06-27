@@ -32,27 +32,39 @@ describe("context compaction deletion tools", () => {
 		}
 	});
 
-		it("surfaces the deletion tool error when context compaction has no safe deletions", async () => {
-			const faux = registerFauxProvider();
-			cleanups.push(() => faux.unregister());
-			faux.setResponses([
-				() =>
-					fauxAssistantMessage(
-						fauxToolCall(
-							"context_delete",
-							{ deletions: [{ kind: "entry", entryId: "entry-user" }] },
-							{ id: "toolu_bad_standard_delete" },
-						),
-						{ stopReason: "toolUse" },
+	it("recovers via best_effort (maximal feasible) when the planner fails but unprotected deletions exist", async () => {
+		const faux = registerFauxProvider();
+		cleanups.push(() => faux.unregister());
+		faux.setResponses([
+			() =>
+				fauxAssistantMessage(
+					fauxToolCall(
+						"context_delete",
+						{ deletions: [{ kind: "entry", entryId: "entry-user" }] },
+						{ id: "toolu_bad_standard_delete" },
 					),
-				() => fauxAssistantMessage("Unable to find safe deletions."),
-				() => fauxAssistantMessage("Still unable after target nudge."),
-			]);
-	
-			await expect(
-				contextCompact({ transcript: createTranscript(), branchEntries: [] }, faux.getModel(), "test-key"),
-			).rejects.toThrow(/attempt reached 0%.*last deletion tool error: Deletion target entry-user is protected/s);
-		});
+					{ stopReason: "toolUse" },
+				),
+			() => fauxAssistantMessage("Unable to find safe deletions."),
+			() => fauxAssistantMessage("Still unable after target nudge."),
+		]);
+
+		// The planner tried to delete a protected entry (entry-user) which failed,
+		// then gave up with 0% reduction. Previously the runner threw a strict
+		// failure. With the graduated-protection ladder, when maximal feasible
+		// unprotected deletions (entry-old-1 + entry-old-2) fit the budget, the
+		// runner recovers via best_effort instead of throwing — the session is
+		// kept continuable even when the planner made no valid deletions.
+		const result = await contextCompact(
+			{ transcript: createTranscript(), branchEntries: [] },
+			faux.getModel(),
+			"test-key",
+		);
+
+		expect(result.fitStrategy).toBe("best_effort");
+		expect(result.deletedTargets).toContainEqual({ kind: "entry", entryId: "entry-old-1" });
+		expect(result.deletedTargets).toContainEqual({ kind: "entry", entryId: "entry-old-2" });
+	});
 
 		it("records grep bulk deletions through context compaction", async () => {
 			const faux = registerFauxProvider();

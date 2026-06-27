@@ -62,6 +62,15 @@ export interface ValidatedContextDeletionResult {
 	deletedTargets: ContextDeletionTarget[];
 	protectedEntryIds: string[];
 	stats: ContextCompactionStats;
+	/**
+	 * Which strategy satisfied liveness. Absent for legacy/extension-provided results
+	 * that did not pass through the graduated-protection ladder.
+	 */
+	fitStrategy?: "meet_target" | "best_effort" | "evict_protected";
+	/** Entry ids force-evicted by the `evict_protected` strategy (oldest-first). */
+	evictedProtectedEntryIds?: string[];
+	/** Mirrors `stats.percentReduction` for reason-reading callers. */
+	achievedReductionPercent?: number;
 }
 
 export interface ContextCompactionResult extends ValidatedContextDeletionResult {

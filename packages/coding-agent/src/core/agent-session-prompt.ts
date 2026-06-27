@@ -7,6 +7,68 @@ import { expandPromptTemplate } from "./prompt-templates.ts";
 import { stripFrontmatter } from "../utils/frontmatter.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
+import { getEffectiveInputBudget } from "./context-window.ts";
+import { PromptExceedsBudgetError } from "./prompt-budget.ts";
+import { computeLivenessBudget } from "./compaction/context-compaction-feasibility.ts";
+import { estimateTokens } from "./compaction/index.ts";
+/**
+ * Airlock guard: estimate the token cost of a user message (text + optional
+ * images) and throw {@link PromptExceedsBudgetError} if it exceeds the model's
+ * liveness budget (`computeLivenessBudget(getEffectiveInputBudget(model), reserveTokens)`).
+ * Such a message can never be made to fit by compaction (user messages are
+ * protected and un-truncated), so it is refused before it enters agent state or
+ * the streaming message queue. Skips silently when no model is selected (cannot
+ * judge). When `reserveTokens >= effectiveInputBudget` the liveness budget is
+ * clamped to 1, so any non-empty prompt is refused rather than silently allowed
+ * by a non-positive raw budget.
+ *
+ * Uses the same `estimateTokens` heuristic and the same `computeLivenessBudget`
+ * as compaction so the input gate and the compaction budget agree. See
+ * `specs/2026-06-27-context-compaction-graduated-protection.md` §5.4.
+ */
+function assertPromptWithinBudget(
+	session: AgentSession,
+	text: string,
+	images: ImageContent[] | undefined,
+): void {
+	const model = session.model;
+	if (!model) return; // Cannot judge without a model; skip defensively.
+	const userContent: (TextContent | ImageContent)[] = [{ type: "text", text }];
+	if (images) userContent.push(...images);
+	const estimatedUserTokens = estimateTokens({
+		role: "user",
+		content: userContent,
+		timestamp: 0,
+	} as AgentMessage);
+	const effectiveInputBudget = getEffectiveInputBudget(model);
+	const reserveTokens = session.settingsManager.getCompactionSettings().reserveTokens;
+	const liveness = computeLivenessBudget(effectiveInputBudget, reserveTokens);
+
+	// Targeted rejection (P2c): when the raw effective input budget minus the
+	// reserve is non-positive, there is literally no room for any input. Even a
+	// single-token prompt ("x") must be refused — it would immediately overflow
+	// the model's input budget and could never be made to fit by compaction
+	// (user messages are protected and un-truncated). The clamped liveness
+	// budget of 1 exists only to keep compaction arithmetic safe; it is NOT a
+	// real allowance for user input.
+	if (estimatedUserTokens > 0 && effectiveInputBudget - Math.max(0, reserveTokens) <= 0) {
+		throw new PromptExceedsBudgetError({
+			estimatedTokens: estimatedUserTokens,
+			budgetTokens: liveness.tokens,
+			modelId: `${model.provider}/${model.id}`,
+		});
+	}
+
+	// Normal liveness-budget gate: refuse when the estimated tokens exceed the
+	// clamped liveness budget. Catches genuinely oversized single messages.
+	if (estimatedUserTokens > liveness.tokens) {
+		throw new PromptExceedsBudgetError({
+			estimatedTokens: estimatedUserTokens,
+			budgetTokens: liveness.tokens,
+			modelId: `${model.provider}/${model.id}`,
+		});
+	}
+}
 
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
@@ -64,6 +126,9 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
+			// Airlock: refuse an oversized queued message before it enters the
+			// streaming message queue (P2). Same budget as the non-streaming path.
+			assertPromptWithinBudget(this, expandedText, currentImages);
 			if (options.streamingBehavior === "followUp") {
 				await this._queueFollowUp(expandedText, currentImages);
 			} else {
@@ -73,8 +138,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			return;
 		}
 
-		// Flush any pending bash messages before the new prompt
-		this._flushPendingBashMessages();
 
 		// Validate model
 		if (!this.model) {
@@ -116,10 +179,32 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
 		}
 
+		// Prompt airlock: refuse a single user message whose estimated tokens
+		// exceed the model's liveness budget (or when reserve consumes the whole
+		// input budget). Such a message could never be made to fit by compaction
+		// (user messages are protected and un-truncated), so it is refused BEFORE
+		// pre-prompt compaction work/state mutation. Running the airlock here (after
+		// model/auth validation, before `_checkCompaction`) ensures an oversized
+		// input is rejected without triggering compaction or mutating session state.
+		// See specs/2026-06-27-context-compaction-graduated-protection.md §5.4.
+		assertPromptWithinBudget(this, expandedText, currentImages);
+
+		// Flush any pending bash messages before the accepted prompt. This runs
+		// after the prompt airlock so an oversized prompt cannot mutate session state
+		// by draining pending bash output before it is refused.
+		this._flushPendingBashMessages();
+
 		// Check if we need to compact before sending (catches aborted responses)
 		const lastAssistant = this._findLastAssistantMessage();
 		if (lastAssistant) {
 			await this._checkCompaction(lastAssistant, false);
+		}
+
+		// Defensive re-check: this.model is a getter and the narrowing from the
+		// earlier validation is lost across the `await this._checkCompaction(...)`
+		// call above. Without a model we cannot compute the budget or run the agent.
+		if (!this.model) {
+			throw new Error(formatNoModelSelectedMessage());
 		}
 
 		// Build messages array (custom message if any, then user message)
@@ -130,6 +215,7 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		if (currentImages) {
 			userContent.push(...currentImages);
 		}
+
 		messages.push({
 			role: "user",
 			content: userContent,
@@ -315,6 +401,9 @@ export async function steer(this: AgentSession, text: string, images?: ImageCont
 	let expandedText = this._expandSkillCommand(text);
 	expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
+	// Airlock: refuse an oversized queued message before it enters the queue (P2).
+	assertPromptWithinBudget(this, expandedText, images);
+
 	await this._queueSteer(expandedText, images);
 }
 
@@ -336,6 +425,9 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
 	let expandedText = this._expandSkillCommand(text);
 	expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
+	// Airlock: refuse an oversized queued message before it enters the queue (P2).
+	assertPromptWithinBudget(this, expandedText, images);
+
 	await this._queueFollowUp(expandedText, images);
 }
 
@@ -343,7 +435,7 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
  * Internal: Queue a steering message (already expanded, no extension command check).
  */
 
-export async function sendUserMessage(this: AgentSession, 
+export async function sendUserMessage(this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
 	options?: { deliverAs?: "steer" | "followUp" },
 ): Promise<void> {
@@ -367,7 +459,8 @@ export async function sendUserMessage(this: AgentSession,
 		if (images.length === 0) images = undefined;
 	}
 
-	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
+	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
+	// The prompt airlock (including the streaming-queue path) is applied inside prompt().
 	await this.prompt(text, {
 		expandPromptTemplates: false,
 		streamingBehavior: options?.deliverAs,

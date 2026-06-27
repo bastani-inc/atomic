@@ -35,6 +35,7 @@ let warnedReconciliationNonConvergence = false;
 function reconcileToolDependencies(
 	transcript: CompactableTranscript,
 	initialTargets: readonly ContextDeletionTarget[],
+	evict = false,
 ): ContextDeletionTarget[] {
 	const targets = [...initialTargets];
 	const callEntries = new Map<string, CompactableTranscriptEntry>();
@@ -77,7 +78,7 @@ function reconcileToolDependencies(
 				const retainedProtectedResult = results.find(
 					(entry) =>
 						!deletedEntryIds.has(entry.entryId) &&
-						!canDeleteTarget(transcript, { kind: "entry", entryId: entry.entryId }),
+						!canDeleteTarget(transcript, { kind: "entry", entryId: entry.entryId }, evict),
 				);
 				if (retainedProtectedResult) {
 					const retainedResultTarget: ContextDeletionTarget = { kind: "entry", entryId: retainedProtectedResult.entryId };
@@ -107,7 +108,7 @@ function reconcileToolDependencies(
 				const callBlockTarget = assistantEntryHasThinkingContentBlock(callEntry)
 					? callEntryTarget
 					: firstToolCallBlockTarget(callEntry, callId) ?? callEntryTarget;
-				if (!canDeleteTarget(transcript, callBlockTarget)) {
+				if (!canDeleteTarget(transcript, callBlockTarget, evict)) {
 					if (isRecentTarget(transcript, callBlockTarget)) {
 						throw new Error(formatRecentContextDeletionError(transcript, callBlockTarget));
 					}
@@ -223,7 +224,9 @@ export function computeContextCompactionStats(
 export function validateContextDeletionRequest(
 	request: ContextDeletionRequest,
 	transcript: CompactableTranscript,
+	options: { evict?: boolean } = {},
 ): ValidatedContextDeletionResult {
+	const evict = options.evict === true;
 	if (!request || typeof request !== "object" || !Array.isArray(request.deletions)) {
 		throw new Error("Context deletion request must be an object with a deletions array");
 	}
@@ -253,7 +256,7 @@ export function validateContextDeletionRequest(
 			if (recentEntryIds.has(deletion.entryId)) {
 				throw new Error(formatRecentContextDeletionError(transcript, normalized));
 			}
-			if (!canDeleteTarget(transcript, normalized)) {
+			if (!canDeleteTarget(transcript, normalized, evict)) {
 				throw new Error(formatProtectedDeletionError(transcript, normalized));
 			}
 		}
@@ -271,7 +274,7 @@ export function validateContextDeletionRequest(
 				}
 				throw new Error(`Unknown content block ${deletion.blockIndex} for entry ${deletion.entryId}`);
 			}
-			if (!canDeleteTarget(transcript, normalized)) {
+			if (!canDeleteTarget(transcript, normalized, evict)) {
 				throw new Error(formatProtectedDeletionError(transcript, normalized));
 			}
 			if (entry.contentBlocks.length <= 1) {
@@ -287,7 +290,7 @@ export function validateContextDeletionRequest(
 		deletedTargets.push(normalized);
 	}
 
-	const reconciledTargets = reconcileToolDependencies(transcript, deletedTargets);
+	const reconciledTargets = reconcileToolDependencies(transcript, deletedTargets, evict);
 	// Tool reconciliation can add targets after the per-request checks above, so
 	// these post-reconcile assertions remain authoritative.
 	assertNoRecentContextDeletionTargets(transcript, reconciledTargets);

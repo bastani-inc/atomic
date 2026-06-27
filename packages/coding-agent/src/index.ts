@@ -71,13 +71,20 @@ export {
 	type BranchSummaryResult,
 	type CollectEntriesResult,
 	type CompactableTranscript,
+	type CompactionFeasibility,
+	type CompactionFitStrategy,
 	type ContextCompactionPreparation,
 	type ContextCompactionResult,
 	type ContextDeletionRequest,
+	type LivenessBudget,
 	type ValidatedContextDeletionResult,
 	buildContextCompactionPrompt,
+	buildEvictionTargets,
+	buildMaxFeasibleDeletionRequest,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
+	computeCompactionFeasibility,
+	computeLivenessBudget,
 	contextCompact,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateTokens,
@@ -91,6 +98,11 @@ export {
 	shouldCompact,
 	validateContextDeletionRequest,
 } from "./core/compaction/index.ts";
+export {
+	PromptExceedsBudgetError,
+	type PromptExceedsBudgetErrorMetadata,
+	formatPromptExceedsBudgetMessage,
+} from "./core/prompt-budget.ts";
 export {
 	CODEX_FAST_MODE_SERVICE_TIER,
 	formatCodexFastModeModelLabel,

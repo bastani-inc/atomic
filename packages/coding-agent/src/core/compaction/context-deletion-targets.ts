@@ -350,15 +350,24 @@ export function canDeleteStaleUserImageContentBlock(
 	return entry.contentBlocks.some((candidate) => candidate.blockIndex !== target.blockIndex && candidate.type !== "image");
 }
 
-export function canDeleteTarget(transcript: CompactableTranscript, target: ContextDeletionTarget): boolean {
+export function canDeleteTarget(transcript: CompactableTranscript, target: ContextDeletionTarget, evict = false): boolean {
 	const entry = transcript.entries.find((candidate) => candidate.entryId === target.entryId);
 	if (!entry) return false;
 	if (isRecentTarget(transcript, target)) return false;
-	if (target.kind === "entry") return isStaleUserImageOnlyEntry(transcript, entry) || !entry.protected;
+	if (target.kind === "entry") {
+		if (evict) return true;
+		return isStaleUserImageOnlyEntry(transcript, entry) || !entry.protected;
+	}
 	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
 	if (!block) return false;
 	if (canDeleteStaleUserImageContentBlock(transcript, target)) return true;
-	if (entry.protected) return false;
+	if (entry.protected) {
+		// Under eviction, full-entry protection is relaxed only at the entry level
+		// (handled above). Individual content-block deletion of a protected entry
+		// stays disallowed: verbatim compaction must delete the whole entry or none.
+		return false;
+	}
+	if (evict) return true;
 	return !block.protected;
 }
 

@@ -2,6 +2,14 @@ import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream, isContextOverflow, streamSimple } from "@earendil-works/pi-ai";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
+import { getEffectiveInputBudget } from "../context-window.ts";
+import {
+	buildEvictionTargets,
+	buildMaxFeasibleDeletionRequest,
+	computeCompactionFeasibility,
+	computeLivenessBudget,
+	type CompactionFitStrategy,
+} from "./context-compaction-feasibility.ts";
 import type {
 	CompactableTranscript,
 	ContextCompactionParameters,
@@ -29,6 +37,7 @@ import {
 	CONTEXT_SEARCH_TRANSCRIPT_TOOL_NAME,
 } from "./context-deletion-tool-definitions.ts";
 import { createContextDeletionTool } from "./context-deletion-tools.ts";
+import { validateContextDeletionRequest } from "./context-deletion-application.ts";
 import {
 	buildContextCompactionPrompt,
 	CONTEXT_COMPACTION_SYSTEM_PROMPT,
@@ -258,8 +267,105 @@ export async function contextCompact(
 		thinkingLevel,
 		parameters,
 	);
-	if (hasMetContextCompactionTarget(standardRun, parameters)) return standardRun.validatedResult;
-	attempts.push({ ...standardRun });
 
+	// meet_target: the planner met the quality target under full protection AND
+	// the result fits the liveness budget. If the target is met but the result
+	// still overflows the liveness budget, fall through to the graduated ladder
+	// (best_effort / evict_protected / strict failure) instead of returning a
+	// result that cannot keep the session continuable.
+	const budget = computeLivenessBudget(getEffectiveInputBudget(model), transcript.settings.reserveTokens);
+	if (
+		hasMetContextCompactionTarget(standardRun, parameters) &&
+		standardRun.validatedResult.stats.tokensAfter <= budget.tokens
+	) {
+		return withFitStrategy(standardRun.validatedResult, "meet_target");
+	}
+	// Graduated-protection fallback ladder. Feasibility decides which strategy is
+	// required; the first strategy that produces a budget-fitting validated result
+	// wins. See specs/2026-06-27-context-compaction-graduated-protection.md.
+	const feasibility = computeCompactionFeasibility(transcript, parameters, budget);
+	const plannerResult = standardRun.validatedResult;
+	const maxFeasibleRequest = buildMaxFeasibleDeletionRequest(transcript);
+	let maxFeasibleResult: ValidatedContextDeletionResult | undefined;
+	try {
+		maxFeasibleResult = validateContextDeletionRequest(maxFeasibleRequest, transcript);
+	} catch {
+		// Validator disagrees with the oracle's conservative feasible request.
+		// Keep the planner result as a fallback so strict failure still reports honestly.
+	}
+
+	// best_effort (planner fits): the quality target is provably infeasible AND
+	// the planner's validated result already fits the liveness budget. A merely
+	// under-performing planner (feasible target, missed reduction) is NOT accepted
+	// here — it falls through to the maximal-feasible or strict-failure path.
+	if (
+		plannerResult &&
+		feasibility.targetFeasible === false &&
+		plannerResult.stats.tokensAfter <= budget.tokens
+	) {
+		return withFitStrategy(plannerResult, "best_effort");
+	}
+
+	// best_effort (maximal feasible unprotected fits): the planner's own result
+	// is over budget (or absent), but a more aggressive unprotected deletion set
+	// would fit the budget. Deterministically build and validate the maximal
+	// feasible unprotected deletion request and accept it if it fits — including
+	// the no-op case where the protected transcript already fits with zero safe
+	// deletions.
+	if (
+		feasibility.fitsBudgetAtMaxDeletion === true &&
+		maxFeasibleResult &&
+		maxFeasibleResult.stats.tokensAfter <= budget.tokens
+	) {
+		return withFitStrategy(maxFeasibleResult, "best_effort");
+	}
+
+	// evict_protected: protected mass overflows the budget. Start from the
+	// deterministic maximal feasible unprotected deletion set, then force-evict
+	// oldest protected task-bearing entries only as needed. This avoids evicting
+	// protected context just because the planner missed unprotected deletions.
+	if (feasibility.fitsBudgetAtMaxDeletion === false) {
+		const evictionBaseline = maxFeasibleResult?.deletedTargets ?? plannerResult?.deletedTargets ?? [];
+		const eviction = buildEvictionTargets(transcript, evictionBaseline, budget);
+		if (eviction.deletions.length > 0) {
+			try {
+				const evictedResult = validateContextDeletionRequest(
+					{ deletions: eviction.deletions },
+					transcript,
+					{ evict: true },
+				);
+				if (evictedResult.stats.tokensAfter <= budget.tokens && evictedResult.deletedTargets.length > 0) {
+					return withFitStrategy(
+						{
+							...evictedResult,
+							evictedProtectedEntryIds: eviction.evictedProtectedEntryIds,
+						},
+						"evict_protected",
+					);
+				}
+			} catch {
+				// Eviction validation failed (e.g. tool-pairing invariant). Fall through
+				// to the strict-failure error so the run reports honestly instead of
+				// silently swallowing the failure.
+			}
+		}
+	}
+
+	attempts.push({ ...standardRun });
 	throw new Error(formatContextCompactionTargetFailureMessage(attempts, parameters));
+}
+
+/**
+ * Stamp a `ValidatedContextDeletionResult` with the strategy that produced it
+ * and the achieved reduction percent, without changing the deletion plan.
+ */
+function withFitStrategy(
+	result: ValidatedContextDeletionResult,
+	fitStrategy: CompactionFitStrategy,
+): ValidatedContextDeletionResult {
+	return {
+		...result,
+		fitStrategy,
+		achievedReductionPercent: result.stats.percentReduction,
+	};
 }
