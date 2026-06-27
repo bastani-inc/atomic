@@ -207,11 +207,12 @@ describe("/workflow resume — durable regression coverage", () => {
   });
 
   test("combined picker resolves live selection before dispose", async () => {
-    const liveRunId = `live-select-${Date.now()}`;
-    singletonStore.recordRunStart({ id: liveRunId, name: "live-select-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
-    singletonStore.recordRunPaused(liveRunId);
+    const now = Date.now();
+    const liveRunId = `live-select-${now}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-select-wf", inputs: {}, status: "running", stages: [], startedAt: now });
+    singletonStore.recordRunPaused(liveRunId, now + 2);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-select-alongside", name: "durable-select", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "durable-select-alongside", name: "durable-select", inputs: {}, createdAt: now, updatedAt: now + 1, status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     const { pi, commands } = buildMockPi();
     factory(pi);
@@ -227,8 +228,9 @@ describe("/workflow resume — durable regression coverage", () => {
   });
 
   test("combined picker resumes failed live runs through continuation path", async () => {
-    const failedRunId = `failed-live-${Date.now()}`;
-    singletonStore.recordRunStart({ id: failedRunId, name: "missing-continuation-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    const now = Date.now();
+    const failedRunId = `failed-live-${now}`;
+    singletonStore.recordRunStart({ id: failedRunId, name: "missing-continuation-wf", inputs: {}, status: "running", stages: [], startedAt: now });
     singletonStore.recordRunEnd(failedRunId, "failed", undefined, "recoverable", {
       failureRecoverability: "recoverable",
       failureDisposition: "terminal_failed",
@@ -236,7 +238,7 @@ describe("/workflow resume — durable regression coverage", () => {
       resumable: true,
     });
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-with-failed-live", name: "durable-select", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "durable-with-failed-live", name: "durable-select", inputs: {}, createdAt: now - 2, updatedAt: now - 1, status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     const { pi, commands } = buildMockPi();
     factory(pi);
@@ -249,7 +251,7 @@ describe("/workflow resume — durable regression coverage", () => {
     await handlerPromise;
 
     const joined = messages.join("\n");
-    assert.match(joined, /Workflow definition not found|Cannot resume failed run|missing-continuation-wf/);
+    assert.match(joined, /missing-continuation-wf/);
     assert.doesNotMatch(joined, /Snapshot available/);
   });
 });
