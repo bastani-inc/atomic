@@ -7,6 +7,17 @@ const DEFAULT_WIDTH = 120;
 const LOOP_INPUT_RE = /^max_(loops?|turns?|iterations?|rounds?|refinements?)$/i;
 const COUNTED_SUFFIX_RE = /^(.*?)-(\d+)$/;
 const LETTER_SUFFIX_RE = /^(reviewer|review|locator|pattern|analyzer|online|design-system|system|worker)-[a-z]$/i;
+const BUILTIN_COUNTED_BASES = new Set([
+  "research-prompt-refinement", "prompt-refine", "research", "orchestrator",
+  "work-turn", "completion-reviewer", "evidence-reviewer", "risk-reviewer",
+  "generate", "user-feedback", "locator", "pattern-finder", "pattern",
+  "analyzer", "online-researcher", "online",
+]);
+const BUILTIN_LOOP_DEFAULTS: Record<string, Record<string, number>> = {
+  ralph: { max_loops: 10 },
+  goal: { max_turns: 10 },
+  "open-claude-design": { max_refinements: 3 },
+};
 
 export interface WorkflowLoopSource {
   readonly name: string;
@@ -81,6 +92,7 @@ function fitLoopSummaryText(text: string, width: number): string {
 
 function phaseGroups(source: WorkflowLoopSource): PhaseGroup[] {
   const groups: PhaseGroup[] = [];
+  const countedBases = repeatedCountedBases(source.stages);
   let i = 0;
   while (i < source.stages.length) {
     const stage = source.stages[i]!;
@@ -91,20 +103,31 @@ function phaseGroups(source: WorkflowLoopSource): PhaseGroup[] {
       const next = source.stages[j]!;
       if (parentSignature(next) !== parentKey) break;
       const previous = source.stages[j - 1]!;
-      const nextBase = normalizeStageName(next.name);
-      const previousBase = normalizeStageName(previous.name);
+      const nextBase = normalizeStageName(next.name, countedBases);
+      const previousBase = normalizeStageName(previous.name, countedBases);
       if (nextBase !== previousBase && !looksParallelSibling(stage, next)) break;
       siblings.push(next);
       j++;
     }
-    groups.push(groupSiblings(siblings));
+    groups.push(groupSiblings(siblings, countedBases));
     i = j;
   }
   return coalesceSequentialRepeats(groups);
 }
 
-function groupSiblings(stages: readonly StageSnapshot[]): PhaseGroup {
-  const labels = stages.map((stage) => normalizeStageName(stage.name));
+function repeatedCountedBases(stages: readonly StageSnapshot[]): ReadonlySet<string> {
+  const counts = new Map<string, number>();
+  for (const stage of stages) {
+    const match = COUNTED_SUFFIX_RE.exec(stage.name.toLowerCase());
+    if (!match) continue;
+    const base = displayStageBase(match[1] ?? "");
+    counts.set(base, (counts.get(base) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, count]) => count > 1).map(([base]) => base));
+}
+
+function groupSiblings(stages: readonly StageSnapshot[], countedBases: ReadonlySet<string>): PhaseGroup {
+  const labels = stages.map((stage) => normalizeStageName(stage.name, countedBases));
   const unique = [...new Set(labels)];
   const parallel = stages.length > 1 && sameParents(stages);
   if (unique.length === 1) {
@@ -158,10 +181,13 @@ function parentSignature(stage: StageSnapshot): string {
   return [...stage.parentIds].sort().join("|");
 }
 
-function normalizeStageName(name: string): string {
+function normalizeStageName(name: string, countedBases: ReadonlySet<string> = new Set()): string {
   const lower = name.trim().toLowerCase();
   const counted = COUNTED_SUFFIX_RE.exec(lower);
-  if (counted) return displayStageBase(counted[1] ?? lower);
+  if (counted) {
+    const base = displayStageBase(counted[1] ?? lower);
+    if (countedBases.has(base) || BUILTIN_COUNTED_BASES.has(base)) return base;
+  }
   const lettered = LETTER_SUFFIX_RE.exec(lower);
   if (lettered) return displayStageBase(lettered[1] ?? lower);
   return displayStageBase(lower);
@@ -222,7 +248,7 @@ function referencesDisabled(inputs: Readonly<WorkflowInputValues>): boolean {
 function loopHint(source: WorkflowLoopSource): LoopHint | undefined {
   const candidate = loopInputCandidates(source.inputs)[0];
   if (!candidate) return undefined;
-  const max = Math.max(0, Math.floor(candidate.value));
+  const max = loopInputMax(source, candidate);
   const completed = completedLoopCount(source, candidate.key);
   return {
     maxKey: candidate.key,
@@ -269,13 +295,18 @@ function completedLoopCount(source: WorkflowLoopSource, maxKey: string): number 
   return maxSuffixForBases(source.stages, preferredBases);
 }
 
+function loopInputMax(source: WorkflowLoopSource, candidate: LoopInputCandidate): number {
+  if (candidate.value > 0) return Math.floor(candidate.value);
+  return BUILTIN_LOOP_DEFAULTS[source.name]?.[candidate.key] ?? Math.max(0, Math.floor(candidate.value));
+}
+
 function genericSequentialLoopCount(stages: readonly StageSnapshot[]): number {
   const parsed = stages.flatMap((stage) => {
     const match = COUNTED_SUFFIX_RE.exec(stage.name.toLowerCase());
     if (!match) return [];
     const suffix = Number.parseInt(match[2] ?? "", 10);
     if (!Number.isFinite(suffix)) return [];
-    return [{ stage, base: normalizeStageName(match[1] ?? ""), suffix }];
+    return [{ stage, base: displayStageBase(match[1] ?? ""), suffix }];
   });
   const fanoutParentKeys = new Set<string>();
   const countsByParent = new Map<string, number>();
@@ -306,7 +337,7 @@ function maxSuffixForBases(stages: readonly StageSnapshot[], preferredBases: Rea
   for (const stage of stages) {
     const match = COUNTED_SUFFIX_RE.exec(stage.name.toLowerCase());
     if (!match) continue;
-    const base = normalizeStageName(match[1] ?? "");
+    const base = displayStageBase(match[1] ?? "");
     if (preferredBases !== undefined && !preferredBases.has(base)) continue;
     const parsed = Number.parseInt(match[2] ?? "0", 10);
     if (Number.isFinite(parsed)) maxSuffix = Math.max(maxSuffix, parsed);

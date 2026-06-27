@@ -112,14 +112,22 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
     const rightEdgePad = 2;
     const contentBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
     const currentRun = this._getCurrentRun();
-    const run = currentRun && shouldRenderWorkflowLoopSummary(currentRun) ? currentRun : undefined;
+    const displayRun = currentRun
+      ? { ...currentRun, stages: this._displayStages(currentRun) }
+      : undefined;
+    const run = displayRun && shouldRenderWorkflowLoopSummary(displayRun) ? displayRun : undefined;
     const loopGap = run ? 2 : 0;
     const rawHintsWidth = visibleWidth(hintsStyledRaw);
     const compactHintsWidth = visibleWidth(hintsStyledCompact);
-    // Below this width the loop rail is more noise than signal; give hints priority.
-    const preferredHints = contentBudget - rawHintsWidth - loopGap >= MIN_LOOP_STATUSLINE_BUDGET
-      ? hintsStyledRaw
-      : hintsStyledCompact;
+    const preferredHints = run
+      // With a loop rail, reserve enough room for a useful Loop: fragment.
+      ? contentBudget - rawHintsWidth - loopGap >= MIN_LOOP_STATUSLINE_BUDGET
+        ? hintsStyledRaw
+        : hintsStyledCompact
+      // Without a loop rail, keep the full action labels whenever they fit.
+      : rawHintsWidth <= contentBudget
+        ? hintsStyledRaw
+        : hintsStyledCompact;
     const preferredHintsWidth = preferredHints === hintsStyledRaw ? rawHintsWidth : compactHintsWidth;
     const hintsBudgetTarget = Math.min(contentBudget, preferredHintsWidth);
     const loopBudget = run

@@ -289,6 +289,20 @@ describe("renderStatusList — populated", () => {
     assert.equal(plain.split("\n").filter((line) => /loop\s+scout → worker/.test(line)).length, 1);
   });
 
+  test("builtin loop row uses runner defaults for non-positive limits", () => {
+    const run = makeRun({
+      id: "ralph0uuid",
+      name: "ralph",
+      status: "running",
+      inputs: { max_loops: 0 },
+      stages: [makeStage("orch", "orchestrator-1", "running")],
+    });
+
+    const plain = stripAnsi(renderStatusList([run], { width: 110, showDetailHint: false }));
+    assert.match(plain, /loop\s+prompt-refine → research → orchestrator → review ×3 · ↻ 9 rounds remain/);
+    assert.doesNotMatch(plain, /0 rounds remain/);
+  });
+
   test("failed run carries the killed/failed-at-stage meta", () => {
     const now = 1_000_000;
     const run = makeRun({

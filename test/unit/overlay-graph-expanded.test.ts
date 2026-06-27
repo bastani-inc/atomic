@@ -101,6 +101,47 @@ describe("expanded workflow graph", () => {
     );
   });
 
+  it("renders a Loop rail for expanded child workflow stages", () => {
+    const rootBoundary: StageSnapshot = {
+      ...makeStage("workflow:child"),
+      status: "running",
+      workflowChildRun: {
+        alias: "child",
+        workflow: "child-workflow",
+        runId: "child-run",
+      },
+    };
+    const childFirst = makeStage("child-first");
+    const childSecond = makeStage("child-second", ["child-first"]);
+    const snap: StoreSnapshot = {
+      runs: [
+        makeRun([rootBoundary]),
+        {
+          id: "child-run",
+          name: "child-workflow",
+          inputs: {},
+          status: "running",
+          stages: [childFirst, childSecond],
+          startedAt: Date.now(),
+        },
+      ],
+      notices: [],
+      version: 1,
+    };
+    const view = new GraphView({
+      mode: "overlay",
+      runId: "run-1",
+      store: makeStore(snap),
+      graphTheme: defaultTheme,
+    });
+
+    const rendered = visibleText(view.render(128));
+    assert.doesNotMatch(rendered, /workflow:child/);
+    assert.match(rendered, /child-first/);
+    assert.match(rendered, /Loop: child-first → child-second/);
+    view.dispose();
+  });
+
   it("keeps the boundary node when the imported workflow has no stages of its own", () => {
     const rootBoundary: StageSnapshot = {
       ...makeStage("workflow:child"),

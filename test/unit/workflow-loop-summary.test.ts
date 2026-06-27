@@ -120,6 +120,42 @@ describe("buildWorkflowLoopSummary", () => {
     assert.match(designLoop, /generate\/feedback · ↻ 1 refinements remain → export/);
   });
 
+  test("uses builtin defaults for non-positive bounded-loop inputs", () => {
+    assert.match(buildWorkflowLoopSummary(run({
+      name: "ralph",
+      inputs: { max_loops: 0 },
+      stages: [stage("orch", "orchestrator-1", "running")],
+    })).oneLine, /↻ 9 rounds remain/);
+
+    assert.match(buildWorkflowLoopSummary(run({
+      name: "goal",
+      inputs: { max_turns: -2 },
+      stages: [stage("turn", "work-turn-1", "running")],
+    })).oneLine, /↻ 9 turns remain/);
+
+    assert.match(buildWorkflowLoopSummary(run({
+      name: "open-claude-design",
+      inputs: { max_refinements: 0 },
+      result: { refinements_completed: 1 },
+    })).oneLine, /↻ 2 refinements remain/);
+  });
+
+  test("preserves ordinary numeric stage labels until a counted family repeats", () => {
+    const ordinary = buildWorkflowLoopSummary(run({
+      stages: [stage("oauth", "oauth-2", "running")],
+    })).oneLine;
+    assert.match(ordinary, /Loop: oauth-2/);
+    assert.doesNotMatch(ordinary, /Loop: oauth(?:\s|$)/);
+
+    const repeated = buildWorkflowLoopSummary(run({
+      stages: [
+        stage("oauth1", "oauth-1", "completed"),
+        stage("oauth2", "oauth-2", "running", ["oauth1"]),
+      ],
+    })).oneLine;
+    assert.match(repeated, /Loop: oauth ×2 repeats/);
+  });
+
   test("chooses bounded-loop input by deterministic semantic priority", () => {
     const summary = buildWorkflowLoopSummary(run({
       inputs: { max_loops: 9, max_turns: 4, max_iterations: 8 },

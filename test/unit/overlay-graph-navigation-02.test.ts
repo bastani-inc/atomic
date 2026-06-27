@@ -128,6 +128,17 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
+  it("keeps full non-loop graph action labels at medium widths", () => {
+    const view = makeView([makeStage("single")]);
+    for (const width of [80, 84, 88]) {
+      const rendered = visibleText(view.render(width));
+      assert.doesNotMatch(rendered, /Loop:/);
+      assert.match(rendered, /↑↓←→\s+navigate/, `${width}: navigate label`);
+      assert.match(rendered, /↵\s+attach/, `${width}: attach label`);
+    }
+    view.dispose();
+  });
+
   it("render returns lines in widget mode", () => {
     const snap = makeSnap([makeStage("A")]);
     const store = makeStore(snap);

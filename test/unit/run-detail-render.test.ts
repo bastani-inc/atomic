@@ -179,6 +179,23 @@ describe("renderRunDetail — themed", () => {
     assert.match(plain, /prompt-refine → research → orchestrator → review ×3 parallel/);
   });
 
+  test("LOOP section preserves ordinary numeric labels", () => {
+    const detail = detailFromRun(makeRun({
+      id: "numeric-label",
+      name: "custom",
+      status: "running",
+      stages: [
+        makeStage("oauth", "oauth-2", "running"),
+        makeStage("review", "review", "pending", { parentIds: ["oauth"] }),
+      ],
+    }));
+
+    const plain = stripAnsi(renderRunDetail(detail, { width: 100 }));
+    assert.match(plain, /LOOP/);
+    assert.match(plain, /oauth-2 → review/);
+    assert.doesNotMatch(plain, /oauth → review/);
+  });
+
   test("paused run renders paused badges, summary state, and resume hint", () => {
     const now = 1_000_000;
     const detail = detailFromRun(makeRun({
