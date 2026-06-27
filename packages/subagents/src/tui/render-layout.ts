@@ -66,7 +66,7 @@ export function truncLine(text: string, maxWidth: number): string {
 	return result + activeStyles.join("") + "…";
 }
 
-const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /**
  * Spinner cadence (ms per frame). The running glyph is derived from wall-clock
@@ -112,7 +112,7 @@ export function runningGlyph(seed?: number, now?: number): string {
 	return RUNNING_FRAMES[Math.abs(animatedSeed) % RUNNING_FRAMES.length]!;
 }
 
-const PULSE_FRAMES = ["·", "•", "●", "•"];
+export const PULSE_FRAMES = ["·", "•", "●", "•"];
 
 /**
  * Activity "heartbeat" glyph for live foreground subagent results. Unlike

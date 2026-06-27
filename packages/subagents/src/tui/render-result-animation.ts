@@ -21,16 +21,20 @@ type LegacyResultAnimationContext = {
 	};
 };
 
-const activeResultAnimationTimers = new Map<ResultAnimationTimer, SubagentResultRenderState>();
-
+/**
+ * Legacy safety net for render state objects created by earlier timer-driven
+ * foreground result rendering. New code never schedules result timers, but
+ * clearing the field prevents a stale interval from surviving across upgrades.
+ */
 export function clearResultAnimationTimer(context: LegacyResultAnimationContext): void {
 	const timer = context.state.subagentResultAnimationTimer;
-	if (timer) {
-		clearInterval(timer);
-		activeResultAnimationTimers.delete(timer);
-	}
+	if (timer) clearInterval(timer);
 	context.state.subagentResultAnimationTimer = undefined;
 	context.state.subagentResultAnimationCleanup = undefined;
+}
+
+export function advanceResultPulseFrame(frame: number | undefined): number {
+	return (frame ?? 0) + 1;
 }
 
 export function clearLegacyResultAnimationTimer(context: LegacyResultAnimationContext): void {
@@ -38,12 +42,6 @@ export function clearLegacyResultAnimationTimer(context: LegacyResultAnimationCo
 }
 
 export function stopResultAnimations(): void {
-	for (const [timer, state] of activeResultAnimationTimers) {
-		clearInterval(timer);
-		if (state.subagentResultAnimationTimer === timer) {
-			state.subagentResultAnimationTimer = undefined;
-			state.subagentResultAnimationCleanup = undefined;
-		}
-	}
-	activeResultAnimationTimers.clear();
+	// Retained for extension teardown compatibility; result rendering no longer
+	// registers global animation timers.
 }

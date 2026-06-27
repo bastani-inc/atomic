@@ -5,7 +5,7 @@ import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
 import { getTermWidth, truncLine, type Theme } from "./render-layout.ts";
-import { clearResultAnimationTimer, type ResultAnimationContext } from "./render-result-animation.ts";
+import { advanceResultPulseFrame, clearResultAnimationTimer, type ResultAnimationContext } from "./render-result-animation.ts";
 import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.ts";
 import { buildChainRenderEntries, buildMultiProgressLabel, resultRowLabel, workflowGraphHasStatus, type ChainRenderEntry } from "./render-chain-graph.ts";
 import { subagentResultRenderKey } from "./render-stable-output.ts";
@@ -38,7 +38,7 @@ export function renderLiveSubagentResult(
 		// the only line diffs tied to content that actually changed, so the
 		// differential renderer repaints exactly as it would for any progress
 		// update — no extra above-fold churn between updates.
-		context.state.subagentResultPulseFrame = (context.state.subagentResultPulseFrame ?? 0) + 1;
+		context.state.subagentResultPulseFrame = advanceResultPulseFrame(context.state.subagentResultPulseFrame);
 	}
 	context.state.subagentResultSnapshotNow ??= Date.now();
 	context.state.subagentResultPulseFrame ??= 0;

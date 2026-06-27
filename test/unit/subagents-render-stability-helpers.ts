@@ -2,7 +2,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Component } from "@earendil-works/pi-tui";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { AsyncJobState, Details } from "../../packages/subagents/src/shared/types.js";
-import { renderSubagentResult } from "../../packages/subagents/src/tui/render.js";
+import { PULSE_FRAMES, renderSubagentResult, RUNNING_FRAMES } from "../../packages/subagents/src/tui/render.js";
 
 export type { AgentToolResult, AsyncJobState, Component, Details, ExtensionContext };
 
@@ -14,8 +14,7 @@ export const theme = {
     bold: (value: string) => value,
 } as unknown as RenderTheme;
 
-// Braille spinner frames used by the running glyph. Kept in sync with render.ts.
-export const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+export { PULSE_FRAMES, RUNNING_FRAMES };
 const SPINNER_CHARS = new Set(RUNNING_FRAMES);
 
 export function withMockedNow<T>(now: number, run: () => T): T {
@@ -37,10 +36,6 @@ export function firstSpinnerChar(text: string): string | undefined {
     return undefined;
 }
 
-// Pulse "heartbeat" frames used by foreground subagent running rows. Kept in
-// sync with pulseGlyph() in render-layout.ts. The leading glyph of a compact
-// running row is always one of these, so firstPulseChar() reads it back.
-export const PULSE_FRAMES = ["·", "•", "●", "•"];
 const PULSE_CHARS = new Set(PULSE_FRAMES);
 
 export function firstPulseChar(text: string): string | undefined {

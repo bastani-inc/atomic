@@ -1,6 +1,7 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
+    PULSE_FRAMES,
     renderLiveSubagentResult,
     renderSubagentResult,
     pulseGlyph,
@@ -10,7 +11,6 @@ import {
 import {
     type AgentToolResult,
     type Details,
-    PULSE_FRAMES,
     firstPulseChar,
     runningSingleResult,
     theme,
