@@ -5,10 +5,10 @@ import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
 import { getTermWidth, truncLine, type Theme } from "./render-layout.ts";
-import { clearResultAnimationTimer, ensureResultAnimation, type ResultAnimationContext } from "./render-result-animation.ts";
+import { clearResultAnimationTimer, type ResultAnimationContext } from "./render-result-animation.ts";
 import { renderMultiCompact, renderSingleCompact } from "./render-result-compact.ts";
 import { buildChainRenderEntries, buildMultiProgressLabel, resultRowLabel, workflowGraphHasStatus, type ChainRenderEntry } from "./render-chain-graph.ts";
-import { isRunningSubagentResult, subagentResultRenderKey } from "./render-stable-output.ts";
+import { subagentResultRenderKey } from "./render-stable-output.ts";
 import { modelThinkingBadge, widgetStepStatus } from "./render-event-formatting.ts";
 import {
 	buildLiveStatusLine,
@@ -28,26 +28,27 @@ export function renderLiveSubagentResult(
 ): Component {
 	const nextKey = subagentResultRenderKey(result, options);
 	if (context.state.subagentResultSnapshotKey !== nextKey) {
-		const frameNow = Date.now();
 		context.state.subagentResultSnapshotKey = nextKey;
-		context.state.subagentResultSnapshotNow = frameNow;
-		context.state.subagentResultSpinnerFrameNow = frameNow;
+		context.state.subagentResultSnapshotNow = Date.now();
+		// Advance the activity pulse exactly once per real progress update.
+		// Foreground subagent results render into chat scrollback, which can sit
+		// above the viewport fold. Animating on a timer there forces pi-tui into a
+		// destructive full-screen/scrollback clear on every tick (the flicker that
+		// scaled with widget height). Driving the pulse off genuine updates keeps
+		// the only line diffs tied to content that actually changed, so the
+		// differential renderer repaints exactly as it would for any progress
+		// update — no extra above-fold churn between updates.
+		context.state.subagentResultPulseFrame = (context.state.subagentResultPulseFrame ?? 0) + 1;
 	}
 	context.state.subagentResultSnapshotNow ??= Date.now();
-	context.state.subagentResultSpinnerFrameNow ??= context.state.subagentResultSnapshotNow;
-	// Foreground subagent results render inside chat scrollback. Keep semantic
-	// content time stable between tool/progress updates, but let the spinner tick
-	// independently. That limits timer-driven diffs to spinner glyph cells instead
-	// of updating elapsed/tool/activity text and causing broad chatbox churn.
-	if (options.isPartial && isRunningSubagentResult(result)) {
-		ensureResultAnimation(context);
-	} else {
-		clearResultAnimationTimer(context);
-	}
+	context.state.subagentResultPulseFrame ??= 0;
+	// Never schedule timer-driven re-renders for scrollback content; clear any
+	// stale timer a previous version may have installed for this render slot.
+	clearResultAnimationTimer(context);
 	return renderSubagentResult(result, {
 		...options,
 		now: context.state.subagentResultSnapshotNow,
-		spinnerNow: context.state.subagentResultSpinnerFrameNow,
+		pulseFrame: context.state.subagentResultPulseFrame,
 	}, theme);
 }
 
@@ -56,7 +57,7 @@ export function renderLiveSubagentResult(
  */
 export function renderSubagentResult(
 	result: AgentToolResult<Details>,
-	options: { expanded: boolean; now?: number; spinnerNow?: number },
+	options: { expanded: boolean; now?: number; pulseFrame?: number },
 	theme: Theme,
 ): Component {
 	const d = result.details;
@@ -72,7 +73,7 @@ export function renderSubagentResult(
 
 	if (d.mode === "single" && d.results.length === 1) {
 		const r = d.results[0];
-		if (!expanded) return renderSingleCompact(d, r, theme, options.now, options.spinnerNow);
+		if (!expanded) return renderSingleCompact(d, r, theme, options.now, options.pulseFrame);
 		const isRunning = r.progress?.status === "running";
 		const icon = isRunning
 			? theme.fg("warning", "running")
@@ -166,7 +167,7 @@ export function renderSubagentResult(
 		return c;
 	}
 
-	if (!expanded) return renderMultiCompact(d, theme, options.now, options.spinnerNow);
+	if (!expanded) return renderMultiCompact(d, theme, options.now, options.pulseFrame);
 
 	const hasRunning = d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")

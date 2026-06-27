@@ -37,6 +37,17 @@ export function firstSpinnerChar(text: string): string | undefined {
     return undefined;
 }
 
+// Pulse "heartbeat" frames used by foreground subagent running rows. Kept in
+// sync with pulseGlyph() in render-layout.ts. The leading glyph of a compact
+// running row is always one of these, so firstPulseChar() reads it back.
+export const PULSE_FRAMES = ["·", "•", "●", "•"];
+const PULSE_CHARS = new Set(PULSE_FRAMES);
+
+export function firstPulseChar(text: string): string | undefined {
+    for (const char of text) if (PULSE_CHARS.has(char)) return char;
+    return undefined;
+}
+
 export function runningSingleResult(): AgentToolResult<Details> {
     return {
         content: [{ type: "text", text: "running" }],

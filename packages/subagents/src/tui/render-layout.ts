@@ -73,9 +73,15 @@ const RUNNING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  * time so every active spinner advances smoothly and in lockstep, independent
  * of how often (or how irregularly) progress data updates arrive. The animation
  * timers below only schedule re-renders; the displayed frame always comes from
- * the clock. This fixes the frozen/stuttering spinner from issue #1084 while
- * keeping per-frame diffs to a single glyph cell so the differential renderer
- * never needs a full-clear (no flicker).
+ * the clock. This fixes the frozen/stuttering spinner from issue #1084.
+ *
+ * IMPORTANT: a wall-clock spinner only stays flicker-free for widgets pinned to
+ * the bottom of the buffer (e.g. the below-editor async widget), where every
+ * tick stays inside the viewport. Content rendered into chat scrollback (live
+ * foreground subagent results) can scroll above the viewport fold; there, even
+ * a single-cell spinner diff forces pi-tui into a destructive full-screen +
+ * scrollback clear on every tick. Such surfaces must NOT animate on a timer —
+ * see pulseGlyph(), which is advanced once per real progress update instead.
  */
 export const RUNNING_ANIMATION_MS = 80;
 
@@ -104,6 +110,23 @@ export function runningGlyph(seed?: number, now?: number): string {
 	// captured `now` so host re-renders do not mutate already-emitted lines.
 	const animatedSeed = runningSeed(seed, currentRunningFrame(now)) ?? 0;
 	return RUNNING_FRAMES[Math.abs(animatedSeed) % RUNNING_FRAMES.length]!;
+}
+
+const PULSE_FRAMES = ["·", "•", "●", "•"];
+
+/**
+ * Activity "heartbeat" glyph for live foreground subagent results. Unlike
+ * runningGlyph(), the frame is NOT derived from wall-clock time: the caller
+ * advances `frame` exactly once per real progress update (see
+ * renderLiveSubagentResult). With no animation timer, the only line diffs this
+ * produces coincide with progress data that genuinely changed, so the pulse can
+ * live in chat scrollback (above or below the fold) without ever triggering
+ * pi-tui's full-screen/scrollback clear. Returns a steady breathing dot that
+ * grows and settles as the subagent reports activity.
+ */
+export function pulseGlyph(frame?: number): string {
+	const index = Number.isFinite(frame) ? Math.abs(Math.trunc(frame as number)) : 0;
+	return PULSE_FRAMES[index % PULSE_FRAMES.length]!;
 }
 
 export function progressRunningSeed(progress: ProgressSeedSource | undefined): number | undefined {

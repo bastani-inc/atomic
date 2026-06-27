@@ -2,7 +2,7 @@ import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { shortenPath } from "../shared/formatters.ts";
 import { getSingleResultOutput } from "../shared/utils.ts";
-import { getTermWidth, progressRunningSeed, runningGlyph, runningSeed, truncLine, type Theme } from "./render-layout.ts";
+import { getTermWidth, pulseGlyph, truncLine, type Theme } from "./render-layout.ts";
 import {
 	buildLiveStatusLine,
 	compactCurrentActivity,
@@ -25,7 +25,7 @@ import {
 } from "./render-chain-graph.ts";
 import { modelThinkingBadge, widgetStepGlyph, widgetStepStatus } from "./render-event-formatting.ts";
 
-export function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, now?: number, spinnerNow?: number): Component {
+export function renderSingleCompact(d: Details, r: Details["results"][number], theme: Theme, now?: number, pulseFrame?: number): Component {
 	const output = r.truncation?.text || getSingleResultOutput(r);
 	const progress = r.progress || r.progressSummary;
 	const isRunning = r.progress?.status === "running";
@@ -37,7 +37,7 @@ export function renderSingleCompact(d: Details, r: Details["results"][number], t
 	const c = new Container();
 	const width = getTermWidth() - 4;
 	const modelDisplay = modelThinkingBadge(theme, r.model, undefined, r.fastMode);
-	c.addChild(new Text(truncLine(`${resultGlyph(r, output, theme, isRunning, progressRunningSeed(r.progress ?? r.progressSummary), spinnerNow ?? now)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
+	c.addChild(new Text(truncLine(`${resultGlyph(r, output, theme, isRunning, pulseFrame)} ${theme.fg("toolTitle", theme.bold(r.agent))}${modelDisplay}${contextBadge}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`, width), 0, 0));
 
 	if (isRunning && r.progress) {
 		const progressSnapshotNow = snapshotNowForProgress(r.progress, now);
@@ -61,7 +61,7 @@ export function renderSingleCompact(d: Details, r: Details["results"][number], t
 	return c;
 }
 
-export function renderMultiCompact(d: Details, theme: Theme, now?: number, spinnerNow?: number): Component {
+export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulseFrame?: number): Component {
 	const hasRunning = d.progress?.some((p) => p.status === "running")
 		|| d.results.some((r) => r.progress?.status === "running")
 		|| workflowGraphHasStatus(d, ["running"]);
@@ -87,7 +87,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, spinn
 	const itemTitle = multiLabel.itemTitle;
 	const stats = statJoin(theme, [multiLabel.headerLabel, formatProgressStats(theme, totalSummary, true, now)]);
 	const glyph = hasRunning
-		? theme.fg("accent", runningGlyph(runningSeed(progressRunningSeed(totalSummary), d.currentStepIndex), spinnerNow ?? now))
+		? theme.fg("accent", pulseGlyph(pulseFrame))
 		: failed
 			? theme.fg("error", "✗")
 			: paused
@@ -133,7 +133,7 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, spinn
 		const rPending = rProg && "status" in rProg && rProg.status === "pending";
 		const stepNumber = r.progress?.index !== undefined ? r.progress.index + 1 : progressFromArray?.index !== undefined ? progressFromArray.index + 1 : i + 1;
 		const stepStats = formatProgressStats(theme, rProg, true, now);
-		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, progressRunningSeed(rProg), spinnerNow ?? now);
+		const glyph = rPending ? theme.fg("dim", "◦") : resultGlyph(r, output, theme, rRunning, pulseFrame);
 		const pendingLabel = rPending ? ` ${theme.fg("dim", "· pending")}` : "";
 		const stepLabel = resultRowLabel(d, multiLabel, i, stepNumber);
 		const line = `${glyph} ${stepLabel}: ${themeBold(theme, agentName)}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}${pendingLabel}`;

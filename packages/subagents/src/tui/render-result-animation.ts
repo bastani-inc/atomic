@@ -1,5 +1,3 @@
-import { RUNNING_ANIMATION_MS } from "./render-layout.ts";
-
 type ResultAnimationTimer = ReturnType<typeof setInterval>;
 
 export interface SubagentResultRenderState {
@@ -8,8 +6,8 @@ export interface SubagentResultRenderState {
 	subagentResultSnapshotKey?: string;
 	/** Stable semantic/content timestamp used for durations and activity text. */
 	subagentResultSnapshotNow?: number;
-	/** Timer-driven timestamp used only for spinner glyph frames. */
-	subagentResultSpinnerFrameNow?: number;
+	/** Monotonic pulse frame, advanced once per progress update (no timer). */
+	subagentResultPulseFrame?: number;
 }
 
 export type ResultAnimationContext = {
@@ -37,22 +35,6 @@ export function clearResultAnimationTimer(context: LegacyResultAnimationContext)
 
 export function clearLegacyResultAnimationTimer(context: LegacyResultAnimationContext): void {
 	clearResultAnimationTimer(context);
-}
-
-export function ensureResultAnimation(context: ResultAnimationContext): void {
-	if (context.state.subagentResultAnimationTimer) return;
-	const timer = setInterval(() => {
-		context.state.subagentResultSpinnerFrameNow = Date.now();
-		try {
-			context.invalidate();
-		} catch {
-			clearResultAnimationTimer(context);
-		}
-	}, RUNNING_ANIMATION_MS);
-	timer.unref?.();
-	context.state.subagentResultAnimationTimer = timer;
-	context.state.subagentResultAnimationCleanup = () => clearResultAnimationTimer(context);
-	activeResultAnimationTimers.set(timer, context.state);
 }
 
 export function stopResultAnimations(): void {

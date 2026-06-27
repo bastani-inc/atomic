@@ -2,7 +2,7 @@ import type { AgentProgress, Details } from "../shared/types.ts";
 import { formatDuration, formatTokens, formatToolCall } from "../shared/formatters.ts";
 import { getDisplayItems } from "../shared/utils.ts";
 import { formatActivityLabel } from "../shared/status-format.ts";
-import { getTermWidth, progressRunningSeed, runningGlyph, type Theme } from "./render-layout.ts";
+import { getTermWidth, pulseGlyph, type Theme } from "./render-layout.ts";
 
 export function extractOutputTarget(task: string): string | undefined {
 	const writeToMatch = task.match(/\[Write to:\s*([^\]\n]+)\]/i);
@@ -118,8 +118,8 @@ export function resultStatusLine(result: Details["results"][number], output: str
 	return "Done";
 }
 
-export function resultGlyph(result: Details["results"][number], output: string, theme: Theme, running = result.progress?.status === "running", seed = progressRunningSeed(result.progress ?? result.progressSummary), now?: number): string {
-	if (running) return theme.fg("accent", runningGlyph(seed, now));
+export function resultGlyph(result: Details["results"][number], output: string, theme: Theme, running = result.progress?.status === "running", pulseFrame?: number): string {
+	if (running) return theme.fg("accent", pulseGlyph(pulseFrame));
 	if (result.detached) return theme.fg("warning", "■");
 	if (result.interrupted) return theme.fg("warning", "■");
 	if (result.exitCode !== 0) return theme.fg("error", "✗");

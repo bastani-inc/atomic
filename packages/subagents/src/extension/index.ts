@@ -69,7 +69,7 @@ type SubagentToolRenderState = SubagentResultRenderState;
 function rebuildSlashResultContainer(
 	container: Container,
 	result: AgentToolResult<Details>,
-	options: { expanded: boolean; now?: number },
+	options: { expanded: boolean; now?: number; pulseFrame?: number },
 	theme: ExtensionContext["ui"]["theme"],
 ): void {
 	container.clear();
@@ -92,7 +92,7 @@ function createSlashResultComponent(
 		if (snapshot.version !== lastVersion) {
 			lastVersion = snapshot.version;
 			lastSnapshotNow = Date.now();
-			rebuildSlashResultContainer(container, snapshot.result, { ...options, now: lastSnapshotNow }, theme);
+			rebuildSlashResultContainer(container, snapshot.result, { ...options, now: lastSnapshotNow, pulseFrame: snapshot.version }, theme);
 		}
 		return Container.prototype.render.call(container, width);
 	};
