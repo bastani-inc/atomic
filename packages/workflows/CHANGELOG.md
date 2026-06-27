@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.3-alpha.2] - 2026-06-27
+
 ### Breaking Changes
 
 - Workflow durability is now enabled by default with the zero-infrastructure per-workflow file backend rooted under `~/.atomic/workflow-durable`; the previous process-local in-memory default and `ATOMIC_WORKFLOW_DURABLE_DIR` opt-in path were removed. In-memory durability remains available for explicit test/custom backend overrides and for the privacy opt-out `ATOMIC_WORKFLOW_DURABLE=0`/`false`/`off`/`memory`. ([#1498](https://github.com/bastani-inc/atomic/issues/1498))

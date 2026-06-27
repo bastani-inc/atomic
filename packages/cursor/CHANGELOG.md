@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.2] - 2026-06-27
+
 ### Added
 
 - Added scoped Cursor image-input support for known multimodal Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), plus `cursor/grok-4.3`, including selected-image request serialization and mixed text/image MCP tool-result serialization.
