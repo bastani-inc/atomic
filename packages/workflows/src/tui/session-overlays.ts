@@ -199,6 +199,9 @@ function observeCustomMount(
     return;
   }
 
+  // Atomic/pi custom overlays invoke the component factory synchronously while
+  // mounting. If the mount promise settles before that happens, no overlay can
+  // receive input, so callers should apply their degraded-host fallback.
   Promise.resolve(result).then(
     () => {
       if (!factoryInvoked()) settleHostFailure();
@@ -328,6 +331,8 @@ export function openWorkflowQuitConfirm(
           finish(action.kind === "confirm");
         },
         invalidate: () => tui.requestRender?.(),
+        // Once the prompt mounted, host disposal is equivalent to user cancel;
+        // only never-mounted hosts fail open to avoid wedging headless quits.
         dispose: () => settle(false),
       };
     };

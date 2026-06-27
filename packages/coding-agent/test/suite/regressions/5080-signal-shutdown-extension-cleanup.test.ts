@@ -237,6 +237,8 @@ describe("InteractiveMode.shutdown ordering (#5080)", () => {
 	});
 
 	test("failed pre-shutdown confirmation clears the pending guard", async () => {
+		// ExtensionRunner normally catches handler failures; this synthetic reject
+		// validates the shutdown guard contract if the emit helper ever fails.
 		const order: string[] = [];
 		const context = createContext(order);
 		context.session.extensionRunner = {

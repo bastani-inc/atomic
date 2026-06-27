@@ -321,14 +321,25 @@ export function buildGraphOverlayAdapter(
         done(undefined);
       };
       const graphTheme = deriveGraphThemeFromPiTheme(theme);
+      let quitConfirmationPending = false;
       const requestQuit = (targetRunId: string): void => {
-        const targetRun: RunSnapshot | undefined = store.runs().find((candidate) => candidate.id === targetRunId);
+        if (quitConfirmationPending) return;
+        const targetRun: RunSnapshot | undefined = store.runs()
+          .find((candidate) => candidate.id === targetRunId);
         if (!targetRun || targetRun.endedAt !== undefined) return;
-        void openWorkflowQuitConfirm(ui ?? {}, [targetRun], graphTheme).then((confirmed) => {
-          if (confirmed === false) return;
-          quitRun(targetRunId);
-          finish();
-        });
+        quitConfirmationPending = true;
+        void openWorkflowQuitConfirm(ui ?? {}, [targetRun], graphTheme)
+          .then((confirmed) => {
+            if (confirmed === false) return;
+            const liveTarget: RunSnapshot | undefined = store.runs()
+              .find((candidate) => candidate.id === targetRunId);
+            if (!liveTarget || liveTarget.endedAt !== undefined) return;
+            quitRun(targetRunId);
+            finish();
+          })
+          .finally(() => {
+            quitConfirmationPending = false;
+          });
       };
       const view = new WorkflowAttachPane({
         store,

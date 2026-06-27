@@ -22,6 +22,9 @@ InteractiveModeBase.prototype.shutdown = async function(this: InteractiveModeBas
     if (this.isShuttingDown) return;
 
     if (!options?.fromSignal) {
+      // While a cancellable quit prompt is mounted, further in-process quit
+      // requests (including double Ctrl+C) are owned by that overlay. Real
+      // process signals still bypass this path through `fromSignal`.
       if (this.shutdownConfirmationPending) return;
       this.shutdownConfirmationPending = true;
       let beforeShutdown: Awaited<ReturnType<typeof emitSessionBeforeShutdownEvent>>;
