@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.3-alpha.3] - 2026-06-27
+
+### Changed
+
+- Published a synchronized Atomic 0.9.3-alpha.3 prerelease for the web-access extension; no web-access extension changes were made after 0.9.2.
+
 ## [0.9.2] - 2026-06-23
 
 ### Changed

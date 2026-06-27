@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.3-alpha.3] - 2026-06-27
+
+### Changed
+
+- Published the Atomic 0.9.3-alpha.3 prerelease for the workflows extension from the same code as 0.9.3-alpha.2; no workflow changes were made after the previous prerelease.
+
 ## [0.9.3-alpha.2] - 2026-06-27
 
 ### Breaking Changes

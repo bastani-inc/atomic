@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.3] - 2026-06-27
+
+### Changed
+
+- Published the Atomic 0.9.3-alpha.3 prerelease from the same code as 0.9.3-alpha.2; no coding-agent changes were made after the previous prerelease.
+
 ## [0.9.3-alpha.2] - 2026-06-27
 
 ### Fixed
