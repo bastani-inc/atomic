@@ -1,0 +1,3 @@
+[submodule "evals/deep-swe"]
+	path = evals/deep-swe
+	url = https://github.com/datacurve-ai/deep-swe
