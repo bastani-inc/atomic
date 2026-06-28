@@ -263,4 +263,39 @@ describe("Cursor model mapper", () => {
 		assert.equal(effortOnly?.id, "claude-4.5-opus");
 		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "minimal"), "claude-4.5-opus-high");
 	});
+
+	test("sends a concrete variant id for effort-only models when no thinking level is selected", () => {
+		// Cursor lists only effort-variant ids for these models (no bare base id),
+		// so a no-thinking request must map to a real variant or Cursor replies
+		// `not_found`.
+		const [effortOnly] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "gpt-5.5-low", displayName: "GPT-5.5 Low" },
+				{ id: "gpt-5.5-medium", displayName: "GPT-5.5" },
+				{ id: "gpt-5.5-high", displayName: "GPT-5.5 High" },
+			],
+		});
+		assert.equal(effortOnly?.id, "gpt-5.5");
+		const off = effortOnly!.thinkingLevelMap?.off;
+		assert.ok(typeof off === "string" && off.startsWith("gpt-5.5-"), "expected an off default real variant id");
+		const defaultSend = resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, undefined);
+		assert.notEqual(defaultSend, "gpt-5.5");
+		assert.ok(defaultSend.startsWith("gpt-5.5-"), "no-thinking send must be a real Cursor variant id");
+		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "high"), "gpt-5.5-high");
+
+		// Models that expose a real base id keep sending the base id by default.
+		const [withBase] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "gpt-5.2", displayName: "GPT-5.2" },
+				{ id: "gpt-5.2-high", displayName: "GPT-5.2 High" },
+			],
+		});
+		assert.equal(withBase?.id, "gpt-5.2");
+		assert.equal(withBase!.thinkingLevelMap?.off, undefined);
+		assert.equal(resolveCursorModelVariant(withBase!.id, withBase!.thinkingLevelMap, undefined), "gpt-5.2");
+	});
 });

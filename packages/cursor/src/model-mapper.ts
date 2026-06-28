@@ -102,7 +102,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			api: CURSOR_API,
 			baseUrl: CURSOR_API_BASE_URL,
 			reasoning: supportsReasoning,
-			thinkingLevelMap: supportsEffort ? buildThinkingLevelMap(effortVariants, group.primaryId) : undefined,
+			thinkingLevelMap: supportsEffort ? buildCursorThinkingLevelMap(group, effortVariants) : undefined,
 			input: cursorModelInput(group.primaryId),
 			cost: subscriptionCost(),
 			contextWindow: positiveIntLimit(chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? referenceLimits.contextWindow, ESTIMATED_CONTEXT_WINDOW),
@@ -130,8 +130,13 @@ export function resolveCursorModelVariant(
 	thinkingLevelMap: ThinkingLevelMap | undefined,
 	thinkingLevel: ThinkingLevel | undefined,
 ): string {
-	if (!thinkingLevel || !thinkingLevelMap) return baseModelId;
-	const mapped = thinkingLevelMap[thinkingLevel];
+	if (!thinkingLevelMap) return baseModelId;
+	// With no explicit thinking level, fall back to the `off` default variant.
+	// Effort-only Cursor models have no real base id (Cursor lists only
+	// `gpt-5.5-medium`, never a bare `gpt-5.5`), so sending the synthesized base
+	// id makes Cursor reject the run with `not_found`; the `off` entry carries a
+	// concrete variant id to send instead.
+	const mapped = thinkingLevel ? thinkingLevelMap[thinkingLevel] : thinkingLevelMap.off;
 	if (!mapped || mapped === "default") return baseModelId;
 	if (isCursorEffort(mapped)) return replaceEffortBeforeCursorSuffix(baseModelId, mapped);
 	return mapped;
@@ -223,6 +228,20 @@ function collectEffortVariants(variants: readonly CursorVariant[], primaryId: st
 		if (effort && !byEffort.has(effort)) byEffort.set(effort, variant.id);
 	}
 	return byEffort;
+}
+
+function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: ReadonlyMap<CursorEffort, string>): ThinkingLevelMap {
+	const map = buildThinkingLevelMap(effortVariants, group.primaryId);
+	// When the group has no real base id (every Cursor variant carries an effort
+	// suffix), the synthesized primary id is not a sendable Cursor model. Record
+	// an `off` default so a no-thinking request maps to a concrete variant instead
+	// of the base id, which Cursor would reject with `not_found`.
+	const hasRealBaseId = group.variants.some((variant) => variant.id === group.primaryId);
+	if (!hasRealBaseId) {
+		const defaultVariant = map.minimal ?? map.low ?? map.medium ?? map.high ?? map.xhigh ?? null;
+		if (defaultVariant) map.off = defaultVariant;
+	}
+	return map;
 }
 
 function buildThinkingLevelMap(effortVariants: ReadonlyMap<CursorEffort, string>, primaryId: string): ThinkingLevelMap {
