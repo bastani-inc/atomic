@@ -118,7 +118,7 @@ describe("Cursor provider registration", () => {
 		assert.equal(registrations[0]?.name, "cursor");
 		const config = registrations[0]?.config;
 		assert.equal(config?.name, "Cursor");
-		assert.equal(config?.oauth.name, "Cursor");
+		assert.equal(config?.oauth.name, "Cursor (Experimental)");
 		assert.equal(config?.api, "cursor-agent");
 		assert.equal(typeof config?.streamSimple, "function");
 		assert.ok(config?.models.some((model) => model.id === "composer-2" && /estimated/u.test(model.name)));

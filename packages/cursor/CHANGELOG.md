@@ -5,6 +5,7 @@
 ### Changed
 
 - Resolved Cursor model context windows and max output tokens from the installed `@earendil-works/pi-ai` model catalog instead of flat placeholder estimates: Atomic matches each Cursor model ID's family/version against pi-ai metadata (honoring Cursor's explicit `1M` labels), preserves any positive limits Cursor sends, ignores non-positive bogus limits, and keeps a conservative 200k context / 64k output estimate only for Cursor-only models (such as `composer-*` and `default`/Auto) with no pi-ai match. Limit resolution matches on IDs only — not generic display names — so it never adds, drops, or mislabels models in the list.
+- Changed the Cursor OAuth login option label to **Cursor (Experimental)** so the `/login` picker clearly marks the private-protocol provider as experimental.
 
 ## [0.9.3-alpha.3] - 2026-06-27
 

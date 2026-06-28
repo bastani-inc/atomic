@@ -1,6 +1,6 @@
 export const CURSOR_PROVIDER_ID = "cursor";
 export const CURSOR_PROVIDER_NAME = "Cursor";
-export const CURSOR_LOGIN_NAME = "Cursor";
+export const CURSOR_LOGIN_NAME = "Cursor (Experimental)";
 export const CURSOR_API = "cursor-agent";
 export const CURSOR_API_BASE_URL = "https://api2.cursor.sh";
 export const CURSOR_WEB_BASE_URL = "https://cursor.com";

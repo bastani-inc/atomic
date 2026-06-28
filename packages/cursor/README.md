@@ -4,7 +4,7 @@ First-party Atomic provider for Cursor subscription models.
 
 ## Status
 
-This package registers `cursor` via Atomic's bundled extension provider API. `/login` shows **Cursor** and stores credentials through Atomic OAuth storage (`~/.atomic/agent/auth.json`). The login URL and PKCE polling behavior intentionally match the MIT-licensed [`ndraiman/pi-cursor-provider`](https://github.com/ndraiman/pi-cursor-provider) reference: `callbacks.onAuth({ url: loginUrl })`, no extra login warning/instruction copy, and polling `api2.cursor.sh/auth/poll` until Cursor returns tokens.
+This package registers `cursor` via Atomic's bundled extension provider API. `/login` shows **Cursor (Experimental)** and stores credentials through Atomic OAuth storage (`~/.atomic/agent/auth.json`). The login URL and PKCE polling behavior intentionally match the MIT-licensed [`ndraiman/pi-cursor-provider`](https://github.com/ndraiman/pi-cursor-provider) reference: `callbacks.onAuth({ url: loginUrl })`, no extra login warning/instruction copy, and polling `api2.cursor.sh/auth/poll` until Cursor returns tokens.
 
 The runtime protocol is also aligned to `ndraiman/pi-cursor-provider` at commit `82fc4e73f9ae820d87b34ac36713b18989910a36`: Atomic vendors the reference `cursor-models-raw.json` and generated `proto/agent_pb.ts`, and builds Cursor request/control messages through `@bufbuild/protobuf` descriptors instead of hand-maintained protobuf bytes. HTTP/2 itself is handled by the generated `@bastani/atomic-natives` Rust/N-API package rather than a separate local proxy.
 

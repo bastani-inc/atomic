@@ -46,7 +46,7 @@ Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party h
 
 ### Cursor (experimental)
 
-Cursor support is bundled as the first-party `@bastani/cursor` extension and appears in `/login` as **Cursor (experimental)**. It uses Cursor's browser PKCE flow and stores OAuth credentials in `~/.atomic/agent/auth.json`; do not paste Cursor tokens into environment variables, command-line arguments, or custom proxies. Atomic identifies as a Cursor CLI-compatible client against private endpoints; maintainers and users should explicitly accept that this may conflict with Cursor's terms of service, stop working without notice, or affect the Cursor account used to authenticate.
+Cursor support is bundled as the first-party `@bastani/cursor` extension and appears in `/login` as **Cursor (Experimental)**. It uses Cursor's browser PKCE flow and stores OAuth credentials in `~/.atomic/agent/auth.json`; do not paste Cursor tokens into environment variables, command-line arguments, or custom proxies. Atomic identifies as a Cursor CLI-compatible client against private endpoints; maintainers and users should explicitly accept that this may conflict with Cursor's terms of service, stop working without notice, or affect the Cursor account used to authenticate.
 
 Current limitations:
 

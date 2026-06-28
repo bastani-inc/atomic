@@ -27,7 +27,7 @@ Manual smoke-test procedure after Cursor releases:
 
 1. Sign in to the current Cursor CLI/app and capture a successful `api2.cursor.sh` model discovery or agent `Run` request.
 2. Update `CURSOR_CLIENT_VERSION` in `src/config.ts` from the captured `x-cursor-client-version` header if it changed.
-3. In Atomic, run `/login`, select **Cursor**, complete browser auth, then confirm `/model` lists `cursor/<model-id>` entries from live discovery.
+3. In Atomic, run `/login`, select **Cursor (Experimental)**, complete browser auth, then confirm `/model` lists `cursor/<model-id>` entries from live discovery.
 4. Select a Cursor model and run one chat turn plus one tool-using turn; verify the process exits cleanly for a one-shot/noninteractive run.
 5. Re-run the Cursor unit tests and update these notes for any changed protobuf paths.
 
