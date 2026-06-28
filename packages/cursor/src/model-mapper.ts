@@ -105,8 +105,8 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			thinkingLevelMap: supportsEffort ? buildThinkingLevelMap(effortVariants, group.primaryId) : undefined,
 			input: cursorModelInput(group.primaryId),
 			cost: subscriptionCost(),
-			contextWindow: chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? referenceLimits.contextWindow ?? ESTIMATED_CONTEXT_WINDOW,
-			maxTokens: chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? referenceLimits.maxTokens ?? ESTIMATED_MAX_TOKENS,
+			contextWindow: positiveIntLimit(chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? referenceLimits.contextWindow, ESTIMATED_CONTEXT_WINDOW),
+			maxTokens: positiveIntLimit(chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? referenceLimits.maxTokens, ESTIMATED_MAX_TOKENS),
 		};
 	});
 }
@@ -116,6 +116,13 @@ function cursorModelReferenceCandidates(group: CursorVariantGroup): CursorModelR
 		{ id: group.primaryId, displayName: group.displayName },
 		...group.variants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
 	];
+}
+
+function positiveIntLimit(value: number | undefined, fallback: number): number {
+	// Provider registration rejects non-positive/non-integer windows and would
+	// drop the whole catalog; guarantee a valid positive integer here so limit
+	// values can never affect which Cursor models are listed.
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 export function resolveCursorModelVariant(

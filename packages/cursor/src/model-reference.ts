@@ -49,12 +49,26 @@ const REFERENCE_PROVIDER_PRIORITY = new Map<KnownProvider, number>([
 let referenceModelIndex: ReadonlyMap<string, readonly ReferenceModelLimits[]> | undefined;
 
 export function resolveCursorModelReferenceLimits(candidates: readonly CursorModelReferenceCandidate[]): CursorModelReferenceLimits {
-	const explicitOneMillion = candidates.some((candidate) => hasOneMillionMarker(candidate.id) || hasOneMillionMarker(candidate.displayName ?? ""));
-	const match = findReferenceModel(cursorCandidateAliases(candidates), explicitOneMillion);
-	if (!match) {
-		return explicitOneMillion ? { contextWindow: ONE_MILLION_MODEL_NAME_CONTEXT_WINDOW } : {};
+	// Limit resolution must never affect which Cursor models register. Any failure
+	// (e.g. an unexpected pi-ai catalog shape at runtime) degrades to "no reference
+	// limits" so the caller keeps the model with its estimate.
+	try {
+		const explicitOneMillion = candidates.some((candidate) => hasOneMillionMarker(candidate.id) || hasOneMillionMarker(candidate.displayName ?? ""));
+		const match = findReferenceModel(cursorCandidateAliases(candidates), explicitOneMillion);
+		if (!match) {
+			return explicitOneMillion ? { contextWindow: ONE_MILLION_MODEL_NAME_CONTEXT_WINDOW } : {};
+		}
+		return {
+			contextWindow: positiveIntOrUndefined(match.contextWindow),
+			maxTokens: positiveIntOrUndefined(match.maxTokens),
+		};
+	} catch {
+		return {};
 	}
-	return { contextWindow: match.contextWindow, maxTokens: match.maxTokens };
+}
+
+function positiveIntOrUndefined(value: number): number | undefined {
+	return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function findReferenceModel(aliases: readonly string[], preferOneMillion: boolean): ReferenceModelLimits | undefined {
