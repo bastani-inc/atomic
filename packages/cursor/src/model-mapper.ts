@@ -61,12 +61,13 @@ interface CursorVariantGroup {
 const CURSOR_FALLBACK_RAW_MODELS = rawFallbackModels satisfies readonly CursorUsableModel[];
 const PARSEABLE_EFFORTS: readonly Exclude<CursorEffort, "default">[] = ["none", "low", "medium", "high", "xhigh", "max"];
 const EFFORT_ORDER: readonly CursorEffort[] = ["none", "low", "default", "medium", "high", "xhigh", "max"];
+const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh"];
 const THINKING_LEVEL_EFFORT_PREFERENCES: Record<ThinkingLevel, readonly CursorEffort[]> = {
 	minimal: ["none", "low", "default"],
 	low: ["low", "none", "default"],
 	medium: ["medium", "default", "low"],
 	high: ["high", "medium", "default"],
-	xhigh: ["max", "xhigh", "high"],
+	xhigh: ["max", "xhigh"],
 };
 
 const ESTIMATED_CONTEXT_WINDOW = 200_000;
@@ -152,9 +153,31 @@ export function resolveCursorModelVariant(
 	// id makes Cursor reject the run with `not_found`; the `off` entry carries a
 	// concrete variant id to send instead.
 	const mapped = thinkingLevel ? thinkingLevelMap[thinkingLevel] : thinkingLevelMap.off;
-	if (!mapped || mapped === "default") return baseModelId;
+	if (mapped === null) {
+		const fallbackLevel = nearestSupportedThinkingLevel(thinkingLevelMap, thinkingLevel);
+		return fallbackLevel ? resolveCursorModelVariant(baseModelId, thinkingLevelMap, fallbackLevel) : baseModelId;
+	}
+	if (mapped === undefined || mapped === "default") return baseModelId;
 	if (isCursorEffort(mapped)) return replaceEffortBeforeCursorSuffix(baseModelId, mapped);
 	return mapped;
+}
+
+function nearestSupportedThinkingLevel(
+	thinkingLevelMap: ThinkingLevelMap,
+	thinkingLevel: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+	if (!thinkingLevel) return undefined;
+	const requestedIndex = THINKING_LEVELS.indexOf(thinkingLevel);
+	if (requestedIndex === -1) return undefined;
+	for (let index = requestedIndex - 1; index >= 0; index--) {
+		const level = THINKING_LEVELS[index];
+		if (level && thinkingLevelMap[level] !== null && thinkingLevelMap[level] !== undefined) return level;
+	}
+	for (let index = requestedIndex + 1; index < THINKING_LEVELS.length; index++) {
+		const level = THINKING_LEVELS[index];
+		if (level && thinkingLevelMap[level] !== null && thinkingLevelMap[level] !== undefined) return level;
+	}
+	return undefined;
 }
 
 export function insertEffortBeforeCursorSuffix(modelId: string, effort: CursorEffort): string {
@@ -266,8 +289,13 @@ function buildThinkingLevelMap(effortVariants: ReadonlyMap<CursorEffort, string>
 		low: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.low, primaryId),
 		medium: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.medium, primaryId),
 		high: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.high, primaryId),
-		xhigh: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.xhigh, primaryId),
+		// `xhigh` should only be offered when Cursor advertises a true xhigh/max variant.
+		xhigh: chooseCursorXhighVariant(effortVariants),
 	};
+}
+
+function chooseCursorXhighVariant(effortVariants: ReadonlyMap<CursorEffort, string>): string | null {
+	return effortVariants.get("max") ?? effortVariants.get("xhigh") ?? null;
 }
 
 function chooseEffortVariant(effortVariants: ReadonlyMap<CursorEffort, string>, preferences: readonly CursorEffort[], _primaryId: string): string | null {

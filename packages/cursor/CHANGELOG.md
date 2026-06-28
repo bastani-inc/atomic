@@ -11,6 +11,7 @@
 
 - Fixed Cursor models whose discovery only exposes effort-variant ids (for example `gpt-5.5-low/medium/high`, `claude-opus-4-8-*`, `gpt-5.4-*`, `glm-5.2-*`) failing every request with `Cursor stream ended with not_found` when no thinking level was selected. These models are registered under a synthesized base id (`cursor/gpt-5.5`) that Cursor does not accept as a run target; Atomic now records a concrete default variant and sends it for no-thinking requests, so all Cursor models stream on their default setting.
 - Fixed Cursor models with explicit `1M` ids or labels losing their 1,000,000-token floor when the closest pi-ai reference match advertises a smaller base context window, including `-fast`/thinking sibling groups whose own label omits `1M`, and made the pi-ai catalog a Cursor runtime dependency instead of an optional peer so provider startup cannot fail before graceful limit fallback runs.
+- Fixed Cursor effort-only models advertising `xhigh` when Cursor only returned lower effort variants; Atomic now exposes `xhigh` only for Cursor models whose live/estimated catalog includes a true `xhigh` or `max` variant, while older saved `xhigh` selections safely fall back to the nearest sendable Cursor variant instead of failing.
 
 ## [0.9.3-alpha.3] - 2026-06-27
 

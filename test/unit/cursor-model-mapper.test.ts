@@ -188,6 +188,7 @@ describe("Cursor model mapper", () => {
 
 		assert.equal(byId("gpt-5.5")?.contextWindow, 512_000);
 		assert.equal(byId("gpt-5.5")?.maxTokens, 100_000);
+		assert.equal(byId("gpt-5.5")?.thinkingLevelMap?.xhigh, "gpt-5.5-xhigh");
 		assert.equal(byId("claude-4-sonnet")?.contextWindow, 200_000);
 		// Explicit positive live limits win over the reference catalog.
 		assert.equal(byId("gpt-5.4-explicit")?.contextWindow, 512_000);
@@ -367,6 +368,8 @@ describe("Cursor model mapper", () => {
 		const defaultSend = resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, undefined);
 		assert.equal(defaultSend, "gpt-5.5-low");
 		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "high"), "gpt-5.5-high");
+		assert.equal(effortOnly!.thinkingLevelMap?.xhigh, null);
+		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "xhigh"), "gpt-5.5-high");
 
 		// Models that expose a real base id keep sending the base id by default.
 		const [withBase] = mapCursorCatalogToProviderModels({
