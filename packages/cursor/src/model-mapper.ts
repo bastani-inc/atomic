@@ -93,7 +93,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 		const name = catalog.source === "estimated" ? `${group.displayName} (estimated)` : group.displayName;
 		// Cursor's private API omits token limits, so when neither a live nor a
 		// static explicit limit is present, derive the window/output from the
-		// installed pi-ai model catalog before falling back to a conservative
+		// bundled pi-ai model catalog before falling back to a conservative
 		// estimate. This never changes which models are registered.
 		const referenceLimits = resolveCursorModelReferenceLimits(cursorModelReferenceCandidates(group));
 		return {

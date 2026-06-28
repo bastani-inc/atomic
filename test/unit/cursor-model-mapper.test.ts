@@ -1,6 +1,6 @@
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { getModel } from "@earendil-works/pi-ai";
+import { getModels, getProviders } from "@earendil-works/pi-ai";
 import {
 	createEstimatedCursorCatalog,
 	insertEffortBeforeCursorSuffix,
@@ -9,6 +9,43 @@ import {
 	resolveCursorModelVariant,
 	type CursorModelCatalog,
 } from "../../packages/cursor/src/model-mapper.js";
+import {
+	resolveCursorModelReferenceLimits,
+	setCursorModelReferenceCatalogForTesting,
+	type CursorModelReferenceCatalogEntry,
+} from "../../packages/cursor/src/model-reference.js";
+
+const REFERENCE_CATALOG_FIXTURE: readonly CursorModelReferenceCatalogEntry[] = [
+	{ provider: "opencode", id: "claude-sonnet-4", name: "Claude Sonnet 4", contextWindow: 200_000, maxTokens: 64_000 },
+	{ provider: "opencode", id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 300_000, maxTokens: 70_000 },
+	{ provider: "opencode", id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", contextWindow: 450_000, maxTokens: 80_000 },
+	{ provider: "opencode", id: "gemini-3.1-pro", name: "Gemini 3.1 Pro", contextWindow: 1_048_576, maxTokens: 65_536 },
+	{ provider: "opencode", id: "gpt-5.1", name: "GPT-5.1", contextWindow: 256_000, maxTokens: 50_000 },
+	{ provider: "opencode", id: "gpt-5.4", name: "GPT-5.4", contextWindow: 400_000, maxTokens: 90_000 },
+	{ provider: "opencode", id: "gpt-5.4-mini", name: "GPT-5.4 Mini", contextWindow: 180_000, maxTokens: 45_000 },
+	{ provider: "opencode", id: "gpt-5.5", name: "GPT-5.5", contextWindow: 512_000, maxTokens: 100_000 },
+	{ provider: "xai", id: "grok-4.3", name: "Grok 4.3", contextWindow: 131_072, maxTokens: 32_768 },
+	{ provider: "opencode", id: "kimi-k2.5", name: "Kimi K2.5", contextWindow: 262_144, maxTokens: 131_072 },
+];
+
+beforeEach(() => {
+	setCursorModelReferenceCatalogForTesting(REFERENCE_CATALOG_FIXTURE);
+});
+
+afterEach(() => {
+	setCursorModelReferenceCatalogForTesting(undefined);
+});
+
+function firstLiveReferenceModelWithLimits(): { readonly id: string; readonly name: string } | undefined {
+	for (const provider of getProviders()) {
+		for (const model of getModels(provider)) {
+			if (model.id.trim().length > 0 && Number.isFinite(model.contextWindow) && model.contextWindow > 0 && Number.isFinite(model.maxTokens) && model.maxTokens > 0) {
+				return { id: model.id, name: model.name };
+			}
+		}
+	}
+	return undefined;
+}
 
 describe("Cursor model mapper", () => {
 	test("groups Cursor variants and maps reasoning efforts to Atomic thinking levels", () => {
@@ -74,27 +111,37 @@ describe("Cursor model mapper", () => {
 		const contextWindowFor = (id: string) => models.find((model) => model.id === id)?.contextWindow;
 		const maxTokensFor = (id: string) => models.find((model) => model.id === id)?.maxTokens;
 
-		// Known model families resolve to the installed pi-ai metadata by id.
-		assert.equal(contextWindowFor("claude-4-sonnet"), getModel("opencode", "claude-sonnet-4").contextWindow);
-		assert.equal(contextWindowFor("claude-4.6-opus"), getModel("opencode", "claude-opus-4-6").contextWindow);
-		assert.equal(contextWindowFor("gemini-3.1-pro"), getModel("opencode", "gemini-3.1-pro").contextWindow);
-		assert.equal(contextWindowFor("gpt-5.1"), getModel("opencode", "gpt-5.1").contextWindow);
-		assert.equal(contextWindowFor("gpt-5.4-mini"), getModel("opencode", "gpt-5.4-mini").contextWindow);
-		assert.equal(contextWindowFor("grok-4.3"), getModel("xai", "grok-4.3").contextWindow);
-		assert.equal(contextWindowFor("kimi-k2.5"), getModel("opencode", "kimi-k2.5").contextWindow);
-		assert.equal(maxTokensFor("gpt-5.4"), getModel("opencode", "gpt-5.4").maxTokens);
-		assert.equal(maxTokensFor("grok-4.3"), getModel("xai", "grok-4.3").maxTokens);
+		// Known model families resolve to deterministic fixture metadata by id.
+		assert.equal(contextWindowFor("claude-4-sonnet"), 200_000);
+		assert.equal(contextWindowFor("gemini-3.1-pro"), 1_048_576);
+		assert.equal(contextWindowFor("gpt-5.1"), 256_000);
+		assert.equal(contextWindowFor("gpt-5.4-mini"), 180_000);
+		assert.equal(contextWindowFor("grok-4.3"), 131_072);
+		assert.equal(contextWindowFor("kimi-k2.5"), 262_144);
+		assert.equal(maxTokensFor("gpt-5.4"), 90_000);
+		assert.equal(maxTokensFor("grok-4.3"), 32_768);
 
 		// Cursor's explicit "1M" labels are honored as a long-context floor.
-		assert.ok((contextWindowFor("claude-4-sonnet-1m") ?? 0) >= 1_000_000);
-		assert.ok((contextWindowFor("claude-4.5-sonnet") ?? 0) >= 1_000_000);
-		assert.ok((contextWindowFor("gpt-5.4") ?? 0) >= 1_000_000);
+		assert.equal(contextWindowFor("claude-4-sonnet-1m"), 1_000_000);
+		assert.equal(contextWindowFor("claude-4.5-sonnet"), 1_000_000);
+		assert.equal(contextWindowFor("gpt-5.4"), 1_000_000);
+		assert.equal(contextWindowFor("claude-4.6-opus"), 1_000_000);
 
 		// Cursor-only models without a pi-ai match keep the conservative estimate,
 		// and the generic "Auto" model must not false-match an unrelated catalog entry.
 		assert.equal(contextWindowFor("composer-2"), 200_000);
 		assert.equal(maxTokensFor("composer-2"), 64_000);
 		assert.equal(contextWindowFor("default"), 200_000);
+	});
+
+	test("smoke-checks the installed pi-ai reference catalog without pinning limits", () => {
+		setCursorModelReferenceCatalogForTesting(undefined);
+		const liveReference = firstLiveReferenceModelWithLimits();
+		assert.ok(liveReference, "expected installed pi-ai catalog to expose at least one limited model");
+
+		const resolved = resolveCursorModelReferenceLimits([{ id: liveReference.id, displayName: liveReference.name }]);
+		assert.ok((resolved.contextWindow ?? 0) > 0);
+		assert.ok((resolved.maxTokens ?? 0) > 0);
 	});
 
 	test("resolves live Cursor limits from pi-ai references and ignores bogus discovered limits", () => {
@@ -115,11 +162,9 @@ describe("Cursor model mapper", () => {
 		});
 		const byId = (id: string) => models.find((model) => model.id === id);
 
-		// Live discovery (which omits token limits) still registers every group, including gpt-5.5.
-		assert.ok(byId("gpt-5.5"), "expected live gpt-5.5 to register");
-		assert.equal(byId("gpt-5.5")?.contextWindow, getModel("opencode", "gpt-5.5").contextWindow);
-		assert.equal(byId("gpt-5.5")?.maxTokens, getModel("opencode", "gpt-5.5").maxTokens);
-		assert.equal(byId("claude-4-sonnet")?.contextWindow, getModel("opencode", "claude-sonnet-4").contextWindow);
+		assert.equal(byId("gpt-5.5")?.contextWindow, 512_000);
+		assert.equal(byId("gpt-5.5")?.maxTokens, 100_000);
+		assert.equal(byId("claude-4-sonnet")?.contextWindow, 200_000);
 		// Explicit positive live limits win over the reference catalog.
 		assert.equal(byId("gpt-5.4-explicit")?.contextWindow, 512_000);
 		assert.equal(byId("gpt-5.4-explicit")?.maxTokens, 12_345);
@@ -130,6 +175,17 @@ describe("Cursor model mapper", () => {
 		// Unknown models keep the conservative estimate.
 		assert.equal(byId("brand-new-unknown")?.contextWindow, 200_000);
 		assert.equal(byId("brand-new-unknown")?.maxTokens, 64_000);
+	});
+
+	test("normalizes hyphenated Claude version aliases to pi-ai references", () => {
+		const [model] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [{ id: "claude-4-5-sonnet", displayName: "Claude Sonnet 4.5" }],
+		});
+
+		assert.equal(model?.contextWindow, 450_000);
+		assert.equal(model?.maxTokens, 80_000);
 	});
 
 	test("marks live Cursor reasoning-capable ids by id even without discovery metadata", () => {

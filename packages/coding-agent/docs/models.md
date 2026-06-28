@@ -4,6 +4,8 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.atomi
 
 Built-in subscription providers such as Cursor (experimental) are selected with the same `provider/model` syntax, for example `cursor/composer-2`. Cursor image input is scoped to known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (`claude-`, `composer-`, `gemini-`, `gpt-`, `kimi-`), plus `grok-4.3`; text-only Cursor models still reject images. Cursor image payloads must be non-empty standard base64, with MIME-style line wrapping whitespace accepted and stripped before serialization. Live private-API model metadata may fall back to estimated labels. Because Cursor support targets undocumented private endpoints with Cursor CLI-compatible headers, maintainers and users should explicitly accept the risk that it may conflict with Cursor's terms, break without notice, or affect the Cursor account used to authenticate.
 
+When Cursor omits token limits, Atomic derives them from its bundled `@earendil-works/pi-ai` model catalog and treats explicit `1M` Cursor labels as a 1,000,000-token context floor; unmatched Cursor-only models keep conservative estimates instead of disappearing from `/model`.
+
 ## Table of Contents
 
 - [Minimal Example](#minimal-example)

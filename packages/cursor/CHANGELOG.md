@@ -4,12 +4,13 @@
 
 ### Changed
 
-- Resolved Cursor model context windows and max output tokens from the installed `@earendil-works/pi-ai` model catalog instead of flat placeholder estimates: Atomic matches each Cursor model ID's family/version against pi-ai metadata (honoring Cursor's explicit `1M` labels), preserves any positive limits Cursor sends, ignores non-positive bogus limits, and keeps a conservative 200k context / 64k output estimate only for Cursor-only models (such as `composer-*` and `default`/Auto) with no pi-ai match. Limit resolution matches on IDs only — not generic display names — so it never adds, drops, or mislabels models in the list.
+- Resolved Cursor model context windows and max output tokens from Atomic's bundled `@earendil-works/pi-ai` model catalog instead of flat placeholder estimates: Atomic matches each Cursor model ID's family/version against pi-ai metadata, preserves any positive limits Cursor sends, ignores non-positive bogus limits, and keeps a conservative 200k context / 64k output estimate only for Cursor-only models (such as `composer-*` and `default`/Auto) with no pi-ai match. Limit resolution matches on IDs only — not generic display names — so it never adds, drops, or mislabels models in the list.
 - Changed the Cursor OAuth login option label to **Cursor (Experimental)** so the `/login` picker clearly marks the private-protocol provider as experimental.
 
 ### Fixed
 
 - Fixed Cursor models whose discovery only exposes effort-variant ids (for example `gpt-5.5-low/medium/high`, `claude-opus-4-8-*`, `gpt-5.4-*`, `glm-5.2-*`) failing every request with `Cursor stream ended with not_found` when no thinking level was selected. These models are registered under a synthesized base id (`cursor/gpt-5.5`) that Cursor does not accept as a run target; Atomic now records a concrete default variant and sends it for no-thinking requests, so all Cursor models stream on their default setting.
+- Fixed Cursor models with explicit `1M` ids or labels losing their 1,000,000-token floor when the closest pi-ai reference match advertises a smaller base context window, and made the pi-ai catalog a Cursor runtime dependency instead of an optional peer so provider startup cannot fail before graceful limit fallback runs.
 
 ## [0.9.3-alpha.3] - 2026-06-27
 

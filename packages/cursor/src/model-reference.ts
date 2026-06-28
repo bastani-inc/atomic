@@ -1,4 +1,4 @@
-import { getModels, getProviders, type Api, type KnownProvider, type Model } from "@earendil-works/pi-ai";
+import { getModels, getProviders } from "@earendil-works/pi-ai";
 
 export interface CursorModelReferenceCandidate {
 	readonly id: string;
@@ -8,6 +8,14 @@ export interface CursorModelReferenceCandidate {
 export interface CursorModelReferenceLimits {
 	readonly contextWindow?: number;
 	readonly maxTokens?: number;
+}
+
+export interface CursorModelReferenceCatalogEntry {
+	readonly provider: string;
+	readonly id: string;
+	readonly name: string;
+	readonly contextWindow: number;
+	readonly maxTokens: number;
 }
 
 interface ReferenceModelLimits {
@@ -24,7 +32,7 @@ const UNRANKED_PROVIDER_PRIORITY = 10_000;
 const CURSOR_EFFORT_SUFFIXES = ["none", "low", "medium", "high", "xhigh", "max", "default"] as const;
 const CLAUDE_FAMILY_NAMES = new Set(["fable", "haiku", "opus", "sonnet"]);
 
-const REFERENCE_PROVIDER_PRIORITY = new Map<KnownProvider, number>([
+const REFERENCE_PROVIDER_PRIORITY = new Map<string, number>([
 	["opencode", 0],
 	["opencode-go", 1],
 	["anthropic", 10],
@@ -46,7 +54,18 @@ const REFERENCE_PROVIDER_PRIORITY = new Map<KnownProvider, number>([
 	["github-copilot", 200],
 ]);
 
+const EMPTY_REFERENCE_MODEL_INDEX: ReadonlyMap<string, readonly ReferenceModelLimits[]> = new Map();
 let referenceModelIndex: ReadonlyMap<string, readonly ReferenceModelLimits[]> | undefined;
+let referenceModelCatalogOverride: readonly CursorModelReferenceCatalogEntry[] | undefined;
+
+export function setCursorModelReferenceCatalogForTesting(models: readonly CursorModelReferenceCatalogEntry[] | undefined): void {
+	referenceModelCatalogOverride = models;
+	resetCursorModelReferenceIndex();
+}
+
+export function resetCursorModelReferenceIndex(): void {
+	referenceModelIndex = undefined;
+}
 
 export function resolveCursorModelReferenceLimits(candidates: readonly CursorModelReferenceCandidate[]): CursorModelReferenceLimits {
 	// Limit resolution must never affect which Cursor models register. Any failure
@@ -58,8 +77,11 @@ export function resolveCursorModelReferenceLimits(candidates: readonly CursorMod
 		if (!match) {
 			return explicitOneMillion ? { contextWindow: ONE_MILLION_MODEL_NAME_CONTEXT_WINDOW } : {};
 		}
+		const contextWindow = positiveIntOrUndefined(match.contextWindow);
 		return {
-			contextWindow: positiveIntOrUndefined(match.contextWindow),
+			contextWindow: explicitOneMillion && contextWindow !== undefined
+				? Math.max(contextWindow, ONE_MILLION_MODEL_NAME_CONTEXT_WINDOW)
+				: contextWindow,
 			maxTokens: positiveIntOrUndefined(match.maxTokens),
 		};
 	} catch {
@@ -87,35 +109,50 @@ function findReferenceModel(aliases: readonly string[], preferOneMillion: boolea
 
 function getReferenceModelIndex(): ReadonlyMap<string, readonly ReferenceModelLimits[]> {
 	if (referenceModelIndex) return referenceModelIndex;
-	const mutableIndex = new Map<string, ReferenceModelLimits[]>();
-	for (const model of getReferenceModels()) {
-		for (const alias of referenceModelAliases(model)) {
-			const existing = mutableIndex.get(alias) ?? [];
-			existing.push(model);
-			mutableIndex.set(alias, existing);
+	try {
+		const mutableIndex = new Map<string, ReferenceModelLimits[]>();
+		for (const model of getReferenceModels()) {
+			for (const alias of referenceModelAliases(model)) {
+				const existing = mutableIndex.get(alias) ?? [];
+				existing.push(model);
+				mutableIndex.set(alias, existing);
+			}
 		}
+		for (const matches of mutableIndex.values()) {
+			matches.sort(compareReferenceModels);
+		}
+		referenceModelIndex = mutableIndex;
+	} catch {
+		referenceModelIndex = EMPTY_REFERENCE_MODEL_INDEX;
 	}
-	for (const matches of mutableIndex.values()) {
-		matches.sort(compareReferenceModels);
-	}
-	referenceModelIndex = mutableIndex;
 	return referenceModelIndex;
 }
 
 function getReferenceModels(): ReferenceModelLimits[] {
+	const models = referenceModelCatalogOverride
+		? referenceModelCatalogOverride.map((model) => toReferenceModelLimits(model, referenceProviderPriority(model.provider)))
+		: getPiAiReferenceModels();
+	models.sort(compareReferenceModels);
+	return models;
+}
+
+function getPiAiReferenceModels(): ReferenceModelLimits[] {
 	const models: ReferenceModelLimits[] = [];
 	for (const provider of getProviders()) {
-		const priority = REFERENCE_PROVIDER_PRIORITY.get(provider) ?? UNRANKED_PROVIDER_PRIORITY;
+		const priority = referenceProviderPriority(provider);
 		for (const model of getModels(provider)) {
 			if (!isPositiveFiniteNumber(model.contextWindow) || !isPositiveFiniteNumber(model.maxTokens)) continue;
 			models.push(toReferenceModelLimits(model, priority));
 		}
 	}
-	models.sort(compareReferenceModels);
 	return models;
 }
 
-function toReferenceModelLimits(model: Model<Api>, priority: number): ReferenceModelLimits {
+function referenceProviderPriority(provider: string): number {
+	return REFERENCE_PROVIDER_PRIORITY.get(provider) ?? UNRANKED_PROVIDER_PRIORITY;
+}
+
+function toReferenceModelLimits(model: CursorModelReferenceCatalogEntry, priority: number): ReferenceModelLimits {
 	return {
 		provider: model.provider,
 		id: model.id,
@@ -205,11 +242,11 @@ function stripTrailingEffort(id: string): string {
 }
 
 function cursorClaudeIdAliases(id: string): string[] {
-	const match = /^claude-(\d+(?:\.\d+)?)-([a-z]+)(?:$|-)/iu.exec(id);
+	const match = /^claude-(\d+(?:[.-]\d+)*)-([a-z]+)(?:$|-)/iu.exec(id);
 	if (!match) return [];
 	const [, version, family] = match;
 	if (!version || !family || !CLAUDE_FAMILY_NAMES.has(family.toLowerCase())) return [];
-	return [`claude-${family.toLowerCase()}-${version.replaceAll(".", "-")}`];
+	return [`claude-${family.toLowerCase()}-${version.replace(/[.-]/gu, "-")}`];
 }
 
 function addNormalizedAlias(aliases: Set<string>, value: string): void {
