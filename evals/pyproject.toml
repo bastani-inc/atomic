@@ -1,0 +1,12 @@
+[project]
+name = "evals"
+version = "0.0.0"
+description = "Atomic internal eval suite package."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "datacurve-pier",
+]
+
+[tool.uv.sources]
+datacurve-pier = { git = "https://github.com/datacurve-ai/pier" }

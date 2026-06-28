@@ -211,6 +211,64 @@ describe("FooterDataProvider reftable branch detection", () => {
 		}
 	});
 
+	it("ignores duplicate reftable watcher events for an unchanged tables.list state", async () => {
+		vi.useFakeTimers();
+		const { worktreeDir, reftableDir } = createReftableWorktree(tempDir);
+		process.chdir(worktreeDir);
+
+		const provider = new FooterDataProvider(worktreeDir);
+		try {
+			expect(provider.getGitBranch()).toBe("main");
+			vi.mocked(execFile).mockClear();
+			const providerWithInternals = provider as unknown as {
+				scheduleReftableRefresh: () => void;
+			};
+
+			writeFileSync(join(reftableDir, "tables.list"), "1\n");
+			providerWithInternals.scheduleReftableRefresh();
+			providerWithInternals.scheduleReftableRefresh();
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+
+			providerWithInternals.scheduleReftableRefresh();
+			await vi.advanceTimersByTimeAsync(650);
+			expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+
+			writeFileSync(join(reftableDir, "tables.list"), "2\n");
+			providerWithInternals.scheduleReftableRefresh();
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+		} finally {
+			provider.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("refreshes on unnamed reftable directory watcher events", async () => {
+		vi.useFakeTimers();
+		const { worktreeDir } = createReftableWorktree(tempDir);
+		process.chdir(worktreeDir);
+
+		const provider = new FooterDataProvider(worktreeDir);
+		try {
+			expect(provider.getGitBranch()).toBe("main");
+			vi.mocked(execFile).mockClear();
+			const providerWithInternals = provider as unknown as {
+				handleReftableDirectoryEvent: (filename: string | null) => void;
+			};
+
+			providerWithInternals.handleReftableDirectoryEvent(null);
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
+		} finally {
+			provider.dispose();
+			vi.useRealTimers();
+		}
+	});
+
 	it("updates the cached branch when the reftable directory changes", async () => {
 		const { worktreeDir, reftableDir } = createReftableWorktree(tempDir);
 		process.chdir(worktreeDir);

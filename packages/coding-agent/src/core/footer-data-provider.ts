@@ -112,6 +112,8 @@ export class FooterDataProvider {
 	private reftableWatcher: FSWatcher | null = null;
 	private reftableTablesListWatcher: FSWatcher | null = null;
 	private reftableTablesListPath: string | null = null;
+	private reftableTablesListFingerprint: string | null = null;
+	private reftableTablesListWatchFileListener: ((current: Stats, previous: Stats) => void) | null = null;
 	private branchChangeCallbacks = new Set<() => void>();
 	private availableProviderCount = 0;
 	private refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -281,10 +283,12 @@ export class FooterDataProvider {
 		this.reftableWatcher = null;
 		closeWatcher(this.reftableTablesListWatcher);
 		this.reftableTablesListWatcher = null;
-		if (this.reftableTablesListPath) {
-			unwatchFile(this.reftableTablesListPath);
-			this.reftableTablesListPath = null;
+		if (this.reftableTablesListPath && this.reftableTablesListWatchFileListener) {
+			unwatchFile(this.reftableTablesListPath, this.reftableTablesListWatchFileListener);
 		}
+		this.reftableTablesListPath = null;
+		this.reftableTablesListFingerprint = null;
+		this.reftableTablesListWatchFileListener = null;
 		if (this.gitWatcherRetryTimer) {
 			clearTimeout(this.gitWatcherRetryTimer);
 			this.gitWatcherRetryTimer = null;
@@ -305,6 +309,39 @@ export class FooterDataProvider {
 	private handleGitWatcherError(): void {
 		this.clearGitWatchers();
 		this.scheduleGitWatcherRetry();
+	}
+
+	private readReftableTablesListFingerprint(): string | null {
+		if (!this.reftableTablesListPath || !existsSync(this.reftableTablesListPath)) {
+			return null;
+		}
+
+		try {
+			const stat = statSync(this.reftableTablesListPath);
+			const content = readFileSync(this.reftableTablesListPath, "utf8");
+			return `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${content}`;
+		} catch {
+			return null;
+		}
+	}
+
+	private scheduleReftableRefresh(): void {
+		const fingerprint = this.readReftableTablesListFingerprint();
+		if (fingerprint !== null && fingerprint === this.reftableTablesListFingerprint) {
+			return;
+		}
+
+		this.reftableTablesListFingerprint = fingerprint;
+		this.scheduleRefresh();
+	}
+
+	private handleReftableDirectoryEvent(filename: string | Buffer | null): void {
+		if (filename === "tables.list") {
+			this.scheduleReftableRefresh();
+			return;
+		}
+
+		this.scheduleRefresh();
 	}
 
 	private setupGitWatcher(): void {
@@ -342,10 +379,12 @@ export class FooterDataProvider {
 		// instead of HEAD. Watch it separately so the footer picks up those changes.
 		const reftableDir = join(this.gitPaths.commonGitDir, "reftable");
 		if (existsSync(reftableDir)) {
+			this.reftableTablesListPath = join(reftableDir, "tables.list");
+			this.reftableTablesListFingerprint = this.readReftableTablesListFingerprint();
 			this.reftableWatcher = watchWithErrorHandler(
 				reftableDir,
-				() => {
-					this.scheduleRefresh();
+				(_eventType, filename) => {
+					this.handleReftableDirectoryEvent(filename);
 				},
 				() => this.handleGitWatcherError(),
 			);
@@ -353,28 +392,28 @@ export class FooterDataProvider {
 				return;
 			}
 
-			const tablesListPath = join(reftableDir, "tables.list");
-			if (existsSync(tablesListPath)) {
-				this.reftableTablesListPath = tablesListPath;
+			const tablesListPath = this.reftableTablesListPath;
+			if (tablesListPath && existsSync(tablesListPath)) {
 				this.reftableTablesListWatcher = watchWithErrorHandler(
 					tablesListPath,
 					() => {
-						this.scheduleRefresh();
+						this.scheduleReftableRefresh();
 					},
 					() => this.handleGitWatcherError(),
 				);
 				if (!this.reftableTablesListWatcher) {
 					return;
 				}
-				watchFile(tablesListPath, { interval: 250 }, (current, previous) => {
+				this.reftableTablesListWatchFileListener = (current, previous) => {
 					if (
 						current.mtimeMs !== previous.mtimeMs ||
 						current.ctimeMs !== previous.ctimeMs ||
 						current.size !== previous.size
 					) {
-						this.scheduleRefresh();
+						this.scheduleReftableRefresh();
 					}
-				});
+				};
+				watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListWatchFileListener);
 			}
 		}
 	}
