@@ -32,10 +32,14 @@
     ]
   },
   "peerDependencies": {
-    "@bastani/atomic": "*"
+    "@bastani/atomic": "*",
+    "@earendil-works/pi-ai": "*"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
+      "optional": true
+    },
+    "@earendil-works/pi-ai": {
       "optional": true
     }
   },

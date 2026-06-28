@@ -1,6 +1,7 @@
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { CURSOR_API, CURSOR_API_BASE_URL } from "./config.js";
 import rawFallbackModels from "./cursor-models-raw.json" with { type: "json" };
+import { resolveCursorModelReferenceLimits, type CursorModelReferenceCandidate } from "./model-reference.js";
 
 export type CursorCatalogSource = "live" | "estimated";
 export type CursorEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "default";
@@ -90,6 +91,11 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 		const supportsEffort = group.variants.some((variant) => Boolean(variant.effort)) || effortVariants.size >= 2;
 		const supportsReasoning = supportsReasoningModelId(group.primaryId);
 		const name = catalog.source === "estimated" ? `${group.displayName} (estimated)` : group.displayName;
+		// Cursor's private API omits token limits, so when neither a live nor a
+		// static explicit limit is present, derive the window/output from the
+		// installed pi-ai model catalog before falling back to a conservative
+		// estimate. This never changes which models are registered.
+		const referenceLimits = resolveCursorModelReferenceLimits(cursorModelReferenceCandidates(group));
 		return {
 			id: group.primaryId,
 			name,
@@ -99,10 +105,17 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			thinkingLevelMap: supportsEffort ? buildThinkingLevelMap(effortVariants, group.primaryId) : undefined,
 			input: cursorModelInput(group.primaryId),
 			cost: subscriptionCost(),
-			contextWindow: chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? ESTIMATED_CONTEXT_WINDOW,
-			maxTokens: chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? ESTIMATED_MAX_TOKENS,
+			contextWindow: chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? referenceLimits.contextWindow ?? ESTIMATED_CONTEXT_WINDOW,
+			maxTokens: chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? referenceLimits.maxTokens ?? ESTIMATED_MAX_TOKENS,
 		};
 	});
+}
+
+function cursorModelReferenceCandidates(group: CursorVariantGroup): CursorModelReferenceCandidate[] {
+	return [
+		{ id: group.primaryId, displayName: group.displayName },
+		...group.variants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
+	];
 }
 
 export function resolveCursorModelVariant(
@@ -232,8 +245,10 @@ function isCursorEffort(value: string): value is CursorEffort {
 }
 
 function chooseLargestNumber(values: readonly (number | undefined)[]): number | undefined {
-	const finiteValues = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-	return finiteValues.length > 0 ? Math.max(...finiteValues) : undefined;
+	// Cursor's private API omits token limits; treat any non-positive value as
+	// bogus so a stray 0/negative never becomes an invalid context window.
+	const positiveValues = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
+	return positiveValues.length > 0 ? Math.max(...positiveValues) : undefined;
 }
 
 function choosePrimaryId(variants: readonly CursorVariant[], baseId: string): string {

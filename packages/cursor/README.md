@@ -17,6 +17,7 @@ The unavoidable Atomic-specific integration difference is the provider surface: 
 - Cursor's private API may change without notice.
 - HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
 - Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.
+- Cursor's private `GetUsableModels` response omits context-window and output-token limits. Atomic preserves positive limits when present and otherwise resolves them from the installed `@earendil-works/pi-ai` model catalog by matching the Cursor model ID's family/version (honoring explicit `1M` labels), falling back to a conservative 200k context / 64k output estimate for Cursor-only models without a pi-ai match. Limit resolution never adds or removes models from the list.
 
 ## Attribution
 

@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { getModel } from "@earendil-works/pi-ai";
 import {
 	createEstimatedCursorCatalog,
 	insertEffortBeforeCursorSuffix,
@@ -66,6 +67,69 @@ describe("Cursor model mapper", () => {
 		for (const leaked of ["gpt-5.4-high", "gpt-5.4-mini-none", "claude-4.6-opus-high", "gpt-5.1-codex-max-high"]) {
 			assert.equal(ids.includes(leaked), false, `fallback catalog leaked effort variant ${leaked}`);
 		}
+	});
+
+	test("derives missing fallback limits from the pi-ai model catalog", () => {
+		const models = mapCursorCatalogToProviderModels(createEstimatedCursorCatalog(123));
+		const contextWindowFor = (id: string) => models.find((model) => model.id === id)?.contextWindow;
+		const maxTokensFor = (id: string) => models.find((model) => model.id === id)?.maxTokens;
+
+		// Known model families resolve to the installed pi-ai metadata by id.
+		assert.equal(contextWindowFor("claude-4-sonnet"), getModel("opencode", "claude-sonnet-4").contextWindow);
+		assert.equal(contextWindowFor("claude-4.6-opus"), getModel("opencode", "claude-opus-4-6").contextWindow);
+		assert.equal(contextWindowFor("gemini-3.1-pro"), getModel("opencode", "gemini-3.1-pro").contextWindow);
+		assert.equal(contextWindowFor("gpt-5.1"), getModel("opencode", "gpt-5.1").contextWindow);
+		assert.equal(contextWindowFor("gpt-5.4-mini"), getModel("opencode", "gpt-5.4-mini").contextWindow);
+		assert.equal(contextWindowFor("grok-4.3"), getModel("xai", "grok-4.3").contextWindow);
+		assert.equal(contextWindowFor("kimi-k2.5"), getModel("opencode", "kimi-k2.5").contextWindow);
+		assert.equal(maxTokensFor("gpt-5.4"), getModel("opencode", "gpt-5.4").maxTokens);
+		assert.equal(maxTokensFor("grok-4.3"), getModel("xai", "grok-4.3").maxTokens);
+
+		// Cursor's explicit "1M" labels are honored as a long-context floor.
+		assert.ok((contextWindowFor("claude-4-sonnet-1m") ?? 0) >= 1_000_000);
+		assert.ok((contextWindowFor("claude-4.5-sonnet") ?? 0) >= 1_000_000);
+		assert.ok((contextWindowFor("gpt-5.4") ?? 0) >= 1_000_000);
+
+		// Cursor-only models without a pi-ai match keep the conservative estimate,
+		// and the generic "Auto" model must not false-match an unrelated catalog entry.
+		assert.equal(contextWindowFor("composer-2"), 200_000);
+		assert.equal(maxTokensFor("composer-2"), 64_000);
+		assert.equal(contextWindowFor("default"), 200_000);
+	});
+
+	test("resolves live Cursor limits from pi-ai references and ignores bogus discovered limits", () => {
+		const models = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [
+				{ id: "gpt-5.5-low", displayName: "GPT-5.5 Low" },
+				{ id: "gpt-5.5-medium", displayName: "GPT-5.5" },
+				{ id: "gpt-5.5-high", displayName: "GPT-5.5 High" },
+				{ id: "gpt-5.5-xhigh", displayName: "GPT-5.5 Extra High" },
+				{ id: "claude-4-sonnet", displayName: "Sonnet 4" },
+				{ id: "gpt-5.4-explicit", displayName: "GPT-5.4 Explicit", contextWindow: 512_000, maxTokens: 12_345 },
+				{ id: "gemini-zero-limit", displayName: "Gemini Zero Limit", contextWindow: 0, maxTokens: 0 },
+				{ id: "kimi-negative-limit", displayName: "Kimi Negative", contextWindow: -1, maxTokens: -1 },
+				{ id: "brand-new-unknown", displayName: "Brand New" },
+			],
+		});
+		const byId = (id: string) => models.find((model) => model.id === id);
+
+		// Live discovery (which omits token limits) still registers every group, including gpt-5.5.
+		assert.ok(byId("gpt-5.5"), "expected live gpt-5.5 to register");
+		assert.equal(byId("gpt-5.5")?.contextWindow, getModel("opencode", "gpt-5.5").contextWindow);
+		assert.equal(byId("gpt-5.5")?.maxTokens, getModel("opencode", "gpt-5.5").maxTokens);
+		assert.equal(byId("claude-4-sonnet")?.contextWindow, getModel("opencode", "claude-sonnet-4").contextWindow);
+		// Explicit positive live limits win over the reference catalog.
+		assert.equal(byId("gpt-5.4-explicit")?.contextWindow, 512_000);
+		assert.equal(byId("gpt-5.4-explicit")?.maxTokens, 12_345);
+		// Non-positive discovered limits are ignored and fall back to the estimate.
+		assert.equal(byId("gemini-zero-limit")?.contextWindow, 200_000);
+		assert.equal(byId("gemini-zero-limit")?.maxTokens, 64_000);
+		assert.equal(byId("kimi-negative-limit")?.contextWindow, 200_000);
+		// Unknown models keep the conservative estimate.
+		assert.equal(byId("brand-new-unknown")?.contextWindow, 200_000);
+		assert.equal(byId("brand-new-unknown")?.maxTokens, 64_000);
 	});
 
 	test("marks live Cursor reasoning-capable ids by id even without discovery metadata", () => {

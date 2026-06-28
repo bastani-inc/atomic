@@ -75,9 +75,11 @@
       },
       "peerDependencies": {
         "@bastani/atomic": "*",
+        "@earendil-works/pi-ai": "*",
       },
       "optionalPeers": [
         "@bastani/atomic",
+        "@earendil-works/pi-ai",
       ],
     },
     "packages/intercom": {
