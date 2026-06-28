@@ -116,7 +116,7 @@ Install and set up Atomic by following https://docs.bastani.ai/llms.txt.
 
 ## Production-grade development loops
 
-You do not have to run every step. Pick the smallest loop that fits the work:
+Workflows are the default path for non-trivial work and for requests that already have structure plus a verifiable objective, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, or docs/code-change work where validation matters. If your prompt says things like "do X until Y", "repeat until", "iterate until", "review/fix until passing", or "run checks and fix until green", you are describing a workflow-shaped loop. Pick the smallest loop that fits the work:
 
 **Need codebase context? Run research.**
 
@@ -144,7 +144,7 @@ Run ralph to implement specs/2026-03-rate-limit.md, run the focused rate-limit t
 
 Add `create_pr=true` to either `ralph` or `goal` only when you want that workflow's final pull-request stage and report after the review gate approves; prompt text alone does not opt in.
 
-**Small one-off task? Use goal.** Give it the task, expected outcome, and validation. Goal keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final pull-request stage with `create_pr=true` after approval.
+**Small one-off task? Use goal.** Give it the task, expected outcome, and validation. Goal is the default for small-to-medium non-trivial changes with a verifiable end state, including bug fixes, debugging, scoped multi-file edits, and requests that say to review/fix, test/fix, or iterate until passing. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final pull-request stage with `create_pr=true` after approval.
 
 ```text
 Use goal to update the CLI docs for --json, include one example, run the docs build, and finish when the build passes.
@@ -215,7 +215,7 @@ Atomic ships three top-level building blocks for executable engineering loops: *
 
 ### 1. Workflows
 
-Workflows define the executable loop: inputs, stages, branches, parallelism, retries, checks, artifacts, checkpoints, and human review gates. Each stage runs an Atomic coding-agent session with the model provider you configured.
+Workflows define the executable loop: inputs, stages, branches, parallelism, retries, checks, artifacts, checkpoints, and human review gates. Each stage runs an Atomic coding-agent session with the model provider you configured. Use workflows by default for non-trivial tasks, structured requests, and anything with explicit done criteria or a repeat-until/review-until/fix-until stop condition, including implementation, build, debug, bug-fix, migration, new-feature, scoped multi-file, and validation-heavy docs/code work.
 
 | Workflow                 | What it does                                                                                                                                                                                                                                                                                                                                                                | Example input                                                                                                                                                                                 |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

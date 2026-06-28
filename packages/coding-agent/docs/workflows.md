@@ -4,7 +4,9 @@
 
 Workflows are how Atomic runs executable engineering loops: reusable multi-stage automation with tracked stages, parallel branches, artifacts, human input, live status, checkpoints, and resumable background execution.
 
-Use a workflow when a task should be repeatable, inspectable, resumable, or split across multiple model sessions. Markdown prompts can describe a loop; Atomic workflows run the loop with scoped context, tools, artifacts, verification, subagents, review gates, and human approvals. For one-off work, the `workflow` tool can also run a tracked single task, parallel fan-out, or chain without creating a saved workflow file.
+Default to a workflow for any non-trivial task, and for any task with inherent structure plus an objective you can make verifiable. Inherent structure includes implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, or docs/code-change work where validation matters, plus multiple subtasks, dependencies, handoffs, review/validation gates, uncertainty, or an outcome that needs evidence. Loop-shaped requests are especially strong workflow signals: phrases such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, or `keep going until done` already describe a control loop plus a stop condition. Markdown prompts can describe a loop; Atomic workflows run the loop with scoped context, tools, artifacts, verification, subagents, review gates, and human approvals. For one-off work, the `workflow` tool can also run a tracked single task, parallel fan-out, or chain without creating a saved workflow file.
+
+Use direct chat only for tiny, deterministic, low-risk work where workflow tracking would add more overhead than value, usually a clearly single-file/no-test/no-review edit or a simple answer.
 
 **Key capabilities:**
 - **Tracked stages** - Name each step and inspect it in workflow status and graph views
@@ -18,6 +20,7 @@ Use a workflow when a task should be repeatable, inspectable, resumable, or spli
 - **Package distribution** - Ship workflows through Atomic packages, settings, or conventional directories
 
 **Example use cases:**
+- Any non-trivial task with a clear objective and verifiable done criteria
 - Small, outcome-driven code or docs changes with explicit done criteria
 - Codebase research with parallel local and external research stages
 - Review/fix loops with independent reviewers and a synthesis stage
@@ -399,17 +402,19 @@ Prompt answers are replayable only while the source run remains in the live in-m
 
 ## When to Use Workflows
 
-Workflows are a good fit when you need:
+Workflows are the default path when a request is non-trivial, has inherent structure, and has an objective you can verify. Choose a workflow before direct chat when the prompt includes any of these signals:
 
-- named stages that appear in status and graph views
-- sequential or parallel work with explicit handoffs
+- implementation, build, debugging/diagnosis, bug-fix, migration, new-feature, scoped multi-file, or docs/code-change work where validation matters
+- multiple subtasks, dependencies, or handoffs
+- sequential or parallel work with explicit context handoffs
+- review, validation, QA, approval, or human-input gates
 - long-running or resumable background execution
-- human approval or missing information during a run
 - saved artifacts for later inspection
 - model fallback chains for important stages
 - reusable automation that can be launched again with different inputs
+- loop or stop-condition phrasing such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, or `keep going until done`
 
-If the task is only deterministic TypeScript with no LLM/session stage, use a script, custom tool, or extension command instead.
+Use direct chat instead only for tiny, deterministic, low-risk edits or answers where stage tracking would add more overhead than value, usually a clearly single-file/no-test/no-review edit. If the task is only deterministic TypeScript with no LLM/session stage, use a script, custom tool, or extension command instead.
 
 | User goal | Use |
 |-----------|-----|

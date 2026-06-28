@@ -5,6 +5,8 @@
   An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
+Use workflows by default for non-trivial tasks, structured requests, and objectives with verifiable done criteria, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, and validation-heavy docs/code work. Prompt language such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green` is a strong signal to map the work to a workflow with an explicit stop condition rather than a direct chat turn.
+
 <p align="center">
   <a href="#authoring-api">Authoring API</a>
   &nbsp;·&nbsp;

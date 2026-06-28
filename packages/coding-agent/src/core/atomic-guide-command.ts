@@ -8,7 +8,7 @@ export const ATOMIC_GUIDE_COMMAND_DESCRIPTION =
 
 const OVERVIEW = `# Atomic overview
 
-Atomic turns one-off prompts into developer workflows: on-call debugging, repo research that turns into implementation, testing and review loops, and larger multi-stage automation. Use \`/workflow goal\` for small-to-medium changes with a clear work surface, exact outcome, and named validation; keep \`/workflow ralph\` for larger migrations, broad refactors, and multi-package research-first implementation work. Start Atomic in a project with \`atomic\`, then talk to it normally. Use \`@file\` to attach files, \`!command\` to run shell output through the model, and \`!!command\` to run shell output without adding it to context.
+Atomic turns one-off prompts into developer workflows: on-call debugging, repo research that turns into implementation, testing and review loops, and larger multi-stage automation. Workflows are the default for non-trivial work and requests with inherent structure plus a verifiable objective, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, or validation-heavy docs/code work. Loop-shaped prompts like \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, or \`run checks and fix until green\` should map to a workflow unless the task is a tiny deterministic direct edit or simple answer. Use \`/workflow goal\` for small-to-medium changes with a clear work surface, exact outcome, and named validation; keep \`/workflow ralph\` for larger migrations, broad refactors, and multi-package research-first implementation work. Start Atomic in a project with \`atomic\`, then talk to it normally. Use \`@file\` to attach files, \`!command\` to run shell output through the model, and \`!!command\` to run shell output without adding it to context.
 
 ## Core session commands
 
@@ -26,9 +26,9 @@ Atomic turns one-off prompts into developer workflows: on-call debugging, repo r
 
 | Goal | How to use |
 |---|---|
-| On-call / broken behavior | Run \`/run debugger "Reproduce the failure, patch the root cause, and validate it"\` for a focused fix loop, or ask Atomic in chat to build a reusable workflow that does the same |
+| On-call / broken behavior | Use \`/workflow goal objective="Reproduce the failure, patch the root cause, and validate it"\` for a focused fix loop; reserve direct debugger/subagent calls for narrow diagnosis or truly tiny deterministic fixes |
 | Research → spec → implementation | Chain \`/skill:research-codebase\` → \`/skill:create-spec\` → \`/workflow goal objective="..."\` for bounded scoped work with explicit validation; add \`create_pr=true\` for Goal's final PR handoff after approval, or use \`/workflow ralph ...\` when the work needs research-first broad refactoring |
-| Testing / regression hardening | Run \`/skill:tdd\` for test-first work, then \`/parallel-review current diff\`, then land the change |
+| Testing / regression hardening | Use \`/workflow goal objective="Add the regression coverage, fix failures, and finish when focused tests pass"\`; loop wording like review/fix/test until passing is workflow-shaped |
 | Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or \`/workflow deep-research-codebase\` for whole-repo synthesis |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
 
@@ -37,8 +37,8 @@ Atomic turns one-off prompts into developer workflows: on-call debugging, repo r
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | small-to-medium scoped changes when you can name the work surface, outcome, and validation; keeps receipts in a ledger, stops as \`complete\`, \`blocked\`, or \`needs_human\`, and can run a final PR handoff with \`create_pr=true\` after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
-| \`ralph\` | larger migrations, broad refactors, and multi-package changes where you want Atomic to research first, delegate, review, and iterate; add \`create_pr=true\` only when you want the final pull-request stage and report | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
+| \`goal\` | small-to-medium scoped changes when you can name the work surface, outcome, and validation, including bug fixes, debugging, scoped multi-file edits, and test/fix loops; keeps receipts in a ledger, stops as \`complete\`, \`blocked\`, or \`needs_human\`, and can run a final PR handoff with \`create_pr=true\` after approval | \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and validate the changed behavior"\` |
+| \`ralph\` | larger migrations, new features, broad refactors, and multi-package changes where you want Atomic to research first, delegate, review, and iterate; add \`create_pr=true\` only when you want the final pull-request stage and report | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | UI and design-system work that benefits from generation and refinement loops | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
 Use \`/workflow list\` to see what is available and \`/workflow inputs <name>\` to inspect inputs in your environment.
@@ -103,15 +103,17 @@ Skip this if the implementation request is already precise.
 
 ## 3. Implement with review built in
 
-For ordinary work, ask Atomic directly and require validation:
-
-\`Implement the approved spec in specs/<date>-<topic>.md. Run focused tests and summarize validation.\`
+Default to a workflow for non-trivial implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, or docs/code-change work when validation matters. Direct chat is best reserved for tiny deterministic single-file/no-test/no-review edits or simple answers.
 
 For small-to-medium scoped changes where you can identify the work surface, exact outcome, and validation, use \`goal\`:
 
 \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and finish when the documented behavior is validated"\`
 
-For larger migrations, broad refactors, or multi-package changes that need research-first implementation, use \`ralph\`:
+If the request is loop-shaped — for example \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, or \`run checks and fix until green\` — make the stop condition explicit in the Goal objective:
+
+\`/workflow goal objective="Fix the flaky checkout test, adjust the smallest necessary code, and finish when the focused test passes three times"\`
+
+For larger migrations, broad refactors, new features, or multi-package changes that need research-first implementation, use \`ralph\`:
 
 \`/workflow ralph prompt="Migrate the database layer to Drizzle"\`
 
@@ -140,6 +142,8 @@ const WORKFLOWS = `# Workflows primer
 
 A workflow is a TypeScript-defined pipeline exported from \`workflow({...})\`. It can run tasks, chains, parallel fan-out, human-in-the-loop prompts, background status, and model fallback chains.
 
+Use workflows by default for non-trivial work with a verifiable objective: implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, validation-heavy docs/code changes, or any prompt with a stop condition such as \`do X until Y\`, \`repeat until\`, \`iterate until\`, or \`review/fix until passing\`. Skip workflows only for tiny deterministic direct edits or simple answers where tracking would add more overhead than value.
+
 You do not have to write TypeScript to add one. Describe the workflow you want in plain chat — goal, inputs, stages, which steps are parallel or sequential, handoff/output shape, and any model or thinking-level preferences — and Atomic will use the workflow docs to scaffold a reusable definition under \`.atomic/workflows/\` and reload it for you. Hand-edit the TypeScript afterward when you want precise control.
 
 ## Built-in workflows
@@ -147,8 +151,8 @@ You do not have to write TypeScript to add one. Describe the workflow you want i
 | Workflow | When to use | How to run |
 |---|---|---|
 | \`deep-research-codebase\` | broad repo or cross-cutting research before you decide what to change (for one area, use \`/skill:research-codebase\`; this indexes the whole repo) | \`/workflow deep-research-codebase prompt="How do payment retries work end to end?"\` |
-| \`goal\` | small-to-medium scoped changes with a clear outcome and named validation; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
-| \`ralph\` | larger migrations, broad refactors, and multi-package research-first implementation work | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
+| \`goal\` | small-to-medium scoped changes with a clear outcome and named validation, including bug fixes, debugging, scoped multi-file edits, and test/fix loops; add \`create_pr=true\` only for final PR handoff after approval | \`/workflow goal objective="Update the CLI docs, include one usage example, and verify the docs build passes"\` |
+| \`ralph\` | larger migrations, new features, broad refactors, and multi-package research-first implementation work | \`/workflow ralph prompt="Migrate the database layer to Drizzle" create_pr=true\` |
 | \`open-claude-design\` | frontend and product design work | \`/workflow open-claude-design prompt="Refresh the settings page hierarchy"\` |
 
 Use \`/workflow inputs <name>\` to inspect the exact inputs in your environment.
