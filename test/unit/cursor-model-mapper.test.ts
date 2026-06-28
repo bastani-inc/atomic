@@ -126,6 +126,7 @@ describe("Cursor model mapper", () => {
 		assert.equal(contextWindowFor("claude-4.5-sonnet"), 1_000_000);
 		assert.equal(contextWindowFor("gpt-5.4"), 1_000_000);
 		assert.equal(contextWindowFor("claude-4.6-opus"), 1_000_000);
+		assert.equal(contextWindowFor("gpt-5.4-fast"), 1_000_000);
 
 		// Cursor-only models without a pi-ai match keep the conservative estimate,
 		// and the generic "Auto" model must not false-match an unrelated catalog entry.
@@ -142,6 +143,29 @@ describe("Cursor model mapper", () => {
 		const resolved = resolveCursorModelReferenceLimits([{ id: liveReference.id, displayName: liveReference.name }]);
 		assert.ok((resolved.contextWindow ?? 0) > 0);
 		assert.ok((resolved.maxTokens ?? 0) > 0);
+	});
+
+	test("keeps Cursor models registered when the reference catalog cannot be indexed", () => {
+		const badCatalogEntry: CursorModelReferenceCatalogEntry = {
+			provider: "opencode",
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			get contextWindow(): number {
+				throw new Error("bad reference catalog");
+			},
+			maxTokens: 100_000,
+		};
+		setCursorModelReferenceCatalogForTesting([badCatalogEntry]);
+
+		const [model] = mapCursorCatalogToProviderModels({
+			source: "live",
+			fetchedAt: 1,
+			models: [{ id: "gpt-5.5", displayName: "GPT-5.5" }],
+		});
+
+		assert.equal(model?.id, "gpt-5.5");
+		assert.equal(model?.contextWindow, 200_000);
+		assert.equal(model?.maxTokens, 64_000);
 	});
 
 	test("resolves live Cursor limits from pi-ai references and ignores bogus discovered limits", () => {
@@ -284,8 +308,8 @@ describe("Cursor model mapper", () => {
 			source: "live",
 			fetchedAt: 1,
 			models: [
-				{ id: "gpt-5.4", displayName: "GPT-5.4" },
-				{ id: "gpt-5.4-high", displayName: "GPT-5.4 High" },
+				{ id: "gpt-5.4", displayName: "GPT-5.4 1M" },
+				{ id: "gpt-5.4-high", displayName: "GPT-5.4 1M High" },
 				{ id: "gpt-5.4-fast", displayName: "GPT-5.4 Fast" },
 				{ id: "gpt-5.4-high-fast", displayName: "GPT-5.4 High Fast" },
 				{ id: "gpt-5.4-thinking", displayName: "GPT-5.4 Thinking", supportsThinking: true },
@@ -298,6 +322,8 @@ describe("Cursor model mapper", () => {
 		const fast = models.find((entry) => entry.id === "gpt-5.4-fast");
 		assert.equal(resolveCursorModelVariant(normal!.id, normal!.thinkingLevelMap, "high"), "gpt-5.4-high");
 		assert.equal(resolveCursorModelVariant(fast!.id, fast!.thinkingLevelMap, "high"), "gpt-5.4-high-fast");
+		assert.equal(normal?.contextWindow, 1_000_000);
+		assert.equal(fast?.contextWindow, 1_000_000);
 	});
 
 	test("collapses mandatory effort-only live fast/thinking ids", () => {
@@ -335,10 +361,11 @@ describe("Cursor model mapper", () => {
 		});
 		assert.equal(effortOnly?.id, "gpt-5.5");
 		const off = effortOnly!.thinkingLevelMap?.off;
-		assert.ok(typeof off === "string" && off.startsWith("gpt-5.5-"), "expected an off default real variant id");
+		// No-thinking intentionally chooses the least available effort so `off`
+		// means minimum reasoning when Cursor only offers effort variants.
+		assert.equal(off, "gpt-5.5-low");
 		const defaultSend = resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, undefined);
-		assert.notEqual(defaultSend, "gpt-5.5");
-		assert.ok(defaultSend.startsWith("gpt-5.5-"), "no-thinking send must be a real Cursor variant id");
+		assert.equal(defaultSend, "gpt-5.5-low");
 		assert.equal(resolveCursorModelVariant(effortOnly!.id, effortOnly!.thinkingLevelMap, "high"), "gpt-5.5-high");
 
 		// Models that expose a real base id keep sending the base id by default.

@@ -89,8 +89,8 @@ export function resolveCursorModelReferenceLimits(candidates: readonly CursorMod
 	}
 }
 
-function positiveIntOrUndefined(value: number): number | undefined {
-	return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+export function positiveIntOrUndefined(value: number | undefined): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function findReferenceModel(aliases: readonly string[], preferOneMillion: boolean): ReferenceModelLimits | undefined {
@@ -129,11 +129,9 @@ function getReferenceModelIndex(): ReadonlyMap<string, readonly ReferenceModelLi
 }
 
 function getReferenceModels(): ReferenceModelLimits[] {
-	const models = referenceModelCatalogOverride
+	return referenceModelCatalogOverride
 		? referenceModelCatalogOverride.map((model) => toReferenceModelLimits(model, referenceProviderPriority(model.provider)))
 		: getPiAiReferenceModels();
-	models.sort(compareReferenceModels);
-	return models;
 }
 
 function getPiAiReferenceModels(): ReferenceModelLimits[] {

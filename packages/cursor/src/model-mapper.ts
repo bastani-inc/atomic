@@ -1,7 +1,7 @@
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
 import { CURSOR_API, CURSOR_API_BASE_URL } from "./config.js";
 import rawFallbackModels from "./cursor-models-raw.json" with { type: "json" };
-import { resolveCursorModelReferenceLimits, type CursorModelReferenceCandidate } from "./model-reference.js";
+import { positiveIntOrUndefined, resolveCursorModelReferenceLimits, type CursorModelReferenceCandidate } from "./model-reference.js";
 
 export type CursorCatalogSource = "live" | "estimated";
 export type CursorEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "default";
@@ -86,7 +86,9 @@ export function createEstimatedCursorCatalog(now = Date.now()): CursorModelCatal
 }
 
 export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): CursorProviderModelDefinition[] {
-	return groupCursorModels(catalog.models).map((group) => {
+	const groups = groupCursorModels(catalog.models);
+	const familyReferenceVariants = cursorReferenceVariantsByBaseId(groups);
+	return groups.map((group) => {
 		const effortVariants = collectEffortVariants(group.variants, group.primaryId);
 		const supportsEffort = group.variants.some((variant) => Boolean(variant.effort)) || effortVariants.size >= 2;
 		const supportsReasoning = supportsReasoningModelId(group.primaryId);
@@ -94,8 +96,10 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 		// Cursor's private API omits token limits, so when neither a live nor a
 		// static explicit limit is present, derive the window/output from the
 		// bundled pi-ai model catalog before falling back to a conservative
-		// estimate. This never changes which models are registered.
-		const referenceLimits = resolveCursorModelReferenceLimits(cursorModelReferenceCandidates(group));
+		// estimate. This never changes which models are registered. One-million
+		// labels are tracked across fast/thinking sibling groups for the same
+		// family so Cursor's mode suffixes do not hide the advertised long window.
+		const referenceLimits = resolveCursorModelReferenceLimits(cursorModelReferenceCandidates(group, familyReferenceVariants.get(group.baseId) ?? []));
 		return {
 			id: group.primaryId,
 			name,
@@ -111,18 +115,29 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 	});
 }
 
-function cursorModelReferenceCandidates(group: CursorVariantGroup): CursorModelReferenceCandidate[] {
+function cursorModelReferenceCandidates(group: CursorVariantGroup, familyVariants: readonly CursorVariant[]): CursorModelReferenceCandidate[] {
 	return [
 		{ id: group.primaryId, displayName: group.displayName },
 		...group.variants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
+		...familyVariants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
 	];
+}
+
+function cursorReferenceVariantsByBaseId(groups: readonly CursorVariantGroup[]): ReadonlyMap<string, readonly CursorVariant[]> {
+	const variantsByBaseId = new Map<string, CursorVariant[]>();
+	for (const group of groups) {
+		const variants = variantsByBaseId.get(group.baseId) ?? [];
+		variants.push(...group.variants);
+		variantsByBaseId.set(group.baseId, variants);
+	}
+	return variantsByBaseId;
 }
 
 function positiveIntLimit(value: number | undefined, fallback: number): number {
 	// Provider registration rejects non-positive/non-integer windows and would
 	// drop the whole catalog; guarantee a valid positive integer here so limit
 	// values can never affect which Cursor models are listed.
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+	return positiveIntOrUndefined(value) ?? fallback;
 }
 
 export function resolveCursorModelVariant(
@@ -235,7 +250,8 @@ function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: 
 	// When the group has no real base id (every Cursor variant carries an effort
 	// suffix), the synthesized primary id is not a sendable Cursor model. Record
 	// an `off` default so a no-thinking request maps to a concrete variant instead
-	// of the base id, which Cursor would reject with `not_found`.
+	// of the base id, which Cursor would reject with `not_found`. Prefer the
+	// minimal/least-effort variant because `off` means minimum reasoning.
 	const hasRealBaseId = group.variants.some((variant) => variant.id === group.primaryId);
 	if (!hasRealBaseId) {
 		const defaultVariant = map.minimal ?? map.low ?? map.medium ?? map.high ?? map.xhigh ?? null;
