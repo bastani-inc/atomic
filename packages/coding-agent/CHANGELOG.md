@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Debounced duplicate reftable watcher notifications by de-duplicating unchanged `.git/reftable/tables.list` states, avoiding extra Windows footer branch refreshes while preserving real reftable branch updates.
+
 ## [0.9.3-alpha.4] - 2026-06-28
 
 ### Changed
