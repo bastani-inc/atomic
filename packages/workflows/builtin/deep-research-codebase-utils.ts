@@ -46,7 +46,13 @@ export const PLANNER_MODEL_CONFIG = {
     "google-vertex/gemini-3.5-flash:high",
     "github-copilot/gemini-3.1-pro-preview (1m):high",
     "google/gemini-3.1-pro-preview:high",
-    "google-vertex/gemini-3.1-pro-preview:high"
+    "google-vertex/gemini-3.1-pro-preview:high",
+    "openrouter/openai/gpt-5.5:xhigh",
+    "openrouter/anthropic/claude-opus-4-8:xhigh",
+    "openrouter/zai/glm-5.2:xhigh",
+    "openrouter/google/gemini-3.5-flash:high",
+    "openrouter/google/gemini-3.1-pro-preview:high"
+
   ],
   excludedTools: ["ask_user_question"],
 } as const;

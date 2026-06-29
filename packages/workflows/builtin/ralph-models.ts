@@ -15,7 +15,13 @@ export const promptEngineerModelConfig = {
       "google-vertex/gemini-3.5-flash:high",
       "github-copilot/gemini-3.1-pro-preview (1m):high",
       "google/gemini-3.1-pro-preview:high",
-      "google-vertex/gemini-3.1-pro-preview:high"
+      "google-vertex/gemini-3.1-pro-preview:high",
+      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/openai/gpt-5.5:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/google/gemini-3.5-flash:high",
+      "openrouter/google/gemini-3.1-pro-preview:high"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -34,7 +40,12 @@ export const researchModelConfig = {
         "google-vertex/gemini-3.5-flash:medium",
         "github-copilot/gemini-3.1-pro-preview (1m):medium",
         "google/gemini-3.1-pro-preview:medium",
-        "google-vertex/gemini-3.1-pro-preview:medium"
+        "google-vertex/gemini-3.1-pro-preview:medium",
+        "openrouter/openai/gpt-5.5:medium",
+        "openrouter/anthropic/claude-opus-4-8:medium",
+        "openrouter/zai/glm-5.2:medium",
+        "openrouter/google/gemini-3.5-flash:medium",
+        "openrouter/google/gemini-3.1-pro-preview:medium"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -53,7 +64,12 @@ export const orchestratorModelConfig = {
         "google-vertex/gemini-3.5-flash:medium",
         "github-copilot/gemini-3.1-pro-preview (1m):medium",
         "google/gemini-3.1-pro-preview:medium",
-        "google-vertex/gemini-3.1-pro-preview:medium"
+        "google-vertex/gemini-3.1-pro-preview:medium",
+        "openrouter/openai/gpt-5.5:medium",
+        "openrouter/anthropic/claude-opus-4-8:medium",
+        "openrouter/zai/glm-5.2:medium",
+        "openrouter/google/gemini-3.5-flash:medium",
+        "openrouter/google/gemini-3.1-pro-preview:medium"
     ],
     excludedTools: ["ask_user_question"],
 };
@@ -73,7 +89,13 @@ export const reviewerAModelConfig = {
       "google-vertex/gemini-3.5-flash:high",
       "github-copilot/gemini-3.1-pro-preview (1m):high",
       "google/gemini-3.1-pro-preview:high",
-      "google-vertex/gemini-3.1-pro-preview:high"
+      "google-vertex/gemini-3.1-pro-preview:high",
+      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/openai/gpt-5.5:xhigh",
+      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/google/gemini-3.5-flash:high",
+      "openrouter/google/gemini-3.1-pro-preview:high"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,
@@ -94,7 +116,13 @@ export const reviewerBModelConfig = {
       "google-vertex/gemini-3.5-flash:high",
       "github-copilot/gemini-3.1-pro-preview (1m):high",
       "google/gemini-3.1-pro-preview:high",
-      "google-vertex/gemini-3.1-pro-preview:high"
+      "google-vertex/gemini-3.1-pro-preview:high",
+      "openrouter/openai/gpt-5.5:xhigh",
+      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/google/gemini-3.5-flash:high",
+      "openrouter/google/gemini-3.1-pro-preview:high"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,
@@ -115,7 +143,13 @@ export const reviewerCModelConfig = {
       "openai/gpt-5.5:xhigh",
       "anthropic/claude-fable-5:xhigh",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh"
+      "anthropic/claude-opus-4-8:xhigh",
+      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/google/gemini-3.5-flash:high",
+      "openrouter/google/gemini-3.1-pro-preview:high",
+      "openrouter/openai/gpt-5.5:xhigh",
+      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:xhigh",
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,

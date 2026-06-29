@@ -106,7 +106,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "google-vertex/gemini-3.5-flash:medium",
           "github-copilot/gemini-3.1-pro-preview (1m):medium",
           "google/gemini-3.1-pro-preview:medium",
-          "google-vertex/gemini-3.1-pro-preview:medium"
+          "google-vertex/gemini-3.1-pro-preview:medium",
+          "openrouter/openai/gpt-5.5:medium",
+          "openrouter/anthropic/claude-opus-4-8:medium",
+          "openrouter/zai/glm-5.2:medium",
+          "openrouter/google/gemini-3.5-flash:medium",
+          "openrouter/google/gemini-3.1-pro-preview:medium"
       ],
       tools: goalRunnerTools,
     };
@@ -126,7 +131,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "google-vertex/gemini-3.5-flash:high",
           "github-copilot/gemini-3.1-pro-preview (1m):high",
           "google/gemini-3.1-pro-preview:high",
-          "google-vertex/gemini-3.1-pro-preview:high"
+          "google-vertex/gemini-3.1-pro-preview:high",
+          "openrouter/openai/gpt-5.5:xhigh",
+          "openrouter/anthropic/claude-opus-4-8:xhigh",
+          "openrouter/zai/glm-5.2:xhigh",
+          "openrouter/google/gemini-3.5-flash:high",
+          "openrouter/google/gemini-3.1-pro-preview:high"
       ],
       tools: goalRunnerTools,
       schema: reviewDecisionSchema,
