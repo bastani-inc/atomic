@@ -43,7 +43,7 @@ type SendOptions = {
 
 const config = {
   enabled: true,
-  notifyOn: ["completed", "failed", "awaiting_input"] as const,
+  notifyOn: ["completed", "failed", "blocked", "awaiting_input"] as const,
 };
 
 function runningStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {
@@ -118,6 +118,38 @@ describe("installWorkflowLifecycleNotifications", () => {
     assert.equal(sent[0]?.details?.scope, "run");
     assert.equal(sent[0]?.details?.workflowName, "release");
     assert.match(sent[0]?.content ?? "", /\/workflow status run-1/);
+  });
+
+  test("uses blocked lifecycle notices for runs ending with blocked status", () => {
+    const { store, sent } = install();
+    store.recordRunStart({ id: "run-blocked", name: "release", inputs: {}, status: "running", stages: [], startedAt: 1 });
+
+    assert.equal(store.recordRunEnd("run-blocked", "blocked", { status: "blocked", summary: "checks are still pending" }), true);
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.kind, "blocked");
+    assert.equal(sent[0]?.details?.status, "blocked");
+    assert.match(sent[0]?.content ?? "", /ended blocked/);
+    assert.doesNotMatch(sent[0]?.content ?? "", /✓/u);
+  });
+
+  test("seeds historical completed runs using returned failed or blocked status", () => {
+    const store = createStore();
+    const sent: SentMessage[] = [];
+    startRun(store, "run-legacy-failed", "legacy failed");
+    store.recordRunEnd("run-legacy-failed", "completed", { status: "failed", summary: "old failure" });
+    startRun(store, "run-legacy-blocked", "legacy blocked");
+    store.recordRunEnd("run-legacy-blocked", "completed", { status: "blocked", summary: "old blocker" });
+
+    installWorkflowLifecycleNotifications({
+      store,
+      config,
+      state: createWorkflowLifecycleNotificationState(),
+      sendMessage(message) { sent.push(message as SentMessage); },
+    });
+    store.recordNotice({ id: "history-tick", level: "info", message: "tick", createdAt: 13 });
+
+    assert.deepEqual(sent, []);
   });
 
   test("emits failure notice with stage and truncated error context", () => {

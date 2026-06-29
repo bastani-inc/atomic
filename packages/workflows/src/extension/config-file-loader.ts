@@ -68,7 +68,7 @@ function validateConfig(value: unknown): string | null {
       }
       for (const item of notifyOn) {
         if (!isWorkflowLifecycleNoticeKind(item)) {
-          return `"workflowNotifications.notifyOn" entries must be "completed", "failed", or "awaiting_input", got ${JSON.stringify(item)}`;
+          return `"workflowNotifications.notifyOn" entries must be "completed", "failed", "blocked", or "awaiting_input", got ${JSON.stringify(item)}`;
         }
       }
     }

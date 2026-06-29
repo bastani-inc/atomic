@@ -696,7 +696,7 @@ Example config:
   "resumeInFlight": "ask",
   "workflowNotifications": {
     "enabled": true,
-    "notifyOn": ["completed", "failed", "awaiting_input"]
+    "notifyOn": ["completed", "failed", "blocked", "awaiting_input"]
   }
 }
 ```
@@ -711,7 +711,7 @@ Runtime config defaults:
 | `statusFile` | `false` | Write a derived status file; defaults under `.atomic/workflows/status.json` when enabled |
 | `resumeInFlight` | `"ask"` | Behavior when discovering resumable in-flight work |
 | `workflowNotifications.enabled` | `true` | Emit terminal workflow lifecycle notices into the active main chat |
-| `workflowNotifications.notifyOn` | `["completed", "failed", "awaiting_input"]` | Lifecycle states to track; terminal `completed`/`failed` states create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
+| `workflowNotifications.notifyOn` | `["completed", "failed", "blocked", "awaiting_input"]` | Lifecycle states to track; terminal `completed`/`failed`/`blocked` states create main-chat notices, while `awaiting_input` is tracked for dedupe/restore without waking the main agent |
 
 Invalid JSON or invalid shapes produce `CONFIG_INVALID` diagnostics. Missing config files are ignored.
 
@@ -1007,7 +1007,7 @@ The default file backend needs no environment variable or database. It writes on
 
 ## Lifecycle Notices and Human Input
 
-Atomic emits deduplicated main-chat notices when top-level workflow runs complete or fail. Nested child workflow completion/failure is reflected inside the expanded parent graph instead of producing separate top-level completion cards. These terminal notices are queued into the active main chat as steering/context messages (`triggerTurn: true`, `deliverAs: "steer"`) so the model can react without the user manually polling status. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces. Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["completed", "failed", "awaiting_input"]`).
+Atomic emits deduplicated main-chat notices when top-level workflow runs complete, fail, or end blocked. Nested child workflow completion/failure is reflected inside the expanded parent graph instead of producing separate top-level completion cards. These terminal notices are queued into the active main chat as steering/context messages (`triggerTurn: true`, `deliverAs: "steer"`) so the model can react without the user manually polling status. Awaiting-input workflow states are tracked for dedupe/restore, but they do not enqueue main-chat connect cards or wake the model; prompt state remains visible through workflow status/connect surfaces. Configure lifecycle behavior with `workflowNotifications.enabled` (default `true`) and `workflowNotifications.notifyOn` (default `["completed", "failed", "blocked", "awaiting_input"]`).
 
 Human input is runtime-only: call `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`, `ctx.ui.editor`, or `ctx.ui.custom<T>` at the point where the workflow actually needs a decision. No builder-level declaration is required or supported.
 

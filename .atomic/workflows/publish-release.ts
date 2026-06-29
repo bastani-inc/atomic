@@ -172,14 +172,14 @@ export default workflow({
       ].join("\n"),
     });
 
-    const ciVerification = verifyReleasePrChecksPassed(release, prReference, baseRef);
+    const ciVerification = await verifyReleasePrChecksPassed(release, prReference, baseRef);
     if (!ciVerification.ok) {
       return blockedOutput(
         release,
         "verify-release-pr-checks-passed",
         "GitHub PR required checks are passing for the exact captured PR head SHA before merge",
         [ciVerification.summary, "", "CI wait stage output:", excerpt(ciWait.text, 2_000)].join("\n"),
-        "failed",
+        ciVerification.pending === true ? "blocked" : "failed",
       );
     }
 

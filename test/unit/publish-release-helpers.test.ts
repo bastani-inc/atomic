@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   prereleaseVersionPattern,
   releaseVersionPattern,
@@ -13,6 +14,8 @@ import {
   type JsonValue,
 } from "../../.atomic/workflows/lib/publish-release.js";
 import { waitForWorkflowRunSucceeded } from "../../.atomic/workflows/lib/publish-release-run-wait.js";
+import { verifyReleasePrChecksPassed } from "../../.atomic/workflows/lib/publish-release-gates.js";
+
 
 describe("publish-release version validation", () => {
   test("accepts stable release versions only for release requests", () => {
@@ -152,17 +155,111 @@ describe("publish-release GitHub PR checks verification", () => {
     });
   });
 
-  test("rejects empty, failing, pending, or malformed required check lists", () => {
+  test("distinguishes failing checks from pending checks", () => {
     assert.equal(verifyPullRequestChecksJson([]).ok, false);
-
-    const result = verifyPullRequestChecksJson([
+    const failed = verifyPullRequestChecksJson([
       { name: "typecheck", bucket: "fail", state: "FAILURE", link: "https://example.test/check" },
+    ]);
+    assert.equal(failed.ok, false);
+    assert.equal(failed.pending, undefined);
+    assert.match(failed.summary, /typecheck bucket=fail state=FAILURE link=https:\/\/example\.test\/check/u);
+
+    const pending = verifyPullRequestChecksJson([
       { name: "unit", bucket: "pending", state: "PENDING" },
     ]);
+    assert.equal(pending.ok, false);
+    assert.equal(pending.pending, true);
+    assert.match(pending.summary, /unit bucket=pending state=PENDING/u);
+  });
+
+  test("polls pending PR checks until they pass", async () => {
+    const release = validateReleaseRequest("release", "1.2.3");
+    const prReference = {
+      ok: true as const,
+      summary: "GitHub PR reference is verified.",
+      prUrl: "https://github.com/earendil-works/pi-mono/pull/123",
+      prNumber: 123,
+      headRefOid: "def456",
+      state: "OPEN",
+    };
+    const prView = {
+      number: 123,
+      state: "OPEN",
+      baseRefName: "main",
+      headRefName: "release/1.2.3",
+      headRefOid: "def456",
+      url: prReference.prUrl,
+    };
+    const responses: CommandResult[] = [
+      { command: "gh pr view", exitCode: 0, stdout: JSON.stringify(prView), stderr: "" },
+      { command: "gh pr checks", exitCode: 8, stdout: JSON.stringify([{ name: "unit", bucket: "pending", state: "PENDING" }]), stderr: "" },
+      { command: "gh pr view", exitCode: 0, stdout: JSON.stringify(prView), stderr: "" },
+      { command: "gh pr checks", exitCode: 0, stdout: JSON.stringify([{ name: "unit", bucket: "pass", state: "SUCCESS" }]), stderr: "" },
+    ];
+    const sleeps: number[] = [];
+
+    const result = await verifyReleasePrChecksPassed(release, prReference, "main", {
+      attempts: 2,
+      pollIntervalMs: 25,
+      runCommand: (args) => {
+        const response = responses.shift();
+        if (response === undefined) throw new Error(`unexpected command: ${args.join(" ")}`);
+        return { ...response, command: args.join(" ") };
+      },
+      sleep: (durationMs) => {
+        sleeps.push(durationMs);
+        return Promise.resolve();
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(sleeps, [25]);
+    assert.equal(responses.length, 0);
+  });
+
+  test("marks PR checks as pending when polling times out", async () => {
+    const release = validateReleaseRequest("release", "1.2.3");
+    const prReference = {
+      ok: true as const,
+      summary: "GitHub PR reference is verified.",
+      prUrl: "https://github.com/earendil-works/pi-mono/pull/123",
+      prNumber: 123,
+      headRefOid: "def456",
+      state: "OPEN",
+    };
+    const prView = {
+      number: 123,
+      state: "OPEN",
+      baseRefName: "main",
+      headRefName: "release/1.2.3",
+      headRefOid: "def456",
+      url: prReference.prUrl,
+    };
+    const result = await verifyReleasePrChecksPassed(release, prReference, "main", {
+      attempts: 1,
+      pollIntervalMs: 25,
+      runCommand: (args) => ({
+        command: args.join(" "),
+        exitCode: args.includes("checks") ? 8 : 0,
+        stdout: JSON.stringify(args.includes("checks") ? [{ name: "unit", bucket: "pending", state: "PENDING" }] : prView),
+        stderr: "",
+      }),
+      sleep: () => Promise.resolve(),
+    });
 
     assert.equal(result.ok, false);
-    assert.match(result.summary, /typecheck bucket=fail state=FAILURE link=https:\/\/example\.test\/check/u);
-    assert.match(result.summary, /unit bucket=pending state=PENDING/u);
+    assert.equal(result.pending, true);
+    assert.match(result.summary, /did not finish before the polling timeout/u);
+  });
+
+  test("publish-release polling helpers do not reference Bun globals", () => {
+    const helpers = [
+      ".atomic/workflows/lib/publish-release-gates.ts",
+      ".atomic/workflows/lib/publish-release-run-wait.ts",
+    ];
+    for (const helper of helpers) {
+      assert.doesNotMatch(readFileSync(helper, "utf8"), /\bBun\./u, helper);
+    }
   });
 
   test("does not treat completed check status as passing without a pass bucket", () => {
@@ -304,6 +401,11 @@ describe("publish-release GitHub Actions publish verification", () => {
     assert.deepEqual(sleeps, [25]);
     assert.equal(commands.some((command) => command.includes(" run watch ")), false);
     assert.match(result.summary, /status: completed/u);
+  });
+
+  test("publish-release run polling helper does not reference Bun globals", () => {
+    const source = readFileSync(".atomic/workflows/lib/publish-release-run-wait.ts", "utf8");
+    assert.doesNotMatch(source, /\bBun\./u);
   });
 
   test("marks a still-running publish run as pending when polling times out", async () => {

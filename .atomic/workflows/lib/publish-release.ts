@@ -266,6 +266,14 @@ function checkPassed(value: { readonly [key: string]: JsonValue }): boolean {
   return state === "SUCCESS" || state === "PASSING" || state === "PASSED";
 }
 
+function checkPending(value: { readonly [key: string]: JsonValue }): boolean {
+  const bucket = stringField(value, "bucket")?.toLowerCase();
+  if (bucket !== undefined) return bucket === "pending";
+
+  const state = stringField(value, "state")?.toUpperCase();
+  return state === "PENDING" || state === "QUEUED" || state === "IN_PROGRESS" || state === "WAITING" || state === "REQUESTED";
+}
+
 export function verifyPullRequestChecksJson(value: JsonValue): PullRequestChecksVerification {
   if (!Array.isArray(value)) {
     return { ok: false, summary: "GitHub PR checks response was not a JSON array." };
@@ -276,18 +284,24 @@ export function verifyPullRequestChecksJson(value: JsonValue): PullRequestChecks
   }
 
   const failures: string[] = [];
+  const pending: string[] = [];
   for (const [index, check] of value.entries()) {
     if (!isJsonObject(check)) {
       failures.push(`check[${index}] was not a JSON object`);
       continue;
     }
 
-    if (!checkPassed(check)) {
-      const name = checkName(check, index);
-      const bucket = stringField(check, "bucket") ?? "missing";
-      const state = stringField(check, "state") ?? "missing";
-      const link = stringField(check, "link");
-      failures.push(`${name} bucket=${bucket} state=${state}${link === undefined ? "" : ` link=${link}`}`);
+    if (checkPassed(check)) continue;
+
+    const name = checkName(check, index);
+    const bucket = stringField(check, "bucket") ?? "missing";
+    const state = stringField(check, "state") ?? "missing";
+    const link = stringField(check, "link");
+    const line = `${name} bucket=${bucket} state=${state}${link === undefined ? "" : ` link=${link}`}`;
+    if (checkPending(check)) {
+      pending.push(line);
+    } else {
+      failures.push(line);
     }
   }
 
@@ -297,6 +311,17 @@ export function verifyPullRequestChecksJson(value: JsonValue): PullRequestChecks
       summary: [
         "GitHub PR required checks are not verified as passing.",
         ...failures.map((failure) => `- ${failure}`),
+      ].join("\n"),
+    };
+  }
+
+  if (pending.length > 0) {
+    return {
+      ok: false,
+      pending: true,
+      summary: [
+        "GitHub PR required checks are still pending.",
+        ...pending.map((check) => `- ${check}`),
       ].join("\n"),
     };
   }

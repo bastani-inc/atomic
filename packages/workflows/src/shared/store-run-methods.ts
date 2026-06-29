@@ -82,10 +82,10 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
         run.pausedAt = undefined;
       }
       run.durationMs = elapsedRunMs(run, run.endedAt);
+      if (result !== undefined && shouldStoreRunResult(status)) run.result = result;
       const wasBlocked = run.blockedAt !== undefined || run.failureDisposition === "active_blocked";
       delete run.blockedAt;
       if (status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked") {
-        if (result !== undefined) run.result = result;
         clearRunFailureMetadata(run);
         if (metadata !== undefined) applyRunEndMetadata(run, metadata);
       } else {
@@ -226,4 +226,9 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
       };
     },
   };
+}
+
+
+function shouldStoreRunResult(status: RunStatus): boolean {
+  return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked" || status === "failed";
 }

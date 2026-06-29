@@ -43,7 +43,7 @@ type SendOptions = {
 
 const config = {
   enabled: true,
-  notifyOn: ["completed", "failed", "awaiting_input"] as const,
+  notifyOn: ["completed", "failed", "blocked", "awaiting_input"] as const,
 };
 
 function runningStage(overrides: Partial<StageSnapshot> = {}): StageSnapshot {

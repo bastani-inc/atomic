@@ -139,14 +139,14 @@ describe("recordRunEnd — terminal guard", () => {
 
   // --- result/error field rules ---
 
-  test("result stored only for completed", () => {
+  test("result stored for completed", () => {
     s.recordRunEnd("r1", "completed", { answer: 42 });
     assert.deepEqual(s.runs().find((r) => r.id === "r1")!.result, { answer: 42 });
   });
 
-  test("result NOT stored for failed (wrong status)", () => {
+  test("result stored for failed", () => {
     s.recordRunEnd("r1", "failed", { answer: 42 });
-    assert.equal(s.runs().find((r) => r.id === "r1")!.result, undefined);
+    assert.deepEqual(s.runs().find((r) => r.id === "r1")!.result, { answer: 42 });
   });
 
   test("result NOT stored for killed", () => {

@@ -6,6 +6,7 @@ import {
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type PublishWorkflowRunVerification,
+  type CommandResult,
   type PullRequestMergeVerification,
   type PullRequestReferenceVerification,
   type ValidatedRelease,
@@ -20,7 +21,22 @@ type GateVerification =
   | {
       readonly ok: false;
       readonly summary: string;
+      readonly pending?: boolean;
     };
+
+type CheckGateOptions = {
+  readonly attempts?: number;
+  readonly pollIntervalMs?: number;
+  readonly runCommand?: (args: readonly string[]) => CommandResult;
+  readonly sleep?: (durationMs: number) => Promise<void>;
+};
+
+const defaultCheckGateAttempts = 30;
+const defaultCheckGatePollIntervalMs = 30_000;
+
+function defaultSleep(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
 
 type MainReadyVerification =
   | {
@@ -116,12 +132,46 @@ export function captureReleasePrReference(
   };
 }
 
-export function verifyReleasePrChecksPassed(
+export async function verifyReleasePrChecksPassed(
   release: ValidatedRelease,
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
+  options: CheckGateOptions = {},
+): Promise<GateVerification> {
+  const attempts = options.attempts ?? defaultCheckGateAttempts;
+  const pollIntervalMs = options.pollIntervalMs ?? defaultCheckGatePollIntervalMs;
+  const sleep = options.sleep ?? defaultSleep;
+  let lastPendingSummary: string | undefined;
+
+  const execute = options.runCommand ?? runCommand;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const verification = verifyReleasePrChecksOnce(release, prReference, baseRef, execute);
+    if (verification.ok) return verification;
+    if (verification.pending !== true) return verification;
+
+    lastPendingSummary = verification.summary;
+    if (attempt < attempts) await sleep(pollIntervalMs);
+  }
+
+  return {
+    ok: false,
+    pending: true,
+    summary: [
+      "GitHub PR required checks did not finish before the polling timeout.",
+      `attempts: ${attempts}`,
+      `pollIntervalMs: ${pollIntervalMs}`,
+      lastPendingSummary,
+    ].filter((line): line is string => line !== undefined).join("\n\n"),
+  };
+}
+
+function verifyReleasePrChecksOnce(
+  release: ValidatedRelease,
+  prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
+  baseRef: string,
+  execute: (args: readonly string[]) => CommandResult,
 ): GateVerification {
-  const prView = runCommand([
+  const prView = execute([
     "gh",
     "pr",
     "view",
@@ -148,7 +198,7 @@ export function verifyReleasePrChecksPassed(
     return { ok: false, summary: [refreshedReference.summary, commandSummary(prView)].join("\n\n") };
   }
 
-  const checks = runCommand([
+  const checks = execute([
     "gh",
     "pr",
     "checks",
@@ -158,16 +208,28 @@ export function verifyReleasePrChecksPassed(
     "name,state,bucket,link,workflow,description",
   ]);
 
-  if (checks.exitCode !== 0) {
+  const parsedChecks = parseJsonCommand(checks, "GitHub PR required checks returned invalid JSON.");
+  if (checks.exitCode !== 0 && checks.exitCode !== 8) {
     return { ok: false, summary: ["GitHub PR required checks command failed.", commandSummary(checks)].join("\n\n") };
   }
-
-  const parsedChecks = parseJsonCommand(checks, "GitHub PR required checks returned invalid JSON.");
-  if (!parsedChecks.ok) return { ok: false, summary: parsedChecks.summary };
+  if (!parsedChecks.ok) {
+    if (checks.exitCode === 8) {
+      return {
+        ok: false,
+        pending: true,
+        summary: ["GitHub PR required checks are still pending.", commandSummary(checks)].join("\n\n"),
+      };
+    }
+    return { ok: false, summary: parsedChecks.summary };
+  }
 
   const checkVerification = verifyPullRequestChecksJson(parsedChecks.value);
   if (!checkVerification.ok) {
-    return { ok: false, summary: [checkVerification.summary, commandSummary(prView), commandSummary(checks)].join("\n\n") };
+    return {
+      ok: false,
+      pending: checkVerification.pending,
+      summary: [checkVerification.summary, commandSummary(prView), commandSummary(checks)].join("\n\n"),
+    };
   }
 
   return {

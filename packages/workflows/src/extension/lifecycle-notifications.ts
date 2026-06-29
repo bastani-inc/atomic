@@ -21,11 +21,12 @@ import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workfl
 export const LIFECYCLE_NOTICE_CUSTOM_TYPE = "workflows:lifecycle-notice";
 export const LIFECYCLE_NOTICE_SNIPPET_LIMIT = 240;
 
-export type WorkflowLifecycleNoticeKind = "completed" | "failed" | "awaiting_input";
+export type WorkflowLifecycleNoticeKind = "completed" | "failed" | "blocked" | "awaiting_input";
 
 export const WORKFLOW_LIFECYCLE_NOTICE_KINDS = [
   "completed",
   "failed",
+  "blocked",
   "awaiting_input",
 ] as const satisfies readonly WorkflowLifecycleNoticeKind[];
 
@@ -95,8 +96,9 @@ export function seedWorkflowLifecycleNotificationState(
 ): void {
   for (const run of snapshot.runs) {
     if (!isTopLevelWorkflowRun(run)) continue;
-    if ((run.status === "completed" || run.status === "failed") && run.endedAt !== undefined) {
-      state.deliveredTerminalRuns.add(terminalRunKey(run.status, run.id));
+    const noticeKind = terminalNoticeKind(run);
+    if (noticeKind !== undefined && run.endedAt !== undefined) {
+      state.deliveredTerminalRuns.add(terminalRunKey(noticeKind, run.id));
     }
     if (run.pendingPrompt !== undefined) {
       state.deliveredInputPrompts.add(runAwaitingInputKey(run.id, run.pendingPrompt));
@@ -186,9 +188,10 @@ export function installWorkflowLifecycleNotifications(
 
   const emitTerminalNoticeOnce = (
     run: RunSnapshot,
-    kind: "completed" | "failed",
+    kind: "completed" | "failed" | "blocked",
   ): void => {
-    if (run.status !== kind || run.endedAt === undefined || !notifyOn.has(kind)) {
+    const noticeKind = terminalNoticeKind(run);
+    if (noticeKind !== kind || run.endedAt === undefined || !notifyOn.has(kind)) {
       return;
     }
 
@@ -231,6 +234,7 @@ export function installWorkflowLifecycleNotifications(
       if (!isTopLevelWorkflowRun(run)) continue;
       emitTerminalNoticeOnce(run, "completed");
       emitTerminalNoticeOnce(run, "failed");
+      emitTerminalNoticeOnce(run, "blocked");
 
       if (!notifyOn.has("awaiting_input")) continue;
       emitRunAwaitingInputNoticeOnce(run);
@@ -273,6 +277,10 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
     const errorText = details.error ? `: ${details.error}` : "";
     return `✗ Workflow "${workflowName}" failed (run ${details.runId}${stageText})${errorText}. Inspect: /workflow status ${details.runId}`;
   }
+  if (details.kind === "blocked") {
+    const errorText = details.error ? `: ${details.error}` : "";
+    return `! Workflow "${workflowName}" ended blocked (run ${details.runId})${errorText}. Inspect: /workflow status ${details.runId}`;
+  }
   const prompt = details.promptMessage ? ` Prompt: ${details.promptMessage}` : "";
   if (details.scope === "run") {
     return `？ Workflow "${workflowName}" needs input (run ${details.runId}).${prompt} Respond: /workflow connect ${details.runId} to answer this run-level prompt.`;
@@ -286,7 +294,7 @@ export function formatWorkflowLifecycleNoticeText(details: WorkflowLifecycleNoti
 
 function makeTerminalNotice(
   run: RunSnapshot,
-  kind: "completed" | "failed",
+  kind: "completed" | "failed" | "blocked",
 ): WorkflowLifecycleNoticeDetails {
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
@@ -320,7 +328,15 @@ function jsonString(value: string): string {
   return JSON.stringify(value);
 }
 
-function terminalRunKey(kind: "completed" | "failed", runId: string): string {
+function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked" | undefined {
+  if (run.status === "failed" || run.status === "blocked") return run.status;
+  if (run.status !== "completed") return undefined;
+  const returnedStatus = run.result?.["status"];
+  if (returnedStatus === "failed" || returnedStatus === "blocked") return returnedStatus;
+  return "completed";
+}
+
+function terminalRunKey(kind: "completed" | "failed" | "blocked", runId: string): string {
   return `${kind}:${runId}`;
 }
 
@@ -361,19 +377,27 @@ function renderLifecycleNoticeCard(
   details: WorkflowLifecycleNoticeDetails,
   opts: { width: number; theme?: GraphTheme; fallbackText: string },
 ): string[] {
-  const tone: WorkflowNoticeTone = details.kind === "failed" ? "error" : details.kind === "awaiting_input" ? "warning" : "success";
+  const tone: WorkflowNoticeTone = details.kind === "failed"
+    ? "error"
+    : details.kind === "awaiting_input" || details.kind === "blocked"
+      ? "warning"
+      : "success";
   const title = details.kind === "failed"
     ? "WORKFLOW FAILED"
     : details.kind === "awaiting_input"
       ? "WORKFLOW INPUT"
-      : "WORKFLOW COMPLETE";
-  const glyph = details.kind === "failed" ? "✗" : details.kind === "awaiting_input" ? "？" : "✓";
+      : details.kind === "blocked"
+        ? "WORKFLOW BLOCKED"
+        : "WORKFLOW COMPLETE";
+  const glyph = details.kind === "failed" ? "✗" : details.kind === "awaiting_input" ? "？" : details.kind === "blocked" ? "!" : "✓";
   const stage = details.stageName ?? details.failedStageId ?? details.stageId;
   const headline = details.kind === "failed"
     ? `Workflow "${details.workflowName}" failed`
     : details.kind === "awaiting_input"
       ? `Workflow "${details.workflowName}" needs input`
-      : `Workflow "${details.workflowName}" completed`;
+      : details.kind === "blocked"
+        ? `Workflow "${details.workflowName}" ended blocked`
+        : `Workflow "${details.workflowName}" completed`;
   return renderWorkflowNoticeCard({
     title,
     glyph,

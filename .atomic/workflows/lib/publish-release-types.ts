@@ -65,6 +65,7 @@ export type PullRequestChecksVerification =
   | {
       readonly ok: false;
       readonly summary: string;
+      readonly pending?: boolean;
     };
 
 export type PublishWorkflowRunVerification =

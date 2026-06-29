@@ -41,6 +41,7 @@ import {
 import { assertWorkflowRunOutputs, normalizeWorkflowRunOutput } from "../runs/foreground/executor-outputs.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import { getDurableBackend } from "../durable/factory.js";
+import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
@@ -423,15 +424,16 @@ export async function run<
     assertWorkflowRunOutputs(def.name, result, def.outputs);
     assertWorkflowCreatedStage(runSnapshot);
     await durableBackend.flush?.();
-    const recorded = activeStore.recordRunEnd(runId, "completed", result);
-    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: "completed", result, ts: Date.now() });
-    durableBackend.setWorkflowStatus(runId, "completed");
+    const returned = classifyReturnedRunStatus(result);
+    const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error);
+    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ts: Date.now() });
+    durableBackend.setWorkflowStatus(runId, returned.status);
     await durableBackend.flush?.();
     if (opts.persistence && durableBackend.persistent) {
       const cacheEntry = durableBackend.toCacheEntry(runId);
       if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
     }
-    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "completed", result }, opts.onRunEnd);
+    return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);

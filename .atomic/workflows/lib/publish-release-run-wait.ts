@@ -41,6 +41,10 @@ type RunIdentity =
 type JsonObject = { readonly [key: string]: JsonValue };
 
 const runJsonFields = "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt,headSha";
+function defaultSleep(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
 
 function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -122,7 +126,7 @@ export async function waitForWorkflowRunSucceeded(
   options: WaitOptions,
 ): Promise<PublishWorkflowRunVerification> {
   const execute = options.runCommand ?? defaultRunCommand;
-  const sleep = options.sleep ?? Bun.sleep;
+  const sleep = options.sleep ?? defaultSleep;
   const listAttempts = options.listAttempts ?? 6;
   const viewAttempts = options.viewAttempts ?? 120;
   const pollIntervalMs = options.pollIntervalMs ?? 10_000;

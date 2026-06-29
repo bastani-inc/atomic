@@ -182,7 +182,7 @@ export const WORKFLOW_CONFIG_DEFAULTS = {
   resumeInFlight: "ask" as const,
   workflowNotifications: {
     enabled: true,
-    notifyOn: ["completed", "failed", "awaiting_input"] as const,
+    notifyOn: ["completed", "failed", "blocked", "awaiting_input"] as const,
   },
 } as const;
 
