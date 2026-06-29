@@ -100,6 +100,11 @@ class Atomic(BaseInstalledAgent):
         "raw.githubusercontent.com",
         "registry.npmjs.org",
     )
+    # Disable Atomic's HTTP idle timeout (undici headers/body timeout) for evals.
+    # Long-context gpt-5.5 + thinking=xhigh requests near the model's prompt cap can
+    # take >5 min to first token; the 5-min default surfaces as "Connection error."
+    # 0 disables the cap so large requests can complete. See http-dispatcher.ts.
+    _HTTP_IDLE_TIMEOUT_MS: int = 0
 
     CLI_FLAGS = [
         CliFlag(
@@ -215,8 +220,10 @@ class Atomic(BaseInstalledAgent):
         session_dir = shlex.quote(self._CONTAINER_SESSION_DIR)
         output_file = shlex.quote(str(EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME))
         copilot_config_command = self._copilot_models_config_command(copilot_base_url)
+        settings_config_command = self._atomic_settings_config_command()
         command = (
             f"rm -rf {session_dir} && mkdir -p {session_dir} && "
+            f"{settings_config_command}"
             f"{copilot_config_command}"
             "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi && "
             f"atomic --print --mode json --session-dir {session_dir} "
@@ -267,6 +274,17 @@ class Atomic(BaseInstalledAgent):
             "cat > $HOME/.atomic/agent/models.json <<'ATOMIC_MODELS_JSON'\n"
             f"{config_json}\n"
             "ATOMIC_MODELS_JSON\n"
+        )
+
+    @classmethod
+    def _atomic_settings_config_command(cls) -> str:
+        settings = {"httpIdleTimeoutMs": cls._HTTP_IDLE_TIMEOUT_MS}
+        settings_json = json.dumps(settings, indent=2)
+        return (
+            "mkdir -p $HOME/.atomic/agent && "
+            "cat > $HOME/.atomic/agent/settings.json <<'ATOMIC_SETTINGS_JSON'\n"
+            f"{settings_json}\n"
+            "ATOMIC_SETTINGS_JSON\n"
         )
 
     @staticmethod

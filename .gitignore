@@ -280,3 +280,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# Pier/Harbor eval job artifacts (local only; not tracked)
+evals/jobs/
