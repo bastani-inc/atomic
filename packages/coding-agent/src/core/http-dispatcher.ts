@@ -1,7 +1,10 @@
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { installCopilotGeminiReasoningInterceptor } from "./copilot-gemini-reasoning.ts";
 
-export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000;
+export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
+
+/** Connect-phase timeout so a black-holed/firewalled host fails fast instead of hanging until the OS TCP timeout. */
+export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
 
 export const HTTP_IDLE_TIMEOUT_CHOICES = [
 	{ label: "30 sec", timeoutMs: 30_000 },
@@ -46,6 +49,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			allowH2: false,
 			bodyTimeout: normalizedTimeoutMs,
 			headersTimeout: normalizedTimeoutMs,
+			connect: { timeout: HTTP_CONNECT_TIMEOUT_MS },
 		}),
 	);
 

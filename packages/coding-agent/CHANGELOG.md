@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the default HTTP idle timeout from 5 to 10 minutes (`httpIdleTimeoutMs` 300000 → 600000) and added a fixed 10-second connect-phase timeout, so slow long-context turns finish instead of failing as "Connection error." while unreachable or firewall-blocked hosts fail fast instead of hanging.
+
 ### Fixed
 
 - Debounced duplicate reftable watcher notifications by de-duplicating unchanged `.git/reftable/tables.list` states, avoiding extra Windows footer branch refreshes while preserving real reftable branch updates.

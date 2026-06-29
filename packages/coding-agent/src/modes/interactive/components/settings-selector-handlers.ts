@@ -1,5 +1,5 @@
 import type { Transport } from "@earendil-works/pi-ai";
-import { HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
+import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { DEFAULT_PROJECT_TRUST_BY_LABEL } from "./settings-selector-options.ts";
 import type { DoubleEscapeAction, QueueDeliveryMode, SettingsCallbacks, TreeFilterMode } from "./settings-selector-types.ts";
 
@@ -35,7 +35,7 @@ export function createSettingsChangeHandler(callbacks: SettingsCallbacks): (id: 
 				break;
 			case "http-idle-timeout": {
 				const selected = HTTP_IDLE_TIMEOUT_CHOICES.find((choice) => choice.label === newValue);
-				callbacks.onHttpIdleTimeoutChange(selected?.timeoutMs ?? 300_000);
+				callbacks.onHttpIdleTimeoutChange(selected?.timeoutMs ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS);
 				break;
 			}
 			case "bash-interceptor":
