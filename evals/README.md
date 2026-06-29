@@ -68,7 +68,7 @@ export OPENROUTER_API_KEY="..."
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model openrouter/anthropic/claude-sonnet-4.5 \
+  --model openrouter/openai/gpt-5.5 \
   --agent-kwarg thinking=xhigh \
   --agent-kwarg version=next \
   --n-tasks 1 \
