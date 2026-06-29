@@ -158,9 +158,9 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `httpIdleTimeoutMs` | number | `700000` | HTTP header/body idle timeout in milliseconds. Must be a non-negative finite number; decimals are rounded down. Set to `0` to disable the idle timeout. |
+| `httpIdleTimeoutMs` | number | `600000` | HTTP header/body idle timeout in milliseconds. Must be a non-negative finite number; decimals are rounded down. Set to `0` to disable the idle timeout. |
 
-Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 700,000 ms (~12 minutes), which tolerates long no-token windows (long-context + `thinking=xhigh` first-token latency) while reclaiming stale idle connections. The dispatcher also applies a fixed 10-second connect-phase timeout so an unreachable or firewall-blocked host fails fast instead of hanging until the OS TCP timeout.
+Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 600,000 ms (10 minutes), which keeps slow long-context requests working while reclaiming stale idle connections. The dispatcher also applies a fixed 10-second connect-phase timeout so an unreachable or firewall-blocked host fails fast instead of hanging until the OS TCP timeout.
 
 The `/settings` picker offers these presets:
 
@@ -170,13 +170,12 @@ The `/settings` picker offers these presets:
 | `1 min` | `60000` |
 | `5 min` | `300000` |
 | `10 min` | `600000` |
-| `~12 min` | `700000` |
 | `30 min` | `1800000` |
 | `Disabled` | `0` |
 
 ```json
 {
-  "httpIdleTimeoutMs": 700000
+  "httpIdleTimeoutMs": 600000
 }
 ```
 
@@ -187,7 +186,7 @@ The `/settings` picker offers these presets:
 | `steeringMode` | string | `"one-at-a-time"` | How steering messages are sent: `"all"` or `"one-at-a-time"` |
 | `followUpMode` | string | `"one-at-a-time"` | How follow-up messages are sent: `"all"` or `"one-at-a-time"` |
 | `transport` | string | `"auto"` | Preferred transport for providers that support multiple transports: `"sse"`, `"websocket"`, `"websocket-cached"`, or `"auto"` |
-| `httpIdleTimeoutMs` | number | `700000` | HTTP header/body idle timeout in milliseconds, also used by providers with explicit stream idle timeouts. Set to `0` to disable. |
+| `httpIdleTimeoutMs` | number | `600000` | HTTP header/body idle timeout in milliseconds, also used by providers with explicit stream idle timeouts. Set to `0` to disable. |
 | `websocketConnectTimeoutMs` | number | `15000` | WebSocket connect/open handshake timeout in milliseconds for providers that support WebSocket transports. Set to `0` to disable. |
 
 ### Terminal & Images

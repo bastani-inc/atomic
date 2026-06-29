@@ -5,7 +5,7 @@
 ### Changed
 
 - Enabled provider/SDK retries by default (`retry.provider.maxRetries` `0` → `5`) so transient socket drops retry instead of surfacing as fatal `"Connection error"`. Connection failures (status-undefined) back off briefly while the existing `retry.provider.maxRetryDelayMs` cap still fails fast on long quota/rate-limit waits.
-- Raised the default HTTP idle timeout from 10 to ~12 minutes (`httpIdleTimeoutMs` 600000 → 700000) and added a `~12 min` preset, so long no-token windows (long-context + `thinking=xhigh` first-token latency) survive without disabling the cap. Eval harness adapters (`atomic_pier.py`, `atomic_harbor.py`) no longer hard-code `httpIdleTimeoutMs:0`; they inherit the new defaults.
+- Removed the hard-coded `httpIdleTimeoutMs:0` override from the eval harness adapters (`atomic_pier.py`, `atomic_harbor.py`); they now inherit the standard 10-minute idle timeout default.
 
 ## [0.9.3-alpha.5] - 2026-06-28
 
