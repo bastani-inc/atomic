@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream pi `^0.80.2` and retargeted legacy provider/model imports to `@earendil-works/pi-ai/compat`, preserving MCP sampling behavior under the updated pi-ai package layout.
+
+### Fixed
+
+- Made `unflattenToolArguments` schema-aware so literal dotted top-level argument keys such as `filter.name` are preserved unless the tool input schema proves the key represents a nested path, while bracket-indexed array/object keys are still reconstructed for direct-tool and proxy/gateway calls.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Changed

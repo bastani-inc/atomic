@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Added
+
+- Added a Rust-backed `PtySession` N-API surface using `portable-pty`, enabling Atomic `bash` calls with `pty: true` to run through a real PTY/ConPTY with streaming output, resize, kill, timeout, cwd, shell, and environment support.
+- Added native `glob`, `grep`, in-memory `search`, `hasMatch`, and filesystem scan-cache invalidation bindings for Atomic's full-level `find`/`search` tool parity.
+
+### Changed
+
+- Refreshed the native build toolchain and transitive Rust dependencies, including `@napi-rs/cli` 3.7.2, `rustls` 0.23.41, `napi` 3.9.4, `bytes` 1.12.0, and `webpki-roots` 1.0.8.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Changed

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Added
+
+- Added scoped Cursor image-input support for known multimodal Claude, Composer, Gemini, GPT, Kimi, and Grok 4.3 model families, including selected-image request serialization and mixed text/image MCP tool-result serialization.
+- Added `cursor/grok-4.3` to the estimated fallback catalog.
+
+### Changed
+
+- Aligned the Cursor provider dependency on upstream pi-ai `^0.80.2` and retargeted legacy provider/model imports to the `@earendil-works/pi-ai/compat` entrypoint.
+- Resolved Cursor model context windows and max output tokens from Atomic's bundled pi-ai model catalog while preserving positive live limits, ignoring bogus non-positive values, and keeping conservative estimates only for Cursor-only models.
+- Marked Cursor OAuth as **Cursor (Experimental)** in the `/login` picker.
+
+### Fixed
+
+- Fixed effort-variant-only Cursor models failing no-thinking requests by recording and sending a concrete default variant instead of an unsendable synthesized base id.
+- Preserved explicit `1M` Cursor context floors across fallback catalog matches and made the pi-ai catalog a runtime dependency so limit fallback remains available at provider startup.
+- Exposed `xhigh` only for Cursor models whose live or estimated catalog includes a real `xhigh`/`max` variant, with saved `xhigh` selections falling back to the nearest sendable variant.
+- Rejected empty or malformed base64 image payloads during Cursor selected-image and MCP image serialization while accepting valid MIME-wrapped base64 with whitespace.
+
+### Removed
+
+- Removed outdated Cursor Grok 4.20 fallback entries and stopped advertising unsupported Grok-family Cursor IDs as image-capable.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Changed

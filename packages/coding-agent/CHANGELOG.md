@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Breaking Changes
+
+- Replaced the legacy exact-replacement `edit` tool API with the hashline-only `input` script schema; callers must use snapshot tags from `read`/`search`/`write`/`edit` instead of `path` + `edits[]` or `oldText`/`newText`.
+- Tightened the model-facing `read`, `find`, and `search` schemas to the new builtin contracts (`read` path selectors, required `find.paths`, and the narrowed `search` option set).
+
+### Added
+
+- Added first-run onboarding that routes pasted tickets, specs, and tasks into normal Atomic sessions with scope-estimation guidance and workflow handoff next steps.
+- Added internal workflow-stage session marking so workflow-created sessions stay out of ordinary `/resume`, `atomic -r`, and `--continue` history while remaining accessible through workflow resume/status surfaces.
+- Added first-class `find`/`search` builtins, hashline snapshot anchors, hashline edit scripts with stale-tag safety, a disabled-by-default Bash Interceptor toggle, Rust-backed `pty:true` bash execution, and native glob/grep/search bindings for oh-my-pi parity.
+
+### Changed
+
+- Synced bundled upstream Pi runtime packages to `^0.80.2` and routed legacy pi-ai imports through the temporary `/compat` entrypoint, including virtual-module and Jiti aliases for first-party and user-installed extensions.
+- Enabled provider/SDK retries by default, raised the standard HTTP idle timeout to 10 minutes, and added a 10-second connect-phase timeout so transient socket drops retry while unreachable hosts fail fast.
+- Accounted for image content blocks in context-window estimates and compaction budgets, raised delegated workflow/subagent nesting to the shared five-level maximum, and exported the canonical schema-aware flattened-argument helper used by host and MCP tool execution.
+- Updated workflow and user-facing documentation so structured, validation-heavy, implementation, debugging, migration, and loop-shaped requests are routed to workflows by default.
+
+### Fixed
+
+- Fixed custom tool renderer cleanup, persisted-context replay after context compaction, and multiple first-run onboarding edge cases around placeholders, file references, isolated config discovery, saved tasks, `/import`, `/model`, and `/new`.
+- Completed the oh-my-pi builtin parity pass across `read`, `write`, `find`, `search`, `edit`, `bash`, archive, document, URL, internal-resource, conflict, and SQLite selectors, including pagination, truncation metadata, native cache invalidation, copied-hashline stripping, async/PTY behavior, and cross-platform path handling.
+- Hardened generated-file, URL, `local://`, SQLite, archive, native PTY/search, and bash-interceptor paths against traversal, SSRF, unsafe raw SQL/archive cases, stale cache writes, native panics, leaked async output, and provider-hostile argument shapes.
+- Fixed compiled release binary packaging and cross-platform package tests by externalizing `mupdf`, preparing native bindings and fixtures in CI, running the coding-agent Vitest suite under Bun, and hardening Windows path, color, and process-spawn coverage.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Changed

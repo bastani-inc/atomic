@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Breaking Changes
+
+- Enabled workflow durability by default with a zero-infrastructure per-workflow file backend under `~/.atomic/workflow-durable`, replacing the previous process-local in-memory default and removing the old `ATOMIC_WORKFLOW_DURABLE_DIR` opt-in path. Explicit in-memory durability remains available through custom/test backends or `ATOMIC_WORKFLOW_DURABLE=0`/`false`/`off`/`memory`.
+
+### Added
+
+- Added `StageContext.sendUserMessage(content, { deliverAs? })` so workflow authors can inject follow-on user turns into live stage sessions after `prompt()` resolves while preserving MCP scope, abort handling, and structured-output guards.
+- Added cross-session durable workflow resumability with cached `ctx.tool`, `ctx.ui`, `ctx.stage`/`ctx.task`/`ctx.chain`/`ctx.parallel`, and child-workflow checkpoints, plus `/workflow resume` discovery of durable workflow history from session metadata and the durable backend.
+- Added optional DBOS-backed durability through the lazily loaded `@dbos-inc/dbos-sdk`, including DBOS read-side hydration for resumable workflows when `DBOS_SYSTEM_DATABASE_URL` is set.
+- Added OpenRouter fallback coverage to builtin `goal`, `ralph`, `deep-research-codebase`, and `open-claude-design` workflow model configs.
+
+### Changed
+
+- Marked workflow stage sessions as internal so they are excluded from normal Atomic resume history while remaining inspectable and resumable through workflow-specific commands and tools.
+- Revised builtin `goal`, `ralph`, and `open-claude-design` prompts to emphasize full objective completion, stable non-ordinal artifacts, a shared five-level subagent nesting budget, and model-facing workflow guidance that routes non-trivial structured work to workflows by default.
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.80.2`.
+
+### Fixed
+
+- Fixed workflow graph and attached-stage chat interactions, including direct mouse-click activation, mouse/trackpad wheel capture, copy-mode toggling, stale `Working...` spinners, terminal-row animation cleanup, and post-terminal subagent progress handling.
+- Hardened durable resume, replay, checkpoint, and listing behavior across file and DBOS backends, including pending prompts, terminal/non-resumable states, stale cache entries, repeated quit/resume cycles, child workflow scope isolation, checkpoint identity hashing, retries, cancellation, and durable write failures.
+- Fixed `/workflow resume` picker behavior for live, paused, failed, and cross-session durable workflows so it matches the standard Atomic resume selector and handles empty, headless, mixed live/durable, and cache-only states consistently.
+- Fixed builtin workflow continuity and configuration edge cases, including `open-claude-design` generator/feedback forking, isolated workflow config discovery, durable schema-backed stage replay, parallel fail-fast finalization, and custom-backend propagation into child workflows.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Added

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-06-29
+
+### Added
+
+- Added OpenRouter fallback coverage to bundled subagent definitions so delegated codebase analysis, research, debugging, simplification, and worker sessions can recover through OpenRouter-hosted frontier, GLM, and Gemini providers when native providers are unavailable.
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.80.2` runtime packages and retargeted legacy provider/model imports to `@earendil-works/pi-ai/compat`.
+- Raised the default and hard maximum subagent nesting budget to five delegated levels, extending nested-run observability to the same depth.
+
+### Fixed
+
+- Prevented async and foreground subagent status widgets from flickering or unmounting during host UI refreshes, tall-panel redraws, and reset-and-hydrate cycles with active background runs.
+- Fixed live subagent result animation cleanup so terminal workflow rows evict animation registry entries instead of leaving stale intervals.
+- Synced upstream subagent hardening for compact tool-call summaries, nested fanout call/result history, duplicate dispatch rejection, provider-safe chain schemas, failed foreground diagnostics, builtin `search` MCP allowlist filtering, and updated builtin `find`/`search` tool guidance.
+
 ## [0.9.3-alpha.6] - 2026-06-29
 
 ### Added
