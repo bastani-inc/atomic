@@ -49,7 +49,7 @@ export const PLANNER_MODEL_CONFIG = {
     "google-vertex/gemini-3.1-pro-preview:high",
     "openrouter/openai/gpt-5.5:xhigh",
     "openrouter/anthropic/claude-opus-4-8:xhigh",
-    "openrouter/zai/glm-5.2:xhigh",
+    "openrouter/z-ai/glm-5.2:xhigh",
     "openrouter/google/gemini-3.5-flash:high",
     "openrouter/google/gemini-3.1-pro-preview:high"
 

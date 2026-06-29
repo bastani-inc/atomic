@@ -19,7 +19,7 @@ export const promptEngineerModelConfig = {
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
-      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/google/gemini-3.5-flash:high",
       "openrouter/google/gemini-3.1-pro-preview:high"
     ],
@@ -43,7 +43,7 @@ export const researchModelConfig = {
         "google-vertex/gemini-3.1-pro-preview:medium",
         "openrouter/openai/gpt-5.5:medium",
         "openrouter/anthropic/claude-opus-4-8:medium",
-        "openrouter/zai/glm-5.2:medium",
+        "openrouter/z-ai/glm-5.2:medium",
         "openrouter/google/gemini-3.5-flash:medium",
         "openrouter/google/gemini-3.1-pro-preview:medium"
     ],
@@ -67,7 +67,7 @@ export const orchestratorModelConfig = {
         "google-vertex/gemini-3.1-pro-preview:medium",
         "openrouter/openai/gpt-5.5:medium",
         "openrouter/anthropic/claude-opus-4-8:medium",
-        "openrouter/zai/glm-5.2:medium",
+        "openrouter/z-ai/glm-5.2:medium",
         "openrouter/google/gemini-3.5-flash:medium",
         "openrouter/google/gemini-3.1-pro-preview:medium"
     ],
@@ -93,7 +93,7 @@ export const reviewerAModelConfig = {
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/google/gemini-3.5-flash:high",
       "openrouter/google/gemini-3.1-pro-preview:high"
     ],
@@ -120,7 +120,7 @@ export const reviewerBModelConfig = {
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
-      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/google/gemini-3.5-flash:high",
       "openrouter/google/gemini-3.1-pro-preview:high"
     ],
@@ -144,7 +144,7 @@ export const reviewerCModelConfig = {
       "anthropic/claude-fable-5:xhigh",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
-      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/google/gemini-3.5-flash:high",
       "openrouter/google/gemini-3.1-pro-preview:high",
       "openrouter/openai/gpt-5.5:xhigh",

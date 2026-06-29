@@ -85,7 +85,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "anthropic/claude-sonnet-4-6:high",
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
-      "openrouter/zai/glm-5.2:xhigh",
+      "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/anthropic/claude-sonnet-4-6:high",
 
     ],

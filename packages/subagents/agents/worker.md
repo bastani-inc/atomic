@@ -6,7 +6,7 @@ inheritProjectContext: true
 inheritSkills: false
 tools: read, edit, write, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
 model: zai/glm-5.2:medium
-fallbackModels: zai-coding-cn/glm-5.2:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, github-copilot/gemini-3.5-flash (1m):medium, google/gemini-3.5-flash:medium, google-vertex/gemini-3.5-flash:medium, github-copilot/gemini-3.1-pro-preview (1m):medium, google/gemini-3.1-pro-preview:medium, google-vertex/gemini-3.1-pro-preview:medium, openrouter/zai/glm-5.2:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-opus-4-8:medium, openrouter/google/gemini-3.5-flash:medium, openrouter/google/gemini-3.1-pro-preview:medium
+fallbackModels: zai-coding-cn/glm-5.2:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, github-copilot/gemini-3.5-flash (1m):medium, google/gemini-3.5-flash:medium, google-vertex/gemini-3.5-flash:medium, github-copilot/gemini-3.1-pro-preview (1m):medium, google/gemini-3.1-pro-preview:medium, google-vertex/gemini-3.1-pro-preview:medium, openrouter/z-ai/glm-5.2:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-opus-4-8:medium, openrouter/google/gemini-3.5-flash:medium, openrouter/google/gemini-3.1-pro-preview:medium
 skills: tdd, playwright-cli, tmux
 defaultContext: fork
 defaultProgress: true
