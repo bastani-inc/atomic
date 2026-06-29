@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agents.ts";
 import {
 	type AgentProgress,

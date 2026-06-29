@@ -4,7 +4,7 @@
  * URL line selectors reuse the same safe rendering path before slicing lines.
  */
 import { resolve as resolvePath } from "node:path";
-import type { TextContent } from "@earendil-works/pi-ai";
+import type { TextContent } from "@earendil-works/pi-ai/compat";
 import type { ReadToolDetails } from "./read.ts";
 import { applyReadLineSelection, decodeReadableUrl } from "./read-document-extract.ts";
 import { executeReadUrl, loadPage } from "./fetch-url.ts";

@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, registerFauxProvider, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import {
 	buildContextCompactionPrompt,
 	type CompactableTranscript,

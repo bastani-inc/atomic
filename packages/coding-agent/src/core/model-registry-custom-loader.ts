@@ -1,4 +1,4 @@
-import { type Api, getModels, getProviders, type KnownProvider, type Model } from "@earendil-works/pi-ai";
+import { type Api, getModels, getProviders, type KnownProvider, type Model } from "@earendil-works/pi-ai/compat";
 import { existsSync, readFileSync } from "fs";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import { mergeCompat, mergeCustomModels } from "./model-registry-builtins.ts";

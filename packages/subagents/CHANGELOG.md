@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.80.2` runtime packages (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) and retargeted legacy provider/model imports to `@earendil-works/pi-ai/compat`, preserving delegated model resolution and streaming behavior under the updated pi-ai package layout.
+
 ## [0.9.3-alpha.4] - 2026-06-28
 
 ### Changed

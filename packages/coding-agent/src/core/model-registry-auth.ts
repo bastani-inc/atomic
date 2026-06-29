@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { withGitHubCopilotApiVersionHeader } from "./model-registry-builtins.ts";
 import type { ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";

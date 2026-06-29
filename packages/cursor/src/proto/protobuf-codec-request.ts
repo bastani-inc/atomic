@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import type { ImageContent } from "@earendil-works/pi-ai";
+import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import { parseJsonObject, type JsonObject } from "../config.js";
 import type { CursorRunRequest, CursorToolResultContent } from "../transport.js";
 import {

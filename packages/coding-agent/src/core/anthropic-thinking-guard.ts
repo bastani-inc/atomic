@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
 
 type JsonObject = Record<string, unknown>;
 

@@ -1,4 +1,4 @@
-import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai/compat";
 import type { CursorUsableModel } from "./model-mapper.js";
 
 export interface CursorTransportLifecycleSnapshot {

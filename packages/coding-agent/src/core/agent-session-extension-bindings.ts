@@ -1,5 +1,5 @@
 import { basename, dirname } from "node:path";
-import { resetApiProviders } from "@earendil-works/pi-ai";
+import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ExtensionBindings } from "./agent-session-types.ts";
 import type { ExtensionRunner } from "./extensions/index.ts";

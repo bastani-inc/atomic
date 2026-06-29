@@ -1,4 +1,4 @@
-import type { Transport } from "@earendil-works/pi-ai";
+import type { Transport } from "@earendil-works/pi-ai/compat";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.ts";
 import { DEFAULT_PROJECT_TRUST_BY_LABEL } from "./settings-selector-options.ts";
 import type { DoubleEscapeAction, QueueDeliveryMode, SettingsCallbacks, TreeFilterMode } from "./settings-selector-types.ts";

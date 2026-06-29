@@ -1,4 +1,4 @@
-import type { Transport } from "@earendil-works/pi-ai";
+import type { Transport } from "@earendil-works/pi-ai/compat";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true

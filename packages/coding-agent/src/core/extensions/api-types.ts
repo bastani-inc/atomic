@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { KeyId } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { EventBus } from "../event-bus.ts";

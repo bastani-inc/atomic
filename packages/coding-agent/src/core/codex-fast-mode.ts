@@ -12,7 +12,7 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 	type ThinkingLevel,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { OrchestrationContext } from "./extensions/index.ts";
 
 export const CODEX_FAST_MODE_SERVICE_TIER = "priority" as const;

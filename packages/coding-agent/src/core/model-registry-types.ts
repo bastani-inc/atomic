@@ -8,7 +8,7 @@ import type {
 	OpenAICompletionsCompat,
 	OpenAIResponsesCompat,
 	SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 

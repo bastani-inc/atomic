@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai";
+import type { Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { getSupportedContextWindows } from "../src/core/context-window.ts";
 import {

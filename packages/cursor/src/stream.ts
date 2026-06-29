@@ -1,5 +1,5 @@
 import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
-import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
+import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
 import { resolveCursorModelVariant } from "./model-mapper.js";

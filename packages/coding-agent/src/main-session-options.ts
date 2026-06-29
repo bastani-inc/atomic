@@ -1,4 +1,4 @@
-import { modelsAreEqual } from "@earendil-works/pi-ai";
+import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";

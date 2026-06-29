@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { test, describe } from "bun:test";
 import assert from "node:assert/strict";
-import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import {
 	CursorConnectFrameDecoder,
 	CursorProtobufProtocolCodec,

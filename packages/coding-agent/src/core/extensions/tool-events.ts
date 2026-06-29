@@ -1,4 +1,4 @@
-import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import type { EditToolDetails } from "../tools/edit.ts";
 import type {
 	BashToolDetails,

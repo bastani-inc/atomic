@@ -1,4 +1,4 @@
-import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, Text, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";

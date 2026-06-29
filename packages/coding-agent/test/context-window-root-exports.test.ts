@@ -21,7 +21,7 @@ function writeConsumerFixture(tempDir: string): string {
 	const consumerPath = join(tempDir, "consumer.mts");
 	writeFileSync(
 		consumerPath,
-		`import type { Api, Model } from "@earendil-works/pi-ai";
+		`import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import {
 	formatContextWindow,
 	getModelDefaultContextWindow,

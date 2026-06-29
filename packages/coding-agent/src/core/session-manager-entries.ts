@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { getModels, getProviders } from "@earendil-works/pi-ai";
+import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
 import {
 	createEstimatedCursorCatalog,
 	insertEffortBeforeCursorSuffix,

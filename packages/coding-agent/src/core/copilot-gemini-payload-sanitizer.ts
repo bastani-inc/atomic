@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
 /**
  * Sanitizes outbound OpenAI-compatible request payloads for GitHub Copilot

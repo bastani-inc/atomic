@@ -5,7 +5,7 @@ import * as path from "node:path";
 export { fs, os, path };
 export { default as chalk } from "chalk";
 export type { AgentMessage } from "@earendil-works/pi-agent-core";
-export { getProviders, type Api, type AssistantMessage, type ImageContent, type Message, type Model, type OAuthProviderId, type OAuthSelectPrompt } from "@earendil-works/pi-ai";
+export { getProviders, type Api, type AssistantMessage, type ImageContent, type Message, type Model, type OAuthProviderId, type OAuthSelectPrompt } from "@earendil-works/pi-ai/compat";
 export type { AutocompleteItem, AutocompleteProvider, AutocompleteSuggestions, EditorComponent, Keybinding, KeyId, MarkdownTheme, OverlayHandle, OverlayOptions, SlashCommand } from "@earendil-works/pi-tui";
 export { CombinedAutocompleteProvider, type Component, Container, fuzzyFilter, getCapabilities, hyperlink, Loader, type LoaderIndicatorOptions, Markdown, matchesKey, ProcessTerminal, Spacer, setKeybindings, Text, TruncatedText, TUI, visibleWidth } from "@earendil-works/pi-tui";
 export { spawn, spawnSync } from "child_process";

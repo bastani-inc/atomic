@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import { appendJsonl } from "../../shared/artifacts.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { createAgentSession } from "../../packages/coding-agent/src/core/sdk.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";

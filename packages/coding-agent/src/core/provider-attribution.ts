@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model, ProviderHeaders } from "@earendil-works/pi-ai/compat";
 import { APP_NAME } from "../config.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { isInstallTelemetryEnabled } from "./telemetry.ts";
@@ -77,10 +77,7 @@ function getSessionHeaders(model: Model<Api>, sessionId: string | undefined): Re
 	return { "x-opencode-session": sessionId, "x-opencode-client": APP_NAME };
 }
 
-function mergeHeaderSource(
-	merged: Record<string, string>,
-	headers: Record<string, string> | undefined,
-): void {
+function mergeHeaderSource(merged: ProviderHeaders, headers: ProviderHeaders | undefined): void {
 	if (!headers) return;
 	for (const [key, value] of Object.entries(headers)) {
 		const normalizedKey = key.toLowerCase();
@@ -89,6 +86,10 @@ function mergeHeaderSource(
 				delete merged[existingKey];
 			}
 		}
+		// Preserve `null` verbatim: under pi-ai 0.80.2 a `null` header value is the
+		// documented suppression signal for a provider/API default header. Collapsing
+		// it to `undefined` or dropping it would let pi-ai re-add its own default and
+		// silently defeat the caller's suppression request.
 		merged[key] = value;
 	}
 }
@@ -97,9 +98,9 @@ export function mergeProviderAttributionHeaders(
 	model: Model<Api>,
 	settingsManager: SettingsManager,
 	sessionId: string | undefined,
-	...headerSources: Array<Record<string, string> | undefined>
-): Record<string, string> | undefined {
-	const merged: Record<string, string> = {};
+	...headerSources: Array<ProviderHeaders | undefined>
+): ProviderHeaders | undefined {
+	const merged: ProviderHeaders = {};
 	mergeHeaderSource(merged, getSessionHeaders(model, sessionId));
 	mergeHeaderSource(merged, getDefaultAttributionHeaders(model, settingsManager));
 

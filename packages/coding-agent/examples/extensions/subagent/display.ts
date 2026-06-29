@@ -1,5 +1,5 @@
 import * as os from "node:os";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 
 export function formatTokens(count: number): string {
   if (count < 1000) return count.toString();

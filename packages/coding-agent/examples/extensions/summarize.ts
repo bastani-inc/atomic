@@ -1,4 +1,4 @@
-import { complete, getModel } from "@earendil-works/pi-ai";
+import { complete, getModel } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@bastani/atomic";
 import { DynamicBorder, getMarkdownTheme } from "@bastani/atomic";
 import { Container, Markdown, matchesKey, Text } from "@earendil-works/pi-tui";

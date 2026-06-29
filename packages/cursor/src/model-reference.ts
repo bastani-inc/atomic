@@ -1,4 +1,4 @@
-import { getModels, getProviders } from "@earendil-works/pi-ai";
+import { getModels, getProviders } from "@earendil-works/pi-ai/compat";
 
 export interface CursorModelReferenceCandidate {
 	readonly id: string;

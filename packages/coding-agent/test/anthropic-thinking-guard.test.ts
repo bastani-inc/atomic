@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai/compat";
 import { restoreAnthropicReplayThinkingBlocks } from "../src/core/anthropic-thinking-guard.ts";
 
 function anthropicModel(): Model<Api> {

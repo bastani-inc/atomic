@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Transport } from "@earendil-works/pi-ai";
+import type { Transport } from "@earendil-works/pi-ai/compat";
 import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
 import type { TerminalTheme } from "../theme/theme.ts";
 

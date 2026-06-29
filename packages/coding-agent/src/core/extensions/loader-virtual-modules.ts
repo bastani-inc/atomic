@@ -18,7 +18,11 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
     import("typebox/value"),
     import("@earendil-works/pi-agent-core"),
     import("@earendil-works/pi-tui"),
-    import("@earendil-works/pi-ai"),
+    // pi 0.80.2: the old global pi-ai API moved off the root entrypoint onto
+    // `/compat` (a strict superset). Extensions still `import ... from
+    // "@earendil-works/pi-ai"`, so we load the compat module here and key it
+    // under the root specifier below to keep every extension working unchanged.
+    import("@earendil-works/pi-ai/compat"),
     import("@earendil-works/pi-ai/oauth"),
     // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
     // avoiding a circular dependency while preserving the package-name extension import path.
@@ -35,11 +39,13 @@ async function loadVirtualModules(): Promise<Record<string, object>> {
     "@earendil-works/pi-agent-core": piAgentCore,
     "@earendil-works/pi-tui": piTui,
     "@earendil-works/pi-ai": piAi,
+    "@earendil-works/pi-ai/compat": piAi,
     "@earendil-works/pi-ai/oauth": piAiOauth,
     "@bastani/atomic": piCodingAgent,
     "@mariozechner/pi-agent-core": piAgentCore,
     "@mariozechner/pi-tui": piTui,
     "@mariozechner/pi-ai": piAi,
+    "@mariozechner/pi-ai/compat": piAi,
     "@mariozechner/pi-ai/oauth": piAiOauth,
   };
 }
@@ -126,7 +132,7 @@ function getAliases(): Record<string, string> {
   const piCodingAgentEntry = packageIndex;
   const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
   const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-  const piAiEntry = resolveWorkspaceOrImport("ai/dist/index.js", "@earendil-works/pi-ai");
+  const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
   const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 
   _aliases = {
@@ -135,10 +141,12 @@ function getAliases(): Record<string, string> {
     "@earendil-works/pi-agent-core": piAgentCoreEntry,
     "@earendil-works/pi-tui": piTuiEntry,
     "@earendil-works/pi-ai": piAiEntry,
+    "@earendil-works/pi-ai/compat": piAiEntry,
     "@earendil-works/pi-ai/oauth": piAiOauthEntry,
     "@mariozechner/pi-agent-core": piAgentCoreEntry,
     "@mariozechner/pi-tui": piTuiEntry,
     "@mariozechner/pi-ai": piAiEntry,
+    "@mariozechner/pi-ai/compat": piAiEntry,
     "@mariozechner/pi-ai/oauth": piAiOauthEntry,
     typebox: typeboxEntry,
     "typebox/compile": typeboxCompileEntry,

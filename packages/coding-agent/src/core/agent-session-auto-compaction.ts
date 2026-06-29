@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { isContextOverflow } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { getEffectiveInputBudget } from "./context-window.ts";
 import { parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the web-access extension peer dependency with upstream pi TUI `^0.80.2`; no web-access extension source changes were needed for this metadata sync.
+
 ## [0.9.3-alpha.4] - 2026-06-28
 
 ### Changed

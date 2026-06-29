@@ -7,7 +7,7 @@ import {
 	createAssistantMessageEventStream,
 	type Model,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ENV_CODEX_FAST_MODE } from "../src/config.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -286,7 +286,21 @@ describe("createAgentSession codex fast mode", () => {
 			"fetch",
 			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 				capturedPayload = JSON.parse(await bodyToText(init?.body)) as Record<string, unknown>;
-				return new Response("data: [DONE]\n\n", {
+				const completedEvent = {
+					type: "response.completed",
+					response: {
+						id: "resp_test",
+						status: "completed",
+						service_tier: CODEX_FAST_MODE_SERVICE_TIER,
+						usage: {
+							input_tokens: 0,
+							input_tokens_details: { cached_tokens: 0 },
+							output_tokens: 0,
+							total_tokens: 0,
+						},
+					},
+				};
+				return new Response(`data: ${JSON.stringify(completedEvent)}\n\ndata: [DONE]\n\n`, {
 					status: 200,
 					headers: { "content-type": "text/event-stream" },
 				});

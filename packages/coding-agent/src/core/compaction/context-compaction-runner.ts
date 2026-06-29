@@ -1,6 +1,6 @@
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
-import { createAssistantMessageEventStream, isContextOverflow, streamSimple } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
+import { createAssistantMessageEventStream, isContextOverflow, streamSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
 import type {
 	CompactableTranscript,

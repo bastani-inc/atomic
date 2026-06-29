@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped the native build toolchain devDependency `@napi-rs/cli` from 3.7.0 to 3.7.2 (includes the Node 12-compatible CJS binding-loader fix and an esbuild 0.28.1 security update), and refreshed transitive Cargo crates used by the `@bastani/atomic-natives` Rust build: `rustls` 0.23.40 → 0.23.41, `napi` 3.9.2 → 3.9.4, `bytes` 1.11.1 → 1.12.0, and `webpki-roots` 1.0.7 → 1.0.8 (the latter removing the Mozilla-deprecated `SecureSign Root CA12` root). No native transport source changes were needed.
+
 ## [0.9.3-alpha.4] - 2026-06-28
 
 ### Changed

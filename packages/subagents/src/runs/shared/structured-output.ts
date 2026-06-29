@@ -3,7 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { APP_NAME } from "@bastani/atomic";
 import { Compile } from "typebox/compile";
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import type { JsonSchemaObject } from "../../shared/types.ts";
 
 const ENV_PREFIX = APP_NAME.toUpperCase();

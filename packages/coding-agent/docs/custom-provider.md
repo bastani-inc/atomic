@@ -345,6 +345,8 @@ interface OAuthCredentials {
 
 For providers with non-standard APIs, implement `streamSimple`. Study the existing provider implementations before writing your own:
 
+> **Compatibility note (Pi 0.80.2 sync):** Upstream Pi 0.80.2 made the `@earendil-works/pi-ai` root entrypoint core-only and moved the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, `streamSimple`, and the `Model`/`Api`/`SimpleStreamOptions`/`AssistantMessageEventStream` types shown below) onto the `@earendil-works/pi-ai/compat` entrypoint. Atomic's extension loader aliases the `@earendil-works/pi-ai` root to `/compat` at runtime, so extensions that import these symbols from the root keep working unchanged. For new TypeScript code that needs this legacy surface, prefer importing from `@earendil-works/pi-ai/compat` for accurate type resolution. The `/oauth` subpath is unaffected.
+
 **Reference implementations:**
 
 Atomic uses provider implementations from its installed `@earendil-works/pi-ai` dependency. Inspect the compiled declarations and JavaScript under `node_modules/@earendil-works/pi-ai/dist/providers/`, including:
@@ -354,7 +356,6 @@ Atomic uses provider implementations from its installed `@earendil-works/pi-ai` 
 - `openai-responses.d.ts` / `openai-responses.js` - OpenAI Responses API
 - `google.d.ts` / `google.js` - Google Generative AI
 - `amazon-bedrock.d.ts` / `amazon-bedrock.js` - AWS Bedrock
-
 ### Stream Pattern
 
 All providers follow the same pattern:

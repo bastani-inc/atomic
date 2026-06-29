@@ -1,4 +1,4 @@
-import { getApiProvider } from "@earendil-works/pi-ai";
+import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";

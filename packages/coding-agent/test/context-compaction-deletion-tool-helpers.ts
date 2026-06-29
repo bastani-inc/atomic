@@ -1,6 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Context, StreamOptions } from "@earendil-works/pi-ai";
-import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai";
+import type { Context, StreamOptions } from "@earendil-works/pi-ai/compat";
+import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { buildContextCompactionPrompt, CONTEXT_COMPACTION_TARGET_REDUCTION_PERCENT, contextCompact, createContextDeletionTool, DEFAULT_COMPACTION_SETTINGS, type CompactableTranscript } from "../src/core/compaction/index.ts";
 export function userMessage(text: string): AgentMessage {
 	return {

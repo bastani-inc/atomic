@@ -5,7 +5,7 @@ import {
 	type KnownProvider,
 	type Model,
 	type OpenAICompletionsCompat,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";

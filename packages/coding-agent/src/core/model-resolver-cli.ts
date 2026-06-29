@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
 import type { ModelRegistry } from "./model-registry.ts";

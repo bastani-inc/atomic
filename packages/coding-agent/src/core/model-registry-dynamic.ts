@@ -4,7 +4,7 @@ import {
 	type OAuthProviderInterface,
 	registerApiProvider,
 	type SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import type { DynamicProviderApplyInput, ProviderConfigInput } from "./model-registry-types.ts";

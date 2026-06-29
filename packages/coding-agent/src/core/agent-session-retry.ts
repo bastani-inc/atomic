@@ -1,5 +1,5 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { isContextOverflow } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
+import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { sleep } from "../utils/sleep.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 import { normalizeToolArgumentsForModel } from "./copilot-gemini-tool-arguments.ts";

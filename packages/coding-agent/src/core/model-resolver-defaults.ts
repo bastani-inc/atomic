@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
 /** Default model IDs for each known provider */
 export const defaultModelPerProvider: Record<string, string> = {

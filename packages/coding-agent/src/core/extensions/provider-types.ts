@@ -6,7 +6,7 @@ import type {
 	OAuthCredentials,
 	OAuthLoginCallbacks,
 	SimpleStreamOptions,
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "./api-types.ts";
 
 /** Configuration for registering a provider via pi.registerProvider(). */

@@ -2,7 +2,7 @@
  * Model registry - manages built-in and custom models, provides API key resolution.
  */
 
-import { type Api, type Model, resetApiProviders } from "@earendil-works/pi-ai";
+import { type Api, type Model, resetApiProviders } from "@earendil-works/pi-ai/compat";
 import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { dirname } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";

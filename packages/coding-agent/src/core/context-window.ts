@@ -1,6 +1,6 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 
-declare module "@earendil-works/pi-ai" {
+declare module "@earendil-works/pi-ai/compat" {
 	interface Model<TApi extends Api> {
 		/** Selectable context-window sizes for this model. The scalar contextWindow remains the default/effective value. */
 		contextWindowOptions?: readonly number[];

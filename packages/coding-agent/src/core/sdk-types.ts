@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStorage } from "./auth-storage.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import type { ResourceLoader } from "./resource-loader.ts";

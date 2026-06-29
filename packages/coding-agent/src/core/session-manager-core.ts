@@ -1,4 +1,4 @@
-import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";

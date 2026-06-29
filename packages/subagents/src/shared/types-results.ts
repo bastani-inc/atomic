@@ -2,7 +2,7 @@
  * Result, progress, and core subagent public types.
  */
 
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { NestedRunAddress, NestedRunSummary, NestedStepSummary } from "./types-async.ts";
 

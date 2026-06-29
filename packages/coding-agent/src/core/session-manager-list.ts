@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Message, TextContent } from "@earendil-works/pi-ai";
+import type { Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { existsSync } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";

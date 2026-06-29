@@ -3,6 +3,21 @@ title: "Changelog"
 description: "What's new in Atomic"
 ---
 
+<Update label="June 29, 2026">
+
+## Upstream Pi sync
+
+- **Synced with upstream Pi 0.80.2.** Atomic's coding-agent fork and bundled extensions are now aligned with upstream Pi through `^0.80.2` for `@earendil-works/pi-ai`, `@earendil-works/pi-agent-core`, and `@earendil-works/pi-tui`. The 0.80.x line is dominated by upstream's "Models runtime migration," which made the `@earendil-works/pi-ai` root entrypoint core-only and moved the legacy global provider/model API (`stream`, `complete`, `registerApiProvider`, `getEnvApiKey`, …) onto a temporary `@earendil-works/pi-ai/compat` entrypoint.
+- **Extensions keep working unchanged.** Atomic's extension loader now aliases the `@earendil-works/pi-ai` root specifiers to the `/compat` entrypoint at runtime, so first-party bundled extensions and user-installed extensions that import from the root continue to resolve transparently — no extension code changes required.
+- **Atomic-first compatibility migration.** Atomic's own runtime, tools, tests, and extension examples were retargeted to the `/compat` entrypoint so they resolve the legacy provider/model API at both type-check and runtime, preserving the public extension and SDK surface Atomic's downstream users depend on.
+- **Toolchain and native dependency refresh.** Bundled `@napi-rs/cli`, `@j178/prek`, `actions/checkout`, and transitive Cargo crates (`rustls`, `napi`, `bytes`, `webpki-roots`) were refreshed to current releases, including the latest Mozilla-aligned webpki trust store.
+
+## Fixes
+
+- Inherits upstream 0.80.0–0.80.2 fixes from the external Pi packages (`pi-ai`, `pi-agent-core`, `pi-tui`) that Atomic consumes as dependency bumps. This includes provider-side handling of malformed all-zero usage in OpenAI Responses context/compaction estimates, request-scoped `apiKey`/`env` participation in provider auth resolution, the restored `pi-ai/compat` legacy per-API stream aliases and `detectCompat` fallback, the `ApiKeyCredential` `auth.json`-compatible discriminator, and the renamed `ShellExecOptions` agent-core type.
+- Note that coding-agent forked-source fixes (for example session-name newline normalization and threaded session-tree ordering) are NOT inherited automatically; they require intentional source porting and are tracked separately. Atomic retains its existing compaction guard for all-zero usage, which already aligns with the upstream fix.
+
+</Update>
 <Update label="May 25, 2026" tags={["v0.8.14"]}>
 
 ## Stable release

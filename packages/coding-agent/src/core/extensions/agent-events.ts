@@ -1,5 +1,5 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessageEvent, ImageContent, Model, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessageEvent, ImageContent, Model, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { ExtensionMode } from "./context-types.ts";
 import type { ExtensionUIContext } from "./ui-types.ts";

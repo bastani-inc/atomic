@@ -1,4 +1,4 @@
-import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import { createHash, randomBytes as nodeRandomBytes, randomUUID } from "node:crypto";
 import {
 	CURSOR_API_BASE_URL,

@@ -1,4 +1,4 @@
-import type { Api, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai/compat";
 
 export function model(): Model<Api> {
 	return {

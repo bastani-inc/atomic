@@ -1,4 +1,4 @@
-import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai";
+import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai/compat";
 import { CURSOR_API, CURSOR_API_BASE_URL } from "./config.js";
 import rawFallbackModels from "./cursor-models-raw.json" with { type: "json" };
 import { positiveIntOrUndefined, resolveCursorModelReferenceLimits, type CursorModelReferenceCandidate } from "./model-reference.js";

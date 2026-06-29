@@ -1,4 +1,4 @@
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStorage } from "./auth-storage.ts";
 import { loadBuiltInModels, mergeCustomModels } from "./model-registry-builtins.ts";
 import { loadCustomModelsFromPaths } from "./model-registry-custom-loader.ts";

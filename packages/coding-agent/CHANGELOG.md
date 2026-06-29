@@ -4,6 +4,12 @@
 
 ### Changed
 
+- Synced bundled upstream Pi runtime packages to `^0.80.2` (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) across the coding-agent direct/peer dependency pins, aligning Atomic with upstream Pi's 0.80.x "Models runtime migration" where the `@earendil-works/pi-ai` root entrypoint became core-only and the legacy global provider/model API moved to the temporary `@earendil-works/pi-ai/compat` entrypoint.
+- Retargeted Atomic's first-party `@earendil-works/pi-ai` imports to the `/compat` entrypoint across the coding-agent runtime, tools, tests, examples, and SDK (both value and type imports), preserving the public extension and SDK surface downstream users depend on. The `/oauth` and `/bedrock-provider` subpaths were left untouched.
+- Updated the extension loader's virtual-module and jiti alias paths to alias the `@earendil-works/pi-ai` root specifiers to the `/compat` entrypoint, so first-party bundled extensions and user-installed extensions that import from the root keep resolving transparently with no source changes required.
+- Widened `ProviderHeaders` handling in `provider-attribution.ts` to the upstream 0.80.2 `Record<string, string | null>` shape, preserving `null` values verbatim through the merged attribution output so they reach pi-ai as the documented suppression signal for default provider/API headers (rather than collapsing them to `undefined`, which would let pi-ai re-add its own defaults).
+- Consolidated open Dependabot updates onto this branch: bumped `actions/checkout` to 7.0.0 (release workflow), `@j178/prek` to 0.4.5 (root devDependency), `@napi-rs/cli` to 3.7.2 (natives devDependency), and refreshed transitive Cargo crates `rustls` to 0.23.41, `napi` to 3.9.4, `bytes` to 1.12.0, and `webpki-roots` to 1.0.8 (the latter removing the Mozilla-deprecated `SecureSign Root CA12` root).
+
 - Raised the default HTTP idle timeout from 5 to 10 minutes (`httpIdleTimeoutMs` 300000 → 600000) and added a fixed 10-second connect-phase timeout, so slow long-context turns finish instead of failing as "Connection error." while unreachable or firewall-blocked hosts fail fast instead of hanging.
 
 ### Fixed
