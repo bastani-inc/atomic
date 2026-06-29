@@ -1,4 +1,4 @@
-import { complete, getModel, type Message, type Model } from "@mariozechner/pi-ai";
+import { complete, getModel, type Message, type Model } from "@mariozechner/pi-ai/compat";
 import type { ExtensionContext } from "@bastani/atomic";
 import type { QueryResultData } from "./storage.js";
 

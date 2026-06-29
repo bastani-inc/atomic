@@ -1,4 +1,4 @@
-import { complete, getModel, type Model } from "@mariozechner/pi-ai";
+import { complete, getModel, type Model } from "@mariozechner/pi-ai/compat";
 import type { QueryResultData } from "./storage.js";
 import {
 	buildDeterministicSummary,

@@ -132,6 +132,9 @@ function getAliases(): Record<string, string> {
   const piCodingAgentEntry = packageIndex;
   const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
   const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
+  // The workspace path mirrors pi-ai 0.80.x's built compat export. If an
+  // upstream layout change moves that file, fall back to package export
+  // resolution so installed Atomic builds still load the canonical entrypoint.
   const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
   const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 
@@ -158,6 +161,12 @@ function getAliases(): Record<string, string> {
 
   return _aliases;
 }
+
+/** Internal hooks for extension-loader alias regression tests. */
+export const extensionLoaderTestHooks = {
+  loadVirtualModules,
+  getAliases,
+};
 
 export async function loadExtensionModule(
   extensionPath: string,
