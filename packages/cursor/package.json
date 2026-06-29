@@ -1,6 +1,6 @@
 {
   "name": "@bastani/cursor",
-  "version": "0.0.0",
+  "version": "0.9.3",
   "private": true,
   "description": "Experimental first-party Atomic extension for Cursor OAuth, model discovery, and streaming provider registration.",
   "contributors": [
@@ -40,7 +40,7 @@
     }
   },
   "dependencies": {
-    "@bastani/atomic-natives": "0.0.0",
+    "@bastani/atomic-natives": "0.9.3",
     "@bufbuild/protobuf": "^2.0.0",
     "@earendil-works/pi-ai": "^0.80.2"
   }
