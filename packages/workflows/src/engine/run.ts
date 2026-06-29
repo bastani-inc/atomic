@@ -425,9 +425,9 @@ export async function run<
     assertWorkflowCreatedStage(runSnapshot);
     await durableBackend.flush?.();
     const returned = classifyReturnedRunStatus(result);
-    const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error);
-    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ts: Date.now() });
-    durableBackend.setWorkflowStatus(runId, returned.status);
+    const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
+    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ts: Date.now() });
+    durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
     await durableBackend.flush?.();
     if (opts.persistence && durableBackend.persistent) {
       const cacheEntry = durableBackend.toCacheEntry(runId);

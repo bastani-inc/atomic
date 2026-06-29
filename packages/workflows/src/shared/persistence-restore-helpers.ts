@@ -335,7 +335,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const exitReason = end["exitReason"];
     const resumable = end["resumable"];
     const restoredAuthorExit = isWorkflowExitTerminalStatus(status) &&
-      (exited === true || status !== "completed" || typeof exitReason === "string" || resumable === false);
+      (exited === true || typeof exitReason === "string");
     if (status === "completed" && !restoredAuthorExit && stages.some((stage) => stage.status !== "completed")) continue;
     store.recordRunStart({
       id: runId,

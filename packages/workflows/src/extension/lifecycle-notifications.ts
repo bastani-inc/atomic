@@ -299,13 +299,14 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
+  const error = run.error ?? (kind === "blocked" ? run.exitReason : undefined);
   return {
     kind,
     scope: "run",
     runId: run.id,
     workflowName: run.name,
     status: run.status,
-    ...(run.error ? { error: truncateSnippet(run.error) } : {}),
+    ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
     ...(run.durationMs !== undefined ? { durationMs: run.durationMs } : {}),

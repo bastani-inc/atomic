@@ -8,6 +8,7 @@ import {
   type JsonValue,
   type PublishWorkflowRunVerification,
 } from "./publish-release.js";
+import { defaultSleep } from "./publish-release-helpers.js";
 
 type RunCommand = (args: readonly string[]) => CommandResult;
 type Sleep = (durationMs: number) => Promise<void>;
@@ -41,11 +42,6 @@ type RunIdentity =
 type JsonObject = { readonly [key: string]: JsonValue };
 
 const runJsonFields = "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt,headSha";
-function defaultSleep(durationMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, durationMs));
-}
-
-
 function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

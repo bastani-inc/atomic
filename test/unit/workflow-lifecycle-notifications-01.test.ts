@@ -124,13 +124,32 @@ describe("installWorkflowLifecycleNotifications", () => {
     const { store, sent } = install();
     store.recordRunStart({ id: "run-blocked", name: "release", inputs: {}, status: "running", stages: [], startedAt: 1 });
 
-    assert.equal(store.recordRunEnd("run-blocked", "blocked", { status: "blocked", summary: "checks are still pending" }), true);
+    assert.equal(store.recordRunEnd("run-blocked", "blocked", { status: "blocked", summary: "checks are still pending" }, "checks are still pending"), true);
 
     assert.equal(sent.length, 1);
     assert.equal(sent[0]?.details?.kind, "blocked");
     assert.equal(sent[0]?.details?.status, "blocked");
-    assert.match(sent[0]?.content ?? "", /ended blocked/);
+    assert.equal(sent[0]?.details?.error, "checks are still pending");
+    assert.match(sent[0]?.content ?? "", /ended blocked.*checks are still pending/u);
     assert.doesNotMatch(sent[0]?.content ?? "", /✓/u);
+  });
+
+  test("includes ctx.exit blocked reasons in lifecycle notices", () => {
+    const { store, sent } = install();
+    startRun(store, "run-exit-blocked", "release");
+
+    assert.equal(
+      store.recordRunEnd("run-exit-blocked", "blocked", undefined, undefined, {
+        exited: true,
+        exitReason: "waiting for approval",
+      }),
+      true,
+    );
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.details?.kind, "blocked");
+    assert.equal(sent[0]?.details?.error, "waiting for approval");
+    assert.match(sent[0]?.content ?? "", /ended blocked.*waiting for approval/u);
   });
 
   test("seeds historical completed runs using returned failed or blocked status", () => {

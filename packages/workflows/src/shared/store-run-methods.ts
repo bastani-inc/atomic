@@ -87,6 +87,7 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
       delete run.blockedAt;
       if (status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked") {
         clearRunFailureMetadata(run);
+        if (status === "blocked" && error !== undefined) run.error = error;
         if (metadata !== undefined) applyRunEndMetadata(run, metadata);
       } else {
         if (wasBlocked && error === undefined) delete run.error;
@@ -227,7 +228,6 @@ export function createRunStoreMethods(context: StoreContext): RunStoreMethods {
     },
   };
 }
-
 
 function shouldStoreRunResult(status: RunStatus): boolean {
   return status === "completed" || status === "skipped" || status === "cancelled" || status === "blocked" || status === "failed";

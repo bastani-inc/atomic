@@ -1290,6 +1290,8 @@ Workflow outputs are runtime contracts for completed workflow runs and for paren
 
 **Return convention:** outputs are return-object keys. Atomic never infers child workflow outputs from stage names, stage order, or the final assistant message. If a parent should read `child.outputs.foo`, the child workflow's `run` must both declare `outputs: { foo: schema }` and return `{ foo: value }`. `result` is not special and is never added for you: to expose `result`, declare it in `outputs` and return `{ result }` exactly like any other output. Returning a key that is not declared in `outputs` fails the run with `atomic-workflows: workflow "<name>" returned undeclared output "<key>"; declare it in outputs or remove it from the run return`.
 
+**Reserved `status` output convention:** if a workflow declares and returns a top-level `status` output with the string value `"failed"` or `"blocked"`, Atomic treats that as the workflow's terminal run status instead of recording a successful completion. When present, a non-empty top-level `summary` string becomes the run error/reason shown in lifecycle notices and status surfaces. Use this convention only when the workflow is intentionally reporting its own terminal state (for example, a deterministic release gate that returns `{ status: "blocked", summary: "required checks are pending" }`). Do not use a top-level `status` field for unrelated external state such as a deployment/check you merely inspected; choose a domain-specific name like `deployment_status` or `gate_status` instead.
+
 The `outputs` object is a schema contract, not an automatic stage selector. To expose values from any stage, capture the stage/task/child result in normal TypeScript and return it from `run` under the desired key:
 
 ```ts

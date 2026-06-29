@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow lifecycle notices for structured workflow outputs whose returned `status` is `failed` or `blocked`: the runtime now records those runs as failed/blocked instead of successful completions, preserves their returned output, and emits failure/blocked lifecycle cards rather than success/checkmark notices.
+- Fixed workflow lifecycle notices for structured workflow outputs whose returned `status` is `failed` or `blocked`: the runtime now records those runs as failed/blocked instead of successful completions, preserves their returned output, carries blocked summaries into lifecycle notice reasons, marks returned failures non-resumable with explicit terminal failure metadata, and emits failure/blocked lifecycle cards rather than success/checkmark notices.
 
 ## [0.9.3] - 2026-06-29
 

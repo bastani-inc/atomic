@@ -12,6 +12,7 @@ import {
   type ValidatedRelease,
 } from "./publish-release.js";
 import { waitForWorkflowRunSucceeded } from "./publish-release-run-wait.js";
+import { defaultSleep } from "./publish-release-helpers.js";
 
 type GateVerification =
   | {
@@ -34,9 +35,6 @@ type CheckGateOptions = {
 const defaultCheckGateAttempts = 30;
 const defaultCheckGatePollIntervalMs = 30_000;
 
-function defaultSleep(durationMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, durationMs));
-}
 
 type MainReadyVerification =
   | {

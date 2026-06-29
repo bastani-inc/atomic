@@ -14,6 +14,10 @@ export function excerpt(text: string, limit = 1_200): string {
   return `${text.slice(0, limit)}\n…[truncated ${text.length - limit} chars]`;
 }
 
+export function defaultSleep(durationMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
 export function blockedOutput(
   release: ValidatedRelease,
   stage: string,

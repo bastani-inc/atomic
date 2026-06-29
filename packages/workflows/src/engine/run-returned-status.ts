@@ -1,8 +1,10 @@
+import type { RunEndMetadata } from "../shared/store-public-types.js";
 import type { WorkflowOutputValues } from "../shared/types.js";
 
 export interface ReturnedRunStatus {
   readonly status: "completed" | "failed" | "blocked";
   readonly error?: string;
+  readonly metadata?: RunEndMetadata;
 }
 
 export function classifyReturnedRunStatus(result: WorkflowOutputValues | undefined): ReturnedRunStatus {
@@ -15,5 +17,25 @@ export function classifyReturnedRunStatus(result: WorkflowOutputValues | undefin
   const error = typeof summary === "string" && summary.trim().length > 0
     ? summary.trim()
     : `Workflow returned status ${JSON.stringify(returnedStatus)}.`;
-  return { status: returnedStatus, error };
+  return {
+    status: returnedStatus,
+    error,
+    metadata: returnedStatus === "failed"
+      ? returnedFailureMetadata(error)
+      : returnedBlockedMetadata(),
+  };
+}
+
+function returnedFailureMetadata(error: string): RunEndMetadata {
+  return {
+    failureKind: "unknown",
+    failureRecoverability: "non_recoverable",
+    failureDisposition: "terminal_failed",
+    failureMessage: error,
+    resumable: false,
+  };
+}
+
+function returnedBlockedMetadata(): RunEndMetadata {
+  return { resumable: false };
 }

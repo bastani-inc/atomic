@@ -33,11 +33,13 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
   if (!input.isRoot) return;
   const status = input.runSnapshot.status;
   const isExitTerminal = input.runSnapshot.exited === true && status !== "running";
-  if (status !== "failed" && status !== "killed" && !isExitTerminal) return;
+  const isReturnedBlockedTerminal = status === "blocked" && input.runSnapshot.endedAt !== undefined;
+  if (status !== "failed" && status !== "killed" && !isExitTerminal && !isReturnedBlockedTerminal) return;
 
   const durableStatus = toDurableStatus(status);
   if (durableStatus !== undefined) {
-    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
+    const resumable = status === "blocked" ? false : input.runSnapshot.resumable;
+    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, resumable);
   }
   try {
     await input.durableBackend.flush?.();
