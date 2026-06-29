@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.6] - 2026-06-29
+
 ### Added
 
 - Added OpenRouter fallback coverage to the bundled subagent definitions so delegated codebase analysis, research, debugging, simplification, and worker sessions can recover through OpenRouter-hosted frontier, GLM, and Gemini providers when native providers are unavailable.

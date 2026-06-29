@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.6] - 2026-06-29
+
 ### Changed
 
 - Enabled provider/SDK retries by default (`retry.provider.maxRetries` `0` → `5`) so transient socket drops retry instead of surfacing as fatal `"Connection error"`. Connection failures (status-undefined) back off briefly while the existing `retry.provider.maxRetryDelayMs` cap still fails fast on long quota/rate-limit waits.
