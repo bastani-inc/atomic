@@ -1,4 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import {
   commandSummary,
   runCommand,
@@ -67,7 +68,7 @@ function isJsonObject(value: JsonValue): value is { readonly [key: string]: Json
 }
 
 async function readPackageManifest(path: string): Promise<PackageManifest> {
-  const value = await Bun.file(path).json() as JsonValue;
+  const value = JSON.parse(await readFile(path, "utf8")) as JsonValue;
   if (!isJsonObject(value)) {
     throw new Error(`${path} did not contain a JSON object`);
   }
