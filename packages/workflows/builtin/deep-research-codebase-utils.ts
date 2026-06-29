@@ -52,7 +52,6 @@ export const PLANNER_MODEL_CONFIG = {
     "openrouter/z-ai/glm-5.2:xhigh",
     "openrouter/google/gemini-3.5-flash:high",
     "openrouter/google/gemini-3.1-pro-preview:high"
-
   ],
   excludedTools: ["ask_user_question"],
 } as const;

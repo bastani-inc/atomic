@@ -86,8 +86,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-sonnet-4-6:high",
-
+      "openrouter/anthropic/claude-sonnet-4-6:high"
     ],
   };
   // Phase 1: combined discovery + init — one stage interviews the user via

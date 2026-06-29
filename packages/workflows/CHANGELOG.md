@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added OpenRouter fallback coverage to the builtin `goal`, `ralph`, `deep-research-codebase`, and `open-claude-design` workflow model configs so workflow stages have additional frontier, GLM, and Gemini provider redundancy.
+
 ## [0.9.3-alpha.5] - 2026-06-28
 
 ### Changed
