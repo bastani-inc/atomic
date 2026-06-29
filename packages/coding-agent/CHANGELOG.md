@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.5] - 2026-06-28
+
 ### Changed
 
 - Synced bundled upstream Pi runtime packages to `^0.80.2` (`@earendil-works/pi-agent-core`, `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`) across the coding-agent direct/peer dependency pins, aligning Atomic with upstream Pi's 0.80.x "Models runtime migration" where the `@earendil-works/pi-ai` root entrypoint became core-only and the legacy global provider/model API moved to the temporary `@earendil-works/pi-ai/compat` entrypoint.

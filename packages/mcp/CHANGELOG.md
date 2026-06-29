@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.3-alpha.5] - 2026-06-28
+
 ### Changed
 
 - Aligned the MCP extension peer dependencies with upstream pi `^0.80.2` (`@earendil-works/pi-ai` and `@earendil-works/pi-tui`) and retargeted legacy provider/model imports to `@earendil-works/pi-ai/compat`, preserving the MCP sampling provider behavior under the updated pi-ai package layout.

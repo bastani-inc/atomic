@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.3-alpha.5] - 2026-06-28
+
 ### Changed
 
 - Aligned the web-access extension peer dependency with upstream pi TUI `^0.80.2` and retargeted its legacy pi-ai summary/model helper imports to the `/compat` entrypoint, preserving the old `complete`/`getModel` API under the updated pi-ai package layout.

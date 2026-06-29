@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.3-alpha.5] - 2026-06-28
+
 ### Changed
 
 - Aligned the Cursor provider direct dependency on `@earendil-works/pi-ai` with upstream pi `^0.80.2` and retargeted its provider/model imports to the `@earendil-works/pi-ai/compat` entrypoint, preserving the legacy provider APIs Cursor uses under the updated pi-ai package layout.
