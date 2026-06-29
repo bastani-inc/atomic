@@ -17,11 +17,6 @@ class Atomic(BaseInstalledAgent):
     _OUTPUT_FILENAME = "atomic.txt"
     _SESSION_DIR_NAME = "atomic-sessions"
     _CONTAINER_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
-    # Disable Atomic's HTTP idle timeout (undici headers/body + SDK total timeout).
-    # Long-context + thinking=xhigh turns near the model's prompt cap can take
-    # minutes to first token; a finite cap surfaces as "Connection error." after
-    # 3 useless retries. 0 removes the cap so large requests can complete.
-    _HTTP_IDLE_TIMEOUT_MS: int = 0
 
     CLI_FLAGS = [
         CliFlag(
@@ -49,7 +44,11 @@ class Atomic(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
             environment,
-            command="apt-get update && apt-get install -y curl",
+            command=(
+                "apt-get update && "
+                "apt-get install -y --no-install-recommends curl fd-find git ripgrep && "
+                "ln -sf /usr/bin/fdfind /usr/local/bin/fd"
+            ),
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
         version_spec = f"@{self._version}" if self._version else "@latest"
@@ -145,13 +144,11 @@ class Atomic(BaseInstalledAgent):
         # Persist the main chat under /logs so workflow stage sessions inherit
         # that directory and can be included in post-run usage accounting.
         session_dir = shlex.quote(self._CONTAINER_SESSION_DIR)
-        settings_config_command = self._atomic_settings_config_command()
 
         await self.exec_as_agent(
             environment,
             command=(
                 f"rm -rf {session_dir} && mkdir -p {session_dir} && "
-                f"{settings_config_command}"
                 f". ~/.nvm/nvm.sh && "
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"
@@ -160,17 +157,6 @@ class Atomic(BaseInstalledAgent):
                 f'2>&1 </dev/null | grep -v \'"type":"message_update"\' | stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}'
             ),
             env=env,
-        )
-
-    @classmethod
-    def _atomic_settings_config_command(cls) -> str:
-        settings = {"httpIdleTimeoutMs": cls._HTTP_IDLE_TIMEOUT_MS}
-        settings_json = json.dumps(settings, indent=2)
-        return (
-            "mkdir -p $HOME/.atomic/agent && "
-            "cat > $HOME/.atomic/agent/settings.json <<'ATOMIC_SETTINGS_JSON'\n"
-            f"{settings_json}\n"
-            "ATOMIC_SETTINGS_JSON\n"
         )
 
     @staticmethod
