@@ -49,6 +49,7 @@ export type ModelFallbackFailureKind =
   | "rate_limit"
   | "provider_unavailable"
   | "network_timeout"
+  | "transport_error"
   | "model_unavailable"
   | "cancelled"
   | "task_failure"
@@ -76,6 +77,7 @@ const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Se
   "rate_limit",
   "provider_unavailable",
   "network_timeout",
+  "transport_error",
   "model_unavailable",
 ]);
 
@@ -258,6 +260,17 @@ const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
   /\bprovider\b[^\n]*\brefus(?:e|al|ed|es|ing)?\b[^\n]*\b(?:prompt|request|content|policy|safety)\b/i,
 ];
 
+const TRANSPORT_OUTAGE_FAILURE_PATTERNS: readonly RegExp[] = [
+  /^connection\s+error\.?$/i,
+  /^fetch\s+failed\.?$/i,
+];
+
+function transportOutageKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
+  return TRANSPORT_OUTAGE_FAILURE_PATTERNS.some((pattern) => pattern.test(message.trim()))
+    ? "transport_error"
+    : undefined;
+}
+
 function refusalKindFromMessage(message: string): ModelFallbackFailureKind | undefined {
   if (CANCELLED_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "cancelled";
   if (NON_RETRYABLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "task_failure";
@@ -268,6 +281,8 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 function fallbackKindFromMessage(message: string, name: string | undefined): ModelFallbackFailureKind | undefined {
   const refusalKind = refusalKindFromMessage(message);
   if (refusalKind !== undefined) return refusalKind;
+  const transportOutageKind = transportOutageKindFromMessage(message);
+  if (transportOutageKind !== undefined) return transportOutageKind;
   const nameKind = kindFromCode(name);
   if (nameKind !== undefined) return nameKind;
   if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
@@ -303,6 +318,16 @@ function makeSignal(
     ...(code !== undefined ? { code } : {}),
     ...(name !== undefined ? { name } : {}),
   };
+}
+
+function fallbackSignalFromDirectMessage(
+  value: unknown,
+  source: ModelFallbackFailureSource | undefined,
+): ModelFallbackFailureSignal | undefined {
+  const message = directMessageFrom(value);
+  if (message === undefined) return undefined;
+  const kind = fallbackKindFromMessage(message, errorName(value));
+  return kind === undefined ? undefined : makeSignal(kind, value, source);
 }
 
 function fallbackSignalFromMessage(
@@ -345,6 +370,9 @@ function structuredSignal(
 
   const directRefusalSignal = classifyAssistantRefusalSignal(value, source);
   if (directRefusalSignal !== undefined) return directRefusalSignal;
+
+  const directMessageSignal = fallbackSignalFromDirectMessage(value, source);
+  if (directMessageSignal !== undefined) return directMessageSignal;
 
   const codeKind = kindFromCode(codeFrom(value));
   const nameKind = kindFromCode(errorName(value));
