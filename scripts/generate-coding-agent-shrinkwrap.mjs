@@ -10,10 +10,13 @@ const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
 const internalPackageNames = new Set(["@bastani/atomic-natives"]);
+const registryBackedInternalPackageNames = new Set(["@bastani/atomic-natives"]);
+const atomicNativePlatformPackagePrefix = "@bastani/atomic-natives-";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.4", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
+const registryMetadataCache = new Map();
 
 const args = new Set(process.argv.slice(2));
 const checkOnly = args.has("--check");
@@ -34,6 +37,16 @@ function packageDependencies(entry) {
 		...(entry.dependencies ?? {}),
 		...(entry.optionalDependencies ?? {}),
 	};
+}
+
+function packageDependencyItems(entry) {
+	const dependencies = Object.entries(entry.dependencies ?? {}).map(([name, range]) => ({ name, range, optional: false }));
+	const optionalDependencies = Object.entries(entry.optionalDependencies ?? {}).map(([name, range]) => ({
+		name,
+		range,
+		optional: true,
+	}));
+	return [...dependencies, ...optionalDependencies].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function sortedObject(object) {
@@ -110,6 +123,18 @@ function copyPackageJsonEntry(packageJson, options) {
 	return sortedPackageEntry(entry);
 }
 
+function copyRegistryPackageEntry(packageJson, options = {}) {
+	const entry = copyPackageJsonEntry(packageJson, { includeName: false });
+	entry.resolved = packageJson.dist?.tarball ?? registryTarballUrl(packageJson.name, packageJson.version);
+	if (packageJson.dist?.integrity) {
+		entry.integrity = packageJson.dist.integrity;
+	}
+	if (options.optional) {
+		entry.optional = true;
+	}
+	return sortedPackageEntry(entry);
+}
+
 function packageNameFromLockPath(lockPath) {
 	const marker = "node_modules/";
 	const index = lockPath.lastIndexOf(marker);
@@ -127,6 +152,45 @@ function packageNameFromLockPath(lockPath) {
 function registryTarballUrl(packageName, version) {
 	const tarballName = packageName.startsWith("@") ? packageName.split("/")[1] : packageName;
 	return `https://registry.npmjs.org/${packageName}/-/${tarballName}-${version}.tgz`;
+}
+
+function isPlaceholderVersion(version) {
+	return version === "0.0.0" || version === "0.0.0-dev";
+}
+
+function isExactVersion(versionRange) {
+	return typeof versionRange === "string" && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(versionRange);
+}
+
+function registryPackageMetadataUrl(packageName, version) {
+	return `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`;
+}
+
+async function fetchRegistryPackageJson(packageName, version) {
+	if (!isExactVersion(version) || isPlaceholderVersion(version)) {
+		return undefined;
+	}
+
+	const cacheKey = `${packageName}@${version}`;
+	if (registryMetadataCache.has(cacheKey)) {
+		return registryMetadataCache.get(cacheKey);
+	}
+
+	const response = await fetch(registryPackageMetadataUrl(packageName, version), {
+		headers: { accept: "application/json" },
+	});
+
+	if (response.status === 404) {
+		registryMetadataCache.set(cacheKey, undefined);
+		return undefined;
+	}
+	if (!response.ok) {
+		throw new Error(`Failed to fetch npm metadata for ${cacheKey}: ${response.status} ${response.statusText}`);
+	}
+
+	const packageJson = await response.json();
+	registryMetadataCache.set(cacheKey, packageJson);
+	return packageJson;
 }
 
 function getInternalWorkspaces(lockPackages) {
@@ -192,22 +256,60 @@ function resolveExternalDependency(lockPackages, packageName, fromLockPath) {
 	);
 }
 
-function addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, name, workspace) {
-	const packageJson = workspace.packageJson;
-	const outputPath = `node_modules/${name}`;
-	const entry = copyPackageJsonEntry(packageJson, { includeName: false });
-	entry.resolved = registryTarballUrl(name, packageJson.version);
-
-	shrinkwrapPackages[outputPath] = sortedPackageEntry(entry);
-	addedPaths.add(outputPath);
-
-	for (const dependencyName of Object.keys(packageDependencies(packageJson))) {
-		queue.push({ name: dependencyName, from: outputPath });
+function enqueueDependencies(queue, entry, from) {
+	for (const dependency of packageDependencyItems(entry)) {
+		queue.push({ ...dependency, from });
 	}
 }
 
-function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, name, from) {
-	const lockPath = resolveExternalDependency(lockPackages, name, from);
+async function addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, name, workspace) {
+	const localPackageJson = workspace.packageJson;
+	const registryPackageJson = registryBackedInternalPackageNames.has(name)
+		? await fetchRegistryPackageJson(name, localPackageJson.version)
+		: undefined;
+	const packageJson = registryPackageJson ?? localPackageJson;
+	const outputPath = `node_modules/${name}`;
+	const entry = registryPackageJson
+		? copyRegistryPackageEntry(packageJson)
+		: copyPackageJsonEntry(packageJson, { includeName: false });
+
+	entry.resolved ??= registryTarballUrl(name, localPackageJson.version);
+	shrinkwrapPackages[outputPath] = sortedPackageEntry(entry);
+	addedPaths.add(outputPath);
+	enqueueDependencies(queue, packageJson, outputPath);
+}
+
+async function addRegistryPackage(shrinkwrapPackages, addedPaths, queue, item) {
+	if (!item.name.startsWith(atomicNativePlatformPackagePrefix)) {
+		throw new Error(`Refusing to resolve non-native package ${item.name} from npm registry fallback.`);
+	}
+	const packageJson = await fetchRegistryPackageJson(item.name, item.range);
+	if (!packageJson) {
+		throw new Error(`Cannot resolve ${item.name}@${item.range} from npm registry.`);
+	}
+
+	const outputPath = `node_modules/${item.name}`;
+	if (addedPaths.has(outputPath)) {
+		return;
+	}
+
+	shrinkwrapPackages[outputPath] = copyRegistryPackageEntry(packageJson, { optional: item.optional });
+	addedPaths.add(outputPath);
+	enqueueDependencies(queue, packageJson, outputPath);
+}
+
+async function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, item) {
+	let lockPath;
+	try {
+		lockPath = resolveExternalDependency(lockPackages, item.name, item.from);
+	} catch (error) {
+		if (item.name.startsWith(atomicNativePlatformPackagePrefix)) {
+			await addRegistryPackage(shrinkwrapPackages, addedPaths, queue, item);
+			return;
+		}
+		throw error;
+	}
+
 	if (addedPaths.has(lockPath)) {
 		return;
 	}
@@ -215,10 +317,7 @@ function addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue,
 	const entry = lockPackages[lockPath];
 	shrinkwrapPackages[lockPath] = copyLockEntry(entry);
 	addedPaths.add(lockPath);
-
-	for (const dependencyName of Object.keys(packageDependencies(entry))) {
-		queue.push({ name: dependencyName, from: lockPath });
-	}
+	enqueueDependencies(queue, entry, lockPath);
 }
 
 function validateShrinkwrap(shrinkwrap, internalNames) {
@@ -266,6 +365,21 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 		}
 	}
 
+	const atomicNativesEntry = shrinkwrap.packages["node_modules/@bastani/atomic-natives"];
+	if (atomicNativesEntry && !isPlaceholderVersion(atomicNativesEntry.version)) {
+		const nativePackageNames = Object.keys(atomicNativesEntry.optionalDependencies ?? {}).filter((name) =>
+			name.startsWith(atomicNativePlatformPackagePrefix),
+		);
+		if (nativePackageNames.length === 0) {
+			errors.push("@bastani/atomic-natives release entry is missing generated optional native package dependencies");
+		}
+		for (const nativePackageName of nativePackageNames) {
+			if (!includedPackageNames.has(nativePackageName)) {
+				errors.push(`native optional dependency ${nativePackageName} is missing`);
+			}
+		}
+	}
+
 	for (const [lockPath, entry] of Object.entries(shrinkwrap.packages)) {
 		for (const dependencyName of Object.keys(packageDependencies(entry))) {
 			const dependencyIncluded = [...includedPaths].some(
@@ -287,7 +401,7 @@ function validateShrinkwrap(shrinkwrap, internalNames) {
 	}
 }
 
-function generateShrinkwrap() {
+async function generateShrinkwrap() {
 	const rootLock = readJson(rootLockfilePath);
 	if (rootLock.lockfileVersion !== 3 || !rootLock.packages) {
 		throw new Error("package-lock.json must be lockfileVersion 3 and contain a packages map");
@@ -301,7 +415,7 @@ function generateShrinkwrap() {
 	};
 	const addedPaths = new Set([""]);
 	const internalNames = new Set();
-	const queue = Object.keys(packageDependencies(codingAgentPackage)).map((name) => ({ name, from: "" }));
+	const queue = packageDependencyItems(codingAgentPackage).map((dependency) => ({ ...dependency, from: "" }));
 
 	while (queue.length > 0) {
 		const item = queue.shift();
@@ -314,12 +428,12 @@ function generateShrinkwrap() {
 			const outputPath = `node_modules/${item.name}`;
 			internalNames.add(item.name);
 			if (!addedPaths.has(outputPath)) {
-				addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, item.name, workspace);
+				await addInternalWorkspace(shrinkwrapPackages, addedPaths, queue, item.name, workspace);
 			}
 			continue;
 		}
 
-		addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, item.name, item.from);
+		await addExternalPackage(lockPackages, shrinkwrapPackages, addedPaths, queue, item);
 	}
 
 	const shrinkwrap = {
@@ -335,7 +449,7 @@ function generateShrinkwrap() {
 }
 
 try {
-	const shrinkwrap = generateShrinkwrap();
+	const shrinkwrap = await generateShrinkwrap();
 	const content = `${JSON.stringify(shrinkwrap, null, "\t")}\n`;
 
 	if (checkOnly) {

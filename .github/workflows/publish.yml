@@ -33,7 +33,7 @@ jobs:
         steps:
             - uses: useblacksmith/checkout@v1
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ github.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -106,7 +106,7 @@ jobs:
         steps:
             - uses: useblacksmith/checkout@v1
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ github.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -193,7 +193,7 @@ jobs:
         steps:
             - uses: actions/checkout@v7.0.0
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ github.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -288,7 +288,7 @@ jobs:
 
             - uses: actions/checkout@v7.0.0
               with:
-                  ref: ${{ steps.checkout_ref.outputs.ref }}
+                  ref: ${{ github.sha }}
                   fetch-depth: 0
                   persist-credentials: false
 
