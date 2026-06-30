@@ -15,8 +15,10 @@
  *   3. stamp the real version into the worktree via scripts/bump-version.ts
  *      (bun.lock keeps main's 0.0.0 placeholders; `bun install --frozen-lockfile`
  *      tolerates the workspace version-string mismatch, so the lockfile is left as-is)
- *   4. commit `Release <version>` and tag `<version>` inside the worktree
- *   5. remove the worktree — the tag (and its commit) persist in the repo
+ *   4. regenerate release artifacts that must carry the stamped version, including
+ *      packages/coding-agent/npm-shrinkwrap.json
+ *   5. commit `Release <version>` and tag `<version>` inside the worktree
+ *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
  * Because publish.yml checks out the *tagged commit* (which now carries the
  * real version) every existing version validation passes unchanged.
@@ -145,8 +147,12 @@ async function main(): Promise<void> {
     await $`git -C ${ROOT} worktree add --detach ${worktreeDir} ${baseSha}`.quiet();
     worktreeAdded = true;
 
-    // Stamp the real version into the detached worktree only.
+    // Stamp the real version into the detached worktree only, then regenerate
+    // release artifacts that encode the stamped version. The shrinkwrap generator
+    // is hermetic: internal Atomic packages use deterministic registry tarball
+    // URLs derived from local package metadata rather than npm registry metadata.
     await $`bun run ${join(ROOT, "scripts/bump-version.ts")} ${version} --root ${worktreeDir}`;
+    await $`bun run ${join(worktreeDir, "scripts/generate-coding-agent-shrinkwrap.mjs")}`;
 
     // bun.lock intentionally keeps main's 0.0.0 workspace placeholders: it is not
     // shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the

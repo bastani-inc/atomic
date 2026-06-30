@@ -10,9 +10,7 @@ const codingAgentDir = join(repoRoot, "packages/coding-agent");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
 const shrinkwrapPath = join(codingAgentDir, "npm-shrinkwrap.json");
 const internalPackageNames = new Set(["@bastani/atomic-natives"]);
-const placeholderVersion = "0.0.0";
 const defaultNpmRegistry = "https://registry.npmjs.org";
-const npmRegistry = (process.env.npm_config_registry || process.env.NPM_CONFIG_REGISTRY || defaultNpmRegistry).replace(/\/$/, "");
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.4", "postinstall only warns about protobufjs version scheme mismatches"],
@@ -132,48 +130,6 @@ function registryTarballUrl(packageName, version, registry = defaultNpmRegistry)
 	return `${registry}/${packageName}/-/${tarballName}-${version}.tgz`;
 }
 
-function registryMetadataUrl(packageName) {
-	return `${npmRegistry}/${encodeURIComponent(packageName)}`;
-}
-
-function assertRegistryMetadata(packageName, version, metadata) {
-	if (!metadata || metadata.name !== packageName || metadata.version !== version) {
-		throw new Error(`Registry metadata for ${packageName}@${version} is malformed.`);
-	}
-	if (!metadata.dist?.tarball || !metadata.dist?.integrity) {
-		throw new Error(`Registry metadata for ${packageName}@${version} is missing dist.tarball or dist.integrity.`);
-	}
-}
-
-async function fetchRegistryPackageVersion(packageName, version) {
-	if (version === placeholderVersion) {
-		return undefined;
-	}
-
-	const response = await fetch(registryMetadataUrl(packageName), {
-		headers: { accept: "application/vnd.npm.install-v1+json, application/json" },
-	});
-	if (!response.ok) {
-		throw new Error(`Unable to read npm metadata for ${packageName}@${version}: HTTP ${response.status}`);
-	}
-	const packument = await response.json();
-	const metadata = packument?.versions?.[version];
-	if (!metadata) {
-		throw new Error(
-			`npm metadata for ${packageName}@${version} is not available. Publish @bastani/atomic-natives and its optional platform packages before generating the @bastani/atomic shrinkwrap.`,
-		);
-	}
-	assertRegistryMetadata(packageName, version, metadata);
-	return metadata;
-}
-
-function copyRegistryPackageEntry(metadata) {
-	const entry = copyPackageJsonEntry(metadata, { includeName: false });
-	entry.resolved = metadata.dist.tarball;
-	entry.integrity = metadata.dist.integrity;
-	return sortedPackageEntry(entry);
-}
-
 function platformDescriptorFromNapiTarget(packageJson, target) {
 	const mappings = {
 		"x86_64-pc-windows-msvc": { suffix: "win32-x64-msvc", os: ["win32"], cpu: ["x64"] },
@@ -211,7 +167,7 @@ function generatedAtomicNativesOptionalPackages(packageJson) {
 	);
 }
 
-async function buildInternalPackageEntries(workspaces) {
+function buildInternalPackageEntries(workspaces) {
 	const entries = new Map();
 	for (const [name, workspace] of workspaces) {
 		const packageJson = workspace.packageJson;
@@ -219,30 +175,16 @@ async function buildInternalPackageEntries(workspaces) {
 			continue;
 		}
 
-		const metadata = await fetchRegistryPackageVersion(name, packageJson.version);
 		const optionalPackages = generatedAtomicNativesOptionalPackages(packageJson);
-		const mainEntry = metadata ? copyRegistryPackageEntry(metadata) : copyPackageJsonEntry(packageJson, { includeName: false });
-		mainEntry.resolved = metadata?.dist?.tarball ?? registryTarballUrl(name, packageJson.version);
-		if (metadata?.dist?.integrity) {
-			mainEntry.integrity = metadata.dist.integrity;
-		}
+		const mainEntry = copyPackageJsonEntry(packageJson, { includeName: false });
+		mainEntry.resolved = registryTarballUrl(name, packageJson.version);
 		mainEntry.optionalDependencies = sortedObject(
-			metadata?.optionalDependencies ??
-				Object.fromEntries([...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version])),
+			Object.fromEntries([...optionalPackages].map(([packageName, descriptor]) => [packageName, descriptor.version])),
 		);
 		entries.set(name, sortedPackageEntry(mainEntry));
 
 		for (const [packageName, descriptor] of optionalPackages) {
-			const optionalVersion = mainEntry.optionalDependencies[packageName];
-			const optionalMetadata = await fetchRegistryPackageVersion(packageName, optionalVersion);
-			const optionalEntry = optionalMetadata ? copyRegistryPackageEntry(optionalMetadata) : { ...descriptor.entry };
-			optionalEntry.os = descriptor.entry.os;
-			optionalEntry.cpu = descriptor.entry.cpu;
-			if (descriptor.entry.libc) {
-				optionalEntry.libc = descriptor.entry.libc;
-			}
-			optionalEntry.optional = true;
-			entries.set(packageName, sortedPackageEntry(optionalEntry));
+			entries.set(packageName, sortedPackageEntry({ ...descriptor.entry }));
 		}
 	}
 	return entries;
@@ -411,7 +353,7 @@ async function generateShrinkwrap() {
 	const lockPackages = rootLock.packages;
 	const codingAgentPackage = readJson(join(codingAgentDir, "package.json"));
 	const internalWorkspaces = getInternalWorkspaces(lockPackages);
-	const generatedInternalPackages = await buildInternalPackageEntries(internalWorkspaces);
+	const generatedInternalPackages = buildInternalPackageEntries(internalWorkspaces);
 	const shrinkwrapPackages = {
 		"": copyPackageJsonEntry(codingAgentPackage, { includeName: true }),
 	};

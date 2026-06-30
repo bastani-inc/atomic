@@ -68,6 +68,16 @@ bun --cwd packages/coding-agent run test -- test/specific.test.ts
 
 The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded; there is no grandfather/baseline allowlist for authored files.
 
+## Release shrinkwrap
+
+`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` for deterministic package-manager installs. Main stays versionless at `0.0.0`; `scripts/cut-release.ts` stamps the real version in an off-main worktree and regenerates the shrinkwrap there before tagging.
+
+The shrinkwrap generator is hermetic for Atomic-owned packages. It derives `@bastani/atomic-natives` and generated native optional package entries from local package metadata plus deterministic registry tarball URLs, so release publishing does not depend on npm metadata for native packages that were just published.
+
+```bash
+bun run scripts/generate-coding-agent-shrinkwrap.mjs --check
+```
+
 ## Project Structure
 
 ```

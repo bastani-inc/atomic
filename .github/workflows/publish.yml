@@ -309,6 +309,9 @@ jobs:
             - name: Test
               run: bun run test:all
 
+            - name: Verify committed npm shrinkwrap
+              run: bun run check:shrinkwrap
+
             - name: Download Atomic native bindings
               uses: actions/download-artifact@v8
               with:
@@ -567,10 +570,9 @@ jobs:
                   bun pm pack --dry-run
                   npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
 
-            - name: Generate npm shrinkwrap for published package
+            - name: Verify prepared npm shrinkwrap for published package
               if: steps.registry.outputs.exists != 'true'
-              working-directory: ${{ env.PACKAGE_DIR }}
-              run: bun run shrinkwrap
+              run: bun run check:shrinkwrap
 
             - name: Verify npm tarball contents
               if: steps.registry.outputs.exists != 'true'

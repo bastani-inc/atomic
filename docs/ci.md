@@ -30,6 +30,7 @@ Pull request / push
      ├─ resolve and validate the release tag
      ├─ bun install --frozen-lockfile
      ├─ bun run typecheck && bun run test:all
+     ├─ verify committed npm-shrinkwrap.json is deterministic and current
      ├─ download native NAPI artifacts
      ├─ prepare generated native optional packages
      ├─ cd packages/coding-agent && bun run docs:check
@@ -41,6 +42,7 @@ Pull request / push
      ├─ extract release notes from packages/coding-agent/CHANGELOG.md
      ├─ check whether the npm versions already exist
      ├─ npm publish --provenance --tag "$NPM_TAG" from packages/natives when needed
+     ├─ re-verify prepared npm-shrinkwrap.json without npm metadata lookups
      ├─ bun pm pack --dry-run from packages/coding-agent when publishing
      ├─ npm publish --provenance --tag "$NPM_TAG" from packages/coding-agent when needed
      ├─ determine GitHub Release type
@@ -144,7 +146,9 @@ bun run scripts/cut-release.ts 0.8.0 --base main --push
 bun run scripts/cut-release.ts 0.8.0-alpha.1 --base main --push
 ```
 
-Internally the script validates a clean tree, creates a detached `git worktree` at the base commit, stamps every versioned manifest with `scripts/bump-version.ts` (all `packages/*/package.json`, the `@bastani/atomic-natives` pin, `packages/natives/native/index.js`, and the Cargo manifests/lock), commits `Release <version>`, tags it, removes the worktree, and pushes only the tag. `main` is never advanced and the tag's commit is the only place the real version lives. `bun.lock` keeps `main`'s `0.0.0` workspace placeholders — it is not shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the version-string mismatch.
+Internally the script validates a clean tree, creates a detached `git worktree` at the base commit, stamps every versioned manifest with `scripts/bump-version.ts` (all `packages/*/package.json`, the `@bastani/atomic-natives` pin, `packages/natives/native/index.js`, and the Cargo manifests/lock), regenerates `packages/coding-agent/npm-shrinkwrap.json` inside that stamped worktree, commits `Release <version>`, tags it, removes the worktree, and pushes only the tag. `main` is never advanced and the tag's commit is the only place the real version lives. `bun.lock` keeps `main`'s `0.0.0` workspace placeholders — it is not shipped in the npm tarball and `bun install --frozen-lockfile` tolerates the version-string mismatch.
+
+The release shrinkwrap is prepared before the tag is published. Internal Atomic entries such as `@bastani/atomic-natives` and its generated platform optional packages are derived from the stamped local `package.json` metadata and deterministic npm tarball URLs like `https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-<version>.tgz`; the generator intentionally does not query npm metadata for the just-published native packages or require their registry `integrity` fields.
 
 ### Publish Flow
 
@@ -170,6 +174,7 @@ Publish @bastani/atomic
   · setup Bun and Node (Node 24 for npm provenance publish)
   · bun install --frozen-lockfile
   · bun run typecheck && bun run test:all
+  · verify the committed npm-shrinkwrap.json matches local deterministic generation
   · download native NAPI artifacts from the matrix jobs
   · prepare generated native optional packages with `bun run --cwd packages/natives create-npm-dirs` and `bun run --cwd packages/natives artifacts`
   · cd packages/coding-agent && bun run docs:check
@@ -188,6 +193,7 @@ Publish @bastani/atomic
   · determine npm tag: latest or next
   · skip publish if version already exists on npm
   · cd packages/natives && bun run prepublish:native && npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
+  · verify the prepared npm-shrinkwrap.json still matches local deterministic generation
   · cd packages/coding-agent && bun pm pack --dry-run
   · cd packages/coding-agent && npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
   · determine GitHub Release prerelease/latest settings
@@ -263,6 +269,7 @@ The meaningful pre-publish checks are:
 - docs route/internal-link validation with `cd packages/coding-agent && bun run docs:check`
 - Mintlify MDX/page syntax validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`
 - Mintlify broken-link validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`
+- deterministic `npm-shrinkwrap.json` validation for `@bastani/atomic`
 - `@bastani/atomic` build output validation
 - builtin extension/resource validation under `dist/builtin/`
 - `bun pm pack --dry-run` from `packages/coding-agent`
@@ -274,7 +281,7 @@ The meaningful pre-publish checks are:
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
-| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
+| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate deterministic shrinkwrap/docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
 | `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
 | `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
 | `claude.yml`         | Issue/PR comments, issues, PR reviews         | Interactive Claude assistant gated on `@claude` mentions                                                                                                                                                      |
@@ -318,7 +325,7 @@ The meaningful pre-publish checks are:
 
     On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke. (A `main` build reports the `0.0.0` placeholder for `--version`; a release build from the tag reports the real version.)
 
-3. From a clean `main`, cut and push the release tag. This stamps the version onto an off-`main` `Release 0.8.0` commit, tags it, and pushes only the tag (the publish trigger):
+3. From a clean `main`, cut and push the release tag. This stamps the version onto an off-`main` `Release 0.8.0` commit, regenerates the deterministic `@bastani/atomic` shrinkwrap from local metadata, tags it, and pushes only the tag (the publish trigger):
 
     ```sh
     bun run scripts/cut-release.ts 0.8.0 --base main --push

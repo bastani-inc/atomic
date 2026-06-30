@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Made release shrinkwrap preparation hermetic by deriving `@bastani/atomic-natives` and generated platform optional package entries from local stamped package metadata with deterministic registry tarball URLs, removing post-native-publish npm metadata lookups that could race registry propagation.
+
 ## [0.9.4-alpha.2] - 2026-06-29
 
 ### Fixed
