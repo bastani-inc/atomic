@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardened the coding-agent npm shrinkwrap generator so release publishes resolve the already-published `@bastani/atomic-natives` registry metadata and generated platform optional packages before packing `@bastani/atomic`, while versionless main keeps deterministic placeholder native package entries for shrinkwrap checks.
+
 ## [0.9.4-alpha.1] - 2026-06-29
 
 ### Changed

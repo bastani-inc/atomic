@@ -519,10 +519,96 @@
 			"version": "0.0.0",
 			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives/-/atomic-natives-0.0.0.tgz",
 			"license": "MIT",
+			"optionalDependencies": {
+				"@bastani/atomic-natives-darwin-arm64": "0.0.0",
+				"@bastani/atomic-natives-darwin-x64": "0.0.0",
+				"@bastani/atomic-natives-linux-arm64-gnu": "0.0.0",
+				"@bastani/atomic-natives-linux-x64-gnu": "0.0.0",
+				"@bastani/atomic-natives-win32-arm64-msvc": "0.0.0",
+				"@bastani/atomic-natives-win32-x64-msvc": "0.0.0"
+			},
 			"engines": {
 				"bun": ">=1.3.14",
 				"node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
 			}
+		},
+		"node_modules/@bastani/atomic-natives-darwin-arm64": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-arm64/-/atomic-natives-darwin-arm64-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"darwin"
+			],
+			"cpu": [
+				"arm64"
+			],
+			"optional": true
+		},
+		"node_modules/@bastani/atomic-natives-darwin-x64": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-darwin-x64/-/atomic-natives-darwin-x64-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"darwin"
+			],
+			"cpu": [
+				"x64"
+			],
+			"optional": true
+		},
+		"node_modules/@bastani/atomic-natives-linux-arm64-gnu": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-arm64-gnu/-/atomic-natives-linux-arm64-gnu-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"arm64"
+			],
+			"libc": [
+				"glibc"
+			],
+			"optional": true
+		},
+		"node_modules/@bastani/atomic-natives-linux-x64-gnu": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-linux-x64-gnu/-/atomic-natives-linux-x64-gnu-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"linux"
+			],
+			"cpu": [
+				"x64"
+			],
+			"libc": [
+				"glibc"
+			],
+			"optional": true
+		},
+		"node_modules/@bastani/atomic-natives-win32-arm64-msvc": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-arm64-msvc/-/atomic-natives-win32-arm64-msvc-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"win32"
+			],
+			"cpu": [
+				"arm64"
+			],
+			"optional": true
+		},
+		"node_modules/@bastani/atomic-natives-win32-x64-msvc": {
+			"version": "0.0.0",
+			"resolved": "https://registry.npmjs.org/@bastani/atomic-natives-win32-x64-msvc/-/atomic-natives-win32-x64-msvc-0.0.0.tgz",
+			"license": "MIT",
+			"os": [
+				"win32"
+			],
+			"cpu": [
+				"x64"
+			],
+			"optional": true
 		},
 		"node_modules/@borewit/text-codec": {
 			"version": "0.2.2",
