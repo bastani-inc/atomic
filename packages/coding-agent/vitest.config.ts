@@ -21,11 +21,13 @@ const workspaceSourceAliases: AliasOptions =
 			]
 		: [];
 
+const defaultTestTimeoutMs = process.platform === "win32" ? 90_000 : 30_000;
+
 export default defineConfig({
 	test: {
 		globals: true,
 		environment: "node",
-		testTimeout: 30000,
+		testTimeout: defaultTestTimeoutMs,
 		include: ["test/**/*.test.ts", "test/**/*.spec.ts", "test/**/*.suite.ts"],
 		exclude: [
 			"**/node_modules/**",

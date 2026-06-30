@@ -165,11 +165,14 @@ class Atomic(BaseInstalledAgent):
     def network_allowlist(self) -> NetworkAllowlist:
         provider = self._parsed_model_provider
         defaults = set(self._INSTALL_DOMAINS)
-        if provider and provider in self._PROVIDER_DOMAINS:
-            defaults.update(self._PROVIDER_DOMAINS[provider])
-        else:
-            for domains in self._PROVIDER_DOMAINS.values():
-                defaults.update(domains)
+        # Atomic workflows can select fallback models from providers other than
+        # the top-level Pier --model provider. In Pier's restricted egress mode,
+        # narrowing the allowlist to only the requested provider makes valid
+        # workflow fallback attempts fail as generic SDK "Connection error"
+        # transport failures. Allow every Atomic-supported provider domain here;
+        # credentials/model config still decide which providers can actually run.
+        for domains in self._PROVIDER_DOMAINS.values():
+            defaults.update(domains)
         urls = [self._get_env(key) for key in self._BASE_URL_ENV_KEYS]
         if provider == "github-copilot":
             urls.append(self._copilot_api_base_url())
