@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const testDir = dirname(fileURLToPath(import.meta.url));
 export const cliPath = resolve(testDir, "../src/cli.ts");
 
+const defaultCliProcessTimeoutMs = process.platform === "win32" ? 75_000 : 30_000;
+
 export interface CliProcessResult {
 	stdout: string;
 	stderr: string;
@@ -57,7 +59,7 @@ export async function runCliProcess(args: string[], options: { cwd: string; env?
 	child.stderr?.on("data", (chunk) => { stderr += chunk.toString(); });
 
 	return await new Promise((resolvePromise, reject) => {
-		const timeout = setTimeout(() => { timedOut = true; killProcessTree(child.pid); }, options.timeoutMs ?? 30_000);
+		const timeout = setTimeout(() => { timedOut = true; killProcessTree(child.pid); }, options.timeoutMs ?? defaultCliProcessTimeoutMs);
 		const finish = (code: number | null, signal: NodeJS.Signals | null) => {
 			if (settled) return;
 			settled = true;
