@@ -132,12 +132,12 @@ Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Us
 | `retry.maxRetries` | number | `3` | Maximum agent-level retry attempts |
 | `retry.baseDelayMs` | number | `2000` | Base delay for agent-level exponential backoff (2s, 4s, 8s) |
 | `retry.provider.timeoutMs` | number | SDK default | Provider/SDK request timeout in milliseconds |
-| `retry.provider.maxRetries` | number | `5` | Provider/SDK retry attempts (also retries dropped connections / `Connection error`) |
+| `retry.provider.maxRetries` | number | `0` | Provider/SDK retry attempts. Leave unset/`0` to let Atomic's agent-level retry handle transient failures |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
 
 When a provider requests a retry delay longer than `retry.provider.maxRetryDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 
-`retry.provider.maxRetries` defaults to `5` so transient socket drops (sandbox proxies, prod edge idle-closes) retry instead of failing as `Connection error`. The `maxRetryDelayMs` cap keeps this safe: connection errors back off briefly, while quota/rate-limit replies asking for a long delay still fail fast instead of blocking on usage limits. Set to `0` to disable provider-level retries.
+`retry.provider.maxRetries` follows upstream Pi's behavior and defaults to `0` SDK/provider retries. Atomic still performs agent-level retries via `retry.maxRetries`; set `retry.provider.maxRetries` explicitly only when you want the underlying provider SDK to retry before Atomic observes the failure.
 
 ```json
 {
@@ -147,7 +147,7 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
     "baseDelayMs": 2000,
     "provider": {
       "timeoutMs": 3600000,
-      "maxRetries": 5,
+      "maxRetries": 0,
       "maxRetryDelayMs": 60000
     }
   }
@@ -160,7 +160,7 @@ When a provider requests a retry delay longer than `retry.provider.maxRetryDelay
 |---------|------|---------|-------------|
 | `httpIdleTimeoutMs` | number | `600000` | HTTP header/body idle timeout in milliseconds. Must be a non-negative finite number; decimals are rounded down. Set to `0` to disable the idle timeout. |
 
-Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 600,000 ms (10 minutes), which keeps slow long-context requests working while reclaiming stale idle connections. The dispatcher also applies a fixed 10-second connect-phase timeout so an unreachable or firewall-blocked host fails fast instead of hanging until the OS TCP timeout.
+Atomic applies this timeout to the global HTTP dispatcher used by `fetch` and provider SDK HTTP clients. The default is 600,000 ms (10 minutes), which keeps slow long-context requests working while reclaiming stale idle connections. Atomic does not impose a separate fixed connect-phase timeout; connection failures surface through the provider and agent retry/error paths.
 
 The `/settings` picker offers these presets:
 

@@ -567,10 +567,27 @@ jobs:
                   bun pm pack --dry-run
                   npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
 
+            - name: Generate npm shrinkwrap for published package
+              if: steps.registry.outputs.exists != 'true'
+              working-directory: ${{ env.PACKAGE_DIR }}
+              run: bun run shrinkwrap
+
             - name: Verify npm tarball contents
               if: steps.registry.outputs.exists != 'true'
               working-directory: ${{ env.PACKAGE_DIR }}
-              run: bun pm pack --dry-run
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  bun pm pack --dry-run
+                  npm pack --dry-run --json > "$RUNNER_TEMP/atomic-npm-pack.json"
+                  cat "$RUNNER_TEMP/atomic-npm-pack.json"
+                  bun --eval '
+                    const pack = await Bun.file(process.env.RUNNER_TEMP + "/atomic-npm-pack.json").json();
+                    const files = new Set(pack[0]?.files?.map((file) => file.path));
+                    if (!files.has("npm-shrinkwrap.json")) {
+                      throw new Error("npm pack output is missing npm-shrinkwrap.json");
+                    }
+                  '
 
             - name: Publish to npm
               if: steps.registry.outputs.exists != 'true'

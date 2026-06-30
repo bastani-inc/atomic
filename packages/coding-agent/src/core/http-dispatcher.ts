@@ -1,10 +1,10 @@
-import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
+import * as undici from "undici";
 import { installCopilotGeminiReasoningInterceptor } from "./copilot-gemini-reasoning.ts";
 
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 600_000;
 
-/** Connect-phase timeout so a black-holed/firewalled host fails fast instead of hanging until the OS TCP timeout. */
-export const HTTP_CONNECT_TIMEOUT_MS = 10_000;
+const originalGlobalFetch = globalThis.fetch;
+let installedGlobalFetch: typeof globalThis.fetch | undefined;
 
 export const HTTP_IDLE_TIMEOUT_CHOICES = [
 	{ label: "30 sec", timeoutMs: 30_000 },
@@ -36,7 +36,9 @@ export function formatHttpIdleTimeoutMs(timeoutMs: number): string {
  * Keep HTTP/2 disabled for now because some Node/undici combinations have
  * produced stream-reset crashes, and use a configurable idle timeout so stale
  * connections are eventually reclaimed while long-running requests remain
- * supported.
+ * supported. Do not install a fixed connect-phase timeout here: under Pier and
+ * other policy/proxy layers, CONNECT establishment can be slower than normal
+ * internet egress and should surface through the provider/agent retry path.
  */
 export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TIMEOUT_MS): void {
 	const normalizedTimeoutMs = parseHttpIdleTimeoutMs(timeoutMs);
@@ -44,14 +46,26 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 		throw new Error(`Invalid HTTP idle timeout: ${String(timeoutMs)}`);
 	}
 
-	setGlobalDispatcher(
-		new EnvHttpProxyAgent({
+	undici.setGlobalDispatcher(
+		new undici.EnvHttpProxyAgent({
 			allowH2: false,
 			bodyTimeout: normalizedTimeoutMs,
 			headersTimeout: normalizedTimeoutMs,
-			connect: { timeout: HTTP_CONNECT_TIMEOUT_MS },
 		}),
 	);
+
+	// Keep fetch and the dispatcher on the same undici implementation. Some Node
+	// releases use a bundled fetch that can ignore the npm undici dispatcher or
+	// otherwise behave differently from the configured dispatcher used by SDKs.
+	// If a caller replaced fetch after module load, preserve that deliberate
+	// override.
+	const shouldInstallGlobals = installedGlobalFetch === undefined
+		? globalThis.fetch === originalGlobalFetch
+		: globalThis.fetch === installedGlobalFetch;
+	if (shouldInstallGlobals) {
+		undici.install?.();
+		installedGlobalFetch = globalThis.fetch;
+	}
 
 	// Bridge CAPI Gemini thought signatures (`reasoning_opaque`) on the inbound
 	// SSE stream so multi-turn Copilot Gemini tool use does not stall on empty

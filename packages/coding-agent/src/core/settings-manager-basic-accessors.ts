@@ -360,7 +360,7 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 	getProviderRetrySettings() {
 		return {
 			timeoutMs: settingsInternals(this).settings.retry?.provider?.timeoutMs,
-			maxRetries: settingsInternals(this).settings.retry?.provider?.maxRetries ?? 5,
+			maxRetries: settingsInternals(this).settings.retry?.provider?.maxRetries,
 			maxRetryDelayMs: settingsInternals(this).settings.retry?.provider?.maxRetryDelayMs ?? 60000,
 		};
 	},

@@ -2,8 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Restored upstream Pi's provider retry default by leaving `retry.provider.maxRetries` unset/zero unless users configure it explicitly, so Atomic's agent-level retry observes provider transport failures directly instead of the SDK retrying them first.
+
 ### Fixed
 
+- Aligned Atomic's global HTTP dispatcher with upstream Pi by removing the fixed 10-second connect-phase timeout and installing undici's fetch implementation alongside the configured proxy dispatcher, avoiding spurious provider `Connection error` failures behind policy/proxy egress layers.
+- Made headless JSON print mode return a nonzero exit code when the final assistant turn ends with `stopReason: "error"` or `"aborted"`, so Pier and other harnesses can mark provider failures as agent errors.
+- Declared `lru-cache` as a direct runtime dependency and added publish-time `npm-shrinkwrap.json` generation, matching upstream Pi's deterministic npm installs and fixing strict pnpm global installs that could not resolve Atomic's hashline and fetch-tool cache imports.
 - Updated user-facing workflow documentation for the blocked lifecycle notice state, the default `workflowNotifications.notifyOn` set, and the reserved top-level workflow output `status` convention for returned `failed`/`blocked` run statuses.
 
 ## [0.9.3] - 2026-06-29

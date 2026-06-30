@@ -221,23 +221,25 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 			await promptWithScopedCommandSuppression(message);
 		}
 
-		if (mode === "text" && !suppressFinalOutput) {
-			const state = session.state;
-			const lastMessage = state.messages[state.messages.length - 1];
+		const state = session.state;
+		const lastMessage = state.messages[state.messages.length - 1];
 
-			if (lastMessage?.role === "assistant") {
-				const assistantMsg = lastMessage as AssistantMessage;
-				if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+		if (lastMessage?.role === "assistant") {
+			const assistantMsg = lastMessage as AssistantMessage;
+			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				if (mode === "text" && !suppressFinalOutput) {
 					console.error(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
-					exitCode = 1;
-				} else {
-					for (const content of assistantMsg.content) {
-						if (content.type === "text") {
-							writeRawStdout(`${content.text}\n`);
-						}
+				}
+				exitCode = 1;
+			} else if (mode === "text" && !suppressFinalOutput) {
+				for (const content of assistantMsg.content) {
+					if (content.type === "text") {
+						writeRawStdout(`${content.text}\n`);
 					}
 				}
-			} else if (lastMessage?.role === "custom") {
+			}
+		} else if (mode === "text" && !suppressFinalOutput) {
+			if (lastMessage?.role === "custom") {
 				const text = displayableCustomText(lastMessage as CustomMessage);
 				if (text !== undefined) {
 					writeRawStdout(`${text}\n`);
