@@ -23,6 +23,8 @@
     "test:all": "bun run test:unit && bun run test:integration",
     "typecheck": "tsc --noEmit",
     "check:file-length": "bun scripts/check-file-length.ts",
+    "check:shrinkwrap": "node scripts/generate-coding-agent-shrinkwrap.mjs --check",
+    "shrinkwrap:coding-agent": "node scripts/generate-coding-agent-shrinkwrap.mjs",
     "lint": "tsc --noEmit"
   },
   "devDependencies": {
