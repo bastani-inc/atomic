@@ -17,6 +17,7 @@ import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-a
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { assistantStopReason, isAssistantFailureStopReason, shouldStartSubagentFinalDrain } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
+import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -204,6 +205,7 @@ export async function runSingleAttempt(
 			settled = true;
 			clearFinalDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			if (activityTimer) {
 				clearInterval(activityTimer);
 				activityTimer = undefined;
@@ -358,13 +360,24 @@ export async function runSingleAttempt(
 
 		let stderrBuf = "";
 		const clearStdioGuard = attachPostExitStdioGuard(proc, { idleMs: 2000, hardMs: 8000 });
+		const attemptWatchdog = createAttemptWatchdog({
+			child: proc,
+			isSettled: () => settled || processClosed || detached,
+			onTimeout(message) {
+				forcedTerminationSignal = true;
+				result.error ??= message;
+				progress.error = message;
+			},
+		});
 		proc.stdout.on("data", (d) => {
+			attemptWatchdog.activity();
 			buf += d.toString();
 			const lines = buf.split("\n");
 			buf = lines.pop() || "";
 			lines.forEach(processLine);
 		});
 		proc.stderr.on("data", (d) => {
+			attemptWatchdog.activity();
 			stderrBuf += d.toString();
 		});
 		proc.on("exit", () => {
@@ -374,6 +387,7 @@ export async function runSingleAttempt(
 		proc.on("close", (code, signal) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
 			if (detached) {
@@ -394,6 +408,7 @@ export async function runSingleAttempt(
 		proc.on("error", (error) => {
 			clearFinalDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
 			if (!result.error) result.error = error instanceof Error ? error.message : String(error);

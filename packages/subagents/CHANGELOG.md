@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed subagent model fallback so request/context incompatibility failures (HTTP 400/413/422 bad/unprocessable/payload-too-large request, unsupported tool/parameter, context-length/context-window overflow, `invalid_request`/`bad_request`/`too_large` errors) advance the chain to the next candidate instead of stopping. When none of the configured candidates can serve the request, the subagent now falls back to the current user-selected model. Refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+- Fixed foreground and background subagent model attempts that produced no child activity from hanging indefinitely. Each candidate attempt now has a conservative idle watchdog and absolute wall-clock cap, records a retryable timeout failure, and advances to the next fallback candidate; known providers without configured auth are skipped before spawning while unknown/custom providers and the current-model last resort are still attempted ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
 
 ## [0.9.4-alpha.6] - 2026-07-01
 

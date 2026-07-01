@@ -80,6 +80,8 @@ export interface RunSyncOptions {
 	modelOverride?: string;
 	/** Registry models available for heuristic bare-model resolution */
 	availableModels?: Array<{ provider: string; id: string; fullId: string }>;
+	/** Providers known to the registry before auth filtering */
+	knownModelProviders?: string[];
 	/** Current parent-session provider to prefer for ambiguous bare model ids */
 	preferredModelProvider?: string;
 	/** Current parent-session model to try after configured fallback models */

@@ -76,6 +76,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		currentModel: currentModelFullId(ctx.model),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = [...new Set((typeof ctx.modelRegistry.getAll === "function" ? ctx.modelRegistry.getAll() : ctx.modelRegistry.getAvailable()).map((model) => model.provider))];
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
@@ -110,6 +111,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agents,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -139,6 +141,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agents,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -181,6 +184,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agentConfig: a,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,

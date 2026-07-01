@@ -61,14 +61,16 @@ export async function runSingleStep(
 		}
 	}
 
-	const candidates = step.modelCandidates && step.modelCandidates.length > 0
+	const candidates = step.modelCandidates !== undefined
 		? step.modelCandidates
 		: step.model
 			? [step.model]
 			: [undefined];
 	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
-	const attemptNotes: string[] = [];
+	const modelAttempts: ModelAttempt[] = [...(step.modelAttempts ?? [])];
+	const attemptNotes: string[] = modelAttempts
+		.filter((attempt) => !attempt.success && attempt.exitCode === null && attempt.error)
+		.map((attempt) => `[fallback] ${attempt.error}`);
 	const pendingAttemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;

@@ -108,6 +108,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = [...new Set((typeof ctx.modelRegistry.getAll === "function" ? ctx.modelRegistry.getAll() : ctx.modelRegistry.getAvailable()).map((model) => model.provider))];
 	let taskTexts = tasks.map((t) => t.task);
 	const skillOverrides: (string[] | false | undefined)[] = tasks.map((t) =>
 		normalizeSkillInput(t.skill),
@@ -205,6 +206,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 				agents,
 				ctx: asyncCtx,
 				availableModels,
+				knownModelProviders,
 				cwd: effectiveCwd,
 				maxOutput: params.maxOutput,
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,

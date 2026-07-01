@@ -125,6 +125,7 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			nestedRoute: input.nestedRoute,
 			modelOverride: effectiveModel,
 			availableModels: input.availableModels,
+			knownModelProviders: input.knownModelProviders,
 			currentModel: currentModelFullId(input.ctx.model),
 			preferredModelProvider: input.ctx.model?.provider,
 			skills: behavior.skills === false ? [] : behavior.skills,

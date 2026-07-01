@@ -76,6 +76,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = [...new Set((typeof ctx.modelRegistry.getAll === "function" ? ctx.modelRegistry.getAll() : ctx.modelRegistry.getAvailable()).map((model) => model.provider))];
 	let task = params.task ?? "";
 	let modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
@@ -145,6 +146,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 				agentConfig,
 				ctx: asyncCtx,
 				availableModels,
+				knownModelProviders,
 				cwd: effectiveCwd,
 				maxOutput: params.maxOutput,
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -246,6 +248,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		index: 0,
 		modelOverride,
 		availableModels,
+		knownModelProviders,
 		preferredModelProvider: currentProvider,
 		currentModel: currentModelFullId(ctx.model),
 		skills: effectiveSkills,

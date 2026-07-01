@@ -117,6 +117,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	let templates: ResolvedTemplates = resolveChainTemplates(chainSteps);
 	let tuiBehaviorOverrides: Awaited<ReturnType<typeof resolveChainClarification>>["tuiBehaviorOverrides"];
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = [...new Set((typeof ctx.modelRegistry.getAll === "function" ? ctx.modelRegistry.getAll() : ctx.modelRegistry.getAvailable()).map((model) => model.provider))];
 	const context: ChainRuntimeContext = {
 		params,
 		agents,
@@ -140,6 +141,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		chainSkills,
 		chainDir,
 		availableModels,
+		knownModelProviders,
 		originalTask,
 		chainAgents,
 		chainSteps,

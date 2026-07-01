@@ -1,4 +1,5 @@
 import type { CodexFastModeResolvedSettings, CodexFastModeScope } from "@bastani/atomic";
+import type { ModelAttempt } from "../../shared/types.ts";
 
 export interface RunnerSubagentStep {
 	agent: string;
@@ -13,6 +14,7 @@ export interface RunnerSubagentStep {
 	fastMode?: boolean;
 	modelFastModes?: Record<string, boolean>;
 	modelCandidates?: string[];
+	modelAttempts?: ModelAttempt[];
 	codexFastModeSettings?: CodexFastModeResolvedSettings;
 	codexFastModeScope?: CodexFastModeScope;
 	tools?: string[];

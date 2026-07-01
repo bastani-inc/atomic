@@ -177,6 +177,10 @@ Agents can define ordered `fallbackModels` for retryable provider or model failu
 
 A candidate that cannot serve the current request — for example an HTTP 400/413/422 bad/unprocessable/payload-too-large request, an unsupported tool or parameter, a context-length/context-window overflow, or a `too large` / `invalid_request` error — is treated as request/context incompatible and the chain advances to the next candidate rather than stopping. This means that if none of the configured candidates are applicable to the request, Atomic falls back to the currently selected user model instead of failing outright.
 
+Each foreground and background model candidate is bounded by a per-attempt idle watchdog (default 5 minutes without child stdout, stderr, or JSON child events) and an absolute wall-clock cap (default 60 minutes). If either trips, Atomic terminates that child attempt, records a retryable timeout in `modelAttempts`, and continues to the next fallback candidate. The defaults can be overridden with `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` and `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS`; `ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS` controls SIGTERM-to-SIGKILL escalation.
+
+When registry availability shows that a known candidate provider has no configured auth, Atomic records a skipped model attempt before spawning a child. Unknown/custom providers are still attempted, and the current user-selected model appended as the final fallback is never filtered out by this pre-spawn check.
+
 Fallbacks do not retry ordinary task failures, validation failures, tool failures, cancellations, or workflow-code errors. Because a fallback may send the same prompt and context to a different provider, choose models that match your cost, privacy, and data-handling requirements.
 
 Each candidate can also carry its own reasoning effort — see [Reasoning levels](#reasoning-levels).

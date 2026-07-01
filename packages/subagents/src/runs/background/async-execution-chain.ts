@@ -12,6 +12,7 @@ import type { RunnerStep } from "../shared/parallel-utils.ts";
 import { injectSingleOutputInstruction, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { buildModelCandidates, resolveModelCandidate } from "../shared/model-fallback.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { NESTED_RUNS_DIR, nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { resolveExpectedWorktreeAgentCwd } from "../shared/worktree.ts";
@@ -57,6 +58,7 @@ export function executeAsyncChain(
 	const resultMode = params.resultMode ?? "chain";
 	const chainSkills = params.chainSkills ?? [];
 	const availableModels = params.availableModels;
+	const knownModelProviders = params.knownModelProviders;
 	const fastModeScope = resolveSubagentCodexFastModeScope(workflowStageSubagentGuard);
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
 	const firstStep = chain[0];
@@ -149,9 +151,16 @@ export function executeAsyncChain(
 
 		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
 		const model = applyThinkingSuffix(primaryModel, a.thinking);
-		const modelCandidates = buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel, a.fallbackThinkingLevels)
+		const rawModelCandidates = buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel, a.fallbackThinkingLevels)
 			.map((candidate) => applyThinkingSuffix(candidate, a.thinking))
 			.filter((candidate): candidate is string => typeof candidate === "string");
+		const filteredCandidates = filterSpawnableModelCandidates({
+			candidates: rawModelCandidates,
+			availableModels,
+			knownModelProviders,
+			currentModel: applyThinkingSuffix(ctx.currentModel, a.thinking),
+		});
+		const modelCandidates = filteredCandidates.candidates;
 		const fastModeSettings = getSubagentCodexFastModeSettings(stepCwd);
 		return {
 			agent: s.agent,
@@ -165,6 +174,7 @@ export function executeAsyncChain(
 			thinking: resolveEffectiveThinking(model, a.thinking),
 			...resolveSubagentModelFastModeMetadata({ model, modelCandidates, cwd: stepCwd, settings: fastModeSettings, scope: fastModeScope }),
 			modelCandidates,
+			modelAttempts: filteredCandidates.skippedAttempts,
 			codexFastModeSettings: fastModeSettings,
 			codexFastModeScope: fastModeScope,
 			tools: a.tools,

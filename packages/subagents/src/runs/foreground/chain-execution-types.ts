@@ -109,6 +109,7 @@ export interface ParallelChainRunInput {
 	agents: AgentConfig[];
 	stepIndex: number;
 	availableModels: ModelInfo[];
+	knownModelProviders: string[];
 	chainDir: string;
 	prev: string;
 	originalTask: string;
@@ -179,6 +180,7 @@ export interface ChainRuntimeContext {
 	chainSkills: string[];
 	chainDir: string;
 	availableModels: ModelInfo[];
+	knownModelProviders: string[];
 	originalTask: string;
 	chainAgents: string[];
 	chainSteps: ChainStep[];

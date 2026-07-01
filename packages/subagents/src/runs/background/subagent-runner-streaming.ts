@@ -12,6 +12,7 @@ import {
 	shouldStartSubagentFinalDrain,
 } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
+import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
 import type { ChildEvent, ChildEventContext, RunPiStreamingResult } from "./subagent-runner-types.ts";
 import { emptyUsage } from "./subagent-runner-utils.ts";
 
@@ -163,7 +164,16 @@ export function runPiStreaming(
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
 		const clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
+		const attemptWatchdog = createAttemptWatchdog({
+			child,
+			isSettled: () => settled,
+			onTimeout(message) {
+				forcedTerminationSignal = true;
+				error ??= message;
+			},
+		});
 		child.stdout.on("data", (chunk: Buffer) => {
+			attemptWatchdog.activity();
 			const text = chunk.toString();
 			stdoutBuf += text;
 			const lines = stdoutBuf.split("\n");
@@ -172,6 +182,7 @@ export function runPiStreaming(
 		});
 
 		child.stderr.on("data", (chunk: Buffer) => {
+			attemptWatchdog.activity();
 			processStderrText(chunk.toString());
 		});
 		registerInterrupt?.(() => {
@@ -220,6 +231,7 @@ export function runPiStreaming(
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
 			outputStream.end();
@@ -246,6 +258,7 @@ export function runPiStreaming(
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
