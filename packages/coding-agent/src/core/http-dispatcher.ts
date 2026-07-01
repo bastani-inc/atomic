@@ -30,6 +30,17 @@ export function formatHttpIdleTimeoutMs(timeoutMs: number): string {
 	return `${timeoutMs / 1000} sec`;
 }
 
+export function createHttpDispatcherOptions(timeoutMs: number): ConstructorParameters<typeof undici.EnvHttpProxyAgent>[0] {
+	return {
+		allowH2: false,
+		// Undici defaults to a 10s connect timeout; disable it so slow
+		// policy/proxy CONNECT establishment follows provider retry handling.
+		connectTimeout: 0,
+		bodyTimeout: timeoutMs,
+		headersTimeout: timeoutMs,
+	};
+}
+
 /**
  * Configure the global undici dispatcher used by fetch and SDK HTTP clients.
  *
@@ -47,14 +58,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	}
 
 	undici.setGlobalDispatcher(
-		new undici.EnvHttpProxyAgent({
-			allowH2: false,
-			// Undici defaults to a 10s connect timeout; disable it so slow
-			// policy/proxy CONNECT establishment follows provider retry handling.
-			connectTimeout: 0,
-			bodyTimeout: normalizedTimeoutMs,
-			headersTimeout: normalizedTimeoutMs,
-		}),
+		new undici.EnvHttpProxyAgent(createHttpDispatcherOptions(normalizedTimeoutMs)),
 	);
 
 	// Keep fetch and the dispatcher on the same undici implementation. Some Node
