@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Atomic-side built-in GitHub Copilot model entries for `github-copilot/claude-sonnet-5` and `github-copilot/mai-code-flash-1`, reusing the existing Copilot catalog overlay so their context-window choices continue to follow GitHub's live `/models` metadata.
+
 ## [0.9.4-alpha.6] - 2026-07-01
 
 ### Added

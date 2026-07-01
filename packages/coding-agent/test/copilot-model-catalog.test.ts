@@ -22,6 +22,7 @@ import {
 
 // Minimal CAPI /models fixture mirroring the live shape. Every window is INPUT (prompt) tokens:
 //   gpt-5.5 / claude  -> tiered (default + long_context), different default budgets
+//   Atomic extras      -> same model-agnostic tier parsing as upstream Copilot models
 //   gpt-5.3-codex     -> default tier only, no long_context (single window)
 //   gpt-4o            -> no tiered pricing; window comes from max_prompt_tokens
 //   mystery-model     -> no max_prompt_tokens; window falls back to max_context_window_tokens
@@ -38,6 +39,16 @@ function capiBody() {
 				id: "claude-opus-4.8",
 				capabilities: { limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
 				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
+			},
+			{
+				id: "claude-sonnet-5",
+				capabilities: { limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
+				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
+			},
+			{
+				id: "mai-code-flash-1",
+				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 } },
+				billing: { token_prices: { default: { context_max: 272_000 }, long_context: { context_max: 922_000 } } },
 			},
 			{
 				id: "gpt-5.3-codex",
@@ -125,7 +136,15 @@ describe("resolveCopilotModelContext", () => {
 describe("parseCopilotModelCatalog", () => {
 	test("includes every model with a usable input budget", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual([...catalog.keys()].sort(), ["claude-opus-4.8", "gpt-4o", "gpt-5.3-codex", "gpt-5.5", "mystery-model"]);
+		assert.deepEqual([...catalog.keys()].sort(), [
+			"claude-opus-4.8",
+			"claude-sonnet-5",
+			"gpt-4o",
+			"gpt-5.3-codex",
+			"gpt-5.5",
+			"mai-code-flash-1",
+			"mystery-model",
+		]);
 	});
 
 	test("resolves windows per model: full total long tier with the prompt cap as effective budget", () => {
@@ -139,6 +158,16 @@ describe("parseCopilotModelCatalog", () => {
 			contextWindow: 200_000,
 			contextWindowOptions: [200_000, 1_000_000],
 			maxInputTokens: 936_000,
+		});
+		assert.deepEqual(catalog.get("claude-sonnet-5"), {
+			contextWindow: 200_000,
+			contextWindowOptions: [200_000, 1_000_000],
+			maxInputTokens: 936_000,
+		});
+		assert.deepEqual(catalog.get("mai-code-flash-1"), {
+			contextWindow: 272_000,
+			contextWindowOptions: [272_000, 1_050_000],
+			maxInputTokens: 922_000,
 		});
 		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000 });
 		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000 });
@@ -244,7 +273,7 @@ describe("active catalog overlay", () => {
 	test("set/get/clear round-trips", () => {
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 		setActiveCopilotModelCatalog(parseCopilotModelCatalog(capiBody()));
-		assert.equal(getActiveCopilotModelCatalog().size, 5);
+		assert.equal(getActiveCopilotModelCatalog().size, 7);
 		clearActiveCopilotModelCatalog();
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 	});
@@ -326,7 +355,7 @@ describe("seedActiveCopilotModelCatalogFromCache", () => {
 		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 0);
 		// Far beyond COPILOT_CATALOG_CACHE_TTL_MS: the seed must still apply (validation only).
 		assert.equal(seedActiveCopilotModelCatalogFromCache(token, cachePath, COPILOT_CATALOG_CACHE_TTL_MS * 1_000), true);
-		assert.equal(getActiveCopilotModelCatalog().size, 5);
+		assert.equal(getActiveCopilotModelCatalog().size, 7);
 	});
 
 	test("no-ops without a token, on host mismatch, or with no cache file", () => {

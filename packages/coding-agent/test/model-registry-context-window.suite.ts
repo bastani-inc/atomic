@@ -9,7 +9,6 @@ import {
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
 	const {
@@ -29,6 +28,8 @@ describeModelRegistry((context) => {
 			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000 }],
 			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
 			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
+			["claude-sonnet-5", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
+			["mai-code-flash-1", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000 }],
 			["gpt-4.1", { contextWindow: 200_000 }],
 		]);
 
@@ -56,6 +57,37 @@ describeModelRegistry((context) => {
 			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
 			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
 			expect(gemini31?.maxInputTokens).toBe(936_000);
+		});
+
+		test("includes Atomic-augmented github-copilot models with sane metadata", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+
+			const claudeSonnet5 = registry.find("github-copilot", "claude-sonnet-5");
+			if (!claudeSonnet5) {
+				throw new Error("Missing built-in github-copilot/claude-sonnet-5 model");
+			}
+			expect(claudeSonnet5.provider).toBe("github-copilot");
+			expect(claudeSonnet5.api).toBe("anthropic-messages");
+			expect(claudeSonnet5.reasoning).toBe(true);
+			expect(claudeSonnet5.input).toEqual(["text", "image"]);
+			expect(claudeSonnet5.contextWindow).toBe(200_000);
+			expect(claudeSonnet5.defaultContextWindow).toBe(200_000);
+			expect(claudeSonnet5.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(claudeSonnet5.maxInputTokens).toBe(936_000);
+
+			const maiCodeFlash = registry.find("github-copilot", "mai-code-flash-1");
+			if (!maiCodeFlash) {
+				throw new Error("Missing built-in github-copilot/mai-code-flash-1 model");
+			}
+			expect(maiCodeFlash.provider).toBe("github-copilot");
+			expect(maiCodeFlash.api).toBe("openai-responses");
+			expect(maiCodeFlash.reasoning).toBe(true);
+			expect(maiCodeFlash.input).toEqual(["text", "image"]);
+			expect(maiCodeFlash.contextWindow).toBe(272_000);
+			expect(maiCodeFlash.defaultContextWindow).toBe(272_000);
+			expect(maiCodeFlash.contextWindowOptions).toEqual([272_000, 1_050_000]);
+			expect(maiCodeFlash.maxInputTokens).toBe(922_000);
 		});
 
 		test("overrides contextWindow (input tokens) without options for single-window catalog models", () => {
