@@ -2,10 +2,6 @@
 
 ## [Unreleased]
 
-### Synced with upstream Pi v0.80.3
-
-Atomic is a fork of Pi. This release syncs Atomic's `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` runtime dependencies from `^0.80.2` to `^0.80.3` and ports the relevant coding-agent changes, while preserving Atomic branding, package names, the versionless-`main` release convention, bundled first-party extensions, and user-facing Atomic docs.
-
 ### Added
 
 - Added `get_entries` and `get_tree` RPC commands for reading session entries and tree snapshots over RPC, with corresponding `RpcClient.getEntries`/`getTree` helpers and response types (inherited from upstream Pi [#6078](https://github.com/earendil-works/pi/pull/6078)).
@@ -18,8 +14,11 @@ Atomic is a fork of Pi. This release syncs Atomic's `@earendil-works/pi-agent-co
 
 ### Changed
 
+- Synced Atomic's `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` runtime dependencies from `^0.80.2` to `^0.80.3` and ported the relevant coding-agent changes while preserving Atomic branding, package names, the versionless-`main` release convention, bundled first-party extensions, and user-facing Atomic docs.
 - Bumped `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` from `^0.80.2` to `^0.80.3` across `@bastani/atomic` and all bundled first-party extensions, and regenerated `bun.lock`, `package-lock.json`, and `npm-shrinkwrap.json`.
 - Changed the default OpenAI model to `gpt-5.5` (inherited from upstream Pi). The Atomic-specific `github-copilot` default remains `gpt-5.4`.
+- Deferred the shared `isRetryableAssistantError` retry classifier because Atomic's `_isRetryableError` carries Atomic-specific Copilot Gemini handling (`content_filter`/`finish_reason: error` for CAPI-mapped MALFORMED_FUNCTION_CALL); adopting it safely requires merging Atomic's extra patterns back in during a follow-up sync.
+- Deferred the interactive status-indicator stabilization refactor (Loader → StatusIndicator classes) because it is a large TUI refactor that needs visual QA.
 
 ### Fixed
 
@@ -36,10 +35,6 @@ Atomic is a fork of Pi. This release syncs Atomic's `@earendil-works/pi-agent-co
 - Fixed disk BMP image files to be detected, converted to PNG, and attached through `read` and CLI `@file` inputs (inherited from upstream Pi [#6047](https://github.com/earendil-works/pi/issues/6047)).
 - Fixed a crash when undici emits an internal client error while terminating a mid-stream HTTP response, by attaching error-suppressing listeners to the global dispatcher and per-origin pools (inherited from upstream Pi [#6133](https://github.com/earendil-works/pi/issues/6133)).
 
-### Notes
-
-- The shared `isRetryableAssistantError` retry classifier is intentionally deferred. Atomic's `_isRetryableError` (`agent-session-retry.ts`) carries Atomic-specific Copilot Gemini handling (`content_filter`/`finish_reason: error` for CAPI-mapped MALFORMED_FUNCTION_CALL) that the shared pi-ai helper does not cover; replacing it wholesale would regress those code paths. Adopting the shared helper requires merging Atomic's extra patterns back in and will be evaluated for a follow-up sync.
-- The interactive status-indicator stabilization refactor (Loader → StatusIndicator classes) is deferred; it is a large TUI refactor that needs visual QA.
 ## [0.9.4-alpha.5] - 2026-07-01
 
 ### Fixed
