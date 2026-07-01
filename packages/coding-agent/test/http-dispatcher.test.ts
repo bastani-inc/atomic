@@ -3,11 +3,14 @@ import { createHttpDispatcherOptions } from "../src/core/http-dispatcher.ts";
 
 describe("createHttpDispatcherOptions", () => {
 	it("disables undici's default fixed connect timeout", () => {
-		expect(createHttpDispatcherOptions(123_456)).toEqual({
-			allowH2: false,
-			connectTimeout: 0,
-			bodyTimeout: 123_456,
-			headersTimeout: 123_456,
-		});
+		const options = createHttpDispatcherOptions(123_456);
+		expect(options.allowH2).toBe(false);
+		expect(options.connectTimeout).toBe(0);
+		expect(options.bodyTimeout).toBe(123_456);
+		expect(options.headersTimeout).toBe(123_456);
+		// v0.80.3: attach undici error-suppressing factories so mid-stream
+		// client errors do not crash the process.
+		expect(typeof options.clientFactory).toBe("function");
+		expect(typeof options.factory).toBe("function");
 	});
 });

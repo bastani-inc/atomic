@@ -96,6 +96,7 @@ InteractiveModeBase.prototype.toggleThinkingBlockVisibility = function(this: Int
 InteractiveModeBase.prototype.openExternalEditor = function(this: InteractiveModeBase): void {
     const currentText = this.editor.getExpandedText?.() ?? this.editor.getText();
     const updated = openExternalEditorForText(currentText, this.ui, {
+      editorCommand: this.settingsManager.getExternalEditorCommand(),
       showWarning: (message) => this.showWarning(message),
     });
     if (updated !== undefined) this.editor.setText(updated);

@@ -10,6 +10,7 @@ import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { ContextCompactionResult } from "../../core/compaction/index.ts";
+import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
 	RpcCommand,
@@ -77,9 +78,7 @@ export class RpcClient {
 		this.options = options;
 	}
 
-	/**
-	 * Start the RPC agent process.
-	 */
+	/** Start the RPC agent process. */
 	async start(): Promise<void> {
 		if (this.process) {
 			throw new Error("Client already started");
@@ -142,9 +141,7 @@ export class RpcClient {
 		}
 	}
 
-	/**
-	 * Stop the RPC agent process.
-	 */
+	/** Stop the RPC agent process. */
 	async stop(): Promise<void> {
 		if (!this.process) return;
 
@@ -169,9 +166,7 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
-	/**
-	 * Subscribe to agent events.
-	 */
+	/** Subscribe to agent events. */
 	onEvent(listener: RpcEventListener): () => void {
 		this.eventListeners.push(listener);
 		return () => {
@@ -182,9 +177,7 @@ export class RpcClient {
 		};
 	}
 
-	/**
-	 * Get collected stderr output (useful for debugging).
-	 */
+	/** Get collected stderr output (useful for debugging). */
 	getStderr(): string {
 		return this.stderr;
 	}
@@ -202,23 +195,17 @@ export class RpcClient {
 		await this.send({ type: "prompt", message, images });
 	}
 
-	/**
-	 * Queue a steering message to interrupt the agent mid-run.
-	 */
+	/** Queue a steering message to interrupt the agent mid-run. */
 	async steer(message: string, images?: ImageContent[]): Promise<void> {
 		await this.send({ type: "steer", message, images });
 	}
 
-	/**
-	 * Queue a follow-up message to be processed after the agent finishes.
-	 */
+	/** Queue a follow-up message to be processed after the agent finishes. */
 	async followUp(message: string, images?: ImageContent[]): Promise<void> {
 		await this.send({ type: "follow_up", message, images });
 	}
 
-	/**
-	 * Abort current operation.
-	 */
+	/** Abort current operation. */
 	async abort(): Promise<void> {
 		await this.send({ type: "abort" });
 	}
@@ -233,25 +220,19 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	/**
-	 * Get current session state.
-	 */
+	/** Get current session state. */
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
 		return this.getData(response);
 	}
 
-	/**
-	 * Set model by provider and ID.
-	 */
+	/** Set model by provider and ID. */
 	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
 		const response = await this.send({ type: "set_model", provider, modelId });
 		return this.getData(response);
 	}
 
-	/**
-	 * Cycle to next model.
-	 */
+	/** Cycle to next model. */
 	async cycleModel(): Promise<{
 		model: { provider: string; id: string };
 		thinkingLevel: ThinkingLevel;
@@ -261,24 +242,18 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
-	/**
-	 * Get list of available models.
-	 */
+	/** Get list of available models. */
 	async getAvailableModels(): Promise<ModelInfo[]> {
 		const response = await this.send({ type: "get_available_models" });
 		return this.getData<{ models: ModelInfo[] }>(response).models;
 	}
 
-	/**
-	 * Set thinking level.
-	 */
+	/** Set thinking level. */
 	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
 		await this.send({ type: "set_thinking_level", level });
 	}
 
-	/**
-	 * Cycle thinking level.
-	 */
+	/** Cycle thinking level. */
 	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
 		const response = await this.send({ type: "cycle_thinking_level" });
 		return this.getData(response);
@@ -293,31 +268,23 @@ export class RpcClient {
 		this.assertSuccess(response);
 	}
 
-	/**
-	 * Get selectable context-window token budgets for the current model.
-	 */
+	/** Get selectable context-window token budgets for the current model. */
 	async getAvailableContextWindows(): Promise<RpcContextWindowInfo> {
 		const response = await this.send({ type: "get_available_context_windows" });
 		return this.getData(response);
 	}
 
-	/**
-	 * Set steering mode.
-	 */
+	/** Set steering mode. */
 	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.send({ type: "set_steering_mode", mode });
 	}
 
-	/**
-	 * Set follow-up mode.
-	 */
+	/** Set follow-up mode. */
 	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
 		await this.send({ type: "set_follow_up_mode", mode });
 	}
 
-	/**
-	 * Compact session context with deletion-only verbatim context compaction.
-	 */
+	/** Compact session context with deletion-only verbatim context compaction. */
 	async compact(): Promise<ContextCompactionResult> {
 		const response = await this.send({ type: "compact" });
 		return this.getData(response);
@@ -367,6 +334,18 @@ export class RpcClient {
 	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
 		const response = await this.send({ type: "get_fork_messages" });
 		return this.getData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
+	}
+
+	/** Session entries in append order, optionally only those after the `since` entry id. */
+	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
+		const response = await this.send({ type: "get_entries", since });
+		return this.getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
+	}
+
+	/** The session entry tree. */
+	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
+		const response = await this.send({ type: "get_tree" });
+		return this.getData<{ tree: SessionTreeNode[]; leafId: string | null }>(response);
 	}
 	async getLastAssistantText(): Promise<string | null> {
 		const response = await this.send({ type: "get_last_assistant_text" });

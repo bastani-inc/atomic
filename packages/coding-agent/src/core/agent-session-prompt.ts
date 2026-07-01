@@ -163,10 +163,12 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 			}
 		}
 		// Apply extension-modified system prompt, or reset to base
-		if (result?.systemPrompt) {
+		if (result?.systemPrompt !== undefined) {
+			this._systemPromptOverride = result.systemPrompt;
 			this.agent.state.systemPrompt = result.systemPrompt;
 		} else {
 			// Ensure we're using the base prompt (in case previous turn had modifications)
+			this._systemPromptOverride = undefined;
 			this.agent.state.systemPrompt = this._baseSystemPrompt;
 		}
 	} catch (error) {
@@ -180,9 +182,13 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 
 
 export async function _runAgentPrompt(this: AgentSession, messages: AgentMessage | AgentMessage[]): Promise<void> {
-	await this.agent.prompt(messages);
-	await this.waitForRetry();
-	await this._continueQueuedAgentMessages();
+	try {
+		await this.agent.prompt(messages);
+		await this.waitForRetry();
+		await this._continueQueuedAgentMessages();
+	} finally {
+		this._systemPromptOverride = undefined;
+	}
 }
 
 export async function _runAgentContinue(this: AgentSession): Promise<void> {

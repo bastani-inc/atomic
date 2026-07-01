@@ -32,6 +32,13 @@ export interface SessionStartEvent {
 	previousSessionFile?: string;
 }
 
+/** Fired when the current session metadata changes. */
+export interface SessionInfoChangedEvent {
+	type: "session_info_changed";
+	/** Current normalized session name. Undefined when the name is cleared. */
+	name: string | undefined;
+}
+
 /** Fired before switching to another session (can be cancelled) */
 export interface SessionBeforeSwitchEvent {
 	type: "session_before_switch";
@@ -107,6 +114,7 @@ export interface SessionTreeEvent {
 
 export type SessionEvent =
 	| SessionStartEvent
+	| SessionInfoChangedEvent
 	| SessionBeforeSwitchEvent
 	| SessionBeforeForkEvent
 	| SessionBeforeCompactEvent

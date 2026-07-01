@@ -100,7 +100,6 @@ export function validateSessionIdFlags(parsed: Args): void {
 		parsed.session ? "--session" : undefined,
 		parsed.continue ? "--continue" : undefined,
 		parsed.resume ? "--resume" : undefined,
-		parsed.noSession ? "--no-session" : undefined,
 	].filter((flag): flag is string => flag !== undefined);
 
 	if (conflictingFlags.length > 0) {
@@ -116,10 +115,19 @@ export function validateSessionIdFlags(parsed: Args): void {
 		process.exit(1);
 	}
 }
-
 function forkSessionOrExit(sourcePath: string, cwd: string, sessionDir?: string, sessionId?: string): SessionManager {
 	try {
 		return SessionManager.forkFrom(sourcePath, cwd, sessionDir, { id: sessionId });
+	} catch (error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(chalk.red(`Error: ${message}`));
+		process.exit(1);
+	}
+}
+
+function openSessionOrExit(path: string, sessionDir?: string): SessionManager {
+	try {
+		return SessionManager.open(path, sessionDir);
 	} catch (error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.error(chalk.red(`Error: ${message}`));
@@ -134,7 +142,7 @@ export async function createSessionManager(
 	settingsManager: SettingsManager,
 ): Promise<SessionManager> {
 	if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
-		return SessionManager.inMemory(cwd);
+		return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
 	}
 
 	if (parsed.fork) {
@@ -166,7 +174,7 @@ export async function createSessionManager(
 		switch (resolved.type) {
 			case "path":
 			case "local":
-				return SessionManager.open(resolved.path, sessionDir);
+				return openSessionOrExit(resolved.path, sessionDir);
 
 			case "global": {
 				console.log(chalk.yellow(`Session found in different project: ${resolved.cwd}`));
@@ -195,7 +203,7 @@ export async function createSessionManager(
 				console.log(chalk.dim("No session selected"));
 				process.exit(0);
 			}
-			return SessionManager.open(selectedPath, sessionDir);
+			return openSessionOrExit(selectedPath, sessionDir);
 		} finally {
 			stopThemeWatcher();
 		}
@@ -208,7 +216,7 @@ export async function createSessionManager(
 	if (parsed.sessionId) {
 		const existingSession = await findLocalSessionByExactId(parsed.sessionId, cwd, sessionDir);
 		if (existingSession) {
-			return SessionManager.open(existingSession.path, sessionDir);
+			return openSessionOrExit(existingSession.path, sessionDir);
 		}
 	}
 

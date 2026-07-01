@@ -175,6 +175,7 @@ InteractiveModeBase.prototype.createExtensionUIContext = function(this: Interact
         toolOutputExpanded: this.toolOutputExpanded,
         showImages: this.settingsManager.getShowImages(),
         imageWidthCells: this.settingsManager.getImageWidthCells(),
+        outputPad: this.outputPad,
         getToolDefinition: (toolName: string) =>
           this.getRegisteredToolDefinition(toolName),
         getCustomMessageRenderer: (customType: string) =>

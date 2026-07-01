@@ -1,3 +1,4 @@
+import type { PrepareNextTurnContext } from "@earendil-works/pi-agent-core";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { redirectOversizedToolResult } from "./tools/oversized-tool-result.js";
 
@@ -69,12 +70,35 @@ export function _installAgentToolHooks(this: AgentSession): void {
 	};
 }
 
-// =========================================================================
-// Event Subscription
-// =========================================================================
+/**
+ * Install a prepareNextTurnWithContext hook so that extension tool changes
+ * (e.g. setActiveTools) and before_agent_start systemPrompt overrides are
+ * applied to the next provider request within the same run.
+ */
+export function _installAgentNextTurnRefresh(this: AgentSession): void {
+	const previousPrepareNextTurnWithContext =
+		this.agent.prepareNextTurnWithContext ??
+		(this.agent.prepareNextTurn
+			? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
+			: undefined);
+	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
+		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
+		const previousContext = previousSnapshot?.context ?? turn.context;
 
-/** Emit an event to all listeners */
+		return {
+			...previousSnapshot,
+			context: {
+				...previousContext,
+				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
+				tools: this.agent.state.tools.slice(),
+			},
+			model: this.agent.state.model,
+			thinkingLevel: this.agent.state.thinkingLevel,
+		};
+	};
+}
 
 export const agentSessionToolHooksMethods = {
 	_installAgentToolHooks,
+	_installAgentNextTurnRefresh,
 };

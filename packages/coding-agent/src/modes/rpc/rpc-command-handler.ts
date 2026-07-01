@@ -226,6 +226,27 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "get_fork_messages", { messages });
 			}
 
+			case "get_entries": {
+				const sessionManager = session.sessionManager;
+				let entries = sessionManager.getEntries();
+				if (command.since !== undefined) {
+					const sinceIndex = entries.findIndex((e) => e.id === command.since);
+					if (sinceIndex === -1) {
+						return createRpcErrorResponse(id, "get_entries", `Entry not found: ${command.since}`);
+					}
+					entries = entries.slice(sinceIndex + 1);
+				}
+				return createRpcSuccessResponse(id, "get_entries", { entries, leafId: sessionManager.getLeafId() });
+			}
+
+			case "get_tree": {
+				const sessionManager = session.sessionManager;
+				return createRpcSuccessResponse(id, "get_tree", {
+					tree: sessionManager.getTree(),
+					leafId: sessionManager.getLeafId(),
+				});
+			}
+
 			case "get_last_assistant_text": {
 				const text = session.getLastAssistantText();
 				return createRpcSuccessResponse(id, "get_last_assistant_text", { text });

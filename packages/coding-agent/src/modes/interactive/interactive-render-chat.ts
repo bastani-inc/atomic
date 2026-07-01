@@ -38,6 +38,7 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: Interact
       toolOutputExpanded: this.toolOutputExpanded,
       showImages: this.settingsManager.getShowImages(),
       imageWidthCells: this.settingsManager.getImageWidthCells(),
+      outputPad: this.outputPad,
       getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
       getCustomMessageRenderer: (customType) =>
         this.session.extensionRunner.getMessageRenderer(customType),
@@ -127,6 +128,7 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
               const userComponent = new UserMessageComponent(
                 skillBlock.userMessage,
                 this.getMarkdownThemeWithSettings(),
+                this.outputPad,
               );
               this.chatContainer.addChild(userComponent);
             }
@@ -134,6 +136,7 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
             const userComponent = new UserMessageComponent(
               textContent,
               this.getMarkdownThemeWithSettings(),
+              this.outputPad,
             );
             this.chatContainer.addChild(userComponent);
           }
@@ -149,6 +152,7 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
           this.hideThinkingBlock,
           this.getMarkdownThemeWithSettings(),
           this.hiddenThinkingLabel,
+          this.outputPad,
         );
         this.chatContainer.addChild(assistantComponent);
         break;

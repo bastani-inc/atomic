@@ -97,6 +97,7 @@ InteractiveModeBase.prototype.applyRuntimeSettings = function(this: InteractiveM
     this.usageMeter.setAutoCompactEnabled(this.session.autoCompactionEnabled);
     this.footerDataProvider.setCwd(this.sessionManager.getCwd());
     this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+    this.outputPad = this.settingsManager.getOutputPad();
     this.ui.setShowHardwareCursor(this.settingsManager.getShowHardwareCursor());
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
     const editorPaddingX = this.settingsManager.getEditorPaddingX();

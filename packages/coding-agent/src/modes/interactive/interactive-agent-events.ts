@@ -100,6 +100,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
             this.hideThinkingBlock,
             this.getMarkdownThemeWithSettings(),
             this.hiddenThinkingLabel,
+            this.outputPad,
           );
           this.streamingMessage = event.message;
           this.chatContainer.addChild(this.streamingComponent);

@@ -4,7 +4,7 @@ import { isLocalPath } from "../utils/paths.ts";
 import { clearExtensionCache, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
-import { startTimingSpan, endTimingSpan } from "./timings.ts";
+import { resetTimings, startTimingSpan, endTimingSpan } from "./timings.ts";
 import { loadProjectContextFiles, resolvePromptInput } from "./resource-loader-context-files.ts";
 import { discoverAppendSystemPromptFile, discoverSystemPromptFile } from "./resource-loader-discovery.ts";
 import { loadExtensionFactories, loadFinalExtensionSet } from "./resource-loader-extensions.ts";
@@ -124,6 +124,7 @@ export async function reloadDefaultResourceLoader(
 	options?: ResourceLoaderReloadOptions,
 ): Promise<void> {
 	const state = resourceInternals(loader);
+	resetTimings("extensions");
 	if (state.loaded) {
 		clearExtensionCache();
 	}

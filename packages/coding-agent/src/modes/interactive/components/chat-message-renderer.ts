@@ -24,8 +24,7 @@ export type ChatMessageEntry =
 export interface ChatMessageRenderOptions {
   ui: Pick<TUI, "requestRender">; cwd: string; markdownTheme?: MarkdownTheme;
   hideThinkingBlock?: boolean; hiddenThinkingLabel?: string; toolOutputExpanded?: boolean;
-  showImages?: boolean; imageWidthCells?: number;
-  getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
+  showImages?: boolean; imageWidthCells?: number; outputPad?: number; getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
   getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 }
 export function chatEntriesFromAgentMessages(
@@ -410,6 +409,7 @@ export function renderChatMessageEntry(
         options.hideThinkingBlock ?? false,
         markdownTheme,
         options.hiddenThinkingLabel ?? "Thinking...",
+        options.outputPad ?? 1,
       );
     case "tool": {
       const component = new ToolExecutionComponent(
@@ -448,7 +448,7 @@ export function renderChatMessageEntry(
       return component;
     }
     case "user":
-      return userMessageComponent(messageEntry.text, markdownTheme, options.toolOutputExpanded ?? false);
+      return userMessageComponent(messageEntry.text, markdownTheme, options.toolOutputExpanded ?? false, options.outputPad ?? 1);
     case "custom": {
       const component = new CustomMessageComponent(
         messageEntry.message,
@@ -467,15 +467,15 @@ export function renderChatMessageEntry(
       return new Text(theme.fg("dim", messageEntry.text), 1, 0);
   }
 }
-function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expanded: boolean): Component {
+function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expanded: boolean, outputPad = 1): Component {
   const skillBlock = parseSkillBlock(text);
-  if (!skillBlock) return new UserMessageComponent(text, markdownTheme);
+  if (!skillBlock) return new UserMessageComponent(text, markdownTheme, outputPad);
   const container = new Container();
   const skillComponent = new SkillInvocationMessageComponent(skillBlock, markdownTheme);
   skillComponent.setExpanded(expanded);
   container.addChild(skillComponent);
   if (skillBlock.userMessage) {
-    container.addChild(new UserMessageComponent(skillBlock.userMessage, markdownTheme));
+    container.addChild(new UserMessageComponent(skillBlock.userMessage, markdownTheme, outputPad));
   }
   return container;
 }

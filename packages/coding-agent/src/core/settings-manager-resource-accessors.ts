@@ -4,6 +4,7 @@ import type { DefaultProjectTrust, PackageSource, ThinkingBudgetsSettings } from
 
 interface SettingsManagerResourceAccessors {
 	getHideThinkingBlock(): boolean;
+	getExternalEditorCommand(): string | undefined;
 	setHideThinkingBlock(hide: boolean): void;
 	getShellPath(): string | undefined;
 	setShellPath(path: string | undefined): void;
@@ -50,6 +51,18 @@ declare module "./settings-manager-core.ts" {
 const resourceAccessors: SettingsManagerResourceAccessors = {
 	getHideThinkingBlock() {
 		return settingsInternals(this).settings.hideThinkingBlock ?? false;
+	},
+
+	getExternalEditorCommand() {
+		const configuredEditor = settingsInternals(this).settings.externalEditor;
+		if (typeof configuredEditor === "string" && configuredEditor.trim() !== "") {
+			return configuredEditor;
+		}
+		const environmentEditor = process.env.VISUAL || process.env.EDITOR;
+		if (environmentEditor) {
+			return environmentEditor;
+		}
+		return process.platform === "win32" ? "notepad" : "nano";
 	},
 
 	setHideThinkingBlock(hide) {

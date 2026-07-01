@@ -6,61 +6,90 @@
 import { ENV_TIMING, getEnvValue } from "../config.ts";
 
 const ENABLED = getEnvValue(ENV_TIMING) === "1";
-const timings: Array<{ label: string; ms: number }> = [];
-let lastTime = Date.now();
-let resetTime = lastTime;
+
+interface TimingNamespace {
+	timings: Array<{ label: string; ms: number }>;
+	lastTime: number;
+	resetTime: number;
+}
+
+export type TimingLabel = "main" | "extensions";
+
+const timingNamespaces = new Map<TimingLabel, TimingNamespace>();
 
 export interface TimingSpan {
 	label: string;
 	start: number;
+	namespace: TimingLabel;
 }
 
 export function isTimingEnabled(): boolean {
 	return ENABLED;
 }
 
-export function resetTimings(): void {
-	if (!ENABLED) return;
-	timings.length = 0;
-	lastTime = Date.now();
-	resetTime = lastTime;
+function ensureNamespace(namespace: TimingLabel): TimingNamespace {
+	let entry = timingNamespaces.get(namespace);
+	if (!entry) {
+		const now = Date.now();
+		entry = { timings: [], lastTime: now, resetTime: now };
+		timingNamespaces.set(namespace, entry);
+	}
+	return entry;
 }
 
-export function time(label: string): void {
+export function resetTimings(namespace: TimingLabel = "main"): void {
 	if (!ENABLED) return;
 	const now = Date.now();
-	timings.push({ label, ms: now - lastTime });
-	lastTime = now;
+	timingNamespaces.set(namespace, { timings: [], lastTime: now, resetTime: now });
 }
 
-export function startTimingSpan(label: string): TimingSpan | null {
+export function time(label: string, namespace: TimingLabel = "main"): void {
+	if (!ENABLED) return;
+	const now = Date.now();
+	const timingNamespace = ensureNamespace(namespace);
+	timingNamespace.timings.push({ label, ms: now - timingNamespace.lastTime });
+	timingNamespace.lastTime = now;
+}
+
+export function startTimingSpan(label: string, namespace: TimingLabel = "main"): TimingSpan | null {
 	if (!ENABLED) return null;
-	return { label, start: Date.now() };
+	return { label, start: Date.now(), namespace };
 }
 
 export function endTimingSpan(span: TimingSpan | null): void {
 	if (!ENABLED || !span) return;
 	const now = Date.now();
-	timings.push({ label: span.label, ms: now - span.start });
-	lastTime = now;
+	const timingNamespace = ensureNamespace(span.namespace);
+	timingNamespace.timings.push({ label: span.label, ms: now - span.start });
+	timingNamespace.lastTime = now;
 }
 
-export function recordTiming(label: string, ms: number): void {
+export function recordTiming(label: string, ms: number, namespace: TimingLabel = "main"): void {
 	if (!ENABLED) return;
-	timings.push({ label, ms });
+	const timingNamespace = ensureNamespace(namespace);
+	timingNamespace.timings.push({ label, ms });
 }
 
-export function recordTimeSinceReset(label: string): void {
+export function recordTimeSinceReset(label: string, namespace: TimingLabel = "main"): void {
 	if (!ENABLED) return;
-	timings.push({ label, ms: Date.now() - resetTime });
+	const timingNamespace = ensureNamespace(namespace);
+	timingNamespace.timings.push({ label, ms: Date.now() - timingNamespace.resetTime });
+}
+
+function printTimingGroup(title: string, namespace: TimingNamespace): void {
+	const printableTimings = namespace.timings.filter((timing) => timing.ms >= 0);
+	if (printableTimings.length === 0) return;
+	console.error(`\n--- ${title} ---`);
+	for (const t of printableTimings) {
+		console.error(`  ${t.label}: ${t.ms}ms`);
+	}
+	console.error(`  TOTAL initialization time: ${Date.now() - namespace.resetTime}ms`);
+	console.error(`${"-".repeat(title.length + 8)}\n`);
 }
 
 export function printTimings(): void {
-	if (!ENABLED || timings.length === 0) return;
-	console.error("\n--- Startup Timings ---");
-	for (const t of timings) {
-		console.error(`  ${t.label}: ${t.ms}ms`);
+	if (!ENABLED) return;
+	for (const [namespace, timingNamespace] of timingNamespaces) {
+		printTimingGroup(`Startup Timings: ${namespace}`, timingNamespace);
 	}
-	console.error(`  TOTAL initialization time: ${Date.now() - resetTime}ms`);
-	console.error("------------------------\n");
 }

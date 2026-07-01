@@ -161,6 +161,7 @@ export class InteractiveModeBase {
 
   // Thinking block visibility state
   hideThinkingBlock = false;
+  outputPad: 0 | 1 = 1;
 
 
 
@@ -369,6 +370,7 @@ export class InteractiveModeBase {
 
     // Load hide thinking block setting
     this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
+    this.outputPad = this.settingsManager.getOutputPad();
 
     // Register themes from resource loader and initialize
     setRegisteredThemes(this.session.resourceLoader.getThemes().themes);

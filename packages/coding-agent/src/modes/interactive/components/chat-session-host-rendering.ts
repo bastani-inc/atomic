@@ -217,6 +217,7 @@ function chatRenderSettingsCacheKey<TExtraEntry extends ChatTranscriptEntryLike>
     inherited?.toolOutputExpanded === true,
     inherited?.showImages !== false,
     inherited?.imageWidthCells ?? null,
+    inherited?.outputPad ?? null,
     state.getCwd?.() ?? state.getAgentSession?.()?.sessionManager.getCwd() ?? process.cwd(),
     state.bodyViewport.getScrollFromBottom() === 0,
     isChatSessionStreaming(state),

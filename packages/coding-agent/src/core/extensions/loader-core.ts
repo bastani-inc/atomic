@@ -51,7 +51,7 @@ async function loadExtension(
   const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
   try {
-    const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`);
+    const moduleSpan = startTimingSpan(`loadExtensions.${extensionPath}.module`, "extensions");
     const factory = await loadExtensionModule(resolvedPath, cacheToken);
     endTimingSpan(moduleSpan);
     if (!factory) {
@@ -70,7 +70,7 @@ async function loadExtension(
       workflowResourceProvider,
       resourceLoaderInheritanceSnapshotProvider,
     );
-    const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`);
+    const factorySpan = startTimingSpan(`loadExtensions.${extensionPath}.factory`, "extensions");
     await factory(api);
     endTimingSpan(factorySpan);
 
@@ -127,7 +127,7 @@ async function loadExtensionsInternal(
   const resolvedRuntime = runtime ?? createExtensionRuntime();
 
   for (const extPath of paths) {
-    const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`);
+    const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`, "extensions");
     const { extension, error } = await loadExtension(
       extPath,
       resolvedCwd,

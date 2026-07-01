@@ -26,6 +26,8 @@ interface SettingsManagerUiAccessors {
 	setShowHardwareCursor(enabled: boolean): void;
 	getEditorPaddingX(): number;
 	setEditorPaddingX(padding: number): void;
+	getOutputPad(): 0 | 1;
+	setOutputPad(padding: 0 | 1): void;
 	getAutocompleteMaxVisible(): number;
 	setAutocompleteMaxVisible(maxVisible: number): void;
 	getCodeBlockIndent(): string;
@@ -187,6 +189,17 @@ const uiAccessors: SettingsManagerUiAccessors = {
 		const state = settingsInternals(this);
 		state.globalSettings.editorPaddingX = Math.max(0, Math.min(3, Math.floor(padding)));
 		state.markModified("editorPaddingX");
+		state.save();
+	},
+
+	getOutputPad() {
+		return settingsInternals(this).settings.outputPad === 0 ? 0 : 1;
+	},
+
+	setOutputPad(padding) {
+		const state = settingsInternals(this);
+		state.globalSettings.outputPad = padding;
+		state.markModified("outputPad");
 		state.save();
 	},
 

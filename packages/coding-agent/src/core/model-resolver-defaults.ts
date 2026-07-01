@@ -4,7 +4,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 export const defaultModelPerProvider: Record<string, string> = {
   "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
   anthropic: "claude-opus-4-8",
-  openai: "gpt-5.4",
+  openai: "gpt-5.5",
   "azure-openai-responses": "gpt-5.4",
   "openai-codex": "gpt-5.5",
   deepseek: "deepseek-v4-pro",

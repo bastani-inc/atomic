@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Synced with upstream Pi v0.80.3
+
+Atomic is a fork of Pi. This release syncs Atomic's `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` runtime dependencies from `^0.80.2` to `^0.80.3` and ports the relevant coding-agent changes, while preserving Atomic branding, package names, the versionless-`main` release convention, bundled first-party extensions, and user-facing Atomic docs.
+
+### Added
+
+- Added `get_entries` and `get_tree` RPC commands for reading session entries and tree snapshots over RPC, with corresponding `RpcClient.getEntries`/`getTree` helpers and response types (inherited from upstream Pi [#6078](https://github.com/earendil-works/pi/pull/6078)).
+- Added a package `./rpc-entry` export and `src/rpc-entry.ts` entrypoint for launching Atomic directly in RPC mode (inherited from upstream Pi).
+- Added `session_info_changed` as an extension event so extensions can observe session name changes, wired through `AgentSession.setSessionName` to the extension runner (inherited from upstream Pi [#6175](https://github.com/earendil-works/pi/pull/6175)).
+- Added an `externalEditor` settings.json override for Ctrl+G external editor commands, with default fallbacks to Notepad on Windows and `nano` elsewhere (inherited from upstream Pi [#6122](https://github.com/earendil-works/pi/issues/6122)).
+- Added an `outputPad` setting (`0 | 1`, default `1`) controlling horizontal padding for user messages, assistant messages, and thinking blocks (inherited from upstream Pi [#6168](https://github.com/earendil-works/pi/issues/6168)).
+- Added BMP image detection and shared `processImage`/`convertImageBytesToPng` helpers so unsupported image formats are normalized (converted to PNG) before inlining (inherited from upstream Pi [#6047](https://github.com/earendil-works/pi/issues/6047)).
+- Added `resetTimings`/`time` timing namespaces so extension load timings are recorded and reset separately from main startup timings (inherited from upstream Pi [#6030](https://github.com/earendil-works/pi/pull/6030), [#6063](https://github.com/earendil-works/pi/pull/6063)).
+
+### Changed
+
+- Bumped `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` from `^0.80.2` to `^0.80.3` across `@bastani/atomic` and all bundled first-party extensions, and regenerated `bun.lock`, `package-lock.json`, and `npm-shrinkwrap.json`.
+- Changed the default OpenAI model to `gpt-5.5` (inherited from upstream Pi). The Atomic-specific `github-copilot` default remains `gpt-5.4`.
+
+### Fixed
+
+- Fixed extension `setActiveTools` changes to apply before the next provider request in the same run, by installing a `prepareNextTurnWithContext` hook that refreshes system prompt and tools (inherited from upstream Pi [#6162](https://github.com/earendil-works/pi/issues/6162)).
+- Fixed `before_agent_start` system prompt overrides to survive when extension tool changes occur mid-run (inherited from upstream Pi [#6162](https://github.com/earendil-works/pi/issues/6162)).
+- Fixed invalid session file errors at CLI entry to print a clean red error message instead of a stack trace, via `openSessionOrExit` wrappers around `SessionManager.open` call sites (inherited from upstream Pi [#6002](https://github.com/earendil-works/pi/issues/6002)).
+- Fixed resumed/transcript chat rendering to respect the `outputPad` setting for user and assistant messages rendered through `renderChatMessageEntry` and the chat-session-host render path (inherited from upstream Pi [#6168](https://github.com/earendil-works/pi/issues/6168)).
+- Fixed the dedicated `rpc-entry` to use Atomic's APP_NAME-based env marker (`ATOMIC_CODING_AGENT`) instead of the upstream `PI_CODING_AGENT`, and to force `--mode rpc` as the last CLI argument so a caller-supplied `--mode` cannot override it.
+- Fixed pre-prompt compaction to stop after compaction instead of continuing immediately (already present in Atomic; documented for parity with upstream Pi [#6074](https://github.com/earendil-works/pi/pull/6074)).
+- Fixed `--session` and `SessionManager` to reject non-empty invalid session files without overwriting them (inherited from upstream Pi [#6002](https://github.com/earendil-works/pi/issues/6002)).
+- Fixed user-message transcript rendering to keep visible backslashes in Markdown escape sequences such as `\"` (inherited from upstream Pi [#6105](https://github.com/earendil-works/pi/issues/6105)).
+- Fixed assistant messages stopped by output length to show a visible incomplete-response error (inherited from upstream Pi [#4290](https://github.com/earendil-works/pi/issues/4290)).
+- Fixed `--no-session --session-id` so ephemeral CLI runs can use deterministic session IDs for provider cache affinity (inherited from upstream Pi [#6070](https://github.com/earendil-works/pi/issues/6070)).
+- Fixed disk BMP image files to be detected, converted to PNG, and attached through `read` and CLI `@file` inputs (inherited from upstream Pi [#6047](https://github.com/earendil-works/pi/issues/6047)).
+- Fixed a crash when undici emits an internal client error while terminating a mid-stream HTTP response, by attaching error-suppressing listeners to the global dispatcher and per-origin pools (inherited from upstream Pi [#6133](https://github.com/earendil-works/pi/issues/6133)).
+
+### Notes
+
+- The shared `isRetryableAssistantError` retry classifier is intentionally deferred. Atomic's `_isRetryableError` (`agent-session-retry.ts`) carries Atomic-specific Copilot Gemini handling (`content_filter`/`finish_reason: error` for CAPI-mapped MALFORMED_FUNCTION_CALL) that the shared pi-ai helper does not cover; replacing it wholesale would regress those code paths. Adopting the shared helper requires merging Atomic's extra patterns back in and will be evaluated for a follow-up sync.
+- The interactive status-indicator stabilization refactor (Loader → StatusIndicator classes) is deferred; it is a large TUI refactor that needs visual QA.
 ## [0.9.4-alpha.5] - 2026-07-01
 
 ### Fixed

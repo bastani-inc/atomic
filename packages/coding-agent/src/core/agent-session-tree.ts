@@ -5,7 +5,9 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 
 export function setSessionName(this: AgentSession, name: string): void {
 	this.sessionManager.appendSessionInfo(name);
-	this._emit({ type: "session_info_changed", name: this.sessionManager.getSessionName() });
+	const event = { type: "session_info_changed", name: this.sessionManager.getSessionName() } as const;
+	this._emit(event);
+	void this._extensionRunner.emit(event);
 }
 
 // =========================================================================

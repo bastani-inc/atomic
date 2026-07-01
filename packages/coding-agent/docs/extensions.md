@@ -402,6 +402,17 @@ pi.on("session_start", async (event, ctx) => {
 });
 ```
 
+#### session_info_changed
+
+Fired when the current session display name is set via `/name`, RPC, or `pi.setSessionName()`.
+
+```typescript
+pi.on("session_info_changed", async (event, ctx) => {
+  // event.name - current normalized name, or undefined if cleared
+  ctx.ui.notify(`Session renamed: ${event.name ?? "(none)"}`, "info");
+});
+```
+
 #### session_before_switch
 
 Fired before starting a new session (`/new`) or switching sessions (`/resume`).

@@ -48,7 +48,7 @@ export function setActiveToolsByName(this: AgentSession, toolNames: string[]): v
 
 	// Rebuild base system prompt with new tool set
 	this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
-	this.agent.state.systemPrompt = this._baseSystemPrompt;
+	this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 }
 
 /** Whether compaction or branch summarization is currently running */
@@ -127,7 +127,7 @@ export function _rebuildSystemPrompt(this: AgentSession, toolNames: string[]): s
 
 export function _refreshBaseSystemPromptFromActiveTools(this: AgentSession): void {
 	this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
-	this.agent.state.systemPrompt = this._baseSystemPrompt;
+	this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 }
 
 // =========================================================================

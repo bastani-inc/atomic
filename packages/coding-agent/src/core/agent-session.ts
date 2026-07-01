@@ -115,6 +115,7 @@ export class AgentSession {
 	protected _toolPromptGuidelines: Map<string, string[]> = new Map();
 	protected _baseSystemPrompt = "";
 	protected _baseSystemPromptOptions!: BuildSystemPromptOptions;
+	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	constructor(config: AgentSessionConfig) {
@@ -138,6 +139,7 @@ export class AgentSession {
 		internals._handleAgentEvent = internals._handleAgentEvent.bind(this);
 		this._unsubscribeAgent = this.agent.subscribe(internals._handleAgentEvent);
 		internals._installAgentToolHooks();
+		internals._installAgentNextTurnRefresh();
 		internals._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,

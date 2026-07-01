@@ -281,28 +281,19 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(header.id).toBe(sm.getSessionId());
 	});
 
-	it("truncates and rewrites file without valid header", () => {
+	it("rejects non-empty file without a valid session header instead of overwriting it", () => {
 		const noHeaderFile = join(tempDir, "no-header.jsonl");
 		// File with messages but no session header (corrupted state)
-		writeFileSync(
-			noHeaderFile,
-			'{"type":"message","id":"abc","parentId":"orphaned","timestamp":"2025-01-01T00:00:00Z","message":{"role":"assistant","content":"test"}}\n',
+		const originalContent =
+			'{"type":"message","id":"abc","parentId":"orphaned","timestamp":"2025-01-01T00:00:00Z","message":{"role":"assistant","content":"test"}}\n';
+		writeFileSync(noHeaderFile, originalContent);
+
+		expect(() => SessionManager.open(noHeaderFile, tempDir)).toThrow(
+			`Session file is not a valid pi session: ${noHeaderFile}`,
 		);
 
-		const sm = SessionManager.open(noHeaderFile, tempDir);
-
-		// Should have created a new session with valid header
-		expect(sm.getSessionId()).toBeTruthy();
-		expect(sm.getHeader()).toBeTruthy();
-		expect(sm.getHeader()?.type).toBe("session");
-
-		// File should now contain only a valid header (old content truncated)
-		const content = readFileSync(noHeaderFile, "utf-8");
-		const lines = content.trim().split("\n").filter(Boolean);
-		expect(lines.length).toBe(1);
-		const header = JSON.parse(lines[0]);
-		expect(header.type).toBe("session");
-		expect(header.id).toBe(sm.getSessionId());
+		// The corrupted file must be left untouched.
+		expect(readFileSync(noHeaderFile, "utf-8")).toBe(originalContent);
 	});
 
 	it("preserves explicit session file path when recovering from corrupted file", () => {
@@ -315,9 +306,9 @@ describe("SessionManager.setSessionFile with corrupted files", () => {
 		expect(sm.getSessionFile()).toBe(explicitPath);
 	});
 
-	it("subsequent loads of recovered file work correctly", () => {
+	it("subsequent loads of recovered empty file work correctly", () => {
 		const corruptedFile = join(tempDir, "corrupted.jsonl");
-		writeFileSync(corruptedFile, "garbage content\n");
+		writeFileSync(corruptedFile, "");
 
 		// First open recovers the file
 		const sm1 = SessionManager.open(corruptedFile, tempDir);
