@@ -7,6 +7,8 @@ This document covers setup, the local dev loop, testing patterns, and project la
 ## Prerequisites
 
 - **[Bun](https://bun.sh) ≥ 1.3.14** — runtime, package manager, and test runner
+- **[uv](https://docs.astral.sh/uv/)** — Python package/environment manager for the `evals/` harness
+- **Docker** — required for local Pier/DeepSWE sandbox runs
 
 This repo uses **Bun** for all development, scripts, and testing. The `@bastani/workflows` workspace package ships raw `.ts` files with no build step; Atomic bundles it into `@bastani/atomic` during the coding-agent build.
 
@@ -15,9 +17,51 @@ This repo uses **Bun** for all development, scripts, and testing. The `@bastani/
 ## Setup
 
 ```bash
-git clone git@github.com:bastani-inc/atomic.git
+git clone --recurse-submodules git@github.com:bastani-inc/atomic.git
 cd atomic
 bun install
+```
+
+If you cloned without submodules, initialize them before running evals or touching vendored benchmark harnesses:
+
+```bash
+git submodule update --init --recursive
+```
+
+Current submodules include `evals/deep-swe` and `evals/vendor/pier`; the evals package points `datacurve-pier` at the local editable `evals/vendor/pier` checkout.
+
+The eval harness is Python-based and uses [`uv`](https://docs.astral.sh/uv/) from the `evals/` directory:
+
+```bash
+cd evals
+uv sync
+uv run python -c 'import pier, pathlib; print(pathlib.Path(pier.__file__).resolve())'
+uv run pier --help
+```
+
+The `pier` import should resolve to `evals/vendor/pier/src/pier/__init__.py`. After pulling submodule pointer changes or local Pier edits, refresh the editable install with:
+
+```bash
+cd evals
+uv sync --reinstall-package datacurve-pier
+```
+
+Example single-task DeepSWE run with Atomic and the local Pier checkout:
+
+```bash
+cd evals
+export OPENROUTER_API_KEY=...
+uv run pier run \
+  -p deep-swe/tasks \
+  --agent-import-path atomic_pier:Atomic \
+  --model openrouter/openai/gpt-5.5 \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg version=next \
+  --agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}' \
+  --n-tasks 1 \
+  --sample-seed 0 \
+  --n-concurrent 1 \
+  --force-build
 ```
 
 `bun install` runs the root `prepare` script, which installs Git hooks with [`prek`](https://prek.j178.dev/) from [`prek.toml`](./prek.toml). The hook shims installed by default come from `default_install_hook_types`; currently that is `pre-commit`. To reinstall hooks manually, run `bun run hooks:install`. Set `PREK_DISABLE_INSTALL=1` to skip hook installation for a local install; CI skips it automatically.

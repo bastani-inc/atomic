@@ -1,3 +1,6 @@
 [submodule "evals/deep-swe"]
 	path = evals/deep-swe
 	url = https://github.com/datacurve-ai/deep-swe
+[submodule "evals/vendor/pier"]
+	path = evals/vendor/pier
+	url = https://github.com/lavaman131/pier

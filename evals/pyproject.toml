@@ -9,4 +9,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-datacurve-pier = { git = "https://github.com/datacurve-ai/pier" }
+datacurve-pier = { path = "vendor/pier", editable = true }
