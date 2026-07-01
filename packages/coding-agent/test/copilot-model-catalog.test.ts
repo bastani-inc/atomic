@@ -36,7 +36,7 @@ function capiBody() {
 			},
 			{
 				id: "claude-opus-4.8",
-				capabilities: { limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
+				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
 				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
 			},
 			{
@@ -72,6 +72,7 @@ describe("resolveCopilotModelContext", () => {
 				contextWindow: 272_000,
 				contextWindowOptions: [272_000, 1_050_000],
 				maxInputTokens: 922_000,
+				maxTokens: 128_000,
 			},
 		);
 	});
@@ -97,6 +98,7 @@ describe("resolveCopilotModelContext", () => {
 				contextWindow: 200_000,
 				contextWindowOptions: [200_000, 1_000_000],
 				maxInputTokens: 936_000,
+				maxTokens: 64_000,
 			},
 		);
 	});
@@ -134,15 +136,17 @@ describe("parseCopilotModelCatalog", () => {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
+			maxTokens: 128_000,
 		});
 		assert.deepEqual(catalog.get("claude-opus-4.8"), {
 			contextWindow: 200_000,
 			contextWindowOptions: [200_000, 1_000_000],
 			maxInputTokens: 936_000,
+			maxTokens: 128_000,
 		});
-		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000 });
-		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000 });
-		assert.deepEqual(catalog.get("mystery-model"), { contextWindow: 256_000 });
+		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000, maxTokens: 128_000 });
+		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000, maxTokens: 16_384 });
+		assert.deepEqual(catalog.get("mystery-model"), { contextWindow: 256_000, maxTokens: 16_384 });
 	});
 
 	test("tolerates malformed bodies", () => {
@@ -223,6 +227,7 @@ describe("fetchCopilotModelCatalog", () => {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
+			maxTokens: 128_000,
 		});
 	});
 
@@ -270,9 +275,10 @@ describe("disk cache", () => {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
+			maxTokens: 128_000,
 		});
-		assert.deepEqual(read?.get("gpt-5.3-codex"), { contextWindow: 272_000 });
-		assert.deepEqual(read?.get("mystery-model"), { contextWindow: 256_000 });
+		assert.deepEqual(read?.get("gpt-5.3-codex"), { contextWindow: 272_000, maxTokens: 128_000 });
+		assert.deepEqual(read?.get("mystery-model"), { contextWindow: 256_000, maxTokens: 16_384 });
 	});
 
 	test("ignores a stale catalog", () => {
@@ -319,6 +325,7 @@ describe("seedActiveCopilotModelCatalogFromCache", () => {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
+			maxTokens: 128_000,
 		});
 	});
 

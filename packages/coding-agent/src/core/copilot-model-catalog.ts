@@ -29,7 +29,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** Resolved input-token context window(s) for a single Copilot model. */
+/** Resolved context and output-token limits for a single Copilot model. */
 export interface CopilotModelContext {
 	/**
 	 * Base/displayed context window — shown in the footer. The default tier's `context_max`, or the
@@ -50,6 +50,11 @@ export interface CopilotModelContext {
 	 * displayed window already equals the input cap.
 	 */
 	maxInputTokens?: number;
+	/**
+	 * Maximum output tokens (`max_output_tokens`) advertised by Copilot CAPI. When present, this
+	 * replaces the static built-in `Model.maxTokens` so requests use GitHub's live output cap.
+	 */
+	maxTokens?: number;
 }
 
 /** Map of model id → resolved input-token context window(s). */
@@ -132,7 +137,7 @@ export function copilotTokenFromEnvironment(env: CopilotEnvironment = process.en
 export const COPILOT_CATALOG_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** Current on-disk cache schema version. */
-export const COPILOT_CATALOG_CACHE_VERSION = 3 as const;
+export const COPILOT_CATALOG_CACHE_VERSION = 4 as const;
 
 /**
  * Resolve the Copilot CAPI base URL.
@@ -225,11 +230,13 @@ export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotM
 			limits.longContextMax;
 		// Only carry the cap when the displayed long window actually exceeds it (the branded-total
 		// case); when they coincide there is no gap and the input budget is just the window.
-		return longWindow > inputCap
-			? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
-			: { contextWindow: base, contextWindowOptions: [base, longWindow] };
+		const resolved: CopilotModelContext =
+			longWindow > inputCap
+				? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
+				: { contextWindow: base, contextWindowOptions: [base, longWindow] };
+		return limits.maxOutputTokens !== undefined ? { ...resolved, maxTokens: limits.maxOutputTokens } : resolved;
 	}
-	return { contextWindow: base };
+	return limits.maxOutputTokens !== undefined ? { contextWindow: base, maxTokens: limits.maxOutputTokens } : { contextWindow: base };
 }
 
 /**
@@ -355,16 +362,19 @@ function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined 
 	const contextWindow = toPositiveInt(record?.contextWindow);
 	if (contextWindow === undefined) return undefined;
 	const maxInputTokens = toPositiveInt(record?.maxInputTokens);
+	const maxTokens = toPositiveInt(record?.maxTokens);
 	const rawOptions = record?.contextWindowOptions;
 	if (Array.isArray(rawOptions)) {
 		const options = rawOptions.map(toPositiveInt).filter((n): n is number => n !== undefined);
 		if (options.length > 1) {
-			return maxInputTokens !== undefined
+			const context = maxInputTokens !== undefined
 				? { contextWindow, contextWindowOptions: options, maxInputTokens }
 				: { contextWindow, contextWindowOptions: options };
+			return maxTokens !== undefined ? { ...context, maxTokens } : context;
 		}
 	}
-	return maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
+	const context = maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
+	return maxTokens !== undefined ? { ...context, maxTokens } : context;
 }
 
 /** Read a fresh, host-matching catalog from the cache file, or `undefined` if missing/stale/invalid. */
