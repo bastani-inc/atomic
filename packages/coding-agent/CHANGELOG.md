@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Disabled Undici's default 10-second connect timeout in Atomic's global proxy-aware HTTP dispatcher so headless or sandboxed runs behind policy proxies can wait for slow provider CONNECT establishment instead of surfacing spurious `Connection error.` failures.
+
 ## [0.9.4-alpha.3] - 2026-06-30
 
 ### Fixed

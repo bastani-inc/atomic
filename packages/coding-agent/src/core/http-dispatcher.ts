@@ -49,6 +49,9 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 	undici.setGlobalDispatcher(
 		new undici.EnvHttpProxyAgent({
 			allowH2: false,
+			// Undici defaults to a 10s connect timeout; disable it so slow
+			// policy/proxy CONNECT establishment follows provider retry handling.
+			connectTimeout: 0,
 			bodyTimeout: normalizedTimeoutMs,
 			headersTimeout: normalizedTimeoutMs,
 		}),
