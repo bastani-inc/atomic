@@ -102,6 +102,40 @@ describeModelRegistry((context) => {
 			}
 		});
 
+		test("routes GitHub Copilot env auth through the public hub by default", () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";
+			try {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const copilotModels = getModelsForProvider(registry, "github-copilot");
+
+				expect(copilotModels.length).toBeGreaterThan(0);
+				for (const model of copilotModels) {
+					expect(model.baseUrl).toBe("https://api.githubcopilot.com");
+				}
+			} finally {
+				if (previous === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+				else process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
+		test("models.json baseUrl override wins over GitHub Copilot env routing", () => {
+			const previous = process.env.COPILOT_GITHUB_TOKEN;
+			process.env.COPILOT_GITHUB_TOKEN = "github_pat_enterprise";
+			try {
+				writeRawModelsJson({
+					"github-copilot": overrideConfig("https://copilot-proxy.example.com"),
+				});
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const model = registry.find("github-copilot", "gpt-5.5");
+
+				expect(model?.baseUrl).toBe("https://copilot-proxy.example.com");
+			} finally {
+				if (previous === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
+				else process.env.COPILOT_GITHUB_TOKEN = previous;
+			}
+		});
+
 		test("preserves explicit GitHub Copilot API version provider header override", async () => {
 			writeRawModelsJson({
 				"github-copilot": {

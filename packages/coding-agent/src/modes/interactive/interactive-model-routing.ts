@@ -60,9 +60,7 @@ InteractiveModeBase.prototype.refreshCopilotModelCatalog = async function(this: 
 
 InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: InteractiveModeBase): Promise<void> {
     const registry = this.session.modelRegistry;
-    const cred = registry.authStorage.get("github-copilot");
-    // Gate: do nothing unless the user has the GitHub Copilot provider.
-    if (!cred || cred.type !== "oauth") return;
+    // Gate: do nothing unless the user has a Copilot token, including COPILOT_GITHUB_TOKEN env auth.
     try {
       const token = await registry.getApiKeyForProvider("github-copilot");
       if (!token) return;

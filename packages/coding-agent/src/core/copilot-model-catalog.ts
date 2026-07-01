@@ -72,8 +72,61 @@ export const COPILOT_CATALOG_HEADERS: Readonly<Record<string, string>> = {
 	"X-GitHub-Api-Version": COPILOT_CATALOG_API_VERSION,
 };
 
-/** Default (non-enterprise) Copilot CAPI base URL when the token has no resolvable `proxy-ep`. */
+/** Default Copilot CAPI base URL for OAuth tokens when no route can be resolved. */
 export const DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilot.com";
+
+/** GitHub Copilot public routing hub for PAT-based `COPILOT_GITHUB_TOKEN` auth. */
+export const COPILOT_PUBLIC_API_BASE_URL = "https://api.githubcopilot.com";
+
+/** Enterprise Copilot CAPI host for GHES/non-github.com server URLs. */
+export const COPILOT_ENTERPRISE_API_BASE_URL = "https://api.enterprise.githubcopilot.com";
+
+export const COPILOT_GITHUB_TOKEN_ENV = "COPILOT_GITHUB_TOKEN";
+export const COPILOT_API_TARGET_ENV = "COPILOT_API_TARGET";
+export const GITHUB_COPILOT_BASE_URL_ENV = "GITHUB_COPILOT_BASE_URL";
+export const GITHUB_SERVER_URL_ENV = "GITHUB_SERVER_URL";
+
+type CopilotEnvironment = Record<string, string | undefined>;
+
+function normalizeCopilotApiBaseUrl(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+	try {
+		new URL(withScheme);
+	} catch {
+		return undefined;
+	}
+	return withScheme.replace(/\/+$/, "");
+}
+
+function explicitCopilotApiBaseUrlFromEnvironment(env: CopilotEnvironment): string | undefined {
+	return normalizeCopilotApiBaseUrl(env[COPILOT_API_TARGET_ENV]) ?? normalizeCopilotApiBaseUrl(env[GITHUB_COPILOT_BASE_URL_ENV]);
+}
+
+function copilotApiBaseUrlFromServerUrl(serverUrl: string | undefined): string | undefined {
+	const trimmed = serverUrl?.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
+		const host = parsed.hostname.toLowerCase();
+		if (!host || host === "github.com") return undefined;
+		if (host.endsWith(".ghe.com")) return `https://copilot-api.${host}`;
+		return COPILOT_ENTERPRISE_API_BASE_URL;
+	} catch {
+		return undefined;
+	}
+}
+
+function isCopilotEnvironmentToken(token: string | undefined, env: CopilotEnvironment): boolean {
+	const environmentToken = copilotTokenFromEnvironment(env);
+	return environmentToken !== undefined && token === environmentToken;
+}
+
+export function copilotTokenFromEnvironment(env: CopilotEnvironment = process.env): string | undefined {
+	const token = env[COPILOT_GITHUB_TOKEN_ENV]?.trim();
+	return token ? token : undefined;
+}
 
 /** Disk-cache freshness window, matching the Copilot CLI's list-models cache TTL. */
 export const COPILOT_CATALOG_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -85,11 +138,19 @@ export const COPILOT_CATALOG_CACHE_VERSION = 3 as const;
  * Resolve the Copilot CAPI base URL.
  *
  * Copilot access tokens embed a `proxy-ep=proxy.<host>` segment; the API host is the same host with
- * `proxy.` swapped for `api.`. Falls back to the enterprise host or the individual default. (pi-ai
- * exposes an equivalent helper, but its published `dist` mangles the export name, so the small,
- * stable parsing logic is reimplemented here.)
+ * `proxy.` swapped for `api.`. Env-token routing resolves explicit `COPILOT_API_TARGET` /
+ * `GITHUB_COPILOT_BASE_URL` overrides, then `GITHUB_SERVER_URL` (`*.ghe.com` ->
+ * `copilot-api.<tenant>.ghe.com`, other non-github.com -> `api.enterprise.githubcopilot.com`),
+ * then the public Copilot routing hub `api.githubcopilot.com` for `COPILOT_GITHUB_TOKEN`. Stored
+ * OAuth credentials still fall back to the generated individual host when no token route is known.
  */
-export function copilotApiBaseUrlFromToken(token: string | undefined, enterpriseDomain?: string): string {
+export function copilotApiBaseUrlFromToken(
+	token: string | undefined,
+	enterpriseDomain?: string,
+	env: CopilotEnvironment = process.env,
+): string {
+	const explicitOverride = explicitCopilotApiBaseUrlFromEnvironment(env);
+	if (explicitOverride) return explicitOverride;
 	if (token) {
 		const match = token.match(/proxy-ep=([^;]+)/);
 		if (match) {
@@ -97,6 +158,9 @@ export function copilotApiBaseUrlFromToken(token: string | undefined, enterprise
 		}
 	}
 	if (enterpriseDomain) return `https://copilot-api.${enterpriseDomain}`;
+	const serverUrlOverride = copilotApiBaseUrlFromServerUrl(env[GITHUB_SERVER_URL_ENV]);
+	if (serverUrlOverride) return serverUrlOverride;
+	if (isCopilotEnvironmentToken(token, env)) return COPILOT_PUBLIC_API_BASE_URL;
 	return DEFAULT_COPILOT_API_BASE_URL;
 }
 

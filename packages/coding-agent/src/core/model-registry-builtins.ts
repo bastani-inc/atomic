@@ -7,7 +7,7 @@ import {
 	type OpenAICompletionsCompat,
 } from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
-import { getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
+import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
@@ -28,6 +28,13 @@ export function withGitHubCopilotApiVersionHeader(
 		return headers;
 	}
 	return { ...(headers ?? {}), [GITHUB_COPILOT_API_VERSION_HEADER]: GITHUB_COPILOT_API_VERSION };
+}
+
+function withCopilotEnvironmentBaseUrl(model: Model<Api>): Model<Api> {
+	if (model.provider !== "github-copilot") return model;
+	const resolvedBaseUrl = copilotApiBaseUrlFromToken(copilotTokenFromEnvironment());
+	if (resolvedBaseUrl === DEFAULT_COPILOT_API_BASE_URL || resolvedBaseUrl === model.baseUrl) return model;
+	return { ...model, baseUrl: resolvedBaseUrl };
 }
 
 function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
@@ -123,7 +130,7 @@ export function loadBuiltInModels(
 		const perModelOverrides = modelOverrides.get(provider);
 
 		return models.map((m) => {
-			let model = m;
+			let model = withCopilotEnvironmentBaseUrl(m);
 
 			if (providerOverride) {
 				model = {

@@ -156,14 +156,50 @@ describe("parseCopilotModelCatalog", () => {
 describe("copilotApiBaseUrlFromToken", () => {
 	test("derives the api host from the token proxy-ep", () => {
 		assert.equal(
-			copilotApiBaseUrlFromToken("tid=abc;exp=1;proxy-ep=proxy.individual.githubcopilot.com;more=1"),
+			copilotApiBaseUrlFromToken("tid=abc;exp=1;proxy-ep=proxy.individual.githubcopilot.com;more=1", undefined, {}),
 			"https://api.individual.githubcopilot.com",
 		);
 	});
 
 	test("falls back to enterprise host then the individual default", () => {
-		assert.equal(copilotApiBaseUrlFromToken(undefined, "company.ghe.com"), "https://copilot-api.company.ghe.com");
-		assert.equal(copilotApiBaseUrlFromToken("no-proxy-here"), "https://api.individual.githubcopilot.com");
+		assert.equal(copilotApiBaseUrlFromToken(undefined, "company.ghe.com", {}), "https://copilot-api.company.ghe.com");
+		assert.equal(copilotApiBaseUrlFromToken("no-proxy-here", undefined, {}), "https://api.individual.githubcopilot.com");
+	});
+
+	test("honors explicit Copilot base URL environment overrides", () => {
+		assert.equal(
+			copilotApiBaseUrlFromToken("tid=abc;proxy-ep=proxy.individual.githubcopilot.com", undefined, {
+				COPILOT_API_TARGET: "api.enterprise.githubcopilot.com",
+			}),
+			"https://api.enterprise.githubcopilot.com",
+		);
+		assert.equal(
+			copilotApiBaseUrlFromToken("tid=abc;proxy-ep=proxy.individual.githubcopilot.com", undefined, {
+				GITHUB_COPILOT_BASE_URL: "https://copilot-proxy.example.com/",
+			}),
+			"https://copilot-proxy.example.com",
+		);
+	});
+
+	test("routes COPILOT_GITHUB_TOKEN and GitHub server URLs to Copilot hosts", () => {
+		assert.equal(
+			copilotApiBaseUrlFromToken("env-token", undefined, { COPILOT_GITHUB_TOKEN: "env-token" }),
+			"https://api.githubcopilot.com",
+		);
+		assert.equal(
+			copilotApiBaseUrlFromToken("env-token", undefined, {
+				COPILOT_GITHUB_TOKEN: "env-token",
+				GITHUB_SERVER_URL: "https://company.ghe.com",
+			}),
+			"https://copilot-api.company.ghe.com",
+		);
+		assert.equal(
+			copilotApiBaseUrlFromToken("env-token", undefined, {
+				COPILOT_GITHUB_TOKEN: "env-token",
+				GITHUB_SERVER_URL: "https://github.enterprise.example",
+			}),
+			"https://api.enterprise.githubcopilot.com",
+		);
 	});
 });
 

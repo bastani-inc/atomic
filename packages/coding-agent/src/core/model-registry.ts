@@ -8,7 +8,7 @@ import { dirname } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
-import { copilotCatalogCachePath, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
+import { copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
@@ -47,8 +47,9 @@ export class ModelRegistry {
 	private seedCopilotModelCatalogFromCache(): void {
 		if (this.modelsJsonPaths.length === 0) return;
 		const cred = this.authStorage.get("github-copilot");
-		if (!cred || cred.type !== "oauth" || typeof cred.access !== "string") return;
-		seedActiveCopilotModelCatalogFromCache(cred.access, copilotCatalogCachePath(dirname(this.modelsJsonPaths[0])));
+		const token = cred?.type === "oauth" && typeof cred.access === "string" ? cred.access : copilotTokenFromEnvironment();
+		if (!token) return;
+		seedActiveCopilotModelCatalogFromCache(token, copilotCatalogCachePath(dirname(this.modelsJsonPaths[0])));
 	}
 
 	static create(

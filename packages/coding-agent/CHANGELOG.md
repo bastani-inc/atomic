@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Routed `COPILOT_GITHUB_TOKEN` env auth through an endpoint resolver that honors explicit Copilot base URL overrides, GitHub Enterprise server URLs, and the public Copilot routing hub so env-token users avoid account-specific endpoint `421 Misdirected Request` failures ([#1569](https://github.com/bastani-inc/atomic/issues/1569)).
+
 ## [0.9.4-alpha.4] - 2026-06-30
 
 ### Fixed
