@@ -51,6 +51,7 @@ export type ModelFallbackFailureKind =
   | "network_timeout"
   | "transport_error"
   | "model_unavailable"
+  | "request_incompatible"
   | "cancelled"
   | "task_failure"
   | "unknown";
@@ -79,6 +80,7 @@ const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Se
   "network_timeout",
   "transport_error",
   "model_unavailable",
+  "request_incompatible",
 ]);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -157,6 +159,9 @@ function normalizeCode(value: string | number | undefined): string | undefined {
 
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
   switch (status) {
+    case 400:
+    case 413: case 422:
+      return "request_incompatible";
     case 401:
     case 403:
       return "auth_on_candidate_provider";
@@ -193,6 +198,15 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
   }
 }
 
+const REQUEST_INCOMPATIBLE_CODES: ReadonlySet<string> = new Set([
+  "invalid_request", "invalid_request_error", "bad_request", "context_length_exceeded",
+  "request_too_large", "too_large", "request_entity_too_large", "max_tokens",
+  "max_context_length", "context_window_exceeded",
+]);
+function requestIncompatibleKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
+  const normalizedCode = normalizeCode(code);
+  return normalizedCode !== undefined && REQUEST_INCOMPATIBLE_CODES.has(normalizedCode) ? "request_incompatible" : undefined;
+}
 function kindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
   const normalizedCode = normalizeCode(code);
   if (normalizedCode === undefined) return undefined;
@@ -200,6 +214,8 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
   if (refusalKind !== undefined) return refusalKind;
   const httpStatusKind = kindFromStatus(integerFrom(code));
   if (httpStatusKind !== undefined) return httpStatusKind;
+  const requestIncompatibleKind = requestIncompatibleKindFromCode(code);
+  if (requestIncompatibleKind !== undefined) return requestIncompatibleKind;
 
   switch (normalizedCode) {
     case "auth":
@@ -248,6 +264,18 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
   }
 }
 
+const REQUEST_INCOMPATIBLE_FAILURE_PATTERNS: readonly RegExp[] = [
+  /\bcontext[_\s-]?length(?:[_\s-]?exceeded)?\b/i,
+  /\bcontext[_\s-]?window(?:[_\s-]?exceeded)?\b/i,
+  /\bmax[_\s-]?context\b/i,
+  /\bmax[_\s-]?tokens?\b/i,
+  /\brequest(?:[_\s-]?entity)?[_\s-]?too[_\s-]?large\b/i,
+  /\btoo[_\s-]?large\b/i,
+  /\b(?:unsupported|unknown|invalid)\s+(?:tool|parameter|function)\b/i,
+  /\b(?:tool|parameter|function)\s+(?:not\s+(?:supported|found|allowed)|unknown|invalid)\b/i,
+  /\binvalid[_\s-]?request(?:[_\s-]?error)?\b/i,
+  /\bbad[_\s-]?request\b/i,
+];
 const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
   /\bfinish[_\s-]?reason\b[^\n]*\bcontent[_\s-]?filter\b/i,
   /\bcontent[_\s-]?filter(?:ed|ing)?\b/i,
@@ -283,6 +311,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
   if (refusalKind !== undefined) return refusalKind;
   const transportOutageKind = transportOutageKindFromMessage(message);
   if (transportOutageKind !== undefined) return transportOutageKind;
+  if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
   const nameKind = kindFromCode(name);
   if (nameKind !== undefined) return nameKind;
   if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
@@ -371,9 +400,6 @@ function structuredSignal(
   const directRefusalSignal = classifyAssistantRefusalSignal(value, source);
   if (directRefusalSignal !== undefined) return directRefusalSignal;
 
-  const directMessageSignal = fallbackSignalFromDirectMessage(value, source);
-  if (directMessageSignal !== undefined) return directMessageSignal;
-
   const codeKind = kindFromCode(codeFrom(value));
   const nameKind = kindFromCode(errorName(value));
   if (codeKind === "cancelled" || nameKind === "cancelled") return makeSignal("cancelled", value, source);
@@ -387,7 +413,6 @@ function structuredSignal(
     if (isRefusalSignal(diagnosticSignal)) return diagnosticSignal;
     firstNestedFallbackSignal ??= diagnosticSignal;
   }
-
   const cause = causeOf(value);
   const causeSignal = structuredSignal(cause, nestedSeen, source)
     ?? fallbackSignalFromMessage(cause, source);
@@ -395,6 +420,11 @@ function structuredSignal(
     if (isRefusalSignal(causeSignal)) return causeSignal;
     firstNestedFallbackSignal ??= causeSignal;
   }
+
+  // Direct-message classification runs after nested traversal so a generic wrapper
+  // ("invalid request"/"400 bad request") cannot mask a non-retryable nested signal.
+  const directMessageSignal = fallbackSignalFromDirectMessage(value, source);
+  if (directMessageSignal !== undefined) return directMessageSignal;
 
   const statusKind = kindFromStatus(statusFrom(value));
   if (statusKind !== undefined) return makeSignal(statusKind, value, source);

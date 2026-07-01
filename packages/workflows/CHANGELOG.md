@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow stage model fallback so request/context incompatibility failures (HTTP 400/413/422 bad/unprocessable/payload-too-large request, unsupported tool/parameter, context-length/context-window overflow, `invalid_request`/`bad_request`/`too_large` errors) advance the chain to the next candidate instead of stopping. When none of the configured candidates can serve the request, the stage now falls back to the current user-selected model. Refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+
 ## [0.9.4-alpha.6] - 2026-07-01
 
 ### Changed

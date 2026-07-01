@@ -1816,6 +1816,8 @@ For lower-level integrations, `@bastani/workflows` also exports `setupGitWorktre
 
 `fallbackModels` retries transient provider/model failures with the primary `model` first, then each fallback, then the current Atomic-selected model when available. It is for rate limits, quota/auth/provider outages, unavailable models, network timeouts, generic transport errors such as `Connection error.` / `fetch failed`, and 5xx errors — not workflow-code errors, tool failures, validation failures, or cancellations.
 
+A candidate that is **request/context incompatible** with the current turn — for example an HTTP 400/413/422 bad/unprocessable/payload-too-large request, an unsupported tool or parameter, a context-length/context-window overflow, or a `too large` / `invalid_request` / `bad_request` error — also advances the chain to the next candidate rather than stopping. This ensures that if none of the configured candidates can serve the request, the workflow stage falls back to the currently selected user model instead of hard-failing. Refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain and are never retried on another model.
+
 When a finished stage's session is reattached for a follow-up (for example a post-completion follow-up, or after the CLI is reloaded), the stage resumes on the model the session last settled on — the one that actually worked — instead of replaying the chain from the primary. If that model fails again with a transient/retryable error, the full chain is retried from the primary.
 
 ### Reasoning levels
