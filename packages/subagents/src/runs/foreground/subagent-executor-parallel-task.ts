@@ -38,6 +38,7 @@ interface ForegroundParallelRunInput {
 	maxSubagentDepths: number[];
 	workflowStageSubagentGuard?: boolean;
 	availableModels: ModelInfo[];
+	knownModelProviders: string[];
 	modelOverrides: (string | undefined)[];
 	behaviors: ResolvedStepBehavior[];
 	firstProgressIndex: number;
@@ -110,6 +111,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
+			knownModelProviders: input.knownModelProviders,
 			preferredModelProvider: input.ctx.model?.provider,
 			currentModel: currentModelFullId(input.ctx.model),
 			skills: effectiveSkills === false ? [] : effectiveSkills,

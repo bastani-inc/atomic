@@ -283,6 +283,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 			paramsCwd: effectiveCwd,
 			workflowStageSubagentGuard,
 			availableModels,
+			knownModelProviders,
 			modelOverrides,
 			behaviors,
 			firstProgressIndex: parallelProgressPrecreated ? -1 : firstProgressIndex,

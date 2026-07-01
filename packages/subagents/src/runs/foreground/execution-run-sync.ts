@@ -104,7 +104,7 @@ export async function runSync(
 	}
 
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const modelsToTry = candidates.length > 0 ? candidates : (rawCandidates.length === 0 ? [undefined] : []);
 	for (let i = 0; i < modelsToTry.length; i++) {
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
@@ -164,7 +164,9 @@ export async function runSync(
 		exitCode: 1,
 		messages: [],
 		usage: emptyUsage(),
-		error: "Subagent did not produce a result.",
+		error: modelAttempts.length > 0
+			? "No spawnable subagent model candidates after pre-spawn filtering."
+			: "Subagent did not produce a result.",
 	} satisfies SingleResult;
 
 	result.usage = aggregateUsage;

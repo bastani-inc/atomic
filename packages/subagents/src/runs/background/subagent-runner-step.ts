@@ -17,7 +17,7 @@ import {
 import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import type { ArtifactPaths, ModelAttempt } from "../../shared/types.ts";
 import type { RunPiStreamingResult, SingleStepContext, SubagentStep } from "./subagent-runner-types.ts";
-import { fastModeForStepAttempt } from "./subagent-runner-utils.ts";
+import { emptyUsage, fastModeForStepAttempt } from "./subagent-runner-utils.ts";
 import { runPiStreaming } from "./subagent-runner-streaming.ts";
 
 export { outputEntryFromAsyncResult };
@@ -205,6 +205,17 @@ export async function runSingleStep(
 			break;
 		}
 		if (!tryNextModel) break;
+	}
+
+	if (!finalResult && candidates.length === 0 && modelAttempts.length > 0) {
+		finalResult = {
+			stderr: "",
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: "No spawnable subagent model candidates after pre-spawn filtering.",
+			finalOutput: "",
+		};
 	}
 
 	const rawOutput = finalResult?.finalOutput ?? "";
