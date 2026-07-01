@@ -7,6 +7,7 @@
 ### Fixed
 
 - Disabled Undici's default 10-second connect timeout in Atomic's global proxy-aware HTTP dispatcher so headless or sandboxed runs behind policy proxies can wait for slow provider CONNECT establishment instead of surfacing spurious `Connection error.` failures.
+- Resumed post-compaction queued work through the full agent continuation lifecycle and surfaced continuation failures, preventing sessions from appearing dead after auto-compaction or failed tool-call recovery ([#1570](https://github.com/bastani-inc/atomic/issues/1570)).
 
 ## [0.9.4-alpha.3] - 2026-06-30
 

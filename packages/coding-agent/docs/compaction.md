@@ -100,6 +100,8 @@ By default, `reserveTokens` is 16384 tokens. Configure it in `~/.atomic/agent/se
 
 You can also trigger compaction manually with `/compact`. Custom summary instructions are not accepted because Verbatim Compaction is deletion-only and retained transcript content stays verbatim.
 
+If auto-compaction runs while a turn still has queued work (for example a failed tool-call result or a follow-up queued during compaction), Atomic resumes through the same continuation lifecycle as a normal queued turn: provider retry handling runs, additional queued messages drain, and any post-compaction resume failure is surfaced instead of being swallowed silently.
+
 ### Image Context and Compaction
 
 Image content blocks (screenshots, pasted images, image-bearing tool results) are expensive: providers fold image tokens into their reported prompt/input usage, so image-heavy conversations reach the compaction threshold sooner. Atomic accounts for this in two complementary ways:

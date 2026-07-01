@@ -60,6 +60,7 @@ export type AgentSessionEvent =
 			willRetry: false;
 			errorMessage?: string;
 	  }
+	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
 

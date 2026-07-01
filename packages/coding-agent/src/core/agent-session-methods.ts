@@ -132,6 +132,7 @@ export interface AgentSessionMethodSurface {
 
 	prompt(text: string, options?: PromptOptions): Promise<void>;
 	_runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void>;
+	_runAgentContinue(): Promise<void>;
 	_continueQueuedAgentMessages(): Promise<void>;
 	_tryExecuteBuiltinSlashCommand(text: string): Promise<boolean>;
 	_tryExecuteExtensionCommand(text: string): Promise<boolean>;

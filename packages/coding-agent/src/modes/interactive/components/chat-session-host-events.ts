@@ -130,6 +130,14 @@ export function applyChatSessionAgentEvent<
       changed = true;
       break;
     }
+    case "agent_continue_error": {
+      const continueError = event as Extract<AgentSessionEvent, { type: "agent_continue_error" }>;
+      state.sdkBusy = false;
+      state.statusMessage = continueError.errorMessage;
+      state.workingMessage = undefined;
+      changed = true;
+      break;
+    }
     default:
       changed = false;
   }

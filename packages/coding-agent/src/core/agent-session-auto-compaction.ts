@@ -157,7 +157,14 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
  */
 
 export function _resumeAfterAutoCompaction(this: AgentSession): void {
-	this.agent.continue().catch(() => {});
+	void this._runAgentContinue().catch((error) => {
+		const message = error instanceof Error ? error.message : String(error);
+		this._emit({
+			type: "agent_continue_error",
+			source: "post_compaction",
+			errorMessage: `Post-compaction continuation failed: ${message}`,
+		});
+	});
 }
 
 /**

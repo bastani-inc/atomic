@@ -150,6 +150,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(true);
 
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
 
 		const runAutoCompaction = (
 			session as unknown as {
@@ -161,6 +162,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+		expect(drainSpy).toHaveBeenCalledTimes(1);
 	});
 	it("should resume when compaction_end listener asynchronously queues work before the deferred probe", async () => {
 		let queuedAtCompactionEnd: boolean | undefined;
@@ -184,6 +186,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 
 		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
 
 		const runAutoCompaction = (
 			session as unknown as {
@@ -202,6 +205,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await vi.advanceTimersByTimeAsync(100);
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
+		expect(drainSpy).toHaveBeenCalledTimes(1);
 	});
 	it("should suppress deferred continuation when streaming starts before the probe", async () => {
 		session.agent.followUp({

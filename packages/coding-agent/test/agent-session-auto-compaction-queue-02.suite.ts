@@ -124,6 +124,58 @@ describe("AgentSession auto-compaction queue resume", () => {
 		}
 	});
 
+	it("should run the full continuation lifecycle after threshold compaction resume", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
+		const drainSpy = vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+		expect(waitSpy).toHaveBeenCalledTimes(1);
+		expect(drainSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("should surface post-compaction continuation failures", async () => {
+		session.agent.followUp({
+			role: "custom",
+			customType: "test",
+			content: [{ type: "text", text: "Queued custom" }],
+			display: false,
+			timestamp: Date.now(),
+		});
+		const errors: string[] = [];
+		session.subscribe((event) => {
+			if (event.type === "agent_continue_error") errors.push(event.errorMessage);
+		});
+		vi.spyOn(session.agent, "continue").mockRejectedValue(new Error("boom"));
+
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction("threshold", false);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(errors).toEqual(["Post-compaction continuation failed: boom"]);
+	});
+
 	it("should trigger threshold compaction for error messages using last successful usage", async () => {
 		const model = session.model!;
 

@@ -429,6 +429,12 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.ui.requestRender();
         break;
       }
+
+      case "agent_continue_error": {
+        this.showError(event.errorMessage);
+        this.ui.requestRender();
+        break;
+      }
     }
   };
 

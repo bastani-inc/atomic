@@ -185,6 +185,12 @@ export async function _runAgentPrompt(this: AgentSession, messages: AgentMessage
 	await this._continueQueuedAgentMessages();
 }
 
+export async function _runAgentContinue(this: AgentSession): Promise<void> {
+	await this.agent.continue();
+	await this.waitForRetry();
+	await this._continueQueuedAgentMessages();
+}
+
 
 export async function _continueQueuedAgentMessages(this: AgentSession): Promise<void> {
 	await this._agentEventQueue;
@@ -385,6 +391,7 @@ export async function sendUserMessage(this: AgentSession,
 export const agentSessionPromptMethods = {
 	prompt,
 	_runAgentPrompt,
+	_runAgentContinue,
 	_continueQueuedAgentMessages,
 	_tryExecuteBuiltinSlashCommand,
 	_tryExecuteExtensionCommand,
