@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.4-alpha.6] - 2026-07-01
+
+### Changed
+
+- Aligned the Cursor provider dependency with upstream pi-ai `^0.80.3`; no Cursor provider source changes were needed for this metadata sync.
+
 ## [0.9.4-alpha.5] - 2026-07-01
 
 ### Changed

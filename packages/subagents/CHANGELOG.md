@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.4-alpha.6] - 2026-07-01
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream pi `^0.80.3` runtime packages; no subagents extension source changes were needed for this metadata sync.
+
 ## [0.9.4-alpha.5] - 2026-07-01
 
 ### Changed

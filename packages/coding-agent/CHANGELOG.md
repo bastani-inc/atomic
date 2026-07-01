@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.4-alpha.6] - 2026-07-01
+
 ### Added
 
 - Added `get_entries` and `get_tree` RPC commands for reading session entries and tree snapshots over RPC, with corresponding `RpcClient.getEntries`/`getTree` helpers and response types (inherited from upstream Pi [#6078](https://github.com/earendil-works/pi/pull/6078)).

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.4-alpha.6] - 2026-07-01
+
+### Changed
+
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.80.3`; no workflows extension source changes were needed for this metadata sync.
+
 ## [0.9.4-alpha.5] - 2026-07-01
 
 ### Changed
