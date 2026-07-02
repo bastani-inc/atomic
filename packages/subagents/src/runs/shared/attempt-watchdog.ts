@@ -16,17 +16,27 @@ export interface AttemptWatchdog {
 	clear(): void;
 }
 
-function positiveEnvMs(name: string): number | undefined {
+/** Parse a millisecond override from the environment. Non-numeric values are
+ * silently ignored (the default applies). Zero or negative values are clamped
+ * to `0`, which callers treat as "timeout disabled". */
+function envMs(name: string): number | undefined {
 	const raw = process.env[name];
 	if (!raw) return undefined;
 	const value = Number(raw);
-	return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+	if (!Number.isFinite(value)) return undefined;
+	return value > 0 ? Math.floor(value) : 0;
+}
+
+function positiveEnvMs(name: string): number | undefined {
+	const value = envMs(name);
+	return value !== undefined && value > 0 ? value : undefined;
 }
 
 export function resolveAttemptTimeoutConfig(): AttemptTimeoutConfig {
 	return {
-		idleMs: positiveEnvMs("ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS") ?? DEFAULT_IDLE_MS,
-		wallMs: positiveEnvMs("ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS") ?? DEFAULT_WALL_MS,
+		// `0` (or a negative value) disables the corresponding timeout entirely.
+		idleMs: envMs("ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS") ?? DEFAULT_IDLE_MS,
+		wallMs: envMs("ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS") ?? DEFAULT_WALL_MS,
 		killGraceMs: positiveEnvMs("ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS") ?? DEFAULT_KILL_GRACE_MS,
 	};
 }
@@ -85,6 +95,7 @@ export function createAttemptWatchdog(params: {
 	};
 	const scheduleIdle = () => {
 		clearIdle();
+		if (config.idleMs <= 0) return; // idle watchdog disabled
 		idleTimer = setTimeout(() => {
 			if (params.isToolActive?.()) {
 				// Do not kill a healthy attempt that is busy inside a slow tool call;
@@ -98,8 +109,10 @@ export function createAttemptWatchdog(params: {
 	};
 
 	scheduleIdle();
-	wallTimer = setTimeout(() => trip(wallTimeoutMessage(config.wallMs)), config.wallMs);
-	wallTimer.unref?.();
+	if (config.wallMs > 0) {
+		wallTimer = setTimeout(() => trip(wallTimeoutMessage(config.wallMs)), config.wallMs);
+		wallTimer.unref?.();
+	}
 
 	return {
 		activity() {

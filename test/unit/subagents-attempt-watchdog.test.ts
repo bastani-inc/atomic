@@ -8,6 +8,7 @@ import { runSingleStep } from "../../packages/subagents/src/runs/background/suba
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { runForegroundParallelTasks } from "../../packages/subagents/src/runs/foreground/subagent-executor-parallel-task.js";
 import { filterSpawnableModelCandidates } from "../../packages/subagents/src/runs/shared/model-candidate-filter.js";
+import { resolveAttemptTimeoutConfig } from "../../packages/subagents/src/runs/shared/attempt-watchdog.js";
 
 function agentConfig(): AgentConfig {
   return {
@@ -303,6 +304,93 @@ describe("subagent per-attempt watchdog", () => {
       assert.equal(existsSync(join(dir, "spawned")), false);
       assert.deepEqual(result.modelAttempts?.map((attempt) => attempt.model), ["provider-a/stalled", "provider-b/working"]);
     });
+  });
+
+  test("background runner spawns one default attempt when no candidates were ever configured", async () => {
+    await withFakeCli(`
+      const fs = require("node:fs");
+      const path = require("node:path");
+      const modelIndex = process.argv.indexOf("--model");
+      fs.writeFileSync(path.join(process.cwd(), "spawned-model"), modelIndex === -1 ? "default" : process.argv[modelIndex + 1]);
+      console.log(${JSON.stringify(successEvent("default ok"))});
+    `, async (dir) => {
+      // No primary model, no fallbacks, no current model: buildModelCandidates()
+      // yields [] and pre-spawn filtering records no skipped attempts. The runner
+      // must mirror the foreground path and run one default-model attempt instead
+      // of silently exiting 1 with no error and no spawn.
+      const result = await runSingleStep({
+        agent: "fake-worker",
+        task: "Do work",
+        inheritProjectContext: false,
+        inheritSkills: false,
+        modelCandidates: [],
+        modelAttempts: [],
+      }, {
+        previousOutput: "",
+        placeholder: "{previous}",
+        cwd: dir,
+        sessionEnabled: false,
+        id: "background-default-attempt",
+        flatIndex: 0,
+        flatStepCount: 1,
+        outputFile: join(dir, "output.txt"),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.error, undefined);
+      assert.match(result.output, /default ok/);
+      assert.equal(readFileSync(join(dir, "spawned-model"), "utf8"), "default");
+      assert.equal(result.modelAttempts?.length, 1);
+      assert.equal(result.modelAttempts?.[0]?.success, true);
+    });
+  });
+
+  test("ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS=0 disables the idle watchdog", async () => {
+    await withFakeCli(`
+      const modelIndex = process.argv.indexOf("--model");
+      const model = modelIndex === -1 ? "default" : process.argv[modelIndex + 1];
+      if (model === "provider-a/stalled") setInterval(() => {}, 1000);
+      else console.log(${JSON.stringify(successEvent("fallback ok"))});
+    `, async (dir) => {
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "0";
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "600";
+      const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+        cwd: dir,
+        runId: "watchdog-idle-disabled",
+        availableModels: [
+          { provider: "provider-a", id: "stalled", fullId: "provider-a/stalled" },
+          { provider: "provider-b", id: "working", fullId: "provider-b/working" },
+        ],
+        knownModelProviders: ["provider-a", "provider-b"],
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.match(result.finalOutput ?? "", /fallback ok/);
+      assert.equal(result.modelAttempts?.length, 2);
+      assert.equal(result.modelAttempts?.[0]?.success, false);
+      // A fully silent child must outlive the (disabled) idle window and only be
+      // bounded by the wall-clock cap.
+      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out after 600ms\./i);
+      assert.doesNotMatch(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
+      assert.equal(result.modelAttempts?.[1]?.success, true);
+    });
+  });
+
+  test("non-numeric watchdog overrides are ignored and defaults apply", async () => {
+    const previousIdle = process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
+    const previousWall = process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
+    process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "soon";
+    process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "-100";
+    try {
+      const config = resolveAttemptTimeoutConfig();
+      assert.equal(config.idleMs, 5 * 60_000);
+      assert.equal(config.wallMs, 0);
+    } finally {
+      if (previousIdle === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS;
+      else process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = previousIdle;
+      if (previousWall === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS;
+      else process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = previousWall;
+    }
   });
 
   test("background runner reports a useful error when every candidate was filtered", async () => {

@@ -64,14 +64,20 @@ export async function runSingleStep(
 	// `!== undefined` is intentional: an explicitly empty array means every candidate
 	// was removed by pre-spawn filtering (see filterSpawnableModelCandidates) and must
 	// be respected — do not "simplify" this back to `.length > 0`, which would spawn a
-	// doomed default attempt. The empty case is surfaced as an error below.
-	const candidates = step.modelCandidates !== undefined
+	// doomed default attempt. Pre-spawn filtering always records each removal as a
+	// skipped attempt in step.modelAttempts, so an empty array WITHOUT skipped attempts
+	// means no candidates were configured at all (no primary model, no fallbacks, no
+	// current model); mirror the foreground path (execution-run-sync.ts `modelsToTry`)
+	// and run one default-model attempt instead of silently exiting with no attempt.
+	// The filtered-to-empty case is surfaced as an error below.
+	const preSkippedAttempts = step.modelAttempts ?? [];
+	const candidates = step.modelCandidates !== undefined && (step.modelCandidates.length > 0 || preSkippedAttempts.length > 0)
 		? step.modelCandidates
 		: step.model
 			? [step.model]
 			: [undefined];
 	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [...(step.modelAttempts ?? [])];
+	const modelAttempts: ModelAttempt[] = [...preSkippedAttempts];
 	const attemptNotes: string[] = modelAttempts
 		.filter((attempt) => !attempt.success && attempt.exitCode === null && attempt.error)
 		.map((attempt) => `[fallback] ${attempt.error}`);

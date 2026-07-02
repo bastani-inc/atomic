@@ -6,6 +6,7 @@
 
 - Added dynamic GitHub Copilot model population from the live CAPI `/models` catalog: picker-enabled, non-disabled plain chat ids are synthesized from catalog metadata (endpoints, capabilities, limits, and display names) while built-in `pi-ai` definitions still win, namespaced enterprise deployments such as `org/deployment/model` are skipped, and cached catalog metadata enables the same models on cold start.
 - Added catalog-driven thinking-level gating for GitHub Copilot models so dynamically synthesized entries and bundled `pi-ai` Copilot models only offer the reasoning levels advertised by CAPI's `capabilities.supports.reasoning_effort` arrays, while models without an effort array keep their existing thinking behavior.
+- Added a subagent watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
 
 ### Fixed
 
@@ -16,6 +17,7 @@
 - Fixed foreground and background subagent model attempts that produced no child activity from hanging indefinitely. Atomic now bounds each candidate with an idle watchdog and wall-clock cap, records retryable timeout attempts so fallback continues, and skips known unauthenticated providers before spawning while preserving unknown/custom providers and the current-model last resort ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
 - Fixed the subagent per-attempt idle watchdog so an in-flight tool execution counts as activity: a slow, quiet tool call (long build or test run with no interim output) is no longer killed as a stalled attempt; the wall-clock cap still bounds such attempts ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
 - Aligned the subagents and workflows model-failure classifiers' direct-message precedence and added a cross-package conformance test suite so the two classifier copies cannot silently drift ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Fixed the background subagent runner to spawn one default-model attempt when no model candidates were ever configured (no primary model, no fallbacks, and no current model), mirroring the foreground path instead of silently exiting 1 with no error and no spawn; an explicitly empty candidate list produced by pre-spawn auth filtering is still respected and surfaced as an error ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
 
 ## [0.9.4-alpha.6] - 2026-07-01
 
