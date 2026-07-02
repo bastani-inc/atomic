@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.4-alpha.8] - 2026-07-02
+
 ### Changed
 
 - Changed the Claude Fable 5 reasoning level from `xhigh` to `high` across all builtin workflow model chains (`ralph` prompt-engineer/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors.
