@@ -27,6 +27,22 @@ export function toModelInfo(model: RegistryModelLike): ModelInfo {
 	};
 }
 
+interface KnownProviderRegistryLike {
+	getAvailable(): ReadonlyArray<{ provider: string }>;
+	/** Older hosts may not expose `getAll()`; callers probe at runtime and fall back
+	 * to `getAvailable()`. */
+	getAll?: () => ReadonlyArray<{ provider: string }>;
+}
+
+/** Collect the distinct providers of every model the registry knows about — including
+ * providers without configured auth — falling back to `getAvailable()` when the host
+ * registry does not expose `getAll()`. Used to pre-filter spawn candidates whose
+ * provider is known but keyless. */
+export function collectKnownModelProviders(registry: KnownProviderRegistryLike): string[] {
+	const models = typeof registry.getAll === "function" ? registry.getAll() : registry.getAvailable();
+	return [...new Set(models.map((model) => model.provider))];
+}
+
 /** Resolve the effective thinking level from a model string (which may contain a known suffix like `:high`)
  * and an explicit thinking config value. Returns `undefined` when no thinking is applicable
  * (e.g. no model was specified, or the model has no suffix and no config was provided). */

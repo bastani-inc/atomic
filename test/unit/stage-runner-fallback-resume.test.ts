@@ -276,3 +276,100 @@ describe("live (retained-session) follow-up resumes on the settled model (#1431 
     ]);
   });
 });
+describe("request/context incompatibility advances the fallback chain to the current selected model (#1580)", () => {
+  const PRIMARY = { provider: "anthropic", id: "model-a" };
+  const FALLBACK = { provider: "anthropic", id: "model-b" };
+  const CURRENT = { provider: "openai", id: "gpt-current" };
+
+  function incompatibleOpts(
+    create: (options: StageSessionCreateOptions) => StageSessionRuntime,
+    createdWith: CreateRecord[],
+  ): StageRunnerOpts {
+    return {
+      stageId: "stage-1580",
+      stageName: "Reviewer",
+      runId: "run-1580",
+      stageOptions: { model: "anthropic/model-a", fallbackModels: ["anthropic/model-b"] },
+      models: {
+        currentModel: "openai/gpt-current",
+        preferredProvider: "anthropic",
+        async listModels() {
+          return [
+            { provider: "anthropic", id: "model-a", fullId: "anthropic/model-a" },
+            { provider: "anthropic", id: "model-b", fullId: "anthropic/model-b" },
+            { provider: "openai", id: "gpt-current", fullId: "openai/gpt-current" },
+          ];
+        },
+      },
+      adapters: {
+        agentSession: {
+          async create(options: StageSessionCreateOptions) {
+            createdWith.push({ model: options?.model, hasSessionManager: options?.sessionManager !== undefined });
+            return create(options);
+          },
+        },
+      },
+    };
+  }
+
+  test("a 400 request-incompatible primary advances to fallback and then the current selected model", async () => {
+    const createdWith: CreateRecord[] = [];
+    const opts = incompatibleOpts((options) => {
+      const model = options?.model as string | undefined;
+      // Primary fails with HTTP 400 (request incompatible).
+      if (model === "anthropic/model-a") {
+        return makeFakeStageSession({ model: PRIMARY, promptError: new Error("400 bad request: unsupported tool") });
+      }
+      // Configured fallback also fails with context-length exceeded (request incompatible).
+      if (model === "anthropic/model-b") {
+        return makeFakeStageSession({ model: FALLBACK, promptError: new Error("context length exceeded for this model") });
+      }
+      // Current selected user model succeeds.
+      return makeFakeStageSession({ model: CURRENT });
+    }, createdWith);
+
+    const ctx = createStageContext(opts);
+    await ctx.prompt("run");
+    await ctx.__dispose();
+
+    // The chain advanced through all candidates including the appended current model.
+    assert.deepEqual(
+      createdWith.map((r) => r.model),
+      ["anthropic/model-a", "anthropic/model-b", "openai/gpt-current"],
+      "request-incompatible failures must advance through candidates to the current selected model",
+    );
+
+    const attempts = ctx.__modelFallbackMeta().modelAttempts ?? [];
+    assert.deepEqual(
+      attempts.map((a) => ({ model: a.model, success: a.success })),
+      [
+        { model: "anthropic/model-a", success: false },
+        { model: "anthropic/model-b", success: false },
+        { model: "openai/gpt-current", success: true },
+      ],
+      "the current selected user model is the final successful fallback after request-incompatible failures",
+    );
+  });
+
+  test("an applicable primary still wins without exercising the fallback chain", async () => {
+    const createdWith: CreateRecord[] = [];
+    const opts = incompatibleOpts(() => {
+      return makeFakeStageSession({ model: PRIMARY });
+    }, createdWith);
+
+    const ctx = createStageContext(opts);
+    await ctx.prompt("run");
+    await ctx.__dispose();
+
+    assert.deepEqual(
+      createdWith.map((r) => r.model),
+      ["anthropic/model-a"],
+      "an applicable primary does not exercise the fallback chain",
+    );
+    const attempts = ctx.__modelFallbackMeta().modelAttempts ?? [];
+    assert.deepEqual(
+      attempts.map((a) => ({ model: a.model, success: a.success })),
+      [{ model: "anthropic/model-a", success: true }],
+    );
+  });
+});

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed subagent model fallback so request/context incompatibility failures (HTTP 400/413/422 bad/unprocessable/payload-too-large request, unsupported tool/parameter, context-length/context-window overflow, `invalid_request`/`bad_request`/`too_large` errors) advance the chain to the next candidate instead of stopping. When none of the configured candidates can serve the request, the subagent now falls back to the current user-selected model. Refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+- Fixed foreground and background subagent model attempts that produced no child activity from hanging indefinitely. Each candidate attempt now has a conservative idle watchdog and absolute wall-clock cap, records a retryable timeout failure, and advances to the next fallback candidate; known providers without configured auth are skipped before spawning while unknown/custom providers and the current-model last resort are still attempted ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+- Fixed the per-attempt idle watchdog so an in-flight tool execution counts as activity: a slow, quiet tool call (long build or test run with no interim output) is no longer killed as a stalled attempt; the wall-clock cap still bounds such attempts ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Aligned the subagents model-failure classifier's direct-message precedence with the workflows classifier (direct-message classification now runs after nested cause/diagnostic traversal and before outer status/code classification), and added a cross-package conformance test suite so the two classifier copies cannot silently drift ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Fixed the background subagent runner to spawn one default-model attempt when no model candidates were ever configured (no primary model, no fallbacks, and no current model), mirroring the foreground path instead of silently exiting 1 with no error and no spawn. An explicitly empty candidate list produced by pre-spawn auth filtering is still respected and surfaced as an error ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+
+### Added
+
+- Added a watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply. The `ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS` SIGTERM→SIGKILL grace period intentionally cannot be disabled — `0`, negative, or non-numeric values fall back to its default so escalation always stays bounded ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+
 ## [0.9.4-alpha.6] - 2026-07-01
 
 ### Changed

@@ -9,6 +9,7 @@ import { resolveChildCwd } from "../../shared/utils.ts";
 import { applyThinkingSuffix, SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
 import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildModelCandidates, resolveModelCandidate } from "../shared/model-fallback.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { NESTED_RUNS_DIR, nestedResultsPath, resolveInheritedNestedRouteFromEnv, resolveNestedParentAddressFromEnv, writeNestedEvent } from "../shared/nested-events.ts";
 import {
 	UNAVAILABLE_SUBAGENT_SKILL_ERROR,
@@ -50,6 +51,7 @@ export function executeAsyncSingle(
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
 	const skillNames = params.skills ?? agentConfig.skills ?? [];
 	const availableModels = params.availableModels;
+	const knownModelProviders = params.knownModelProviders;
 	const { resolved: resolvedSkills, missing: missingSkills } = resolveSkillsWithFallback(skillNames, runnerCwd, ctx.cwd);
 	if (missingSkills.includes("subagent")) return formatAsyncStartError("single", UNAVAILABLE_SUBAGENT_SKILL_ERROR);
 	let systemPrompt = agentConfig.systemPrompt?.trim() ?? "";
@@ -84,9 +86,16 @@ export function executeAsyncSingle(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,
 	);
-	const modelCandidates = buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
+	const rawModelCandidates = buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider, ctx.currentModel)
 		.map((candidate) => applyThinkingSuffix(candidate, agentConfig.thinking))
 		.filter((candidate): candidate is string => typeof candidate === "string");
+	const filteredCandidates = filterSpawnableModelCandidates({
+		candidates: rawModelCandidates,
+		availableModels,
+		knownModelProviders,
+		currentModel: applyThinkingSuffix(ctx.currentModel, agentConfig.thinking),
+	});
+	const modelCandidates = filteredCandidates.candidates;
 	const fastModeSettings = getSubagentCodexFastModeSettings(runnerCwd);
 	const fastModeScope = resolveSubagentCodexFastModeScope(workflowStageSubagentGuard);
 	let spawnResult: AsyncSpawnResult = {};
@@ -103,6 +112,7 @@ export function executeAsyncSingle(
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
 						...resolveSubagentModelFastModeMetadata({ model, modelCandidates, cwd: runnerCwd, settings: fastModeSettings, scope: fastModeScope }),
 						modelCandidates,
+						modelAttempts: filteredCandidates.skippedAttempts,
 						codexFastModeSettings: fastModeSettings,
 						codexFastModeScope: fastModeScope,
 						tools: agentConfig.tools,

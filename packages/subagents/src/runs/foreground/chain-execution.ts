@@ -2,7 +2,7 @@
  * Public foreground chain execution API.
  */
 
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import {
 	createChainDir,
 	isDynamicParallelStep,
@@ -117,6 +117,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	let templates: ResolvedTemplates = resolveChainTemplates(chainSteps);
 	let tuiBehaviorOverrides: Awaited<ReturnType<typeof resolveChainClarification>>["tuiBehaviorOverrides"];
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	const context: ChainRuntimeContext = {
 		params,
 		agents,
@@ -140,6 +141,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		chainSkills,
 		chainDir,
 		availableModels,
+		knownModelProviders,
 		originalTask,
 		chainAgents,
 		chainSteps,

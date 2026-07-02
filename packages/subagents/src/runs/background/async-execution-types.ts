@@ -26,6 +26,7 @@ export interface AsyncChainParams {
 	agents: AgentConfig[];
 	ctx: AsyncExecutionContext;
 	availableModels?: AvailableModelInfo[];
+	knownModelProviders?: string[];
 	cwd?: string;
 	maxOutput?: MaxOutputConfig;
 	artifactsDir?: string;
@@ -62,6 +63,7 @@ export interface AsyncSingleParams {
 	outputMode?: "inline" | "file-only";
 	modelOverride?: string;
 	availableModels?: AvailableModelInfo[];
+	knownModelProviders?: string[];
 	maxSubagentDepth: number;
 	workflowStageSubagentGuard?: boolean;
 	worktreeSetupHook?: string;

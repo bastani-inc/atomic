@@ -20,6 +20,7 @@ import {
 	formatModelAttemptNote,
 	isRetryableModelFailure,
 } from "../shared/model-fallback.ts";
+import { filterSpawnableModelCandidates } from "../shared/model-candidate-filter.ts";
 import { artifactOutputByResult, emptyUsage, modelFailureSignalByResult, sumUsage } from "./execution-utils.ts";
 import { runSingleAttemptWithStructuredOutputRetries } from "./execution-structured-retries.ts";
 import { shouldSuppressIntermediateRetryableFailureUpdate } from "./execution-updates.ts";
@@ -65,7 +66,7 @@ export async function runSync(
 		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
 	}
 
-	const candidates = buildModelCandidates(
+	const rawCandidates = buildModelCandidates(
 		options.modelOverride ?? agent.model,
 		agent.fallbackModels,
 		options.availableModels,
@@ -73,13 +74,20 @@ export async function runSync(
 		options.currentModel,
 		agent.fallbackThinkingLevels,
 	);
+	const filteredCandidates = filterSpawnableModelCandidates({
+		candidates: rawCandidates,
+		availableModels: options.availableModels,
+		knownModelProviders: options.knownModelProviders,
+		currentModel: options.currentModel,
+	});
+	const candidates = filteredCandidates.candidates;
 	const fastModeCwd = options.cwd ?? runtimeCwd;
 	const fastModeSettings = getSubagentCodexFastModeSettings(fastModeCwd);
 	const fastModeScope = resolveSubagentCodexFastModeScope(options.workflowStageSubagentGuard);
 	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
+	const modelAttempts: ModelAttempt[] = [...filteredCandidates.skippedAttempts];
 	const aggregateUsage = emptyUsage();
-	const attemptNotes: string[] = [];
+	const attemptNotes: string[] = filteredCandidates.skippedAttempts.map((attempt) => `[fallback] ${attempt.error}`);
 	const pendingAttemptNotes: string[] = [];
 	let totalToolCount = 0;
 	let totalDurationMs = 0;
@@ -96,7 +104,7 @@ export async function runSync(
 	}
 
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const modelsToTry = candidates.length > 0 ? candidates : (rawCandidates.length === 0 ? [undefined] : []);
 	for (let i = 0; i < modelsToTry.length; i++) {
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
@@ -156,7 +164,9 @@ export async function runSync(
 		exitCode: 1,
 		messages: [],
 		usage: emptyUsage(),
-		error: "Subagent did not produce a result.",
+		error: modelAttempts.length > 0
+			? "No spawnable subagent model candidates after pre-spawn filtering."
+			: "Subagent did not produce a result.",
 	} satisfies SingleResult;
 
 	result.usage = aggregateUsage;

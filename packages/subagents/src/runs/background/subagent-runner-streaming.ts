@@ -12,6 +12,7 @@ import {
 	shouldStartSubagentFinalDrain,
 } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
+import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
 import type { ChildEvent, ChildEventContext, RunPiStreamingResult } from "./subagent-runner-types.ts";
 import { emptyUsage } from "./subagent-runner-utils.ts";
 
@@ -55,6 +56,7 @@ export function runPiStreaming(
 		let assistantError: string | undefined;
 		let assistantFailureSignal: unknown;
 		let interrupted = false;
+		let activeToolExecutions = 0;
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -98,6 +100,11 @@ export function runPiStreaming(
 
 			appendChildEvent(event);
 			onChildEvent?.(event);
+
+			// Track in-flight tool executions so the idle watchdog does not mistake a
+			// slow, quiet tool call for a stalled attempt.
+			if (event.type === "tool_execution_start") activeToolExecutions += 1;
+			else if (event.type === "tool_execution_end") activeToolExecutions = Math.max(0, activeToolExecutions - 1);
 
 			if (event.type === "tool_execution_start" && event.toolName) {
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
@@ -163,7 +170,22 @@ export function runPiStreaming(
 		let finalHardKillTimer: NodeJS.Timeout | undefined;
 		let settled = false;
 		const clearStdioGuard = attachPostExitStdioGuard(child, { idleMs: 2000, hardMs: 8000 });
+		const attemptWatchdog = createAttemptWatchdog({
+			child,
+			isSettled: () => settled,
+			// An in-flight tool execution counts as watchdog activity so a slow, quiet
+			// tool call is not mistaken for a stalled attempt. Caveat: the counter only
+			// decrements on tool_execution_end, so if a tool ends abnormally without its
+			// end event the idle watchdog is deferred indefinitely and the wall-clock cap
+			// becomes the sole backstop — do not lower the wall cap assuming idle fires.
+			isToolActive: () => activeToolExecutions > 0,
+			onTimeout(message) {
+				forcedTerminationSignal = true;
+				error ??= message;
+			},
+		});
 		child.stdout.on("data", (chunk: Buffer) => {
+			attemptWatchdog.activity();
 			const text = chunk.toString();
 			stdoutBuf += text;
 			const lines = stdoutBuf.split("\n");
@@ -172,6 +194,7 @@ export function runPiStreaming(
 		});
 
 		child.stderr.on("data", (chunk: Buffer) => {
+			attemptWatchdog.activity();
 			processStderrText(chunk.toString());
 		});
 		registerInterrupt?.(() => {
@@ -220,6 +243,7 @@ export function runPiStreaming(
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
 			outputStream.end();
@@ -246,6 +270,7 @@ export function runPiStreaming(
 			registerInterrupt?.(undefined);
 			clearDrainTimers();
 			clearStdioGuard();
+			attemptWatchdog.clear();
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);

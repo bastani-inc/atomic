@@ -17,7 +17,7 @@ import {
 import { formatModelAttemptNote, isRetryableModelFailure } from "../shared/model-fallback.ts";
 import type { ArtifactPaths, ModelAttempt } from "../../shared/types.ts";
 import type { RunPiStreamingResult, SingleStepContext, SubagentStep } from "./subagent-runner-types.ts";
-import { fastModeForStepAttempt } from "./subagent-runner-utils.ts";
+import { emptyUsage, fastModeForStepAttempt } from "./subagent-runner-utils.ts";
 import { runPiStreaming } from "./subagent-runner-streaming.ts";
 
 export { outputEntryFromAsyncResult };
@@ -61,14 +61,26 @@ export async function runSingleStep(
 		}
 	}
 
-	const candidates = step.modelCandidates && step.modelCandidates.length > 0
+	// `!== undefined` is intentional: an explicitly empty array means every candidate
+	// was removed by pre-spawn filtering (see filterSpawnableModelCandidates) and must
+	// be respected — do not "simplify" this back to `.length > 0`, which would spawn a
+	// doomed default attempt. Pre-spawn filtering always records each removal as a
+	// skipped attempt in step.modelAttempts, so an empty array WITHOUT skipped attempts
+	// means no candidates were configured at all (no primary model, no fallbacks, no
+	// current model); mirror the foreground path (execution-run-sync.ts `modelsToTry`)
+	// and run one default-model attempt instead of silently exiting with no attempt.
+	// The filtered-to-empty case is surfaced as an error below.
+	const preSkippedAttempts = step.modelAttempts ?? [];
+	const candidates = step.modelCandidates !== undefined && (step.modelCandidates.length > 0 || preSkippedAttempts.length > 0)
 		? step.modelCandidates
 		: step.model
 			? [step.model]
 			: [undefined];
 	const attemptedModels: string[] = [];
-	const modelAttempts: ModelAttempt[] = [];
-	const attemptNotes: string[] = [];
+	const modelAttempts: ModelAttempt[] = [...preSkippedAttempts];
+	const attemptNotes: string[] = modelAttempts
+		.filter((attempt) => !attempt.success && attempt.exitCode === null && attempt.error)
+		.map((attempt) => `[fallback] ${attempt.error}`);
 	const pendingAttemptNotes: string[] = [];
 	const eventsPath = path.join(path.dirname(ctx.outputFile), "events.jsonl");
 	let finalResult: RunPiStreamingResult | undefined;
@@ -203,6 +215,17 @@ export async function runSingleStep(
 			break;
 		}
 		if (!tryNextModel) break;
+	}
+
+	if (!finalResult && candidates.length === 0 && modelAttempts.length > 0) {
+		finalResult = {
+			stderr: "",
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: "No spawnable subagent model candidates after pre-spawn filtering.",
+			finalOutput: "",
+		};
 	}
 
 	const rawOutput = finalResult?.finalOutput ?? "";

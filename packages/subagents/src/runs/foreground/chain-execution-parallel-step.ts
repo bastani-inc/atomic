@@ -78,6 +78,7 @@ export async function runStaticParallelChainStep(input: {
 			agents: context.agents,
 			stepIndex,
 			availableModels: context.availableModels,
+			knownModelProviders: context.knownModelProviders,
 			chainDir: context.chainDir,
 			prev: state.prev,
 			originalTask: context.originalTask,

@@ -117,6 +117,7 @@ export type ModelFallbackFailureKind =
 	| "provider_unavailable"
 	| "network_timeout"
 	| "model_unavailable"
+	| "request_incompatible"
 	| "cancelled"
 	| "task_failure"
 	| "unknown";
@@ -144,6 +145,7 @@ const FALLBACKABLE_FAILURE_KINDS: ReadonlySet<ModelFallbackFailureKind> = new Se
 	"provider_unavailable",
 	"network_timeout",
 	"model_unavailable",
+	"request_incompatible",
 ]);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -222,6 +224,9 @@ function normalizeCode(value: string | number | undefined): string | undefined {
 
 function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | undefined {
 	switch (status) {
+		case 400:
+		case 413: case 422:
+			return "request_incompatible";
 		case 401:
 		case 403:
 			return "auth_on_candidate_provider";
@@ -237,6 +242,15 @@ function kindFromStatus(status: number | undefined): ModelFallbackFailureKind | 
 	}
 }
 
+const REQUEST_INCOMPATIBLE_CODES: ReadonlySet<string> = new Set([
+	"invalid_request", "invalid_request_error", "bad_request", "context_length_exceeded",
+	"request_too_large", "too_large", "request_entity_too_large", "max_tokens",
+	"max_context_length", "context_window_exceeded",
+]);
+function requestIncompatibleKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
+	const normalizedCode = normalizeCode(code);
+	return normalizedCode !== undefined && REQUEST_INCOMPATIBLE_CODES.has(normalizedCode) ? "request_incompatible" : undefined;
+}
 function refusalKindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
 	if (normalizedCode === undefined) return undefined;
@@ -258,6 +272,14 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
 	}
 }
 
+const CODE_KINDS_BY_KIND: ReadonlyArray<readonly [ModelFallbackFailureKind, ReadonlySet<string>]> = [
+	["auth_on_candidate_provider", new Set(["auth", "auth_required", "authentication_required", "unauthorized", "forbidden", "invalid_api_key", "missing_api_key", "invalid_key"])],
+	["network_timeout", new Set(["etimedout", "econnreset", "econnrefused", "enotfound", "eai_again", "fetch_failed", "network_error", "timeout", "timeout_error", "und_err_connect_timeout"])],
+	["rate_limit", new Set(["rate_limit", "rate_limit_exceeded", "too_many_requests", "quota_exceeded"])],
+	["cancelled", new Set(["aborterror", "aborted", "cancelled", "canceled"])],
+	["model_unavailable", new Set(["model_not_found", "model_unavailable", "model_disabled", "unknown_model"])],
+	["provider_unavailable", new Set(["provider_error", "api_error", "service_unavailable", "temporarily_unavailable", "overloaded"])],
+];
 function kindFromCode(code: string | number | undefined): ModelFallbackFailureKind | undefined {
 	const normalizedCode = normalizeCode(code);
 	if (normalizedCode === undefined) return undefined;
@@ -265,54 +287,19 @@ function kindFromCode(code: string | number | undefined): ModelFallbackFailureKi
 	if (refusalKind !== undefined) return refusalKind;
 	const httpStatusKind = kindFromStatus(integerFrom(code));
 	if (httpStatusKind !== undefined) return httpStatusKind;
-
-	switch (normalizedCode) {
-		case "auth":
-		case "auth_required":
-		case "authentication_required":
-		case "unauthorized":
-		case "forbidden":
-		case "invalid_api_key":
-		case "missing_api_key":
-		case "invalid_key":
-			return "auth_on_candidate_provider";
-		case "etimedout":
-		case "econnreset":
-		case "econnrefused":
-		case "enotfound":
-		case "eai_again":
-		case "fetch_failed":
-		case "network_error":
-		case "timeout":
-		case "timeout_error":
-		case "und_err_connect_timeout":
-			return "network_timeout";
-		case "rate_limit":
-		case "rate_limit_exceeded":
-		case "too_many_requests":
-		case "quota_exceeded":
-			return "rate_limit";
-		case "aborterror":
-		case "aborted":
-		case "cancelled":
-		case "canceled":
-			return "cancelled";
-		case "model_not_found":
-		case "model_unavailable":
-		case "model_disabled":
-		case "unknown_model":
-			return "model_unavailable";
-		case "provider_error":
-		case "api_error":
-		case "service_unavailable":
-		case "temporarily_unavailable":
-		case "overloaded":
-			return "provider_unavailable";
-		default:
-			return undefined;
-	}
+	const requestIncompatibleKind = requestIncompatibleKindFromCode(code);
+	if (requestIncompatibleKind !== undefined) return requestIncompatibleKind;
+	return CODE_KINDS_BY_KIND.find(([_, codes]) => codes.has(normalizedCode))?.[0];
 }
 
+const REQUEST_INCOMPATIBLE_FAILURE_PATTERNS: readonly RegExp[] = [
+	/\bcontext[_\s-]?(?:length|window)(?:[_\s-]?exceeded)?\b/i,
+	/\bmax[_\s-]?(?:context|tokens?)\b/i,
+	/\b(?:request(?:[_\s-]?entity)?[_\s-]?too|too)[_\s-]?large\b/i,
+	/\b(?:unsupported|unknown|invalid)\s+(?:tool|parameter|function)\b/i,
+	/\b(?:tool|parameter|function)\s+(?:not\s+(?:supported|found|allowed)|unknown|invalid)\b/i,
+	/\b(?:invalid[_\s-]?request(?:[_\s-]?error)?|bad[_\s-]?request)\b/i,
+];
 const PROVIDER_REFUSAL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/\bfinish[_\s-]?reason\b[^\n]*\bcontent[_\s-]?filter\b/i,
 	/\bcontent[_\s-]?filter(?:ed|ing)?\b/i,
@@ -335,6 +322,7 @@ function refusalKindFromMessage(message: string): ModelFallbackFailureKind | und
 function fallbackKindFromMessage(message: string, name: string | undefined): ModelFallbackFailureKind | undefined {
 	const refusalKind = refusalKindFromMessage(message);
 	if (refusalKind !== undefined) return refusalKind;
+	if (REQUEST_INCOMPATIBLE_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return "request_incompatible";
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
 	if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
@@ -372,14 +360,20 @@ function makeSignal(
 	};
 }
 
-function fallbackSignalFromMessage(
+function fallbackSignalForMessage(
+	message: string | undefined,
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
-	const message = modelFailureMessage(value);
-	if (!message.trim()) return undefined;
+	if (message === undefined || message.trim().length === 0) return undefined;
 	const kind = fallbackKindFromMessage(message, errorName(value));
 	return kind === undefined ? undefined : makeSignal(kind, value, source);
+}
+function fallbackSignalFromMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+	return fallbackSignalForMessage(modelFailureMessage(value), value, source);
+}
+function fallbackSignalFromDirectMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+	return fallbackSignalForMessage(directMessageFrom(value), value, source);
 }
 
 function classifyAssistantRefusalSignal(
@@ -433,6 +427,12 @@ function structuredSignal(
 		if (isRefusalSignal(causeSignal)) return causeSignal;
 		firstNestedFallbackSignal ??= causeSignal;
 	}
+	// Direct-message classification runs after nested traversal so a generic wrapper
+	// ("invalid request"/"400 bad request") cannot mask a non-retryable nested signal.
+	// Kept in the same position as the workflows classifier so the two copies stay
+	// behaviorally parallel (see test/unit/model-fallback-classifier-conformance.test.ts).
+	const directMessageSignal = fallbackSignalFromDirectMessage(value, source);
+	if (directMessageSignal !== undefined) return directMessageSignal;
 	const statusKind = kindFromStatus(statusFrom(value));
 	if (statusKind !== undefined) return makeSignal(statusKind, value, source);
 	if (codeKind !== undefined) return makeSignal(codeKind, value, source);
@@ -463,8 +463,7 @@ function messageFromUnknown(value: unknown, seen: Set<unknown>): string | undefi
 	const status = statusFrom(value);
 	if (status !== undefined) return `Model request failed with status ${status}`;
 	const code = codeFrom(value);
-	if (code !== undefined) return `Model request failed with code ${String(code)}`;
-	return undefined;
+	return code !== undefined ? `Model request failed with code ${String(code)}` : undefined;
 }
 export function modelFailureMessage(error: unknown): string {
 	const structuredMessage = messageFromUnknown(error, new Set());

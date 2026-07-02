@@ -126,6 +126,7 @@ export async function runSequentialChainStep(input: {
 		nestedRoute: context.params.nestedRoute,
 		modelOverride: effectiveModel,
 		availableModels: context.availableModels,
+		knownModelProviders: context.knownModelProviders,
 		currentModel: currentModelFullId(context.ctx.model),
 		preferredModelProvider: context.ctx.model?.provider,
 		skills: behavior.skills === false ? [] : behavior.skills,

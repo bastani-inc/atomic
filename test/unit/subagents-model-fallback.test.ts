@@ -216,4 +216,51 @@ describe("subagent model fallback helpers", () => {
     assert.equal(isRetryableModelFailure({ status: 503, message: "shell command failed" }), false);
     assert.equal(isRetryableModelFailure("command failed: bun test"), false);
   });
+
+  test("retry classifier treats request/context incompatibility as fallbackable (#1580)", () => {
+    assert.equal(normalizeModelFailureSignal({ status: 400, message: "bad request" }).kind, "request_incompatible");
+    assert.equal(isRetryableModelFailure({ status: 400, message: "bad request" }), true);
+    assert.equal(normalizeModelFailureSignal({ statusCode: 422, message: "unprocessable" }).kind, "request_incompatible");
+    assert.equal(isRetryableModelFailure({ statusCode: 422, message: "unprocessable" }), true);
+    assert.equal(normalizeModelFailureSignal({ code: "422", message: "unprocessable" }).kind, "request_incompatible");
+  });
+
+  test("retry classifier treats HTTP 413 payload/request-too-large as fallbackable (#1580)", () => {
+    const cases: ReadonlyArray<{ label: string; failure: unknown }> = [
+      { label: "status 413", failure: { status: 413, message: "payload too large" } },
+      { label: "statusCode 413", failure: { statusCode: 413, message: "request entity too large" } },
+      { label: "httpStatus 413", failure: { httpStatus: 413, message: "too large" } },
+      { label: "code 413 numeric", failure: { code: 413, message: "payload too large" } },
+      { label: "code 413 string", failure: { code: "413", message: "too large" } },
+    ];
+    for (const { label, failure } of cases) {
+      assert.equal(normalizeModelFailureSignal(failure).kind, "request_incompatible", label);
+      assert.equal(isRetryableModelFailure(failure), true, label);
+    }
+  });
+
+  test("retry classifier classifies request-incompatible codes and messages as fallbackable (#1580)", () => {
+    for (const code of ["invalid_request_error", "context_length_exceeded", "bad_request", "too_large", "max_tokens"]) {
+      assert.equal(normalizeModelFailureSignal({ code, message: "localized" }).kind, "request_incompatible", `code ${code}`);
+      assert.equal(isRetryableModelFailure({ code, message: "localized" }), true, `code ${code}`);
+    }
+    const messages = [
+      "context length exceeded for this model",
+      "request too large",
+      "unsupported tool: foo",
+      "invalid_request_error",
+      "bad request",
+    ];
+    for (const message of messages) {
+      assert.equal(isRetryableModelFailure(new Error(message)), true, `message "${message}"`);
+      assert.equal(normalizeModelFailureSignal(new Error(message)).kind, "request_incompatible", `message "${message}"`);
+    }
+  });
+
+  test("request incompatibility does not outrank refusals or cancellations (#1580)", () => {
+    assert.equal(isRetryableModelFailure({ status: 400, stopReason: "aborted", errorMessage: "aborted" }), false);
+    assert.equal(isRetryableModelFailure({ statusCode: 422, name: "AbortError", message: "aborted by user" }), false);
+    assert.equal(isRetryableModelFailure({ httpStatus: 400, message: "content_filter" }), false);
+    assert.equal(isRetryableModelFailure({ status: 422, diagnostics: [{ error: { message: "command failed" } }] }), false);
+  });
 });

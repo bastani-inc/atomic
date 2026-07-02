@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { APP_NAME } from "@bastani/atomic";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import {
@@ -76,6 +76,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		currentModel: currentModelFullId(ctx.model),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
@@ -110,6 +111,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agents,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -139,6 +141,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agents,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -181,6 +184,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			agentConfig: a,
 			ctx: asyncCtx,
 			availableModels,
+			knownModelProviders,
 			cwd: effectiveCwd,
 			maxOutput: params.maxOutput,
 			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,

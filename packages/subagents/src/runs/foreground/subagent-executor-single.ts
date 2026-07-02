@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { APP_NAME } from "@bastani/atomic";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
@@ -76,6 +76,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 
 	const currentProvider = ctx.model?.provider;
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
+	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	let task = params.task ?? "";
 	let modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
@@ -145,6 +146,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 				agentConfig,
 				ctx: asyncCtx,
 				availableModels,
+				knownModelProviders,
 				cwd: effectiveCwd,
 				maxOutput: params.maxOutput,
 				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
@@ -246,6 +248,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		index: 0,
 		modelOverride,
 		availableModels,
+		knownModelProviders,
 		preferredModelProvider: currentProvider,
 		currentModel: currentModelFullId(ctx.model),
 		skills: effectiveSkills,
