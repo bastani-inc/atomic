@@ -26,6 +26,10 @@ updates:
       labels:
           - "dependencies"
           - "bun"
+      ignore:
+          # @types/node is pinned via a root `overrides` entry to match
+          # upstream Pi's resolved lockfile (see #1489); bumps here are no-ops.
+          - dependency-name: "@types/node"
 
     # Rust crates (workspace)
     - package-ecosystem: "cargo"
