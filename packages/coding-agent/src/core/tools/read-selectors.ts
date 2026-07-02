@@ -129,12 +129,28 @@ function parseLineRangeList(value: string, invalid: (message: string) => void): 
 	}
 	return ranges;
 }
+function isBareLineNumber(value: string): boolean { return value.length > 0 && [...value].every(isAsciiDigit); }
 function extractTrailingLineRange(value: string, invalid: (message: string) => void): { path: string; ranges: ReadLineRange[] } | undefined {
 	const colonIndex = value.lastIndexOf(":");
 	if (colonIndex < 0) return undefined;
 	const rangeText = value.slice(colonIndex + 1);
 	const ranges = parseLineRangeList(rangeText, invalid);
-	return ranges ? { path: value.slice(0, colonIndex), ranges } : undefined;
+	if (!ranges) return undefined;
+	const path = value.slice(0, colonIndex);
+	// Support the `file:START:END` (and grep-style `file:LINE:COL`) colon
+	// convention: a trailing bare-number segment preceded by another bare-number
+	// segment reads as START..END. Without this the leading number stays glued to
+	// the path (`file:395`) and produces a broken filename.
+	const prevColon = path.lastIndexOf(":");
+	if (prevColon >= 0 && ranges.length === 1 && ranges[0]!.end === undefined && isBareLineNumber(rangeText)) {
+		const prevSegment = path.slice(prevColon + 1);
+		if (isBareLineNumber(prevSegment)) {
+			const start = Number.parseInt(prevSegment, 10);
+			const end = ranges[0]!.start;
+			if (start >= 1) return { path: path.slice(0, prevColon), ranges: [end >= start ? { start, end } : { start }] };
+		}
+	}
+	return { path, ranges };
 }
 function selectorFromRanges(path: string, ranges: ReadLineRange[], raw: boolean, conflicts: boolean): ReadLineSelector {
 	if (ranges.length === 1 && ranges[0]!.end === undefined) return { path, offset: ranges[0]!.start, raw, conflicts };

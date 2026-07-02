@@ -39,6 +39,19 @@ describe("hashline file tool parity", () => {
 		expect(splitReadLineSelector("http://localhost:3000")).toMatchObject({ path: "http://localhost:3000" });
 	});
 
+	it("reads colon-delimited START:END selectors as a line range instead of a broken path", async () => {
+		const dir = await createTempDir();
+		await writeFile(join(dir, "lines.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
+		const read = createReadToolDefinition(dir, { hashlineStore });
+		const output = text(await read.execute("read-colon-range", { path: "lines.txt:2:4" }, undefined, undefined, {} as ExtensionContext));
+		expect(output).toContain("2:two");
+		expect(output).toContain("4:four");
+		expect(output).not.toContain("no such file or directory");
+		expect(splitReadLineSelector("/abs/Sat.Solver.fst:395:470")).toMatchObject({ path: "/abs/Sat.Solver.fst", ranges: [{ start: 395, end: 470 }] });
+		expect(splitReadLineSelector("/abs/Sat.Solver.fst:395")).toMatchObject({ path: "/abs/Sat.Solver.fst", offset: 395 });
+		expect(splitReadLineSelector("/abs/file.ts:40:8")).toMatchObject({ path: "/abs/file.ts", offset: 40 });
+	});
+
 	it("raw bounded reads do not include reference context", async () => {
 		const dir = await createTempDir();
 		await writeFile(join(dir, "lines.txt"), "one\ntwo\nthree\nfour\nfive\nsix\n", "utf8");
