@@ -1,7 +1,7 @@
 import { reviewDecisionSchema } from "./ralph-core.js";
 
 export const promptEngineerModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
@@ -20,7 +20,7 @@ export const promptEngineerModelConfig = {
       "github-copilot/gemini-3.1-pro-preview (1m):high",
       "google/gemini-3.1-pro-preview:high",
       "google-vertex/gemini-3.1-pro-preview:high",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
@@ -93,7 +93,7 @@ export const orchestratorModelConfig = {
 };
 
 export const reviewerAModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
@@ -112,7 +112,7 @@ export const reviewerAModelConfig = {
       "github-copilot/gemini-3.1-pro-preview (1m):high",
       "google/gemini-3.1-pro-preview:high",
       "google-vertex/gemini-3.1-pro-preview:high",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
@@ -130,7 +130,7 @@ export const reviewerBModelConfig = {
     fallbackModels: [
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "anthropic/claude-fable-5:xhigh",
+      "anthropic/claude-fable-5:high",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
       "zai/glm-5.2:xhigh",
@@ -146,7 +146,7 @@ export const reviewerBModelConfig = {
       "google/gemini-3.1-pro-preview:high",
       "google-vertex/gemini-3.1-pro-preview:high",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/anthropic/claude-sonnet-5:high",
@@ -171,14 +171,14 @@ export const reviewerCModelConfig = {
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "anthropic/claude-fable-5:xhigh",
+      "anthropic/claude-fable-5:high",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
       "github-copilot/claude-sonnet-5 (1m):high",
       "anthropic/claude-sonnet-5:high",
       "github-copilot/claude-sonnet-4.6 (1m):high",
       "anthropic/claude-sonnet-4-6:high",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/anthropic/claude-sonnet-5:high",
       "openrouter/anthropic/claude-sonnet-4-6:high",

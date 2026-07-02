@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the Claude Fable 5 reasoning level from `xhigh` to `high` across all builtin workflow model chains (`ralph` prompt-engineer/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors.
+
+### Fixed
+
+- Fixed the builtin `goal` reviewer and `deep-research-codebase` planner model fallback chains missing the OpenRouter mirror of their primary model: `openrouter/anthropic/claude-fable-5` is now the first OpenRouter fallback candidate in both chains, matching the ordering already used by the `ralph` prompt-engineer/reviewer and `open-claude-design` chains.
+
 ## [0.9.4-alpha.7] - 2026-07-02
 
 ### Fixed

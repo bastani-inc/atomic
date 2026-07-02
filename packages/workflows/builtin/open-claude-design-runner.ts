@@ -75,7 +75,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   }
 
   const designModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
@@ -85,7 +85,7 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "github-copilot/claude-sonnet-4.6 (1m):high",
       "anthropic/claude-sonnet-5:high",
       "anthropic/claude-sonnet-4-6:high",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/anthropic/claude-sonnet-5:high",
