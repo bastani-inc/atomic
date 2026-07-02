@@ -25,9 +25,9 @@ describeModelRegistry((context) => {
 		// The live CAPI catalog (only populated when the user has the GitHub Copilot provider) drives
 		// which Copilot models expose a selectable long-context window. Seed it like a successful fetch.
 		const copilotCatalog = new Map([
-			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000 }],
-			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
-			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }],
+			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000 }],
+			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
+			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			[
 				"claude-sonnet-5",
 				{
@@ -36,7 +36,7 @@ describeModelRegistry((context) => {
 					maxInputTokens: 936_000,
 					displayName: "Claude Sonnet 5",
 					supportedEndpoints: ["/v1/messages", "/chat/completions"],
-					supports: { adaptiveThinking: true, reasoningEffort: true, vision: true, toolCalls: true },
+					supports: { adaptiveThinking: true, reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"], minThinkingBudget: true, maxThinkingBudget: true, vision: true, toolCalls: true },
 					limits: { maxPromptTokens: 936_000, maxOutputTokens: 64_000, maxContextWindowTokens: 1_000_000 },
 					modelPickerEnabled: true,
 					policyState: "enabled",
@@ -50,7 +50,7 @@ describeModelRegistry((context) => {
 					maxInputTokens: 128_000,
 					displayName: "MAI-Code-1-Flash",
 					supportedEndpoints: ["/responses"],
-					supports: { reasoningEffort: true, toolCalls: true },
+					supports: { reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high"], toolCalls: true },
 					limits: { maxPromptTokens: 128_000, maxOutputTokens: 128_000, maxContextWindowTokens: 256_000 },
 					modelPickerEnabled: true,
 					policyState: "enabled",
@@ -72,6 +72,7 @@ describeModelRegistry((context) => {
 			expect(gpt55?.defaultContextWindow).toBe(272_000);
 			expect(gpt55?.contextWindowOptions).toEqual([272_000, 1_050_000]);
 			expect(gpt55?.maxInputTokens).toBe(922_000);
+			expect(gpt55?.maxTokens).toBe(128_000);
 			expect(gpt55 ? getSupportedContextWindows(gpt55) : []).toEqual([272_000, 1_050_000]);
 
 			// claude/gemini: 200k default / 1M long; 936k prompt cap carried internally.
@@ -80,6 +81,7 @@ describeModelRegistry((context) => {
 			expect(claude?.defaultContextWindow).toBe(200_000);
 			expect(claude?.contextWindowOptions).toEqual([200_000, 1_000_000]);
 			expect(claude?.maxInputTokens).toBe(936_000);
+			expect(claude?.maxTokens).toBe(64_000);
 
 			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
 			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
@@ -110,6 +112,7 @@ describeModelRegistry((context) => {
 			expect(maiCodeFlash.provider).toBe("github-copilot");
 			expect(maiCodeFlash.api).toBe("openai-responses");
 			expect(maiCodeFlash.reasoning).toBe(true);
+			expect(maiCodeFlash.thinkingLevelMap).toEqual({ off: null, minimal: "low" });
 			expect(maiCodeFlash.input).toEqual(["text"]);
 			expect(maiCodeFlash.contextWindow).toBe(128_000);
 			expect(maiCodeFlash.contextWindowOptions).toBeUndefined();

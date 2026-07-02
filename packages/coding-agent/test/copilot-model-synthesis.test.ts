@@ -13,7 +13,7 @@ function chatEntry(overrides: Partial<CopilotModelContext> = {}): CopilotModelCo
 		contextWindow: 128_000,
 		displayName: "Fixture Model",
 		supportedEndpoints: ["/responses"],
-		supports: { reasoningEffort: true, toolCalls: true },
+		supports: { reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high"], toolCalls: true },
 		limits: { maxPromptTokens: 128_000, maxOutputTokens: 64_000, maxContextWindowTokens: 192_000 },
 		modelPickerEnabled: true,
 		policyState: "enabled",
@@ -33,7 +33,7 @@ describe("synthesizeCopilotCatalogModels", () => {
 					contextWindowOptions: [200_000, 1_000_000],
 					maxInputTokens: 936_000,
 					supportedEndpoints: ["/v1/messages", "/chat/completions"],
-					supports: { adaptiveThinking: true, reasoningEffort: true, vision: true, toolCalls: true },
+					supports: { adaptiveThinking: true, reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"], minThinkingBudget: true, maxThinkingBudget: true, vision: true, toolCalls: true },
 					limits: { maxPromptTokens: 936_000, maxOutputTokens: 64_000, maxContextWindowTokens: 1_000_000 },
 				}),
 			],
@@ -44,7 +44,7 @@ describe("synthesizeCopilotCatalogModels", () => {
 					contextWindow: 128_000,
 					maxInputTokens: 128_000,
 					supportedEndpoints: ["/responses"],
-					supports: { reasoningEffort: true, toolCalls: true },
+					supports: { reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high"], toolCalls: true },
 					limits: { maxPromptTokens: 128_000, maxOutputTokens: 128_000, maxContextWindowTokens: 256_000 },
 				}),
 			],
@@ -68,6 +68,7 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.equal(mai?.api, "openai-responses");
 		assert.deepEqual(mai?.input, ["text"]);
 		assert.equal(mai?.reasoning, true);
+		assert.deepEqual(mai?.thinkingLevelMap, { off: null, minimal: "low" });
 		assert.equal(mai?.maxTokens, 128_000);
 	});
 

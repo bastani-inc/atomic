@@ -8,6 +8,7 @@ export interface CopilotModelContext {
 	contextWindow: number;
 	contextWindowOptions?: readonly number[];
 	maxInputTokens?: number;
+	maxTokens?: number;
 	displayName?: string;
 	vendor?: string;
 	supportedEndpoints?: readonly string[];
@@ -24,6 +25,7 @@ export interface CopilotModelSupports {
 	minThinkingBudget?: boolean;
 	parallelToolCalls?: boolean;
 	reasoningEffort?: boolean;
+	reasoningEffortLevels?: readonly string[];
 	streaming?: boolean;
 	structuredOutputs?: boolean;
 	toolCalls?: boolean;
@@ -144,17 +146,11 @@ function toPositiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-/** Raw token limits parsed from a CAPI model entry. */
 export interface CopilotModelLimits {
-	/** `capabilities.limits.max_prompt_tokens` — maximum prompt/input budget (the hard input cap). */
 	maxPromptTokens?: number;
-	/** `capabilities.limits.max_context_window_tokens` — total context capacity (the displayed long tier). */
 	maxContextWindowTokens?: number;
-	/** `capabilities.limits.max_output_tokens` — output reserve; derives the input cap when `max_prompt_tokens` is absent. */
 	maxOutputTokens?: number;
-	/** `billing.token_prices.default.context_max` — default-tier prompt threshold. */
 	defaultContextMax?: number;
-	/** `billing.token_prices.long_context.context_max` — long-context prompt threshold. */
 	longContextMax?: number;
 }
 
@@ -164,24 +160,28 @@ function stringArray(value: unknown): readonly string[] | undefined {
 	return strings.length > 0 ? strings : undefined;
 }
 
-function booleanFlag(record: Record<string, unknown> | undefined, key: string): boolean | undefined {
+function supportedFlag(record: Record<string, unknown> | undefined, key: string): boolean | undefined {
 	const value = record?.[key];
-	return typeof value === "boolean" ? value : undefined;
+	if (typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) && value > 0;
+	if (Array.isArray(value)) return value.length > 0;
+	return undefined;
 }
 
 function parseCopilotSupports(value: unknown): CopilotModelSupports | undefined {
 	const record = asRecord(value);
 	if (!record) return undefined;
 	const supports: CopilotModelSupports = {
-		adaptiveThinking: booleanFlag(record, "adaptive_thinking"),
-		maxThinkingBudget: booleanFlag(record, "max_thinking_budget"),
-		minThinkingBudget: booleanFlag(record, "min_thinking_budget"),
-		parallelToolCalls: booleanFlag(record, "parallel_tool_calls"),
-		reasoningEffort: booleanFlag(record, "reasoning_effort"),
-		streaming: booleanFlag(record, "streaming"),
-		structuredOutputs: booleanFlag(record, "structured_outputs"),
-		toolCalls: booleanFlag(record, "tool_calls"),
-		vision: booleanFlag(record, "vision"),
+		adaptiveThinking: supportedFlag(record, "adaptive_thinking"),
+		maxThinkingBudget: supportedFlag(record, "max_thinking_budget"),
+		minThinkingBudget: supportedFlag(record, "min_thinking_budget"),
+		parallelToolCalls: supportedFlag(record, "parallel_tool_calls"),
+		reasoningEffort: supportedFlag(record, "reasoning_effort"),
+		reasoningEffortLevels: stringArray(record.reasoning_effort),
+		streaming: supportedFlag(record, "streaming"),
+		structuredOutputs: supportedFlag(record, "structured_outputs"),
+		toolCalls: supportedFlag(record, "tool_calls"),
+		vision: supportedFlag(record, "vision"),
 	};
 	return Object.values(supports).some((flag) => flag !== undefined) ? supports : undefined;
 }
@@ -223,11 +223,12 @@ export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotM
 			limits.longContextMax;
 		// Only carry the cap when the displayed long window actually exceeds it (the branded-total
 		// case); when they coincide there is no gap and the input budget is just the window.
-		return longWindow > inputCap
+		const resolved: CopilotModelContext = longWindow > inputCap
 			? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
 			: { contextWindow: base, contextWindowOptions: [base, longWindow] };
+		return limits.maxOutputTokens !== undefined ? { ...resolved, maxTokens: limits.maxOutputTokens } : resolved;
 	}
-	return { contextWindow: base };
+	return limits.maxOutputTokens !== undefined ? { contextWindow: base, maxTokens: limits.maxOutputTokens } : { contextWindow: base };
 }
 
 /**
@@ -361,15 +362,16 @@ function sanitizeCachedSupports(value: unknown): CopilotModelSupports | undefine
 	const record = asRecord(value);
 	if (!record) return undefined;
 	const supports: CopilotModelSupports = {
-		adaptiveThinking: booleanFlag(record, "adaptiveThinking"),
-		maxThinkingBudget: booleanFlag(record, "maxThinkingBudget"),
-		minThinkingBudget: booleanFlag(record, "minThinkingBudget"),
-		parallelToolCalls: booleanFlag(record, "parallelToolCalls"),
-		reasoningEffort: booleanFlag(record, "reasoningEffort"),
-		streaming: booleanFlag(record, "streaming"),
-		structuredOutputs: booleanFlag(record, "structuredOutputs"),
-		toolCalls: booleanFlag(record, "toolCalls"),
-		vision: booleanFlag(record, "vision"),
+		adaptiveThinking: supportedFlag(record, "adaptiveThinking"),
+		maxThinkingBudget: supportedFlag(record, "maxThinkingBudget"),
+		minThinkingBudget: supportedFlag(record, "minThinkingBudget"),
+		parallelToolCalls: supportedFlag(record, "parallelToolCalls"),
+		reasoningEffort: supportedFlag(record, "reasoningEffort"),
+		reasoningEffortLevels: stringArray(record.reasoningEffortLevels),
+		streaming: supportedFlag(record, "streaming"),
+		structuredOutputs: supportedFlag(record, "structuredOutputs"),
+		toolCalls: supportedFlag(record, "toolCalls"),
+		vision: supportedFlag(record, "vision"),
 	};
 	return Object.values(supports).some((flag) => flag !== undefined) ? supports : undefined;
 }
@@ -392,8 +394,10 @@ function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined 
 	const contextWindow = toPositiveInt(record?.contextWindow);
 	if (contextWindow === undefined) return undefined;
 	const maxInputTokens = toPositiveInt(record?.maxInputTokens);
+	const maxTokens = toPositiveInt(record?.maxTokens);
 	const rawOptions = record?.contextWindowOptions;
 	const base: CopilotModelContext = maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
+	if (maxTokens !== undefined) base.maxTokens = maxTokens;
 	if (Array.isArray(rawOptions)) {
 		const options = rawOptions.map(toPositiveInt).filter((n): n is number => n !== undefined);
 		if (options.length > 1) base.contextWindowOptions = options;
@@ -415,7 +419,6 @@ function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined 
 	};
 }
 
-/** Read a fresh, host-matching catalog from the cache file, or `undefined` if missing/stale/invalid. */
 export function readCopilotCatalogCache(
 	path: string,
 	options: ReadCopilotCatalogCacheOptions,
@@ -443,7 +446,6 @@ export function readCopilotCatalogCache(
 	return catalog;
 }
 
-/** Write the catalog to the cache file (creating parent dirs). Best-effort; never throws. */
 export function writeCopilotCatalogCache(
 	path: string,
 	baseUrl: string,
@@ -464,12 +466,10 @@ export function writeCopilotCatalogCache(
 	}
 }
 
-/** Host component of a base URL, for matching {@link readCopilotCatalogCache} `host`. */
 export function copilotCatalogCacheHost(baseUrl: string): string {
 	return hostFromBaseUrl(baseUrl);
 }
 
-/** Standard on-disk cache path for the Copilot model catalog under an agent directory. */
 export function copilotCatalogCachePath(agentDir: string): string {
 	return join(agentDir, "cache", "copilot-models.json");
 }

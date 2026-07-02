@@ -41,7 +41,7 @@ function capiBody() {
 				capabilities: {
 					type: "chat",
 					limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 },
-					supports: { reasoning_effort: true, vision: true, tool_calls: true },
+					supports: { reasoning_effort: ["low", "medium", "high", "xhigh"], vision: true, tool_calls: true },
 				},
 				supported_endpoints: ["/responses"],
 				billing: { token_prices: { default: { context_max: 272_000 }, long_context: { context_max: 922_000 } } },
@@ -60,7 +60,7 @@ function capiBody() {
 				capabilities: {
 					type: "chat",
 					limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 },
-					supports: { adaptive_thinking: true, reasoning_effort: true, vision: true, tool_calls: true },
+					supports: { adaptive_thinking: true, reasoning_effort: ["low", "medium", "high", "xhigh", "max"], min_thinking_budget: 1024, max_thinking_budget: 64_000, vision: true, tool_calls: true },
 				},
 				supported_endpoints: ["/v1/messages", "/chat/completions"],
 				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
@@ -74,7 +74,7 @@ function capiBody() {
 				capabilities: {
 					type: "chat",
 					limits: { max_output_tokens: 128_000, max_prompt_tokens: 128_000, max_context_window_tokens: 256_000 },
-					supports: { reasoning_effort: true, tool_calls: true },
+					supports: { reasoning_effort: ["low", "medium", "high"], tool_calls: true },
 				},
 				supported_endpoints: ["/responses"],
 			},
@@ -111,6 +111,7 @@ describe("resolveCopilotModelContext", () => {
 				contextWindow: 272_000,
 				contextWindowOptions: [272_000, 1_050_000],
 				maxInputTokens: 922_000,
+				maxTokens: 128_000,
 			},
 		);
 	});
@@ -136,6 +137,7 @@ describe("resolveCopilotModelContext", () => {
 				contextWindow: 200_000,
 				contextWindowOptions: [200_000, 1_000_000],
 				maxInputTokens: 936_000,
+				maxTokens: 64_000,
 			},
 		);
 	});
@@ -199,6 +201,11 @@ describe("parseCopilotModelCatalog", () => {
 		assert.equal(catalog.get("claude-sonnet-5")?.displayName, "Claude Sonnet 5");
 		assert.deepEqual(catalog.get("claude-sonnet-5")?.supportedEndpoints, ["/v1/messages", "/chat/completions"]);
 		assert.equal(catalog.get("claude-sonnet-5")?.supports?.adaptiveThinking, true);
+		assert.deepEqual(catalog.get("claude-sonnet-5")?.supports?.reasoningEffortLevels, ["low", "medium", "high", "xhigh", "max"]);
+		assert.equal(catalog.get("claude-sonnet-5")?.supports?.minThinkingBudget, true);
+		assert.equal(catalog.get("claude-sonnet-5")?.supports?.maxThinkingBudget, true);
+		assert.equal(catalog.get("mai-code-1-flash-picker")?.supports?.reasoningEffort, true);
+		assert.deepEqual(catalog.get("mai-code-1-flash-picker")?.supports?.reasoningEffortLevels, ["low", "medium", "high"]);
 		assert.equal(catalog.get("claude-sonnet-5")?.modelPickerEnabled, true);
 		assert.equal(catalog.get("claude-sonnet-5")?.policyState, "enabled");
 		assert.equal(catalog.get("claude-sonnet-5")?.type, "chat");
@@ -334,6 +341,8 @@ describe("disk cache", () => {
 		assert.deepEqual(contextOnly(read?.get("mystery-model")), { contextWindow: 256_000 });
 		assert.equal(read?.get("claude-sonnet-5")?.displayName, "Claude Sonnet 5");
 		assert.deepEqual(read?.get("claude-sonnet-5")?.supportedEndpoints, ["/v1/messages", "/chat/completions"]);
+		assert.equal(read?.get("claude-sonnet-5")?.maxTokens, 64_000);
+		assert.deepEqual(read?.get("claude-sonnet-5")?.supports?.reasoningEffortLevels, ["low", "medium", "high", "xhigh", "max"]);
 	});
 
 	test("ignores a stale catalog", () => {

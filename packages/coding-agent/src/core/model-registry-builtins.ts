@@ -50,7 +50,7 @@ function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
 	if (model.provider !== "github-copilot") return model;
 	const context = getActiveCopilotModelCatalog().get(model.id);
 	if (!context) return model;
-	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens };
+	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens, maxTokens: context.maxTokens ?? model.maxTokens };
 	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
 		return withContextWindowOptions(base, context.contextWindowOptions);
 	}

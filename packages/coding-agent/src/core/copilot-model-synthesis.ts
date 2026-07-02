@@ -11,7 +11,7 @@ const ENDPOINT_API_PREFERENCE = [
 
 const ZERO_COST: Model<Api>["cost"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const ADAPTIVE_THINKING_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { minimal: "low", xhigh: "max" };
-const REASONING_EFFORT_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { off: null, xhigh: "xhigh" };
+const REASONING_EFFORT_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { off: null, minimal: "low", xhigh: "xhigh" };
 
 export interface CopilotModelTemplate {
 	baseUrl: string;
@@ -29,9 +29,18 @@ function hasReasoning(entry: CopilotModelContext): boolean {
 	);
 }
 
+function reasoningEffortThinkingLevelMap(entry: CopilotModelContext): Model<Api>["thinkingLevelMap"] {
+	const levels = new Set(entry.supports?.reasoningEffortLevels ?? []);
+	if (levels.size === 0) return REASONING_EFFORT_LEVEL_MAP;
+	const map: Model<Api>["thinkingLevelMap"] = { off: null, minimal: levels.has("low") ? "low" : null };
+	if (levels.has("xhigh")) map.xhigh = "xhigh";
+	else if (levels.has("max")) map.xhigh = "max";
+	return map;
+}
+
 function thinkingLevelMapFor(entry: CopilotModelContext): Model<Api>["thinkingLevelMap"] | undefined {
 	if (entry.supports?.adaptiveThinking) return ADAPTIVE_THINKING_LEVEL_MAP;
-	if (entry.supports?.reasoningEffort) return REASONING_EFFORT_LEVEL_MAP;
+	if (entry.supports?.reasoningEffort) return reasoningEffortThinkingLevelMap(entry);
 	return undefined;
 }
 
@@ -75,7 +84,7 @@ export function synthesizeCopilotCatalogModels(
 			cost: ZERO_COST,
 			maxInputTokens: entry.maxInputTokens,
 			contextWindow: entry.contextWindow,
-			maxTokens: entry.limits?.maxOutputTokens ?? entry.maxInputTokens ?? entry.contextWindow,
+			maxTokens: entry.maxTokens ?? entry.limits?.maxOutputTokens ?? entry.maxInputTokens ?? entry.contextWindow,
 		};
 		if (entry.contextWindowOptions && entry.contextWindowOptions.length > 1) {
 			model = withContextWindowOptions(model, entry.contextWindowOptions);
