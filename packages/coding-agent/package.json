@@ -122,7 +122,7 @@
     "@types/diff": "7.0.2",
     "@types/hosted-git-info": "3.0.5",
     "@types/ms": "2.1.0",
-    "@types/node": "24.12.4",
+    "@types/node": "26.0.1",
     "@types/proper-lockfile": "4.1.4",
     "@types/semver": "7.7.1",
     "@typescript/native-preview": "7.0.0-dev.20260511.1",
