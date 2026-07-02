@@ -81,11 +81,14 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "anthropic/claude-opus-4-8:xhigh",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
+      "github-copilot/claude-sonnet-5 (1m):high",
       "github-copilot/claude-sonnet-4.6 (1m):high",
+      "anthropic/claude-sonnet-5:high",
       "anthropic/claude-sonnet-4-6:high",
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
       "openrouter/z-ai/glm-5.2:xhigh",
+      "openrouter/anthropic/claude-sonnet-5:high",
       "openrouter/anthropic/claude-sonnet-4-6:high"
     ],
   };
