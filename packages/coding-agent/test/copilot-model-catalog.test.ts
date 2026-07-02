@@ -10,6 +10,7 @@ import {
 	COPILOT_CONTEXT_WINDOW_FALLBACK,
 	copilotApiBaseUrlFromToken,
 	copilotCatalogCachePath,
+	type CopilotModelContext,
 	fetchCopilotModelCatalog,
 	getActiveCopilotModelCatalog,
 	parseCopilotModelCatalog,
@@ -20,19 +21,29 @@ import {
 	writeCopilotCatalogCache,
 } from "../src/core/copilot-model-catalog.ts";
 
-// Minimal CAPI /models fixture mirroring the live shape. Every window is INPUT (prompt) tokens:
-//   gpt-5.5 / claude  -> tiered (default + long_context), different default budgets
-//   Atomic extras      -> same model-agnostic tier parsing as upstream Copilot models
-//   gpt-5.3-codex     -> default tier only, no long_context (single window)
-//   gpt-4o            -> no tiered pricing; window comes from max_prompt_tokens
-//   mystery-model     -> no max_prompt_tokens; window falls back to max_context_window_tokens
-//   bare-model        -> no usable limit signal at all (skipped)
+function contextOnly(context: CopilotModelContext | undefined): CopilotModelContext | undefined {
+	if (!context) return undefined;
+	const result: CopilotModelContext = { contextWindow: context.contextWindow };
+	if (context.contextWindowOptions) result.contextWindowOptions = context.contextWindowOptions;
+	if (context.maxInputTokens) result.maxInputTokens = context.maxInputTokens;
+	return result;
+}
+
+// Minimal CAPI /models fixture mirroring the live shape. Every window is INPUT (prompt) tokens.
 function capiBody() {
 	return {
 		data: [
 			{
 				id: "gpt-5.5",
-				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 } },
+				name: "GPT-5.5",
+				model_picker_enabled: true,
+				policy: { state: "enabled" },
+				capabilities: {
+					type: "chat",
+					limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 },
+					supports: { reasoning_effort: true, vision: true, tool_calls: true },
+				},
+				supported_endpoints: ["/responses"],
 				billing: { token_prices: { default: { context_max: 272_000 }, long_context: { context_max: 922_000 } } },
 			},
 			{
@@ -42,13 +53,30 @@ function capiBody() {
 			},
 			{
 				id: "claude-sonnet-5",
-				capabilities: { limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 } },
+				name: "Claude Sonnet 5",
+				vendor: "Anthropic",
+				model_picker_enabled: true,
+				policy: { state: "enabled" },
+				capabilities: {
+					type: "chat",
+					limits: { max_output_tokens: 64_000, max_prompt_tokens: 936_000, max_context_window_tokens: 1_000_000 },
+					supports: { adaptive_thinking: true, reasoning_effort: true, vision: true, tool_calls: true },
+				},
+				supported_endpoints: ["/v1/messages", "/chat/completions"],
 				billing: { token_prices: { default: { context_max: 200_000 }, long_context: { context_max: 936_000 } } },
 			},
 			{
-				id: "mai-code-flash-1",
-				capabilities: { limits: { max_output_tokens: 128_000, max_prompt_tokens: 922_000, max_context_window_tokens: 1_050_000 } },
-				billing: { token_prices: { default: { context_max: 272_000 }, long_context: { context_max: 922_000 } } },
+				id: "mai-code-1-flash-picker",
+				name: "MAI-Code-1-Flash",
+				vendor: "Microsoft",
+				model_picker_enabled: true,
+				policy: { state: "enabled" },
+				capabilities: {
+					type: "chat",
+					limits: { max_output_tokens: 128_000, max_prompt_tokens: 128_000, max_context_window_tokens: 256_000 },
+					supports: { reasoning_effort: true, tool_calls: true },
+				},
+				supported_endpoints: ["/responses"],
 			},
 			{
 				id: "gpt-5.3-codex",
@@ -142,36 +170,38 @@ describe("parseCopilotModelCatalog", () => {
 			"gpt-4o",
 			"gpt-5.3-codex",
 			"gpt-5.5",
-			"mai-code-flash-1",
+			"mai-code-1-flash-picker",
 			"mystery-model",
 		]);
 	});
 
 	test("resolves windows per model: full total long tier with the prompt cap as effective budget", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
-		assert.deepEqual(catalog.get("gpt-5.5"), {
+		assert.deepEqual(contextOnly(catalog.get("gpt-5.5")), {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
 		});
-		assert.deepEqual(catalog.get("claude-opus-4.8"), {
+		assert.deepEqual(contextOnly(catalog.get("claude-opus-4.8")), {
 			contextWindow: 200_000,
 			contextWindowOptions: [200_000, 1_000_000],
 			maxInputTokens: 936_000,
 		});
-		assert.deepEqual(catalog.get("claude-sonnet-5"), {
+		assert.deepEqual(contextOnly(catalog.get("claude-sonnet-5")), {
 			contextWindow: 200_000,
 			contextWindowOptions: [200_000, 1_000_000],
 			maxInputTokens: 936_000,
 		});
-		assert.deepEqual(catalog.get("mai-code-flash-1"), {
-			contextWindow: 272_000,
-			contextWindowOptions: [272_000, 1_050_000],
-			maxInputTokens: 922_000,
-		});
-		assert.deepEqual(catalog.get("gpt-5.3-codex"), { contextWindow: 272_000 });
-		assert.deepEqual(catalog.get("gpt-4o"), { contextWindow: 64_000 });
-		assert.deepEqual(catalog.get("mystery-model"), { contextWindow: 256_000 });
+		assert.deepEqual(contextOnly(catalog.get("mai-code-1-flash-picker")), { contextWindow: 128_000 });
+		assert.deepEqual(contextOnly(catalog.get("gpt-5.3-codex")), { contextWindow: 272_000 });
+		assert.deepEqual(contextOnly(catalog.get("gpt-4o")), { contextWindow: 64_000 });
+		assert.deepEqual(contextOnly(catalog.get("mystery-model")), { contextWindow: 256_000 });
+		assert.equal(catalog.get("claude-sonnet-5")?.displayName, "Claude Sonnet 5");
+		assert.deepEqual(catalog.get("claude-sonnet-5")?.supportedEndpoints, ["/v1/messages", "/chat/completions"]);
+		assert.equal(catalog.get("claude-sonnet-5")?.supports?.adaptiveThinking, true);
+		assert.equal(catalog.get("claude-sonnet-5")?.modelPickerEnabled, true);
+		assert.equal(catalog.get("claude-sonnet-5")?.policyState, "enabled");
+		assert.equal(catalog.get("claude-sonnet-5")?.type, "chat");
 	});
 
 	test("tolerates malformed bodies", () => {
@@ -248,7 +278,7 @@ describe("fetchCopilotModelCatalog", () => {
 		assert.equal(capturedHeaders.Authorization, "Bearer tid=abc;proxy-ep=proxy.individual.githubcopilot.com");
 		assert.equal(capturedHeaders["X-GitHub-Api-Version"], COPILOT_CATALOG_HEADERS["X-GitHub-Api-Version"]);
 		assert.equal(capturedHeaders["Copilot-Integration-Id"], "vscode-chat");
-		assert.deepEqual(catalog.get("gpt-5.5"), {
+		assert.deepEqual(contextOnly(catalog.get("gpt-5.5")), {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
@@ -295,13 +325,15 @@ describe("disk cache", () => {
 		const catalog = parseCopilotModelCatalog(capiBody());
 		writeCopilotCatalogCache(path, baseUrl, catalog, 1_000);
 		const read = readCopilotCatalogCache(path, { host, now: 1_000 + COPILOT_CATALOG_CACHE_TTL_MS - 1 });
-		assert.deepEqual(read?.get("gpt-5.5"), {
+		assert.deepEqual(contextOnly(read?.get("gpt-5.5")), {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,
 		});
-		assert.deepEqual(read?.get("gpt-5.3-codex"), { contextWindow: 272_000 });
-		assert.deepEqual(read?.get("mystery-model"), { contextWindow: 256_000 });
+		assert.deepEqual(contextOnly(read?.get("gpt-5.3-codex")), { contextWindow: 272_000 });
+		assert.deepEqual(contextOnly(read?.get("mystery-model")), { contextWindow: 256_000 });
+		assert.equal(read?.get("claude-sonnet-5")?.displayName, "Claude Sonnet 5");
+		assert.deepEqual(read?.get("claude-sonnet-5")?.supportedEndpoints, ["/v1/messages", "/chat/completions"]);
 	});
 
 	test("ignores a stale catalog", () => {
@@ -344,7 +376,7 @@ describe("seedActiveCopilotModelCatalogFromCache", () => {
 		writeCopilotCatalogCache(cachePath, baseUrl, parseCopilotModelCatalog(capiBody()), 1_000);
 		assert.equal(getActiveCopilotModelCatalog().size, 0);
 		assert.equal(seedActiveCopilotModelCatalogFromCache(token, cachePath), true);
-		assert.deepEqual(getActiveCopilotModelCatalog().get("gpt-5.5"), {
+		assert.deepEqual(contextOnly(getActiveCopilotModelCatalog().get("gpt-5.5")), {
 			contextWindow: 272_000,
 			contextWindowOptions: [272_000, 1_050_000],
 			maxInputTokens: 922_000,

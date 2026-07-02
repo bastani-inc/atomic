@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added Atomic-side built-in GitHub Copilot model entries for `github-copilot/claude-sonnet-5` and `github-copilot/mai-code-flash-1`, reusing the existing Copilot catalog overlay so their context-window choices continue to follow GitHub's live `/models` metadata.
+- Added dynamic GitHub Copilot model population from the live CAPI `/models` catalog: picker-enabled, non-disabled plain chat ids are synthesized from catalog metadata (endpoints, capabilities, limits, and display names) while built-in `pi-ai` definitions still win, namespaced enterprise deployments such as `org/deployment/model` are skipped, and cached catalog metadata enables the same models on cold start.
 
 ## [0.9.4-alpha.6] - 2026-07-01
 

@@ -8,67 +8,19 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
+import { copilotTemplateFromModels, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
 const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
 const GITHUB_COPILOT_API_VERSION = "2026-06-01";
 
-const GITHUB_COPILOT_BASE_URL = "https://api.individual.githubcopilot.com";
-const GITHUB_COPILOT_HEADERS = {
-	"User-Agent": "GitHubCopilotChat/0.35.0",
-	"Editor-Version": "vscode/1.107.0",
-	"Editor-Plugin-Version": "copilot-chat/0.35.0",
-	"Copilot-Integration-Id": "vscode-chat",
-};
-
-const EXTRA_GITHUB_COPILOT_MODELS: Model<Api>[] = [
-	{
-		id: "claude-sonnet-5",
-		name: "Claude Sonnet 5",
-		api: "anthropic-messages",
-		provider: "github-copilot",
-		baseUrl: GITHUB_COPILOT_BASE_URL,
-		headers: GITHUB_COPILOT_HEADERS,
-		compat: { forceAdaptiveThinking: true },
-		reasoning: true,
-		thinkingLevelMap: { minimal: "low", xhigh: "max" },
-		input: ["text", "image"],
-		cost: {
-			input: 3,
-			output: 15,
-			cacheRead: 0.3,
-			cacheWrite: 3.75,
-		},
-		contextWindow: 1_000_000,
-		maxTokens: 32_000,
-	},
-	{
-		id: "mai-code-flash-1",
-		name: "MAI Code Flash 1",
-		api: "openai-responses",
-		provider: "github-copilot",
-		baseUrl: GITHUB_COPILOT_BASE_URL,
-		headers: GITHUB_COPILOT_HEADERS,
-		reasoning: true,
-		thinkingLevelMap: { off: null, minimal: "low", xhigh: "xhigh" },
-		input: ["text", "image"],
-		cost: {
-			input: 0.75,
-			output: 4.5,
-			cacheRead: 0.075,
-			cacheWrite: 0,
-		},
-		contextWindow: 400_000,
-		maxTokens: 128_000,
-	},
-];
-
-function withExtraGitHubCopilotModels(provider: string, models: Model<Api>[]): Model<Api>[] {
+function withDynamicGitHubCopilotModels(provider: string, models: Model<Api>[]): Model<Api>[] {
 	if (provider !== "github-copilot") return models;
 	const existingIds = new Set(models.map((model) => model.id));
-	const extras = EXTRA_GITHUB_COPILOT_MODELS.filter((model) => !existingIds.has(model.id));
-	return [...models, ...extras];
+	const template = copilotTemplateFromModels(models);
+	const dynamicModels = synthesizeCopilotCatalogModels(getActiveCopilotModelCatalog(), existingIds, template);
+	return dynamicModels.length === 0 ? models : [...models, ...dynamicModels];
 }
 
 function hasHeader(headers: Record<string, string> | undefined, headerName: string): boolean {
@@ -182,7 +134,7 @@ export function loadBuiltInModels(
 	modelOverrides: Map<string, Map<string, ModelOverride>>,
 ): Model<Api>[] {
 	return getProviders().flatMap((provider) => {
-		const models = withExtraGitHubCopilotModels(provider, getModels(provider as KnownProvider) as Model<Api>[]);
+		const models = withDynamicGitHubCopilotModels(provider, getModels(provider as KnownProvider) as Model<Api>[]);
 		const providerOverride = overrides.get(provider);
 		const perModelOverrides = modelOverrides.get(provider);
 
