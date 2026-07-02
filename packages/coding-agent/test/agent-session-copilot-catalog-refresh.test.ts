@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { afterEach, test } from "bun:test";
+import { afterEach, test } from "vitest";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import {
