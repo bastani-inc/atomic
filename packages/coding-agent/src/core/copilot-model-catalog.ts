@@ -1,63 +1,38 @@
-/**
- * GitHub Copilot model catalog (CAPI) — dynamic prompt-token budgets.
- *
- * GitHub's Copilot API (CAPI) exposes distinct model limits via `GET {baseUrl}/models`:
- *
- *   - `capabilities.limits.max_context_window_tokens` is the model's total context capacity
- *     (prompt + completion reserve).
- *   - `capabilities.limits.max_prompt_tokens` is the maximum prompt/input budget Atomic can safely
- *     fill before the provider must reserve output tokens.
- *   - `billing.token_prices.<tier>.context_max` is a prompt-token billing/selection threshold. The
- *     `default` tier is the short prompt budget (e.g. gpt-5.5 272k, Claude 200k); a
- *     `long_context` tier adds a selectable larger prompt budget (e.g. gpt-5.5 922k, Claude 936k).
- *
- * Atomic shows the model's full context window for the selectable long tier (the
- * `max_context_window_tokens` total, e.g. 1_000_000/1_050_000), matching how the native `openai/*`
- * and `anthropic/*` providers advertise these models. Because GitHub enforces a lower server-side
- * prompt cap (`max_prompt_tokens`, e.g. 936k/922k) below that total, the prompt cap is retained as
- * an internal effective input budget (`CopilotModelContext.maxInputTokens`) that drives compaction
- * thresholds and the overflow-recovery guard, so the branded total can be displayed without
- * overrunning the server limit. The default (short) tier stays at the `default` billing tier's
- * prompt budget.
- *
- * This data is intentionally NOT baked into a static map: GitHub adds/removes models and retiers
- * windows over time (e.g. a model that disappears from the catalog), so a hardcoded snapshot goes
- * stale. Instead the catalog is fetched live (gated on the user actually having the GitHub Copilot
- * provider) and cached on disk for a short TTL, exactly like the Copilot CLI.
- */
+/** GitHub Copilot CAPI model catalog parsing, active state, and disk cache. */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-/** Resolved context and output-token limits for a single Copilot model. */
+/** Resolved input-token context window(s) and optional synthesis metadata for a single Copilot model. */
 export interface CopilotModelContext {
-	/**
-	 * Base/displayed context window — shown in the footer. The default tier's `context_max`, or the
-	 * model-level `max_prompt_tokens` fallback otherwise.
-	 */
 	contextWindow: number;
-	/**
-	 * Selectable windows (`[default, long]`) when the model exposes a `long_context` tier larger than
-	 * its default; absent for single-window models. The long entry is the model's full
-	 * `max_context_window_tokens` (total capacity) when advertised, matching `openai/*` and
-	 * `anthropic/*`.
-	 */
 	contextWindowOptions?: readonly number[];
-	/**
-	 * Hard prompt/input cap (`max_prompt_tokens`) when it sits below the displayed long window. Used
-	 * as the effective input budget for compaction thresholds and overflow recovery so the branded
-	 * total can be shown without overrunning GitHub's server-side prompt limit. Absent when the
-	 * displayed window already equals the input cap.
-	 */
 	maxInputTokens?: number;
-	/**
-	 * Maximum output tokens (`max_output_tokens`) advertised by Copilot CAPI. When present, this
-	 * replaces the static built-in `Model.maxTokens` so requests use GitHub's live output cap.
-	 */
 	maxTokens?: number;
+	displayName?: string;
+	vendor?: string;
+	supportedEndpoints?: readonly string[];
+	supports?: CopilotModelSupports;
+	limits?: CopilotModelLimits;
+	modelPickerEnabled?: boolean;
+	policyState?: string;
+	type?: string;
 }
 
-/** Map of model id → resolved input-token context window(s). */
+export interface CopilotModelSupports {
+	adaptiveThinking?: boolean;
+	maxThinkingBudget?: boolean;
+	minThinkingBudget?: boolean;
+	parallelToolCalls?: boolean;
+	reasoningEffort?: boolean;
+	reasoningEffortLevels?: readonly string[];
+	streaming?: boolean;
+	structuredOutputs?: boolean;
+	toolCalls?: boolean;
+	vision?: boolean;
+}
+
+/** Map of model id → resolved context window(s) plus optional synthesis metadata. */
 export type CopilotModelCatalog = ReadonlyMap<string, CopilotModelContext>;
 
 /** Safety fallback when a model reports neither `max_prompt_tokens` nor `max_context_window_tokens`. */
@@ -137,18 +112,8 @@ export function copilotTokenFromEnvironment(env: CopilotEnvironment = process.en
 export const COPILOT_CATALOG_CACHE_TTL_MS = 30 * 60 * 1000;
 
 /** Current on-disk cache schema version. */
-export const COPILOT_CATALOG_CACHE_VERSION = 4 as const;
+export const COPILOT_CATALOG_CACHE_VERSION = 5 as const;
 
-/**
- * Resolve the Copilot CAPI base URL.
- *
- * Copilot access tokens embed a `proxy-ep=proxy.<host>` segment; the API host is the same host with
- * `proxy.` swapped for `api.`. Env-token routing resolves explicit `COPILOT_API_TARGET` /
- * `GITHUB_COPILOT_BASE_URL` overrides, then `GITHUB_SERVER_URL` (`*.ghe.com` ->
- * `copilot-api.<tenant>.ghe.com`, other non-github.com -> `api.enterprise.githubcopilot.com`),
- * then the public Copilot routing hub `api.githubcopilot.com` for `COPILOT_GITHUB_TOKEN`. Stored
- * OAuth credentials still fall back to the generated individual host when no token route is known.
- */
 export function copilotApiBaseUrlFromToken(
 	token: string | undefined,
 	enterpriseDomain?: string,
@@ -181,28 +146,56 @@ function toPositiveInt(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-/** Raw token limits parsed from a CAPI model entry. */
 export interface CopilotModelLimits {
-	/** `capabilities.limits.max_prompt_tokens` — maximum prompt/input budget (the hard input cap). */
 	maxPromptTokens?: number;
-	/** `capabilities.limits.max_context_window_tokens` — total context capacity (the displayed long tier). */
 	maxContextWindowTokens?: number;
-	/** `capabilities.limits.max_output_tokens` — output reserve; derives the input cap when `max_prompt_tokens` is absent. */
 	maxOutputTokens?: number;
-	/** `billing.token_prices.default.context_max` — default-tier prompt threshold. */
 	defaultContextMax?: number;
-	/** `billing.token_prices.long_context.context_max` — long-context prompt threshold. */
 	longContextMax?: number;
 }
 
-/**
- * Resolve a model's input-token context window(s) from its CAPI limits.
- *
- * `contextWindow` is the model's base input budget — the default tier's `context_max` when tiered,
- * otherwise `max_prompt_tokens ?? max_context_window_tokens ?? 128_000`. A `long_context` tier that
- * is larger than the base adds a second selectable window. Returns `undefined` when the entry
- * carries no usable limit signal at all.
- */
+function stringArray(value: unknown): readonly string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const strings = value.filter((item): item is string => typeof item === "string" && item.length > 0);
+	return strings.length > 0 ? strings : undefined;
+}
+
+function supportedFlag(record: Record<string, unknown> | undefined, key: string): boolean | undefined {
+	const value = record?.[key];
+	if (typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) && value > 0;
+	if (Array.isArray(value)) return value.length > 0;
+	return undefined;
+}
+
+function parseCopilotSupports(value: unknown): CopilotModelSupports | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const supports: CopilotModelSupports = {
+		adaptiveThinking: supportedFlag(record, "adaptive_thinking"),
+		maxThinkingBudget: supportedFlag(record, "max_thinking_budget"),
+		minThinkingBudget: supportedFlag(record, "min_thinking_budget"),
+		parallelToolCalls: supportedFlag(record, "parallel_tool_calls"),
+		reasoningEffort: supportedFlag(record, "reasoning_effort"),
+		reasoningEffortLevels: stringArray(record.reasoning_effort),
+		streaming: supportedFlag(record, "streaming"),
+		structuredOutputs: supportedFlag(record, "structured_outputs"),
+		toolCalls: supportedFlag(record, "tool_calls"),
+		vision: supportedFlag(record, "vision"),
+	};
+	return Object.values(supports).some((flag) => flag !== undefined) ? supports : undefined;
+}
+
+function parseCopilotLimits(limits: Record<string, unknown> | undefined, prices: Record<string, unknown> | undefined): CopilotModelLimits {
+	return {
+		maxPromptTokens: toPositiveInt(limits?.max_prompt_tokens),
+		maxContextWindowTokens: toPositiveInt(limits?.max_context_window_tokens),
+		maxOutputTokens: toPositiveInt(limits?.max_output_tokens),
+		defaultContextMax: toPositiveInt(asRecord(prices?.default)?.context_max),
+		longContextMax: toPositiveInt(asRecord(prices?.long_context)?.context_max),
+	};
+}
+
 export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotModelContext | undefined {
 	const hasSignal =
 		limits.maxPromptTokens !== undefined ||
@@ -230,10 +223,9 @@ export function resolveCopilotModelContext(limits: CopilotModelLimits): CopilotM
 			limits.longContextMax;
 		// Only carry the cap when the displayed long window actually exceeds it (the branded-total
 		// case); when they coincide there is no gap and the input budget is just the window.
-		const resolved: CopilotModelContext =
-			longWindow > inputCap
-				? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
-				: { contextWindow: base, contextWindowOptions: [base, longWindow] };
+		const resolved: CopilotModelContext = longWindow > inputCap
+			? { contextWindow: base, contextWindowOptions: [base, longWindow], maxInputTokens: inputCap }
+			: { contextWindow: base, contextWindowOptions: [base, longWindow] };
 		return limits.maxOutputTokens !== undefined ? { ...resolved, maxTokens: limits.maxOutputTokens } : resolved;
 	}
 	return limits.maxOutputTokens !== undefined ? { contextWindow: base, maxTokens: limits.maxOutputTokens } : { contextWindow: base };
@@ -253,16 +245,25 @@ export function parseCopilotModelCatalog(body: unknown): CopilotModelCatalog {
 		const id = record.id;
 		if (typeof id !== "string" || id.length === 0) continue;
 
-		const limits = asRecord(asRecord(record.capabilities)?.limits);
+		const capabilities = asRecord(record.capabilities);
+		const limitsRecord = asRecord(capabilities?.limits);
 		const prices = asRecord(asRecord(record.billing)?.token_prices);
-		const context = resolveCopilotModelContext({
-			maxPromptTokens: toPositiveInt(limits?.max_prompt_tokens),
-			maxContextWindowTokens: toPositiveInt(limits?.max_context_window_tokens),
-			maxOutputTokens: toPositiveInt(limits?.max_output_tokens),
-			defaultContextMax: toPositiveInt(asRecord(prices?.default)?.context_max),
-			longContextMax: toPositiveInt(asRecord(prices?.long_context)?.context_max),
-		});
-		if (context) catalog.set(id, context);
+		const limits = parseCopilotLimits(limitsRecord, prices);
+		const context = resolveCopilotModelContext(limits);
+		if (context) {
+			const policy = asRecord(record.policy);
+			catalog.set(id, {
+				...context,
+				displayName: typeof record.name === "string" && record.name.length > 0 ? record.name : undefined,
+				vendor: typeof record.vendor === "string" && record.vendor.length > 0 ? record.vendor : undefined,
+				supportedEndpoints: stringArray(record.supported_endpoints),
+				supports: parseCopilotSupports(capabilities?.supports),
+				limits,
+				modelPickerEnabled: typeof record.model_picker_enabled === "boolean" ? record.model_picker_enabled : undefined,
+				policyState: typeof policy?.state === "string" ? policy.state : undefined,
+				type: typeof capabilities?.type === "string" ? capabilities.type : undefined,
+			});
+		}
 	}
 
 	return catalog;
@@ -357,6 +358,37 @@ export interface ReadCopilotCatalogCacheOptions {
 	ttlMs?: number;
 }
 
+function sanitizeCachedSupports(value: unknown): CopilotModelSupports | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const supports: CopilotModelSupports = {
+		adaptiveThinking: supportedFlag(record, "adaptiveThinking"),
+		maxThinkingBudget: supportedFlag(record, "maxThinkingBudget"),
+		minThinkingBudget: supportedFlag(record, "minThinkingBudget"),
+		parallelToolCalls: supportedFlag(record, "parallelToolCalls"),
+		reasoningEffort: supportedFlag(record, "reasoningEffort"),
+		reasoningEffortLevels: stringArray(record.reasoningEffortLevels),
+		streaming: supportedFlag(record, "streaming"),
+		structuredOutputs: supportedFlag(record, "structuredOutputs"),
+		toolCalls: supportedFlag(record, "toolCalls"),
+		vision: supportedFlag(record, "vision"),
+	};
+	return Object.values(supports).some((flag) => flag !== undefined) ? supports : undefined;
+}
+
+function sanitizeCachedLimits(value: unknown): CopilotModelLimits | undefined {
+	const record = asRecord(value);
+	if (!record) return undefined;
+	const limits: CopilotModelLimits = {
+		maxPromptTokens: toPositiveInt(record.maxPromptTokens),
+		maxContextWindowTokens: toPositiveInt(record.maxContextWindowTokens),
+		maxOutputTokens: toPositiveInt(record.maxOutputTokens),
+		defaultContextMax: toPositiveInt(record.defaultContextMax),
+		longContextMax: toPositiveInt(record.longContextMax),
+	};
+	return Object.values(limits).some((limit) => limit !== undefined) ? limits : undefined;
+}
+
 function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined {
 	const record = asRecord(value);
 	const contextWindow = toPositiveInt(record?.contextWindow);
@@ -364,20 +396,29 @@ function sanitizeCachedContext(value: unknown): CopilotModelContext | undefined 
 	const maxInputTokens = toPositiveInt(record?.maxInputTokens);
 	const maxTokens = toPositiveInt(record?.maxTokens);
 	const rawOptions = record?.contextWindowOptions;
+	const base: CopilotModelContext = maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
+	if (maxTokens !== undefined) base.maxTokens = maxTokens;
 	if (Array.isArray(rawOptions)) {
 		const options = rawOptions.map(toPositiveInt).filter((n): n is number => n !== undefined);
-		if (options.length > 1) {
-			const context = maxInputTokens !== undefined
-				? { contextWindow, contextWindowOptions: options, maxInputTokens }
-				: { contextWindow, contextWindowOptions: options };
-			return maxTokens !== undefined ? { ...context, maxTokens } : context;
-		}
+		if (options.length > 1) base.contextWindowOptions = options;
 	}
-	const context = maxInputTokens !== undefined ? { contextWindow, maxInputTokens } : { contextWindow };
-	return maxTokens !== undefined ? { ...context, maxTokens } : context;
+	const displayName = record && typeof record.displayName === "string" && record.displayName.length > 0 ? record.displayName : undefined;
+	const vendor = record && typeof record.vendor === "string" && record.vendor.length > 0 ? record.vendor : undefined;
+	const policyState = record && typeof record.policyState === "string" ? record.policyState : undefined;
+	const type = record && typeof record.type === "string" ? record.type : undefined;
+	return {
+		...base,
+		displayName,
+		vendor,
+		supportedEndpoints: stringArray(record?.supportedEndpoints),
+		supports: sanitizeCachedSupports(record?.supports),
+		limits: sanitizeCachedLimits(record?.limits),
+		modelPickerEnabled: typeof record?.modelPickerEnabled === "boolean" ? record.modelPickerEnabled : undefined,
+		policyState,
+		type,
+	};
 }
 
-/** Read a fresh, host-matching catalog from the cache file, or `undefined` if missing/stale/invalid. */
 export function readCopilotCatalogCache(
 	path: string,
 	options: ReadCopilotCatalogCacheOptions,
@@ -405,7 +446,6 @@ export function readCopilotCatalogCache(
 	return catalog;
 }
 
-/** Write the catalog to the cache file (creating parent dirs). Best-effort; never throws. */
 export function writeCopilotCatalogCache(
 	path: string,
 	baseUrl: string,
@@ -426,12 +466,10 @@ export function writeCopilotCatalogCache(
 	}
 }
 
-/** Host component of a base URL, for matching {@link readCopilotCatalogCache} `host`. */
 export function copilotCatalogCacheHost(baseUrl: string): string {
 	return hostFromBaseUrl(baseUrl);
 }
 
-/** Standard on-disk cache path for the Copilot model catalog under an agent directory. */
 export function copilotCatalogCachePath(agentDir: string): string {
 	return join(agentDir, "cache", "copilot-models.json");
 }

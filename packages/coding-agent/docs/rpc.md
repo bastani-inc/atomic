@@ -335,7 +335,7 @@ Unsupported or malformed selections return the standard RPC error response:
 }
 ```
 
-Larger provider context windows may consume more credits/cost. For allowlisted GitHub Copilot long-context models (including `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over GitHub's server cap are rejected with a friendly hint.
+Larger provider context windows may consume more credits/cost. For catalog-advertised GitHub Copilot long-context models (including `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`), selecting `1m` raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over GitHub's server cap are rejected with a friendly hint.
 
 ### Thinking
 
@@ -1042,7 +1042,7 @@ Emitted when the active context-window token budget changes through RPC `set_con
 }
 ```
 
-Larger provider context windows may consume more credits/cost. Prefer the model default unless the additional repository/session context is useful for the current task. For allowlisted GitHub Copilot long-context models such as `github-copilot/gpt-5.5` and `github-copilot/gemini-3.1-pro-preview`, a `1m` selection raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt size, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
+Larger provider context windows may consume more credits/cost. Prefer the model default unless the additional repository/session context is useful for the current task. For catalog-advertised GitHub Copilot long-context models such as `github-copilot/gpt-5.5`, `github-copilot/claude-sonnet-5`, and `github-copilot/gemini-3.1-pro-preview`, a `1m` selection raises Atomic's local budget and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub applies the long-context billing tier server-side by prompt size, consumes more Copilot AI credits, and requires long-context/usage-based billing entitlement.
 
 ### compaction_start / compaction_end
 

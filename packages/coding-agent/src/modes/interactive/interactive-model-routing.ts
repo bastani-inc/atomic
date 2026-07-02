@@ -73,6 +73,7 @@ InteractiveModeBase.prototype.loadCopilotModelCatalog = async function(this: Int
       }
       setActiveCopilotModelCatalog(catalog);
       registry.refresh();
+      this.session.refreshCurrentModelFromRegistry();
       this.copilotCatalogApplied = true;
     } catch {
       // Best-effort: leave the active catalog as-is on any failure (offline, auth, parse).

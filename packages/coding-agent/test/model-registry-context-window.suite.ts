@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import { getSupportedContextWindows, selectContextWindow } from "../src/core/context-window.ts";
 import {
@@ -25,9 +26,38 @@ describeModelRegistry((context) => {
 		// The live CAPI catalog (only populated when the user has the GitHub Copilot provider) drives
 		// which Copilot models expose a selectable long-context window. Seed it like a successful fetch.
 		const copilotCatalog = new Map([
-			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000 }],
-			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 128_000 }],
+			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000, supports: { reasoningEffort: true, reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"] } }],
+			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
+			[
+				"claude-sonnet-5",
+				{
+					contextWindow: 200_000,
+					contextWindowOptions: [200_000, 1_000_000],
+					maxInputTokens: 936_000,
+					displayName: "Claude Sonnet 5",
+					supportedEndpoints: ["/v1/messages", "/chat/completions"],
+					supports: { adaptiveThinking: true, reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high", "xhigh", "max"], minThinkingBudget: true, maxThinkingBudget: true, vision: true, toolCalls: true },
+					limits: { maxPromptTokens: 936_000, maxOutputTokens: 64_000, maxContextWindowTokens: 1_000_000 },
+					modelPickerEnabled: true,
+					policyState: "enabled",
+					type: "chat",
+				},
+			],
+			[
+				"mai-code-1-flash-picker",
+				{
+					contextWindow: 128_000,
+					maxInputTokens: 128_000,
+					displayName: "MAI-Code-1-Flash",
+					supportedEndpoints: ["/responses"],
+					supports: { reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high"], toolCalls: true },
+					limits: { maxPromptTokens: 128_000, maxOutputTokens: 128_000, maxContextWindowTokens: 256_000 },
+					modelPickerEnabled: true,
+					policyState: "enabled",
+					type: "chat",
+				},
+			],
 			["gpt-4.1", { contextWindow: 200_000 }],
 		]);
 
@@ -52,12 +82,77 @@ describeModelRegistry((context) => {
 			expect(claude?.defaultContextWindow).toBe(200_000);
 			expect(claude?.contextWindowOptions).toEqual([200_000, 1_000_000]);
 			expect(claude?.maxInputTokens).toBe(936_000);
-			expect(claude?.maxTokens).toBe(128_000);
+			expect(claude?.maxTokens).toBe(64_000);
 
 			const gemini31 = registry.find("github-copilot", "gemini-3.1-pro-preview");
 			expect(gemini31?.contextWindowOptions).toEqual([200_000, 1_000_000]);
 			expect(gemini31?.maxInputTokens).toBe(936_000);
-			expect(gemini31?.maxTokens).toBe(64_000);
+		});
+
+		test("synthesizes picker-enabled github-copilot catalog models with metadata-driven fields", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+
+			const claudeSonnet5 = registry.find("github-copilot", "claude-sonnet-5");
+			if (!claudeSonnet5) throw new Error("Missing dynamic github-copilot/claude-sonnet-5 model");
+			expect(claudeSonnet5.name).toBe("Claude Sonnet 5");
+			expect(claudeSonnet5.provider).toBe("github-copilot");
+			expect(claudeSonnet5.api).toBe("anthropic-messages");
+			expect(claudeSonnet5.reasoning).toBe(true);
+			expect(claudeSonnet5.compat).toEqual({ forceAdaptiveThinking: true });
+			expect(getSupportedThinkingLevels(claudeSonnet5)).toEqual(["off", "low", "medium", "high", "xhigh"]);
+			expect(claudeSonnet5.thinkingLevelMap?.xhigh).toBe("xhigh");
+			expect(claudeSonnet5.input).toEqual(["text", "image"]);
+			expect(claudeSonnet5.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+			expect(claudeSonnet5.contextWindowOptions).toEqual([200_000, 1_000_000]);
+			expect(claudeSonnet5.maxInputTokens).toBe(936_000);
+			expect(claudeSonnet5.maxTokens).toBe(64_000);
+
+			const maiCodeFlash = registry.find("github-copilot", "mai-code-1-flash-picker");
+			if (!maiCodeFlash) throw new Error("Missing dynamic github-copilot/mai-code-1-flash-picker model");
+			expect(maiCodeFlash.name).toBe("MAI-Code-1-Flash");
+			expect(maiCodeFlash.provider).toBe("github-copilot");
+			expect(maiCodeFlash.api).toBe("openai-responses");
+			expect(maiCodeFlash.reasoning).toBe(true);
+			expect(getSupportedThinkingLevels(maiCodeFlash)).toEqual(["low", "medium", "high"]);
+			expect(maiCodeFlash.input).toEqual(["text"]);
+			expect(maiCodeFlash.contextWindow).toBe(128_000);
+			expect(maiCodeFlash.contextWindowOptions).toBeUndefined();
+			expect(maiCodeFlash.maxInputTokens).toBe(128_000);
+			expect(maiCodeFlash.maxTokens).toBe(128_000);
+		});
+
+		test("overlays builtin github-copilot thinking levels from catalog effort arrays", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const gpt55 = registry.find("github-copilot", "gpt-5.5");
+
+			if (!gpt55) throw new Error("Missing built-in github-copilot/gpt-5.5 model");
+			expect(getSupportedThinkingLevels(gpt55)).toEqual(["off", "low", "medium", "high", "xhigh"]);
+			expect(gpt55.thinkingLevelMap?.minimal).toBe(null);
+		});
+
+		test("leaves builtin copilot thinking maps untouched without effort arrays", () => {
+			const baseline = ModelRegistry.create(context.authStorage, context.modelsJsonPath).find("github-copilot", "gpt-5-mini");
+			setActiveCopilotModelCatalog(new Map([["gpt-5-mini", { contextWindow: 128_000, supports: { reasoningEffort: true } }]]));
+			const overlaid = ModelRegistry.create(context.authStorage, context.modelsJsonPath).find("github-copilot", "gpt-5-mini");
+
+			expect(overlaid?.thinkingLevelMap).toEqual(baseline?.thinkingLevelMap);
+		});
+
+		test("user model thinkingLevelMap overrides win over catalog overlays", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			writeRawModelsJson({
+				"github-copilot": {
+					modelOverrides: { "gpt-5.5": { thinkingLevelMap: { minimal: "minimal", xhigh: null } } },
+				},
+			});
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const gpt55 = registry.find("github-copilot", "gpt-5.5");
+
+			expect(gpt55?.thinkingLevelMap?.minimal).toBe("minimal");
+			expect(gpt55?.thinkingLevelMap?.xhigh).toBe(null);
+			expect(gpt55 ? getSupportedThinkingLevels(gpt55) : []).toEqual(["off", "minimal", "low", "medium", "high"]);
 		});
 
 		test("overrides contextWindow (input tokens) without options for single-window catalog models", () => {
@@ -102,10 +197,7 @@ describeModelRegistry((context) => {
 			writeCopilotCatalogCache(
 				copilotCatalogCachePath(context.tempDir),
 				"https://api.individual.githubcopilot.com",
-				new Map([[
-					"claude-opus-4.8",
-					{ contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 128_000 },
-				]]),
+				new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000 }]]),
 				1_000,
 			);
 
@@ -115,7 +207,6 @@ describeModelRegistry((context) => {
 			expect(claude?.contextWindow).toBe(200_000);
 			expect(claude?.contextWindowOptions).toEqual([200_000, 1_000_000]);
 			expect(claude?.maxInputTokens).toBe(936_000);
-			expect(claude?.maxTokens).toBe(128_000);
 			// The previously selected long window now validates instead of warning/resetting.
 			const selected = claude ? selectContextWindow(claude, 1_000_000) : { error: "missing" };
 			expect("error" in selected).toBe(false);
@@ -146,7 +237,6 @@ describeModelRegistry((context) => {
 				expect(selected.model.defaultContextWindow).toBe(272_000);
 				// The prompt cap rides along so compaction/overflow still respect the real input budget.
 				expect(selected.model.maxInputTokens).toBe(922_000);
-				expect(selected.model.maxTokens).toBe(128_000);
 				expect(getSupportedContextWindows(selected.model)).toEqual([272_000, 1_050_000]);
 			}
 		});

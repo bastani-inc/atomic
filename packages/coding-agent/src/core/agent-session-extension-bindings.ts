@@ -97,6 +97,10 @@ export function _applyExtensionBindings(this: AgentSession, runner: ExtensionRun
 }
 
 
+export function refreshCurrentModelFromRegistry(this: AgentSession): void {
+	this._refreshCurrentModelFromRegistry();
+}
+
 export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 	const currentModel = this.model;
 	if (!currentModel) {
@@ -108,12 +112,16 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 		return;
 	}
 
+	const previousModel = currentModel;
+	const previousThinkingLevel = this.thinkingLevel;
 	const replay = this._getResumeContextWindowReplayForModel(refreshedModel);
 	this.agent.state.model = replay.model;
 	if (currentModel.contextWindow !== replay.contextWindow) {
 		this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
 	}
+	this.setThinkingLevel(previousThinkingLevel);
 	this._refreshBaseSystemPromptFromActiveTools();
+	this._emit({ type: "model_changed", model: replay.model, previousModel, source: "restore" });
 }
 
 
@@ -220,11 +228,11 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 		{
 			registerProvider: (name, config) => {
 				this._modelRegistry.registerProvider(name, config);
-				this._refreshCurrentModelFromRegistry();
+				this.refreshCurrentModelFromRegistry();
 			},
 			unregisterProvider: (name) => {
 				this._modelRegistry.unregisterProvider(name);
-				this._refreshCurrentModelFromRegistry();
+				this.refreshCurrentModelFromRegistry();
 			},
 		},
 	);
@@ -269,6 +277,7 @@ export const agentSessionExtensionBindingsMethods = {
 	buildExtensionResourcePaths,
 	getExtensionSourceLabel,
 	_applyExtensionBindings,
+	refreshCurrentModelFromRegistry,
 	_refreshCurrentModelFromRegistry,
 	_bindExtensionCore,
 	reload,

@@ -8,11 +8,20 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
+import { copilotTemplateFromModels, copilotThinkingLevelMapFor, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
 const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
 const GITHUB_COPILOT_API_VERSION = "2026-06-01";
+
+function withDynamicGitHubCopilotModels(provider: string, models: Model<Api>[]): Model<Api>[] {
+	if (provider !== "github-copilot") return models;
+	const existingIds = new Set(models.map((model) => model.id));
+	const template = copilotTemplateFromModels(models);
+	const dynamicModels = synthesizeCopilotCatalogModels(getActiveCopilotModelCatalog(), existingIds, template);
+	return dynamicModels.length === 0 ? models : [...models, ...dynamicModels];
+}
 
 function hasHeader(headers: Record<string, string> | undefined, headerName: string): boolean {
 	if (!headers) return false;
@@ -37,16 +46,19 @@ function withCopilotEnvironmentBaseUrl(model: Model<Api>): Model<Api> {
 	return { ...model, baseUrl: resolvedBaseUrl };
 }
 
+function withCopilotThinkingLevelMap(model: Model<Api>): Model<Api> {
+	if (model.provider !== "github-copilot") return model;
+	const context = getActiveCopilotModelCatalog().get(model.id);
+	if (!context?.supports?.reasoningEffortLevels) return model;
+	const thinkingLevelMap = copilotThinkingLevelMapFor(context, model.api);
+	return thinkingLevelMap ? { ...model, thinkingLevelMap } : model;
+}
+
 function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
 	if (model.provider !== "github-copilot") return model;
 	const context = getActiveCopilotModelCatalog().get(model.id);
 	if (!context) return model;
-	const base = {
-		...model,
-		contextWindow: context.contextWindow,
-		maxInputTokens: context.maxInputTokens,
-		maxTokens: context.maxTokens ?? model.maxTokens,
-	};
+	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens, maxTokens: context.maxTokens ?? model.maxTokens };
 	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {
 		return withContextWindowOptions(base, context.contextWindowOptions);
 	}
@@ -130,7 +142,7 @@ export function loadBuiltInModels(
 	modelOverrides: Map<string, Map<string, ModelOverride>>,
 ): Model<Api>[] {
 	return getProviders().flatMap((provider) => {
-		const models = getModels(provider as KnownProvider) as Model<Api>[];
+		const models = withDynamicGitHubCopilotModels(provider, getModels(provider as KnownProvider) as Model<Api>[]);
 		const providerOverride = overrides.get(provider);
 		const perModelOverrides = modelOverrides.get(provider);
 
@@ -145,7 +157,7 @@ export function loadBuiltInModels(
 				};
 			}
 
-			model = withCopilotContextWindowOptions(model);
+			model = withCopilotThinkingLevelMap(withCopilotContextWindowOptions(model));
 			const modelOverride = perModelOverrides?.get(m.id);
 			return modelOverride ? applyModelOverride(model, modelOverride) : model;
 		});
