@@ -80,7 +80,7 @@
     "@earendil-works/pi-agent-core": "^0.80.3",
     "@earendil-works/pi-ai": "^0.80.3",
     "@earendil-works/pi-tui": "^0.80.3",
-    "@modelcontextprotocol/ext-apps": "^1.7.2",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
     "@silvia-odwyer/photon-node": "0.3.4",
