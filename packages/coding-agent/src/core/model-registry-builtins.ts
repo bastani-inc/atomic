@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
-import { copilotTemplateFromModels, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
+import { copilotTemplateFromModels, copilotThinkingLevelMapFor, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
@@ -44,6 +44,14 @@ function withCopilotEnvironmentBaseUrl(model: Model<Api>): Model<Api> {
 	const resolvedBaseUrl = copilotApiBaseUrlFromToken(copilotTokenFromEnvironment());
 	if (resolvedBaseUrl === DEFAULT_COPILOT_API_BASE_URL || resolvedBaseUrl === model.baseUrl) return model;
 	return { ...model, baseUrl: resolvedBaseUrl };
+}
+
+function withCopilotThinkingLevelMap(model: Model<Api>): Model<Api> {
+	if (model.provider !== "github-copilot") return model;
+	const context = getActiveCopilotModelCatalog().get(model.id);
+	if (!context?.supports?.reasoningEffortLevels) return model;
+	const thinkingLevelMap = copilotThinkingLevelMapFor(context, model.api);
+	return thinkingLevelMap ? { ...model, thinkingLevelMap } : model;
 }
 
 function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
@@ -149,7 +157,7 @@ export function loadBuiltInModels(
 				};
 			}
 
-			model = withCopilotContextWindowOptions(model);
+			model = withCopilotThinkingLevelMap(withCopilotContextWindowOptions(model));
 			const modelOverride = perModelOverrides?.get(m.id);
 			return modelOverride ? applyModelOverride(model, modelOverride) : model;
 		});

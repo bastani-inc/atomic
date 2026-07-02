@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
+import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { synthesizeCopilotCatalogModels } from "../src/core/copilot-model-synthesis.ts";
 import type { CopilotModelContext } from "../src/core/copilot-model-catalog.ts";
 
@@ -20,6 +21,10 @@ function chatEntry(overrides: Partial<CopilotModelContext> = {}): CopilotModelCo
 		type: "chat",
 		...overrides,
 	};
+}
+
+function supportedThinkingLevels(model: Model<Api> | undefined): readonly string[] {
+	return model ? getSupportedThinkingLevels(model) : [];
 }
 
 describe("synthesizeCopilotCatalogModels", () => {
@@ -58,7 +63,8 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.deepEqual(claude?.input, ["text", "image"]);
 		assert.equal(claude?.reasoning, true);
 		assert.deepEqual(claude?.compat, { forceAdaptiveThinking: true });
-		assert.deepEqual(claude?.thinkingLevelMap, { minimal: "low", xhigh: "max" });
+		assert.deepEqual(supportedThinkingLevels(claude), ["off", "low", "medium", "high", "xhigh"]);
+		assert.deepEqual(claude?.thinkingLevelMap?.xhigh, "xhigh");
 		assert.equal(claude?.contextWindow, 200_000);
 		assert.deepEqual(claude?.contextWindowOptions, [200_000, 1_000_000]);
 		assert.equal(claude?.maxInputTokens, 936_000);
@@ -68,8 +74,26 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.equal(mai?.api, "openai-responses");
 		assert.deepEqual(mai?.input, ["text"]);
 		assert.equal(mai?.reasoning, true);
-		assert.deepEqual(mai?.thinkingLevelMap, { off: null, minimal: "low" });
+		assert.deepEqual(supportedThinkingLevels(mai), ["low", "medium", "high"]);
 		assert.equal(mai?.maxTokens, 128_000);
+	});
+
+	test("gates selectable thinking levels by advertised CAPI reasoning_effort arrays", () => {
+		const models = synthesizeCopilotCatalogModels(
+			new Map([
+				["gpt-5.5-style", chatEntry({ supports: { reasoningEffort: true, reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"] } })],
+				["gemini-3.5-flash-style", chatEntry({ supports: { reasoningEffort: true, reasoningEffortLevels: ["minimal", "low", "medium", "high"] } })],
+				["claude-opus-4.6-style", chatEntry({ supportedEndpoints: ["/v1/messages"], supports: { adaptiveThinking: true, reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high", "max"] } })],
+			]),
+			new Set(),
+			template,
+		);
+
+		assert.deepEqual(supportedThinkingLevels(models.find((model) => model.id === "gpt-5.5-style")), ["off", "low", "medium", "high", "xhigh"]);
+		assert.deepEqual(supportedThinkingLevels(models.find((model) => model.id === "gemini-3.5-flash-style")), ["minimal", "low", "medium", "high"]);
+		const adaptiveMax = models.find((model) => model.id === "claude-opus-4.6-style");
+		assert.deepEqual(supportedThinkingLevels(adaptiveMax), ["off", "low", "medium", "high", "xhigh"]);
+		assert.equal(adaptiveMax?.thinkingLevelMap?.xhigh, "max");
 	});
 
 	test("gates out non-picker, non-chat, disabled, unmapped, namespaced, and duplicate entries", () => {

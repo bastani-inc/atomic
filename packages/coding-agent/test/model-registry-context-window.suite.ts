@@ -1,3 +1,4 @@
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, test } from "vitest";
 import { getSupportedContextWindows, selectContextWindow } from "../src/core/context-window.ts";
 import {
@@ -25,7 +26,7 @@ describeModelRegistry((context) => {
 		// The live CAPI catalog (only populated when the user has the GitHub Copilot provider) drives
 		// which Copilot models expose a selectable long-context window. Seed it like a successful fetch.
 		const copilotCatalog = new Map([
-			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000 }],
+			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000, supports: { reasoningEffort: true, reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"] } }],
 			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			[
@@ -99,7 +100,8 @@ describeModelRegistry((context) => {
 			expect(claudeSonnet5.api).toBe("anthropic-messages");
 			expect(claudeSonnet5.reasoning).toBe(true);
 			expect(claudeSonnet5.compat).toEqual({ forceAdaptiveThinking: true });
-			expect(claudeSonnet5.thinkingLevelMap).toEqual({ minimal: "low", xhigh: "max" });
+			expect(getSupportedThinkingLevels(claudeSonnet5)).toEqual(["off", "low", "medium", "high", "xhigh"]);
+			expect(claudeSonnet5.thinkingLevelMap?.xhigh).toBe("xhigh");
 			expect(claudeSonnet5.input).toEqual(["text", "image"]);
 			expect(claudeSonnet5.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 			expect(claudeSonnet5.contextWindowOptions).toEqual([200_000, 1_000_000]);
@@ -112,12 +114,45 @@ describeModelRegistry((context) => {
 			expect(maiCodeFlash.provider).toBe("github-copilot");
 			expect(maiCodeFlash.api).toBe("openai-responses");
 			expect(maiCodeFlash.reasoning).toBe(true);
-			expect(maiCodeFlash.thinkingLevelMap).toEqual({ off: null, minimal: "low" });
+			expect(getSupportedThinkingLevels(maiCodeFlash)).toEqual(["low", "medium", "high"]);
 			expect(maiCodeFlash.input).toEqual(["text"]);
 			expect(maiCodeFlash.contextWindow).toBe(128_000);
 			expect(maiCodeFlash.contextWindowOptions).toBeUndefined();
 			expect(maiCodeFlash.maxInputTokens).toBe(128_000);
 			expect(maiCodeFlash.maxTokens).toBe(128_000);
+		});
+
+		test("overlays builtin github-copilot thinking levels from catalog effort arrays", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const gpt55 = registry.find("github-copilot", "gpt-5.5");
+
+			if (!gpt55) throw new Error("Missing built-in github-copilot/gpt-5.5 model");
+			expect(getSupportedThinkingLevels(gpt55)).toEqual(["off", "low", "medium", "high", "xhigh"]);
+			expect(gpt55.thinkingLevelMap?.minimal).toBe(null);
+		});
+
+		test("leaves builtin copilot thinking maps untouched without effort arrays", () => {
+			const baseline = ModelRegistry.create(context.authStorage, context.modelsJsonPath).find("github-copilot", "gpt-5-mini");
+			setActiveCopilotModelCatalog(new Map([["gpt-5-mini", { contextWindow: 128_000, supports: { reasoningEffort: true } }]]));
+			const overlaid = ModelRegistry.create(context.authStorage, context.modelsJsonPath).find("github-copilot", "gpt-5-mini");
+
+			expect(overlaid?.thinkingLevelMap).toEqual(baseline?.thinkingLevelMap);
+		});
+
+		test("user model thinkingLevelMap overrides win over catalog overlays", () => {
+			setActiveCopilotModelCatalog(copilotCatalog);
+			writeRawModelsJson({
+				"github-copilot": {
+					modelOverrides: { "gpt-5.5": { thinkingLevelMap: { minimal: "minimal", xhigh: null } } },
+				},
+			});
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const gpt55 = registry.find("github-copilot", "gpt-5.5");
+
+			expect(gpt55?.thinkingLevelMap?.minimal).toBe("minimal");
+			expect(gpt55?.thinkingLevelMap?.xhigh).toBe(null);
+			expect(gpt55 ? getSupportedThinkingLevels(gpt55) : []).toEqual(["off", "minimal", "low", "medium", "high"]);
 		});
 
 		test("overrides contextWindow (input tokens) without options for single-window catalog models", () => {

@@ -5,6 +5,7 @@
 ### Added
 
 - Added dynamic GitHub Copilot model population from the live CAPI `/models` catalog: picker-enabled, non-disabled plain chat ids are synthesized from catalog metadata (endpoints, capabilities, limits, and display names) while built-in `pi-ai` definitions still win, namespaced enterprise deployments such as `org/deployment/model` are skipped, and cached catalog metadata enables the same models on cold start.
+- Added catalog-driven thinking-level gating for GitHub Copilot models so dynamically synthesized entries and bundled `pi-ai` Copilot models only offer the reasoning levels advertised by CAPI's `capabilities.supports.reasoning_effort` arrays, while models without an effort array keep their existing thinking behavior.
 
 ### Fixed
 
