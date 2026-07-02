@@ -6,6 +6,10 @@
 
 - Added dynamic GitHub Copilot model population from the live CAPI `/models` catalog: picker-enabled, non-disabled plain chat ids are synthesized from catalog metadata (endpoints, capabilities, limits, and display names) while built-in `pi-ai` definitions still win, namespaced enterprise deployments such as `org/deployment/model` are skipped, and cached catalog metadata enables the same models on cold start.
 
+### Fixed
+
+- Fixed GitHub Copilot models to use the live `max_output_tokens` value from the Copilot model catalog, preventing `github-copilot/claude-opus-4.8` from being capped by Atomic's stale built-in output-token limit after compaction ([#1582](https://github.com/bastani-inc/atomic/issues/1582)).
+
 ## [0.9.4-alpha.6] - 2026-07-01
 
 ### Added
