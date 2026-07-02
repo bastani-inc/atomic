@@ -360,14 +360,20 @@ function makeSignal(
 	};
 }
 
-function fallbackSignalFromMessage(
+function fallbackSignalForMessage(
+	message: string | undefined,
 	value: unknown,
 	source: ModelFallbackFailureSource | undefined,
 ): ModelFallbackFailureSignal | undefined {
-	const message = modelFailureMessage(value);
-	if (!message.trim()) return undefined;
+	if (message === undefined || message.trim().length === 0) return undefined;
 	const kind = fallbackKindFromMessage(message, errorName(value));
 	return kind === undefined ? undefined : makeSignal(kind, value, source);
+}
+function fallbackSignalFromMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+	return fallbackSignalForMessage(modelFailureMessage(value), value, source);
+}
+function fallbackSignalFromDirectMessage(value: unknown, source: ModelFallbackFailureSource | undefined): ModelFallbackFailureSignal | undefined {
+	return fallbackSignalForMessage(directMessageFrom(value), value, source);
 }
 
 function classifyAssistantRefusalSignal(
@@ -421,6 +427,12 @@ function structuredSignal(
 		if (isRefusalSignal(causeSignal)) return causeSignal;
 		firstNestedFallbackSignal ??= causeSignal;
 	}
+	// Direct-message classification runs after nested traversal so a generic wrapper
+	// ("invalid request"/"400 bad request") cannot mask a non-retryable nested signal.
+	// Kept in the same position as the workflows classifier so the two copies stay
+	// behaviorally parallel (see test/unit/model-fallback-classifier-conformance.test.ts).
+	const directMessageSignal = fallbackSignalFromDirectMessage(value, source);
+	if (directMessageSignal !== undefined) return directMessageSignal;
 	const statusKind = kindFromStatus(statusFrom(value));
 	if (statusKind !== undefined) return makeSignal(statusKind, value, source);
 	if (codeKind !== undefined) return makeSignal(codeKind, value, source);

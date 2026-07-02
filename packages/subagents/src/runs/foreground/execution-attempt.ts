@@ -363,6 +363,9 @@ export async function runSingleAttempt(
 		const attemptWatchdog = createAttemptWatchdog({
 			child: proc,
 			isSettled: () => settled || processClosed || detached,
+			// A slow, quiet tool call (long build/test run) must not be mistaken for a
+			// stalled attempt: an in-flight tool execution counts as watchdog activity.
+			isToolActive: () => progress.currentTool !== undefined,
 			onTimeout(message) {
 				forcedTerminationSignal = true;
 				result.error ??= message;

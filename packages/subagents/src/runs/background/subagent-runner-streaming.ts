@@ -56,6 +56,7 @@ export function runPiStreaming(
 		let assistantError: string | undefined;
 		let assistantFailureSignal: unknown;
 		let interrupted = false;
+		let activeToolExecutions = 0;
 		const rawStdoutLines: string[] = [];
 
 		const writeOutputLine = (line: string) => {
@@ -99,6 +100,11 @@ export function runPiStreaming(
 
 			appendChildEvent(event);
 			onChildEvent?.(event);
+
+			// Track in-flight tool executions so the idle watchdog does not mistake a
+			// slow, quiet tool call for a stalled attempt.
+			if (event.type === "tool_execution_start") activeToolExecutions += 1;
+			else if (event.type === "tool_execution_end") activeToolExecutions = Math.max(0, activeToolExecutions - 1);
 
 			if (event.type === "tool_execution_start" && event.toolName) {
 				const toolArgs = extractToolArgsPreview(event.args ?? {});
@@ -167,6 +173,7 @@ export function runPiStreaming(
 		const attemptWatchdog = createAttemptWatchdog({
 			child,
 			isSettled: () => settled,
+			isToolActive: () => activeToolExecutions > 0,
 			onTimeout(message) {
 				forcedTerminationSignal = true;
 				error ??= message;

@@ -61,6 +61,9 @@ const successEvent = (text: string) => JSON.stringify({
   },
 });
 
+const toolStartEvent = JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "sleep" } });
+const toolEndEvent = JSON.stringify({ type: "tool_execution_end", toolName: "bash" });
+
 describe("subagent per-attempt watchdog", () => {
   test("kills a stalled model attempt and advances to the next fallback", async () => {
     await withFakeCli(`
@@ -116,6 +119,147 @@ describe("subagent per-attempt watchdog", () => {
       assert.match(result.finalOutput ?? "", /activity ok/);
       assert.equal(result.modelAttempts?.length, 1);
       assert.equal(result.modelAttempts?.[0]?.success, true);
+    });
+  });
+
+  test("does not trip the idle watchdog while a slow tool call is active", async () => {
+    await withFakeCli(`
+      console.log(${JSON.stringify(toolStartEvent)});
+      setTimeout(() => {
+        console.log(${JSON.stringify(toolEndEvent)});
+        console.log(${JSON.stringify(successEvent("tool ok"))});
+      }, 700);
+    `, async (dir) => {
+      const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+        cwd: dir,
+        runId: "watchdog-tool-active",
+        modelOverride: "provider-a/stalled",
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.error, undefined);
+      assert.match(result.finalOutput ?? "", /tool ok/);
+      assert.equal(result.modelAttempts?.length, 1);
+      assert.equal(result.modelAttempts?.[0]?.success, true);
+    });
+  });
+
+  test("trips the idle watchdog when the child stalls after a tool call ends", async () => {
+    await withFakeCli(`
+      const modelIndex = process.argv.indexOf("--model");
+      const model = modelIndex === -1 ? "default" : process.argv[modelIndex + 1];
+      if (model === "provider-a/stalled") {
+        console.log(${JSON.stringify(toolStartEvent)});
+        console.log(${JSON.stringify(toolEndEvent)});
+        setInterval(() => {}, 1000);
+      } else {
+        console.log(${JSON.stringify(successEvent("fallback ok"))});
+      }
+    `, async (dir) => {
+      const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+        cwd: dir,
+        runId: "watchdog-post-tool-stall",
+        availableModels: [
+          { provider: "provider-a", id: "stalled", fullId: "provider-a/stalled" },
+          { provider: "provider-b", id: "working", fullId: "provider-b/working" },
+        ],
+        knownModelProviders: ["provider-a", "provider-b"],
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.match(result.finalOutput ?? "", /fallback ok/);
+      assert.equal(result.modelAttempts?.length, 2);
+      assert.equal(result.modelAttempts?.[0]?.success, false);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
+      assert.equal(result.modelAttempts?.[1]?.success, true);
+    });
+  });
+
+  test("enforces the wall-clock cap even with steady child activity", async () => {
+    await withFakeCli(`
+      const modelIndex = process.argv.indexOf("--model");
+      const model = modelIndex === -1 ? "default" : process.argv[modelIndex + 1];
+      if (model === "provider-a/stalled") setInterval(() => process.stderr.write("tick\\n"), 50);
+      else console.log(${JSON.stringify(successEvent("fallback ok"))});
+    `, async (dir) => {
+      process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "600";
+      const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+        cwd: dir,
+        runId: "watchdog-wall-cap",
+        availableModels: [
+          { provider: "provider-a", id: "stalled", fullId: "provider-a/stalled" },
+          { provider: "provider-b", id: "working", fullId: "provider-b/working" },
+        ],
+        knownModelProviders: ["provider-a", "provider-b"],
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.match(result.finalOutput ?? "", /fallback ok/);
+      assert.equal(result.modelAttempts?.length, 2);
+      assert.equal(result.modelAttempts?.[0]?.success, false);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out after 600ms\./i);
+      assert.doesNotMatch(result.modelAttempts?.[0]?.error ?? "", /without child activity/i);
+      assert.equal(result.modelAttempts?.[1]?.success, true);
+    });
+  });
+
+  test("escalates to SIGKILL when the child ignores SIGTERM", async () => {
+    await withFakeCli(`
+      const modelIndex = process.argv.indexOf("--model");
+      const model = modelIndex === -1 ? "default" : process.argv[modelIndex + 1];
+      if (model === "provider-a/stalled") {
+        process.on("SIGTERM", () => {});
+        setInterval(() => {}, 1000);
+      } else {
+        console.log(${JSON.stringify(successEvent("fallback ok"))});
+      }
+    `, async (dir) => {
+      const result = await runSync(dir, [agentConfig()], "fake-worker", "Do work", {
+        cwd: dir,
+        runId: "watchdog-sigkill-escalation",
+        availableModels: [
+          { provider: "provider-a", id: "stalled", fullId: "provider-a/stalled" },
+          { provider: "provider-b", id: "working", fullId: "provider-b/working" },
+        ],
+        knownModelProviders: ["provider-a", "provider-b"],
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.match(result.finalOutput ?? "", /fallback ok/);
+      assert.equal(result.modelAttempts?.length, 2);
+      assert.equal(result.modelAttempts?.[0]?.success, false);
+      assert.match(result.modelAttempts?.[0]?.error ?? "", /timed out/i);
+      assert.equal(result.modelAttempts?.[1]?.success, true);
+    });
+  });
+
+  test("background runner keeps a silent tool call alive past the idle window", async () => {
+    await withFakeCli(`
+      console.log(${JSON.stringify(toolStartEvent)});
+      setTimeout(() => {
+        console.log(${JSON.stringify(toolEndEvent)});
+        console.log(${JSON.stringify(successEvent("background tool ok"))});
+      }, 700);
+    `, async (dir) => {
+      const result = await runSingleStep({
+        agent: "fake-worker",
+        task: "Do work",
+        inheritProjectContext: false,
+        inheritSkills: false,
+      }, {
+        previousOutput: "",
+        placeholder: "{previous}",
+        cwd: dir,
+        sessionEnabled: false,
+        id: "background-tool-active",
+        flatIndex: 0,
+        flatStepCount: 1,
+        outputFile: join(dir, "output.txt"),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.error, undefined);
+      assert.match(result.output, /background tool ok/);
     });
   });
 

@@ -44,6 +44,11 @@ export function createAttemptWatchdog(params: {
 	config?: Partial<AttemptTimeoutConfig>;
 	onTimeout: (message: string) => void;
 	isSettled: () => boolean;
+	/** Reports whether a tool call is currently executing in the child. A slow tool
+	 * (long build, large test suite) can legitimately stay silent past the idle
+	 * window, so an in-flight tool execution counts as activity and defers the idle
+	 * trip. The wall-clock cap still bounds the whole attempt. */
+	isToolActive?: () => boolean;
 }): AttemptWatchdog {
 	const config = { ...resolveAttemptTimeoutConfig(), ...(params.config ?? {}) };
 	let idleTimer: NodeJS.Timeout | undefined;
@@ -80,7 +85,15 @@ export function createAttemptWatchdog(params: {
 	};
 	const scheduleIdle = () => {
 		clearIdle();
-		idleTimer = setTimeout(() => trip(idleTimeoutMessage(config.idleMs)), config.idleMs);
+		idleTimer = setTimeout(() => {
+			if (params.isToolActive?.()) {
+				// Do not kill a healthy attempt that is busy inside a slow tool call;
+				// re-arm the idle window and let the wall-clock cap bound the attempt.
+				scheduleIdle();
+				return;
+			}
+			trip(idleTimeoutMessage(config.idleMs));
+		}, config.idleMs);
 		idleTimer.unref?.();
 	};
 

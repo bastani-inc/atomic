@@ -61,6 +61,10 @@ export async function runSingleStep(
 		}
 	}
 
+	// `!== undefined` is intentional: an explicitly empty array means every candidate
+	// was removed by pre-spawn filtering (see filterSpawnableModelCandidates) and must
+	// be respected — do not "simplify" this back to `.length > 0`, which would spawn a
+	// doomed default attempt. The empty case is surfaced as an error below.
 	const candidates = step.modelCandidates !== undefined
 		? step.modelCandidates
 		: step.model

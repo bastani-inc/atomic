@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import {
