@@ -210,6 +210,7 @@ export interface AgentSessionMethodSurface {
 	getExtensionSourceLabel(extensionPath: string): string;
 	_applyExtensionBindings(runner: ExtensionRunner): void;
 	_refreshCurrentModelFromRegistry(): void;
+	refreshCurrentModelFromRegistry(): void;
 	_bindExtensionCore(runner: ExtensionRunner): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
@@ -301,6 +302,7 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "abortBranchSummary"
 	| "setAutoCompactionEnabled"
 	| "bindExtensions"
+	| "refreshCurrentModelFromRegistry"
 	| "reload"
 	| "abortRetry"
 	| "setAutoRetryEnabled"

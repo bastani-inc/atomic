@@ -10,6 +10,7 @@
 ### Fixed
 
 - Fixed GitHub Copilot models to use the live `max_output_tokens` value from the Copilot model catalog, preventing `github-copilot/claude-opus-4.8` from being capped by Atomic's stale built-in output-token limit after compaction ([#1582](https://github.com/bastani-inc/atomic/issues/1582)).
+- Fixed active GitHub Copilot sessions to adopt live catalog model metadata as soon as the catalog loads, so fallback models refresh their supported reasoning levels without requiring a restart.
 
 ## [0.9.4-alpha.6] - 2026-07-01
 
