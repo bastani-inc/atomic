@@ -37,6 +37,9 @@ export function resolveAttemptTimeoutConfig(): AttemptTimeoutConfig {
 		// `0` (or a negative value) disables the corresponding timeout entirely.
 		idleMs: envMs("ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS") ?? DEFAULT_IDLE_MS,
 		wallMs: envMs("ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS") ?? DEFAULT_WALL_MS,
+		// The SIGTERM→SIGKILL grace period intentionally cannot be disabled: once a
+		// watchdog trips, escalation must always be bounded. `0`, negative, or
+		// non-numeric values fall back to the default.
 		killGraceMs: positiveEnvMs("ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS") ?? DEFAULT_KILL_GRACE_MS,
 	};
 }

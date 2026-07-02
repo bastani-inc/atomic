@@ -173,6 +173,11 @@ export function runPiStreaming(
 		const attemptWatchdog = createAttemptWatchdog({
 			child,
 			isSettled: () => settled,
+			// An in-flight tool execution counts as watchdog activity so a slow, quiet
+			// tool call is not mistaken for a stalled attempt. Caveat: the counter only
+			// decrements on tool_execution_end, so if a tool ends abnormally without its
+			// end event the idle watchdog is deferred indefinitely and the wall-clock cap
+			// becomes the sole backstop — do not lower the wall cap assuming idle fires.
 			isToolActive: () => activeToolExecutions > 0,
 			onTimeout(message) {
 				forcedTerminationSignal = true;

@@ -365,6 +365,10 @@ export async function runSingleAttempt(
 			isSettled: () => settled || processClosed || detached,
 			// A slow, quiet tool call (long build/test run) must not be mistaken for a
 			// stalled attempt: an in-flight tool execution counts as watchdog activity.
+			// Caveat: `progress.currentTool` is cleared on tool_execution_end, so if a
+			// tool ends abnormally without emitting its end event the idle watchdog is
+			// deferred indefinitely and the wall-clock cap becomes the sole backstop for
+			// this attempt — do not lower the wall cap assuming idle always fires.
 			isToolActive: () => progress.currentTool !== undefined,
 			onTimeout(message) {
 				forcedTerminationSignal = true;

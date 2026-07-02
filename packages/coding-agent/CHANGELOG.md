@@ -6,7 +6,7 @@
 
 - Added dynamic GitHub Copilot model population from the live CAPI `/models` catalog: picker-enabled, non-disabled plain chat ids are synthesized from catalog metadata (endpoints, capabilities, limits, and display names) while built-in `pi-ai` definitions still win, namespaced enterprise deployments such as `org/deployment/model` are skipped, and cached catalog metadata enables the same models on cold start.
 - Added catalog-driven thinking-level gating for GitHub Copilot models so dynamically synthesized entries and bundled `pi-ai` Copilot models only offer the reasoning levels advertised by CAPI's `capabilities.supports.reasoning_effort` arrays, while models without an effort array keep their existing thinking behavior.
-- Added a subagent watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Added a subagent watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply. The `ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS` SIGTERM→SIGKILL grace period intentionally cannot be disabled — `0`, negative, or non-numeric values fall back to its default so escalation always stays bounded ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
 
 ### Fixed
 

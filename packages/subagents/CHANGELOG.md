@@ -12,7 +12,7 @@
 
 ### Added
 
-- Added a watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Added a watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) now disables the corresponding per-attempt timeout entirely; non-numeric values are ignored and the defaults apply. The `ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS` SIGTERM→SIGKILL grace period intentionally cannot be disabled — `0`, negative, or non-numeric values fall back to its default so escalation always stays bounded ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
 
 ## [0.9.4-alpha.6] - 2026-07-01
 
