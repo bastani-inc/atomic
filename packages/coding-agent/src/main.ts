@@ -15,7 +15,6 @@ import { type AgentSessionRuntimeDiagnostic, createAgentSessionFromServices, cre
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-import { exportFromFile } from "./core/export-html/index.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { resolveModelScope } from "./core/model-resolver.ts";
@@ -84,6 +83,7 @@ export async function main(args: string[], options?: MainOptions) {
 		let result: string;
 		try {
 			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
+			const { exportFromFile } = await import("./core/export-html/index.ts");
 			result = await exportFromFile(parsed.export, outputPath);
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : "Failed to export session";
@@ -178,6 +178,9 @@ export async function main(args: string[], options?: MainOptions) {
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
+	// When true, the initial runtime was created without loading extension code so the
+	// TUI can paint immediately; InteractiveMode completes the load in the background.
+	let deferredExtensionLoad = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -192,6 +195,24 @@ export async function main(args: string[], options?: MainOptions) {
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		// Defer extension loading to after first paint only when nothing before the TUI
+		// starts needs extensions: no trust prompt, no -e sources, no extension flags,
+		// no CLI/settings model selection that could reference extension providers.
+		const deferExtensions =
+			appMode === "interactive" &&
+			process.stdin.isTTY === true &&
+			sessionStartEvent === undefined &&
+			!parsed.help &&
+			parsed.listModels === undefined &&
+			(!shouldResolveProjectTrust || storedProjectTrust !== null) &&
+			(resolvedExtensionPaths?.length ?? 0) === 0 &&
+			parsed.unknownFlags.size === 0 &&
+			parsed.provider === undefined &&
+			parsed.model === undefined &&
+			(parsed.models ?? runtimeSettingsManager.getEnabledModels() ?? []).length === 0;
+		if (sessionStartEvent === undefined) {
+			deferredExtensionLoad = deferExtensions;
+		}
 		const getProjectTrustContext = () =>
 			projectTrustContext ??
 			createProjectTrustContext({
@@ -207,7 +228,9 @@ export async function main(args: string[], options?: MainOptions) {
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions:
-				shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
+				deferExtensions
+					? { deferExtensions: true }
+					: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
 					? {
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
@@ -438,10 +461,12 @@ export async function main(args: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
+			deferredExtensionLoad,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
+			await interactiveMode.deferredStartupPromise;
 			printTimings();
 			interactiveMode.stop();
 			stopThemeWatcher();

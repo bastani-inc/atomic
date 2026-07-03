@@ -217,6 +217,14 @@ export class InteractiveModeBase {
 
 
 
+  // Deferred extension load state (first paint happens before extensions load)
+  deferredStartupPending = false;
+
+
+  deferredStartupPromise: Promise<void> | undefined = undefined;
+
+
+
   // Shutdown state
   shutdownRequested = false;
 
@@ -324,6 +332,7 @@ export class InteractiveModeBase {
     options: InteractiveModeOptions = {},
   ) {
     this.options = options;
+    this.deferredStartupPending = Boolean(options.deferredExtensionLoad);
     this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
     this.runtimeHost = runtimeHost;
     this.runtimeHost.setBeforeSessionInvalidate(() => {

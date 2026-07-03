@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isLocalPath } from "../utils/paths.ts";
-import { clearExtensionCache, loadExtensionsCached } from "./extensions/loader.ts";
+import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
 import type { PathMetadata, ResolvedPaths } from "./package-manager.ts";
 import { resetTimings, startTimingSpan, endTimingSpan } from "./timings.ts";
@@ -193,13 +193,15 @@ export async function reloadDefaultResourceLoader(
 		: mergeResourcePaths(state.cwd, cliEnabledExtensions, [...enabledExtensions, ...builtinEnabledExtensions]);
 
 	const inheritanceSnapshotProvider = createInheritanceSnapshotProvider(loader);
-	const extensionsResult = await loadFinalExtensionSet(
-		loader,
-		extensionPaths,
-		preTrustExtensions,
-		workflowResourceProvider,
-		inheritanceSnapshotProvider,
-	);
+	const extensionsResult: LoadExtensionsResult = options?.deferExtensions
+		? { extensions: [], errors: [], runtime: createExtensionRuntime() }
+		: await loadFinalExtensionSet(
+				loader,
+				extensionPaths,
+				preTrustExtensions,
+				workflowResourceProvider,
+				inheritanceSnapshotProvider,
+			);
 
 	for (const p of state.additionalExtensionPaths) {
 		if (isLocalPath(p)) {

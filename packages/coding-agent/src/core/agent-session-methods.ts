@@ -214,7 +214,7 @@ export interface AgentSessionMethodSurface {
 	_bindExtensionCore(runner: ExtensionRunner): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
-	reload(): Promise<void>;
+	reload(options?: { reason?: "startup" | "reload" }): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
 	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;

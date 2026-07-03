@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
-import { getAgentDir, isBunBinary } from "../../config.ts";
+import { getExtensionTranspileCacheDir, isBunBinary } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -66,6 +66,35 @@ async function getVirtualModules(): Promise<Record<string, object>> {
   return _virtualModulesPromise;
 }
 let _aliases: Record<string, string> | null = null;
+let _transpileCacheDir: string | null = null;
+
+/**
+ * Persistent on-disk cache for jiti-transpiled extension modules.
+ * jiti keys cache entries by source-content hash, so entries self-invalidate
+ * when extension sources change; stale sibling version dirs are pruned
+ * in the background.
+ */
+function getTranspileCacheDir(): string {
+  if (_transpileCacheDir) return _transpileCacheDir;
+  _transpileCacheDir = getExtensionTranspileCacheDir();
+  pruneStaleTranspileCaches(_transpileCacheDir);
+  return _transpileCacheDir;
+}
+
+function pruneStaleTranspileCaches(currentDir: string): void {
+  const parent = path.dirname(currentDir);
+  const keep = path.basename(currentDir);
+  void fs.promises
+    .readdir(parent)
+    .then((entries) =>
+      Promise.all(
+        entries
+          .filter((entry) => entry !== keep)
+          .map((entry) => fs.promises.rm(path.join(parent, entry), { recursive: true, force: true })),
+      ),
+    )
+    .catch(() => {});
+}
 
 let extensionCacheCwd: string | undefined;
 let extensionCacheGeneration = 0;
@@ -121,22 +150,28 @@ function getAliases(): Record<string, string> {
   const typeboxValueEntry = require.resolve("typebox/value");
 
   const packagesRoot = path.resolve(__dirname, "../../../../");
-  const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string => {
+  const resolveWorkspaceOrImport = (workspaceRelativePath: string, packageName: string): string => {
     const workspacePath = path.join(packagesRoot, workspaceRelativePath);
     if (fs.existsSync(workspacePath)) {
       return workspacePath;
     }
-    return fileURLToPath(import.meta.resolve(specifier));
+    // Resolve via the package.json export and join the built-entry path, not
+    // import.meta.resolve: its mere presence silently breaks bytecode
+    // generation for the compiled binary (CJS bundle), and require.resolve
+    // fails on these ESM-only packages.
+    const packageRoot = path.dirname(require.resolve(`${packageName}/package.json`));
+    const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
+    return path.join(packageRoot, entryRelativePath);
   };
 
   const piCodingAgentEntry = packageIndex;
   const piAgentCoreEntry = resolveWorkspaceOrImport("agent/dist/index.js", "@earendil-works/pi-agent-core");
   const piTuiEntry = resolveWorkspaceOrImport("tui/dist/index.js", "@earendil-works/pi-tui");
-  // The workspace path mirrors pi-ai 0.80.x's built compat export. If an
-  // upstream layout change moves that file, fall back to package export
-  // resolution so installed Atomic builds still load the canonical entrypoint.
-  const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
-  const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
+  // The workspace path mirrors pi-ai 0.80.x's built dist layout. If an
+  // upstream layout change moves these files, this join needs updating to
+  // match the package's real dist paths.
+  const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
+  const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai");
 
   _aliases = {
     "@bastani/atomic": piCodingAgentEntry,
@@ -160,11 +195,6 @@ function getAliases(): Record<string, string> {
   };
 
   return _aliases;
-}
-
-/** Per-user directory for jiti's transformed-module cache. */
-function getExtensionTransformCacheDir(): string {
-  return path.join(getAgentDir(), "cache", "extension-transforms");
 }
 
 /** Internal hooks for extension-loader alias regression tests. */
@@ -197,12 +227,11 @@ export async function loadExtensionModule(
   const forceTransformedImports = isBunBinary || (isWindows && nativelyImportedPaths.has(extensionPath));
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
-    ...(forceTransformedImports ? { tryNative: false } : {}),
-    // Transformed imports on Windows persist jiti transforms in a per-user
-    // cache dir (content-hash keyed, so edits invalidate entries) instead of
-    // re-transpiling each launch. The agent dir stays writable even for the
-    // compiled binary, whose module dir is read-only.
-    ...(isWindows ? { fsCache: getExtensionTransformCacheDir() } : isBunBinary ? { fsCache: false } : {}),
+    ...(forceTransformedImports
+      ? { fsCache: getTranspileCacheDir(), tryNative: false }
+      : isWindows
+        ? { fsCache: getTranspileCacheDir() }
+        : {}),
     ...(isBunBinary ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
   });
   const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });

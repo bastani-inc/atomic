@@ -24,6 +24,8 @@ declare module "./interactive-mode-base.ts" {
   completeFirstRunOnboarding(): void;
   handleOnboardingWorkflowSeed(seed: string): Promise<void>;
   init(): Promise<void>;
+  completeDeferredStartup(): Promise<void>;
+  retryDeferredModelRestore(): Promise<void>;
   updateTerminalTitle(): void;
   run(): Promise<void>;
   checkForPackageUpdates(): Promise<string[]>;

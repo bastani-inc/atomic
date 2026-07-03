@@ -87,8 +87,10 @@ InteractiveModeBase.prototype.bindCurrentSessionExtensions = async function(this
 
     const extensionRunner = this.session.extensionRunner;
     this.setupExtensionShortcuts(extensionRunner);
-    this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
-    this.showStartupNoticesIfNeeded();
+    if (!this.deferredStartupPending) {
+      this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
+      this.showStartupNoticesIfNeeded();
+    }
   };
 
 InteractiveModeBase.prototype.applyRuntimeSettings = function(this: InteractiveModeBase): void {

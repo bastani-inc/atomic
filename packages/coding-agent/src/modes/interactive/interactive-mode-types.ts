@@ -28,4 +28,6 @@ export interface InteractiveModeOptions {
   initialMessages?: string[];
   /** Force verbose startup (overrides quietStartup setting) */
   verbose?: boolean;
+  /** Runtime was created without extension code; finish loading in the background after first paint. */
+  deferredExtensionLoad?: boolean;
 }

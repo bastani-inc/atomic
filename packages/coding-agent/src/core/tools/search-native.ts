@@ -1,4 +1,4 @@
-import { createRequire } from "node:module";
+import { createModuleRequire } from "../../utils/module-require.ts";
 
 type NativeBinding = {
 	glob: (options: NativeGlobOptions) => Promise<NativeGlobResult>;
@@ -90,7 +90,7 @@ export function resetNativeSearchBindingCache(): void {
 export function loadNativeSearchBinding(): NativeBinding | null {
 	if (cachedLoadResult !== null) return cachedLoadResult || null;
 	try {
-		const require = createRequire(import.meta.url);
+		const require = createModuleRequire(import.meta.url);
 		const binding = require("@bastani/atomic-natives") as Partial<NativeBinding>;
 		if (typeof binding.glob !== "function" || typeof binding.grep !== "function") {
 			cachedLoadResult = false;

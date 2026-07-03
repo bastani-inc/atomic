@@ -14,6 +14,12 @@ export interface ResourceExtensionPaths {
 }
 
 export interface ResourceLoaderReloadOptions {
+	/**
+	 * Skip loading extension code during this reload, leaving the loader with an
+	 * empty extension set. Skills, prompts, themes, context files, and prompt
+	 * files still load. A later full reload() picks up extensions.
+	 */
+	deferExtensions?: boolean;
 	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;
 	resolveBorrowedProjectTrust?: (options: {
 		source: string;
