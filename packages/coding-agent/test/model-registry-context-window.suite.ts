@@ -177,12 +177,22 @@ describeModelRegistry((context) => {
 			}
 		});
 
-		test("adds no options when the catalog is empty (no Copilot auth / offline)", () => {
+		test("falls back to the static CAPI snapshot when the catalog is empty (no Copilot auth / offline)", () => {
+			// Snapshot-backed bundled models keep their real CAPI tiers offline: the
+			// bundled pi-ai metadata claims a 400k base window for gpt-5.5, but CAPI
+			// enforces a 272k default tier with a 1.05M long tier (922k input cap).
 			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
 			const model = registry.find("github-copilot", "gpt-5.5");
 			expect(model).toBeDefined();
-			expect(model?.contextWindowOptions).toBeUndefined();
-			expect(model ? getSupportedContextWindows(model) : []).toEqual([model?.contextWindow]);
+			expect(model?.contextWindow).toBe(272_000);
+			expect(model?.maxInputTokens).toBe(922_000);
+			expect(model ? getSupportedContextWindows(model) : []).toEqual([272_000, 1_050_000]);
+
+			// Models without a CAPI snapshot expose no options offline.
+			const unsnapshotted = registry.find("github-copilot", "gpt-5.2");
+			expect(unsnapshotted).toBeDefined();
+			expect(unsnapshotted?.contextWindowOptions).toBeUndefined();
+			expect(unsnapshotted ? getSupportedContextWindows(unsnapshotted) : []).toEqual([unsnapshotted?.contextWindow]);
 		});
 
 		test("seeds context-window options from the on-disk cache at construction (returning user)", () => {

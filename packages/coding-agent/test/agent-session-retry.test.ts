@@ -434,18 +434,20 @@ describe("AgentSession retry", () => {
 		expect(session.isRetrying).toBe(false);
 	});
 
-	it("retries content_filter only for Copilot Gemini, not other providers", () => {
+	it("retries structured safety-trigger errors (content_filter, Anthropic refusal) for all providers", () => {
 		const created = createSession({ failCount: 0 });
 		const probe = created.session as unknown as {
 			_isRetryableError(message: AssistantMessage): boolean;
 		};
 
+		// OpenAI-style `finish_reason: content_filter` (any provider).
 		const anthropicBlocked = createAssistantMessage("", {
 			stopReason: "error",
 			errorMessage: "Provider finish_reason: content_filter",
 		});
-		expect(probe._isRetryableError(anthropicBlocked)).toBe(false);
+		expect(probe._isRetryableError(anthropicBlocked)).toBe(true);
 
+		// github-copilot CAPI mapping of spurious Gemini RECITATION/safety blocks.
 		const geminiBlocked = createAssistantMessage("", {
 			stopReason: "error",
 			errorMessage: "Provider finish_reason: content_filter",
@@ -454,6 +456,20 @@ describe("AgentSession retry", () => {
 			model: "gemini-3.1-pro-preview",
 		});
 		expect(probe._isRetryableError(geminiBlocked)).toBe(true);
+
+		// pi-ai's canned mapping of Anthropic `refusal` stops.
+		const anthropicRefusal = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "The model refused to complete the request",
+		});
+		expect(probe._isRetryableError(anthropicRefusal)).toBe(true);
+
+		// Non-safety, non-transient errors stay non-retryable.
+		const badRequest = createAssistantMessage("", {
+			stopReason: "error",
+			errorMessage: "Invalid request: unknown parameter",
+		});
+		expect(probe._isRetryableError(badRequest)).toBe(false);
 	});
 
 	it("does not treat a reasoning-only turn (output > 0) as an empty completion", () => {
@@ -479,4 +495,5 @@ describe("AgentSession retry", () => {
 		});
 		expect(probe._isEmptyCompletion(reasoningOnly)).toBe(false);
 	});
+
 });
