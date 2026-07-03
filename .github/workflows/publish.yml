@@ -85,9 +85,14 @@ jobs:
 
                   # --version exits before builtin extensions are loaded. Start the
                   # non-interactive runtime far enough to surface extension diagnostics,
-                  # but allow the expected no-models exit in CI.
+                  # but allow the expected no-models exit in CI. Run from a clean temp
+                  # cwd so repo-local config (e.g. .mcp.json) can't leak into the smoke
+                  # run and hang startup.
+                  work_dir="$RUNNER_TEMP/atomic-linux-binary-smoke-cwd"
+                  rm -rf "$work_dir"
+                  mkdir -p "$work_dir"
                   set +e
-                  output=$(printf '' | "$smoke_dir/atomic/atomic" --no-session 2>&1)
+                  output=$(cd "$work_dir" && printf '' | "$smoke_dir/atomic/atomic" --no-session 2>&1)
                   status=$?
                   set -e
                   echo "$output"
@@ -164,9 +169,16 @@ jobs:
 
                   # --version exits before builtin extensions are loaded. Start the
                   # non-interactive runtime far enough to surface extension diagnostics,
-                  # but allow the expected no-models exit in CI.
+                  # but allow the expected no-models exit in CI. Run from a clean temp
+                  # cwd so repo-local config (e.g. .mcp.json) can't leak into the smoke
+                  # run and hang startup.
+                  $workDir = Join-Path $env:RUNNER_TEMP "atomic-windows-binary-smoke-cwd"
+                  Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
+                  New-Item -ItemType Directory -Path $workDir | Out-Null
+                  Push-Location $workDir
                   $output = "" | & $atomic --no-session 2>&1 | Out-String
                   $status = $LASTEXITCODE
+                  Pop-Location
                   Write-Host $output
                   if ($output -match "Failed to load extension") {
                     exit 1

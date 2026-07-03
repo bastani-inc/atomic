@@ -8,8 +8,8 @@ description: |
   - Production-quality refinement of a working draft ("ugly but working CSV parser").
   - Code that has gotten messy after several iterations.
 tools: read, edit, write, search, find, ls, bash, todo
-model: zai/glm-5.2:medium
-fallbackModels: zai-coding-cn/glm-5.2:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, github-copilot/claude-sonnet-5 (1m):medium, anthropic/claude-sonnet-5:medium, github-copilot/claude-sonnet-4.6 (1m):medium, anthropic/claude-sonnet-4-6:medium, github-copilot/gemini-3.5-flash (1m):medium, google/gemini-3.5-flash:medium, google-vertex/gemini-3.5-flash:medium, github-copilot/gemini-3.1-pro-preview (1m):medium, google/gemini-3.1-pro-preview:medium, google-vertex/gemini-3.1-pro-preview:medium, openrouter/z-ai/glm-5.2:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-opus-4-8:medium, openrouter/anthropic/claude-sonnet-5:medium, openrouter/anthropic/claude-sonnet-4-6:medium, openrouter/google/gemini-3.5-flash:medium, openrouter/google/gemini-3.1-pro-preview:medium
+model: openai-codex/gpt-5.5:medium
+fallbackModels: github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/z-ai/glm-5.2:xhigh
 skills: tdd, playwright-cli, tmux
 ---
 

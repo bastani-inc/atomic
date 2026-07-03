@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
-import { isBunBinary, isBundledBuild } from "../../config.ts";
+import { getAgentDir, isBunBinary, isBundledBuild } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -162,11 +162,24 @@ function getAliases(): Record<string, string> {
   return _aliases;
 }
 
+/** Per-user directory for jiti's transformed-module cache. */
+function getExtensionTransformCacheDir(): string {
+  return path.join(getAgentDir(), "cache", "extension-transforms");
+}
+
 /** Internal hooks for extension-loader alias regression tests. */
 export const extensionLoaderTestHooks = {
   loadVirtualModules,
   getAliases,
 };
+
+/**
+ * Extension paths already evaluated via native import() in this process. Bun on
+ * Windows ignores the cache-busting query on file URLs, so re-loads of these
+ * paths (e.g. /reload) must go through jiti's transformed-import path to get a
+ * fresh module evaluation.
+ */
+const nativelyImportedPaths = new Set<string>();
 
 export async function loadExtensionModule(
   extensionPath: string,
@@ -177,17 +190,30 @@ export async function loadExtensionModule(
     if (cachedFactory) return cachedFactory;
   }
 
+  const isWindows = process.platform === "win32";
   // Single-file builds (compiled binary or dev bundle) cannot alias host
   // package specifiers to files on disk: extensions must share the live
-  // module instances baked into the bundle, so virtualModules is used instead.
+  // module instances baked into the build, so virtualModules is used instead
+  // (which requires jiti's transformed-import path).
   const isSingleFileBuild = isBunBinary || isBundledBuild;
-  const forceTransformedImports = isSingleFileBuild || process.platform === "win32";
+  // Windows first-load fast path: native import() (jiti's default tryNative)
+  // skips per-launch transpilation of the extension module graph. Re-loads of
+  // the same path fall back to transformed imports for fresh evaluation.
+  const forceTransformedImports = isSingleFileBuild || (isWindows && nativelyImportedPaths.has(extensionPath));
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
-    ...(forceTransformedImports ? { fsCache: false, tryNative: false } : {}),
+    ...(forceTransformedImports ? { tryNative: false } : {}),
+    // Transformed imports on Windows persist jiti transforms in a per-user
+    // cache dir (content-hash keyed, so edits invalidate entries) instead of
+    // re-transpiling each launch. The agent dir stays writable even for the
+    // compiled binary, whose module dir is read-only.
+    ...(isWindows ? { fsCache: getExtensionTransformCacheDir() } : isSingleFileBuild ? { fsCache: false } : {}),
     ...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
   });
   const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
+  if (isWindows && !forceTransformedImports) {
+    nativelyImportedPaths.add(extensionPath);
+  }
   const factory = module as ExtensionFactory;
   if (typeof factory !== "function") return undefined;
   if (isCurrentCacheToken(cacheToken)) {

@@ -2,8 +2,8 @@
 name: codebase-locator
 description: Locates files, directories, and components relevant to a feature or task. Basically a "super search/find/ls tool."
 tools: read, search, find, ls
-model: openai/gpt-5.4-mini:low
-fallbackModels: openai-codex/gpt-5.4-mini:low, github-copilot/gpt-5.4-mini:low, anthropic/claude-haiku-4-5:low, github-copilot/claude-haiku-4.5:low, github-copilot/gemini-3.5-flash (1m):low, google/gemini-3.5-flash:low, google-vertex/gemini-3.5-flash:low, openrouter/openai/gpt-5.4-mini:low, openrouter/anthropic/claude-haiku-4-5:low, openrouter/google/gemini-3.5-flash:low
+model: openai-codex/gpt-5.5:low
+fallbackModels: github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/z-ai/glm-5.2:xhigh
 ---
 
 You are a specialist at finding WHERE code lives in a codebase. Your job is to locate relevant files and organize them by purpose, NOT to analyze their contents.
