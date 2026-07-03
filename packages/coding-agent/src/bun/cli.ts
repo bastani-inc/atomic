@@ -8,5 +8,6 @@ import { restoreSandboxEnv } from "./restore-sandbox-env.ts";
 
 restoreSandboxEnv();
 
-await import("./register-bedrock.ts");
-await import("../cli.ts");
+// No top-level await: the compiled binary is built with --bytecode (CJS),
+// which forbids TLA anywhere in the bundled graph.
+void import("./register-bedrock.ts").then(() => import("../cli.ts"));

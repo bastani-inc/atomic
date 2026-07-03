@@ -1,4 +1,4 @@
-import { createRequire } from "node:module";
+import { createModuleRequire } from "../../utils/module-require.ts";
 import { getShellConfig, getShellEnv } from "../../utils/shell.ts";
 
 const NATIVE_PACKAGE = "@bastani/atomic-natives";
@@ -49,7 +49,7 @@ export function resetNativePtyBindingCache(): void {
 function loadNativePtyBinding(): NativeLoadResult {
 	if (cachedLoadResult) return cachedLoadResult;
 	try {
-		const loaded = createRequire(import.meta.url)(NATIVE_PACKAGE) as Partial<NativePtyBinding>;
+		const loaded = createModuleRequire(import.meta.url)(NATIVE_PACKAGE) as Partial<NativePtyBinding>;
 		if (typeof loaded.PtySession !== "function") {
 			cachedLoadResult = { ok: false, error: new Error(`Native package ${NATIVE_PACKAGE} is missing PtySession.`) };
 			return cachedLoadResult;

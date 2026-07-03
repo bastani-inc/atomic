@@ -5,8 +5,7 @@ import { theme } from "../modes/interactive/theme/theme.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { calculateContextTokens, estimateContextTokens } from "./compaction/index.ts";
 import type { ContextUsage, ReplacedSessionContext } from "./extensions/index.ts";
-import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
-import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
+import type { ToolHtmlRenderer } from "./export-html/index.ts";
 import { CURRENT_SESSION_VERSION, getLatestCompactionBoundaryEntry, type SessionHeader } from "./session-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { SessionStats } from "./agent-session-types.ts";
@@ -111,6 +110,10 @@ export function getContextUsage(this: AgentSession): ContextUsage | undefined {
 
 export async function exportToHtml(this: AgentSession, outputPath?: string): Promise<string> {
 	const themeName = this.settingsManager.getTheme();
+	const [{ exportSessionToHtml }, { createToolHtmlRenderer }] = await Promise.all([
+		import("./export-html/index.ts"),
+		import("./export-html/tool-renderer.ts"),
+	]);
 
 	// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
 	const toolRenderer: ToolHtmlRenderer = createToolHtmlRenderer({

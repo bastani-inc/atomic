@@ -14,8 +14,13 @@ const __dirname = dirname(__filename);
  * Detect if we're running as a Bun compiled binary.
  * Bun binaries have import.meta.url containing "$bunfs", "~BUN", or "%7EBUN" (Bun's virtual filesystem path)
  */
-export const isBunBinary =
-	import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+const bunFsMarkers = ["$bunfs", "~BUN", "%7EBUN"];
+// Check process.argv[1] as well as import.meta.url: in a CJS (bytecode) bundle
+// import.meta.url is rewritten to the original source path, but argv[1] still
+// points into Bun's virtual filesystem.
+export const isBunBinary = [import.meta.url, process.argv[1] ?? ""].some((candidate) =>
+	bunFsMarkers.some((marker) => candidate.includes(marker)),
+);
 
 /**
  * Detect if we're running from a single-file bundle produced by `bun run bundle:dev`.
@@ -415,6 +420,14 @@ export function getToolsDir(): string {
 /** Get path to managed binaries directory (fd, rg) */
 export function getBinDir(): string {
 	return join(getAgentDir(), "bin");
+}
+
+/**
+ * Get path to the extension transpile cache directory (jiti fsCache).
+ * Scoped by version so release upgrades never read stale transpiled output.
+ */
+export function getExtensionTranspileCacheDir(): string {
+	return join(getAgentDir(), "cache", "jiti", VERSION);
 }
 
 /** Get path to prompt templates directory */

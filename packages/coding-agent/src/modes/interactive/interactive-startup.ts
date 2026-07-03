@@ -145,14 +145,15 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       });
 
     // Initialize extensions first so resources are shown before messages
-    if (this.options.completeDeferredStartup) {
-      await this.finishDeferredStartup();
-    } else {
-      await this.rebindCurrentSession();
-    }
+    await this.rebindCurrentSession();
 
     // Render initial messages AFTER showing loaded resources
     this.renderInitialMessages();
+
+    // Extensions were skipped before first paint; finish loading them in the background.
+    if (this.deferredStartupPending) {
+      this.deferredStartupPromise = this.completeDeferredStartup();
+    }
 
     // Set up theme file watcher
     onThemeChange(() => {
@@ -233,11 +234,18 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
       this.showError(`models.json error: ${modelsJsonError}`);
     }
 
-    if (modelFallbackMessage) {
+    if (modelFallbackMessage && !this.deferredStartupPromise) {
+      // With a deferred extension load, model restore is retried once extension
+      // providers register; completeDeferredStartup shows the warning if it still fails.
       this.showWarning(modelFallbackMessage);
     }
 
     void this.maybeWarnAboutAnthropicSubscriptionAuth();
+
+    // Prompts need extension tools; wait for the background load before sending any.
+    if (this.deferredStartupPromise) {
+      await this.deferredStartupPromise;
+    }
 
     // Process initial messages
     if (initialMessage) {

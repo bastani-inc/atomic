@@ -15,10 +15,9 @@ export interface ResourceExtensionPaths {
 
 export interface ResourceLoaderReloadOptions {
 	/**
-	 * Skip extension loading, leaving the loader with an empty extension set.
-	 *
-	 * Used for deferred startup: the caller paints the first frame with
-	 * extension-free services, then runs a full reload afterwards.
+	 * Skip loading extension code during this reload, leaving the loader with an
+	 * empty extension set. Skills, prompts, themes, context files, and prompt
+	 * files still load. A later full reload() picks up extensions.
 	 */
 	deferExtensions?: boolean;
 	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;

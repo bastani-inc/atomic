@@ -15,7 +15,6 @@ import { type AgentSessionRuntimeDiagnostic, createAgentSessionFromServices, cre
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
-import { exportFromFile } from "./core/export-html/index.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { resolveModelScope } from "./core/model-resolver.ts";
@@ -27,7 +26,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
-import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, shouldDeferInteractiveStartup, toPrintOutputMode } from "./main-app-mode.ts";
+import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
@@ -84,6 +83,7 @@ export async function main(args: string[], options?: MainOptions) {
 		let result: string;
 		try {
 			const outputPath = parsed.messages.length > 0 ? parsed.messages[0] : undefined;
+			const { exportFromFile } = await import("./core/export-html/index.ts");
 			result = await exportFromFile(parsed.export, outputPath);
 		} catch (error: unknown) {
 			const message = error instanceof Error ? error.message : "Failed to export session";
@@ -178,13 +178,15 @@ export async function main(args: string[], options?: MainOptions) {
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
+	// When true, the initial runtime was created without loading extension code so the
+	// TUI can paint immediately; InteractiveMode completes the load in the background.
+	let deferredExtensionLoad = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
-		deferExtensions,
 	}) => {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = hasProjectTrustInputs(cwd);
@@ -193,6 +195,24 @@ export async function main(args: string[], options?: MainOptions) {
 		const shouldResolveProjectTrust =
 			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustInputs;
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: initialProjectTrusted });
+		// Defer extension loading to after first paint only when nothing before the TUI
+		// starts needs extensions: no trust prompt, no -e sources, no extension flags,
+		// no CLI/settings model selection that could reference extension providers.
+		const deferExtensions =
+			appMode === "interactive" &&
+			process.stdin.isTTY === true &&
+			sessionStartEvent === undefined &&
+			!parsed.help &&
+			parsed.listModels === undefined &&
+			(!shouldResolveProjectTrust || storedProjectTrust !== null) &&
+			(resolvedExtensionPaths?.length ?? 0) === 0 &&
+			parsed.unknownFlags.size === 0 &&
+			parsed.provider === undefined &&
+			parsed.model === undefined &&
+			(parsed.models ?? runtimeSettingsManager.getEnabledModels() ?? []).length === 0;
+		if (sessionStartEvent === undefined) {
+			deferredExtensionLoad = deferExtensions;
+		}
 		const getProjectTrustContext = () =>
 			projectTrustContext ??
 			createProjectTrustContext({
@@ -207,9 +227,10 @@ export async function main(args: string[], options?: MainOptions) {
 			authStorage,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
-			resourceLoaderReloadOptions: deferExtensions
-				? { deferExtensions: true }
-				: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
+			resourceLoaderReloadOptions:
+				deferExtensions
+					? { deferExtensions: true }
+					: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
 					? {
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
@@ -344,27 +365,11 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntimeFactory");
-
-	// Deferred startup: create the initial runtime without extensions so the first
-	// interactive frame paints immediately; the full runtime replaces it after paint.
-	const deferredCwd = sessionManager.getCwd();
-	const deferredHasTrustInputs = hasProjectTrustInputs(deferredCwd);
-	const deferStartup = shouldDeferInteractiveStartup({
-		appMode,
-		parsed,
-		stdinIsTTY: process.stdin.isTTY === true,
-		resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
-		hasTrustInputs: deferredHasTrustInputs,
-		storedProjectTrust: deferredHasTrustInputs ? projectTrustStore.get(deferredCwd) : null,
-		defaultProjectTrust: startupDefaultProjectTrust,
-	});
-
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
-		deferExtensions: deferStartup,
 	});
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
@@ -417,11 +422,9 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
-	if (!deferStartup) {
-		reportDiagnostics(runtime.diagnostics);
-		if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
-			process.exit(1);
-		}
+	reportDiagnostics(runtime.diagnostics);
+	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+		process.exit(1);
 	}
 	time("createAgentSession");
 
@@ -440,7 +443,7 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
-		if (!deferStartup && scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
+		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			const modelList = scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -458,16 +461,12 @@ export async function main(args: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
-			completeDeferredStartup: deferStartup
-				? () =>
-						runtime.completeDeferredStartup({
-							projectTrustContext: createProjectTrustContext({ cwd: sessionManager.getCwd(), mode: "interactive", settingsManager, hasUI: false }),
-						})
-				: undefined,
+			deferredExtensionLoad,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
+			await interactiveMode.deferredStartupPromise;
 			printTimings();
 			interactiveMode.stop();
 			stopThemeWatcher();

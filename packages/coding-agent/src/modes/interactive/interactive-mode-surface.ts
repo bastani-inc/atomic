@@ -24,6 +24,8 @@ declare module "./interactive-mode-base.ts" {
   completeFirstRunOnboarding(): void;
   handleOnboardingWorkflowSeed(seed: string): Promise<void>;
   init(): Promise<void>;
+  completeDeferredStartup(): Promise<void>;
+  retryDeferredModelRestore(): Promise<void>;
   updateTerminalTitle(): void;
   run(): Promise<void>;
   checkForPackageUpdates(): Promise<string[]>;
@@ -91,7 +93,6 @@ declare module "./interactive-mode-base.ts" {
   bindCurrentSessionExtensions(): Promise<void>;
   applyRuntimeSettings(): void;
   rebindCurrentSession(): Promise<void>;
-  finishDeferredStartup(): Promise<void>;
   handleFatalRuntimeError(prefix: string, error: unknown): Promise<never>;
   renderCurrentSessionState(): void;
   getRegisteredToolDefinition(toolName: string): ReturnType<AgentSession["getToolDefinition"]>;

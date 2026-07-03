@@ -239,9 +239,12 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 }
 
 
-export async function reload(this: AgentSession): Promise<void> {
+export async function reload(this: AgentSession, options?: { reason?: "startup" | "reload" }): Promise<void> {
+	const reason = options?.reason ?? "reload";
 	const previousFlagValues = this._extensionRunner.getFlagValues();
-	await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+	if (reason === "reload") {
+		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+	}
 	await this.settingsManager.reload();
 	resetApiProviders();
 	await this._resourceLoader.reload();
@@ -257,8 +260,8 @@ export async function reload(this: AgentSession): Promise<void> {
 		this._extensionShutdownHandler ||
 		this._extensionErrorListener;
 	if (hasBindings) {
-		await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
-		await this.extendResourcesFromExtensions("reload");
+		await this._extensionRunner.emit({ type: "session_start", reason });
+		await this.extendResourcesFromExtensions(reason);
 	}
 }
 
