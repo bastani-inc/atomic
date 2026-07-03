@@ -9,6 +9,7 @@ packages/natives/npm/
 *.tsbuildinfo
 # packages/*/node_modules/
 packages/*/dist/
+packages/*/dist-dev/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
 *.cpuprofile

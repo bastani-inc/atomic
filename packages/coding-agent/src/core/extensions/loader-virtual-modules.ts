@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti/static";
-import { isBunBinary } from "../../config.ts";
+import { isBunBinary, isBundledBuild } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import type { ExtensionFactory } from "./types.ts";
 
@@ -177,11 +177,15 @@ export async function loadExtensionModule(
     if (cachedFactory) return cachedFactory;
   }
 
-  const forceTransformedImports = isBunBinary || process.platform === "win32";
+  // Single-file builds (compiled binary or dev bundle) cannot alias host
+  // package specifiers to files on disk: extensions must share the live
+  // module instances baked into the bundle, so virtualModules is used instead.
+  const isSingleFileBuild = isBunBinary || isBundledBuild;
+  const forceTransformedImports = isSingleFileBuild || process.platform === "win32";
   const jiti = createJiti(import.meta.url, {
     moduleCache: false,
     ...(forceTransformedImports ? { fsCache: false, tryNative: false } : {}),
-    ...(isBunBinary ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
+    ...(isSingleFileBuild ? { virtualModules: await getVirtualModules() } : { alias: getAliases() }),
   });
   const module = await jiti.import(extensionImportSpecifier(extensionPath, cacheToken), { default: true });
   const factory = module as ExtensionFactory;

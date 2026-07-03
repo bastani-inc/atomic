@@ -17,6 +17,13 @@ const __dirname = dirname(__filename);
 export const isBunBinary =
 	import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
+/**
+ * Detect if we're running from a single-file bundle produced by `bun run bundle:dev`.
+ * The bundle build inlines this env var via `--define`, so it is a compile-time
+ * constant there and undefined everywhere else.
+ */
+export const isBundledBuild = process.env.ATOMIC_BUNDLED_BUILD === "1";
+
 /** Detect if Bun is the runtime (compiled binary or bun run) */
 export const isBunRuntime = !!process.versions.bun;
 
