@@ -31,41 +31,43 @@ export interface DeepResearchCodebaseResult {
 
 export const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 
+// Chains curated from Atomic's agentic-coding benchmark (see ralph-models.ts
+// for the frontier data and placement principle: only reviewers get
+// best-in-class models; the planner is a perf-per-dollar stage).
 export const PLANNER_MODEL_CONFIG = {
-  model: "anthropic/claude-fable-5:xhigh",
+  model: "openai-codex/gpt-5.5:xhigh",
   fallbackModels: [
-    "openai-codex/gpt-5.5:xhigh",
     "github-copilot/gpt-5.5:xhigh",
     "openai/gpt-5.5:xhigh",
-    "github-copilot/claude-opus-4.8 (1m):xhigh",
-    "anthropic/claude-opus-4-8:xhigh",
+    "anthropic/claude-fable-5:xhigh",
+    "github-copilot/claude-opus-4.8 (1m):high",
+    "anthropic/claude-opus-4-8:high",
     "zai/glm-5.2:xhigh",
     "zai-coding-cn/glm-5.2:xhigh",
-    "github-copilot/gemini-3.5-flash (1m):high",
-    "google/gemini-3.5-flash:high",
-    "google-vertex/gemini-3.5-flash:high",
-    "github-copilot/gemini-3.1-pro-preview (1m):high",
-    "google/gemini-3.1-pro-preview:high",
-    "google-vertex/gemini-3.1-pro-preview:high",
     "openrouter/openai/gpt-5.5:xhigh",
-    "openrouter/anthropic/claude-opus-4-8:xhigh",
-    "openrouter/z-ai/glm-5.2:xhigh",
-    "openrouter/google/gemini-3.5-flash:high",
-    "openrouter/google/gemini-3.1-pro-preview:high"
+    "openrouter/anthropic/claude-fable-5:xhigh",
+    "openrouter/anthropic/claude-opus-4-8:high",
+    "openrouter/z-ai/glm-5.2:xhigh"
   ],
   excludedTools: ["ask_user_question"],
 } as const;
 
+// gpt-5.5:low is the measured cheap-tier diamond ($1.20/task, 28 steps, 9.4k
+// output tokens). Benchmark-measured models only: opus-4.8:low (41%/$2.29)
+// and glm-5.2:high (36%/$2.84) back it up; unbenchmarked minis/haiku/flash
+// are excluded.
 export const EXPLORER_MODEL_CONFIG = {
-  model: "openai-codex/gpt-5.4-mini:low",
+  model: "openai-codex/gpt-5.5:low",
   fallbackModels: [
-    "github-copilot/gpt-5.4-mini:low",
-    "openai/gpt-5.4-mini:low",
-    "github-copilot/claude-haiku-4.5:low",
-    "anthropic/claude-haiku-4-5:low",
-    "github-copilot/gemini-3.5-flash (1m):low",
-    "google/gemini-3.5-flash:low",
-    "google-vertex/gemini-3.5-flash:low",
+    "github-copilot/gpt-5.5:low",
+    "openai/gpt-5.5:low",
+    "github-copilot/claude-opus-4.8 (1m):low",
+    "anthropic/claude-opus-4-8:low",
+    "zai/glm-5.2:high",
+    "zai-coding-cn/glm-5.2:high",
+    "openrouter/openai/gpt-5.5:low",
+    "openrouter/anthropic/claude-opus-4-8:low",
+    "openrouter/z-ai/glm-5.2:xhigh",
   ],
   excludedTools: ["ask_user_question"],
 } as const;

@@ -9,6 +9,7 @@ import {
 import { normalizeContextWindowOptions, withContextWindowOptions } from "./context-window.ts";
 import { copilotApiBaseUrlFromToken, copilotTokenFromEnvironment, DEFAULT_COPILOT_API_BASE_URL, getActiveCopilotModelCatalog } from "./copilot-model-catalog.ts";
 import { copilotTemplateFromModels, copilotThinkingLevelMapFor, synthesizeCopilotCatalogModels } from "./copilot-model-synthesis.ts";
+import { getStaticCopilotModelFallback } from "./copilot-model-static-fallbacks.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts";
 
@@ -56,7 +57,14 @@ function withCopilotThinkingLevelMap(model: Model<Api>): Model<Api> {
 
 function withCopilotContextWindowOptions(model: Model<Api>): Model<Api> {
 	if (model.provider !== "github-copilot") return model;
-	const context = getActiveCopilotModelCatalog().get(model.id);
+	// The live CAPI catalog (or its disk cache) is authoritative. Without an
+	// entry (cold start, fetch failure, offline), fall back to the bundled
+	// static CAPI snapshot: several bundled pi-ai definitions overstate the
+	// enforced default-tier window or understate output caps, which lets
+	// sessions sail past the server-side limits before compaction fires
+	// (issue #1608). Fallback entries carry the same tier structure as catalog
+	// entries so long-context (1M-class) tiers stay selectable offline.
+	const context = getActiveCopilotModelCatalog().get(model.id) ?? getStaticCopilotModelFallback(model.id);
 	if (!context) return model;
 	const base = { ...model, contextWindow: context.contextWindow, maxInputTokens: context.maxInputTokens, maxTokens: context.maxTokens ?? model.maxTokens };
 	if (context.contextWindowOptions && context.contextWindowOptions.length > 1) {

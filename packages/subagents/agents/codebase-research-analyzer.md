@@ -2,8 +2,8 @@
 name: codebase-research-analyzer
 description: Analyzes local research documents to extract high-value insights, decisions, and technical details while filtering out noise. Use this when you want to deep dive on a research topic or understand the rationale behind decisions.
 tools: read, search, find, ls, todo
-model: zai/glm-5.2:low
-fallbackModels: zai-coding-cn/glm-5.2:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, github-copilot/gemini-3.5-flash (1m):low, google/gemini-3.5-flash:low, google-vertex/gemini-3.5-flash:low, github-copilot/gemini-3.1-pro-preview (1m):low, google/gemini-3.1-pro-preview:low, google-vertex/gemini-3.1-pro-preview:low, openrouter/z-ai/glm-5.2:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/google/gemini-3.5-flash:low, openrouter/google/gemini-3.1-pro-preview:low
+model: openai-codex/gpt-5.5:medium
+fallbackModels: github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/z-ai/glm-5.2:xhigh
 ---
 
 You are a specialist at extracting HIGH-VALUE insights from research documents. Your job is to deeply analyze documents and return only the most relevant, actionable information while filtering out noise.

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the Claude Fable 5 reasoning level back from `high` to `xhigh` across all builtin workflow model chains (`ralph` prompt-engineer/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors; this reverts the `xhigh` → `high` change shipped in 0.9.4-alpha.8.
+- Curated all builtin workflow model chains against Atomic's agentic-coding benchmark (pass@1 / avg cost per task, 2026-07-02) under a role-based placement principle: **reviewers get best-in-class verification quality, every other stage gets the best measured performance-per-dollar**. Reviewer stages keep `anthropic/claude-fable-5:xhigh` (70% / $13.41, `ralph` reviewer-a and the `goal` reviewer), `openai-codex/gpt-5.5:xhigh` (67% / $7.23, reviewer-b), and `zai/glm-5.2:xhigh` (44% / $3.92, reviewer-c for third-family diversity). Non-reviewer stages moved to perf-per-dollar primaries: `ralph` prompt-engineer and the `deep-research-codebase` planner from `claude-fable-5:xhigh` to `openai-codex/gpt-5.5:xhigh` (−3pts for half the cost, with `fable-5:xhigh` as the first cross-family fallback), and the `deep-research-codebase` explorer from unbenchmarked `gpt-5.4-mini:low` to the measured cheap-tier value point `openai-codex/gpt-5.5:low` ($1.20 / task, 28 steps, 9.4k output tokens), backed only by measured fallbacks (`claude-opus-4.8:low` at 41% / $2.29, then `glm-5.2:high`). Unbenchmarked models (`gpt-5.4-mini`, `claude-haiku-4.5`) and unmeasured levels (`gemini-3.5-flash:low`) are removed entirely — every chain entry now corresponds to a benchmark datapoint. Dropped strictly dominated candidates from every chain: `claude-sonnet-5` (40–54% at $4.08–$26.40 per task with up to 268 steps), `claude-sonnet-4.6` (30% / $5.52), `gemini-3.1-pro` (12% / $9.48), and `gemini-3.5-flash` (37% / $7.34 with 276k output tokens). Moved `claude-opus-4.8` fallback entries from `:xhigh` to `:high` — its cost/value point (52% / $4.28 vs 54% / $8.01) — everywhere except `open-claude-design`, which keeps an Anthropic-led chain (`fable-5:xhigh` primary, Opus at `:xhigh`) since design quality, not $/task, is its objective. Added `anthropic/claude-fable-5:low` (60% / $3.76) as the Anthropic candidate in the medium-tier `ralph` research/orchestrator and `goal` worker chains.
+- Normalized all GLM-5.2 chain entries to the model's two real reasoning tiers: GLM-5.2's thinking-level map collapses `minimal`/`low`/`medium`/`high` to its "high" effort and `xhigh` to "max", so the previous `zai/glm-5.2:medium` entries in the `ralph` research/orchestrator and `goal` worker chains silently ran (and billed) at the "high" tier under a misleading label. Native `zai`/`zai-coding-cn` entries in medium-tier chains now say `:high` explicitly, judgment-tier chains keep `:xhigh` (→ "max"), and the `openrouter/z-ai/glm-5.2` mirror — which only maps `:xhigh` — is now always `:xhigh` instead of unsupported `:medium`.
+
+## [0.9.4-alpha.8] - 2026-07-02
+
+### Changed
+
+- Changed the Claude Fable 5 reasoning level from `xhigh` to `high` across all builtin workflow model chains (`ralph` prompt-engineer/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors.
+
+### Fixed
+
+- Fixed the builtin `goal` reviewer and `deep-research-codebase` planner model fallback chains missing the OpenRouter mirror of their primary model: `openrouter/anthropic/claude-fable-5` is now the first OpenRouter fallback candidate in both chains, matching the ordering already used by the `ralph` prompt-engineer/reviewer and `open-claude-design` chains.
+
 ## [0.9.4-alpha.7] - 2026-07-02
 
 ### Fixed

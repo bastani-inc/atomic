@@ -92,26 +92,22 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
 
+    // Chains curated from Atomic's agentic-coding benchmark (see
+    // ralph-models.ts for the frontier data and drop rationale).
     const workerModelConfig = {
       model: "openai-codex/gpt-5.5:medium",
       fallbackModels: [
           "github-copilot/gpt-5.5:medium",
           "openai/gpt-5.5:medium",
+          "anthropic/claude-fable-5:low",
           "github-copilot/claude-opus-4.8 (1m):medium",
           "anthropic/claude-opus-4-8:medium",
-          "zai/glm-5.2:medium",
-          "zai-coding-cn/glm-5.2:medium",
-          "github-copilot/gemini-3.5-flash (1m):medium",
-          "google/gemini-3.5-flash:medium",
-          "google-vertex/gemini-3.5-flash:medium",
-          "github-copilot/gemini-3.1-pro-preview (1m):medium",
-          "google/gemini-3.1-pro-preview:medium",
-          "google-vertex/gemini-3.1-pro-preview:medium",
+          "zai/glm-5.2:high",
+          "zai-coding-cn/glm-5.2:high",
           "openrouter/openai/gpt-5.5:medium",
+          "openrouter/anthropic/claude-fable-5:low",
           "openrouter/anthropic/claude-opus-4-8:medium",
-          "openrouter/z-ai/glm-5.2:medium",
-          "openrouter/google/gemini-3.5-flash:medium",
-          "openrouter/google/gemini-3.1-pro-preview:medium"
+          "openrouter/z-ai/glm-5.2:xhigh"
       ],
       tools: goalRunnerTools,
     };
@@ -122,21 +118,14 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "openai-codex/gpt-5.5:xhigh",
           "github-copilot/gpt-5.5:xhigh",
           "openai/gpt-5.5:xhigh",
-          "github-copilot/claude-opus-4.8 (1m):xhigh",
-          "anthropic/claude-opus-4-8:xhigh",
+          "github-copilot/claude-opus-4.8 (1m):high",
+          "anthropic/claude-opus-4-8:high",
           "zai/glm-5.2:xhigh",
           "zai-coding-cn/glm-5.2:xhigh",
-          "github-copilot/gemini-3.5-flash (1m):high",
-          "google/gemini-3.5-flash:high",
-          "google-vertex/gemini-3.5-flash:high",
-          "github-copilot/gemini-3.1-pro-preview (1m):high",
-          "google/gemini-3.1-pro-preview:high",
-          "google-vertex/gemini-3.1-pro-preview:high",
+          "openrouter/anthropic/claude-fable-5:xhigh",
           "openrouter/openai/gpt-5.5:xhigh",
-          "openrouter/anthropic/claude-opus-4-8:xhigh",
-          "openrouter/z-ai/glm-5.2:xhigh",
-          "openrouter/google/gemini-3.5-flash:high",
-          "openrouter/google/gemini-3.1-pro-preview:high"
+          "openrouter/anthropic/claude-opus-4-8:high",
+          "openrouter/z-ai/glm-5.2:xhigh"
       ],
       tools: goalRunnerTools,
       schema: reviewDecisionSchema,

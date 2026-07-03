@@ -74,6 +74,9 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     });
   }
 
+  // Anthropic-heavy chain for design taste; sonnet-5/sonnet-4.6 dropped as
+  // strictly dominated in Atomic's benchmark (see ralph-models.ts). Opus stays
+  // at :xhigh here — visual quality, not $/task, is the objective for design.
   const designModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
@@ -81,12 +84,9 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
       "anthropic/claude-opus-4-8:xhigh",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "github-copilot/claude-sonnet-4.6 (1m):high",
-      "anthropic/claude-sonnet-4-6:high",
       "openrouter/anthropic/claude-fable-5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:xhigh",
-      "openrouter/z-ai/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-sonnet-4-6:high"
+      "openrouter/z-ai/glm-5.2:xhigh"
     ],
   };
   // Phase 1: combined discovery + init — one stage interviews the user via

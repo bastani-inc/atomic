@@ -219,6 +219,7 @@ export interface AgentSessionMethodSurface {
 	_isRetryableError(message: AssistantMessage): boolean;
 	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;
 	_isEmptyCompletion(message: AssistantMessage): boolean;
+	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;

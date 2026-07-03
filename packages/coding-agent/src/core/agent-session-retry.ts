@@ -14,15 +14,16 @@ export function _isRetryableError(this: AgentSession, message: AssistantMessage)
 
 	const err = message.errorMessage;
 
-	// A genuine `content_filter` stop is a deliberate safety block: retrying it
-	// re-issues the same blocked request up to maxRetries times for no benefit.
-	// GitHub Copilot Gemini is the exception — CAPI maps spurious Gemini blocks
-	// (RECITATION/safety on MALFORMED_FUNCTION_CALL etc.) to `content_filter`, so
-	// only treat `content_filter` as retryable for those models.
-	if (
-		isCopilotGeminiModel({ provider: message.provider, api: message.api, id: message.model }) &&
-		/finish.?reason:?\s*content.?filter/i.test(err)
-	) {
+	// Safety triggers surface through structured API signals that pi-ai maps to
+	// stopReason "error":
+	// - Anthropic `refusal` stops become pi-ai's canned "The model refused to
+	//   complete the request" error message;
+	// - OpenAI-style APIs (and github-copilot CAPI, which also maps spurious
+	//   Gemini RECITATION/safety blocks this way) surface
+	//   `finish_reason: content_filter`.
+	// Spurious safety triggers are common in agentic settings, so these are
+	// re-requested like transient failures, bounded by maxRetries (issue #1608).
+	if (/refused to complete the request|finish.?reason:?\s*content.?filter/i.test(err)) {
 		return true;
 	}
 
@@ -91,6 +92,63 @@ export function _isEmptyCompletion(this: AgentSession, message: AssistantMessage
 	// fails to report `usage` (output defaults to 0) would make every
 	// content-less turn match here; the dual requirement (empty content AND zero
 	// output) keeps that false-positive risk low in practice.
+	return (message.usage?.output ?? 0) === 0;
+}
+
+/**
+ * Detect a canned provider-side safety refusal that arrives as a *successful*
+ * completion instead of an error. Seen with github-copilot GPT models under
+ * heavy contexts: the endpoint intercepts the request and returns exactly
+ * "I'm sorry, but I cannot assist with that request." with zero usage and a
+ * spurious stopReason of "length" (or "stop"), which the agent would otherwise
+ * accept as the final answer and dead-end the turn (issue #1608).
+ *
+ * A text heuristic is unavoidable here: the OpenAI Responses API does signal
+ * these interceptions structurally (`refusal` content parts plus
+ * `incomplete_details.reason: "content_filter"`), but pi-ai's normalization
+ * folds refusal parts into plain text blocks and collapses the `incomplete`
+ * status to stopReason "length", discarding the reason — so no structured
+ * refusal marker survives on the AssistantMessage. Providers whose safety
+ * signals DO survive as structured errors (Anthropic refusal stops, OpenAI
+ * `finish_reason: content_filter`) are matched in _isRetryableError instead.
+ *
+ * Guarded tightly so legitimate turns are never matched:
+ * - only non-error completion stops ("stop" | "length" | "toolUse");
+ * - content must be a single short canned refusal text — any tool call,
+ *   thinking block, or additional prose disqualifies the message;
+ * - usage.output must be 0: a genuine model-authored refusal bills output
+ *   tokens, while the intercepted canned refusal reports zero usage.
+ *
+ * Treated as retryable so the harness re-requests the model call rather than
+ * accepting the refusal; bounded by `maxRetries` like every other retry path.
+ */
+
+const CANNED_SAFETY_REFUSAL_PATTERN =
+	/^(?:i['’]?m sorry[,.]?\s+(?:but\s+)?|sorry[,.]?\s+(?:but\s+)?)?i\s+(?:cannot|can['’]?t|can\s+not|am\s+unable\s+to|am\s+not\s+able\s+to)\s+(?:assist|help|comply|continue)(?:\s+with)?(?:\s+(?:that|this))?(?:\s+(?:request|task))?\.?$/i;
+
+const CANNED_SAFETY_REFUSAL_MAX_LENGTH = 120;
+
+export function _isSafetyRefusal(this: AgentSession, message: AssistantMessage): boolean {
+	// Real errors are handled by _isRetryableError; aborts are user-initiated.
+	if (message.stopReason !== "stop" && message.stopReason !== "length" && message.stopReason !== "toolUse") {
+		return false;
+	}
+
+	const content = message.content;
+	if (!Array.isArray(content) || content.length === 0) return false;
+
+	let text = "";
+	for (const part of content) {
+		if (part.type === "toolCall") return false;
+		if (part.type === "thinking" && (part.redacted === true || part.thinking.trim().length > 0)) return false;
+		if (part.type === "text") text += part.text;
+	}
+	text = text.trim();
+	if (text.length === 0 || text.length > CANNED_SAFETY_REFUSAL_MAX_LENGTH) return false;
+	if (!CANNED_SAFETY_REFUSAL_PATTERN.test(text)) return false;
+
+	// Zero billed output distinguishes a provider interception from legitimate
+	// model-authored refusal prose, which is never auto-retried.
 	return (message.usage?.output ?? 0) === 0;
 }
 
@@ -222,6 +280,7 @@ export const agentSessionRetryMethods = {
 	_isRetryableError,
 	_normalizePersistedGeminiToolArgs,
 	_isEmptyCompletion,
+	_isSafetyRefusal,
 	_handleRetryableError,
 	abortRetry,
 	waitForRetry,

@@ -56,7 +56,7 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 		return;
 	}
 
-	const shouldRetry = this._isRetryableError(lastAssistant) || this._isEmptyCompletion(lastAssistant);
+	const shouldRetry = this._isRetryableError(lastAssistant) || this._isEmptyCompletion(lastAssistant) || this._isSafetyRefusal(lastAssistant);
 	if (!shouldRetry) {
 		return;
 	}
@@ -140,11 +140,12 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			this._lastAssistantMessage = event.message;
 
 			const assistantMsg = event.message as AssistantMessage;
-			// Treat degenerate empty completions (no content, zero output tokens) as
-			// failures alongside stopReason === "error". Otherwise an empty turn that
-			// stops with reason "stop" would reset the retry counter on every attempt,
-			// causing unbounded retries instead of honoring maxRetries.
-			const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg);
+			// Treat degenerate empty completions (no content, zero output tokens) and
+			// intercepted canned safety refusals as failures alongside stopReason ===
+			// "error". Otherwise such a turn that stops with reason "stop"/"length"
+			// would reset the retry counter on every attempt, causing unbounded
+			// retries instead of honoring maxRetries.
+			const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg) || this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed) {
 				this._overflowRecoveryAttempted = false;
 			}
@@ -168,14 +169,18 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 		this._lastAssistantMessage = undefined;
 
 		// Check for retryable errors first (overloaded, rate limit, server errors,
-		// transient provider finish_reason errors, or degenerate empty completions)
+		// transient provider finish_reason errors, degenerate empty completions,
+		// or intercepted canned safety refusals)
 		const retryableError = this._isRetryableError(msg);
 		const emptyCompletion = !retryableError && this._isEmptyCompletion(msg);
-		if (retryableError || emptyCompletion) {
+		const safetyRefusal = !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
+		if (retryableError || emptyCompletion || safetyRefusal) {
 			if (emptyCompletion && !msg.errorMessage) {
 				// Surface a clear reason in the retry banner; empty completions carry no
 				// provider error message of their own.
 				msg.errorMessage = "Provider returned an empty completion";
+			} else if (safetyRefusal && !msg.errorMessage) {
+				msg.errorMessage = "Provider returned a canned safety refusal";
 			}
 			const didRetry = await this._handleRetryableError(msg);
 			if (didRetry) return; // Retry was initiated, don't proceed to compaction

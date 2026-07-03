@@ -2,6 +2,8 @@ telemetry = false
 
 [install]
 minimumReleaseAge = 259200 # 3 days in seconds
+# Trusted first-party upstream; exempt from the age gate (its releases are consumed same-day)
+minimumReleaseAgeExcludes = ["@earendil-works/pi-ai"]
 linker = "hoisted"
 exact = true
 saveTextLockfile = true
