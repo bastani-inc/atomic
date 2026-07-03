@@ -2,8 +2,8 @@
 name: codebase-analyzer
 description: Analyzes codebase implementation details. Call the codebase-analyzer agent when you need to find detailed information about specific components.
 tools: read, search, find, ls, todo
-model: zai/glm-5.2:low
-fallbackModels: zai-coding-cn/glm-5.2:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, github-copilot/claude-sonnet-5 (1m):low, anthropic/claude-sonnet-5:low, github-copilot/claude-sonnet-4.6 (1m):low, anthropic/claude-sonnet-4-6:low, github-copilot/gemini-3.5-flash (1m):low, google/gemini-3.5-flash:low, google-vertex/gemini-3.5-flash:low, github-copilot/gemini-3.1-pro-preview (1m):low, google/gemini-3.1-pro-preview:low, google-vertex/gemini-3.1-pro-preview:low, openrouter/z-ai/glm-5.2:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/anthropic/claude-sonnet-5:low, openrouter/anthropic/claude-sonnet-4-6:low, openrouter/google/gemini-3.5-flash:low, openrouter/google/gemini-3.1-pro-preview:low
+model: openai-codex/gpt-5.5:medium
+fallbackModels: github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/z-ai/glm-5.2:xhigh
 skills: tdd, playwright-cli, tmux
 ---
 
