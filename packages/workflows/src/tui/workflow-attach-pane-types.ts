@@ -41,6 +41,10 @@ export interface WorkflowAttachPaneOpts {
   piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
   /** Parent chat rendering settings and extension renderers, inherited from the host UI. */
   getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+  /** Parent host tool-output/live-detail expansion state, inherited from the host UI. */
+  getToolsExpanded?: () => boolean;
+  /** Parent host tool-output/live-detail expansion setter, inherited from the host UI. */
+  setToolsExpanded?: (expanded: boolean) => void;
   /** Parent footer data provider, inherited so attached chats can render the core coding-agent footer. */
   footerData?: ReadonlyFooterDataProvider;
   /**

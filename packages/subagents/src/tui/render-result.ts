@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { getMarkdownTheme } from "@bastani/atomic";
+import { getMarkdownTheme, keyHint } from "@bastani/atomic";
 import { Container, Markdown, Spacer, Text, type Component } from "@earendil-works/pi-tui";
 import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { formatDuration, formatTokens, formatUsage, shortenPath } from "../shared/formatters.ts";
@@ -116,7 +116,7 @@ export function renderSubagentResult(
 			if (liveStatusLine) {
 				c.addChild(new Text(fit(theme.fg("accent", liveStatusLine)), 0, 0));
 			}
-			c.addChild(new Text(fit(theme.fg("accent", "Press ctrl+o for live detail")), 0, 0));
+			c.addChild(new Text(fit(theme.fg("accent", `Press ${keyHint("app.tools.expand", "for live detail")}`)), 0, 0));
 			if (r.artifactPaths) {
 				c.addChild(new Text(fit(theme.fg("dim", `Artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 			}
@@ -350,7 +350,7 @@ export function renderSubagentResult(
 			if (liveStatusLine) {
 				c.addChild(new Text(fit(theme.fg("accent", `    ${liveStatusLine}`)), 0, 0));
 			}
-			c.addChild(new Text(fit(theme.fg("accent", "    Press ctrl+o for live detail")), 0, 0));
+			c.addChild(new Text(fit(theme.fg("accent", `    Press ${keyHint("app.tools.expand", "for live detail")}`)), 0, 0));
 			if (r.artifactPaths) {
 				c.addChild(new Text(fit(theme.fg("dim", `    artifacts: ${shortenPath(r.artifactPaths.outputPath)}`)), 0, 0));
 			}

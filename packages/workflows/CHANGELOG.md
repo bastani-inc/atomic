@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed attached workflow stage viewers so the host `app.tools.expand` keybinding (Ctrl+O by default) toggles live-detail/tool-output expansion just like the main chat, including custom keybinding remaps ([#1607](https://github.com/bastani-inc/atomic/issues/1607)).
+
 ## [0.9.4-alpha.9] - 2026-07-02
 
 ### Changed

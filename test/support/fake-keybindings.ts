@@ -23,6 +23,7 @@ import type { KeybindingsLike } from "../../packages/workflows/src/tui/keybindin
  * both the literal arrow CSI sequence and ctrl+b (readline-style).
  */
 const DEFAULTS: Readonly<Record<string, readonly string[]>> = {
+  "app.tools.expand": ["\x0f"],
   "tui.editor.cursorUp": ["\x1b[A"],
   "tui.editor.cursorDown": ["\x1b[B"],
   // ctrl+b — readline backward-char (default pi-tui binding for cursorLeft)

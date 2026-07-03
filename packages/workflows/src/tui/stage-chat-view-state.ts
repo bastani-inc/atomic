@@ -57,6 +57,8 @@ export function initializeStageChatView(
   ctx.piTheme = opts.piTheme;
   ctx.piKeybindings = opts.piKeybindings;
   ctx.piEditorFactory = opts.piEditorFactory;
+  ctx.getToolsExpanded = opts.getToolsExpanded;
+  ctx.setToolsExpanded = opts.setToolsExpanded;
   ctx.stageUiBroker = opts.stageUiBroker ?? stageUiBroker;
   ctx.canSubmitPrompt = opts.canSubmitPrompt;
   ctx.mountedCustomUi = null;

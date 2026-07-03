@@ -57,6 +57,41 @@ describe("StageChatView", () => {
         }
     });
 
+    test("app.tools.expand keybinding toggles host tool expansion in attached stage chat", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle();
+        let expanded = false;
+        let renders = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            piKeybindings: makeFakeKeybindings({ "app.tools.expand": ["x"] }),
+            getToolsExpanded: () => expanded,
+            setToolsExpanded: (next) => {
+                expanded = next;
+            },
+            requestRender: () => {
+                renders += 1;
+            },
+        });
+
+        assert.equal(view.handleInput("\x0f"), false);
+        assert.equal(expanded, false);
+        assert.equal(view.handleInput("x"), true);
+        assert.equal(expanded, true);
+        assert.equal(view.handleInput("x"), true);
+        assert.equal(expanded, false);
+        assert.equal(renders, 2);
+        view.dispose();
+    });
+
     test("renders and resolves a structured stage pending prompt locally", async () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");

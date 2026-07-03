@@ -63,6 +63,10 @@ export interface StageChatViewOpts {
   getChatRenderSettings?: () =>
     | Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">>
     | undefined;
+  /** Parent host expansion state for tool-output/live-detail widgets. */
+  getToolsExpanded?: () => boolean;
+  /** Toggle parent host expansion state for tool-output/live-detail widgets. */
+  setToolsExpanded?: (expanded: boolean) => void;
   /** Parent footer data provider inherited from the host UI for core footer/usage rendering. */
   footerData?: ReadonlyFooterDataProvider;
   /**
@@ -133,6 +137,8 @@ export interface StageChatViewContext {
   piTheme: unknown;
   piKeybindings: unknown;
   piEditorFactory: StageChatViewOpts["piEditorFactory"] | undefined;
+  getToolsExpanded: (() => boolean) | undefined;
+  setToolsExpanded: ((expanded: boolean) => void) | undefined;
   chatHost: ChatSessionHost<NoticeEntry>;
   stageUiBroker: StageUiBroker;
   canSubmitPrompt: ((runId: string, stageId: string, promptId: string) => boolean) | undefined;

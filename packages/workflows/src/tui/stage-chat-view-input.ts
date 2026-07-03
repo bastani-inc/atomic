@@ -3,7 +3,7 @@ import {
   handlePromptCardInput,
   isPromptEscapeInput,
 } from "./prompt-card.js";
-import { isKeybindingsLike } from "./keybindings-adapter.js";
+import { APP_ACTION, isKeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import {
   setComponentFocused,
   setEditorFocused,
@@ -35,6 +35,7 @@ export function handleStageChatInput(
     ctx.requestRender?.();
     return true;
   }
+  if (handleToolsExpandInput(ctx, data)) return true;
   if (ctx.mountedCustomUi) {
     return handleMountedCustomUiInput(ctx, data);
   }
@@ -85,6 +86,16 @@ export function handleStageChatInput(
   }
   if (blocked) return true;
   return ctx.chatHost.handleInput(data);
+}
+
+function handleToolsExpandInput(ctx: StageChatViewContext, data: string): boolean {
+  const keybindings = isKeybindingsLike(ctx.piKeybindings) ? ctx.piKeybindings : undefined;
+  if (!matchesAction(keybindings, data, APP_ACTION.toolsExpand)) return false;
+  const expanded = ctx.getToolsExpanded?.() === true;
+  ctx.setToolsExpanded?.(!expanded);
+  ctx.chatHost.invalidate();
+  ctx.requestRender?.();
+  return true;
 }
 
 function handleMountedCustomUiInput(

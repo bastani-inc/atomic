@@ -38,6 +38,10 @@ export interface KeybindingsLike {
   matches(data: string, action: string): boolean;
 }
 
+export const APP_ACTION = {
+  toolsExpand: "app.tools.expand",
+} as const;
+
 export const TUI_ACTION = {
   editorCursorUp: "tui.editor.cursorUp",
   editorCursorDown: "tui.editor.cursorDown",

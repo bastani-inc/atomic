@@ -24,16 +24,9 @@ import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bast
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { GraphView } from "./graph-view.js";
-import {
-  StageChatView,
-  type StageChatDetachMetadata,
-  type StageChatDetachReason,
-} from "./stage-chat-view.js";
+import { StageChatView, type StageChatDetachMetadata, type StageChatDetachReason } from "./stage-chat-view.js";
 import { Key, matchesKey } from "./text-helpers.js";
-import type {
-  StageControlHandle,
-  StageControlRegistry,
-} from "../runs/foreground/stage-control-registry.js";
+import type { StageControlHandle, StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
@@ -68,6 +61,8 @@ export class WorkflowAttachPane implements Component {
   private piKeybindings?: unknown;
   private piEditorFactory?: (tui: TUI, theme: EditorTheme, keybindings: unknown) => EditorComponent;
   private getChatRenderSettings?: () => Partial<Omit<ChatMessageRenderOptions, "ui" | "cwd">> | undefined;
+  private getToolsExpanded?: () => boolean;
+  private setToolsExpanded?: (expanded: boolean) => void;
   private footerData?: ReadonlyFooterDataProvider;
   private now: () => number;
   private mode: WorkflowAttachPaneMode = "graph";
@@ -104,6 +99,8 @@ export class WorkflowAttachPane implements Component {
     this.piKeybindings = opts.piKeybindings;
     this.piEditorFactory = opts.piEditorFactory;
     this.getChatRenderSettings = opts.getChatRenderSettings;
+    this.getToolsExpanded = opts.getToolsExpanded;
+    this.setToolsExpanded = opts.setToolsExpanded;
     this.footerData = opts.footerData;
     this.now = opts.now ?? Date.now;
     this.unsubscribeStore = this.store.subscribe((snapshot) => this._handleStoreUpdate(snapshot));
@@ -197,6 +194,8 @@ export class WorkflowAttachPane implements Component {
       piKeybindings: this.piKeybindings,
       piEditorFactory: this.piEditorFactory,
       getChatRenderSettings: this.getChatRenderSettings,
+      getToolsExpanded: this.getToolsExpanded,
+      setToolsExpanded: this.setToolsExpanded,
       footerData: this.footerData,
       getViewportRows: this.getViewportRows,
       stageUiBroker: this.stageUiBroker,

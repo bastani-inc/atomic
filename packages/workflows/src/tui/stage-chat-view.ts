@@ -83,6 +83,8 @@ export class StageChatView implements Component, Focusable {
   private piTheme!: StageChatViewContext["piTheme"];
   private piKeybindings!: StageChatViewContext["piKeybindings"];
   private piEditorFactory!: StageChatViewContext["piEditorFactory"];
+  private getToolsExpanded!: StageChatViewContext["getToolsExpanded"];
+  private setToolsExpanded!: StageChatViewContext["setToolsExpanded"];
   private chatHost!: StageChatViewContext["chatHost"];
   private stageUiBroker!: StageChatViewContext["stageUiBroker"];
   private canSubmitPrompt!: StageChatViewContext["canSubmitPrompt"];
@@ -213,6 +215,8 @@ export class StageChatView implements Component, Focusable {
     void this.piTheme;
     void this.piKeybindings;
     void this.piEditorFactory;
+    void this.getToolsExpanded;
+    void this.setToolsExpanded;
     void this.stageUiBroker;
     void this.canSubmitPrompt;
     void this.mountingRequestId;

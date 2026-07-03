@@ -1,3 +1,4 @@
+import { keyHint } from "@bastani/atomic";
 import type { AsyncJobState } from "../shared/types.ts";
 import { shortenPath } from "../shared/formatters.ts";
 import { aggregateStepStatus, formatParallelOutcome } from "../shared/status-format.ts";
@@ -80,7 +81,7 @@ export function foregroundStyleWidgetStepLines(
 		lines.push(`    ${nestedLine}`);
 	}
 	if (step.status === "running") {
-		if (!expanded) lines.push(`    ${theme.fg("accent", "Press ctrl+o for live detail")}`);
+		if (!expanded) lines.push(`    ${theme.fg("accent", `Press ${keyHint("app.tools.expand", "for live detail")}`)}`);
 		const output = widgetOutputPath(job, step);
 		if (output) lines.push(`    ${theme.fg("dim", `output: ${shortenPath(output)}`)}`);
 		if (expanded) {
@@ -147,7 +148,7 @@ export function compactSingleWidgetLines(job: AsyncJobState, theme: Theme, width
 		lines.push(`  ${widgetStepGlyph(step.status, theme, widgetStepRunningSeed(step, index), now)} ${itemTitle} ${index + 1}/${total}: ${themeBold(theme, step.agent)} ${theme.fg("dim", "·")} ${status}${modelDisplay}${activitySuffix}${stepStats ? ` ${theme.fg("dim", "·")} ${stepStats}` : ""}`);
 		for (const nestedLine of formatNestedWidgetLines(step.children, theme, width, false, job.updatedAt, undefined, now)) lines.push(`    ${nestedLine}`);
 	}
-	if (job.steps.some((step) => step.status === "running")) lines.push(theme.fg("accent", "  Press ctrl+o for live detail"));
+	if (job.steps.some((step) => step.status === "running")) lines.push(theme.fg("accent", `  Press ${keyHint("app.tools.expand", "for live detail")}`));
 	return lines.map((line) => truncLine(line, width));
 }
 
@@ -161,6 +162,6 @@ export function fitWidgetLineBudget(lines: string[], theme: Theme, width: number
 	const hiddenCount = lines.length - visibleLines;
 	const hint = expanded
 		? `… ${hiddenCount} live-detail lines hidden`
-		: `… ${hiddenCount} lines hidden · ctrl+o expands`;
+		: `… ${hiddenCount} lines hidden · ${keyHint("app.tools.expand", "expands")}`;
 	return [...lines.slice(0, visibleLines), truncLine(theme.fg("dim", hint), width)];
 }

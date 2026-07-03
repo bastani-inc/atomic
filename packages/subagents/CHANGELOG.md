@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed subagent live-detail hints to render the configured `app.tools.expand` keybinding instead of hardcoding Ctrl+O, so remapped users see the same binding honored by attached workflow stage viewers ([#1607](https://github.com/bastani-inc/atomic/issues/1607)).
+
 ## [0.9.4-alpha.9] - 2026-07-02
 
 ### Changed

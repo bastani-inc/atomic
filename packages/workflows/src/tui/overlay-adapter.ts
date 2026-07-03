@@ -48,6 +48,8 @@ export interface OverlayUISurface {
   focusHostInlineCustomUi?: () => boolean;
   getEditorComponent?: () => PiEditorFactory | undefined;
   getChatRenderSettings?: () => OverlayChatRenderSettings | undefined;
+  getToolsExpanded?: () => boolean;
+  setToolsExpanded?: (expanded: boolean) => void;
   getFooterDataProvider?: () => ReadonlyFooterDataProvider;
   setStatus?: (key: string, value: string | undefined) => void;
 }
@@ -334,6 +336,8 @@ export function buildGraphOverlayAdapter(
         piKeybindings: keybindings,
         piEditorFactory: ui?.getEditorComponent?.(),
         getChatRenderSettings: ui?.getChatRenderSettings,
+        getToolsExpanded: ui?.getToolsExpanded,
+        setToolsExpanded: ui?.setToolsExpanded,
         footerData: ui?.getFooterDataProvider?.(),
         // Pi-tui owns terminal dimensions; thread its row count down
         // so the overlay frame fills the actual viewport rather than
