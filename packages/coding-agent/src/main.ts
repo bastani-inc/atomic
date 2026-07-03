@@ -27,7 +27,7 @@ import { SettingsManager } from "./core/settings-manager.ts";
 import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from "./core/timings.ts";
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
-import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
+import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, shouldDeferInteractiveStartup, toPrintOutputMode } from "./main-app-mode.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
@@ -184,6 +184,7 @@ export async function main(args: string[], options?: MainOptions) {
 		sessionManager,
 		sessionStartEvent,
 		projectTrustContext,
+		deferExtensions,
 	}) => {
 		const cachedProjectTrust = projectTrustByCwd.get(cwd);
 		const hasTrustInputs = hasProjectTrustInputs(cwd);
@@ -206,8 +207,9 @@ export async function main(args: string[], options?: MainOptions) {
 			authStorage,
 			settingsManager: runtimeSettingsManager,
 			extensionFlagValues: parsed.unknownFlags,
-			resourceLoaderReloadOptions:
-				shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
+			resourceLoaderReloadOptions: deferExtensions
+				? { deferExtensions: true }
+				: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
 					? {
 							resolveProjectTrust: shouldResolveProjectTrust
 								? async ({ extensionsResult }) => {
@@ -342,11 +344,27 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntimeFactory");
+
+	// Deferred startup: create the initial runtime without extensions so the first
+	// interactive frame paints immediately; the full runtime replaces it after paint.
+	const deferredCwd = sessionManager.getCwd();
+	const deferredHasTrustInputs = hasProjectTrustInputs(deferredCwd);
+	const deferStartup = shouldDeferInteractiveStartup({
+		appMode,
+		parsed,
+		stdinIsTTY: process.stdin.isTTY === true,
+		resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+		hasTrustInputs: deferredHasTrustInputs,
+		storedProjectTrust: deferredHasTrustInputs ? projectTrustStore.get(deferredCwd) : null,
+		defaultProjectTrust: startupDefaultProjectTrust,
+	});
+
 	const runtimeCreationSpan = startTimingSpan("createAgentSessionRuntime");
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
+		deferExtensions: deferStartup,
 	});
 	endTimingSpan(runtimeCreationSpan);
 	const { services, session, modelFallbackMessage } = runtime;
@@ -399,9 +417,11 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const scopedModels = [...session.scopedModels];
 	time("resolveModelScope");
-	reportDiagnostics(runtime.diagnostics);
-	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
-		process.exit(1);
+	if (!deferStartup) {
+		reportDiagnostics(runtime.diagnostics);
+		if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+			process.exit(1);
+		}
 	}
 	time("createAgentSession");
 
@@ -420,7 +440,7 @@ export async function main(args: string[], options?: MainOptions) {
 		printTimings();
 		await runRpcMode(runtime);
 	} else if (appMode === "interactive") {
-		if (scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
+		if (!deferStartup && scopedModels.length > 0 && (parsed.verbose || !settingsManager.getQuietStartup())) {
 			const modelList = scopedModels
 				.map((sm) => {
 					const thinkingStr = sm.thinkingLevel ? `:${sm.thinkingLevel}` : "";
@@ -438,6 +458,12 @@ export async function main(args: string[], options?: MainOptions) {
 			initialImages,
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
+			completeDeferredStartup: deferStartup
+				? () =>
+						runtime.completeDeferredStartup({
+							projectTrustContext: createProjectTrustContext({ cwd: sessionManager.getCwd(), mode: "interactive", settingsManager, hasUI: false }),
+						})
+				: undefined,
 		});
 		if (startupBenchmark) {
 			await interactiveMode.init();

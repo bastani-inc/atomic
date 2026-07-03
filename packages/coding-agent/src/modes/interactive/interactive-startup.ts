@@ -145,7 +145,11 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       });
 
     // Initialize extensions first so resources are shown before messages
-    await this.rebindCurrentSession();
+    if (this.options.completeDeferredStartup) {
+      await this.finishDeferredStartup();
+    } else {
+      await this.rebindCurrentSession();
+    }
 
     // Render initial messages AFTER showing loaded resources
     this.renderInitialMessages();

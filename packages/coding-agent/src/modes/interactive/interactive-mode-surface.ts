@@ -91,6 +91,7 @@ declare module "./interactive-mode-base.ts" {
   bindCurrentSessionExtensions(): Promise<void>;
   applyRuntimeSettings(): void;
   rebindCurrentSession(): Promise<void>;
+  finishDeferredStartup(): Promise<void>;
   handleFatalRuntimeError(prefix: string, error: unknown): Promise<never>;
   renderCurrentSessionState(): void;
   getRegisteredToolDefinition(toolName: string): ReturnType<AgentSession["getToolDefinition"]>;

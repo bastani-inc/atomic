@@ -38,6 +38,8 @@ export type CreateAgentSessionRuntimeFactory = (options: {
 	sessionManager: SessionManager;
 	sessionStartEvent?: SessionStartEvent;
 	projectTrustContext?: ProjectTrustContext;
+	/** Create the runtime without loading extensions (deferred startup). */
+	deferExtensions?: boolean;
 }) => Promise<CreateAgentSessionRuntimeResult>;
 
 /**
@@ -386,6 +388,29 @@ export class AgentSessionRuntime {
 		return { cancelled: false };
 	}
 
+	/**
+	 * Finish a deferred startup by recreating the runtime with extensions loaded.
+	 *
+	 * Used when the initial runtime was created with `deferExtensions` so the
+	 * first frame could paint before extension loading. The extension-free
+	 * session is replaced in place; no `session_shutdown` is emitted because the
+	 * previous session never bound extensions.
+	 */
+	async completeDeferredStartup(options?: { projectTrustContext?: ProjectTrustContext }): Promise<void> {
+		const previousSession = this._session;
+		const sessionManager = previousSession.sessionManager;
+		this.apply(
+			await this.createRuntime({
+				cwd: sessionManager.getCwd(),
+				agentDir: this._services.agentDir,
+				sessionManager,
+				projectTrustContext: options?.projectTrustContext,
+			}),
+		);
+		previousSession.dispose();
+		await this.finishSessionReplacement();
+	}
+
 	async dispose(): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
@@ -409,6 +434,7 @@ export async function createAgentSessionRuntime(
 		agentDir: string;
 		sessionManager: SessionManager;
 		sessionStartEvent?: SessionStartEvent;
+		deferExtensions?: boolean;
 	},
 ): Promise<AgentSessionRuntime> {
 	assertSessionCwdExists(options.sessionManager, options.cwd);

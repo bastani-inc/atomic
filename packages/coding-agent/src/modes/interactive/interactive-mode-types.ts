@@ -28,4 +28,12 @@ export interface InteractiveModeOptions {
   initialMessages?: string[];
   /** Force verbose startup (overrides quietStartup setting) */
   verbose?: boolean;
+  /**
+   * Finish a deferred startup after the first frame paints.
+   *
+   * When set, the runtime was created without extensions; this callback
+   * recreates the full runtime (loading extensions and re-resolving session
+   * options) and rebinds the replacement session to the UI.
+   */
+  completeDeferredStartup?: () => Promise<void>;
 }

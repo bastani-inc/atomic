@@ -122,6 +122,41 @@ InteractiveModeBase.prototype.rebindCurrentSession = async function(this: Intera
     this.updateTerminalTitle();
   };
 
+/**
+ * Finish a deferred startup after first paint: load the full runtime (which
+ * rebinds the replacement session), then surface the diagnostics and model
+ * messages the blocking path reports before the UI starts.
+ */
+InteractiveModeBase.prototype.finishDeferredStartup = async function(this: InteractiveModeBase): Promise<void> {
+    try {
+      await this.options.completeDeferredStartup?.();
+    } catch (error: unknown) {
+      await this.handleFatalRuntimeError("Failed to finish startup", error);
+    }
+    this.options.modelFallbackMessage = this.runtimeHost.modelFallbackMessage;
+    let hasFatalDiagnostics = false;
+    for (const diagnostic of this.runtimeHost.diagnostics) {
+      if (diagnostic.type === "error") {
+        hasFatalDiagnostics = true;
+        this.showError(diagnostic.message);
+      } else {
+        this.showWarning(diagnostic.message);
+      }
+    }
+    if (hasFatalDiagnostics) {
+      stopThemeWatcher();
+      this.stop();
+      process.exit(1);
+    }
+    const scopedModels = this.session.scopedModels;
+    if (scopedModels.length > 0 && (this.options.verbose || !this.settingsManager.getQuietStartup())) {
+      const modelList = scopedModels
+        .map((sm) => `${sm.model.id}${sm.thinkingLevel ? `:${sm.thinkingLevel}` : ""}`)
+        .join(", ");
+      this.showStatus(`Model scope: ${modelList} (ctrl+p cycle)`);
+    }
+  };
+
 InteractiveModeBase.prototype.handleFatalRuntimeError = async function(this: InteractiveModeBase, prefix: string, error: unknown): Promise<never> {
     const message = error instanceof Error ? error.message : String(error);
     this.showError(`${prefix}: ${message}`);

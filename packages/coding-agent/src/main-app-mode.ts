@@ -44,6 +44,37 @@ export function isPlainRuntimeMetadataCommand(parsed: Args): boolean {
 	return !parsed.print && parsed.mode === undefined && isReadOnlyRuntimeMetadataCommand(parsed);
 }
 
+/**
+ * Whether interactive startup can defer extension loading past the first frame.
+ *
+ * Deferral is only safe when nothing before the UI exists could need
+ * extensions: no metadata commands, no extension flags to validate, no -e
+ * sources, and no project-trust prompt (trust already decided or not asked).
+ */
+export function shouldDeferInteractiveStartup(options: {
+	appMode: AppMode;
+	parsed: Args;
+	stdinIsTTY: boolean;
+	resolvedExtensionPathCount: number;
+	hasTrustInputs: boolean;
+	storedProjectTrust: boolean | null;
+	defaultProjectTrust: string;
+}): boolean {
+	const { appMode, parsed } = options;
+	return (
+		appMode === "interactive" &&
+		options.stdinIsTTY &&
+		!parsed.help &&
+		parsed.listModels === undefined &&
+		(parsed.unknownFlags?.size ?? 0) === 0 &&
+		options.resolvedExtensionPathCount === 0 &&
+		(parsed.projectTrustOverride !== undefined ||
+			!options.hasTrustInputs ||
+			options.storedProjectTrust !== null ||
+			options.defaultProjectTrust !== "ask")
+	);
+}
+
 export function toPrintOutputMode(appMode: AppMode): Exclude<Mode, "rpc"> {
 	return appMode === "json" ? "json" : "text";
 }
