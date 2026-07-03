@@ -25,7 +25,6 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCli = join(packageDir, "dist", "cli.js");
 
 const distBuilt = fs.existsSync(distCli);
-const isCI = process.env.CI === "true" || process.env.CI === "1";
 
 /**
  * Locate a REAL Node runtime on PATH. The repo's bunfig `[run] bun = true`
@@ -57,12 +56,18 @@ function findRealNode(): string | null {
 
 const nodeExe = findRealNode();
 
-if (isCI) {
-  // CI must never silently skip this regression guard.
-  assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing in CI — run the build step first");
+// Hard-require the smoke only where the pipeline guarantees its
+// prerequisites (test.yml sets this flag on the integration step, which runs
+// after the package build). Other CI contexts — e.g. publish.yml runs
+// `test:all` BEFORE building dist/ — skip gracefully; the same commit's
+// npm-under-Node coverage is enforced by the test.yml gate on branch pushes
+// and PRs.
+const requireSmoke = process.env.ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE === "1";
+if (requireSmoke) {
+  assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing — run the build step before the integration tests");
   assert.ok(
     nodeExe,
-    `no real Node runtime found on PATH in CI (bun-as-node shims are rejected) — required for the installed-package smoke. PATH=${process.env.PATH}`,
+    `no real Node runtime found on PATH (bun-as-node shims are rejected) — required for the installed-package smoke. PATH=${process.env.PATH}`,
   );
 }
 

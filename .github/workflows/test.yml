@@ -59,6 +59,11 @@ jobs:
               run: bun run test:unit
             - name: Integration tests
               run: bun run test:integration
+              env:
+                  # Hard-require the installed-package Node smoke here, where the
+                  # package build above guarantees dist/ exists. publish.yml runs
+                  # test:all before building and skips the smoke gracefully.
+                  ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
             - name: Build native bindings for package tests
               run: bun run --cwd packages/natives build
             - name: coding-agent vitest suite
