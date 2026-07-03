@@ -17,7 +17,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dir, "../..");
 const repoNodeModules = join(repoRoot, "node_modules");
@@ -25,19 +25,51 @@ const packageDir = join(repoRoot, "packages", "coding-agent");
 const distCli = join(packageDir, "dist", "cli.js");
 
 const distBuilt = fs.existsSync(distCli);
-const nodeAvailable = spawnSync("node", ["--version"], { encoding: "utf8" }).status === 0;
 const isCI = process.env.CI === "true" || process.env.CI === "1";
+
+/**
+ * Locate a REAL Node runtime on PATH. The repo's bunfig `[run] bun = true`
+ * prepends a node->bun shim to PATH for package scripts (e.g.
+ * `bun run test:integration`), so a bare spawnSync("node") can hit bun
+ * masquerading as node — which exits 1 for `--version` here and, worse, would
+ * silently neuter this regression guard (Bun's lenient exports-map resolution
+ * hides the Node-only failure). Every candidate is therefore verified to be
+ * genuine Node via `typeof Bun === "undefined"`.
+ */
+function findRealNode(): string | null {
+  const names = process.platform === "win32" ? ["node.exe", "node.cmd"] : ["node"];
+  const seen = new Set<string>();
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (seen.has(candidate) || !fs.existsSync(candidate)) continue;
+      seen.add(candidate);
+      const probe = spawnSync(candidate, ["-e", "process.stdout.write(typeof Bun)"], {
+        encoding: "utf8",
+        timeout: 30_000,
+      });
+      if (probe.status === 0 && probe.stdout === "undefined") return candidate;
+    }
+  }
+  return null;
+}
+
+const nodeExe = findRealNode();
 
 if (isCI) {
   // CI must never silently skip this regression guard.
   assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing in CI — run the build step first");
-  assert.ok(nodeAvailable, "node is not on PATH in CI — required for the installed-package smoke");
+  assert.ok(
+    nodeExe,
+    `no real Node runtime found on PATH in CI (bun-as-node shims are rejected) — required for the installed-package smoke. PATH=${process.env.PATH}`,
+  );
 }
 
-const runTest = distBuilt && nodeAvailable ? test : test.skip;
-if (!distBuilt || !nodeAvailable) {
+const runTest = distBuilt && nodeExe ? test : test.skip;
+if (!distBuilt || !nodeExe) {
   console.warn(
-    "[installed-package-node-extensions] skipped: requires a built packages/coding-agent/dist and node on PATH",
+    "[installed-package-node-extensions] skipped: requires a built packages/coding-agent/dist and a real (non-bun-shim) node on PATH",
   );
 }
 
@@ -99,7 +131,8 @@ runTest(
     fs.mkdirSync(homeDir, { recursive: true });
     fs.mkdirSync(workDir, { recursive: true });
 
-    const result = spawnSync("node", [join(atomicDest, "dist", "cli.js"), "--no-session"], {
+    assert.ok(nodeExe, "real node executable must be resolved before the smoke runs");
+    const result = spawnSync(nodeExe, [join(atomicDest, "dist", "cli.js"), "--no-session"], {
       cwd: workDir,
       input: "",
       encoding: "utf8",
