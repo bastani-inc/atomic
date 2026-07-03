@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the running subagent widget so it preserves the last known expanded/open state across workflow stage-node exit re-renders instead of transiently collapsing when the live widget context is stale until the next subagent status update ([#1619](https://github.com/bastani-inc/atomic/issues/1619)).
+
 ## [0.9.4-alpha.9] - 2026-07-02
 
 ### Changed

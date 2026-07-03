@@ -63,6 +63,7 @@ interface RenderRequestingContext {
 let latestWidgetCtx: ExtensionContext | undefined;
 let latestWidgetJobs: AsyncJobState[] = [];
 let latestWidgetFrameNow = 0;
+let latestWidgetExpanded = false;
 let widgetTimer: ReturnType<typeof setInterval> | undefined;
 let mountedWidgetCtx: ExtensionContext | undefined;
 let mountedWidgetOwnerKey: string | undefined;
@@ -78,16 +79,21 @@ function getLatestWidgetFrameNow(): number {
 
 function getLatestWidgetExpanded(): boolean {
 	// LiveWidgetComponent re-renders outside a specific renderWidget() call, so
-	// read expansion from the latest live singleton context. If that context was
-	// cleared or went stale, collapse safely instead of consulting a stale caller.
-	if (!latestWidgetCtx?.hasUI) return false;
-	return latestWidgetCtx.ui.getToolsExpanded?.() ?? false;
+	// remember the last expansion state observed from a live host UI. Workflow
+	// stage-node detach can briefly repaint the mounted singleton with a stale or
+	// no-UI context before the next subagent status update refreshes it; falling
+	// back to the cached value avoids a transient collapse while jobs keep running.
+	if (!latestWidgetCtx?.hasUI) return latestWidgetExpanded;
+	const expanded = latestWidgetCtx.ui.getToolsExpanded?.();
+	if (typeof expanded === "boolean") latestWidgetExpanded = expanded;
+	return latestWidgetExpanded;
 }
 
 function clearLatestWidgetState(): void {
 	latestWidgetCtx = undefined;
 	latestWidgetJobs = [];
 	latestWidgetFrameNow = 0;
+	latestWidgetExpanded = false;
 	mountedWidgetCtx = undefined;
 	mountedWidgetOwnerKey = undefined;
 	widgetMounted = false;
