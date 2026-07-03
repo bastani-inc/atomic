@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
 
@@ -39,5 +42,62 @@ describe("extension loader pi-ai compat aliases", () => {
 		expect(typeof compat.complete).toBe("function");
 		expect(typeof compat.getModel).toBe("function");
 		expect(compat.StringEnum).toBe(root.StringEnum);
+	});
+});
+
+describe("extension loader package-root resolution", () => {
+	it("locates a package root without consulting its exports map", () => {
+		// Regression guard for #1600/#1609: pi-ai does not export
+		// "./package.json", so require.resolve("<pkg>/package.json") throws
+		// ERR_PACKAGE_PATH_NOT_EXPORTED under Node and broke every builtin
+		// extension for npm installs. findPackageRoot must scan node_modules
+		// directories directly, ignoring the exports map entirely.
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-pkg-root-"));
+		try {
+			const packageRoot = path.join(tmp, "node_modules", "@scope", "esm-only");
+			fs.mkdirSync(packageRoot, { recursive: true });
+			fs.writeFileSync(
+				path.join(packageRoot, "package.json"),
+				JSON.stringify({
+					name: "@scope/esm-only",
+					version: "1.0.0",
+					type: "module",
+					exports: { ".": "./dist/index.js" },
+				}),
+			);
+
+			const resolved = extensionLoaderTestHooks.findPackageRoot("@scope/esm-only", [
+				path.join(tmp, "node_modules"),
+			]);
+
+			expect(resolved).toBe(packageRoot);
+		} finally {
+			fs.rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("resolves the real pi-ai package root from the loader's node_modules chain", () => {
+		const root = extensionLoaderTestHooks.findPackageRoot("@earendil-works/pi-ai");
+
+		expect(fs.existsSync(path.join(root, "package.json"))).toBe(true);
+		expect(fs.existsSync(path.join(root, "dist", "compat.js"))).toBe(true);
+		expect(fs.existsSync(path.join(root, "dist", "oauth.js"))).toBe(true);
+	});
+
+	it("throws a descriptive error for unknown packages", () => {
+		expect(() => extensionLoaderTestHooks.findPackageRoot("@scope/definitely-missing", [])).toThrow(
+			/Cannot locate package directory/,
+		);
+	});
+
+	it("maps every alias to an existing file (installed-fallback contract)", () => {
+		const aliases = extensionLoaderTestHooks.getAliases();
+
+		for (const [specifier, target] of Object.entries(aliases)) {
+			// When running from src/, the host-package alias uses the TypeScript
+			// ESM convention (.js specifier resolved to the .ts source by jiti).
+			const exists = fs.existsSync(target) || fs.existsSync(target.replace(/\.js$/, ".ts"));
+			expect(exists, `alias ${specifier} -> ${target} does not exist`).toBe(true);
+		}
 	});
 });

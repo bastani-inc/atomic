@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed every builtin extension (workflows, subagents, mcp, web-access, intercom, cursor) failing to load with `Package subpath './package.json' is not defined by "exports"` for npm/bun package installs of Atomic (regression in 0.9.4-alpha.9): the extension loader's installed-package alias fallback resolved host packages via `require.resolve("<pkg>/package.json")`, which Node's strict exports-map encapsulation rejects for packages like `@earendil-works/pi-ai` that do not export `./package.json` (the compiled binary and Bun-run dev paths were unaffected, which is why it slipped through). The loader now locates package roots by scanning the `node_modules` resolution chain directly, bypassing exports maps entirely while staying `import.meta.resolve()`-free to keep bytecode compilation intact. CI now guards this path with an installed-layout smoke test that runs the built package under the Node runtime on both Linux and Windows.
+
 ## [0.9.4-alpha.9] - 2026-07-02
 
 ### Changed

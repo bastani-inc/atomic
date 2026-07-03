@@ -19,6 +19,8 @@ Pull request / push
   ├─ cd packages/coding-agent && bun run build
   ├─ bun run test:unit
   ├─ bun run test:integration
+  │  └─ includes an installed-layout smoke that runs the built @bastani/atomic
+  │     package under the Node runtime and fails on extension-load diagnostics
   └─ scripts/build-binaries.sh --platform <native-x64>
      └─ extract archive, verify bundled paths, run --version and --no-session smoke tests
 
@@ -93,17 +95,18 @@ Steps:
 
 1. Check out the repository.
 2. Set up Bun.
-3. Install dependencies with `bun install --frozen-lockfile`.
-4. Run `bun run typecheck`.
-5. Run `bun run check:file-length` to enforce the 500-line maximum for tracked TS/JS/Rust source-like files after applying only the documented generated/vendored exclusions.
-6. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
-7. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
-8. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
-9. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
-10. Run `bun run test:unit`.
-11. Run `bun run test:integration`.
-12. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-13. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
+3. Set up Node 24 (required by the installed-package Node smoke below; the published `atomic` bin runs under `#!/usr/bin/env node` for npm/bun installs).
+4. Install dependencies with `bun install --frozen-lockfile`.
+5. Run `bun run typecheck`.
+6. Run `bun run check:file-length` to enforce the 500-line maximum for tracked TS/JS/Rust source-like files after applying only the documented generated/vendored exclusions.
+7. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
+8. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
+9. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
+10. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
+11. Run `bun run test:unit`.
+12. Run `bun run test:integration`. This includes `test/integration/installed-package-node-extensions.test.ts`, which assembles an installed-like layout (built `dist/` copied next to linked `node_modules` siblings, outside the monorepo `packages/` tree) and runs `dist/cli.js --no-session` under **Node** — the runtime npm/bun installs actually use — failing on any `Failed to load extension` diagnostic. This guards the extension loader's installed-package alias fallback, which the compiled-binary smoke (virtualModules path) and Bun-run test suites (lenient exports-map resolution) cannot exercise; it runs on both the Linux and Windows matrix legs.
+13. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
+14. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
 
 ### Code Review (`code-review.yml`)
 
@@ -280,7 +283,7 @@ The meaningful pre-publish checks are:
 
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests, build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
+| `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests (including the installed-package Node-runtime extension smoke on Linux and Windows), build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
 | `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate deterministic shrinkwrap/docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
 | `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
 | `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |

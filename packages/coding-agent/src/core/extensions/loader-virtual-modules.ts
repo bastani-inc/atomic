@@ -136,6 +136,25 @@ function extensionImportSpecifier(extensionPath: string, cacheToken: ExtensionCa
 }
 
 /**
+ * Locate an installed package's root directory without consulting its
+ * "exports" map: require.resolve("<pkg>/package.json") throws
+ * ERR_PACKAGE_PATH_NOT_EXPORTED under Node for packages that do not export
+ * "./package.json" (pi-ai does not), and import.meta.resolve() cannot be
+ * used because its mere presence silently disables bytecode generation for
+ * the compiled binary (CJS bundle). Scanning require.resolve.paths() walks
+ * the same node_modules chain Node would, without exports-map encapsulation.
+ */
+function findPackageRoot(packageName: string, searchPaths?: string[]): string {
+  for (const base of searchPaths ?? require.resolve.paths(packageName) ?? []) {
+    const candidate = path.join(base, packageName);
+    if (fs.existsSync(path.join(candidate, "package.json"))) {
+      return candidate;
+    }
+  }
+  throw new Error(`Cannot locate package directory for "${packageName}"`);
+}
+
+/**
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
  */
@@ -155,11 +174,7 @@ function getAliases(): Record<string, string> {
     if (fs.existsSync(workspacePath)) {
       return workspacePath;
     }
-    // Resolve via the package.json export and join the built-entry path, not
-    // import.meta.resolve: its mere presence silently breaks bytecode
-    // generation for the compiled binary (CJS bundle), and require.resolve
-    // fails on these ESM-only packages.
-    const packageRoot = path.dirname(require.resolve(`${packageName}/package.json`));
+    const packageRoot = findPackageRoot(packageName);
     const entryRelativePath = workspaceRelativePath.split("/").slice(1).join("/");
     return path.join(packageRoot, entryRelativePath);
   };
@@ -201,6 +216,7 @@ function getAliases(): Record<string, string> {
 export const extensionLoaderTestHooks = {
   loadVirtualModules,
   getAliases,
+  findPackageRoot,
 };
 
 /**

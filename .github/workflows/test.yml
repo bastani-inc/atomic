@@ -30,6 +30,12 @@ jobs:
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+            # Node is required by test/integration/installed-package-node-extensions.test.ts,
+            # which smoke-tests the built npm package under the Node runtime (the
+            # `atomic` bin runs via `#!/usr/bin/env node` for npm/bun installs).
+            - uses: actions/setup-node@v4
+              with:
+                  node-version: 24
             - uses: dtolnay/rust-toolchain@stable
             - name: Install dependencies
               run: bun install --frozen-lockfile
