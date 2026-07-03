@@ -321,14 +321,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
         assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
             "zai-coding-cn/glm-5.2:xhigh",
-            "github-copilot/gemini-3.5-flash (1m):high",
-            "google/gemini-3.5-flash:high",
-            "google-vertex/gemini-3.5-flash:high",
+            "openrouter/z-ai/glm-5.2:xhigh",
+            "openai-codex/gpt-5.5:xhigh",
+            "github-copilot/gpt-5.5:xhigh",
         ]);
-        assert.equal(
-            reviewerCOptions?.fallbackModels?.includes("github-copilot/gemini-3.1-pro-preview (1m):high"),
-            true,
-        );
+        // Dominated models (benchmark 2026-07-02) must stay out of the chain.
+        const reviewerCFallbacks = reviewerCOptions?.fallbackModels ?? [];
+        assert.equal(reviewerCFallbacks.some((m) => /gemini|sonnet/.test(m)), false);
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);
