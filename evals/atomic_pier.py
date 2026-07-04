@@ -54,7 +54,10 @@ class Atomic(BaseInstalledAgent):
             "GOOGLE_API_KEY",
         ),
         "groq": ("GROQ_API_KEY",),
-        "huggingface": ("HF_TOKEN",),
+        # Disabled: unused provider, and huggingface.co also hosts git
+        # repos/datasets (code lookup in restricted egress). Re-enable
+        # alongside the _PROVIDER_DOMAINS entry if HF inference is needed.
+        # "huggingface": ("HF_TOKEN",),
         "mistral": ("MISTRAL_API_KEY",),
         "openai": ("OPENAI_API_KEY",),
         "openrouter": ("OPENROUTER_API_KEY",),
@@ -68,7 +71,7 @@ class Atomic(BaseInstalledAgent):
         "GITHUB_COPILOT_BASE_URL",
         "GITHUB_SERVER_URL",
         "COPILOT_API_TARGET",
-        "HF_INFERENCE_ENDPOINT",
+        # "HF_INFERENCE_ENDPOINT",  # disabled with the huggingface provider
         "MISTRAL_BASE_URL",
         "OPENAI_API_BASE",
         "OPENAI_BASE_URL",
@@ -78,28 +81,26 @@ class Atomic(BaseInstalledAgent):
     _PROVIDER_DOMAINS: dict[str, tuple[str, ...]] = {
         "amazon-bedrock": (".amazonaws.com",),
         "anthropic": ("api.anthropic.com",),
+        # Copilot inference only. Pier injects COPILOT_GITHUB_TOKEN, which
+        # Atomic sends directly to the CAPI hosts as a Bearer token — the
+        # github.com device-login and api.github.com copilot_internal token
+        # exchange endpoints are only used by interactive OAuth logins and
+        # would allowlist GitHub code search/clone in restricted egress.
         "github-copilot": (
-            "api.github.com",
             "api.githubcopilot.com",
             "api.business.githubcopilot.com",
             "api.enterprise.githubcopilot.com",
             "api.individual.githubcopilot.com",
             ".githubcopilot.com",
-            "github.com",
         ),
         "google": (".googleapis.com",),
         "groq": ("api.groq.com",),
-        "huggingface": ("huggingface.co",),
+        # "huggingface": ("huggingface.co",),  # disabled: unused provider
         "mistral": ("api.mistral.ai",),
         "openai": ("api.openai.com",),
         "openrouter": ("openrouter.ai",),
         "xai": ("api.x.ai",),
     }
-    _INSTALL_DOMAINS: tuple[str, ...] = (
-        "nodejs.org",
-        "raw.githubusercontent.com",
-        "registry.npmjs.org",
-    )
 
     CLI_FLAGS = [
         CliFlag(
@@ -163,14 +164,17 @@ class Atomic(BaseInstalledAgent):
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
-        provider = self._parsed_model_provider
-        defaults = set(self._INSTALL_DOMAINS)
+        if not self.model_name or "/" not in self.model_name:
+            return NetworkAllowlist()
+
+        provider, _ = self.model_name.split("/", 1)
         # Atomic workflows can select fallback models from providers other than
         # the top-level Pier --model provider. In Pier's restricted egress mode,
         # narrowing the allowlist to only the requested provider makes valid
         # workflow fallback attempts fail as generic SDK "Connection error"
         # transport failures. Allow every Atomic-supported provider domain here;
         # credentials/model config still decide which providers can actually run.
+        defaults: set[str] = set()
         for domains in self._PROVIDER_DOMAINS.values():
             defaults.update(domains)
         urls = [self._get_env(key) for key in self._BASE_URL_ENV_KEYS]
