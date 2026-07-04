@@ -4,7 +4,7 @@ import { AsyncJobManager } from "../src/core/async/job-manager.ts";
 import { createSessionAsyncDeliveryHandler, createSessionAsyncJobManager, disposeSessionAsyncJobManager } from "../src/core/async/session-manager.ts";
 import type { AsyncJobDeliveryMessage } from "../src/core/async/types.ts";
 import type { SendMessageOptions } from "../src/core/extensions/index.ts";
-import type { ManagedBashJob } from "../src/core/tools/bash-async-jobs.ts";
+import { listManagedBashJobIds, type ManagedBashJob } from "../src/core/tools/bash-async-jobs.ts";
 import { createBashToolDefinition } from "../src/core/tools/bash.ts";
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 1_000): Promise<void> {
 	const start = Date.now();
@@ -335,6 +335,26 @@ describe("AsyncJobManager", () => {
 		await expect(bash.execute("bash-async-2", { command: "sleep", async: true })).rejects.toThrow(/Background job limit reached/);
 		releaseExec?.();
 		manager.dispose();
+	});
+
+	it("discards the managed job when async registration fails on a disposed manager/session", async () => {
+		const captured: CapturedCustomMessage[] = [];
+		const session = createCapturedSession(captured);
+		const handle = createSessionAsyncJobManager(session);
+		let execStarted = false;
+		const bash = createBashToolDefinition(process.cwd(), {
+			asyncEnabled: true,
+			asyncJobManager: handle.manager,
+			asyncJobDeliveryHandler: createSessionAsyncDeliveryHandler(session, handle.manager, handle.sessionId),
+			asyncJobSessionId: handle.sessionId,
+			operations: { exec: async () => { execStarted = true; return { exitCode: 0 }; } },
+		});
+		disposeSessionAsyncJobManager(handle.manager, handle.sessionId);
+		const before = listManagedBashJobIds();
+		await expect(bash.execute("bash-zombie", { command: "echo zombie", async: true })).rejects.toThrow(/disposed/);
+		const leaked = listManagedBashJobIds().filter((jobId) => !before.includes(jobId));
+		expect(leaked).toEqual([]);
+		expect(execStarted).toBe(false);
 	});
 
 	it("suppresses auto-delivery after explicit async bash cancellation while preserving pollability", async () => {

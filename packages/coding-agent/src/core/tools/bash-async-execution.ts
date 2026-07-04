@@ -2,7 +2,7 @@ import type { AsyncJobManager } from "../async/job-manager.js";
 import type { AsyncJobDeliveryHandler } from "../async/types.js";
 import { invalidateNativeSearchCache } from "./search-native.js";
 import { createAsyncOutputAppender } from "./bash-async-output.js";
-import { createManagedBashJob, formatAsyncJobError } from "./bash-async-jobs.js";
+import { createManagedBashJob, discardManagedBashJob, formatAsyncJobError } from "./bash-async-jobs.js";
 import type { BashOperations, BashToolDetails } from "./bash.js";
 
 interface StartAsyncBashCommandOptions {
@@ -25,7 +25,16 @@ export async function startAsyncBashCommand(options: StartAsyncBashCommandOption
 }> {
 	if (options.manager?.atCapacity) throw new Error("Background job limit reached. Wait for running jobs to finish or cancel one.");
 	const job = createManagedBashJob(options.command, options.cwd, options.timeoutSeconds, options.requestedTimeoutSeconds);
-	options.manager?.registerBashJob(job, options.deliveryHandler, options.sessionId);
+	try {
+		options.manager?.registerBashJob(job, options.deliveryHandler, options.sessionId);
+	} catch (registerError) {
+		// The job was inserted into the managed map but never started; drop it so
+		// it cannot linger as a permanently-"running" zombie entry (see
+		// discardManagedBashJob). Registration failures (disposed manager/session,
+		// capacity race) still surface to the caller as tool errors.
+		discardManagedBashJob(job.jobId);
+		throw registerError;
+	}
 	const appendAsyncOutput = createAsyncOutputAppender(job, { persistAfterBytes: 12_000 });
 	const onParentAbort = () => {
 		options.manager?.acknowledgeDeliveries([job.jobId]);
