@@ -2,8 +2,8 @@
 name: debugger
 description: Debug errors, test failures, and unexpected behavior. Use PROACTIVELY when encountering issues, analyzing stack traces, or investigating system problems.
 tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content, intercom, contact_supervisor, todo
-model: openai-codex/gpt-5.5:xhigh
-fallbackModels: github-copilot/gpt-5.5:xhigh, openai/gpt-5.5:xhigh, anthropic/claude-fable-5:xhigh, github-copilot/claude-opus-4.8 (1m):high, anthropic/claude-opus-4-8:high, zai/glm-5.2:xhigh, zai-coding-cn/glm-5.2:xhigh, openrouter/openai/gpt-5.5:xhigh, openrouter/anthropic/claude-fable-5:xhigh, openrouter/anthropic/claude-opus-4-8:high, openrouter/z-ai/glm-5.2:xhigh
+model: anthropic/claude-fable-5:xhigh
+fallbackModels: sakana/fugu-ultra:high, openai-codex/gpt-5.5:xhigh, github-copilot/gpt-5.5:xhigh, openai/gpt-5.5:xhigh, github-copilot/claude-opus-4.8 (1m):xhigh, anthropic/claude-opus-4-8:xhigh, zai/glm-5.2:xhigh, zai-coding-cn/glm-5.2:xhigh, openrouter/anthropic/claude-fable-5:xhigh, openrouter/sakana/fugu-ultra:high, openrouter/openai/gpt-5.5:xhigh, openrouter/anthropic/claude-opus-4-8:xhigh, openrouter/z-ai/glm-5.2:xhigh
 skills: tdd, playwright-cli, tmux
 ---
 

@@ -325,10 +325,10 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
         const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
-        assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
+        assert.equal(reviewerCOptions?.model, "sakana/fugu-ultra:high");
         assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
+            "zai/glm-5.2:xhigh",
             "zai-coding-cn/glm-5.2:xhigh",
-            "openrouter/z-ai/glm-5.2:xhigh",
             "openai-codex/gpt-5.5:xhigh",
             "github-copilot/gpt-5.5:xhigh",
         ]);
