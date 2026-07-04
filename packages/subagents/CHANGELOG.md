@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.5-alpha.2] - 2026-07-04
+
+### Changed
+
+- Refreshed the builtin debugger agent's July 2026 frontier model roster: it now leads with Claude Fable 5 `:xhigh`, keeps GPT-5.5 `:xhigh`, Opus 4.8 long-context `:xhigh`, and GLM-5.2 fallbacks, and retains only the valid OpenRouter Fugu Ultra mirror rather than unsupported direct Sakana model IDs.
+
 ## [0.9.4] - 2026-07-03
 
 ### Added

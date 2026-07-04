@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.5-alpha.2] - 2026-07-04
+
+### Changed
+
+- Refreshed the July 2026 frontier model rosters for the builtin Ralph, Goal, deep-research-codebase, and open-claude-design workflows: critical prompt-engineering, orchestration, planning, and review chains now use high-capacity Fable 5 `:xhigh` primaries or fallbacks with GPT-5.5, Opus 4.8 long-context `:xhigh`, GLM-5.2, and OpenRouter Fugu Ultra coverage, while Ralph research stays on the measured GPT-5.5 `:medium` / Fable 5 `:low` performance-per-dollar path and reviewer-C remains GLM-led for diversity.
+- Updated workflow model-option schema documentation to show `:xhigh` long-context examples and kept the fallback fixtures aligned so unsupported direct `sakana/` IDs stay out of workflow chains while the valid `openrouter/sakana/fugu-ultra:high` mirror remains available.
+
 ## [0.9.5-alpha.1] - 2026-07-04
 
 ### Breaking Changes

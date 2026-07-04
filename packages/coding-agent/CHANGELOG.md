@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.5-alpha.2] - 2026-07-04
+
+### Changed
+
+- Refreshed the July 2026 builtin workflow and subagent frontier model rosters bundled with Atomic: high-capacity synthesis, planning, debugging, and review paths now lead or fall back through Claude Fable 5 `:xhigh`, GPT-5.5 `:xhigh`, Opus 4.8 long-context `:xhigh`, GLM-5.2, and the valid OpenRouter Fugu Ultra mirror while keeping dominated or unsupported model IDs out of shipped chains.
+
 ## [0.9.5-alpha.1] - 2026-07-04
 
 ### Breaking Changes
