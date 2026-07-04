@@ -30,7 +30,8 @@ function utf8Prefix(text: string, maxBytes: number): string {
 	return text.slice(0, end);
 }
 
-export function createAsyncOutputAppender(job: BashAsyncOutputTarget): BashAsyncOutputAppender {
+export function createAsyncOutputAppender(job: BashAsyncOutputTarget, options?: { persistAfterBytes?: number }): BashAsyncOutputAppender {
+	const persistAfterBytes = options?.persistAfterBytes ?? DEFAULT_MAX_BYTES;
 	let outputBytes = 0;
 	let truncated = false;
 	let fullOutputStream: WriteStream | undefined;
@@ -50,6 +51,7 @@ export function createAsyncOutputAppender(job: BashAsyncOutputTarget): BashAsync
 		const text = sanitizeDecodedOutput(decoded);
 		if (text.length === 0) return;
 		const bytes = byteLength(text);
+		if (outputBytes + bytes > persistAfterBytes) ensureFullOutputStream();
 		if (outputBytes + bytes > DEFAULT_MAX_BYTES) {
 			ensureFullOutputStream();
 			const remaining = Math.max(0, DEFAULT_MAX_BYTES - outputBytes);

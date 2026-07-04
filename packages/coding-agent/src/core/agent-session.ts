@@ -15,9 +15,11 @@ import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat"
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { SessionManager } from "./session-manager.ts";
+import type { SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
+import type { AsyncJobManager } from "./async/job-manager.js";
+import { createSessionAsyncJobManager } from "./async/session-manager.js";
 import { installAgentSessionAccessors } from "./agent-session-accessors.ts";
 import { agentSessionAutoCompactionMethods } from "./agent-session-auto-compaction.ts";
 import { agentSessionBashMethods } from "./agent-session-bash.ts";
@@ -117,7 +119,8 @@ export class AgentSession {
 	protected _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	protected _systemPromptOverride?: string;
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
-
+	protected _asyncJobManager: AsyncJobManager;
+	protected _asyncJobManagerSessionId: symbol;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -134,8 +137,10 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
-
 		const internals = this as unknown as AgentSessionInternalSurface;
+		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);
+		this._asyncJobManager = asyncJobManagerHandle.manager;
+		this._asyncJobManagerSessionId = asyncJobManagerHandle.sessionId;
 		internals._handleAgentEvent = internals._handleAgentEvent.bind(this);
 		this._unsubscribeAgent = this.agent.subscribe(internals._handleAgentEvent);
 		internals._installAgentToolHooks();

@@ -16,8 +16,8 @@ export interface ManagedBashJob {
 	abortController?: AbortController;
 }
 
-const MAX_MANAGED_BASH_JOBS = 100;
-const COMPLETED_JOB_TTL_MS = 30 * 60 * 1000;
+export const MAX_MANAGED_BASH_JOBS = 100;
+export const COMPLETED_JOB_TTL_MS = 30 * 60 * 1000;
 const managedBashJobs = new Map<string, ManagedBashJob>();
 export function formatAsyncJobError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
