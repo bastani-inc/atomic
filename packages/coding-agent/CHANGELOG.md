@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed async `bash({ async: true })` jobs finishing silently: completed or failed session-managed background bash jobs now enqueue an `async-job-result` follow-up message into the originating chat session automatically, while explicit completed-job polling, explicit cancellation, and parent aborts acknowledge the job and suppress duplicate or unwanted idle turns. Suppression is checked again at the streaming boundary so a completed job polled while its automatic follow-up is staged does not later deliver a duplicate. Async delivery bookkeeping is now bounded by the existing background-job retention defaults, suppressions stay tied to retained jobs so disposed-session running jobs cannot later fall back into the owner session, 12KB–50KB follow-up outputs persist their full output path before inline preview truncation, just-under-threshold raw outputs remain fully inline instead of being preview-truncated without a `fullOutputPath`, shared-manager lifecycle tracking prevents owner-session disposal from dropping later-session jobs while cleaning stale handlers from disposed fork/subagent sessions, and non-blocking delivery attempts keep one live streaming session from delaying unrelated async job completions.
+- Fixed a background bash job leak where a failed async-manager registration (disposed manager/session or a capacity race mid-flight) left a never-executed job permanently reported as `running` to `__atomic_bash_job` polls; the managed job entry is now discarded when registration fails and the tool call error is surfaced unchanged.
+
 ## [0.9.4-alpha.10] - 2026-07-03
 
 ### Fixed

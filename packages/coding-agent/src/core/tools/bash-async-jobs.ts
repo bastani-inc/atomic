@@ -16,8 +16,8 @@ export interface ManagedBashJob {
 	abortController?: AbortController;
 }
 
-const MAX_MANAGED_BASH_JOBS = 100;
-const COMPLETED_JOB_TTL_MS = 30 * 60 * 1000;
+export const MAX_MANAGED_BASH_JOBS = 100;
+export const COMPLETED_JOB_TTL_MS = 30 * 60 * 1000;
 const managedBashJobs = new Map<string, ManagedBashJob>();
 export function formatAsyncJobError(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
@@ -46,6 +46,23 @@ export function createManagedBashJob(command: string, cwd: string, timeoutSecond
 	managedBashJobs.set(jobId, job);
 	cleanupManagedBashJobs();
 	return job;
+}
+
+/**
+ * Remove a managed job that never actually started executing (for example when
+ * async-manager registration fails after the map insert). Without this, the
+ * entry would stay "running" forever: TTL cleanup only evicts settled jobs, so
+ * the zombie would linger until the max-jobs overflow forcibly removed it.
+ */
+export function discardManagedBashJob(jobId: string): void {
+	const job = managedBashJobs.get(jobId);
+	if (!job) return;
+	deleteJobOutput(job);
+	managedBashJobs.delete(jobId);
+}
+
+export function listManagedBashJobIds(): string[] {
+	return [...managedBashJobs.keys()];
 }
 
 export function getManagedBashJob(jobId: string): ManagedBashJob | undefined {

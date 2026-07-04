@@ -22,9 +22,10 @@ import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, SessionManager } from "./session-manager.js";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { BuildSystemPromptOptions } from "./system-prompt.ts";
+import type { AsyncJobManager } from "./async/job-manager.js";
 import type { BashOperations } from "./tools/bash.ts";
 import type {
 	AgentSessionEvent,
@@ -376,5 +377,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_baseSystemPromptOptions: BuildSystemPromptOptions;
 	_systemPromptOverride?: string;
 	_lastAssistantMessage: AssistantMessage | undefined;
+	_asyncJobManager: AsyncJobManager;
+	_asyncJobManagerSessionId: symbol;
 }
 

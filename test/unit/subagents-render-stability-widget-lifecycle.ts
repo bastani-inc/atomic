@@ -21,7 +21,7 @@ describe("async widget animation ticker lifecycle", () => {
         };
     }
 
-    function mockLifecycleWidgetCtx(ownerCwd?: string): {
+    function mockLifecycleWidgetCtx(ownerCwd?: string, toolsExpanded = false): {
         ctx: ExtensionContext;
         widgetCalls: Array<{ key: string; content: unknown; options: unknown }>;
         renders: () => number;
@@ -43,7 +43,7 @@ describe("async widget animation ticker lifecycle", () => {
                 ) => {
                     widgetCalls.push({ key, content, options });
                 },
-                getToolsExpanded: () => false,
+                getToolsExpanded: () => toolsExpanded,
                 requestRender: () => {
                     renderCount++;
                 },
@@ -151,6 +151,61 @@ describe("async widget animation ticker lifecycle", () => {
             advanced,
             stableA,
             "widget status updates/ticks should still advance the captured widget clock",
+        );
+    });
+
+    test("mounted async widget keeps last expanded state across stale stage-exit context re-renders", () => {
+        type WidgetFactory = (
+            tui: unknown,
+            widgetTheme: RenderTheme,
+        ) => Component;
+
+        const { ctx, widgetCalls } = mockLifecycleWidgetCtx(undefined, true);
+        renderWidget(ctx, [
+            {
+                ...runningJob(),
+                mode: "chain",
+                chainStepCount: 1,
+                steps: [
+                    {
+                        agent: "worker",
+                        status: "running",
+                        durationMs: 1_000,
+                        toolCount: 1,
+                        tokens: { input: 20, output: 0, total: 20 },
+                        recentTools: [{ tool: "bash", args: "bun test", endMs: 10_000 }],
+                        recentOutput: ["still running"],
+                    },
+                ],
+            },
+        ]);
+
+        const factory = widgetCalls[0]?.content;
+        assert.equal(
+            typeof factory,
+            "function",
+            "mounted widget content should be a component factory",
+        );
+        const component = (factory as WidgetFactory)(undefined, theme);
+        const expanded = component.render(120).join("\n");
+        assert.match(
+            expanded,
+            /bash: bun test/,
+            "expanded widget should show live detail from the current UI state",
+        );
+
+        ctx.hasUI = false;
+
+        const staleContextRender = component.render(120).join("\n");
+        assert.match(
+            staleContextRender,
+            /bash: bun test/,
+            "stage-exit stale/no-UI re-renders should preserve the last expanded state while the job remains mounted",
+        );
+        assert.doesNotMatch(
+            staleContextRender,
+            /Press ctrl\+o for live detail/,
+            "stale context fallback must not transiently collapse the running widget",
         );
     });
 

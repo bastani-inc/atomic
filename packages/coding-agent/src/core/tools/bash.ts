@@ -11,10 +11,12 @@ import { truncateToVisualLines } from "../../modes/interactive/components/visual
 import { theme } from "../../modes/interactive/theme/theme.ts";
 import { waitForChildProcess } from "../../utils/child-process.ts";
 import { getShellConfig, getShellEnv, killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
+import type { AsyncJobManager } from "../async/job-manager.js";
+import type { AsyncJobDeliveryMessage } from "../async/types.js";
 import type { BashResult } from "../bash-executor.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { createAsyncOutputAppender } from "./bash-async-output.ts";
-import { abortManagedBashJob, createManagedBashJob, formatAsyncJobError, getManagedBashJob } from "./bash-async-jobs.ts";
+import { startAsyncBashCommand } from "./bash-async-execution.js";
+import { abortManagedBashJob, getManagedBashJob } from "./bash-async-jobs.ts";
 import { stripLeadingCdCommand } from "./bash-leading-cd.ts";
 import { executeNativePty } from "./bash-pty-native.ts";
 import { checkBashInterceptionCandidates, DEFAULT_BASH_INTERCEPTOR_RULES, type BashInterceptorRule } from "./bash-interceptor.ts";
@@ -116,22 +118,25 @@ export interface BashInterceptorResult {
 }
 export type BashInterceptor = (context: BashSpawnContext) => Promise<BashInterceptorResult | undefined> | BashInterceptorResult | undefined;
 export interface BashToolOptions {
-	/** Custom operations for command execution. Default: local shell */
 	operations?: BashOperations;
-	/** Command prefix prepended to every command (for example shell setup commands) */
+	/** Prefix prepended to every shell command before execution. */
 	commandPrefix?: string;
-	/** Optional explicit shell path from settings */
+	/** Override shell executable resolution for local bash operations. */
 	shellPath?: string;
-	/** Hook to adjust command, cwd, or env before execution */
+	/** Last-mile hook for rewriting the command/cwd/env spawn context. */
 	spawnHook?: BashSpawnHook;
+	/** Optional command interceptor used by extensions and parity tests. */
 	interceptor?: BashInterceptor;
 	interceptorEnabled?: boolean | (() => boolean);
 	availableTools?: string[];
 	interceptorRules?: BashInterceptorRule[];
+	/** Enable background bash jobs and session-managed async result delivery. */
 	asyncEnabled?: boolean;
+	asyncJobManager?: AsyncJobManager;
+	asyncJobDeliveryHandler?: (message: AsyncJobDeliveryMessage) => void | Promise<void>;
+	asyncJobSessionId?: symbol;
 }
-const BASH_PREVIEW_LINES = 5;
-const BASH_UPDATE_THROTTLE_MS = 100;
+const BASH_PREVIEW_LINES = 5, BASH_UPDATE_THROTTLE_MS = 100;
 const DEFAULT_TIMEOUT_SECONDS = 300;
 const MIN_TIMEOUT_SECONDS = 1;
 const MAX_TIMEOUT_SECONDS = 3600;
@@ -266,6 +271,7 @@ export function createBashToolDefinition(
 	const availableTools = options?.availableTools ?? ["read", "search", "find", "edit", "write"];
 	const interceptorRules = options?.interceptorRules ?? DEFAULT_BASH_INTERCEPTOR_RULES;
 	const asyncEnabled = options?.asyncEnabled ?? false;
+	const asyncJobManager = options?.asyncJobManager, asyncJobDeliveryHandler = options?.asyncJobDeliveryHandler, asyncJobSessionId = options?.asyncJobSessionId;
 	return {
 		name: "bash",
 		label: "bash",
@@ -285,6 +291,7 @@ export function createBashToolDefinition(
 			if (jobStatusMatch) {
 				const job = getManagedBashJob(jobStatusMatch[1]!);
 				if (!job) throw new Error(`Unknown bash async job: ${jobStatusMatch[1]}`);
+				if (job.status !== "running") asyncJobManager?.acknowledgeDeliveries([job.jobId]);
 				const text = [`Job ${job.jobId}: ${job.status}`, `Command: ${job.command}`, job.error ? `Error: ${job.error}` : undefined, job.output].filter(Boolean).join("\n");
 				return { content: [{ type: "text", text }], details: { async: { jobId: job.jobId, type: "bash", state: job.status, command: job.command, status: job.status }, exitCode: job.exitCode, timeoutSeconds: job.timeoutSeconds, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}), ...(job.fullOutputPath ? { fullOutputPath: job.fullOutputPath } : {}), wallTimeMs: (job.endedAt ?? Date.now()) - job.startedAt } };
 			}
@@ -292,6 +299,7 @@ export function createBashToolDefinition(
 			if (jobCancelMatch) {
 				const job = abortManagedBashJob(jobCancelMatch[1]!);
 				if (!job) throw new Error(`Unknown bash async job: ${jobCancelMatch[1]}`);
+				asyncJobManager?.acknowledgeDeliveries([job.jobId]);
 				return { content: [{ type: "text", text: `Cancellation requested for bash job ${job.jobId}` }], details: { async: { jobId: job.jobId, type: "bash", state: job.status, command: job.command, status: job.status } } };
 			}
 			const timeout = normalizeTimeoutSeconds(bashCommand.timeout);
@@ -325,26 +333,19 @@ export function createBashToolDefinition(
 			const executionContext = primaryInterception ? spawnContext : (strippedCdContext ?? spawnContext);
 			if (bashCommand.async) {
 				if (!asyncEnabled) throw new Error("bash async execution is disabled");
-				const job = createManagedBashJob(executionContext.command, executionContext.cwd, timeout, bashCommand.timeout !== undefined && bashCommand.timeout !== timeout ? bashCommand.timeout : undefined);
-				const appendAsyncOutput = createAsyncOutputAppender(job);
-				const onParentAbort = () => job.abortController?.abort();
-				if (signal?.aborted) onParentAbort(); else signal?.addEventListener("abort", onParentAbort, { once: true });
-				void (async () => {
-					let error: unknown, exitCode: number | null | undefined;
-					try {
-						exitCode = (await ops.exec(executionContext.command, executionContext.cwd, { onData: appendAsyncOutput.append, timeout, env: executionContext.env, pty: bashCommand.pty, signal: job.abortController?.signal })).exitCode;
-					} catch (execError: unknown) { error = execError; }
-					try { await appendAsyncOutput.close(); } catch (closeError: unknown) { error ??= closeError; }
-					if (error !== undefined) {
-						job.status = "failed";
-						job.error = job.abortController?.signal.aborted ? "aborted" : formatAsyncJobError(error);
-					} else {
-						job.exitCode = exitCode;
-						job.status = exitCode && exitCode !== 0 ? "failed" : "completed";
-					}
-					job.endedAt = Date.now(); invalidateNativeSearchCache(); signal?.removeEventListener("abort", onParentAbort);
-				})();
-				return { content: [{ type: "text", text: `Started async bash command ${job.jobId}: ${executionContext.command}\nPoll with bash({ command: "__atomic_bash_job ${job.jobId}" }); cancel with bash({ command: "__atomic_bash_job_cancel ${job.jobId}" })` }], details: { async: { jobId: job.jobId, type: "bash", state: "running", command: executionContext.command, status: "running" }, timeoutSeconds: timeout, ...(job.requestedTimeoutSeconds !== undefined ? { requestedTimeoutSeconds: job.requestedTimeoutSeconds } : {}) } };
+				return startAsyncBashCommand({
+					command: executionContext.command,
+					cwd: executionContext.cwd,
+					env: executionContext.env,
+					pty: bashCommand.pty,
+					timeoutSeconds: timeout,
+					requestedTimeoutSeconds: bashCommand.timeout !== undefined && bashCommand.timeout !== timeout ? bashCommand.timeout : undefined,
+					signal,
+					operations: ops,
+					manager: asyncJobManager,
+					deliveryHandler: asyncJobDeliveryHandler,
+					sessionId: asyncJobSessionId,
+				});
 			}
 			const output = new OutputAccumulator({ tempFilePrefix: `${APP_NAME}-bash` });
 			let acceptingOutput = true;

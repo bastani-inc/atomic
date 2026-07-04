@@ -1,3 +1,4 @@
+import { disposeSessionAsyncJobManager } from "./async/session-manager.js";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { cleanupSessionResources } from "@earendil-works/pi-ai/compat";
@@ -405,6 +406,7 @@ export function dispose(this: AgentSession): void {
 	this._extensionRunner.invalidate(
 		"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().",
 	);
+	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
 	this._eventListeners = [];
 	cleanupSessionResources(this.sessionId);

@@ -6,6 +6,7 @@ import { createAllToolDefinitions, defaultToolNames } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ToolDefinitionEntry } from "./agent-session-types.ts";
+import { createSessionAsyncDeliveryHandler } from "./async/session-manager.js";
 
 export function _refreshToolRegistry(this: AgentSession, options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 	const previousRegistryNames = new Set(this._toolRegistry.keys());
@@ -154,6 +155,9 @@ export function _buildRuntime(this: AgentSession, options: {
 					shellPath,
 					interceptorEnabled: () => this.settingsManager.getBashInterceptorEnabled(),
 					availableTools: activeBuiltinTools,
+					asyncJobManager: this._asyncJobManager,
+					asyncJobDeliveryHandler: createSessionAsyncDeliveryHandler(this, this._asyncJobManager, this._asyncJobManagerSessionId),
+					asyncJobSessionId: this._asyncJobManagerSessionId,
 					interceptor: async (context) => {
 						const result = await this._extensionRunner.emitUserBash({
 							type: "user_bash",
