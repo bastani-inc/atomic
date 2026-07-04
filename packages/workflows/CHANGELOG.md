@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.5-alpha.1] - 2026-07-04
+
 ### Breaking Changes
 
 - Hardened the builtin `goal` and `ralph` review contracts against objective-drift failures: review findings now require `objective_alignment`, Goal and Ralph review decisions require `requirements_traceability`, and reviewer approval rejects empty or non-proven traceability. Consumers that parse or synthesize these structured reviewer outputs must emit the new required fields.
