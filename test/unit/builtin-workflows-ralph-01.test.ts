@@ -125,10 +125,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.equal(mod.default.name, "ralph");
     });
 
-    test("declares prompt, max_loops, base_branch, git_worktree_dir, and create_pr inputs", async () => {
+    test("declares prompt, acceptance_criteria, max_loops, base_branch, git_worktree_dir, and create_pr inputs", async () => {
         const mod = await import("../../packages/workflows/builtin/ralph.js");
         assert.equal(fieldKind(mod.default.inputs["prompt"]), "text");
         assert.equal(fieldRequired(mod.default.inputs["prompt"]), true);
+        assert.equal(fieldKind(mod.default.inputs["acceptance_criteria"]), "text");
+        assert.equal(fieldRequired(mod.default.inputs["acceptance_criteria"]), false);
+        assert.match(fieldDescription(mod.default.inputs["acceptance_criteria"]), /Original immutable task contract/);
         assert.equal(fieldKind(mod.default.inputs["max_loops"]), "number");
         assert.equal(fieldDefault(mod.default.inputs["max_loops"]), 10);
         assert.equal(fieldKind(mod.default.inputs["base_branch"]), "text");
@@ -161,6 +164,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             /provider-appropriate PR\/MR\/review creation/,
         );
         assert.deepEqual(Object.keys(mod.default.inputs).sort(), [
+            "acceptance_criteria",
             "base_branch",
             "create_pr",
             "git_worktree_dir",
@@ -217,6 +221,19 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]?.excludedTools,
             ["ask_user_question"],
         );
+
+        const stagePrompts = [promptEngineerPrompt, researchPrompt, ctx.calls.prompts["orchestrator-1"]?.[0] ?? "", ctx.calls.prompts["reviewer-a"]?.[0] ?? ""];
+        for (const text of stagePrompts) {
+            assert.match(text, /<acceptance_criteria>\nAdd a small feature\n<\/acceptance_criteria>/);
+            assert.match(text, /<literal_contract>/);
+        }
+        const ctxWithCriteria = makeMockCtx({ prompt: "Follow-up delta", acceptance_criteria: "Original task contract", max_loops: 1, base_branch: "main", git_worktree_dir: "", create_pr: false });
+        await mod.default.run({ ...ctxWithCriteria, cwd: requireRalphTempCwd() });
+        const criteriaPrompts = [ctxWithCriteria.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "", ctxWithCriteria.calls.prompts["research-1"]?.[0] ?? "", ctxWithCriteria.calls.prompts["orchestrator-1"]?.[0] ?? "", ctxWithCriteria.calls.prompts["reviewer-a"]?.[0] ?? ""];
+        for (const text of criteriaPrompts) {
+            assert.match(text, /<objective>[\s\S]*Follow-up delta[\s\S]*<\/objective>/);
+            assert.match(text, /<acceptance_criteria>\nOriginal task contract\n<\/acceptance_criteria>/);
+        }
     });
 
     test("leaves stage cwd unset when git_worktree_dir is not provided", async () => {
@@ -279,6 +296,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             assert.match(prompt, /frontend changes whose correctness depends on backend\/API behavior/, label);
             assert.match(prompt, /skill: "playwright-cli"/, label);
             assert.match(prompt, /skill: "tmux"/, label);
+            assert.match(prompt, /Assume credentials, auth, and environment access/i, label);
+            assert.match(prompt, /unattempted assumption is never valid grounds to skip/i, label);
         }
         for (const label of ["reviewer-a", "reviewer-b"] as const) {
             const prompt = ctx.calls.prompts[label]?.[0] ?? "";
@@ -286,6 +305,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             assert.match(prompt, /Known QA E2E video path for this run:/, label);
             assert.match(prompt, /qa-e2e-evidence\.webm/, label);
             assert.match(prompt, /inspect the actual video before approving/i, label);
+            assert.match(prompt, /assumed-missing credentials/i, label);
+            assert.match(prompt, /exact commands plus observed failure output/i, label);
         }
         assert.equal(ctx.calls.task.includes("code-simplifier-1"), false);
     });

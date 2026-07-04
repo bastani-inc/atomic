@@ -13,6 +13,7 @@ function finding(priority: number | null | undefined): ReviewFinding {
     title: priority === undefined ? "untitled" : `[P${priority}] finding`,
     body: "body",
     confidence_score: 0.9,
+    objective_alignment: "required_by_objective",
     ...(priority === undefined ? {} : { priority }),
     code_location: {
       absolute_file_path: "/repo/file.ts",
@@ -27,6 +28,13 @@ function decision(overrides: Partial<ReviewDecision> = {}): ReviewDecision {
     overall_correctness: "patch is correct",
     overall_explanation: "looks good",
     overall_confidence_score: 0.95,
+    requirements_traceability: [
+      {
+        requirement: "Implement the task",
+        status: "proven",
+        evidence: "Current-state evidence proves the task.",
+      },
+    ],
     stop_review_loop: true,
     reviewer_error: null,
     ...overrides,
@@ -47,6 +55,18 @@ describe("isBlockingFinding", () => {
   test("the blocking threshold is P2", () => {
     assert.equal(MAX_BLOCKING_PRIORITY, 2);
   });
+
+  test("beyond_objective and contradicts_objective findings are non-blocking regardless of priority", () => {
+    assert.equal(isBlockingFinding({ ...finding(0), objective_alignment: "beyond_objective" }), false);
+    assert.equal(isBlockingFinding({ ...finding(0), objective_alignment: "contradicts_objective" }), false);
+  });
+
+  test("missing objective_alignment is blocking even for P3", () => {
+    const unclassified = { ...finding(3) } as Record<string, unknown>;
+    delete unclassified.objective_alignment;
+    assert.equal(isBlockingFinding(unclassified as ReviewFinding), true);
+  });
+
 
   test("unprioritized (null/undefined) findings are blocking", () => {
     assert.equal(isBlockingFinding(finding(null)), true);
@@ -117,6 +137,40 @@ describe("reviewDecisionApproved", () => {
         }),
       ),
       false,
+    );
+  });
+
+  test("rejects missing or non-proven requirements traceability", () => {
+    assert.equal(reviewDecisionApproved(decision({ requirements_traceability: [] })), false);
+    for (const status of ["contradicted", "missing", "unverified"] as const) {
+      assert.equal(
+        reviewDecisionApproved(
+          decision({
+            requirements_traceability: [
+              {
+                requirement: `Requirement is ${status}`,
+                status,
+                evidence: "Evidence does not prove the requirement.",
+              },
+            ],
+          }),
+        ),
+        false,
+      );
+    }
+  });
+
+  test("approves when every requirements traceability entry is proven", () => {
+    assert.equal(
+      reviewDecisionApproved(
+        decision({
+          requirements_traceability: [
+            { requirement: "First clause", status: "proven", evidence: "File and test evidence." },
+            { requirement: "Second clause", status: "proven", evidence: "Runtime evidence." },
+          ],
+        }),
+      ),
+      true,
     );
   });
 });

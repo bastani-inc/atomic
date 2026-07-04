@@ -14,10 +14,23 @@ export type WorkReceipt = {
   readonly summary: string;
 };
 
+export type ObjectiveAlignment =
+  | "required_by_objective"
+  | "consistent_with_objective"
+  | "beyond_objective"
+  | "contradicts_objective";
+
+export type RequirementTraceability = {
+  readonly requirement: string;
+  readonly status: "proven" | "contradicted" | "missing" | "unverified";
+  readonly evidence: string;
+};
+
 export type ReviewFinding = {
   readonly title: string;
   readonly body: string;
   readonly confidence_score: number;
+  readonly objective_alignment: ObjectiveAlignment;
   readonly priority?: number | null;
   readonly code_location: {
     readonly absolute_file_path: string;
@@ -44,6 +57,7 @@ export type ReviewDecision = {
   readonly overall_explanation: string;
   readonly overall_confidence_score: number;
   readonly goal_oracle_satisfied: boolean;
+  readonly requirements_traceability: readonly RequirementTraceability[];
   readonly receipt_assessment: string;
   readonly verification_remaining: string;
   readonly stop_review_loop: boolean;
@@ -93,6 +107,7 @@ export type GoalLifecycleEvent = {
 export type GoalLedger = {
   readonly goal_id: string;
   readonly objective: string;
+  readonly acceptance_criteria: string;
   status: GoalStatus;
   turns: number;
   readonly created_at: string;
@@ -112,6 +127,7 @@ export type ReducerOutcome = {
 
 export type GoalWorkflowInputs = {
   readonly objective: string;
+  readonly acceptance_criteria?: string;
   readonly max_turns: number;
   readonly base_branch: string;
   readonly create_pr: boolean;
@@ -123,6 +139,7 @@ export type GoalWorkflowOutputs = {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
+  readonly acceptance_criteria?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;

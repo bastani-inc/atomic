@@ -60,6 +60,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             title,
             body,
             confidence_score: 0.9,
+            objective_alignment: "required_by_objective",
             priority,
             code_location: {
                 absolute_file_path: join(process.cwd(), "changed.ts"),
@@ -80,6 +81,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             reviewerErrorKind: ReviewerErrorKind;
             overallCorrectness: "patch is correct" | "patch is incorrect";
             goalOracleSatisfied: boolean;
+            requirementsTraceability: readonly { readonly requirement: string; readonly status: "proven" | "contradicted" | "missing" | "unverified"; readonly evidence: string; }[];
             stopReviewLoop: boolean;
         }> = {},
     ): string {
@@ -104,6 +106,13 @@ describe("goal", () => {    type ReviewJsonFinding = {
             overall_confidence_score: 0.9,
             goal_oracle_satisfied:
                 overrides.goalOracleSatisfied ?? decision === "complete",
+            requirements_traceability: overrides.requirementsTraceability ?? [
+                {
+                    requirement: "complete requested objective",
+                    status: decision === "complete" ? "proven" : "missing",
+                    evidence: decision === "complete" ? evidence.join("; ") : (gaps.join("; ") || "work remains"),
+                },
+            ],
             receipt_assessment: evidence.join("; "),
             verification_remaining:
                 overrides.verificationRemaining ??

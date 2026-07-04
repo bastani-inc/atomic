@@ -37,12 +37,14 @@ export type GoalWorkflowReceipt = {
 };
 export type GoalWorkflowInputs = WorkflowInputValues & {
   readonly objective: string;
+  readonly acceptance_criteria?: string;
   readonly max_turns: number;
   readonly base_branch: string;
   readonly create_pr: boolean;
 };
 export type GoalWorkflowRunInputs = WorkflowInputValues & {
   readonly objective: string;
+  readonly acceptance_criteria?: string;
   readonly max_turns?: number;
   readonly base_branch?: string;
   readonly create_pr?: boolean;
@@ -53,6 +55,7 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
+  readonly acceptance_criteria?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;
@@ -70,6 +73,7 @@ export type GoalWorkflowDefinition = WorkflowDefinition<
 
 export type RalphWorkflowInputs = WorkflowInputValues & {
   readonly prompt: string;
+  readonly acceptance_criteria?: string;
   readonly max_loops: number;
   readonly base_branch: string;
   readonly git_worktree_dir: string;
@@ -77,6 +81,7 @@ export type RalphWorkflowInputs = WorkflowInputValues & {
 };
 export type RalphWorkflowRunInputs = WorkflowInputValues & {
   readonly prompt: string;
+  readonly acceptance_criteria?: string;
   readonly max_loops?: number;
   readonly base_branch?: string;
   readonly git_worktree_dir?: string;
@@ -89,6 +94,7 @@ export type RalphWorkflowOutputs = WorkflowOutputValues & {
   readonly research?: string;
   readonly research_path?: string;
   readonly implementation_notes_path?: string;
+  readonly qa_video_path?: string;
   readonly pr_report?: string;
   readonly approved?: boolean;
   readonly iterations_completed?: number;

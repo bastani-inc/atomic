@@ -5,14 +5,32 @@ export function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDeci
   return result.structured as ReviewDecision | undefined;
 }
 
+const NON_BLOCKING_ALIGNMENTS = new Set([
+  "beyond_objective",
+  "contradicts_objective",
+]);
+
+function findingBlocksApproval(finding: ReviewDecision["findings"][number]): boolean {
+  const alignment = finding.objective_alignment;
+  if (NON_BLOCKING_ALIGNMENTS.has(alignment)) return false;
+  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
+    return true;
+  }
+  return finding.priority !== 3;
+}
+
+function traceabilityApproves(decision: ReviewDecision): boolean {
+  return decision.requirements_traceability.length > 0 &&
+    decision.requirements_traceability.every((entry) => entry.status === "proven");
+}
+
 export function reviewApproved(decision: ReviewDecision): boolean {
-  const hasBlockingFindings = decision.findings.some(
-    (finding) => finding.priority !== 3,
-  );
+  const hasBlockingFindings = decision.findings.some(findingBlocksApproval);
   return (
     decision.stop_review_loop === true &&
     decision.overall_correctness === "patch is correct" &&
     decision.goal_oracle_satisfied === true &&
+    traceabilityApproves(decision) &&
     !hasBlockingFindings &&
     decision.reviewer_error == null
   );
@@ -26,6 +44,7 @@ export function reviewerErrorDecision(message: string): ReviewDecision {
       "Reviewer execution failed, so the review gate cannot safely approve the current repository state.",
     overall_confidence_score: 0,
     goal_oracle_satisfied: false,
+    requirements_traceability: [],
     receipt_assessment:
       "No reviewer receipt could be produced because reviewer execution failed.",
     verification_remaining: "Recover reviewer execution and re-run oracle validation.",
@@ -61,8 +80,14 @@ export function reviewDecisionToRecord(args: {
   const blocker = blockerFromReviewDecision(args.decision);
   const approved = reviewApproved(args.decision);
   const verificationGap = args.decision.verification_remaining.trim();
+  const traceabilityGaps = args.decision.requirements_traceability
+    .filter((entry) => entry.status !== "proven")
+    .map((entry) => `${entry.status}: ${entry.requirement} — ${entry.evidence}`);
   const gaps = [
-    ...args.decision.findings.map((finding) => `${finding.title}: ${finding.body}`),
+    ...args.decision.findings.map((finding) =>
+      `[${finding.objective_alignment}] ${finding.title}: ${finding.body}`
+    ),
+    ...traceabilityGaps,
     ...(approved || verificationGap.length === 0 ? [] : [verificationGap]),
     ...(args.decision.reviewer_error == null
       ? []

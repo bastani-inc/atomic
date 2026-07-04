@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { E2E_VERIFICATION_GUIDANCE } from "./shared-prompts.js";
+import { E2E_VERIFICATION_GUIDANCE, LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
 import type { ReviewDecision } from "./ralph-review-gate.js";
 
 export const DEFAULT_MAX_LOOPS = 10;
@@ -26,6 +26,12 @@ const reviewFindingSchema = Type.Object(
     title: Type.String(),
     body: Type.String(),
     confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    objective_alignment: Type.Union([
+      Type.Literal("required_by_objective"),
+      Type.Literal("consistent_with_objective"),
+      Type.Literal("beyond_objective"),
+      Type.Literal("contradicts_objective"),
+    ]),
     priority: Type.Optional(
       Type.Union([Type.Integer({ minimum: 0, maximum: 3 }), Type.Null()]),
     ),
@@ -42,6 +48,20 @@ const reviewFindingSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+  },
+  { additionalProperties: false },
+);
+
+const requirementsTraceabilitySchema = Type.Object(
+  {
+    requirement: Type.String(),
+    status: Type.Union([
+      Type.Literal("proven"),
+      Type.Literal("contradicted"),
+      Type.Literal("missing"),
+      Type.Literal("unverified"),
+    ]),
+    evidence: Type.String(),
   },
   { additionalProperties: false },
 );
@@ -69,6 +89,7 @@ export const reviewDecisionSchema = Type.Object(
     ]),
     overall_explanation: Type.String(),
     overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    requirements_traceability: Type.Array(requirementsTraceabilitySchema),
     stop_review_loop: Type.Boolean(),
     reviewer_error: Type.Optional(
       Type.Union([Type.Null(), reviewerErrorSchema]),
@@ -170,6 +191,7 @@ export function renderQaE2eVideoGuidance(qaVideoPath: string): string {
     `Record that QA E2E pass as a reviewable video so the user can watch the feature working. After \`playwright-cli open\`, start recording with \`playwright-cli video-start ${qaVideoPath}\`, annotate the scenario with \`playwright-cli video-chapter\` / \`playwright-cli video-show-actions\`, exercise the full user scenario, then \`playwright-cli video-stop\`. Write the video to exactly this path and overwrite any prior recording so it always reflects the latest implemented state: ${qaVideoPath}`,
     `After recording, add the video to the implementation notes as a reference: include a \`## QA E2E Video\` entry with the absolute path ${qaVideoPath} and a one-line description of the proven scenario, so the user can review the proof when this stage finishes.`,
     "If the change has no user-visible UI scenario (pure refactor, docs, infra, or non-UI library code), do not fabricate a video; record in the implementation notes that no QA E2E video applies and why.",
+    "Assume credentials, auth, and browser environment access exist until a concrete attempt proves otherwise. Before declaring the QA E2E video impractical, check credential/auth state with non-destructive commands, attempt to launch the app/flow, and record the exact command(s) plus observed failure output.",
     "If `playwright-cli` or a browser runtime is unavailable, install it once per the skill (`npm install -g @playwright/cli@latest`, then `npx playwright install chromium` for a missing browser executable). If it still cannot run, record the smallest validation actually performed and note that the QA E2E video could not be produced — never claim a video exists when it does not.",
   ].join("\n");
 }
@@ -186,6 +208,7 @@ export function reviewerErrorDecision(error: string): ReviewDecision {
       "Reviewer execution failed, so the review gate cannot safely approve the current repository state.",
     overall_confidence_score: 0,
     stop_review_loop: false,
+    requirements_traceability: [],
     reviewer_error: {
       kind: "reviewer_failure",
       message: error,
@@ -258,6 +281,7 @@ export function forkContinuationOptions(
 
 export function renderResearchPromptRefinementPrompt(args: {
   readonly request: string;
+  readonly acceptanceCriteria: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
 }): string {
@@ -265,6 +289,9 @@ export function renderResearchPromptRefinementPrompt(args: {
   return [
     basePrompt,
     taggedPrompt([
+      ["objective", `Research the full requested task: ${args.request}`],
+      ["acceptance_criteria", args.acceptanceCriteria],
+      ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
       args.workflowCwdContext,
       [
         "review_findings",
@@ -272,7 +299,7 @@ export function renderResearchPromptRefinementPrompt(args: {
           ? "No prior review artifact is available."
           : [
               `Latest review round artifact: ${args.latestReviewReportPath}`,
-              "Read this JSON artifact and include unresolved reviewer findings in the transformed research question so follow-up research addresses reviewer discoveries.",
+              "Read this JSON artifact and include unresolved reviewer findings in the transformed research question only when they are consistent with the literal objective and acceptance criteria.",
             ].join("\n"),
       ],
       [
@@ -285,6 +312,8 @@ export function renderResearchPromptRefinementPrompt(args: {
 
 export function renderResearchPrompt(args: {
   readonly transformedResearchQuestion: string;
+  readonly prompt: string;
+  readonly acceptanceCriteria: string;
   readonly workflowCwdContext: PromptSection;
   readonly latestReviewReportPath: string | undefined;
   readonly researchPath: string;
@@ -293,6 +322,9 @@ export function renderResearchPrompt(args: {
   return [
     basePrompt,
     taggedPrompt([
+      ["objective", `Research implementation requirements for: ${args.prompt}`],
+      ["acceptance_criteria", args.acceptanceCriteria],
+      ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
       args.workflowCwdContext,
       [
         "review_findings",
@@ -318,6 +350,7 @@ export function renderResearchPrompt(args: {
 
 export function renderForkedOrchestratorPrompt(args: {
   readonly prompt: string;
+  readonly acceptanceCriteria: string;
   readonly workflowCwdContext: PromptSection;
   readonly researchPath: string;
   readonly implementationNotesPath: string;
@@ -331,6 +364,8 @@ export function renderForkedOrchestratorPrompt(args: {
       ].join("\n"),
     ],
     ["objective", `Implement the full requested task: ${args.prompt}`],
+    ["acceptance_criteria", args.acceptanceCriteria],
+    ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
     args.workflowCwdContext,
     [
       "research",
@@ -367,6 +402,7 @@ export function renderForkedOrchestratorPrompt(args: {
 
 export type RalphInputs = {
   readonly prompt?: string;
+  readonly acceptance_criteria?: string;
   readonly max_loops?: number;
   readonly base_branch?: string;
   readonly git_worktree_dir?: string;
@@ -375,6 +411,7 @@ export type RalphInputs = {
 
 export type RalphWorkflowOptions = {
   readonly prompt: string;
+  readonly acceptanceCriteria: string;
   readonly maxLoops: number;
   readonly comparisonBaseBranch: string;
   readonly workflowStartCwd: string;

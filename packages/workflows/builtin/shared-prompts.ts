@@ -14,7 +14,9 @@ export const E2E_VERIFICATION_GUIDANCE = [
   "Verify correctness end-to-end whenever practical for user-visible behavior; do not rely only on code inspection, unit tests, or stage summaries when an executable user scenario can prove the outcome.",
   "For web or frontend flows — including frontend changes whose correctness depends on backend/API behavior — use the playwright-cli skill, or delegate to a subagent with `skill: \"playwright-cli\"`, to drive the application like a user and capture snapshot, screenshot, DOM, or network evidence when that proves the objective.",
   "For TUI or terminal-app flows, use the tmux skill, or delegate to a subagent with `skill: \"tmux\"`, to launch the app in an isolated tmux session, send keys, capture pane output, and simulate the scenario end to end.",
-  "If end-to-end verification is not practical in this checkout, record what was attempted, the smallest missing prerequisite, and the narrower validation that was run instead; do not claim end-to-end proof when it was not performed.",
+  "Assume credentials, auth, and environment access for playwright-cli/tmux E2E testing exist until a concrete attempt proves otherwise; never skip E2E based only on an assumed missing prerequisite.",
+  "Before declaring E2E impractical, do cheap non-destructive checks first (existing sessions, config files, env vars, CLI auth status), then actually attempt to launch the app or flow.",
+  "If end-to-end verification is not practical in this checkout, record the exact command(s) attempted, observed failure output, smallest missing prerequisite, and narrower validation run instead; an unattempted assumption is never valid grounds to skip.",
 ].join("\n");
 
 export function renderE2eQaVideoReviewGuidance(
@@ -29,5 +31,17 @@ export function renderE2eQaVideoReviewGuidance(
     "Use available video/file tooling such as `fetch_content` on the local video path with a prompt focused on whether the recording proves the required user scenario, or inspect representative frames/metadata when full video analysis is unavailable.",
     "Check that the video reflects the current repository/application state, exercises the objective-relevant user path, shows the expected final behavior, and does not visibly hide errors, stale UI, broken loading states, or skipped steps.",
     "For UI-applicable or full-stack changes, treat a missing, stale, unreadable, or inconclusive QA video as missing E2E evidence unless the receipt or implementation notes justify why no video applies and provide adequate alternate end-to-end proof.",
+    "Treat skipped E2E due to assumed-missing credentials, auth, or environment access as missing evidence unless the worker actually checked credential/auth state, attempted the launch/flow, and reported exact commands plus observed failure output.",
   ].join("\n");
 }
+
+
+export const LITERAL_OBJECTIVE_CONTRACT = [
+  "Literal objective contract:",
+  "- The objective and acceptance criteria are the sole and LITERAL source of truth for required behavior.",
+  "- Acceptance criteria are the immutable task contract; the run objective is a delta that must not contradict them.",
+  "- If the objective and acceptance criteria conflict, do not implement the contradiction. Surface it as a blocker or reviewer finding instead.",
+  "- When external knowledge (language specs, upstream issues, in-repo comments, general best practice, or prior reviewer speculation) conflicts with explicit objective wording, the objective/acceptance criteria win.",
+  "- Never silently resolve such a conflict in favor of external knowledge. Surface the conflict clearly.",
+  "- Do not add behaviors, restrictions, error conditions, or follow-up requirements beyond what the objective/acceptance criteria require.",
+].join("\n");

@@ -2,6 +2,7 @@ import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues } fr
 
 export type RalphWorkflowInputs = WorkflowInputValues & {
   readonly prompt: string;
+  readonly acceptance_criteria?: string;
   readonly max_loops: number;
   readonly base_branch: string;
   readonly git_worktree_dir: string;
@@ -10,6 +11,7 @@ export type RalphWorkflowInputs = WorkflowInputValues & {
 
 export type RalphWorkflowRunInputs = WorkflowInputValues & {
   readonly prompt: string;
+  readonly acceptance_criteria?: string;
   readonly max_loops?: number;
   readonly base_branch?: string;
   readonly git_worktree_dir?: string;
@@ -23,6 +25,7 @@ export type RalphWorkflowOutputs = WorkflowOutputValues & {
   readonly research?: string;
   readonly research_path?: string;
   readonly implementation_notes_path?: string;
+  readonly qa_video_path?: string;
   readonly pr_report?: string;
   readonly approved?: boolean;
   readonly iterations_completed?: number;

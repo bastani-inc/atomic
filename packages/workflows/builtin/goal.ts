@@ -13,9 +13,10 @@ import { DEFAULT_MAX_TURNS } from "./goal-types.js";
 
 export default workflow({
   name: "goal",
-  description: "Goal Runner workflow with bounded LM turns, ledger artifacts, parallel reviewers, and reducer-gated completion.",
+  description: "Goal Runner workflow with bounded LM turns, immutable acceptance criteria, ledger artifacts, parallel reviewers, and reducer-gated completion. When launching follow-up goal runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract.",
   inputs: {
-    objective: Type.String({ description: "The objective for the Goal Runner workflow." }),
+    objective: Type.String({ description: "The objective or delta for this Goal Runner workflow run." }),
+    acceptance_criteria: Type.Optional(Type.String({ description: "Original immutable task contract this run must remain consistent with. Defaults to objective. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here." })),
     max_turns: Type.Number({
       default: DEFAULT_MAX_TURNS,
       description: "Maximum worker/review turns before Goal Runner stops as needs_human.",
@@ -39,6 +40,7 @@ export default workflow({
     approved: Type.Optional(Type.Boolean({ description: "Whether the reducer reached complete." })),
     goal_id: Type.Optional(Type.String({ description: "Per-run goal identifier stored in the ledger." })),
     objective: Type.Optional(Type.String({ description: "Raw goal objective used by the run." })),
+    acceptance_criteria: Type.Optional(Type.String({ description: "Immutable acceptance criteria used by the run." })),
     ledger_path: Type.Optional(Type.String({ description: "OS-temp path to goal-ledger.json with receipts, reviewer decisions, blockers, and lifecycle events." })),
     turns_completed: Type.Optional(Type.Number({ description: "Worker/review turns completed." })),
     iterations_completed: Type.Optional(Type.Number({ description: "Worker/review turns completed, retained for status summaries." })),

@@ -85,12 +85,13 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       throw new Error("goal requires an objective input.");
     }
     const objective = rawObjective;
+    const acceptanceCriteria = inputs.acceptance_criteria?.trim() || objective;
 
     const maxTurns = positiveInteger(inputs.max_turns, DEFAULT_MAX_TURNS);
     const reviewQuorum = DEFAULT_REVIEW_QUORUM;
     const blockerThreshold = Math.min(DEFAULT_BLOCKER_THRESHOLD, maxTurns);
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
-    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective);
+    const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria);
 
     // Chains curated from Atomic's agentic-coding benchmark (see
     // ralph-models.ts for the frontier data and drop rationale).
@@ -415,6 +416,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       approved: ledger.status === "complete",
       goal_id: ledger.goal_id,
       objective: ledger.objective,
+      acceptance_criteria: ledger.acceptance_criteria,
       ledger_path: ledgerPath,
       turns_completed: ledger.turns,
       iterations_completed: ledger.turns,

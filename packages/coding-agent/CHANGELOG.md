@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Hardened the builtin `goal` and `ralph` review contracts against objective-drift failures: review findings now require `objective_alignment`, Goal and Ralph review decisions require `requirements_traceability`, and reviewer approval rejects empty or non-proven traceability. Consumers that parse or synthesize these structured reviewer outputs must emit the new required fields.
+
+### Added
+
+- Added immutable `acceptance_criteria` to the builtin `goal` and `ralph` workflows. Goal persists it in the ledger/model-visible projection and final reports; Ralph threads it through research, orchestrator, and reviewer prompts next to the literal objective contract. Orchestrators should pass the original task text when launching follow-up Goal or Ralph runs from reviewer findings.
+- Added literal-contract prompt language shared by `goal` and `ralph`, objective-alignment arbitration for reviewer findings, non-blocking treatment for `beyond_objective`/`contradicts_objective` findings, and clause-by-clause requirements traceability so reviewer evidence must map directly back to the objective/acceptance criteria.
+- Added attempt-first E2E guidance for `goal` and `ralph`: workers/reviewers must not skip playwright-cli/tmux validation because credentials or auth are merely assumed missing, and skipped E2E must cite the exact attempted commands and observed failure output.
+
 ## [0.9.4] - 2026-07-03
 
 ### Added

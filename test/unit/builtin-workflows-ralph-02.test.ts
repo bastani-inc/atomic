@@ -303,6 +303,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                             overall_correctness: "patch is correct",
                             overall_explanation: "No blocking findings.",
                             overall_confidence_score: 1,
+                            requirements_traceability: [
+                                {
+                                    requirement: "Review schema migration",
+                                    status: "proven",
+                                    evidence: "Current repository state satisfies the migration task.",
+                                },
+                            ],
                             stop_review_loop: true,
                             reviewer_error: null,
                         });
@@ -343,6 +350,7 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                         title: "[P1] Fix reviewer payload",
                         body: "critical reviewer payload should be addressed by research prompts",
                         confidence_score: 0.9,
+                        objective_alignment: "required_by_objective",
                         priority: 1,
                         code_location: {
                             absolute_file_path: join(cwd, "src/example.ts"),
@@ -353,6 +361,13 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                 overall_correctness: "patch is incorrect",
                 overall_explanation: "critical reviewer payload",
                 overall_confidence_score: 0.8,
+                requirements_traceability: [
+                    {
+                        requirement: "Repair review handoff",
+                        status: "missing",
+                        evidence: "Reviewer found a critical handoff issue.",
+                    },
+                ],
                 stop_review_loop: false,
                 reviewer_error: null,
             },

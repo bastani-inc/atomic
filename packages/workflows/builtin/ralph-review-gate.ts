@@ -23,10 +23,17 @@
  * depend on the model correctly deriving that flag.
  */
 
+export type ObjectiveAlignment =
+  | "required_by_objective"
+  | "consistent_with_objective"
+  | "beyond_objective"
+  | "contradicts_objective";
+
 export type ReviewFinding = {
   readonly title: string;
   readonly body: string;
   readonly confidence_score: number;
+  readonly objective_alignment: ObjectiveAlignment;
   readonly priority?: number | null;
   readonly code_location: {
     readonly absolute_file_path: string;
@@ -46,12 +53,19 @@ export type ReviewerError = {
   readonly message: string;
   readonly attempted_recovery: string;
 };
+export type RequirementTraceability = {
+  readonly requirement: string;
+  readonly status: "proven" | "contradicted" | "missing" | "unverified";
+  readonly evidence: string;
+};
+
 
 export type ReviewDecision = {
   readonly findings: readonly ReviewFinding[];
   readonly overall_correctness: "patch is correct" | "patch is incorrect";
   readonly overall_explanation: string;
   readonly overall_confidence_score: number;
+  readonly requirements_traceability: readonly RequirementTraceability[];
   readonly stop_review_loop: boolean;
   readonly reviewer_error?: ReviewerError | null;
 };
@@ -69,6 +83,13 @@ export const MAX_BLOCKING_PRIORITY = 2;
  * approves.
  */
 export function isBlockingFinding(finding: ReviewFinding): boolean {
+  const alignment = finding.objective_alignment;
+  if (alignment === "beyond_objective" || alignment === "contradicts_objective") {
+    return false;
+  }
+  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
+    return true;
+  }
   const priority = finding.priority;
   if (priority === undefined || priority === null) return true;
   return priority <= MAX_BLOCKING_PRIORITY;
@@ -76,14 +97,18 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
 
 /**
  * A single reviewer approves (would stop the loop) when it judged the patch
- * correct, surfaced no reviewer execution error, and filed no blocking
- * (P0/P1/P2) finding. P3 nice-to-haves and placeholder/dummy findings do not
- * block approval.
+ * correct, surfaced no reviewer execution error, filed no blocking (P0/P1/P2)
+ * finding, and supplied a non-empty requirement traceability map where every
+ * explicit requirement is proven. P3 nice-to-haves and placeholder/dummy
+ * findings do not block approval.
  */
 export function reviewDecisionApproved(decision: ReviewDecision): boolean {
+  const traceability = decision.requirements_traceability;
   return (
     decision.overall_correctness === "patch is correct" &&
     decision.reviewer_error == null &&
-    !decision.findings.some(isBlockingFinding)
+    !decision.findings.some(isBlockingFinding) &&
+    traceability.length > 0 &&
+    traceability.every((entry) => entry.status === "proven")
   );
 }

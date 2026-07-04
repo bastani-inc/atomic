@@ -9,6 +9,23 @@ export function formatReviewReport(reviews: readonly ReviewRecord[]): string {
       `Decision: ${review.decision}`,
       `Artifact: ${review.artifact_path}`,
       `Verification remaining: ${review.verification_remaining}`,
+      "Finding alignment warning: beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking them against the acceptance criteria.",
+      review.findings.length === 0
+        ? "Findings: none"
+        : [
+            "Findings:",
+            ...review.findings.map((finding) =>
+              `- ${finding.objective_alignment}: ${finding.title}`
+            ),
+          ].join("\n"),
+      review.requirements_traceability.length === 0
+        ? "Requirements traceability: none"
+        : [
+            "Requirements traceability:",
+            ...review.requirements_traceability.map((entry) =>
+              `- ${entry.status}: ${entry.requirement} — ${entry.evidence}`
+            ),
+          ].join("\n"),
     ].join("\n"))
     .join("\n\n---\n\n");
 }
@@ -35,6 +52,9 @@ export function renderFinalReport(
     "## Objective",
     ledger.objective,
     "",
+    "## Acceptance criteria",
+    ledger.acceptance_criteria,
+    "",
     "## Final status",
     ledger.status,
     "",
@@ -46,6 +66,9 @@ export function renderFinalReport(
     "",
     "## Final decision",
     lastDecision?.reason ?? "No reducer decision was recorded.",
+    "",
+    "## Objective-alignment warning",
+    "Review findings classified beyond_objective or contradicts_objective are non-blocking and must not be promoted into follow-up objectives without checking them against the acceptance criteria.",
     "",
     "## Remaining work if incomplete",
     ledger.status === "complete" ? "none" : remainingWork,

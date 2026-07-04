@@ -16,6 +16,13 @@ describe("goal create_pr", () => {
             overall_explanation: `${decision} decision from test reviewer`,
             overall_confidence_score: 0.9,
             goal_oracle_satisfied: decision === "complete",
+            requirements_traceability: [
+                {
+                    requirement: "complete requested objective",
+                    status: decision === "complete" ? "proven" : "missing",
+                    evidence: decision === "complete" ? "focused validation passed" : "work remains",
+                },
+            ],
             receipt_assessment: "focused validation passed",
             verification_remaining: decision === "complete" ? "none" : "work remains",
             stop_review_loop: decision === "complete",

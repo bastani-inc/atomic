@@ -5,6 +5,12 @@ const reviewFindingSchema = Type.Object(
     title: Type.String(),
     body: Type.String(),
     confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
+    objective_alignment: Type.Union([
+      Type.Literal("required_by_objective"),
+      Type.Literal("consistent_with_objective"),
+      Type.Literal("beyond_objective"),
+      Type.Literal("contradicts_objective"),
+    ]),
     priority: Type.Optional(
       Type.Union([Type.Integer({ minimum: 0, maximum: 3 }), Type.Null()]),
     ),
@@ -21,6 +27,21 @@ const reviewFindingSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+  },
+  { additionalProperties: false },
+);
+
+
+const requirementsTraceabilitySchema = Type.Object(
+  {
+    requirement: Type.String(),
+    status: Type.Union([
+      Type.Literal("proven"),
+      Type.Literal("contradicted"),
+      Type.Literal("missing"),
+      Type.Literal("unverified"),
+    ]),
+    evidence: Type.String(),
   },
   { additionalProperties: false },
 );
@@ -49,6 +70,7 @@ export const reviewDecisionSchema = Type.Object(
     overall_explanation: Type.String(),
     overall_confidence_score: Type.Number({ minimum: 0, maximum: 1 }),
     goal_oracle_satisfied: Type.Boolean(),
+    requirements_traceability: Type.Array(requirementsTraceabilitySchema),
     receipt_assessment: Type.String(),
     verification_remaining: Type.String(),
     stop_review_loop: Type.Boolean(),

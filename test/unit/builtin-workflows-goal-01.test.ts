@@ -44,6 +44,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             title,
             body,
             confidence_score: 0.9,
+            objective_alignment: "required_by_objective",
             priority,
             code_location: {
                 absolute_file_path: join(process.cwd(), "changed.ts"),
@@ -64,6 +65,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
             reviewerErrorKind: ReviewerErrorKind;
             overallCorrectness: "patch is correct" | "patch is incorrect";
             goalOracleSatisfied: boolean;
+            requirementsTraceability: readonly { readonly requirement: string; readonly status: "proven" | "contradicted" | "missing" | "unverified"; readonly evidence: string; }[];
             stopReviewLoop: boolean;
         }> = {},
     ): string {
@@ -88,6 +90,13 @@ describe("goal", () => {    type ReviewJsonFinding = {
             overall_confidence_score: 0.9,
             goal_oracle_satisfied:
                 overrides.goalOracleSatisfied ?? decision === "complete",
+            requirements_traceability: overrides.requirementsTraceability ?? [
+                {
+                    requirement: "complete requested objective",
+                    status: decision === "complete" ? "proven" : "missing",
+                    evidence: decision === "complete" ? evidence.join("; ") : (gaps.join("; ") || "work remains"),
+                },
+            ],
             receipt_assessment: evidence.join("; "),
             verification_remaining:
                 overrides.verificationRemaining ??
@@ -116,10 +125,13 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(mod.default.name, "goal");
     });
 
-    test("declares objective, max_turns, base_branch, and create_pr inputs", async () => {
+    test("declares objective, acceptance_criteria, max_turns, base_branch, and create_pr inputs", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         assert.equal(fieldKind(mod.default.inputs["objective"]), "text");
         assert.equal(fieldRequired(mod.default.inputs["objective"]), true);
+        assert.equal(fieldKind(mod.default.inputs["acceptance_criteria"]), "text");
+        assert.equal(fieldRequired(mod.default.inputs["acceptance_criteria"]), false);
+        assert.match(fieldDescription(mod.default.inputs["acceptance_criteria"]), /Original immutable task contract/);
         assert.equal(fieldKind(mod.default.inputs["max_turns"]), "number");
         assert.equal(fieldDefault(mod.default.inputs["max_turns"]), 10);
         assert.equal(fieldKind(mod.default.inputs["base_branch"]), "text");
@@ -136,6 +148,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.match(createPrDescription, /after reviewer\/reducer approval/);
         assert.match(createPrDescription, /provider-appropriate PR\/MR\/review creation/);
         assert.deepEqual(Object.keys(mod.default.inputs).sort(), [
+            "acceptance_criteria",
             "base_branch",
             "create_pr",
             "max_turns",
@@ -146,6 +159,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
     test("declares child workflow output contract", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         assertOutputTypes(mod.default.outputs, {
+            acceptance_criteria: "text",
             approved: "boolean",
             goal_id: "text",
             iterations_completed: "number",
@@ -337,6 +351,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         ) as {
             goal_id: string;
             objective: string;
+            acceptance_criteria: string;
             status: string;
             turns: number;
             created_at: string;
@@ -353,6 +368,8 @@ describe("goal", () => {    type ReviewJsonFinding = {
         };
         assert.equal(ledger.goal_id, result["goal_id"]);
         assert.equal(ledger.objective, "Refactor tests");
+        assert.equal(ledger.acceptance_criteria, "Refactor tests");
+        assert.equal(result["acceptance_criteria"], "Refactor tests");
         assert.equal(Object.hasOwn(ledger, "objective_revision"), false);
         assert.equal(ledger.status, "complete");
         assert.equal(Object.hasOwn(ledger, "turns"), false);
@@ -389,39 +406,6 @@ describe("goal", () => {    type ReviewJsonFinding = {
             /worker-receipt\.md$/,
         );
         assert.equal(existsSync(ledger.receipts[0]!.artifact_path), true);
-    });
-
-    test("allows approval when correct reviewers only include P3 nice-to-have findings", async () => {
-        const mod = await import("../../packages/workflows/builtin/goal.js");
-        const d = mod.default as unknown as WorkflowDefinition;
-        const p3Finding = finding(
-            "[P3] Consider a small cleanup",
-            "This is a low-priority nice-to-have that should not block completion.",
-            3,
-        );
-        const ctx = makeMockCtx(
-            { objective: "Refactor tests" },
-            {
-                task: (name) => {
-                    if (
-                        name.startsWith("completion-reviewer-") ||
-                        name.startsWith("evidence-reviewer-")
-                    ) {
-                        return reviewJson("complete", {
-                            findings: [p3Finding],
-                        });
-                    }
-                    if (name.startsWith("risk-reviewer-"))
-                        return reviewJson("continue");
-                    return undefined;
-                },
-            },
-        );
-
-        const result = await d.run(ctx);
-
-        assert.equal(result["status"], "complete");
-        assert.equal(result["approved"], true);
     });
 
     test("uses structured stop_review_loop instead of verification_remaining text for approval", async () => {

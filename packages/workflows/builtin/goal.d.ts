@@ -11,6 +11,7 @@ export type GoalWorkflowReceipt = {
 
 export type GoalWorkflowInputs = WorkflowInputValues & {
   readonly objective: string;
+  readonly acceptance_criteria?: string;
   readonly max_turns: number;
   readonly base_branch: string;
   readonly create_pr: boolean;
@@ -18,6 +19,7 @@ export type GoalWorkflowInputs = WorkflowInputValues & {
 
 export type GoalWorkflowRunInputs = WorkflowInputValues & {
   readonly objective: string;
+  readonly acceptance_criteria?: string;
   readonly max_turns?: number;
   readonly base_branch?: string;
   readonly create_pr?: boolean;
@@ -29,6 +31,7 @@ export type GoalWorkflowOutputs = WorkflowOutputValues & {
   readonly approved?: boolean;
   readonly goal_id?: string;
   readonly objective?: string;
+  readonly acceptance_criteria?: string;
   readonly ledger_path?: string;
   readonly turns_completed?: number;
   readonly iterations_completed?: number;

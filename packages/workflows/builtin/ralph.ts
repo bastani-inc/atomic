@@ -11,9 +11,10 @@ import { runRalphWorkflow } from "./ralph-runner.js";
 
 export default workflow({
   name: "ralph",
-  description: "Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration.",
+  description: "Raw prompt → research-prompt-refinement → research → orchestrate → multi-model parallel review loop with bounded iteration and immutable acceptance criteria. When launching follow-up ralph runs from review findings, pass the ORIGINAL task text as acceptance_criteria so deltas cannot drift from the literal contract.",
   inputs: {
     prompt: Type.String({ description: "The task or goal to research, execute, and refine." }),
+    acceptance_criteria: Type.Optional(Type.String({ description: "Original immutable task contract this run must remain consistent with. Defaults to prompt. Orchestrators launching follow-up runs from reviewer findings should pass the ORIGINAL task text here." })),
     max_loops: Type.Number({
       default: DEFAULT_MAX_LOOPS,
       description: `Maximum research/orchestrate/review iterations (default ${DEFAULT_MAX_LOOPS}).`,
@@ -56,6 +57,7 @@ export default workflow({
     const workflowStartCwd = workflowCtx.cwd ?? process.cwd();
     const inputs = workflowCtx.inputs;
     const prompt = inputs.prompt;
+    const acceptanceCriteria = inputs.acceptance_criteria?.trim() || prompt;
     const maxLoops = positiveInteger(inputs.max_loops, DEFAULT_MAX_LOOPS);
     const comparisonBaseBranch = normalizeBranchInput(
       inputs.base_branch,
@@ -64,6 +66,7 @@ export default workflow({
     const createPr = inputs.create_pr === true;
     return await runRalphWorkflow(workflowCtx, {
       prompt,
+      acceptanceCriteria,
       maxLoops,
       comparisonBaseBranch,
       workflowStartCwd,

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import {
   E2E_VERIFICATION_GUIDANCE,
+  LITERAL_OBJECTIVE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
@@ -43,7 +44,7 @@ export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
   options: RalphWorkflowOptions,
 ): Promise<RalphWorkflowResult> {
-  const { prompt, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr } = options;
+  const { prompt, acceptanceCriteria, maxLoops, comparisonBaseBranch, workflowStartCwd, createPr } = options;
   let latestReviewReportPath: string | undefined;
   let finalPlan = "";
   let finalPlanPath = "";
@@ -68,6 +69,7 @@ export async function runRalphWorkflow(
     const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
       prompt: renderResearchPromptRefinementPrompt({
         request: workflowPrompt,
+        acceptanceCriteria,
         workflowCwdContext,
         latestReviewReportPath,
       }),
@@ -81,6 +83,8 @@ export async function runRalphWorkflow(
     const research = await ctx.task(`research-${iteration}`, {
       prompt: renderResearchPrompt({
         transformedResearchQuestion: researchPromptRefinement.text,
+        prompt: workflowPrompt,
+        acceptanceCriteria,
         workflowCwdContext,
         latestReviewReportPath,
         researchPath: workflowResearchPath,
@@ -108,6 +112,8 @@ export async function runRalphWorkflow(
           "objective",
           `Implement the full requested task: ${workflowPrompt}`,
         ],
+        ["acceptance_criteria", acceptanceCriteria],
+        ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
         workflowCwdContext,
         [
           "research",
@@ -195,6 +201,7 @@ export async function runRalphWorkflow(
       ])
       : renderForkedOrchestratorPrompt({
           prompt: workflowPrompt,
+          acceptanceCriteria,
           workflowCwdContext,
           researchPath,
           implementationNotesPath,
@@ -220,6 +227,8 @@ export async function runRalphWorkflow(
         ].join("\n"),
       ],
       ["objective", `Review the current code delta for the task: ${workflowPrompt}`],
+      ["acceptance_criteria", acceptanceCriteria],
+      ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
       workflowCwdContext,
       [
         "comparison_baseline",
@@ -279,6 +288,7 @@ export async function runRalphWorkflow(
         [
           "Each finding title must start with a priority tag: [P0] drop-everything blocker, [P1] urgent next-cycle fix, [P2] normal fix, [P3] low-priority nice-to-have.",
           "Also include numeric priority: 0 for P0, 1 for P1, 2 for P2, 3 for P3; use null only if priority genuinely cannot be determined. Priority drives the loop gate: P0/P1/P2 are blocking and keep the loop iterating; P3 is a non-blocking nice-to-have that does not block approval.",
+          "Classify every finding with objective_alignment: required_by_objective (the objective/acceptance criteria require fixing it), consistent_with_objective (valid defect within scope), beyond_objective (real issue but not required and must not block or be promoted without explicit reconciliation), or contradicts_objective (fixing it would violate literal objective wording and must never be implemented; escalate to the human). Missing/unknown classification is blocking.",
           "The body must be one concise paragraph explaining why this is a bug and the exact scenario, environment, or inputs required for it to arise.",
           "Use a matter-of-fact, non-accusatory tone. Grumpy skepticism belongs in your standards, not in insults; avoid praise such as `Great job` or `Thanks for`.",
           "Keep code_location ranges as short as possible, ideally one line and never longer than 5-10 lines unless unavoidable.",
@@ -322,10 +332,7 @@ export async function runRalphWorkflow(
       ],
       [
         "decision_rules",
-        [
-          "Set stop_review_loop=true when the patch is correct, reviewer_error is null/omitted, and there are no blocking (P0/P1/P2) findings; remaining P3 nice-to-haves do not block approval. The loop gate is computed from finding priorities, so an unresolved P0/P1/P2 keeps the loop going regardless of this flag.",
-          "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
-        ].join("\n"),
+        ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned P0/P1/P2 findings, requirements_traceability is non-empty and every entry is proven, and no objective-relevant verification remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
       ],
     ]);
     let reviews: WorkflowTaskResult[];

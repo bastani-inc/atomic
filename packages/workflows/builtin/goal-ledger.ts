@@ -25,6 +25,7 @@ function modelVisibleLedger(ledger: GoalLedger): ModelVisibleGoalLedger {
   return {
     goal_id: ledger.goal_id,
     objective: ledger.objective,
+    acceptance_criteria: ledger.acceptance_criteria,
     status: ledger.status,
     created_at: ledger.created_at,
     updated_at: ledger.updated_at,
@@ -53,12 +54,14 @@ export function appendLifecycleEvent(
 
 export async function createGoalLedger(
   objective: string,
+  acceptanceCriteria = objective,
 ): Promise<{ ledger: GoalLedger; ledgerPath: string; artifactDir: string }> {
   const artifactDir = await mkdtemp(join(tmpdir(), "atomic-goal-runner-"));
   const now = new Date().toISOString();
   const ledger: GoalLedger = {
     goal_id: randomUUID(),
     objective,
+    acceptance_criteria: acceptanceCriteria,
     status: "active",
     turns: 0,
     created_at: now,
