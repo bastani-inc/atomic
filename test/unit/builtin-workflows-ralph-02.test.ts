@@ -31,7 +31,8 @@ import {
     readPaths,
 } from "./builtin-workflows-helpers.js";
 
-describe("ralph", () => {    let tempCwd: string | undefined;
+describe("ralph", () => {
+    let tempCwd: string | undefined;
 
     beforeEach(() => {
         tempCwd = mkdtempSync(join(tmpdir(), "atomic-ralph-unit-"));
@@ -79,7 +80,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         return [
             {
                 label: "research-prompt-refinement prompt",
-                text: ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ?? "",
+                text:
+                    ctx.calls.prompts["research-prompt-refinement-1"]?.[0] ??
+                    "",
             },
             {
                 label: "orchestrator prompt",
@@ -142,9 +145,11 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             },
             {
                 task: (name) => {
-                    if (name === "research-prompt-refinement-1") return "first question";
+                    if (name === "research-prompt-refinement-1")
+                        return "first question";
                     if (name === "research-1") return "first research";
-                    if (name === "research-prompt-refinement-2") return "second question";
+                    if (name === "research-prompt-refinement-2")
+                        return "second question";
                     if (name === "research-2") return "second research";
                     return undefined;
                 },
@@ -160,7 +165,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             "second research",
         );
         assert.deepEqual(
-            readPaths(ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0]),
+            readPaths(
+                ctx.calls.taskOptions["research-prompt-refinement-1"]?.[0],
+            ),
             [],
         );
         const secondPromptEngineerReads = readPaths(
@@ -168,7 +175,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             secondPromptEngineerReads.some((path) =>
-                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(
+                    normalizePathSeparators(path),
+                ),
             ),
             true,
         );
@@ -177,7 +186,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             secondResearchReads.some((path) =>
-                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(
+                    normalizePathSeparators(path),
+                ),
             ),
             true,
         );
@@ -222,11 +233,14 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             "fork",
         );
         assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.forkFromSessionFile,
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]
+                ?.forkFromSessionFile,
             "/tmp/ralph-research-prompt-refinement-1.jsonl",
         );
         assert.equal(
-            (ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "").startsWith(
+            (
+                ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? ""
+            ).startsWith(
                 "/skill:prompt-engineer Transform the following user request",
             ),
             true,
@@ -252,12 +266,16 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             ctx.calls.taskOptions["orchestrator-2"]?.[0]?.forkFromSessionFile,
             "/tmp/ralph-orchestrator-1.jsonl",
         );
-        const forkedOrchestratorPrompt = ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
+        const forkedOrchestratorPrompt =
+            ctx.calls.prompts["orchestrator-2"]?.[0] ?? "";
         assert.match(
             forkedOrchestratorPrompt,
             /Continue implementing from the latest research findings/i,
         );
-        assert.match(forkedOrchestratorPrompt, /Verify correctness end-to-end whenever practical/);
+        assert.match(
+            forkedOrchestratorPrompt,
+            /Verify correctness end-to-end whenever practical/,
+        );
         assert.match(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
         assert.match(forkedOrchestratorPrompt, /skill: "tmux"/);
         assert.doesNotMatch(
@@ -297,7 +315,11 @@ describe("ralph", () => {    let tempCwd: string | undefined;
             },
             {
                 task: (name) => {
-                    if (name === "reviewer-a" || name === "reviewer-b" || name === "reviewer-c") {
+                    if (
+                        name === "reviewer-a" ||
+                        name === "reviewer-b" ||
+                        name === "reviewer-c"
+                    ) {
                         return JSON.stringify({
                             findings: [],
                             overall_correctness: "patch is correct",
@@ -307,7 +329,8 @@ describe("ralph", () => {    let tempCwd: string | undefined;
                                 {
                                     requirement: "Review schema migration",
                                     status: "proven",
-                                    evidence: "Current repository state satisfies the migration task.",
+                                    evidence:
+                                        "Current repository state satisfies the migration task.",
                                 },
                             ],
                             stop_review_loop: true,
@@ -325,16 +348,27 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
         const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
-        assert.equal(reviewerCOptions?.model, "sakana/fugu-ultra:high");
+        assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
         assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
-            "zai/glm-5.2:xhigh",
             "zai-coding-cn/glm-5.2:xhigh",
             "openai-codex/gpt-5.5:xhigh",
             "github-copilot/gpt-5.5:xhigh",
+            "openai/gpt-5.5:xhigh",
         ]);
         // Dominated models (benchmark 2026-07-02) must stay out of the chain.
         const reviewerCFallbacks = reviewerCOptions?.fallbackModels ?? [];
-        assert.equal(reviewerCFallbacks.some((m) => /gemini|sonnet/.test(m)), false);
+        assert.equal(
+            reviewerCFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
+            true,
+        );
+        assert.equal(
+            reviewerCFallbacks.some((m) => m.startsWith("sakana/")),
+            false,
+        );
+        assert.equal(
+            reviewerCFallbacks.some((m) => /gemini|sonnet/.test(m)),
+            false,
+        );
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);
@@ -396,16 +430,11 @@ describe("ralph", () => {    let tempCwd: string | undefined;
 
         const promptEngineerTwoPrompt =
             ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
-        assert.match(
-            promptEngineerTwoPrompt,
-            /Latest review round artifact:/,
-        );
-        assert.match(
-            promptEngineerTwoPrompt,
-            /unresolved reviewer findings/,
-        );
+        assert.match(promptEngineerTwoPrompt, /Latest review round artifact:/);
+        assert.match(promptEngineerTwoPrompt, /unresolved reviewer findings/);
         assert.equal(
-            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]?.previous,
+            ctx.calls.taskOptions["research-prompt-refinement-2"]?.[0]
+                ?.previous,
             undefined,
         );
         const promptEngineerTwoReads = readPaths(
@@ -413,7 +442,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             promptEngineerTwoReads.some((path) =>
-                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(
+                    normalizePathSeparators(path),
+                ),
             ),
             true,
         );
@@ -422,7 +453,9 @@ describe("ralph", () => {    let tempCwd: string | undefined;
         );
         assert.equal(
             researchTwoReads.some((path) =>
-                /review-round-latest\.json$/.test(normalizePathSeparators(path)),
+                /review-round-latest\.json$/.test(
+                    normalizePathSeparators(path),
+                ),
             ),
             true,
         );

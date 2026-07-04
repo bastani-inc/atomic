@@ -82,7 +82,6 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
     fallbackModels: [
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
-      "sakana/fugu-ultra:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
       "openrouter/anthropic/claude-fable-5:xhigh",

@@ -116,7 +116,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const reviewerModelConfig = {
       model: "anthropic/claude-fable-5:xhigh",
       fallbackModels: [
-          "sakana/fugu-ultra:high",
           "openai-codex/gpt-5.5:xhigh",
           "github-copilot/gpt-5.5:xhigh",
           "openai/gpt-5.5:xhigh",

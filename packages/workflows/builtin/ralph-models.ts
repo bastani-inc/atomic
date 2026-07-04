@@ -2,12 +2,12 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 
 // Model chains are curated from Atomic's agentic-coding benchmark and the
 // July 2026 frontier refresh:
-// - Critical synthesis/review stages prefer fable-5:xhigh, then fugu-ultra
-//   and gpt-5.5 xhigh variants, before long-context opus and GLM fallbacks.
+// - Critical synthesis/review stages prefer fable-5:xhigh, then gpt-5.5 xhigh
+//   variants, openrouter fugu-ultra, long-context opus, and GLM fallbacks.
 // - Research remains on gpt-5.5:medium / fable-5:low for perf-per-dollar.
 // - Reviewer B keeps gpt-5.5:xhigh as an independent frontier family;
-//   reviewer C leads with fugu-ultra:high and GLM xhigh fallbacks to
-//   decorrelate review errors.
+//   reviewer C leads with GLM-5.2 xhigh, with openrouter fugu-ultra retained
+//   mid-chain, to decorrelate review errors.
 // - Dominated benchmark models stay out of the chains: claude-sonnet-5,
 //   claude-sonnet-4.6, gemini-3.1-pro, and gemini-3.5-flash.
 // - GLM-5.2 has only two real reasoning tiers — its thinkingLevelMap collapses
@@ -18,7 +18,6 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 export const promptEngineerModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
-      "sakana/fugu-ultra:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -56,7 +55,6 @@ export const researchModelConfig = {
 export const orchestratorModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
-      "sakana/fugu-ultra:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -76,7 +74,6 @@ export const orchestratorModelConfig = {
 export const reviewerAModelConfig = {
     model: "anthropic/claude-fable-5:xhigh",
     fallbackModels: [
-      "sakana/fugu-ultra:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -100,7 +97,6 @@ export const reviewerBModelConfig = {
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
       "anthropic/claude-fable-5:xhigh",
-      "sakana/fugu-ultra:high",
       "github-copilot/claude-opus-4.8 (1m):xhigh",
       "anthropic/claude-opus-4-8:xhigh",
       "zai/glm-5.2:xhigh",
@@ -116,9 +112,8 @@ export const reviewerBModelConfig = {
 };
 
 export const reviewerCModelConfig = {
-    model: "sakana/fugu-ultra:high",
+    model: "zai/glm-5.2:xhigh",
     fallbackModels: [
-      "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",

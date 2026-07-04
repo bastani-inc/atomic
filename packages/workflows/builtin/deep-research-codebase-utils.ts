@@ -37,7 +37,6 @@ export const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 export const PLANNER_MODEL_CONFIG = {
   model: "anthropic/claude-fable-5:xhigh",
   fallbackModels: [
-    "sakana/fugu-ultra:high",
     "openai-codex/gpt-5.5:xhigh",
     "github-copilot/gpt-5.5:xhigh",
     "openai/gpt-5.5:xhigh",
