@@ -80,7 +80,7 @@ See [Providers](/providers) for all supported providers, environment variables, 
 
 ## First session
 
-On a fresh install with no prior Atomic startup state, Atomic starts with a first-run workflow prompt. Returning users with prior startup state are marked onboarded automatically and continue directly into the normal chat UI; stored credentials by themselves do not skip onboarding. Paste a ticket description, GitHub issue, path to a spec, or task prompt and Atomic hands it to the normal coding-agent session. The handoff raises the selected model to high reasoning when supported and first asks the parent agent to estimate scope from the seed text alone: tickets, issues, and especially specs often list enough work items, files, tests, docs, migrations, or acceptance criteria to classify likely size without immediately inspecting the repo. That text-only pass is treated as a routing confidence signal, not final planning. If the task is clearly tiny/small and high-confidence, the parent can route directly; if the seed references context that must be read or the scope is medium, large, unclear, or risky, it inspects only the necessary issue/spec/path/repo area and can use targeted read-only subagents such as `codebase-locator`, `codebase-analyzer`, and `codebase-pattern-finder` at their normal defaults. It then chooses `goal` for focused work or `ralph` for broader/riskier work, starts the selected workflow, and continues normally. If you paste the task before logging in or selecting a usable model, Atomic keeps only an in-memory copy, asks you to run `/login`, and resumes with the latest saved task after login or `/model` selection makes the session ready; `/new` starts a fresh unresolved onboarding session and drops that saved in-memory task. If you want normal chat instead, type `/chat` or `/chat <message>`; other slash commands such as `/login`, `/model`, and `/atomic` still work and do not dismiss onboarding.
+On a fresh install with no prior Atomic startup state, Atomic shows a one-time first-run explanation after any What's New notes and directly above the input box describing Atomic as a verifiable coding agent runtime for building and running agent workflows you can feel confident in. Returning users with prior startup state are marked onboarded automatically and continue directly into the normal chat UI; stored credentials by themselves do not skip the first-run explanation. The composer is the normal Atomic input from the start: type a message, run `/login`, open `/atomic`, or launch a workflow command without a special onboarding transition.
 
 Once Atomic starts, the fastest way to get value is to kick off a built-in workflow or invoke a skill. Workflows are the default path for non-trivial tasks and for requests with inherent structure plus a verifiable objective, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, or docs/code-change work where validation matters. If a prompt says `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green`, it already describes a workflow-shaped loop with a stop condition.
 
@@ -121,7 +121,7 @@ For smaller one-off tasks, use `goal` with a concrete task description that name
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get a run id; use it to inspect, attach, pause, or resume. First-run `goal`/`ralph` handoffs show the exact `/workflow status <run-id>` and `/workflow connect <run-id>` commands in the dispatched card, and you can also ask in the current chat for status or to steer the run at any point.
+Named workflow runs execute in the background. After launch you get a run id; use it to inspect, attach, pause, or resume.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
@@ -218,7 +218,7 @@ Restart Atomic, or run `/reload`, after changing context files.
 
 ### Reference files
 
-Type `@` in any interactive editor, including first-run onboarding, to fuzzy-search files; or pass files on the command line:
+Type `@` in any interactive editor to fuzzy-search files; or pass files on the command line:
 
 ```bash
 atomic @README.md "Summarize this"

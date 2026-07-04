@@ -1,7 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
-import { ONBOARDING_COPY, ONBOARDING_PLACEHOLDER } from "./interactive-onboarding.ts";
+import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase): void {
     if (this.startupNoticesShown) {
@@ -9,37 +9,58 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
     }
     this.startupNoticesShown = true;
 
-    if (!this.changelogMarkdown) {
+    const changelogMarkdown = this.changelogMarkdown;
+    if (!changelogMarkdown && !this.firstRunOnboardingActive) {
       return;
     }
 
-    if (this.chatContainer.children.length > 0) {
-      this.chatContainer.addChild(new Spacer(1));
+    if (changelogMarkdown) {
+      if (this.chatContainer.children.length > 0) {
+        this.chatContainer.addChild(new Spacer(1));
+      }
+      this.chatContainer.addChild(new DynamicBorder());
+      if (this.settingsManager.getCollapseChangelog()) {
+        const versionMatch = changelogMarkdown.match(
+          /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
+        );
+        const latestVersion = versionMatch ? versionMatch[1] : this.version;
+        const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
+        this.chatContainer.addChild(new Text(condensedText, 1, 0));
+      } else {
+        this.chatContainer.addChild(
+          new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
+        );
+        this.chatContainer.addChild(new Spacer(1));
+        this.chatContainer.addChild(
+          new Markdown(
+            changelogMarkdown.trim(),
+            1,
+            0,
+            this.getMarkdownThemeWithSettings(),
+          ),
+        );
+        this.chatContainer.addChild(new Spacer(1));
+      }
+      this.chatContainer.addChild(new DynamicBorder());
     }
-    this.chatContainer.addChild(new DynamicBorder());
-    if (this.settingsManager.getCollapseChangelog()) {
-      const versionMatch = this.changelogMarkdown.match(
-        /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
-      );
-      const latestVersion = versionMatch ? versionMatch[1] : this.version;
-      const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-      this.chatContainer.addChild(new Text(condensedText, 1, 0));
-    } else {
-      this.chatContainer.addChild(
-        new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
-      );
-      this.chatContainer.addChild(new Spacer(1));
-      this.chatContainer.addChild(
-        new Markdown(
-          this.changelogMarkdown.trim(),
-          1,
-          0,
-          this.getMarkdownThemeWithSettings(),
-        ),
-      );
-      this.chatContainer.addChild(new Spacer(1));
+
+    if (this.firstRunOnboardingActive) {
+      if (this.chatContainer.children.length > 0) {
+        this.chatContainer.addChild(new Spacer(1));
+      }
+      this.firstRunOnboardingNoticeComponents = [
+        new DynamicBorder(),
+        new Text(ONBOARDING_COPY, 1, 0),
+        new DynamicBorder(),
+        new Spacer(1),
+      ];
+      for (const component of this.firstRunOnboardingNoticeComponents) {
+        this.chatContainer.addChild(component);
+      }
+      this.settingsManager.setOnboardedVersion(this.version);
     }
-    this.chatContainer.addChild(new DynamicBorder());
+
+    this.ui.requestRender();
   };
 
 InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): Promise<void> {
@@ -89,9 +110,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.setupEditorSubmitHandler();
 
     this.firstRunOnboardingActive = this.isFirstRunOnboardingEligible();
-    if (this.firstRunOnboardingActive) {
-      this.defaultEditor.setPlaceholder(ONBOARDING_PLACEHOLDER);
-    }
 
     // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
     // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
@@ -120,17 +138,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       // Minimal header when silenced
       this.builtInHeader = new Text("", 0, 0);
       this.headerContainer.addChild(this.builtInHeader);
-    }
-    if (this.firstRunOnboardingActive) {
-      this.firstRunOnboardingHeaderComponents = [
-        new DynamicBorder(),
-        new Text(ONBOARDING_COPY, 1, 0),
-        new DynamicBorder(),
-        new Spacer(1),
-      ];
-      for (const component of this.firstRunOnboardingHeaderComponents) {
-        this.headerContainer.addChild(component);
-      }
     }
     this.ui.requestRender();
 

@@ -117,16 +117,12 @@ export class InteractiveModeBase {
   firstRunOnboardingActive = false;
 
 
-  firstRunOnboardingSeedInFlight = false;
-
-
-  pendingFirstRunOnboardingSeed: string | undefined = undefined;
 
 
   hadLastChangelogVersionAtStartup = false;
 
 
-  firstRunOnboardingHeaderComponents: Component[] = [];
+  firstRunOnboardingNoticeComponents: Component[] = [];
 
 
   autoTrustOnReloadCwd: string | undefined;

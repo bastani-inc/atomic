@@ -58,7 +58,7 @@ Use direct chat only for tiny, deterministic, low-risk work where workflow track
 
 ## Quick Start
 
-On a fresh first run with no prior Atomic startup state, Atomic can route your first pasted ticket, issue, spec path, or task prompt into normal workflow-driven agent work. Returning users with prior startup state are marked onboarded automatically and continue directly into the normal chat UI; stored credentials by themselves do not skip onboarding. If you are not logged in or configured yet, Atomic keeps the latest seed in memory only, asks you to run `/login`, and resumes after login succeeds. Once ready, onboarding raises the selected model to high reasoning when supported and hands the seed to the normal coding-agent session with instructions to first estimate likely scope from the seed text alone. Tickets, GitHub issues, and especially specs often list enough work items, files, tests, docs, migrations, or acceptance criteria to make an initial tiny/small/medium/large/unknown call without immediately inspecting the repo. That text-only estimate is only a routing confidence signal, not final implementation planning. If the seed makes the task clearly tiny or small and high-confidence, the parent can route directly; if referenced context must be read or the scope is medium, large, unclear, risky, or not obviously tiny, the parent inspects only the necessary issue/spec/path/repo area and can use targeted read-only subagents such as `codebase-locator`, `codebase-analyzer`, and `codebase-pattern-finder` at their normal defaults before making the high-reasoning routing decision: `goal` for small fixes/quick fixes, `ralph` for non-trivial work around 2k+ changed lines or many files/areas. It then starts the selected workflow and continues normally. Type `/chat` before handoff to skip this one-time routing and use Atomic as a normal coding-agent chat.
+On a fresh first run with no prior Atomic startup state, Atomic shows a one-time explanation after any What's New notes and directly above the normal input box describing Atomic as a verifiable coding agent runtime for building and running agent workflows you can feel confident in. It no longer intercepts the first message, saves a pasted seed, routes to `goal` or `ralph`, raises reasoning, or requires `/chat` to use normal chat. Type a normal message or slash command immediately; use `/atomic` for guides, `/workflow list` to discover built-ins, or launch a workflow command directly when you already know what you want.
 
 The fastest way to get a workflow running is to **describe it in natural language** and let Atomic write it for you. If you'd rather write the TypeScript yourself, jump to [Or hand-write the TypeScript](#or-hand-write-the-typescript) below.
 
@@ -110,7 +110,7 @@ Then list and run it like any other workflow:
 /workflow <name> key=value ...
 ```
 
-Named workflow runs are background-oriented. After launch, expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`. First-run `goal`/`ralph` handoffs print those exact commands in the dispatched card; use connect to watch, attach, and steer, or ask in the current chat for status or steering at any point.
+Named workflow runs are background-oriented. After launch, expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`.
 
 ### Or hand-write the TypeScript
 

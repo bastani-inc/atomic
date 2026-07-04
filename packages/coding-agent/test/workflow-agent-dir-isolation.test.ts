@@ -79,7 +79,7 @@ describe("workflow agent dir isolation", () => {
     expect(result.diagnostics.some((diagnostic) => diagnostic.source?.startsWith(homeAgentDir))).toBe(false);
   });
 
-  it("does not let home-global goal or ralph workflows shadow bundled onboarding targets", async () => {
+  it("does not let home-global goal or ralph workflows shadow bundled workflow targets", async () => {
     const { cwd, homeAgentDir } = setupIsolatedAgentDir();
     writeShadowWorkflow(homeAgentDir, "goal");
     writeShadowWorkflow(homeAgentDir, "ralph");
