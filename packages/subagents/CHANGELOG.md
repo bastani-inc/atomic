@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-03
+
+### Added
+
+- Added a watchdog escape hatch: setting `ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS` or `ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS` to `0` (or a negative value) disables the corresponding per-attempt timeout entirely; the `ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS` SIGTERM→SIGKILL grace period intentionally cannot be disabled so escalation always stays bounded ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+
+### Changed
+
+- Curated builtin agent model defaults against Atomic's agentic-coding benchmark (pass@1 / avg cost per task, 2026-07-02) under a role-based placement principle: all primaries are now `openai-codex/gpt-5.5` at the measured value point for each tier (`debugger` at `:xhigh`; `worker`, `code-simplifier`, and the analyzer/researcher agents at `:medium`; locator and pattern-finder agents at `:low`), fallback chains degrade through same-model provider mirrors first, then remaining families by descending benchmark value, with OpenRouter mirrors as the availability tail; strictly dominated models (`claude-sonnet-5`, `claude-sonnet-4.6`, `gemini-3.1-pro`, `gemini-3.5-flash`) and unbenchmarked entries (`gpt-5.4-mini`, `claude-haiku-4.5`) were removed so every chain entry corresponds to a benchmark datapoint.
+- Normalized all GLM-5.2 entries to the model's two real reasoning tiers: native `zai`/`zai-coding-cn` entries now say `:high` explicitly (replacing misleading `:medium`/`:low` labels that silently ran at the "high" tier), the `debugger` chain keeps `:xhigh`, and the `openrouter/z-ai/glm-5.2` mirror is now always `:xhigh`.
+- Aligned the subagents extension peer dependencies with upstream pi `^0.80.3` runtime packages.
+
+### Fixed
+
+- Fixed subagent live-detail hints to render the configured `app.tools.expand` keybinding instead of hardcoding Ctrl+O ([#1607](https://github.com/bastani-inc/atomic/issues/1607)), and fixed the running subagent widget to preserve its expanded/open state across workflow stage-node exit re-renders instead of transiently collapsing ([#1619](https://github.com/bastani-inc/atomic/issues/1619)).
+- Fixed subagent model fallback so request/context incompatibility failures (HTTP 400/413/422, unsupported tool/parameter, context-window overflow, `invalid_request`/`bad_request`/`too_large` errors) advance the chain to the next candidate, falling back to the current user-selected model when no configured candidate can serve the request; refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+- Fixed foreground and background subagent model attempts that produced no child activity from hanging indefinitely: each candidate attempt now has a conservative idle watchdog (where in-flight tool executions count as activity) and an absolute wall-clock cap, records a retryable timeout failure, and advances to the next fallback candidate; known providers without configured auth are skipped before spawning ([#1580](https://github.com/bastani-inc/atomic/issues/1580), [#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Aligned the subagents model-failure classifier's direct-message precedence with the workflows classifier and added a cross-package conformance test suite so the two classifier copies cannot silently drift ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+- Fixed the background subagent runner to spawn one default-model attempt when no model candidates were ever configured, mirroring the foreground path instead of silently exiting 1 with no error; an explicitly empty candidate list produced by pre-spawn auth filtering is still surfaced as an error ([#1581](https://github.com/bastani-inc/atomic/pull/1581)).
+
 ## [0.9.4-alpha.11] - 2026-07-03
 
 ### Fixed

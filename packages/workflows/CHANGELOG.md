@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-03
+
+### Changed
+
+- Curated all builtin workflow model chains against Atomic's agentic-coding benchmark (pass@1 / avg cost per task, 2026-07-02) under a role-based placement principle: reviewer stages keep best-in-class verification models (`anthropic/claude-fable-5:xhigh`, `openai-codex/gpt-5.5:xhigh`, and `zai/glm-5.2:xhigh` for third-family diversity), every other stage leads with the best measured performance-per-dollar candidate (`ralph` prompt-engineer and the `deep-research-codebase` planner move to `openai-codex/gpt-5.5:xhigh`, the explorer to `openai-codex/gpt-5.5:low`), strictly dominated models (`claude-sonnet-5`, `claude-sonnet-4.6`, `gemini-3.1-pro`, `gemini-3.5-flash`) and unbenchmarked entries (`gpt-5.4-mini`, `claude-haiku-4.5`) were dropped, and every remaining chain entry corresponds to a benchmark datapoint. `open-claude-design` keeps its Anthropic-led chain with `claude-fable-5:xhigh` primary.
+- Normalized all GLM-5.2 chain entries to the model's two real reasoning tiers: native `zai`/`zai-coding-cn` entries in medium-tier chains now say `:high` explicitly (replacing misleading `:medium` labels that silently billed at the "high" tier), judgment-tier chains keep `:xhigh`, and the `openrouter/z-ai/glm-5.2` mirror is now always `:xhigh`.
+- Aligned the workflows extension peer dependency with upstream pi TUI `^0.80.3`.
+
+### Fixed
+
+- Fixed attached workflow stage viewers so the host `app.tools.expand` keybinding (Ctrl+O by default) toggles live-detail/tool-output expansion just like the main chat, including custom keybinding remaps ([#1607](https://github.com/bastani-inc/atomic/issues/1607)).
+- Fixed workflow stage model fallback so request/context incompatibility failures (HTTP 400/413/422, unsupported tool/parameter, context-window overflow, `invalid_request`/`bad_request`/`too_large` errors) advance the chain to the next candidate, falling back to the current user-selected model when no configured candidate can serve the request; refusals, content-filter/safety blocks, cancellations, and task failures still stop the chain ([#1580](https://github.com/bastani-inc/atomic/issues/1580)).
+- Fixed the builtin `goal` reviewer and `deep-research-codebase` planner model fallback chains missing the `openrouter/anthropic/claude-fable-5` mirror of their primary model, matching the ordering used by the other builtin chains.
+- Classified generic provider `Connection error.` / `fetch failed` transport outages as explicit workflow transport errors so stage fallback metadata can distinguish them from ordinary provider/model outages while preserving the normal next-model fallback order.
+- Fixed workflow lifecycle notices for structured workflow outputs whose returned `status` is `failed` or `blocked`: the runtime now records those runs as failed/blocked instead of successful completions, preserves their returned output, carries blocked summaries into lifecycle notice reasons, marks returned failures non-resumable with explicit terminal failure metadata, and emits failure/blocked lifecycle cards rather than success notices.
+
 ## [0.9.4-alpha.11] - 2026-07-03
 
 ### Fixed

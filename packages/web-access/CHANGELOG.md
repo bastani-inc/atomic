@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-03
+
+### Changed
+
+- Published the stable Atomic 0.9.4 release for the web-access extension with its upstream pi TUI peer dependency aligned to `^0.80.3`; no web-access extension source changes were needed after 0.9.3.
+
 ## [0.9.4-alpha.6] - 2026-07-01
 
 ### Changed
