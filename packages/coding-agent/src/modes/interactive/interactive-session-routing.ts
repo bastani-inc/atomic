@@ -269,7 +269,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function(this: Interac
         return result;
       }
       this.renderCurrentSessionState();
-      if (this.firstRunOnboardingActive) {
+      if (this.firstRunNoticeVisible) {
         this.clearFirstRunOnboardingUi();
       }
       this.showStatus("Resumed session");
@@ -290,7 +290,7 @@ InteractiveModeBase.prototype.handleResumeSession = async function(this: Interac
           return result;
         }
         this.renderCurrentSessionState();
-        if (this.firstRunOnboardingActive) {
+        if (this.firstRunNoticeVisible) {
           this.clearFirstRunOnboardingUi();
         }
         this.showStatus("Resumed session in current cwd");

@@ -163,7 +163,7 @@ InteractiveModeBase.prototype.handleImportCommand = async function(this: Interac
 
     const finishSuccessfulImport = () => {
       this.renderCurrentSessionState();
-      if (this.firstRunOnboardingActive) {
+      if (this.firstRunNoticeVisible) {
         this.clearFirstRunOnboardingUi();
       }
       this.showStatus(`Session imported from: ${inputPath}`);

@@ -107,27 +107,15 @@ export class InteractiveModeBase {
 
   changelogMarkdown: string | undefined = undefined;
 
-
   startupNoticesShown = false;
-
 
   anthropicSubscriptionWarningShown = false;
 
-
-  firstRunOnboardingActive = false;
-
-
-  firstRunOnboardingSeedInFlight = false;
-
-
-  pendingFirstRunOnboardingSeed: string | undefined = undefined;
-
+  firstRunNoticeVisible = false;
 
   hadLastChangelogVersionAtStartup = false;
 
-
-  firstRunOnboardingHeaderComponents: Component[] = [];
-
+  firstRunOnboardingNoticeComponents: Component[] = [];
 
   autoTrustOnReloadCwd: string | undefined;
 

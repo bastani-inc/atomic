@@ -17,7 +17,6 @@ InteractiveModeBase.prototype.handleModelCommand = async function(this: Interact
         this.showStatus(`Model: ${model.id}`);
         void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
         this.checkDaxnutsEasterEgg(model);
-        await this.resumePendingFirstRunOnboardingSeed();
       } catch (error) {
         this.showError(error instanceof Error ? error.message : String(error));
       }
@@ -139,7 +138,6 @@ InteractiveModeBase.prototype.showModelSelector = function(this: InteractiveMode
               this.showContextWindowSelector(model);
             } else {
               this.showStatus(`Model: ${model.id}`);
-              await this.resumePendingFirstRunOnboardingSeed();
             }
           } catch (error) {
             done();
@@ -179,7 +177,6 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
             this.showStatus(
               `Model: ${model.id} \u00b7 ${formatContextWindow(contextWindow)} context`,
             );
-            await this.resumePendingFirstRunOnboardingSeed();
           } catch (error) {
             done();
             this.showError(
