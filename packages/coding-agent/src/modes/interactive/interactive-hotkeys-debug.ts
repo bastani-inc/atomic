@@ -156,6 +156,9 @@ InteractiveModeBase.prototype.handleClearCommand = async function(this: Interact
         return;
       }
       this.renderCurrentSessionState();
+      if (this.firstRunNoticeVisible) {
+        this.clearFirstRunOnboardingUi();
+      }
       this.chatContainer.addChild(new Spacer(1));
       this.chatContainer.addChild(
         new Text(`${theme.fg("accent", "✓ New session started")}`, 1, 1),

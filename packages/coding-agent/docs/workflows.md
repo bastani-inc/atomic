@@ -421,6 +421,25 @@ Workflows are the default path when a request is non-trivial, has inherent struc
 
 Use direct chat instead only for tiny, deterministic, low-risk edits or answers where stage tracking would add more overhead than value, usually a clearly single-file/no-test/no-review edit. If the task is only deterministic TypeScript with no LLM/session stage, use a script, custom tool, or extension command instead.
 
+### Decide before you explore
+
+Make the inline-vs-workflow decision **before the first tool call** on a request, and state it in one short line. Reconnaissance counts as inline execution — reading code, searching, and running probe scripts is already "doing the task" — so an unstated "look around first" default silently commits the session to unbounded inline work, which is exactly how workflow-fit tasks turn into hours of exploration with nothing committed.
+
+When a task passes the checklist above:
+
+- Keep pre-workflow scoping to a few quick reads whose only purpose is writing a sharper objective and validation criteria.
+- Put deep research, upstream/design comparison, and behavior probing *inside* the workflow — any workflow with a research or analysis stage, whether user-defined or builtin (for example `ralph`'s research stage) — not before it.
+
+### Course-correct instead of drifting
+
+If a session drifts anyway — roughly ten or more tool calls of exploration with no artifact, edit, or commit to show, or a repeating "let me verify one more thing" loop — stop and hand off:
+
+1. Write the findings so far to a context file.
+2. Launch the best-fit workflow with that file passed via `reads` and a prompt like ``Read the file at `<path>` ...`` — check `workflow({ action: "list" })` for named or user-defined workflows that match the task first, falling back to the builtin `goal` or `ralph` when nothing more specific fits.
+3. Let the workflow own the implementation while you monitor lifecycle notices.
+
+Sunk inline research is never a reason to stay inline; it transfers via files.
+
 | User goal | Use |
 |-----------|-----|
 | Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |

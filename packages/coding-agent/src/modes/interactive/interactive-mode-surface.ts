@@ -12,7 +12,9 @@ declare module "./interactive-mode-base.ts" {
   setupAutocompleteProvider(): void;
   showStartupNoticesIfNeeded(): void;
   hadLastChangelogVersionAtStartup: boolean;
+  firstRunNoticeVisible: boolean;
   firstRunOnboardingNoticeComponents: Component[];
+  initializeFirstRunOnboardingMarkers(hadFirstRunOnboardingStarted: boolean): void;
   isFirstRunOnboardingEligible(): boolean;
   clearFirstRunOnboardingUi(): void;
   init(): Promise<void>;

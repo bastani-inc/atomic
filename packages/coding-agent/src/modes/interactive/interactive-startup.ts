@@ -10,7 +10,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
     this.startupNoticesShown = true;
 
     const changelogMarkdown = this.changelogMarkdown;
-    if (!changelogMarkdown && !this.firstRunOnboardingActive) {
+    if (!changelogMarkdown && !this.firstRunNoticeVisible) {
       return;
     }
 
@@ -44,7 +44,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
       this.chatContainer.addChild(new DynamicBorder());
     }
 
-    if (this.firstRunOnboardingActive) {
+    if (this.firstRunNoticeVisible) {
       if (this.chatContainer.children.length > 0) {
         this.chatContainer.addChild(new Spacer(1));
       }
@@ -72,17 +72,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.hadLastChangelogVersionAtStartup = Boolean(this.settingsManager.getLastChangelogVersion());
     const hadFirstRunOnboardingStarted = Boolean(this.settingsManager.getFirstRunOnboardingStartedVersion());
     this.changelogMarkdown = this.getChangelogForDisplay();
-    if (
-      this.session.state.messages.length === 0
-      && !hadFirstRunOnboardingStarted
-      && !this.settingsManager.getOnboardedVersion()
-    ) {
-      if (this.hadLastChangelogVersionAtStartup) {
-        this.settingsManager.setOnboardedVersion(this.version);
-      } else {
-        this.settingsManager.setFirstRunOnboardingStartedVersion(this.version);
-      }
-    }
+    this.initializeFirstRunOnboardingMarkers(hadFirstRunOnboardingStarted);
 
     // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
@@ -109,7 +99,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.setupKeyHandlers();
     this.setupEditorSubmitHandler();
 
-    this.firstRunOnboardingActive = this.isFirstRunOnboardingEligible();
+    this.firstRunNoticeVisible = this.isFirstRunOnboardingEligible();
 
     // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
     // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn

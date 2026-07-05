@@ -79,6 +79,69 @@ describe("first-run onboarding", () => {
     expect(isEligible.call({ ...host, settingsManager: upgraded, hadLastChangelogVersionAtStartup: true, options: {} })).toBe(false);
   });
 
+  it("auto-completes onboarding for returning users with prior changelog state", () => {
+    const manager = SettingsManager.inMemory();
+    manager.setLastChangelogVersion("0.1.0");
+    const host = {
+      session: { state: { messages: [] } },
+      settingsManager: manager,
+      hadLastChangelogVersionAtStartup: true,
+      version: "0.2.0",
+    };
+    const initialize = Reflect.get(InteractiveMode.prototype, "initializeFirstRunOnboardingMarkers") as (this: typeof host, hadFirstRunOnboardingStarted: boolean) => void;
+
+    initialize.call(host, false);
+
+    expect(manager.getOnboardedVersion()).toBe("0.2.0");
+    expect(manager.getFirstRunOnboardingStartedVersion()).toBeUndefined();
+  });
+
+  it("starts onboarding for fresh installs but does not activate it for initial input runs", () => {
+    const manager = SettingsManager.inMemory();
+    const host = {
+      session: { state: { messages: [] } },
+      settingsManager: manager,
+      hadLastChangelogVersionAtStartup: false,
+      version: "0.2.0",
+    };
+    const initialize = Reflect.get(InteractiveMode.prototype, "initializeFirstRunOnboardingMarkers") as (this: typeof host, hadFirstRunOnboardingStarted: boolean) => void;
+    const isEligible = Reflect.get(InteractiveMode.prototype, "isFirstRunOnboardingEligible") as (this: typeof host & { options: { initialMessage?: string } }) => boolean;
+
+    initialize.call(host, false);
+
+    expect(manager.getFirstRunOnboardingStartedVersion()).toBe("0.2.0");
+    expect(manager.getOnboardedVersion()).toBeUndefined();
+    expect(isEligible.call({ ...host, options: { initialMessage: "run once" } })).toBe(false);
+  });
+
+  it("renders first-run notice without changelog markdown", () => {
+    const setOnboardedVersion = vi.fn();
+    const children: unknown[] = [];
+    const host = {
+      startupNoticesShown: false,
+      changelogMarkdown: undefined,
+      firstRunNoticeVisible: true,
+      firstRunOnboardingNoticeComponents: [] as unknown[],
+      chatContainer: {
+        children,
+        addChild(child: unknown) {
+          this.children.push(child);
+        },
+      },
+      settingsManager: { setOnboardedVersion },
+      version: "0.2.0",
+      ui: { requestRender: vi.fn() },
+    };
+    const showStartupNoticesIfNeeded = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (this: typeof host) => void;
+
+    showStartupNoticesIfNeeded.call(host);
+
+    expect(host.firstRunOnboardingNoticeComponents).toHaveLength(4);
+    expect(host.chatContainer.children).toEqual(host.firstRunOnboardingNoticeComponents);
+    expect(setOnboardedVersion).toHaveBeenCalledWith("0.2.0");
+    expect(host.ui.requestRender).toHaveBeenCalledTimes(1);
+  });
+
   it("renders first-run notice after the changelog so it stays closest to the input", () => {
     const existingResource = { name: "resource" };
     const children: unknown[] = [existingResource];
@@ -86,7 +149,7 @@ describe("first-run onboarding", () => {
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: "## [0.2.0]\n\n- New workflow updates",
-      firstRunOnboardingActive: true,
+      firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: [] as unknown[],
       chatContainer: {
         children,
@@ -118,7 +181,7 @@ describe("first-run onboarding", () => {
     const cta = [{ name: "border" }, { name: "copy" }, { name: "bottom" }];
     const last = { name: "last" };
     const host = {
-      firstRunOnboardingActive: true,
+      firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: cta,
       chatContainer: { children: [first, ...cta, last] },
       ui: { requestRender: vi.fn() },
@@ -127,16 +190,48 @@ describe("first-run onboarding", () => {
 
     clear.call(host);
 
-    expect(host.firstRunOnboardingActive).toBe(false);
+    expect(host.firstRunNoticeVisible).toBe(false);
     expect(host.chatContainer.children).toEqual([first, last]);
     expect(host.firstRunOnboardingNoticeComponents).toEqual([]);
     expect(host.ui.requestRender).toHaveBeenCalledTimes(1);
   });
 
+  it("clears stale first-run notice state when starting a new session", async () => {
+    const staleNotice = { name: "notice" };
+    const host = {
+      loadingAnimation: undefined,
+      statusContainer: { clear: vi.fn() },
+      runtimeHost: { newSession: vi.fn(async () => ({ cancelled: false })) },
+      renderCurrentSessionState: vi.fn(() => {
+        host.chatContainer.children = [];
+      }),
+      firstRunNoticeVisible: true,
+      firstRunOnboardingNoticeComponents: [staleNotice],
+      chatContainer: {
+        children: [staleNotice] as unknown[],
+        addChild(child: unknown) {
+          this.children.push(child);
+        },
+      },
+      ui: { requestRender: vi.fn() },
+      handleFatalRuntimeError: vi.fn(),
+    };
+    const clear = Reflect.get(InteractiveMode.prototype, "clearFirstRunOnboardingUi") as (this: typeof host) => void;
+    const handleClearCommand = Reflect.get(InteractiveMode.prototype, "handleClearCommand") as (this: typeof host & { clearFirstRunOnboardingUi: () => void }) => Promise<void>;
+    const hostWithClear = host as typeof host & { clearFirstRunOnboardingUi: () => void };
+    hostWithClear.clearFirstRunOnboardingUi = () => clear.call(hostWithClear);
+
+    await handleClearCommand.call(hostWithClear);
+
+    expect(host.firstRunNoticeVisible).toBe(false);
+    expect(host.firstRunOnboardingNoticeComponents).toEqual([]);
+    expect(host.chatContainer.children).not.toContain(staleNotice);
+  });
+
   it("treats first-run text as normal input instead of an onboarding seed", async () => {
     const onInputCallback = vi.fn();
     const host = {
-      firstRunOnboardingActive: true,
+      firstRunNoticeVisible: true,
       defaultEditor: {},
       editor: { setText: vi.fn(), addToHistory: vi.fn() },
       flushPendingBashComponents: vi.fn(),
@@ -155,7 +250,7 @@ describe("first-run onboarding", () => {
 
   it("treats /chat as an ordinary slash command with no onboarding bypass", async () => {
     const host = {
-      firstRunOnboardingActive: true,
+      firstRunNoticeVisible: true,
       defaultEditor: {},
       editor: { setText: vi.fn(), addToHistory: vi.fn() },
       flushPendingBashComponents: vi.fn(),

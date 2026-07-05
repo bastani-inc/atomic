@@ -100,11 +100,9 @@ InteractiveModeBase.prototype.handleClipboardImagePaste = async function(this: I
   };
 
 InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: InteractiveModeBase): void {
-
     this.defaultEditor.onSubmit = async (text: string) => {
       text = text.trim();
       if (!text) return;
-
 
       // Handle commands
       if (text === "/settings") {
@@ -271,7 +269,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
           return;
         }
       }
-
 
       // Queue input during compaction (extension commands execute immediately)
       if (this.session.isCompacting) {

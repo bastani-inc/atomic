@@ -12,6 +12,22 @@ export const ONBOARDING_COPY = [
   "Run `/atomic` for guides or `/workflow list` to see built-in workflows.",
 ].join("\n");
 
+InteractiveModeBase.prototype.initializeFirstRunOnboardingMarkers = function(this: InteractiveModeBase, hadFirstRunOnboardingStarted: boolean): void {
+  if (
+    this.session.state.messages.length !== 0
+    || hadFirstRunOnboardingStarted
+    || this.settingsManager.getOnboardedVersion()
+  ) {
+    return;
+  }
+
+  if (this.hadLastChangelogVersionAtStartup) {
+    this.settingsManager.setOnboardedVersion(this.version);
+  } else {
+    this.settingsManager.setFirstRunOnboardingStartedVersion(this.version);
+  }
+};
+
 InteractiveModeBase.prototype.isFirstRunOnboardingEligible = function(this: InteractiveModeBase): boolean {
   const hasInitialInput = Boolean(this.options.initialMessage) || Boolean(this.options.initialMessages?.length);
   return this.session.state.messages.length === 0
@@ -21,7 +37,7 @@ InteractiveModeBase.prototype.isFirstRunOnboardingEligible = function(this: Inte
 };
 
 InteractiveModeBase.prototype.clearFirstRunOnboardingUi = function(this: InteractiveModeBase): void {
-  this.firstRunOnboardingActive = false;
+  this.firstRunNoticeVisible = false;
   if (this.firstRunOnboardingNoticeComponents.length > 0) {
     this.chatContainer.children = this.chatContainer.children.filter(
       (child) => !this.firstRunOnboardingNoticeComponents.includes(child),
