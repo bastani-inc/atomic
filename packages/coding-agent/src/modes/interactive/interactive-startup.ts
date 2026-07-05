@@ -57,6 +57,8 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
       for (const component of this.firstRunOnboardingNoticeComponents) {
         this.chatContainer.addChild(component);
       }
+      // Mark completion only after queueing the notice in the chat canvas so
+      // launches that skip rendering retry the first-run notice next time.
       this.settingsManager.setOnboardedVersion(this.version);
     }
 

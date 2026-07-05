@@ -176,6 +176,38 @@ describe("first-run onboarding", () => {
     expect(host.ui.requestRender).toHaveBeenCalledTimes(1);
   });
 
+  it("does not mark onboarded when only changelog markdown renders", () => {
+    const setOnboardedVersion = vi.fn();
+    const children: unknown[] = [];
+    const host = {
+      startupNoticesShown: false,
+      changelogMarkdown: "## [0.2.0]\n\n- New workflow updates",
+      firstRunNoticeVisible: false,
+      firstRunOnboardingNoticeComponents: [] as unknown[],
+      chatContainer: {
+        children,
+        addChild(child: unknown) {
+          this.children.push(child);
+        },
+      },
+      settingsManager: {
+        getCollapseChangelog: () => false,
+        setOnboardedVersion,
+      },
+      version: "0.2.0",
+      getMarkdownThemeWithSettings: () => ({}),
+      ui: { requestRender: vi.fn() },
+    };
+    const showStartupNoticesIfNeeded = Reflect.get(InteractiveMode.prototype, "showStartupNoticesIfNeeded") as (this: typeof host) => void;
+
+    showStartupNoticesIfNeeded.call(host);
+
+    expect(host.chatContainer.children).not.toHaveLength(0);
+    expect(host.firstRunOnboardingNoticeComponents).toHaveLength(0);
+    expect(setOnboardedVersion).not.toHaveBeenCalled();
+    expect(host.ui.requestRender).toHaveBeenCalledTimes(1);
+  });
+
   it("removes rendered onboarding notice components without touching the normal editor", () => {
     const first = { name: "first" };
     const cta = [{ name: "border" }, { name: "copy" }, { name: "bottom" }];
