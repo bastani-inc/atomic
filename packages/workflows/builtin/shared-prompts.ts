@@ -43,5 +43,10 @@ export const LITERAL_OBJECTIVE_CONTRACT = [
   "- If the objective and acceptance criteria conflict, do not implement the contradiction. Surface it as a blocker or reviewer finding instead.",
   "- When external knowledge (language specs, upstream issues, in-repo comments, general best practice, or prior reviewer speculation) conflicts with explicit objective wording, the objective/acceptance criteria win.",
   "- Never silently resolve such a conflict in favor of external knowledge. Surface the conflict clearly.",
+  "- Prefer loud errors over silent reinterpretation: when the objective/acceptance criteria enumerate required error conditions, messages, or rejections, give each enumerated error the widest plausible trigger surface. When the contract leaves an input ambiguous or unspecified near an enumerated error case, prefer raising that error over silently reinterpreting the input as different valid behavior, even when external spec knowledge says the input is valid.",
+  "- Only narrow an enumerated error's trigger surface when the objective, acceptance criteria, or pre-existing required tests explicitly require the ambiguous input to be accepted. Widening an enumerated error to nearby ambiguous inputs is applying the contract, not adding beyond it.",
   "- Do not add behaviors, restrictions, error conditions, or follow-up requirements beyond what the objective/acceptance criteria require.",
 ].join("\n");
+
+export const REVIEWER_SPEC_VS_OBJECTIVE_GUARD =
+  "Do not use external spec/standard conformance alone to flag a wide trigger surface for an error condition the objective/acceptance criteria enumerate; the contract prefers loud errors over silent reinterpretation of ambiguous inputs, so classify such spec-vs-objective tension as beyond_objective rather than a blocking defect.";

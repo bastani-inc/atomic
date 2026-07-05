@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Hardened the builtin `goal` and `ralph` loops against spec-vs-objective drift on enumerated error behavior (observed in an eval trace where an adversarial reviewer flagged a task-mandated diagnostic as a spec-conformance defect and the fix cycle silently reinterpreted the ambiguous input as valid behavior, losing the required error): the shared literal objective contract now instructs workers and reviewers to prefer loud errors over silent reinterpretation — when the objective/acceptance criteria enumerate required error conditions, messages, or rejections, each enumerated error gets the widest plausible trigger surface, ambiguous or unspecified inputs near an enumerated error case default to raising that error even when external spec knowledge says the input is valid, and narrowing an enumerated error's trigger surface requires explicit contract or pre-existing required-test demand. Both loops' reviewer bug-selection guidelines now forbid using external spec/standard conformance alone to flag a wide trigger surface for a contract-enumerated error as a defect; such spec-vs-objective tension must be classified `beyond_objective` instead of becoming a blocking finding that steers the implementation away from the contract's errors.
+- Extracted the Ralph reviewer prompt into `builtin/ralph-reviewer-prompt.ts` (`renderRalphReviewerPrompt`) and deduplicated the new reviewer guard into a shared `REVIEWER_SPEC_VS_OBJECTIVE_GUARD` constant consumed by both the Goal and Ralph reviewer prompts, keeping `ralph-runner.ts` under the repository's 500-line file gate. No behavioral change beyond the guard itself.
+
 ## [0.9.5-alpha.3] - 2026-07-04
 
 ### Changed

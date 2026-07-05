@@ -1,6 +1,7 @@
 import {
   E2E_VERIFICATION_GUIDANCE,
   LITERAL_OBJECTIVE_CONTRACT,
+  REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   WORKER_PREFLIGHT_CONTRACT,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
@@ -301,6 +302,7 @@ export function renderReviewerPrompt(args: {
         "Do not rely on unstated assumptions about author intent or codebase behavior.",
         "Speculation is insufficient: identify the code path, scenario, environment, or input that is provably affected.",
         "Do not flag intentional behavior changes as bugs unless they clearly violate the task or documented contract.",
+        REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
         "Ignore trivial style unless it obscures meaning or violates documented standards in a way that affects correctness/security/maintainability.",
         "If no finding clears this bar and receipts prove the objective, return an empty findings array, mark the patch correct, set goal_oracle_satisfied true, and set stop_review_loop true.",
       ].join("\n"),
