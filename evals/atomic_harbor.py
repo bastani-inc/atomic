@@ -21,7 +21,7 @@ class Atomic(BaseInstalledAgent):
     _CONTAINER_SESSION_DIR = f"$HOME/.atomic/agent/{_SESSION_DIR_NAME}"
     _LOG_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
     _OPENAI_CODEX_PROVIDER = "openai-codex"
-    _OPENAI_CODEX_UPLOAD_TARGET = "/tmp/atomic-openai-codex-auth.json"
+    _AUTH_UPLOAD_TARGET = "/tmp/atomic-subscription-auth.json"
 
     CLI_FLAGS = [
         CliFlag(
@@ -88,7 +88,7 @@ class Atomic(BaseInstalledAgent):
             Path.home() / ".pi" / "agent" / "auth.json",
         )
 
-    def _load_openai_codex_auth(self) -> dict[str, object] | None:
+    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
         merged: dict[str, object] = {}
         for auth_path in reversed(self._auth_config_paths()):
             try:
@@ -97,14 +97,16 @@ class Atomic(BaseInstalledAgent):
                 continue
             if isinstance(data, dict):
                 merged.update(data)
-        entry = merged.get(self._OPENAI_CODEX_PROVIDER)
+        entry = merged.get(provider)
         return entry if isinstance(entry, dict) else None
 
     def _has_subscription_auth(self, provider: str) -> bool:
         if provider == "anthropic":
-            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN"))
+            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN")) or (
+                self._load_provider_auth(provider) is not None
+            )
         if provider == self._OPENAI_CODEX_PROVIDER:
-            return self._load_openai_codex_auth() is not None
+            return self._load_provider_auth(provider) is not None
         return True
 
     @staticmethod
@@ -132,24 +134,31 @@ class Atomic(BaseInstalledAgent):
                 return fallback
         return provider, model
 
-    async def _provision_openai_codex_auth(
+    def _should_provision_subscription_auth(self, provider: str) -> bool:
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            return True
+        # Provision the local Claude Pro/Max OAuth entry only when no explicit
+        # env credential is supplied; ANTHROPIC_OAUTH_TOKEN keeps precedence.
+        return provider == "anthropic" and not self._get_env("ANTHROPIC_OAUTH_TOKEN")
+
+    async def _provision_subscription_auth(
         self,
         environment: BaseEnvironment,
         provider: str,
     ) -> None:
-        if provider != self._OPENAI_CODEX_PROVIDER:
+        if not self._should_provision_subscription_auth(provider):
             return
-        entry = self._load_openai_codex_auth()
+        entry = self._load_provider_auth(provider)
         if entry is None:
             return
-        auth_data = {self._OPENAI_CODEX_PROVIDER: entry}
+        auth_data = {provider: entry}
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             temp_path = Path(handle.name)
             json.dump(auth_data, handle, indent=2)
             handle.write("\n")
         try:
             os.chmod(temp_path, 0o600)
-            await environment.upload_file(temp_path, self._OPENAI_CODEX_UPLOAD_TARGET)
+            await environment.upload_file(temp_path, self._AUTH_UPLOAD_TARGET)
         finally:
             try:
                 temp_path.unlink()
@@ -160,16 +169,16 @@ class Atomic(BaseInstalledAgent):
                 environment,
                 command=(
                     f"chown {shlex.quote(str(environment.default_user))} "
-                    f"{self._OPENAI_CODEX_UPLOAD_TARGET}"
+                    f"{self._AUTH_UPLOAD_TARGET}"
                 ),
             )
         await self.exec_as_agent(
             environment,
             command=(
                 "mkdir -p $HOME/.atomic/agent && chmod 700 $HOME/.atomic/agent && "
-                f"install -m 600 {self._OPENAI_CODEX_UPLOAD_TARGET} "
+                f"install -m 600 {self._AUTH_UPLOAD_TARGET} "
                 "$HOME/.atomic/agent/auth.json && "
-                f"rm -f {self._OPENAI_CODEX_UPLOAD_TARGET}"
+                f"rm -f {self._AUTH_UPLOAD_TARGET}"
             ),
         )
 
@@ -252,7 +261,7 @@ class Atomic(BaseInstalledAgent):
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command)
-        await self._provision_openai_codex_auth(environment, requested_provider)
+        await self._provision_subscription_auth(environment, requested_provider)
 
         # Atomic state stays under the container user's ~/.atomic/agent; after
         # the run, transcripts are copied to /logs for Harbor artifact parsing.
