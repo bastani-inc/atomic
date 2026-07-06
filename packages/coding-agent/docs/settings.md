@@ -21,7 +21,7 @@ If no extension or saved decision applies, `defaultProjectTrust` controls the fa
 
 Use `/trust` in interactive mode to save a project trust decision for future sessions, including trust for the immediate parent folder. It writes `~/.atomic/agent/trust.json` only; the current session is not reloaded, so restart Atomic for changes to take effect.
 
-If a bare directory starts without trust-gated inputs, Atomic may run the first interactive session as implicitly trusted. When that already-trusted session later creates a project config directory such as `.atomic/`, Atomic records the same trust decision on clean shutdown so the next launch does not block first paint on a new trust prompt. This does not trust directories that already required a prompt or were running untrusted.
+If a bare directory starts without trust-gated inputs, Atomic may run the interactive session as implicitly trusted. Inert state directories such as `.atomic/todos/` and `.atomic/sessions/` do not require trust and do not disable deferred extension startup. If trust-requiring config appears later, Atomic prompts again on the next launch until you explicitly save a persistent trust decision; the only automatic persistence of implicit startup trust is the existing `/reload` flow after reload discovers trust-requiring resources in an already-trusted session.
 
 Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by older Windows tools; Atomic strips that leading marker before parsing.
 

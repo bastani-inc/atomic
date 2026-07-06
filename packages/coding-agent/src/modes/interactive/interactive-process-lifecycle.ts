@@ -24,8 +24,6 @@ InteractiveModeBase.prototype.shutdown = async function(this: InteractiveModeBas
     // `signal-exit` checks the listener list during the same SIGTERM/SIGHUP
     // dispatch and re-sends the signal if only its own listeners remain.
 
-
-    this.maybeSaveImplicitProjectTrustAfterReload?.();
     if (options?.fromSignal) {
       await this.runtimeHost.dispose();
       this.themeController.disableAutoSync();

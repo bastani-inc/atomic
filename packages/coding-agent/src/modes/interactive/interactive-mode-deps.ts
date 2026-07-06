@@ -73,7 +73,7 @@ export { SkillInvocationMessageComponent } from "./components/skill-invocation-m
 export { ToolExecutionComponent } from "./components/tool-execution.ts";
 export { TreeSelectorComponent } from "./components/tree-selector.ts";
 export { TrustSelectorComponent } from "./components/trust-selector.ts";
-export { hasProjectConfigDir, hasProjectTrustInputs, ProjectTrustStore } from "../../core/trust-manager.ts";
+export { hasProjectConfigDir, hasProjectTrustInputs, hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
 export { UserMessageComponent } from "./components/user-message.ts";
 export { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 export { getModelSearchText } from "./model-search.ts";

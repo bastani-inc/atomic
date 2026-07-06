@@ -133,6 +133,8 @@ export { ModelRegistry } from "./core/model-registry.ts";
 export type { DefaultProjectTrust } from "./core/settings-manager.ts";
 export {
 	hasProjectTrustInputs,
+	hasTrustRequiringProjectResources,
+	TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES,
 	type ProjectTrustDecision,
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,

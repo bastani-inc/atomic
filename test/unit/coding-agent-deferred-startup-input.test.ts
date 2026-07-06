@@ -106,6 +106,7 @@ describe("coding-agent deferred startup input", () => {
   test("preserves editor text and cursor while deferred startup completes", async () => {
     let text = "";
     const cursor = { line: 0, col: 0 };
+    const maybeSaveImplicitProjectTrustAfterReload = mock(() => {});
     const mode: DeferredModeContext = {
       chatContainer: { addChild: mock(() => {}), removeChild: mock(() => {}) },
       ui: { requestRender: mock(() => {}) },
@@ -122,7 +123,7 @@ describe("coding-agent deferred startup input", () => {
       options: {},
       themeController: { applyFromSettings: mock(async () => {}) },
       deferredStartupPending: true,
-      maybeSaveImplicitProjectTrustAfterReload: mock(() => {}),
+      maybeSaveImplicitProjectTrustAfterReload,
       setupAutocompleteProvider: mock(() => {}),
       setupExtensionShortcuts: mock(() => {}),
       retryDeferredModelRestore: mock(async () => {}),
@@ -141,6 +142,7 @@ describe("coding-agent deferred startup input", () => {
     assert.equal(mode.deferredStartupPending, false);
     assert.equal(mode.editor.getText(), "typed during loading");
     assert.deepEqual(mode.editor.getCursor(), { line: 0, col: "typed during loading".length });
+    assert.equal(maybeSaveImplicitProjectTrustAfterReload.mock.calls.length, 0);
   });
 
   test("queues Enter submissions made before deferred startup is ready", async () => {

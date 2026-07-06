@@ -25,6 +25,15 @@ export interface ProjectTrustOption {
 }
 
 type TrustFile = Record<string, boolean | null | undefined>;
+export const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
+	"settings.json",
+	"extensions",
+	"skills",
+	"prompts",
+	"themes",
+	"SYSTEM.md",
+	"APPEND_SYSTEM.md",
+] as const;
 
 function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
@@ -172,10 +181,45 @@ export function hasProjectConfigDir(cwd: string): boolean {
 	const projectCwd = canonicalizePath(resolvePath(cwd));
 	return CONFIG_DIR_NAMES.some((configDirName) => existsSync(join(projectCwd, configDirName)));
 }
+function hasTrustRequiringConfigResources(cwd: string): boolean {
+	const projectCwd = canonicalizePath(resolvePath(cwd));
+	return CONFIG_DIR_NAMES.some((configDirName) => {
+		const configDir = join(projectCwd, configDirName);
+		return TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => existsSync(join(configDir, entry)));
+	});
+}
+
+/**
+ * Returns true when cwd has project-local resources that must be gated by
+ * project trust: trust-requiring entries under cwd/.atomic or cwd/.pi, or
+ * .agents/skills in cwd or one of its ancestors. Returns false for inert
+ * state-only config directories. The user-global ~/.agents/skills directory is
+ * always treated as a trusted user resource and ignored, even when cwd is $HOME.
+ */
+export function hasTrustRequiringProjectResources(cwd: string): boolean {
+	if (hasTrustRequiringConfigResources(cwd)) {
+		return true;
+	}
+
+	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));
+	let currentDir = canonicalizePath(resolvePath(cwd));
+	while (true) {
+		const skillsDir = canonicalizePath(resolvePath(join(currentDir, ".agents", "skills")));
+		if (skillsDir !== userGlobalSkillsDir && existsSync(skillsDir)) {
+			return true;
+		}
+
+		const parentDir = dirname(currentDir);
+		if (parentDir === currentDir) {
+			return false;
+		}
+		currentDir = parentDir;
+	}
+}
 
 export function hasProjectTrustInputs(cwd: string): boolean {
 	let currentDir = canonicalizePath(resolvePath(cwd));
-	if (hasProjectConfigDir(currentDir)) {
+	if (hasTrustRequiringConfigResources(currentDir)) {
 		return true;
 	}
 	const userGlobalSkillsDir = canonicalizePath(resolvePath(join(getHomeDir(), ".agents", "skills")));

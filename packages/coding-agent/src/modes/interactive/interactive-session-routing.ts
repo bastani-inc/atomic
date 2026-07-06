@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type ExtensionCommandContext, Loader, Spacer, APP_NAME, MissingSessionCwdError, SessionManager, keyText, SessionSelectorComponent, TreeSelectorComponent, TrustSelectorComponent, hasProjectTrustInputs, ProjectTrustStore, theme } from "./interactive-mode-deps.ts";
+import { type ExtensionCommandContext, Loader, Spacer, APP_NAME, MissingSessionCwdError, SessionManager, keyText, SessionSelectorComponent, TreeSelectorComponent, TrustSelectorComponent, hasTrustRequiringProjectResources, ProjectTrustStore, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.handleCloneCommand = async function(this: InteractiveModeBase): Promise<void> {
     const leafId = this.sessionManager.getLeafId();
@@ -28,7 +28,7 @@ InteractiveModeBase.prototype.maybeSaveImplicitProjectTrustAfterReload = functio
     if (this.autoTrustOnReloadCwd !== cwd) {
       return false;
     }
-    if (!this.settingsManager.isProjectTrusted() || !hasProjectTrustInputs(cwd)) {
+    if (!this.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(cwd)) {
       return false;
     }
 

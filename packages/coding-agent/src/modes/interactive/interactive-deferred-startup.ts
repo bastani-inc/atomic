@@ -16,7 +16,6 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
 
     try {
       await this.session.reload({ reason: "startup" });
-      this.maybeSaveImplicitProjectTrustAfterReload();
     } catch (error) {
       this.chatContainer.removeChild(loadingIndicator);
       this.deferredStartupPending = false;

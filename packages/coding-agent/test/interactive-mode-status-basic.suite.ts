@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { Container } from "@earendil-works/pi-tui";
@@ -141,7 +141,7 @@ describe("InteractiveMode reload project trust", () => {
 		try {
 			const cwd = path.join(root, "project");
 			const agentDir = path.join(root, "agent");
-			mkdirSync(path.join(cwd, ".atomic"), { recursive: true });
+			mkdirSync(path.join(cwd, ".atomic", "extensions"), { recursive: true });
 			mkdirSync(agentDir, { recursive: true });
 
 			const fakeThis = {
@@ -163,14 +163,39 @@ describe("InteractiveMode reload project trust", () => {
 		}
 	});
 
-	test("persists implicit startup trust after reload creates an AGENTS.md trust input", () => {
-		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-agents-"));
+	test("does not persist implicit startup trust after reload creates only inert project state", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-inert-"));
 		try {
 			const cwd = path.join(root, "project");
 			const agentDir = path.join(root, "agent");
-			mkdirSync(cwd, { recursive: true });
+			mkdirSync(path.join(cwd, ".atomic", "todos"), { recursive: true });
+			mkdirSync(path.join(agentDir), { recursive: true });
+
+			const fakeThis = {
+				autoTrustOnReloadCwd: cwd,
+				sessionManager: { getCwd: () => cwd },
+				settingsManager: { isProjectTrusted: () => true },
+				runtimeHost: { services: { agentDir } },
+				showWarning: vi.fn(),
+			};
+
+			const saved = (InteractiveMode as any).prototype.maybeSaveImplicitProjectTrustAfterReload.call(fakeThis);
+
+			expect(saved).toBe(false);
+			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);
+			expect(fakeThis.autoTrustOnReloadCwd).toBe(cwd);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("persists implicit startup trust after reload creates a non-global .agents skills trust input", () => {
+		const root = mkdtempSync(path.join(tmpdir(), "atomic-reload-trust-skills-"));
+		try {
+			const cwd = path.join(root, "project");
+			const agentDir = path.join(root, "agent");
+			mkdirSync(path.join(cwd, ".agents", "skills"), { recursive: true });
 			mkdirSync(agentDir, { recursive: true });
-			writeFileSync(path.join(cwd, "AGENTS.md"), "project instructions");
 
 			const fakeThis = {
 				autoTrustOnReloadCwd: cwd,
@@ -221,7 +246,7 @@ describe("InteractiveMode reload project trust", () => {
 		try {
 			const cwd = path.join(root, "project");
 			const agentDir = path.join(root, "agent");
-			mkdirSync(path.join(cwd, ".atomic"), { recursive: true });
+			mkdirSync(path.join(cwd, ".atomic", "extensions"), { recursive: true });
 			mkdirSync(agentDir, { recursive: true });
 
 			const fakeThis = {
@@ -237,6 +262,39 @@ describe("InteractiveMode reload project trust", () => {
 			expect(saved).toBe(false);
 			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);
 		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("InteractiveMode shutdown project trust", () => {
+	test("does not persist implicit startup trust on shutdown", async () => {
+		const root = mkdtempSync(path.join(tmpdir(), "atomic-shutdown-trust-"));
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(() => {
+			throw new Error("process.exit intercepted");
+		});
+		try {
+			const cwd = path.join(root, "project");
+			const agentDir = path.join(root, "agent");
+			mkdirSync(path.join(cwd, ".atomic", "extensions"), { recursive: true });
+			mkdirSync(agentDir, { recursive: true });
+			const fakeThis = {
+				isShuttingDown: false,
+				runtimeHost: { services: { agentDir }, dispose: vi.fn(async () => {}) },
+				themeController: { disableAutoSync: vi.fn() },
+				ui: { terminal: { drainInput: vi.fn(async () => {}) } },
+				stop: vi.fn(),
+				sessionManager: { getCwd: () => cwd },
+			};
+
+			await expect((InteractiveMode as any).prototype.shutdown.call(fakeThis, { fromSignal: true })).rejects.toThrow(
+				"process.exit intercepted",
+			);
+
+			expect(new ProjectTrustStore(agentDir).get(cwd)).toBe(null);
+			expect(existsSync(path.join(agentDir, "trust.json"))).toBe(false);
+		} finally {
+			exitSpy.mockRestore();
 			rmSync(root, { recursive: true, force: true });
 		}
 	});
