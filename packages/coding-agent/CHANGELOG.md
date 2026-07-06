@@ -4,7 +4,11 @@
 
 ### Fixed
 
+<<<<<<< HEAD
 - Fixed the bundled workflows documentation to reflect that attached workflow stage chats render live `subagent` widgets for single, parallel, and chain calls, keep them live across attach/re-attach cycles, and let Ctrl+O expand live detail for every child. ([#1643](https://github.com/bastani-inc/atomic/issues/1643))
+=======
+- Fixed a Windows `waitForChildProcess` exit-code race where the process-alive poll could report a fast-dying child as gone before Node emitted the real `exit` event, causing bash commands such as `exit 1` to be reported as successful with a fabricated exit code 0 ([#1647](https://github.com/bastani-inc/atomic/issues/1647)).
+>>>>>>> 2d44820ac (fix(coding-agent): preserve Windows child exit codes)
 
 ## [0.9.5-alpha.5] - 2026-07-06
 

@@ -16,6 +16,16 @@ import crossSpawn from "cross-spawn";
 
 const EXIT_STDIO_IDLE_GRACE_MS = 100;
 const EXIT_STDIO_ACTIVE_DRAIN_HARD_CAP_MS = 5_000;
+const WINDOWS_EXIT_POLL_INTERVAL_MS = 50;
+const WINDOWS_EXIT_CODE_GRACE_MS = 1_000;
+
+type WaitForChildProcessOptions = {
+	platform?: NodeJS.Platform;
+	isWindowsProcessAlive?: (pid: number) => boolean;
+	windowsExitPollIntervalMs?: number;
+	windowsExitCodeGraceMs?: number;
+};
+
 const WINDOWS_SHELL_COMMANDS = new Set(["bun", "npm", "npx", "pnpm", "yarn", "yarnpkg", "corepack"]);
 
 export function shouldUseWindowsShell(command: string): boolean {
@@ -63,7 +73,7 @@ function isWindowsProcessAlive(pid: number): boolean {
  * after the grace elapses. A longer active-drain hard cap is armed once on `exit`
  * so an endlessly noisy descendant cannot keep the wait pending forever.
  */
-export function waitForChildProcess(child: ChildProcess): Promise<number | null> {
+export function waitForChildProcess(child: ChildProcess, options: WaitForChildProcessOptions = {}): Promise<number | null> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
@@ -73,6 +83,11 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 		let stdoutEnded = child.stdout === null;
 		let stderrEnded = child.stderr === null;
 		let windowsExitPoll: NodeJS.Timeout | undefined;
+		let windowsExitCodeGraceTimer: NodeJS.Timeout | undefined;
+		const platform = options.platform ?? process.platform;
+		const processAlive = options.isWindowsProcessAlive ?? isWindowsProcessAlive;
+		const windowsExitPollIntervalMs = options.windowsExitPollIntervalMs ?? WINDOWS_EXIT_POLL_INTERVAL_MS;
+		const windowsExitCodeGraceMs = options.windowsExitCodeGraceMs ?? WINDOWS_EXIT_CODE_GRACE_MS;
 
 		const cleanup = () => {
 			if (windowsExitPoll) {
@@ -86,6 +101,10 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			if (postExitActiveDrainHardCapTimer) {
 				clearTimeout(postExitActiveDrainHardCapTimer);
 				postExitActiveDrainHardCapTimer = undefined;
+			}
+			if (windowsExitCodeGraceTimer) {
+				clearTimeout(windowsExitCodeGraceTimer);
+				windowsExitCodeGraceTimer = undefined;
 			}
 			child.removeListener("error", onError);
 			child.removeListener("exit", onExit);
@@ -149,6 +168,10 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 		};
 
 		const onExit = (code: number | null) => {
+			if (windowsExitCodeGraceTimer) {
+				clearTimeout(windowsExitCodeGraceTimer);
+				windowsExitCodeGraceTimer = undefined;
+			}
 			exited = true;
 			exitCode = code;
 			maybeFinalizeAfterExit();
@@ -158,10 +181,26 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			}
 		};
 
-		const pollWindowsExit = () => {
-			if (process.platform !== "win32" || !child.pid || exited || settled) return;
-			if (!isWindowsProcessAlive(child.pid)) {
+		const armWindowsExitCodeGraceTimer = () => {
+			if (windowsExitCodeGraceTimer) return;
+			if (windowsExitPoll) {
+				clearInterval(windowsExitPoll);
+				windowsExitPoll = undefined;
+			}
+			windowsExitCodeGraceTimer = setTimeout(() => {
+				windowsExitCodeGraceTimer = undefined;
 				onExit(child.exitCode ?? 0);
+			}, windowsExitCodeGraceMs);
+		};
+
+		const pollWindowsExit = () => {
+			if (platform !== "win32" || !child.pid || exited || settled) return;
+			if (!processAlive(child.pid)) {
+				if (child.exitCode !== null) {
+					onExit(child.exitCode);
+				} else {
+					armWindowsExitCodeGraceTimer();
+				}
 			}
 		};
 
@@ -169,7 +208,9 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			finalize(code);
 		};
 
-		if (process.platform === "win32" && child.pid) windowsExitPoll = setInterval(pollWindowsExit, 50);
+		if (platform === "win32" && child.pid) {
+			windowsExitPoll = setInterval(pollWindowsExit, windowsExitPollIntervalMs);
+		}
 		child.stdout?.once("end", onStdoutEnd);
 		child.stderr?.once("end", onStderrEnd);
 		child.stdout?.on("data", onData);
