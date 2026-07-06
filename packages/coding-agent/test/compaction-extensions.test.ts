@@ -9,7 +9,7 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ContextDeletionRequest } from "../src/core/compaction/index.ts";
@@ -267,7 +267,12 @@ describe("Compaction extension types", () => {
 	});
 });
 
+interface AutoCompactionSurface {
+	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+}
+
 describe("Compaction extension offline deletion requests", () => {
+
 	/**
 	 * Shared helper: creates a session with no configured auth, using the given extension handlers.
 	 * Returns the session and a cleanup function.
@@ -275,7 +280,8 @@ describe("Compaction extension offline deletion requests", () => {
 	function createUnauthenticatedSession(
 		beforeCompactHandler: (event: SessionEvent) => Promise<SessionBeforeCompactResult | undefined>,
 		onCompact?: (event: SessionEvent) => Promise<undefined>,
-	): { session: AgentSession; cleanup: () => void } {
+		modelOverrides: Partial<NonNullable<ReturnType<typeof getModel>>> = {},
+	): { session: AgentSession; modelRegistry: ModelRegistry; cleanup: () => void } {
 		const tempDir = join(tmpdir(), `pi-compaction-unauth-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(tempDir, { recursive: true });
 
@@ -294,7 +300,8 @@ describe("Compaction extension offline deletion requests", () => {
 			shortcuts: new Map(),
 		};
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const baseModel = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = { ...baseModel, ...modelOverrides };
 		const agent = new Agent({
 			getApiKey: () => "",
 			initialState: {
@@ -308,12 +315,13 @@ describe("Compaction extension offline deletion requests", () => {
 			...createTestResourceLoader(),
 			getExtensions: () => ({ extensions: [extension], errors: [], runtime }),
 		};
+		const modelRegistry = ModelRegistry.create(AuthStorage.create(join(tempDir, "auth.json")));
 		const session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.create(tempDir),
 			settingsManager: SettingsManager.create(tempDir, tempDir),
 			cwd: tempDir,
-			modelRegistry: ModelRegistry.create(AuthStorage.create(join(tempDir, "auth.json"))),
+			modelRegistry,
 			resourceLoader,
 		});
 
@@ -326,6 +334,7 @@ describe("Compaction extension offline deletion requests", () => {
 
 		return {
 			session,
+			modelRegistry,
 			cleanup() {
 				session.dispose();
 				rmSync(tempDir, { recursive: true, force: true });
@@ -369,6 +378,48 @@ describe("Compaction extension offline deletion requests", () => {
 			expect(compactEvents).toHaveLength(1);
 			expect((compactEvents[0] as SessionCompactEvent).fromExtension).toBe(true);
 		} finally {
+			cleanup();
+		}
+	});
+
+	it("documents overflow extension requests as a budget-gate bypass", async () => {
+		const compactEvents: SessionEvent[] = [];
+		const autoEvents: Array<{ type: string; reason?: string; result?: unknown; errorMessage?: string }> = [];
+
+		const { session, modelRegistry, cleanup } = createUnauthenticatedSession(
+			async (event) => {
+				if (event.type !== "session_before_compact") return undefined;
+				const deletable = event.preparation.transcript.entries.find((entry) => !entry.protected);
+				if (!deletable) return undefined;
+				return { deletionRequest: { deletions: [{ kind: "entry", entryId: deletable.entryId }] } };
+			},
+			async (event) => {
+				if (event.type === "session_compact") compactEvents.push(event);
+				return undefined;
+			},
+			{ contextWindow: 20, maxInputTokens: 20 },
+		);
+		const authSpy = vi.spyOn(modelRegistry, "getApiKeyAndHeaders");
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") {
+				autoEvents.push({ type: event.type, reason: event.reason, result: event.result, errorMessage: event.errorMessage });
+			}
+		});
+
+		try {
+			await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false);
+
+			expect(authSpy).not.toHaveBeenCalled();
+			expect(autoEvents).toHaveLength(1);
+			expect(autoEvents[0]).toMatchObject({ type: "compaction_end", reason: "overflow", errorMessage: undefined });
+			expect(autoEvents[0]!.result).toBeDefined();
+			const result = autoEvents[0]!.result as { stats: { tokensAfter: number } };
+			expect(result.stats.tokensAfter).toBeGreaterThan(20);
+			expect(session.sessionManager.getEntries().some((entry) => entry.type === "context_compaction")).toBe(true);
+			expect(compactEvents).toHaveLength(1);
+			expect((compactEvents[0] as SessionCompactEvent).fromExtension).toBe(true);
+		} finally {
+			authSpy.mockRestore();
 			cleanup();
 		}
 	});

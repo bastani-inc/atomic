@@ -9,6 +9,7 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { getEffectiveInputBudget } from "../src/core/context-window.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 function createContextCompactionStats(tokensBefore: number, tokensAfter: number) {
@@ -136,6 +137,27 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		expect(compactionMocks.contextCompact).toHaveBeenCalledTimes(1);
 		expect(compactionMocks.contextCompact.mock.calls[0]?.[5]).toBe("high");
+	});
+	it("passes threshold and overflow ladder budgets to context compaction", async () => {
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+		const effectiveBudget = getEffectiveInputBudget(session.model!);
+		const settings = session.settingsManager.getCompactionSettings();
+
+		await runAutoCompaction("threshold", false);
+		expect(compactionMocks.contextCompact.mock.calls[0]?.[6]).toEqual({
+			acceptanceTokenBudget: effectiveBudget - settings.reserveTokens,
+		});
+
+		compactionMocks.contextCompact.mockClear();
+		await runAutoCompaction("overflow", false);
+		expect(compactionMocks.contextCompact.mock.calls[0]?.[6]).toEqual({
+			acceptanceTokenBudget: effectiveBudget,
+			criticalEvictionTokenBudget: effectiveBudget,
+		});
 	});
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {
 		session.agent.followUp({

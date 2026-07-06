@@ -171,15 +171,15 @@ function messageText(message: AgentMessage): string {
 	}
 }
 
-function hasAssistantError(message: AgentMessage): boolean {
+export function hasAssistantError(message: AgentMessage): boolean {
 	return message.role === "assistant" && (message as AssistantMessage).stopReason === "error";
 }
 
-function hasToolResultError(message: AgentMessage): boolean {
+export function hasToolResultError(message: AgentMessage): boolean {
 	return message.role === "toolResult" && (message as { isError?: unknown }).isError === true;
 }
 
-function hasFailedBashExecution(message: AgentMessage): boolean {
+export function hasFailedBashExecution(message: AgentMessage): boolean {
 	return message.role === "bashExecution" && typeof message.exitCode === "number" && message.exitCode !== 0;
 }
 

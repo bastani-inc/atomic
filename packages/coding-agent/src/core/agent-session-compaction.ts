@@ -1,7 +1,11 @@
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ContextCompactionApplyOptions } from "./agent-session-methods.ts";
+import { getEffectiveInputBudget } from "./context-window.ts";
 import { type ContextCompactionParameters, type ContextCompactionPreparation, type ContextCompactionResult, type ContextDeletionRequest, type ValidatedContextDeletionResult, contextCompact as runContextCompact, prepareContextCompaction, validateContextDeletionRequest } from "./compaction/index.ts";
+import { runDeterministicContextEviction } from "./compaction/context-compaction-eviction.ts";
+// Type-only import: erased at runtime so module mocks of the compaction barrel stay authoritative.
+import type { ContextCompactionLadderOptions } from "./compaction/context-compaction-runner.ts";
 import type { SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionCompactEvent } from "./extensions/index.ts";
 import type { ContextCompactionEntry } from "./session-manager.ts";
 
@@ -35,16 +39,36 @@ export async function _applyContextVerbatimCompaction(
 		...(options.query === undefined ? {} : { query: options.query }),
 	});
 	if (!preparation) {
+		// Overflow recovery must be loud when there is no transcript the ladder can compact:
+		// a silent no-op would leave the session overflowing without proving safe deletion is exhausted.
+		if (options.reason === "overflow") {
+			throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
+		}
 		return undefined;
 	}
 	const parameters: ContextCompactionParameters = preparation.parameters;
+	const effectiveBudget = getEffectiveInputBudget(model);
+	const ladderOptions: ContextCompactionLadderOptions | undefined =
+		options.reason === "overflow"
+			? { acceptanceTokenBudget: effectiveBudget, criticalEvictionTokenBudget: effectiveBudget }
+			: options.reason === "threshold"
+				// Match the shouldCompact trigger boundary in transcript-estimate space:
+				// tokensAfter <= effectiveBudget - reserveTokens is equivalent to
+				// !shouldCompact(tokensAfter, effectiveBudget, settings). The live post-retry
+				// trigger uses provider usage (system/tools included), so this is a best-effort
+				// boundary; a negative boundary correctly means no estimated result fits.
+				? { acceptanceTokenBudget: effectiveBudget - settings.reserveTokens }
+				: undefined;
 
 	// Planner fallback used when no extension supplies a deletionRequest. Auth is resolved
-	// lazily here so extension-provided deletion requests keep working offline. Returns
-	// undefined when auth is unavailable (auto-mode resolvers), signaling a no-op compaction.
+	// lazily here so extension-provided deletion requests keep working offline. Overflow with
+	// missing auth uses deterministic eviction directly instead of silently no-oping.
 	const runPlanner = async (): Promise<ValidatedContextDeletionResult | undefined> => {
 		const auth = await options.resolvePlannerAuth();
-		if (!auth) return undefined;
+		if (!auth) {
+			if (options.reason === "overflow") return runDeterministicContextEviction(preparation.transcript, effectiveBudget);
+			return undefined;
+		}
 		return runContextCompact(
 			preparation,
 			model,
@@ -52,6 +76,7 @@ export async function _applyContextVerbatimCompaction(
 			auth.headers,
 			options.abortController.signal,
 			compactionThinkingLevel,
+			ladderOptions,
 		);
 	};
 
