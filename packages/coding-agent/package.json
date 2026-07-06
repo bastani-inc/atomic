@@ -117,7 +117,7 @@
   },
   "optionalDependencies": {
     "@mariozechner/clipboard": "0.3.9",
-    "@dbos-inc/dbos-sdk": "4.22.6"
+    "@dbos-inc/dbos-sdk": "4.23.6"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",
