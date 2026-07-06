@@ -35,7 +35,7 @@ export const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 // for the frontier data). This planner uses the high-capacity synthesis roster
 // because it performs cross-codebase planning before partition fan-out.
 export const PLANNER_MODEL_CONFIG = {
-  model: "anthropic/claude-fable-5:xhigh",
+  model: "anthropic/claude-fable-5:high",
   fallbackModels: [
     "openai-codex/gpt-5.5:xhigh",
     "github-copilot/gpt-5.5:xhigh",
@@ -44,7 +44,7 @@ export const PLANNER_MODEL_CONFIG = {
     "anthropic/claude-opus-4-8:xhigh",
     "zai/glm-5.2:xhigh",
     "zai-coding-cn/glm-5.2:xhigh",
-    "openrouter/anthropic/claude-fable-5:xhigh",
+    "openrouter/anthropic/claude-fable-5:high",
     "openrouter/sakana/fugu-ultra:high",
     "openrouter/openai/gpt-5.5:xhigh",
     "openrouter/anthropic/claude-opus-4-8:xhigh",

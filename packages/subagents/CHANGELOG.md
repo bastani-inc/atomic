@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the Claude Fable 5 reasoning level from `xhigh` to `high` in the builtin `debugger` agent, covering the `anthropic/claude-fable-5` primary and its OpenRouter mirror in the fallback chain.
+
 ## [0.9.5-alpha.2] - 2026-07-04
 
 ### Changed
