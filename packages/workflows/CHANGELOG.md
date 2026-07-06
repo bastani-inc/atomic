@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Changed the Claude Fable 5 reasoning level from `xhigh` to `high` across all builtin workflow model chains (`ralph` prompt-engineer/orchestrator/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors.
+- Changed the Claude Opus 4.8 reasoning level from `xhigh` to `high` across the same builtin workflow model chains, covering the `github-copilot/claude-opus-4.8 (1m)`, `anthropic/claude-opus-4-8`, and `openrouter/anthropic/claude-opus-4-8` entries; Opus 4.8 entries already at `medium`/`low` value points are unchanged.
 
 ## [0.9.5-alpha.4] - 2026-07-05
 
