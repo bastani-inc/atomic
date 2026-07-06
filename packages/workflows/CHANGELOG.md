@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.5-alpha.6] - 2026-07-06
+
 ### Fixed
 
 - Fixed workflow stage chats so attach, exit, and re-attach cycles during an in-flight `subagent` call replay the latest live tool partial result immediately instead of collapsing single, parallel, or chain calls back to the bare `renderCall` title until the next update; stage chats also prefer renderers from the stage's own agent session before falling back to the host chat so nested workflow stages can render tools that the parent chat does not expose. ([#1643](https://github.com/bastani-inc/atomic/issues/1643))

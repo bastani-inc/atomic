@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.5-alpha.6] - 2026-07-06
+
 ### Fixed
 
 - Fixed deferred TUI extension loading so the editor keeps accepting and echoing keystrokes after first paint: startup now yields cooperatively between extension/resource-loading chunks, preserves text typed during completion, and safely queues Enter submissions made before the main prompt loop is ready.
