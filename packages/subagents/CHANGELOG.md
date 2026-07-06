@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the Claude Fable 5 reasoning level from `xhigh` to `high` in the builtin `debugger` agent, covering the `anthropic/claude-fable-5` primary and its OpenRouter mirror in the fallback chain.
+- Changed the Claude Opus 4.8 reasoning level from `xhigh` to `high` in the builtin `debugger` agent's fallback chain (`github-copilot/claude-opus-4.8 (1m)`, `anthropic/claude-opus-4-8`, and the OpenRouter mirror); Opus 4.8 entries at other levels in other agents are unchanged.
+
 ## [0.9.5-alpha.2] - 2026-07-04
 
 ### Changed

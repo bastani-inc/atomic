@@ -16,19 +16,19 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 //   openrouter/z-ai mirror maps :xhigh exclusively, so it is always :xhigh.
 
 export const promptEngineerModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
@@ -53,38 +53,38 @@ export const researchModelConfig = {
 };
 
 export const orchestratorModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
 };
 
 export const reviewerAModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
@@ -96,15 +96,15 @@ export const reviewerBModelConfig = {
     fallbackModels: [
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "anthropic/claude-fable-5:xhigh",
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "anthropic/claude-fable-5:high",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
-      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],
     excludedTools: ["ask_user_question"],
@@ -118,14 +118,14 @@ export const reviewerCModelConfig = {
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
-      "anthropic/claude-fable-5:xhigh",
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "anthropic/claude-fable-5:high",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/z-ai/glm-5.2:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
-      "openrouter/anthropic/claude-opus-4-8:xhigh"
+      "openrouter/anthropic/claude-fable-5:high",
+      "openrouter/anthropic/claude-opus-4-8:high"
     ],
     excludedTools: ["ask_user_question"],
     schema: reviewDecisionSchema,

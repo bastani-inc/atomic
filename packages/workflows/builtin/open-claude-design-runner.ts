@@ -78,14 +78,14 @@ export async function runOpenClaudeDesignWorkflow(ctx: OpenClaudeDesignContext):
   // strictly dominated in Atomic's benchmark (see ralph-models.ts). Opus stays
   // at :xhigh here — visual quality, not $/task, is the objective for design.
   const designModelConfig = {
-    model: "anthropic/claude-fable-5:xhigh",
+    model: "anthropic/claude-fable-5:high",
     fallbackModels: [
-      "github-copilot/claude-opus-4.8 (1m):xhigh",
-      "anthropic/claude-opus-4-8:xhigh",
+      "github-copilot/claude-opus-4.8 (1m):high",
+      "anthropic/claude-opus-4-8:high",
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
-      "openrouter/anthropic/claude-fable-5:xhigh",
-      "openrouter/anthropic/claude-opus-4-8:xhigh",
+      "openrouter/anthropic/claude-fable-5:high",
+      "openrouter/anthropic/claude-opus-4-8:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/z-ai/glm-5.2:xhigh"
     ],

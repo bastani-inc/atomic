@@ -114,19 +114,19 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     };
 
     const reviewerModelConfig = {
-      model: "anthropic/claude-fable-5:xhigh",
+      model: "anthropic/claude-fable-5:high",
       fallbackModels: [
           "openai-codex/gpt-5.5:xhigh",
           "github-copilot/gpt-5.5:xhigh",
           "openai/gpt-5.5:xhigh",
-          "github-copilot/claude-opus-4.8 (1m):xhigh",
-          "anthropic/claude-opus-4-8:xhigh",
+          "github-copilot/claude-opus-4.8 (1m):high",
+          "anthropic/claude-opus-4-8:high",
           "zai/glm-5.2:xhigh",
           "zai-coding-cn/glm-5.2:xhigh",
-          "openrouter/anthropic/claude-fable-5:xhigh",
+          "openrouter/anthropic/claude-fable-5:high",
           "openrouter/sakana/fugu-ultra:high",
           "openrouter/openai/gpt-5.5:xhigh",
-          "openrouter/anthropic/claude-opus-4-8:xhigh",
+          "openrouter/anthropic/claude-opus-4-8:high",
           "openrouter/z-ai/glm-5.2:xhigh"
       ],
       tools: goalRunnerTools,
