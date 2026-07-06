@@ -1,0 +1,44 @@
+name: Bug Report
+description: Report something that's broken
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you start:** Read [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md).
+
+        Maintainers review open issues regularly. Issues that do not meet the quality bar in [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md) may need clarification before we can investigate.
+
+
+        **Important:** before reporting an issue in core, please validate first with `atomic -ne` that this is not caused by an extension you loaded.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Be specific. Include error messages if any.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps to trigger the bug.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `atomic --version` (e.g. 0.9.5). If you are using a prerelease, include the exact alpha version (e.g. 0.9.5-alpha.5).
+    validations:
+      required: false

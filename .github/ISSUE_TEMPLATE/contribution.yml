@@ -1,0 +1,35 @@
+name: Contribution
+
+description: Propose a change or feature enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before you start:** Read [CONTRIBUTING.md](https://github.com/bastani-inc/atomic/blob/main/CONTRIBUTING.md).
+
+        Use this form to propose a focused change or feature enhancement. If you need help, have a question, or are unsure whether this belongs here, please ask on [Discord](https://discord.gg/9CvdXUGXR4) instead.
+
+  - type: textarea
+    id: change
+    attributes:
+      label: What do you want to change?
+      description: Be specific and concise.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: What problem does this solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How? (optional)
+      description: Brief technical approach if you have one in mind.
+    validations:
+      required: false
