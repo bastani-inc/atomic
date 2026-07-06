@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes, Text, theme } from "./interactive-mode-deps.ts";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 /**
  * Finishes a startup where extension loading was deferred so the TUI could
@@ -11,6 +12,7 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
     const loadingIndicator = new Text(theme.fg("dim", "Loading extensions, skills, prompts, themes..."), 1, 0);
     this.chatContainer.addChild(loadingIndicator);
     this.ui.requestRender();
+    await yieldToEventLoop();
 
     try {
       await this.session.reload({ reason: "startup" });

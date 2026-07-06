@@ -1,4 +1,5 @@
 import { resolvePath } from "../utils/paths.ts";
+import { yieldToEventLoop } from "../utils/event-loop.ts";
 import { startTimingSpan, endTimingSpan } from "./timings.ts";
 import {
 	loadExtensionFromFactory,
@@ -103,6 +104,9 @@ export async function loadExtensionFactories(
 	const errors: Array<{ path: string; error: string }> = [];
 
 	for (const [index, factory] of state.extensionFactories.entries()) {
+		if (index > 0) {
+			await yieldToEventLoop();
+		}
 		const extensionPath = `<inline:${index + 1}>`;
 		try {
 			const extension = await loadExtensionFromFactory(

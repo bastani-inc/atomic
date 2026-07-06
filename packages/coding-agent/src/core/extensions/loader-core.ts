@@ -3,6 +3,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { endTimingSpan, startTimingSpan } from "../timings.ts";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { createExtensionAPI } from "./loader-api.ts";
 import {
   emptyWorkflowResourceProvider,
@@ -126,7 +127,11 @@ async function loadExtensionsInternal(
   const resolvedEventBus = eventBus ?? createEventBus();
   const resolvedRuntime = runtime ?? createExtensionRuntime();
 
+  let processedExtensionCount = 0;
   for (const extPath of paths) {
+    if (processedExtensionCount > 0) {
+      await yieldToEventLoop();
+    }
     const extensionSpan = startTimingSpan(`loadExtensions.${extPath}.total`, "extensions");
     const { extension, error } = await loadExtension(
       extPath,
@@ -138,7 +143,7 @@ async function loadExtensionsInternal(
       cacheToken,
     );
     endTimingSpan(extensionSpan);
-
+    processedExtensionCount += 1;
     if (error) {
       errors.push({ path: extPath, error });
       continue;

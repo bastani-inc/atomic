@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { isLocalPath } from "../utils/paths.ts";
 import { clearExtensionCache, createExtensionRuntime, loadExtensionsCached } from "./extensions/loader.ts";
 import type { LoadExtensionsResult } from "./extensions/types.ts";
@@ -219,9 +220,11 @@ export async function reloadDefaultResourceLoader(
 		: mergeResourcePaths(state.cwd, [...cliEnabledSkills, ...enabledSkills, ...builtinEnabledSkills], state.additionalSkillPaths);
 
 	state.lastSkillPaths = skillPaths;
+	const skillsStartedAt = Date.now();
 	const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPaths");
 	updateSkillsFromPaths(loader, skillPaths, metadataByPath);
 	endTimingSpan(skillsSpan);
+	await yieldToEventLoopIfSlow(skillsStartedAt);
 	for (const p of state.additionalSkillPaths) {
 		if (isLocalPath(p)) {
 			const resolved = resolveResourcePath(state.cwd, p);
@@ -236,9 +239,11 @@ export async function reloadDefaultResourceLoader(
 		: mergeResourcePaths(state.cwd, [...cliEnabledPrompts, ...enabledPrompts, ...builtinEnabledPrompts], state.additionalPromptTemplatePaths);
 
 	state.lastPromptPaths = promptPaths;
+	const promptsStartedAt = Date.now();
 	const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPaths");
 	updatePromptsFromPaths(loader, promptPaths, metadataByPath);
 	endTimingSpan(promptsSpan);
+	await yieldToEventLoopIfSlow(promptsStartedAt);
 	for (const p of state.additionalPromptTemplatePaths) {
 		if (isLocalPath(p)) {
 			const resolved = resolveResourcePath(state.cwd, p);
@@ -257,9 +262,11 @@ export async function reloadDefaultResourceLoader(
 		: mergeResourcePaths(state.cwd, [...cliEnabledThemes, ...enabledThemes, ...builtinEnabledThemes], state.additionalThemePaths);
 
 	state.lastThemePaths = themePaths;
+	const themesStartedAt = Date.now();
 	const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPaths");
 	updateThemesFromPaths(loader, themePaths, metadataByPath);
 	endTimingSpan(themesSpan);
+	await yieldToEventLoopIfSlow(themesStartedAt);
 	for (const p of state.additionalThemePaths) {
 		const resolved = resolveResourcePath(state.cwd, p);
 		if (!existsSync(resolved) && !state.themeDiagnostics.some((d) => d.path === resolved)) {
@@ -267,6 +274,7 @@ export async function reloadDefaultResourceLoader(
 		}
 	}
 
+	const contextFilesStartedAt = Date.now();
 	const contextFilesSpan = startTimingSpan("DefaultResourceLoader.reload.loadProjectContextFiles");
 	const agentsFiles = {
 		agentsFiles: state.noContextFiles
@@ -278,9 +286,11 @@ export async function reloadDefaultResourceLoader(
 				}),
 	};
 	endTimingSpan(contextFilesSpan);
+	await yieldToEventLoopIfSlow(contextFilesStartedAt);
 	const resolvedAgentsFiles = state.agentsFilesOverride ? state.agentsFilesOverride(agentsFiles) : agentsFiles;
 	state.agentsFiles = resolvedAgentsFiles.agentsFiles;
 
+	const promptFilesStartedAt = Date.now();
 	const promptFilesSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePromptFiles");
 	const baseSystemPrompt = resolvePromptInput(
 		state.systemPromptSource ?? discoverSystemPromptFile(loader),
@@ -298,4 +308,5 @@ export async function reloadDefaultResourceLoader(
 		: baseAppend;
 	state.loaded = true;
 	endTimingSpan(promptFilesSpan);
+	await yieldToEventLoopIfSlow(promptFilesStartedAt);
 }
