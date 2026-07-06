@@ -110,6 +110,49 @@ uv run pier run \
 
 For GHES use `COPILOT_API_TARGET=api.enterprise.githubcopilot.com`; for GHEC use `COPILOT_API_TARGET=copilot-api.<tenant>.ghe.com`.
 
+### Anthropic subscription with OpenRouter fallback
+
+Export `ANTHROPIC_OAUTH_TOKEN` to run Anthropic models through the subscription OAuth path. Also export `OPENROUTER_API_KEY` if you want the adapters to fall back to the equivalent `openrouter/anthropic/...` model when the subscription token is unavailable:
+
+```bash
+export ANTHROPIC_OAUTH_TOKEN="..."
+export OPENROUTER_API_KEY="..."  # optional fallback
+
+uv run pier run \
+  -p deep-swe/tasks \
+  --agent-import-path atomic_pier:Atomic \
+  --model anthropic/claude-opus-4-8 \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg version=next \
+  --agent-timeout-multiplier 16 \
+  --n-tasks 1 \
+  --sample-seed 0 \
+  --force-build
+```
+
+The native Anthropic provider uses dash-form model ids such as `claude-opus-4-8`; when falling back, the adapters translate version suffixes to OpenRouter's matching dot-form slugs such as `openrouter/anthropic/claude-opus-4.8`.
+
+### OpenAI Codex subscription with OpenRouter fallback
+
+For `openai-codex/...` models, Atomic uses OAuth credentials stored in the agent auth file rather than an environment variable. Log in on the host so `~/.atomic/agent/auth.json` (or legacy `~/.pi/agent/auth.json`) contains an `openai-codex` entry. The Pier and Harbor adapters copy only that provider entry into the sandbox user's `~/.atomic/agent/auth.json` with `0600` permissions before launching Atomic. Export `OPENROUTER_API_KEY` if you want missing Codex subscription auth to fall back to the equivalent `openrouter/openai/...` model.
+
+```bash
+export OPENROUTER_API_KEY="..."  # optional fallback
+
+uv run pier run \
+  -p deep-swe/tasks \
+  --agent-import-path atomic_pier:Atomic \
+  --model openai-codex/gpt-5.5 \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg version=next \
+  --agent-timeout-multiplier 16 \
+  --n-tasks 1 \
+  --sample-seed 0 \
+  --force-build
+```
+
+The adapters do not introduce Codex-specific auth environment variables and do not print the OAuth credential contents.
+
 ### OpenRouter
 
 Export an OpenRouter API key and use an OpenRouter model slug after the `openrouter/` provider prefix:
@@ -135,11 +178,12 @@ The Pier network allowlist automatically includes `openrouter.ai` when the model
 
 ## Adapter behavior
 
-The adapter is self-contained; it does not require patching Pier. It follows the Harbor/Pier installed-agent pattern:
+The adapter is self-contained; it does not require patching Pier or Harbor. It follows the installed-agent pattern:
 
 1. Install Atomic and required local search tools (`rg` and `fd`) during setup.
 2. Run the Atomic CLI in JSON mode.
-3. Tee Atomic's JSON stream to `/logs/agent/atomic.txt`.
-4. Collect usage and trajectory data from the logs.
+3. Keep Atomic's mutable agent state under the sandbox user's `~/.atomic/agent` directory by setting Atomic's existing agent-dir environment override, passing `--session-dir ~/.atomic/agent/atomic-sessions`, and exporting `ATOMIC_TODO_PATH=$HOME/.atomic/agent/todos` inside the sandbox so the default todo tool cannot create `.atomic/todos` in the benchmark repository.
+4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and copy session transcripts to `/logs/agent/atomic-sessions/` after the run, with an exit trap to preserve transcripts on SIGTERM-based timeouts.
+5. Collect usage and trajectory data from the logs.
 
 Like the built-in Pier agents, it does not auto-commit work. Deep SWE tasks rely on the agent following the task instruction to commit.

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shlex
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,7 +41,11 @@ class Atomic(BaseInstalledAgent):
 
     _OUTPUT_FILENAME = "atomic.txt"
     _SESSION_DIR_NAME = "atomic-sessions"
-    _CONTAINER_SESSION_DIR = str(EnvironmentPaths.agent_dir / _SESSION_DIR_NAME)
+    _CONTAINER_AGENT_DIR = "$HOME/.atomic/agent"
+    _CONTAINER_SESSION_DIR = f"{_CONTAINER_AGENT_DIR}/{_SESSION_DIR_NAME}"
+    _LOG_SESSION_DIR = str(EnvironmentPaths.agent_dir / _SESSION_DIR_NAME)
+    _OPENAI_CODEX_PROVIDER = "openai-codex"
+    _OPENAI_CODEX_UPLOAD_TARGET = "/tmp/atomic-openai-codex-auth.json"
 
     _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
         "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
@@ -60,6 +67,7 @@ class Atomic(BaseInstalledAgent):
         # "huggingface": ("HF_TOKEN",),
         "mistral": ("MISTRAL_API_KEY",),
         "openai": ("OPENAI_API_KEY",),
+        "openai-codex": (),
         "openrouter": ("OPENROUTER_API_KEY",),
         "xai": ("XAI_API_KEY",),
     }
@@ -98,6 +106,7 @@ class Atomic(BaseInstalledAgent):
         # "huggingface": ("huggingface.co",),  # disabled: unused provider
         "mistral": ("api.mistral.ai",),
         "openai": ("api.openai.com",),
+        "openai-codex": ("chatgpt.com", "auth.openai.com"),
         "openrouter": ("openrouter.ai",),
         "xai": ("api.x.ai",),
     }
@@ -191,6 +200,121 @@ class Atomic(BaseInstalledAgent):
             "$HOME/.agents/skills/ 2>/dev/null || true"
         )
 
+    @staticmethod
+    def _auth_config_paths() -> tuple[Path, ...]:
+        return (
+            Path.home() / ".atomic" / "agent" / "auth.json",
+            Path.home() / ".pi" / "agent" / "auth.json",
+        )
+
+    def _load_openai_codex_auth(self) -> dict[str, object] | None:
+        merged: dict[str, object] = {}
+        for auth_path in reversed(self._auth_config_paths()):
+            try:
+                data = json.loads(auth_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict):
+                merged.update(data)
+        entry = merged.get(self._OPENAI_CODEX_PROVIDER)
+        return entry if isinstance(entry, dict) else None
+
+    def _has_subscription_auth(self, provider: str) -> bool:
+        if provider == "anthropic":
+            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN"))
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            return self._load_openai_codex_auth() is not None
+        return True
+
+    @staticmethod
+    def _openrouter_anthropic_model(model: str) -> str:
+        return re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
+
+    def _fallback_model(self, provider: str, model: str) -> tuple[str, str] | None:
+        if not self._get_env("OPENROUTER_API_KEY"):
+            return None
+        if provider == "anthropic":
+            return "openrouter", f"anthropic/{self._openrouter_anthropic_model(model)}"
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            return "openrouter", f"openai/{model}"
+        return None
+
+    def _select_provider_model(self, provider: str, model: str) -> tuple[str, str]:
+        # The Atomic CLI has no top-level subscription->OpenRouter retry flag; its
+        # `fallbackModels` support is scoped to workflow/subagent attempts. For
+        # eval runs we therefore select the OpenRouter mirror before launch only
+        # when the subscription credential is absent, preserving subscription-first
+        # behavior while avoiding a failed primary attempt that cannot recover.
+        if not self._has_subscription_auth(provider):
+            fallback = self._fallback_model(provider, model)
+            if fallback:
+                return fallback
+        return provider, model
+
+    async def _provision_openai_codex_auth(
+        self,
+        environment: BaseEnvironment,
+        provider: str,
+    ) -> None:
+        if provider != self._OPENAI_CODEX_PROVIDER:
+            return
+        entry = self._load_openai_codex_auth()
+        if entry is None:
+            return
+        auth_data = {self._OPENAI_CODEX_PROVIDER: entry}
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            temp_path = Path(handle.name)
+            json.dump(auth_data, handle, indent=2)
+            handle.write("\n")
+        try:
+            os.chmod(temp_path, 0o600)
+            await environment.upload_file(temp_path, self._OPENAI_CODEX_UPLOAD_TARGET)
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        if environment.default_user is not None:
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"chown {shlex.quote(str(environment.default_user))} "
+                    f"{self._OPENAI_CODEX_UPLOAD_TARGET}"
+                ),
+            )
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "mkdir -p $HOME/.atomic/agent && chmod 700 $HOME/.atomic/agent && "
+                f"install -m 600 {self._OPENAI_CODEX_UPLOAD_TARGET} "
+                "$HOME/.atomic/agent/auth.json && "
+                f"rm -f {self._OPENAI_CODEX_UPLOAD_TARGET}"
+            ),
+        )
+
+    @staticmethod
+    def _agent_state_env() -> dict[str, str]:
+        return {"ATOMIC_CODING_AGENT_DIR": "~/.atomic/agent"}
+
+    @staticmethod
+    def _agent_state_setup_command() -> str:
+        return (
+            "mkdir -p $HOME/.atomic/agent/cache $HOME/.atomic/agent/todos && "
+            "chmod 700 $HOME/.atomic/agent && "
+            "export ATOMIC_TODO_PATH=\"$HOME/.atomic/agent/todos\"; "
+        )
+
+    @staticmethod
+    def _session_sync_trap_command(session_dir: str, log_session_dir: str) -> str:
+        return (
+            "sync_atomic_sessions() { "
+            f"mkdir -p {log_session_dir}; "
+            f"cp -a {session_dir}/. {log_session_dir}/ 2>/dev/null || true; "
+            "}; "
+            "trap sync_atomic_sessions EXIT; "
+            "trap 'sync_atomic_sessions; exit 143' TERM; "
+        )
+
     @with_prompt_template
     async def run(
         self,
@@ -201,12 +325,21 @@ class Atomic(BaseInstalledAgent):
         if not self.model_name or "/" not in self.model_name:
             raise ValueError("Model name must be in the format provider/model_name")
 
-        provider, model = self.model_name.split("/", 1)
+        requested_provider, requested_model = self.model_name.split("/", 1)
+        provider, model = self._select_provider_model(requested_provider, requested_model)
         env = {
             key: value
-            for key in self._PROVIDER_ENV_KEYS.get(provider, ())
+            for key in (
+                *self._PROVIDER_ENV_KEYS.get(provider, ()),
+                *(
+                    ("OPENROUTER_API_KEY",)
+                    if requested_provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}
+                    else ()
+                ),
+            )
             if (value := self._get_env(key))
         }
+        env.update(self._agent_state_env())
         copilot_base_url = (
             self._copilot_api_base_url() if provider == "github-copilot" else None
         )
@@ -214,23 +347,29 @@ class Atomic(BaseInstalledAgent):
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command)
+        await self._provision_openai_codex_auth(environment, requested_provider)
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
             cli_flags += " "
 
-        session_dir = shlex.quote(self._CONTAINER_SESSION_DIR)
+        session_dir = self._CONTAINER_SESSION_DIR
+        log_session_dir = shlex.quote(self._LOG_SESSION_DIR)
         output_file = shlex.quote(str(EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME))
         copilot_config_command = self._copilot_models_config_command(copilot_base_url)
         command = (
-            f"rm -rf {session_dir} && mkdir -p {session_dir} && "
+            f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
+            f"{self._agent_state_setup_command()}"
+            f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
             f"{copilot_config_command}"
             "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi && "
             f"atomic --print --mode json --session-dir {session_dir} "
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
             f"{cli_flags}"
             f"{shlex.quote(instruction)} "
-            f"2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | stdbuf -oL tee {output_file}"
+            "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
+            f"stdbuf -oL tee {output_file}; status=$?; "
+            "exit $status"
         )
         await self.exec_as_agent(environment, command=command, env=env)
         self.populate_context_post_run(context)
@@ -270,7 +409,7 @@ class Atomic(BaseInstalledAgent):
         models_config = {"providers": {"github-copilot": {"baseUrl": base_url}}}
         config_json = json.dumps(models_config, indent=2)
         return (
-            "mkdir -p $HOME/.atomic/agent && "
+            "mkdir -p $HOME/.atomic/agent && chmod 700 $HOME/.atomic/agent && "
             "cat > $HOME/.atomic/agent/models.json <<'ATOMIC_MODELS_JSON'\n"
             f"{config_json}\n"
             "ATOMIC_MODELS_JSON\n"

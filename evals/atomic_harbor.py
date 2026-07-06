@@ -1,6 +1,8 @@
 import json
 import os
+import re
 import shlex
+import tempfile
 from pathlib import Path
 from typing import override
 
@@ -16,7 +18,10 @@ from harbor.models.agent.context import AgentContext
 class Atomic(BaseInstalledAgent):
     _OUTPUT_FILENAME = "atomic.txt"
     _SESSION_DIR_NAME = "atomic-sessions"
-    _CONTAINER_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
+    _CONTAINER_SESSION_DIR = f"$HOME/.atomic/agent/{_SESSION_DIR_NAME}"
+    _LOG_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
+    _OPENAI_CODEX_PROVIDER = "openai-codex"
+    _OPENAI_CODEX_UPLOAD_TARGET = "/tmp/atomic-openai-codex-auth.json"
 
     CLI_FLAGS = [
         CliFlag(
@@ -76,6 +81,121 @@ class Atomic(BaseInstalledAgent):
             f"$HOME/.agents/skills/ 2>/dev/null || true"
         )
 
+    @staticmethod
+    def _auth_config_paths() -> tuple[Path, ...]:
+        return (
+            Path.home() / ".atomic" / "agent" / "auth.json",
+            Path.home() / ".pi" / "agent" / "auth.json",
+        )
+
+    def _load_openai_codex_auth(self) -> dict[str, object] | None:
+        merged: dict[str, object] = {}
+        for auth_path in reversed(self._auth_config_paths()):
+            try:
+                data = json.loads(auth_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(data, dict):
+                merged.update(data)
+        entry = merged.get(self._OPENAI_CODEX_PROVIDER)
+        return entry if isinstance(entry, dict) else None
+
+    def _has_subscription_auth(self, provider: str) -> bool:
+        if provider == "anthropic":
+            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN"))
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            return self._load_openai_codex_auth() is not None
+        return True
+
+    @staticmethod
+    def _openrouter_anthropic_model(model: str) -> str:
+        return re.sub(r"-(\d+)-(\d+)$", r"-\1.\2", model)
+
+    def _fallback_model(self, provider: str, model: str) -> tuple[str, str] | None:
+        if not self._get_env("OPENROUTER_API_KEY"):
+            return None
+        if provider == "anthropic":
+            return "openrouter", f"anthropic/{self._openrouter_anthropic_model(model)}"
+        if provider == self._OPENAI_CODEX_PROVIDER:
+            return "openrouter", f"openai/{model}"
+        return None
+
+    def _select_provider_model(self, provider: str, model: str) -> tuple[str, str]:
+        # The Atomic CLI has no top-level subscription->OpenRouter retry flag; its
+        # `fallbackModels` support is scoped to workflow/subagent attempts. For
+        # eval runs we therefore select the OpenRouter mirror before launch only
+        # when the subscription credential is absent, preserving subscription-first
+        # behavior while avoiding a failed primary attempt that cannot recover.
+        if not self._has_subscription_auth(provider):
+            fallback = self._fallback_model(provider, model)
+            if fallback:
+                return fallback
+        return provider, model
+
+    async def _provision_openai_codex_auth(
+        self,
+        environment: BaseEnvironment,
+        provider: str,
+    ) -> None:
+        if provider != self._OPENAI_CODEX_PROVIDER:
+            return
+        entry = self._load_openai_codex_auth()
+        if entry is None:
+            return
+        auth_data = {self._OPENAI_CODEX_PROVIDER: entry}
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+            temp_path = Path(handle.name)
+            json.dump(auth_data, handle, indent=2)
+            handle.write("\n")
+        try:
+            os.chmod(temp_path, 0o600)
+            await environment.upload_file(temp_path, self._OPENAI_CODEX_UPLOAD_TARGET)
+        finally:
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+        if environment.default_user is not None:
+            await self.exec_as_root(
+                environment,
+                command=(
+                    f"chown {shlex.quote(str(environment.default_user))} "
+                    f"{self._OPENAI_CODEX_UPLOAD_TARGET}"
+                ),
+            )
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "mkdir -p $HOME/.atomic/agent && chmod 700 $HOME/.atomic/agent && "
+                f"install -m 600 {self._OPENAI_CODEX_UPLOAD_TARGET} "
+                "$HOME/.atomic/agent/auth.json && "
+                f"rm -f {self._OPENAI_CODEX_UPLOAD_TARGET}"
+            ),
+        )
+
+    @staticmethod
+    def _agent_state_env() -> dict[str, str]:
+        return {"ATOMIC_CODING_AGENT_DIR": "~/.atomic/agent"}
+
+    @staticmethod
+    def _agent_state_setup_command() -> str:
+        return (
+            "mkdir -p $HOME/.atomic/agent/cache $HOME/.atomic/agent/todos && "
+            "chmod 700 $HOME/.atomic/agent && "
+            "export ATOMIC_TODO_PATH=\"$HOME/.atomic/agent/todos\"; "
+        )
+
+    @staticmethod
+    def _session_sync_trap_command(session_dir: str, log_session_dir: str) -> str:
+        return (
+            "sync_atomic_sessions() { "
+            f"mkdir -p {log_session_dir}; "
+            f"cp -a {session_dir}/. {log_session_dir}/ 2>/dev/null || true; "
+            "}; "
+            "trap sync_atomic_sessions EXIT; "
+            "trap 'sync_atomic_sessions; exit 143' TERM; "
+        )
+
     @with_prompt_template
     async def run(
         self,
@@ -88,50 +208,42 @@ class Atomic(BaseInstalledAgent):
         if not self.model_name or "/" not in self.model_name:
             raise ValueError("Model name must be in the format provider/model_name")
 
-        provider, _ = self.model_name.split("/", 1)
+        requested_provider, requested_model = self.model_name.split("/", 1)
+        provider, model = self._select_provider_model(requested_provider, requested_model)
 
         env: dict[str, str] = {}
-        keys: list[str] = []
-
-        if provider == "amazon-bedrock":
-            keys.extend(["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"])
-        elif provider == "anthropic":
-            keys.extend(["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"])
-        elif provider == "github-copilot":
-            keys.append("COPILOT_GITHUB_TOKEN")
-        elif provider == "google":
-            keys.extend(
-                [
-                    "GEMINI_API_KEY",
-                    "GOOGLE_GENERATIVE_AI_API_KEY",
-                    "GOOGLE_APPLICATION_CREDENTIALS",
-                    "GOOGLE_CLOUD_PROJECT",
-                    "GOOGLE_CLOUD_LOCATION",
-                    "GOOGLE_GENAI_USE_VERTEXAI",
-                    "GOOGLE_API_KEY",
-                ]
-            )
-        elif provider == "groq":
-            keys.append("GROQ_API_KEY")
-        elif provider == "huggingface":
-            keys.append("HF_TOKEN")
-        elif provider == "mistral":
-            keys.append("MISTRAL_API_KEY")
-        elif provider == "openai":
-            keys.append("OPENAI_API_KEY")
-        elif provider == "openrouter":
+        provider_env_keys: dict[str, tuple[str, ...]] = {
+            "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
+            "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
+            "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+            "google": (
+                "GEMINI_API_KEY",
+                "GOOGLE_GENERATIVE_AI_API_KEY",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_LOCATION",
+                "GOOGLE_GENAI_USE_VERTEXAI",
+                "GOOGLE_API_KEY",
+            ),
+            "groq": ("GROQ_API_KEY",),
+            "huggingface": ("HF_TOKEN",),
+            "mistral": ("MISTRAL_API_KEY",),
+            "openai": ("OPENAI_API_KEY",),
+            "openai-codex": (),
+            "openrouter": ("OPENROUTER_API_KEY",),
+            "xai": ("XAI_API_KEY",),
+        }
+        keys = list(provider_env_keys.get(provider, ()))
+        if requested_provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}:
             keys.append("OPENROUTER_API_KEY")
-        elif provider == "xai":
-            keys.append("XAI_API_KEY")
 
         for key in keys:
-            val = os.environ.get(key)
+            val = self._get_env(key)
             if val:
                 env[key] = val
+        env.update(self._agent_state_env())
 
-        model_args = (
-            f"--provider {provider} --model {self.model_name.split('/', 1)[1]} "
-        )
+        model_args = f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
 
         cli_flags = self.build_cli_flags()
         if cli_flags:
@@ -140,21 +252,27 @@ class Atomic(BaseInstalledAgent):
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command)
+        await self._provision_openai_codex_auth(environment, requested_provider)
 
-        # Persist the main chat under /logs so workflow stage sessions inherit
-        # that directory and can be included in post-run usage accounting.
-        session_dir = shlex.quote(self._CONTAINER_SESSION_DIR)
+        # Atomic state stays under the container user's ~/.atomic/agent; after
+        # the run, transcripts are copied to /logs for Harbor artifact parsing.
+        session_dir = self._CONTAINER_SESSION_DIR
+        log_session_dir = shlex.quote(self._LOG_SESSION_DIR)
 
         await self.exec_as_agent(
             environment,
             command=(
-                f"rm -rf {session_dir} && mkdir -p {session_dir} && "
+                f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
+                f"{self._agent_state_setup_command()}"
+                f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
                 f". ~/.nvm/nvm.sh && "
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"
                 f"{cli_flags}"
                 f"{escaped_instruction} "
-                f'2>&1 </dev/null | grep -v \'"type":"message_update"\' | stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}'
+                "2>&1 </dev/null | grep -v '\"type\":\"message_update\"' | "
+                f"stdbuf -oL tee /logs/agent/{self._OUTPUT_FILENAME}; status=$?; "
+                "exit $status"
             ),
             env=env,
         )
