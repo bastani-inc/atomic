@@ -25,6 +25,11 @@ export default workflow({
       default: "origin/main",
       description: "Optional branch reviewers compare the current code delta against (default origin/main).",
     }),
+    git_worktree_dir: Type.String({
+      default: "",
+      description:
+        "Optional Git worktree path. Must start inside a Git repo; absolute paths are used as-is, relative paths resolve from the repo root, existing Git worktrees from the invoking repository are reused/shared as-is, and missing paths are created from base_branch.",
+    }),
     create_pr: Type.Boolean({
       default: false,
       description:
@@ -54,6 +59,10 @@ export default workflow({
     review_report: Type.Optional(Type.String({ description: "Compact report pointing to the latest reviewer decision artifacts used by the reducer." })),
     review_report_path: Type.Optional(Type.String({ description: "JSON artifact path for the latest reviewer decision round." })),
     pr_report: Type.Optional(Type.String({ description: "Pull-request report emitted only when create_pr=true, Goal reaches complete, and the final pull-request stage runs." })),
+  },
+  worktreeFromInputs: {
+    gitWorktreeDir: "git_worktree_dir",
+    baseBranch: "base_branch",
   },
   run: async (ctx) => {
     const workflowCtx = ctx;

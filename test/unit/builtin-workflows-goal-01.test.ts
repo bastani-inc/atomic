@@ -125,7 +125,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
         assert.equal(mod.default.name, "goal");
     });
 
-    test("declares objective, acceptance_criteria, max_turns, base_branch, and create_pr inputs", async () => {
+    test("declares objective, acceptance_criteria, max_turns, base_branch, git_worktree_dir, and create_pr inputs", async () => {
         const mod = await import("../../packages/workflows/builtin/goal.js");
         assert.equal(fieldKind(mod.default.inputs["objective"]), "text");
         assert.equal(fieldRequired(mod.default.inputs["objective"]), true);
@@ -139,6 +139,19 @@ describe("goal", () => {    type ReviewJsonFinding = {
             fieldDefault(mod.default.inputs["base_branch"]),
             "origin/main",
         );
+        assert.equal(fieldKind(mod.default.inputs["git_worktree_dir"]), "text");
+        assert.equal(fieldDefault(mod.default.inputs["git_worktree_dir"]), "");
+        const description = fieldDescription(
+            mod.default.inputs["git_worktree_dir"],
+        );
+        assert.match(description, /inside a Git repo/);
+        assert.match(description, /absolute paths are used as-is/);
+        assert.match(description, /relative paths resolve from the repo root/);
+        assert.match(
+            description,
+            /existing Git worktrees from the invoking repository are reused\/shared as-is/,
+        );
+        assert.match(description, /missing paths are created from base_branch/);
         assert.equal(fieldKind(mod.default.inputs["create_pr"]), "boolean");
         assert.equal(fieldDefault(mod.default.inputs["create_pr"]), false);
         assert.equal(fieldRequired(mod.default.inputs["create_pr"]), false);
@@ -151,9 +164,19 @@ describe("goal", () => {    type ReviewJsonFinding = {
             "acceptance_criteria",
             "base_branch",
             "create_pr",
+            "git_worktree_dir",
             "max_turns",
             "objective",
         ]);
+    });
+
+    test("maps git_worktree_dir and base_branch to input worktree defaults", async () => {
+        const mod = await import("../../packages/workflows/builtin/goal.js");
+
+        assert.deepEqual(mod.default.inputBindings?.worktree, {
+            gitWorktreeDir: "git_worktree_dir",
+            baseBranch: "base_branch",
+        });
     });
 
     test("declares child workflow output contract", async () => {

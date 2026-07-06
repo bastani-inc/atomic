@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `git_worktree_dir` to the builtin `goal` workflow with Ralph-parity input binding so Goal runs can create or reuse a repository worktree from `base_branch` while preserving the invoking repo-relative cwd for worker, reviewer, and optional final PR stages.
+
 ### Changed
 
 - Changed the Claude Fable 5 reasoning level from `xhigh` to `high` across all builtin workflow model chains (`ralph` prompt-engineer/orchestrator/reviewer-a/reviewer-b/reviewer-c, `goal` reviewer, `deep-research-codebase` planner, and `open-claude-design`), covering both the native `anthropic/claude-fable-5` entries and their OpenRouter mirrors.

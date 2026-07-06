@@ -1,0 +1,84 @@
+import { describe, test } from "bun:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import goal from "../../packages/workflows/builtin/goal.js";
+import { setupGitWorktree, runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+
+function createGitRepo(): { readonly root: string; readonly repo: string } {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-goal-worktree-test-")));
+  const repo = join(root, "repo");
+  mkdirSync(repo);
+  runGitChecked(repo, ["init", "-b", "main"]);
+  runGitChecked(repo, ["config", "user.email", "test@example.com"]);
+  runGitChecked(repo, ["config", "user.name", "Test User"]);
+  runGitChecked(repo, ["config", "commit.gpgsign", "false"]);
+  writeFileSync(join(repo, "README.md"), "main\n");
+  runGitChecked(repo, ["add", "README.md"]);
+  runGitChecked(repo, ["commit", "-m", "initial"]);
+  runGitChecked(repo, ["checkout", "-b", "goal-base"]);
+  writeFileSync(join(repo, "base-only.txt"), "created from base branch\n");
+  runGitChecked(repo, ["add", "base-only.txt"]);
+  runGitChecked(repo, ["commit", "-m", "base marker"]);
+  runGitChecked(repo, ["checkout", "main"]);
+  mkdirSync(join(repo, "packages", "api"), { recursive: true });
+  return { root, repo };
+}
+
+describe("goal git_worktree_dir input", () => {
+  test("binds git_worktree_dir and base_branch for executor worktree setup", () => {
+    assert.deepEqual(goal.inputBindings?.worktree, {
+      gitWorktreeDir: "git_worktree_dir",
+      baseBranch: "base_branch",
+    });
+  });
+
+  test("creates missing relative worktrees from base_branch and reuses existing ones", () => {
+    const { root, repo } = createGitRepo();
+    try {
+      const sourceCwd = join(repo, "packages", "api");
+      const created = setupGitWorktree({
+        cwd: sourceCwd,
+        gitWorktreeDir: "../goal-created-wt",
+        baseBranch: "goal-base",
+      });
+
+      assert.equal(created.created, true);
+      assert.equal(created.worktreeRoot, join(root, "goal-created-wt"));
+      assert.equal(created.cwd, join(root, "goal-created-wt", "packages", "api"));
+      assert.equal(existsSync(join(created.worktreeRoot, "base-only.txt")), true);
+
+      const reused = setupGitWorktree({
+        cwd: sourceCwd,
+        gitWorktreeDir: "../goal-created-wt",
+        baseBranch: "main",
+      });
+
+      assert.equal(reused.created, false);
+      assert.equal(reused.worktreeRoot, created.worktreeRoot);
+      assert.equal(reused.cwd, created.cwd);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("uses absolute git_worktree_dir paths as-is", () => {
+    const { root, repo } = createGitRepo();
+    try {
+      const absoluteWorktree = join(root, "absolute-goal-wt");
+      const created = setupGitWorktree({
+        cwd: repo,
+        gitWorktreeDir: absoluteWorktree,
+        baseBranch: "goal-base",
+      });
+
+      assert.equal(created.created, true);
+      assert.equal(created.worktreeRoot, absoluteWorktree);
+      assert.equal(created.cwd, absoluteWorktree);
+      assert.equal(existsSync(join(absoluteWorktree, "base-only.txt")), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
