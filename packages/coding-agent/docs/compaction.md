@@ -6,11 +6,14 @@ Atomic's compaction design and terminology are informed by Morph's Context Compa
 
 **Source files** ([atomic](https://github.com/bastani-inc/atomic)):
 
-- [`packages/coding-agent/src/core/compaction/context-compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction.ts) - Verbatim Compaction planner, transcript tools, validation, and prompt
+- [`packages/coding-agent/src/core/compaction/context-compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction.ts) - Public barrel for Verbatim Compaction types, helpers, tools, and runner exports
+- [`packages/coding-agent/src/core/compaction/context-compaction-runner.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-runner.ts) - Planner loop, strict target gate, auto-compaction fallback ladder, and planner nudge cap
+- [`packages/coding-agent/src/core/compaction/context-compaction-critical.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-critical.ts) - Internal overflow-only critical-pass protected-entry eligibility and prompt guidance
+- [`packages/coding-agent/src/core/compaction/context-compaction-eviction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-eviction.ts) - Internal overflow-only deterministic LRU eviction fallback
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`ContextCompactionEntry`, `BranchSummaryEntry`) and active-context rebuild logic
-- [`packages/coding-agent/src/core/extensions/types.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/types.ts) - Extension event types
+- [`packages/coding-agent/src/core/extensions/session-events.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/session-events.ts) - Compaction extension event payloads
 
 For TypeScript definitions in your project, inspect `node_modules/@bastani/atomic/dist/`.
 
@@ -25,7 +28,7 @@ Atomic has one context compaction behavior and one separate branch-summarization
 
 Summary compaction — the earlier behavior that generated replacement prose — has been removed as an active runtime path. Historical JSONL lines with `type:"compaction"` remain readable on disk but are not injected into active LLM context. See [Legacy Summary Compaction (Retired)](#legacy-summary-compaction-retired) for a comparison and historical reference.
 
-`/compact` has no user-facing arguments. It uses the effective `compaction` settings (`compression_ratio`, `preserve_recent`, and optional `query`), a fixed internal prompt, transcript-bound inspection/deletion tools, local validation, and a `context_compaction` session entry. Auto-compaction uses the same deletion-only path.
+`/compact` has no user-facing arguments. It uses the effective `compaction` settings (`compression_ratio`, `preserve_recent`, and optional `query`), a fixed internal prompt, transcript-bound inspection/deletion tools, local validation, and a `context_compaction` session entry. Manual compaction (`/compact` and the `contextCompact` RPC path) still uses the strict planner target only. Auto-compaction uses the same deletion-only commit path, but threshold and overflow triggers can accept validated below-target reductions or, on overflow only, escalate through internal recovery tiers when the strict target is not achievable.
 
 ## Verbatim vs. Summary Compaction
 
@@ -90,15 +93,15 @@ Settings use the same snake_case names under `compaction`, for example:
 
 ### When It Triggers
 
-Auto-compaction triggers when:
+Auto-compaction threshold checks trigger when:
 
 ```text
-contextTokens > contextWindow - reserveTokens
+contextTokens > effectiveInputBudget - reserveTokens
 ```
 
-By default, `reserveTokens` is 16384 tokens. Configure it in `~/.atomic/agent/settings.json` or `<project-dir>/.atomic/settings.json`; legacy `.pi` paths are also supported. This leaves room for the LLM's response.
+By default, `reserveTokens` is 16384 tokens. Configure it in `~/.atomic/agent/settings.json` or `<project-dir>/.atomic/settings.json`; legacy `.pi` paths are also supported. This leaves room for the LLM's response. Providers that advertise a larger total context window than their hard prompt cap use the model's effective input budget for threshold and overflow recovery decisions.
 
-You can also trigger compaction manually with `/compact`. Custom summary instructions are not accepted because Verbatim Compaction is deletion-only and retained transcript content stays verbatim.
+You can also trigger compaction manually with `/compact`. Custom summary instructions are not accepted because Verbatim Compaction is deletion-only and retained transcript content stays verbatim. Manual compaction keeps the strict `compression_ratio` completion requirement and does not run the auto-compaction overflow ladder.
 
 If auto-compaction runs while a turn still has queued work (for example a failed tool-call result or a follow-up queued during compaction), Atomic resumes through the same continuation lifecycle as a normal queued turn: provider retry handling runs, additional queued messages drain, and any post-compaction resume failure is surfaced instead of being swallowed silently.
 
@@ -171,7 +174,7 @@ The diagram below is intentionally a block diagram, not a flowchart DSL. Read it
 | 3 Planner workspace | `runContextDeletionAssistant` | `CompactableTranscript` | Temp JSONL transcript file plus bounded manifest prompt, inheriting the session's current model thinking level |
 | 4 Tool loop | `createContextDeletionTool` tools | Planner tool calls | In-run deletion store updates or correction errors |
 | 5 Validation airlock | `validateContextDeletionRequest` | Candidate cumulative deletion request | Reconciled `deletedTargets` or thrown error |
-| 6 Planner stops or adds more | Agent loop until target is met or no progress remains | Tool results and current context | Final validated deletion state |
+| 6 Target/fallback decision | `contextCompact` runner ladder | Final or salvaged validated deletion state | Strict-target success, feasible auto-compaction acceptance, overflow-only critical pass, deterministic eviction, or terminal error |
 | 7 Persist compaction | session manager append path | `ContextCompactionResult` | New append-only `context_compaction` entry |
 | 8 Rebuild active context | `buildSessionContext` | Branch plus all logical deletion filters | Model messages with deleted objects omitted verbatim |
 
@@ -262,7 +265,7 @@ append-only SessionEntry branch
 │      toolCallIds      ids from assistant toolCall content blocks                                │
 │      toolResultFor    call id answered by a toolResult entry                                    │
 │                                                                                                │
-│    transcript.protectedEntryIds records the protected ids for the persisted result.             │
+│    transcript.protectedEntryIds records the ids protected by the active validation pass.       │
 └──────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -301,8 +304,10 @@ Prompt body
 │   • Prefer high-confidence exploit actions after that: delete obvious low-value entries via    │
 │     context_grep_delete or context_delete.                                                     │
 │   • Check context_compaction_budget after deletion batches.                                   │
-│   • Treat compression_ratio as strict: default 0.5 means keep 50% / delete 50%.                │
-│   • If the target is not met, continue deleting low-value entries/content blocks.              │
+│   • Treat compression_ratio as strict for the standard planner pass: default 0.5 means keep   │
+│     50% / delete 50%.                                                                         │
+│   • If the strict target is not met, continue deleting low-value entries/content blocks until │
+│     the planner reaches the target, reaches the auto-compaction budget fallback, or stops.    │
 │   • Converge quickly; do not keep reading once safe deletion targets are clear.                │
 ├──────────────────────────────────────────────────────────────────────────────────────────────┤
 │ Transcript file path                                                                          │
@@ -386,7 +391,8 @@ Candidate cumulative deletion request
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Gate 1: recent-context guard                                         │
-│   preserve_recent context entries are rejected with correction text   │
+│   effective recent window entries are rejected with correction text   │
+│   (critical/deterministic overflow uses max(preserve_recent, 5))      │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -420,7 +426,8 @@ Candidate cumulative deletion request
 │ Gate 6: tool-call/tool-result reconciliation                         │
 │   repairs paired call/result deletion dependencies when safe          │
 │   throws explicit recent-context errors when repair crosses the       │
-│   preserve_recent boundary                                           │
+│   effective recent boundary (max(preserve_recent, 5) in overflow      │
+│   critical/deterministic tiers)                                       │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -486,7 +493,7 @@ If the tool result is deleted:
 Standard recent boundary case:
 
 ┌──────────────────────────────┐       repair would delete       ┌──────────────────────────────┐
-│ old side of pair requested   │────────────────────────────────▶│ last-5 side of pair          │
+│ old side of pair requested   │────────────────────────────────▶│ preserve_recent side of pair │
 └──────────────────────────────┘                                  └──────────────────────────────┘
                                       │
                                       ▼
@@ -503,8 +510,8 @@ ValidatedContextDeletionResult
         │    [{ kind: "entry", entryId }, { kind: "content_block", entryId, blockIndex }]
         │
         ├─ protectedEntryIds
-        │    snapshot of ids protected during preparation
-        │
+        │    snapshot of ids protected by the validation pass that produced the result
+        │    (critical overflow excludes entries deliberately relaxed for eviction)
         └─ stats
              object and token reduction estimate
         │
@@ -536,20 +543,29 @@ ValidatedContextDeletionResult
 | `context_delete` validation error | Store rolls back to previous deletion targets | Non-terminating correction tool result with exact error |
 | `context_grep_delete` regex/pattern error | Store rolls back to previous deletion targets | Non-terminating correction tool result with exact error |
 | `context_grep_delete` protected/recent match | Matching protected target is ignored and not counted as a deletion | Non-protected matches still apply when validation succeeds |
-| Planner stops without any valid deletion | Nothing persisted | Compaction fails, including last deletion-tool error when available |
-| Provider overflow after some valid deletions | Valid in-run deletions are used | Compaction can proceed with recorded targets |
-| Provider non-overflow error | Nothing persisted | Error propagates |
-| Extension-provided deletion request invalid | Nothing persisted | Extension/caller sees validation failure |
+| Manual planner stops below the strict `compression_ratio` target | Nothing persisted | Manual compaction fails with achieved reduction, deletion count, and tokens-after details |
+| Threshold auto-compaction stops below the strict target but deletes at least one target and projected `tokensAfter` is at or below `effectiveInputBudget - reserveTokens` | Validated deletion targets are persisted | Tier 2 accepts the feasible result so threshold compaction does not immediately re-trigger |
+| Threshold auto-compaction stops below the strict target and still exceeds the trigger boundary | Nothing persisted | Auto-compaction fails; threshold compaction never escalates to protected-entry eviction |
+| Threshold auto-compaction finds no preparable compactable transcript | Nothing persisted | Silent no-op is preserved because threshold compaction is only opportunistic |
+| Overflow auto-compaction finds no preparable compactable transcript | Nothing persisted | Terminal overflow-recovery error states that nothing more was safely deletable instead of silently no-oping |
+| Overflow auto-compaction has validated deletions whose projected `tokensAfter` is at or below the model's effective input budget | Validated deletion targets are persisted | Tier 1 target-met results, Tier 2 feasible results, and provider-overflow salvage are committed only when they fit the effective input budget; target-met-but-over-budget results escalate instead of being persisted |
+| Overflow planner misses the strict target or meets the strict target while still exceeding the effective input budget | No persistence until a later tier succeeds | Tier 3 reruns the planner with internal `<critical-overflow-mode>` guidance, overflow-only protected-entry eligibility, and an effective recent guard of `max(preserve_recent, 5)` across all entries |
+| Critical overflow pass cannot produce a fitting validated result, or planner auth is unavailable during overflow | No model-generated plan is persisted | Tier 4 runs deterministic code-level LRU eviction with no model call or auth requirement while enforcing the same `max(preserve_recent, 5)` recent floor across all entries |
+| Deterministic overflow eviction cannot fit the effective input budget, has no safe candidate left, or reaches its 50-pass cap | Nothing persisted from the failed attempt | Terminal overflow-recovery error includes achieved stats (`tokensAfter`, percent reduction, deletion-target count), the budget, and that nothing more was safely deletable |
+| Planner run reaches its 50 real provider-turn cap | No additional provider calls are made for that planner run | The runner evaluates the validated deletions recorded so far against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
+| Planner nudge loop reaches its 50 follow-up cap | No extra follow-ups are queued for that planner run | The runner evaluates the best validated state against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
+| Provider non-overflow error | Nothing persisted unless an overflow-only later tier succeeds | Error propagates for manual/threshold; overflow recovery can continue to lower tiers unless the request was aborted |
+| Extension-provided deletion request invalid | Nothing persisted | Extension/caller sees validation failure; extension-provided requests bypass the internal fallback ladder |
 
 
 
 1. **Collect active branch context.** Atomic walks the current session branch and applies any earlier `context_compaction` logical deletions.
 2. **Build a compactable transcript.** Each compactable entry includes a stable `entryId`, role, token estimate, full text, content-block indexes, tool-call IDs, and tool-result links.
-3. **Mark validation guards.** Atomic marks user instructions, custom messages, branch/summary messages, the configured `preserve_recent` context-eligible entries, unresolved assistant/tool errors, and failed bash executions as not directly deletable. If a planner targets one, the deletion tool returns an explicit correction error.
+3. **Mark validation guards.** Atomic marks user instructions, custom messages, branch/summary messages, the configured `preserve_recent` context-eligible entries, unresolved assistant/tool errors, and failed bash executions as protected in the standard transcript. If a standard planner targets one, the deletion tool returns an explicit correction error.
 4. **Write a temporary transcript file.** The compaction assistant receives a compact manifest plus the path to a JSONL transcript file. It should inspect with tools instead of loading the whole transcript into prompt context.
-5. **Run the deletion planner.** The user's currently selected model runs Atomic's fixed Verbatim Compaction prompt using the session's current model thinking level. It can search/read transcript slices and then call deletion tools. The prompt substitutes the effective compaction parameters: `compression_ratio` (fraction to keep, default `0.5`), `preserve_recent` (default `2`), and `query` (explicit or auto-detected). The target reduction is `1 - compression_ratio` and is treated as a strict completion requirement.
+5. **Run the standard deletion planner.** The user's currently selected model runs Atomic's fixed Verbatim Compaction prompt using the session's current model thinking level. It can search/read transcript slices and then call deletion tools. The prompt substitutes the effective compaction parameters: `compression_ratio` (fraction to keep, default `0.5`), `preserve_recent` (default `2`), and `query` (explicit or auto-detected). The target reduction is `1 - compression_ratio` and is treated as a strict completion requirement for the standard planner pass.
 6. **Validate fail-closed.** Atomic validates every cumulative deletion plan locally. Unknown IDs, protected targets, duplicate/overlapping targets, empty-context plans, missing task-bearing context, and tool-call/tool-result orphaning are rejected.
-7. **Continue until target.** Atomic exits the internal planner loop when validated deletion stats meet the configured reduction target. If the model tries to finish early, Atomic injects a follow-up nudge with the current validated reduction and tells the planner to continue removing message entries/content blocks.
+7. **Apply the auto-compaction fallback ladder when needed.** Manual compaction stops at the strict standard planner result. Threshold auto-compaction can accept a below-target result only when it has at least one validated deletion and projected `tokensAfter` is at or below `effectiveInputBudget - reserveTokens`; it never escalates to protected-entry eviction. Overflow auto-compaction commits any planner result (strict-target or below-target feasible) only when projected `tokensAfter` fits the effective input budget, then can rerun the planner in an internal critical overflow pass, and finally can use deterministic code-level LRU eviction until the effective input budget fits or no safe deletion remains. The overflow-only critical planner and deterministic eviction tiers enforce an effective recent guard of `max(preserve_recent, 5)` over all entries.
 8. **Save and rebuild.** Atomic writes a backup snapshot for persisted sessions, appends a `context_compaction` entry with validated targets and stats, then rebuilds the active LLM context from the filtered branch.
 
 ### Transcript-Bound Tools
@@ -564,17 +580,17 @@ The compaction assistant can only compact by using these internal tools. Exact d
 | `context_delete` | Record exact entry/content-block deletion targets. |
 | `context_grep_delete` | Bulk-delete matching entries or content blocks with guardrails. |
 
-The planner is prompted to call `context_compaction_budget` before deleting and after deletion batches. The tool reports the current transcript token estimate as a percentage of the selected model's context window, the configured `compression_ratio`, the projected percentage after selected deletions, current reduction percentage, how many more estimated tokens must be removed to reach the strict target, and the image token share (`remainingImageTokens`, `imageBlockCount`, `imageTokenPercent`) so the planner can prioritize deleting stale image context when images dominate. With the default `compression_ratio: 0.5`, the strict target is a 50% token reduction.
+The planner is prompted to call `context_compaction_budget` before deleting and after deletion batches. The tool reports the current transcript token estimate as a percentage of the selected model's context window, the configured `compression_ratio`, the projected percentage after selected deletions, current reduction percentage, how many more estimated tokens must be removed to reach the strict target, and the image token share (`remainingImageTokens`, `imageBlockCount`, `imageTokenPercent`) so the planner can prioritize deleting stale image context when images dominate. With the default `compression_ratio: 0.5`, the strict standard planner target is a 50% token reduction. Auto-compaction can still commit a validated below-target result when the projected `tokensAfter` clears the relevant budget: threshold compaction uses the trigger boundary (`effectiveInputBudget - reserveTokens`), while overflow recovery uses the model's effective input budget. On the overflow path, strict-target results are also gated by that effective input budget before they can be committed.
 
 `context_grep_delete` supports literal or regex matching, skips already-deleted or disallowed context, enforces a per-call `maxMatches` safety cap, can require `expectedMatchCount` when the planner wants an exact-match safety check, and routes every accepted match through the same validation pipeline as exact deletions. Disallowed matches are ignored before `matches`, `expectedMatchCount`, deletion stats, and selected targets are calculated, so a broad regex can still remove safe blocks without counting rejected candidates as removed. This includes the universal latest-retained assistant guard: if the latest retained assistant message contains `thinking` or `redacted_thinking`, neither `context_delete` nor `context_grep_delete` may remove any content block from that assistant message, even a visible text sibling block. `maxMatches` limits only one tool call; there is no cumulative deletion cap across repeated `context_delete` or `context_grep_delete` calls. Exact deletion attempts that target disallowed entries/blocks return an explicit non-terminating tool error with correction guidance. Exact deletion payloads that include unsupported fields such as transcript `text`, block `content`, summaries, or replacement data are rejected as non-id-only requests.
 
-Tool calls are cumulative during one compaction run. The assistant can apply several small deletion batches, inspect the updated state, and stop only after the validated stats meet the strict reduction target. Atomic uses the validated tool state as the compaction result; ordinary assistant text is ignored for deletion targets.
+Tool calls are cumulative during one planner run. The assistant can apply several small deletion batches, inspect the updated state, and stop only after the validated stats meet the strict reduction target or an auto-compaction budget fallback can safely accept the current result. Atomic uses the validated tool state as the compaction result; ordinary assistant text is ignored for deletion targets. Each planner run is bounded to 50 real provider turns (including tool-call turns), and the planner nudge loop is additionally bounded to 50 follow-up nudges per planner run, so a planner that keeps making tiny changes or repeated tool calls cannot spin indefinitely.
 
 ### Validation Rules
 
 Validation preserves tool-call/tool-result consistency. If deleting a tool call would leave a tool result behind, Atomic either deletes the paired result too or rejects the plan when that would violate a validation guard. If deleting a tool result would leave a visible dangling tool call, Atomic either deletes the paired call too or rejects the plan.
 
-Atomic also refuses plans that would delete all context or leave no task-bearing context. These checks are local; the model cannot bypass them. Provider context-overflow recovery uses the same validation rules as manual and threshold compaction.
+Atomic also refuses plans that would delete all context or leave no task-bearing context. These checks are local; the model cannot bypass them. Provider context-overflow recovery uses the same validation rules as manual and threshold compaction. During the overflow-only critical planner pass and deterministic eviction fallback, Atomic internally enforces an effective recent guard of `max(preserve_recent, 5)` across all entries, restoring the pre-#1399 last-5 floor even for otherwise-unprotected assistant/tool entries. Within that floor, deletion is rejected through the same recent-target validation used elsewhere. Outside that floor, Atomic relaxes deletion eligibility only for stale protected task-bearing entries (`user`, `custom`, branch summary) that are not carrying assistant/tool/bash errors; every resulting plan still passes fail-closed validation, including latest thinking-bearing assistant immutability, task-bearing floor, and tool-call/result pairing.
 
 ### ContextCompactionEntry Structure
 
@@ -688,6 +704,8 @@ pi.on("session_before_compact", async (event, ctx) => {
 ```
 
 If `{ cancel: true }` is returned, compaction aborts with a cancellation error. If `{ deletionRequest }` is returned, Atomic validates it through the same local airlock as model-proposed deletions — unknown IDs, protected targets, orphaning, and empty-context plans are rejected — and skips the internal planner. If nothing is returned, the internal planner runs normally.
+
+Extension-provided deletion requests validate against the original standard transcript and bypass the internal fallback ladder, including its overflow budget-fit gate. The overflow guarantee that committed results fit the effective input budget applies to Atomic's internal ladder results; extension-supplied deletion requests remain a public hook escape hatch that commits after local fail-closed validation. Atomic does not expose a public compaction mode API; protected-entry relaxation is reserved for Atomic's own overflow recovery tiers.
 
 ### session_compact
 
@@ -920,7 +938,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
-| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; auto-compaction starts when context usage exceeds `contextWindow - reserveTokens`. |
+| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when context usage exceeds the model's effective input budget minus this reserve. |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

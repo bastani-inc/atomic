@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an internal tiered fallback ladder for automatic Verbatim Compaction when the strict `compression_ratio` target is not achievable: threshold and overflow auto-compaction now keep the standard strict planner pass as tier 1, tier 2 can accept a validated below-target result with at least one deletion when projected `tokensAfter` clears the relevant budget (`effectiveInputBudget - reserveTokens` for threshold, effective input budget for overflow), overflow commits from Atomic's internal ladder are gated on fitting the effective input budget even when the strict target is met, overflow-only tier 3 reruns the planner with critical LRU-style protected-entry eligibility for stale task-bearing user/custom/branch-summary context and an effective recent floor of `max(preserve_recent, 5)` across all compactable entries, and overflow-only tier 4 performs deterministic code-level LRU eviction without a model call or API credentials while enforcing the same effective last-5 recent floor until the effective input budget fits or no more safe deletion remains. The fallback tiers remain internal: extension hooks keep their existing shapes, extension-provided deletion requests still bypass the ladder including the overflow budget gate, and no public compaction mode API is exposed.
+- Added hard iteration caps to compaction recovery loops: planner provider turns are capped at 50 per planner run (including tool-call turns), planner nudge follow-ups are capped at 50 per planner run, and deterministic overflow eviction is capped at 50 passes, so compaction cannot spin indefinitely and terminal failures report the achieved reduction, deletion count, projected `tokensAfter`, and budget.
+
+### Fixed
+
+- Fixed overflow auto-compaction silently no-oping when planner authentication was unavailable or when the current branch has no preparable compactable transcript: overflow recovery now either skips model tiers and runs deterministic no-auth LRU eviction directly through the existing validation pipeline, or surfaces a terminal error that nothing more was safely deletable.
+- Fixed feasible partial compaction results being discarded solely because they missed the strict ratio target: automatic threshold and overflow compaction now commit validated below-target deletions when their projected `tokensAfter` clears the trigger/budget boundary, including partial deletion state salvaged after a provider context-overflow error.
+
 ## [0.9.5-alpha.4] - 2026-07-05
 
 ### Changed
