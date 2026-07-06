@@ -1,6 +1,7 @@
 import type { StageControlHandle, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
 import { isTerminalStage } from "./executor-scheduler.js";
+import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
 export function createStageControlHandle(runtime: LiveStageRuntime): StageControlHandle {
   const ensureMessagingSession = async (): Promise<void> => {
@@ -15,6 +16,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       throw new Error(`atomic-workflows: cannot message stage "${runtime.name}" because no retained session metadata is available.`);
     }
   };
+  const toolExecutions = new StageToolExecutionBuffer();
+  const unsubscribeToolExecutions = runtime.innerCtx.subscribe((event) => toolExecutions.record(event));
 
   return {
     runId: runtime.runId,
@@ -40,6 +43,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     },
     get agentSession() {
       return runtime.innerCtx.__agentSession();
+    },
+    pendingToolExecutionEvents() {
+      return toolExecutions.replayEvents();
     },
     async ensureAttached() {
       runtime.throwIfStageMutationBlocked();
@@ -120,6 +126,8 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       return runtime.innerCtx.subscribe(listener);
     },
     async dispose() {
+      unsubscribeToolExecutions();
+      toolExecutions.clear();
       await runtime.releaseLiveHandle();
     },
   };

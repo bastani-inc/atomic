@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the bundled workflows documentation to reflect that attached workflow stage chats render live `subagent` widgets for single, parallel, and chain calls, keep them live across attach/re-attach cycles, and let Ctrl+O expand live detail for every child. ([#1643](https://github.com/bastani-inc/atomic/issues/1643))
+
 ## [0.9.5-alpha.5] - 2026-07-06
 
 ### Added

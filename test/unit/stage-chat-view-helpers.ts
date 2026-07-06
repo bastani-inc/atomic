@@ -29,6 +29,7 @@ import {
     type TUI,
 } from "@earendil-works/pi-tui";
 import type { StageControlHandle } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import { StageToolExecutionBuffer } from "../../packages/workflows/src/runs/foreground/stage-tool-execution-buffer.js";
 import type { PendingPrompt } from "../../packages/workflows/src/shared/store-types.js";
 import {
     initTheme,
@@ -68,6 +69,7 @@ export function makeHandle(
     emit: (event: AgentSessionEvent) => void;
 } {
     let listener: ((e: AgentSessionEvent) => void) | undefined;
+    const toolExecutions = new StageToolExecutionBuffer();
     let handleStatus = status;
     const handle: StageControlHandle = {
         runId: "run-1",
@@ -83,6 +85,9 @@ export function makeHandle(
         },
         messages,
         agentSession,
+        pendingToolExecutionEvents() {
+            return toolExecutions.replayEvents();
+        },
         async ensureAttached() {},
         async prompt(text: string) {
             state.promptCalls.push(text);
@@ -112,7 +117,10 @@ export function makeHandle(
     return {
         handle,
         state,
-        emit: (event: AgentSessionEvent) => listener?.(event),
+        emit: (event: AgentSessionEvent) => {
+            toolExecutions.record(event);
+            listener?.(event);
+        },
     };
 }
 

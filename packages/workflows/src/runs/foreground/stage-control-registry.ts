@@ -59,6 +59,8 @@ export interface StageControlHandle {
   readonly messages: AgentSession["messages"];
   /** Live coding-agent session when available, used by embedded chat/footer UI. */
   readonly agentSession?: AgentSession;
+  /** Replayable in-flight tool starts/partial updates for stage-chat remounts. */
+  pendingToolExecutionEvents?(): readonly AgentSessionEvent[];
   /** Ensure the SDK session exists. Cheap when already attached. */
   ensureAttached(): Promise<void>;
   /** Send a prompt. Use only when the stage is idle / not streaming. */

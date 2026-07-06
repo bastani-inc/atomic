@@ -4,11 +4,7 @@ import type { PendingPrompt, RunSnapshot, StageSnapshot } from "../shared/store-
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import { resolveStageChatViewportRows } from "./stage-chat-layout.js";
 import { createPromptCardState } from "./prompt-card.js";
-import {
-  hideMountedCustomUi,
-  releaseMountedCustomUi,
-  showCustomUi,
-} from "./stage-chat-view-custom-ui.js";
+import { hideMountedCustomUi, releaseMountedCustomUi, showCustomUi } from "./stage-chat-view-custom-ui.js";
 import { editorRuleColor } from "./stage-chat-view-footer-status.js";
 import {
   blankLine,
@@ -30,6 +26,8 @@ import {
 } from "./stage-chat-view-types.js";
 import { noticeRow, noticeSummary } from "./stage-chat-view-transcript.js";
 import { applyStageChatLiveHandleEvent } from "./stage-chat-view-live-events.js";
+import { replayPendingToolExecutions } from "./stage-chat-view-pending-tools.js";
+import { stageChatRenderSettings } from "./stage-chat-view-render-settings.js";
 import { hexToAnsi, RESET } from "./color-utils.js";
 import {
   isTerminalOrNonStreamingStageChatStatus,
@@ -89,6 +87,7 @@ export function initializeStageChatView(
   });
 
   snapshotMessagesFromHandle(ctx);
+  replayPendingToolExecutions(ctx);
   const initialRun = currentRun(ctx);
   const initialStage = initialRun?.stages.find((s) => s.id === ctx.stageId);
   ctx.lastObservedRunStatus = initialRun?.status;
@@ -187,7 +186,7 @@ function createChatHost(
     keybindings: opts.piKeybindings,
     editorFactory: opts.piEditorFactory,
     editorTheme: editorThemeFromGraphTheme(ctx.theme),
-    getChatRenderSettings: opts.getChatRenderSettings,
+    getChatRenderSettings: () => stageChatRenderSettings(ctx, opts),
     footerData: opts.footerData,
     renderExtraEntry: (entry) => noticeRow(entry, ctx.theme),
   });

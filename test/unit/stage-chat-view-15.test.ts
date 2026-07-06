@@ -3,15 +3,18 @@ import {
     assert,
     createStore,
     StageChatView,
+    fakeFooterAgentSession,
     deriveGraphTheme,
     makeHandle,
     setupRun,
     stripAnsi,
 } from "./stage-chat-view-helpers.js";
-import type { AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
+import type { AgentSession, AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
 import type { TSchema } from "typebox";
 import { renderLiveSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import { makeFakeKeybindings } from "../support/fake-keybindings.js";
+import type { AgentProgress, Details } from "../../packages/subagents/src/shared/types.js";
 
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 
@@ -73,6 +76,68 @@ function runningSubagentDetails() {
     };
 }
 
+function runningChildProgress(index: number, agent: string): AgentProgress {
+    return {
+        index,
+        agent,
+        status: "running",
+        task: `run ${agent}`,
+        recentTools: [],
+        recentOutput: [`${agent}-expanded-output`],
+        toolCount: index + 2,
+        tokens: (index + 1) * 1000,
+        durationMs: 10_000 + index,
+        currentTool: "bash",
+        currentToolArgs: `echo ${agent}`,
+        currentToolStartedAt: Date.now(),
+    };
+}
+
+function runningMultiSubagentDetails(mode: "parallel" | "chain"): Details {
+    const first = runningChildProgress(0, "alpha");
+    const second = runningChildProgress(1, "beta");
+    return {
+        mode,
+        chainAgents: mode === "chain" ? ["alpha", "beta"] : undefined,
+        results: [first, second].map((progress) => ({
+            agent: progress.agent,
+            task: progress.task,
+            exitCode: 0,
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+            progress,
+            artifactPaths: {
+                inputPath: `/tmp/${progress.agent}/input.txt`,
+                outputPath: `/tmp/${progress.agent}/output.txt`,
+                jsonlPath: `/tmp/${progress.agent}/events.jsonl`,
+                metadataPath: `/tmp/${progress.agent}/metadata.json`,
+            },
+        })),
+        progress: [first, second],
+    };
+}
+
+function emitRunningMultiSubagent(
+    emit: (event: AgentSessionEvent) => void,
+    mode: "parallel" | "chain",
+): void {
+    emit({
+        type: "tool_execution_start",
+        toolCallId: "subagent-1",
+        toolName: "subagent",
+        args: mode === "parallel"
+            ? { tasks: [{ agent: "alpha", task: "run alpha" }, { agent: "beta", task: "run beta" }] }
+            : { chain: [{ agent: "alpha", task: "run alpha" }, { agent: "beta", task: "run beta" }] },
+    } as AgentSessionEvent);
+    emit({
+        type: "tool_execution_update",
+        toolCallId: "subagent-1",
+        partialResult: {
+            content: [{ type: "text", text: `${mode} children are running` }],
+            details: runningMultiSubagentDetails(mode),
+        },
+    } as AgentSessionEvent);
+}
+
 function emitRunningSubagent(emit: (event: AgentSessionEvent) => void): void {
     emit({
         type: "tool_execution_start",
@@ -113,11 +178,30 @@ const subagentToolDefinition: ToolDefinition<TSchema, unknown> = {
     renderResult: renderLiveSubagentResult as ToolDefinition<TSchema, unknown>["renderResult"],
 };
 
-function subagentRenderSettings() {
+function subagentRenderSettings(toolOutputExpanded = false) {
     return {
+        toolOutputExpanded,
         getToolDefinition: (name: string) =>
             name === "subagent" ? subagentToolDefinition : undefined,
     };
+}
+
+function subagentToolCallMessages(mode: "single" | "parallel" | "chain"): AgentSession["messages"] {
+    const args = mode === "single"
+        ? { agent: "worker", task: "fix spinner" }
+        : mode === "parallel"
+            ? { tasks: [{ agent: "alpha", task: "run alpha" }, { agent: "beta", task: "run beta" }] }
+            : { chain: [{ agent: "alpha", task: "run alpha" }, { agent: "beta", task: "run beta" }] };
+    return [{
+        role: "assistant",
+        content: [{ type: "toolCall", id: "subagent-1", name: "subagent", arguments: args }],
+        api: "test-api",
+        provider: "test-provider",
+        model: "test-model",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "toolUse",
+        timestamp: Date.now(),
+    }];
 }
 
 describe("StageChatView terminal subagent cleanup regressions", () => {
@@ -134,7 +218,7 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
             handle,
             onDetach: () => {},
             onClose: () => {},
-            getChatRenderSettings: subagentRenderSettings,
+            getChatRenderSettings: () => subagentRenderSettings(false),
         });
 
         emitRunningSubagent(emit);
@@ -156,6 +240,112 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
         assert.equal(details?.workflowGraph?.nodes?.[0]?.children?.[0]?.status, "detached");
         assert.doesNotMatch(renderText(view), /Working/);
         assert.equal(view._hasAnimationTick, false);
+        view.dispose();
+    });
+
+    test("remount replays in-flight subagent partial results for single, parallel, and chain calls", () => {
+        for (const mode of ["single", "parallel", "chain"] as const) {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a", "running");
+            const { handle, emit } = makeHandle(undefined, subagentToolCallMessages(mode));
+            const firstView = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {},
+                getChatRenderSettings: () => subagentRenderSettings(false),
+            });
+
+            if (mode === "single") emitRunningSubagent(emit);
+            else emitRunningMultiSubagent(emit, mode);
+            firstView.dispose();
+
+            const remounted = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {},
+                getChatRenderSettings: () => subagentRenderSettings(false),
+            });
+
+            const entry = chatEntries(remounted).find(isSubagentToolEntry);
+            assert.equal(entry?.isPartial, true, `${mode} should stay partial after remount`);
+            assert.notEqual(entry?.result, undefined, `${mode} should replay the latest partial result`);
+            const rendered = renderText(remounted);
+            if (mode === "single") assert.match(rendered, /worker/);
+            else {
+                assert.match(rendered, /alpha/, `${mode} should render first child after remount`);
+                assert.match(rendered, /beta/, `${mode} should render second child after remount`);
+            }
+            remounted.dispose();
+        }
+    });
+
+    test("ctrl+o expansion uses production-style shared toolOutputExpanded wiring", () => {
+        for (const mode of ["parallel", "chain"] as const) {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a", "running");
+            const { handle, emit } = makeHandle(undefined, subagentToolCallMessages(mode));
+            let toolsExpanded = false;
+            const view = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {},
+                piKeybindings: makeFakeKeybindings(),
+                getToolsExpanded: () => toolsExpanded,
+                setToolsExpanded: (expanded) => {
+                    toolsExpanded = expanded;
+                },
+                getChatRenderSettings: () => subagentRenderSettings(toolsExpanded),
+            });
+
+            emitRunningMultiSubagent(emit, mode);
+            assert.doesNotMatch(renderText(view), /alpha-expanded-output/);
+            assert.equal(view.handleInput("\x0f"), true);
+            const expanded = renderText(view);
+            assert.match(expanded, /alpha-expanded-output/, `${mode} should expand first child`);
+            assert.match(expanded, /beta-expanded-output/, `${mode} should expand second child`);
+            view.dispose();
+        }
+    });
+
+    test("stage chat resolves tool renderers from the stage session before host fallback", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const agentSession = Object.assign(fakeFooterAgentSession(false), {
+            getToolDefinition: (name: string) => name === "subagent" ? subagentToolDefinition : undefined,
+        }) as AgentSession;
+        const { handle, emit } = makeHandle(undefined, subagentToolCallMessages("parallel"), "running", agentSession);
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            getChatRenderSettings: () => ({ toolOutputExpanded: false, getToolDefinition: () => undefined }),
+        });
+
+        emitRunningMultiSubagent(emit, "parallel");
+        const rendered = renderText(view);
+        assert.match(rendered, /parallel/);
+        assert.match(rendered, /Press .*live detail/);
+        assert.match(rendered, /⎿\s+bash: echo alpha/);
         view.dispose();
     });
 
