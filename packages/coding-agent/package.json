@@ -95,7 +95,7 @@
     "ignore": "7.0.5",
     "jiti": "2.7.0",
     "linkedom": "^0.18.12",
-    "lru-cache": "11.3.6",
+    "lru-cache": "11.5.1",
     "markit-ai": "0.5.3",
     "minimatch": "10.2.5",
     "open": "^11.0.0",
