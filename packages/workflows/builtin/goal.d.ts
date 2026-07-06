@@ -14,6 +14,7 @@ export type GoalWorkflowInputs = WorkflowInputValues & {
   readonly acceptance_criteria?: string;
   readonly max_turns: number;
   readonly base_branch: string;
+  readonly git_worktree_dir: string;
   readonly create_pr: boolean;
 };
 
@@ -22,6 +23,7 @@ export type GoalWorkflowRunInputs = WorkflowInputValues & {
   readonly acceptance_criteria?: string;
   readonly max_turns?: number;
   readonly base_branch?: string;
+  readonly git_worktree_dir?: string;
   readonly create_pr?: boolean;
 };
 
