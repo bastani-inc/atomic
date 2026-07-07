@@ -183,7 +183,7 @@ The adapter is self-contained; it does not require patching Pier or Harbor. It f
 1. Install Atomic and required local search tools (`rg` and `fd`) during setup.
 2. Run the Atomic CLI in JSON mode.
 3. Keep Atomic's mutable agent state under the sandbox user's `~/.atomic/agent` directory by setting Atomic's existing agent-dir environment override, passing `--session-dir ~/.atomic/agent/atomic-sessions`, and exporting `ATOMIC_TODO_PATH=$HOME/.atomic/agent/todos` inside the sandbox so the default todo tool cannot create `.atomic/todos` in the benchmark repository.
-4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and copy session transcripts to `/logs/agent/atomic-sessions/` after the run, with an exit trap to preserve transcripts on SIGTERM-based timeouts.
+4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and continuously mirror session transcripts to `/logs/agent/atomic-sessions/` during the run, with a final exit-trap sync to preserve transcripts on normal exits and SIGTERM-based timeouts.
 5. Collect usage and trajectory data from the logs.
 
 Like the built-in Pier agents, it does not auto-commit work. Deep SWE tasks rely on the agent following the task instruction to commit.
