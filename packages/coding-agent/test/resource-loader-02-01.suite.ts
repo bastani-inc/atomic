@@ -59,7 +59,7 @@ Extra prompt content`,
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
-			loader.extendResources({
+			await loader.extendResources({
 				skillPaths: [
 					{
 						path: extraSkillDir,
@@ -112,7 +112,7 @@ Extra content`,
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 			await loader.reload();
 
-			loader.extendResources({
+			await loader.extendResources({
 				skillPaths: [
 					{
 						path: pathToFileURL(extraSkillDir).href,

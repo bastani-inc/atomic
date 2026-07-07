@@ -133,18 +133,17 @@ initTheme("dark");
 describe("coding-agent deferred startup input", () => {
   test("yields to the event loop between extension module loads", async () => {
     const dir = await makeTempDir();
-    const markerPath = join(dir, "immediate.marker");
     const logPath = join(dir, "order.log");
     const firstExtension = join(dir, "first-extension.ts");
     const secondExtension = join(dir, "second-extension.ts");
 
     await writeFile(
       firstExtension,
-      `import { appendFileSync, writeFileSync } from "node:fs";\nexport default function () { appendFileSync(${JSON.stringify(logPath)}, "first\\n"); setImmediate(() => { writeFileSync(${JSON.stringify(markerPath)}, "fired"); appendFileSync(${JSON.stringify(logPath)}, "immediate\\n"); }); }\n`,
+      `import { appendFileSync, writeFileSync } from "node:fs";\nimport { dirname, join } from "node:path";\nimport { fileURLToPath } from "node:url";\nconst dir = dirname(fileURLToPath(import.meta.url));\nconst markerPath = join(dir, "immediate.marker");\nconst logPath = join(dir, "order.log");\nexport default function () { appendFileSync(logPath, "first\\n"); setImmediate(() => { writeFileSync(markerPath, "fired"); appendFileSync(logPath, "immediate\\n"); }); }\n`,
     );
     await writeFile(
       secondExtension,
-      `import { appendFileSync, existsSync } from "node:fs";\nexport default function () { appendFileSync(${JSON.stringify(logPath)}, existsSync(${JSON.stringify(markerPath)}) ? "second-after-immediate\\n" : "second-before-immediate\\n"); }\n`,
+      `import { appendFileSync, existsSync } from "node:fs";\nimport { dirname, join } from "node:path";\nimport { fileURLToPath } from "node:url";\nconst dir = dirname(fileURLToPath(import.meta.url));\nconst markerPath = join(dir, "immediate.marker");\nconst logPath = join(dir, "order.log");\nexport default function () { appendFileSync(logPath, existsSync(markerPath) ? "second-after-immediate\\n" : "second-before-immediate\\n"); }\n`,
     );
 
     const waitForImmediate = new Promise<void>((resolve) => setImmediate(resolve));

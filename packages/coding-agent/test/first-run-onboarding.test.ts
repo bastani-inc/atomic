@@ -281,6 +281,7 @@ describe("first-run onboarding", () => {
       firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: cta,
       chatContainer: { children: [first, ...cta, last] },
+      startupNoticesContainer: { children: [...cta] },
       ui: { requestRender: vi.fn() },
     };
     const clear = Reflect.get(InteractiveMode.prototype, "clearFirstRunOnboardingUi") as (this: typeof host) => void;
@@ -310,6 +311,9 @@ describe("first-run onboarding", () => {
           this.children.push(child);
         },
       },
+      startupNoticesContainer: {
+        children: [staleNotice] as unknown[],
+      },
       ui: { requestRender: vi.fn() },
       handleFatalRuntimeError: vi.fn(),
     };
@@ -335,6 +339,7 @@ describe("first-run onboarding", () => {
       onInputCallback,
       pendingUserInputs: [],
       session: { isBashRunning: false, isCompacting: false, isStreaming: false, prompt: vi.fn() },
+      renderDeferredUserInput: vi.fn(),
     };
     const submit = installSubmitHandler(host);
 
@@ -343,6 +348,7 @@ describe("first-run onboarding", () => {
     expect(onInputCallback).toHaveBeenCalledWith("Implement ticket ABC");
     expect(host.session.prompt).not.toHaveBeenCalled();
     expect(host.editor.addToHistory).toHaveBeenCalledWith("Implement ticket ABC");
+    expect(host.renderDeferredUserInput).toHaveBeenCalledWith("Implement ticket ABC");
   });
 
   it("treats /chat as an ordinary slash command with no onboarding bypass", async () => {
@@ -354,6 +360,7 @@ describe("first-run onboarding", () => {
       onInputCallback: vi.fn(),
       pendingUserInputs: [],
       session: { isBashRunning: false, isCompacting: false, isStreaming: false, prompt: vi.fn() },
+      renderDeferredUserInput: vi.fn(),
     };
     const submit = installSubmitHandler(host);
 
