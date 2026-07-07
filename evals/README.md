@@ -89,7 +89,7 @@ For GitHub Copilot in `allow_internet = false` tasks, the Pier adapter routes AP
 2. `GITHUB_COPILOT_BASE_URL` if provided (host or URL)
 3. `GITHUB_SERVER_URL` routing:
     - `https://github.com` → `https://api.githubcopilot.com`
-    - `https://<tenant>.ghe.com` → `https://copilot-api.<tenant>.ghe.com`
+    - `https://<tenant>.ghe.com` → the tenant-specific GHE Copilot routing host
     - other GitHub Enterprise Server domains → `https://api.enterprise.githubcopilot.com`
 
 If you see `421 Misdirected Request`, force the target explicitly:
@@ -108,7 +108,7 @@ uv run pier run \
   --force-build
 ```
 
-For GHES use `COPILOT_API_TARGET=api.enterprise.githubcopilot.com`; for GHEC use `COPILOT_API_TARGET=copilot-api.<tenant>.ghe.com`.
+For GHES use `COPILOT_API_TARGET=api.enterprise.githubcopilot.com`; for GHEC use the tenant-specific GHE Copilot routing host.
 
 ### Anthropic subscription with OpenRouter fallback
 

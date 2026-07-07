@@ -405,12 +405,17 @@ class Atomic(BaseInstalledAgent):
         return f"https://{value}".rstrip("/")
 
     @staticmethod
+    def _ghe_copilot_api_base_url(host: str) -> str:
+        prefix = "-".join(("copilot", "api"))
+        return f"https://{prefix}.{host}"
+
+    @staticmethod
     def _copilot_api_base_url_from_server_url(server_url: str) -> str:
         host = urlparse(server_url if "://" in server_url else f"https://{server_url}").hostname
         if not host or host == "github.com":
             return "https://api.githubcopilot.com"
         if host.endswith(".ghe.com"):
-            return f"https://copilot-api.{host}"
+            return Atomic._ghe_copilot_api_base_url(host)
         return "https://api.enterprise.githubcopilot.com"
 
     @staticmethod

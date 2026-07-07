@@ -100,13 +100,20 @@ else
     PLATFORMS=(darwin-arm64 darwin-x64 linux-x64 linux-arm64 windows-x64 windows-arm64)
 fi
 
+shared_app_dir="binaries/.app"
+rm -rf "$shared_app_dir"
+mkdir -p "$shared_app_dir"
+echo "==> Building shared app bundle..."
+bun build --target=bun --format=cjs --external mupdf ./dist/bun/cli.js --outfile "$shared_app_dir/app.js"
+bun build --target=bun --format=cjs --external mupdf ./src/utils/image-resize-worker.ts --outfile "$shared_app_dir/image-resize-worker.js"
+
 for platform in "${PLATFORMS[@]}"; do
     echo "Building for $platform..."
     mkdir -p "binaries/$platform"
     if [[ "$platform" == windows-* ]]; then
-        bun build --compile --bytecode --format=cjs --external mupdf --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic.exe"
+        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
     else
-        bun build --compile --bytecode --format=cjs --external mupdf --target=bun-$platform ./dist/bun/cli.js --outfile "binaries/$platform/atomic"
+        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
     fi
 done
 
@@ -128,10 +135,20 @@ cursor_native_filename() {
     esac
 }
 
+win32_console_mode_arch() {
+    case "$1" in
+        windows-x64) echo "x64" ;;
+        windows-arm64) echo "arm64" ;;
+        *) return 1 ;;
+    esac
+}
+
 for platform in "${PLATFORMS[@]}"; do
     cp package.json "binaries/$platform/"
     cp README.md "binaries/$platform/"
     cp CHANGELOG.md "binaries/$platform/"
+    cp "$shared_app_dir/app.js" "binaries/$platform/"
+    cp "$shared_app_dir/image-resize-worker.js" "binaries/$platform/"
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "binaries/$platform/"
     mkdir -p "binaries/$platform/theme"
     cp dist/modes/interactive/theme/*.json "binaries/$platform/theme/"
@@ -139,6 +156,14 @@ for platform in "${PLATFORMS[@]}"; do
     cp dist/modes/interactive/assets/* "binaries/$platform/assets/"
     cp -r dist/core/export-html "binaries/$platform/"
     cp -r dist/builtin "binaries/$platform/"
+    if console_arch="$(win32_console_mode_arch "$platform")"; then
+        console_src="../../node_modules/@earendil-works/pi-tui/native/win32/prebuilds/win32-$console_arch/win32-console-mode.node"
+        console_dst="binaries/$platform/native/win32/prebuilds/win32-$console_arch"
+        if [ -f "$console_src" ]; then
+            mkdir -p "$console_dst"
+            cp "$console_src" "$console_dst/"
+        fi
+    fi
 
     cp -r "$runtime_deps_dir" "binaries/$platform/node_modules"
     rm -rf "binaries/$platform/node_modules/@bastani/atomic-natives/npm"
@@ -156,7 +181,7 @@ for platform in "${PLATFORMS[@]}"; do
     cp -r examples "binaries/$platform/"
 done
 
-rm -rf "$runtime_deps_dir"
+rm -rf "$runtime_deps_dir" "$shared_app_dir"
 
 echo "==> Creating release archives..."
 cd binaries

@@ -11,6 +11,8 @@ function baseInput(overrides: Partial<ComputeDeferExtensionsInput> = {}): Comput
 		shouldResolveProjectTrust: false,
 		storedProjectTrust: null,
 		resolvedExtensionPathCount: 0,
+		resolvedResourcePathCount: 0,
+		hasSystemPromptInput: false,
 		unknownFlagCount: 0,
 		provider: undefined,
 		model: undefined,
@@ -30,6 +32,8 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ unknownFlagCount: 1 }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ resolvedResourcePathCount: 1 }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ hasSystemPromptInput: true }))).toBe(false);
 	});
 
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {

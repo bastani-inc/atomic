@@ -20,6 +20,12 @@ export interface ResourceLoaderReloadOptions {
 	 * files still load. A later full reload() picks up extensions.
 	 */
 	deferExtensions?: boolean;
+	/**
+	 * Skip all resource discovery and loading during this reload. This is used by
+	 * interactive first-paint startup only when no CLI/startup input can observe
+	 * resources before a later full reload() completes.
+	 */
+	deferResources?: boolean;
 	resolveProjectTrust?: (options: { extensionsResult: LoadExtensionsResult }) => boolean | Promise<boolean>;
 	resolveBorrowedProjectTrust?: (options: {
 		source: string;
@@ -36,7 +42,7 @@ export interface ResourceLoader {
 	getAgentsFiles(): { agentsFiles: Array<{ path: string; content: string }> };
 	getSystemPrompt(): string | undefined;
 	getAppendSystemPrompt(): string[];
-	extendResources(paths: ResourceExtensionPaths): void;
+	extendResources(paths: ResourceExtensionPaths): Promise<void>;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
 

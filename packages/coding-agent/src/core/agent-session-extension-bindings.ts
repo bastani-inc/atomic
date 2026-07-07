@@ -50,7 +50,7 @@ export async function extendResourcesFromExtensions(this: AgentSession, reason: 
 		themePaths: this.buildExtensionResourcePaths(themePaths),
 	};
 
-	this._resourceLoader.extendResources(extensionPaths);
+	await this._resourceLoader.extendResources(extensionPaths);
 	this._baseSystemPrompt = this._rebuildSystemPrompt(this.getActiveToolNames());
 	this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 }

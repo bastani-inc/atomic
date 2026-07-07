@@ -91,7 +91,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.addMessageToChat(event.message);
           this.ui.requestRender();
         } else if (event.message.role === "user") {
-          this.addMessageToChat(event.message);
+          if (!this.consumeDeferredRenderedUserInput(this.getUserMessageText(event.message))) {
+            this.addMessageToChat(event.message);
+          }
           this.updatePendingMessagesDisplay();
           this.ui.requestRender();
         } else if (event.message.role === "assistant") {
@@ -253,6 +255,11 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         }
         this.pendingTools.clear();
 
+		if (this.pendingLoadedResourcesDisclosure) {
+			this.pendingLoadedResourcesDisclosure = false;
+			this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
+			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
+		}
         await this.checkShutdownRequested();
 
         this.ui.requestRender();

@@ -2,6 +2,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase): void {
     if (this.startupNoticesShown) {
@@ -143,17 +144,29 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
         console.error(`Tool readiness check failed: ${message}`);
       });
 
-    // Initialize extensions first so resources are shown before messages
-    await this.rebindCurrentSession();
-
-    // Render initial messages AFTER showing loaded resources
-    this.renderInitialMessages();
-
-    // Extensions were skipped before first paint; finish loading them in the background.
+    // When startup resources are deferred, keep the already-painted editor responsive.
+    // Extension UI bindings are installed at the deferred reload boundary, not here,
+    // so no post-paint resource work can block visible typing.
     if (this.deferredStartupPending) {
-      this.deferredStartupPromise = this.completeDeferredStartup();
+      this.applyRuntimeSettings();
+      this.subscribeToAgent();
+      this.updateEditorBorderColor();
+      this.updateTerminalTitle();
+    } else {
+      await this.rebindCurrentSession();
     }
 
+    // Render initial messages AFTER the initial session binding is in place.
+    this.renderInitialMessages();
+
+
+
+	if (this.deferredStartupPending) {
+		setTimeout(() => {
+			if (!this.deferredStartupPending || this.deferredStartupPromise) return;
+			void this.ensureDeferredStartupComplete();
+		}, 2000);
+	}
     // Set up theme file watcher
     onThemeChange(() => {
       this.ui.invalidate();
@@ -188,30 +201,19 @@ InteractiveModeBase.prototype.updateTerminalTitle = function(this: InteractiveMo
 InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): Promise<void> {
     await this.init();
 
-    // Load GitHub Copilot context-window tiers from CAPI early (gated on the Copilot provider) so
-    // the footer and /model picker reflect GitHub's real windows. Best-effort, never blocks startup.
-    void this.refreshCopilotModelCatalog();
-
-    // Start version check asynchronously
-    checkForNewPiVersion(this.version).then((newVersion) => {
-      if (newVersion) {
-        this.showNewVersionNotification(newVersion);
-      }
-    });
-
-    // Start package update check asynchronously
-    this.checkForPackageUpdates().then((updates) => {
-      if (updates.length > 0) {
-        this.showPackageUpdateNotification(updates);
-      }
-    });
-
-    // Check tmux keyboard setup asynchronously
-    this.checkTmuxKeyboardSetup().then((warning) => {
-      if (warning) {
-        this.showWarning(warning);
-      }
-    });
+	setTimeout(() => {
+		void this.refreshCopilotModelCatalog();
+		checkForNewPiVersion(this.version).then((newVersion) => {
+			if (newVersion) this.showNewVersionNotification(newVersion);
+		});
+		this.checkForPackageUpdates().then((updates) => {
+			if (updates.length > 0) this.showPackageUpdateNotification(updates);
+		});
+		this.checkTmuxKeyboardSetup().then((warning) => {
+			if (warning) this.showWarning(warning);
+		});
+		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+	}, 500);
 
     // Show startup warnings
     const {
@@ -233,17 +235,15 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
       this.showError(`models.json error: ${modelsJsonError}`);
     }
 
-    if (modelFallbackMessage && !this.deferredStartupPromise) {
-      // With a deferred extension load, model restore is retried once extension
-      // providers register; completeDeferredStartup shows the warning if it still fails.
+    if (modelFallbackMessage && !this.deferredStartupPending) {
       this.showWarning(modelFallbackMessage);
     }
 
-    void this.maybeWarnAboutAnthropicSubscriptionAuth();
 
-    // Prompts need extension tools; wait for the background load before sending any.
-    if (this.deferredStartupPromise) {
-      await this.deferredStartupPromise;
+    // CLI-provided startup prompts need extension tools/resources; wait before sending them,
+    // but do not block the normal no-prompt input loop from becoming ready.
+    if (this.deferredStartupPending && (initialMessage || (initialMessages && initialMessages.length > 0))) {
+      await this.ensureDeferredStartupComplete();
     }
 
     // Process initial messages
@@ -272,9 +272,22 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
     // Main interactive loop
     while (true) {
       const userInput = await this.getUserInput();
+		if (this.deferredStartupPending) {
+			this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
+			this.setWorkingVisible(true);
+			await yieldToEventLoop();
+		}
       try {
+        await this.ensureDeferredStartupComplete();
         await this.session.prompt(userInput);
+		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
+		if (this.pendingLoadedResourcesDisclosure) {
+			this.pendingLoadedResourcesDisclosure = false;
+			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
+		}
       } catch (error: unknown) {
+		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
+        this.discardDeferredRenderedUserInput(userInput);
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error occurred";
         this.showError(errorMessage);

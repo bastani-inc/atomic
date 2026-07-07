@@ -36,8 +36,7 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { normalizePath } from "./utils/paths.ts";
 
-export type { AppMode } from "./main-app-mode.ts";
-export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
+export type { AppMode } from "./main-app-mode.ts"; export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
 
 export interface MainOptions {
 	extensionFactories?: ExtensionFactory[];
@@ -117,10 +116,7 @@ export async function main(args: string[], options?: MainOptions) {
 	const startupStoredProjectTrust = startupHasTrustInputs ? projectTrustStore.get(cwd) : null;
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
-	const startupProjectTrusted =
-		parsed.projectTrustOverride ??
-		startupStoredProjectTrust ??
-		(!startupHasTrustInputs || startupDefaultProjectTrust === "always");
+	const startupProjectTrusted = parsed.projectTrustOverride ?? startupStoredProjectTrust ?? (!startupHasTrustInputs || startupDefaultProjectTrust === "always");
 
 	// Run migrations after computing startup project trust so project-local migrations
 	// cannot read or mutate untrusted project config before approval.
@@ -207,6 +203,8 @@ export async function main(args: string[], options?: MainOptions) {
 			shouldResolveProjectTrust,
 			storedProjectTrust,
 			resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+			resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0),
+			hasSystemPromptInput: parsed.systemPrompt !== undefined || (parsed.appendSystemPrompt?.length ?? 0) > 0,
 			unknownFlagCount: parsed.unknownFlags.size,
 			provider: parsed.provider,
 			model: parsed.model,
@@ -230,7 +228,7 @@ export async function main(args: string[], options?: MainOptions) {
 			extensionFlagValues: parsed.unknownFlags,
 			resourceLoaderReloadOptions:
 				deferExtensions
-					? { deferExtensions: true }
+					? { deferExtensions: true, deferResources: true }
 					: shouldResolveProjectTrust || (resolvedExtensionPaths?.length ?? 0) > 0
 					? {
 							resolveProjectTrust: shouldResolveProjectTrust

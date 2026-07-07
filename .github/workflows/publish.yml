@@ -60,6 +60,8 @@ jobs:
 
                   "$smoke_dir/atomic/atomic" --version
                   for required_path in \
+                    app.js \
+                    image-resize-worker.js \
                     builtin/workflows/package.json \
                     builtin/workflows/src/extension/index.ts \
                     builtin/subagents/package.json \
@@ -143,6 +145,8 @@ jobs:
                     exit $LASTEXITCODE
                   }
                   foreach ($requiredPath in @(
+                    "app.js",
+                    "image-resize-worker.js",
                     "builtin/workflows/package.json",
                     "builtin/workflows/src/extension/index.ts",
                     "builtin/subagents/package.json",
@@ -158,6 +162,7 @@ jobs:
                     "node_modules/@bastani/atomic-natives/package.json",
                     "node_modules/@bastani/atomic-natives/native/index.js",
                     "node_modules/@bastani/atomic-natives/native/atomic_natives.win32-x64-msvc.node",
+                    "native/win32/prebuilds/win32-x64/win32-console-mode.node",
                     "node_modules/@modelcontextprotocol/ext-apps/package.json",
                     "node_modules/@mozilla/readability/package.json"
                   )) {

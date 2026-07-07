@@ -163,6 +163,10 @@ declare module "./interactive-mode-base.ts" {
   renderSessionContext(sessionContext: SessionContext, options?: { updateFooter?: boolean; populateHistory?: boolean }): void;
   renderInitialMessages(): void;
   getUserInput(): Promise<string>;
+  renderDeferredUserInput(text: string): void;
+  consumeDeferredRenderedUserInput(text: string): boolean;
+  discardDeferredRenderedUserInput(text: string): void;
+  ensureDeferredStartupComplete(): Promise<void>;
   rebuildChatFromMessages(): void;
   handleCtrlC(): void;
   handleCtrlD(): void;

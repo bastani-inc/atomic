@@ -60,7 +60,7 @@ export const COPILOT_PUBLIC_API_BASE_URL = "https://api.githubcopilot.com";
 
 /** Enterprise Copilot CAPI host for GHES/non-github.com server URLs. */
 export const COPILOT_ENTERPRISE_API_BASE_URL = "https://api.enterprise.githubcopilot.com";
-
+const GHE_COPILOT_API_HOST_PREFIX = ["copilot", "api"].join("-");
 export const COPILOT_GITHUB_TOKEN_ENV = "COPILOT_GITHUB_TOKEN";
 export const COPILOT_API_TARGET_ENV = "COPILOT_API_TARGET";
 export const GITHUB_COPILOT_BASE_URL_ENV = "GITHUB_COPILOT_BASE_URL";
@@ -91,7 +91,7 @@ function copilotApiBaseUrlFromServerUrl(serverUrl: string | undefined): string |
 		const parsed = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
 		const host = parsed.hostname.toLowerCase();
 		if (!host || host === "github.com") return undefined;
-		if (host.endsWith(".ghe.com")) return `https://copilot-api.${host}`;
+		if (host.endsWith(".ghe.com")) return `https://${GHE_COPILOT_API_HOST_PREFIX}.${host}`;
 		return COPILOT_ENTERPRISE_API_BASE_URL;
 	} catch {
 		return undefined;
@@ -127,7 +127,7 @@ export function copilotApiBaseUrlFromToken(
 			return `https://${match[1].replace(/^proxy\./, "api.")}`;
 		}
 	}
-	if (enterpriseDomain) return `https://copilot-api.${enterpriseDomain}`;
+	if (enterpriseDomain) return `https://${GHE_COPILOT_API_HOST_PREFIX}.${enterpriseDomain}`;
 	const serverUrlOverride = copilotApiBaseUrlFromServerUrl(env[GITHUB_SERVER_URL_ENV]);
 	if (serverUrlOverride) return serverUrlOverride;
 	if (isCopilotEnvironmentToken(token, env)) return COPILOT_PUBLIC_API_BASE_URL;

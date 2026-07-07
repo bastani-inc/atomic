@@ -11,6 +11,8 @@ export interface ComputeDeferExtensionsInput {
 	shouldResolveProjectTrust: boolean;
 	storedProjectTrust: boolean | null;
 	resolvedExtensionPathCount: number;
+	resolvedResourcePathCount: number;
+	hasSystemPromptInput: boolean;
 	unknownFlagCount: number;
 	provider?: string;
 	model?: string;
@@ -25,6 +27,8 @@ export function computeDeferExtensions(input: ComputeDeferExtensionsInput): bool
 		input.listModels === undefined &&
 		(!input.shouldResolveProjectTrust || input.storedProjectTrust !== null) &&
 		input.resolvedExtensionPathCount === 0 &&
+		input.resolvedResourcePathCount === 0 &&
+		!input.hasSystemPromptInput &&
 		input.unknownFlagCount === 0 &&
 		input.provider === undefined &&
 		input.model === undefined

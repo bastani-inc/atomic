@@ -19,7 +19,7 @@ import {
 	resolveTrustedBorrowedProjectLocalSources,
 } from "./resource-loader-package-resources.ts";
 import { applyExtensionSourceInfo } from "./resource-loader-source-info.ts";
-import { updatePromptsFromPaths, updateSkillsFromPaths, updateThemesFromPaths } from "./resource-loader-assets.ts";
+import { updatePromptsFromPathsAsync, updateSkillsFromPathsAsync, updateThemesFromPathsAsync } from "./resource-loader-assets.ts";
 import { mergeResourcePaths, resolveResourcePath } from "./resource-loader-paths.ts";
 import type { ResourceLoaderReloadOptions } from "./resource-loader-types.ts";
 
@@ -147,6 +147,42 @@ export async function reloadDefaultResourceLoader(
 			preTrustExtensions,
 		);
 	}
+	if (options?.deferResources && !options.resolveProjectTrust && !options.resolveBorrowedProjectTrust) {
+		await state.settingsManager.reload();
+		const deferredExtensions: LoadExtensionsResult = { extensions: [], errors: [], runtime: createExtensionRuntime() };
+		state.extensionsResult = state.extensionsOverride ? state.extensionsOverride(deferredExtensions) : deferredExtensions;
+		state.extensionSkillSourceInfos = new Map();
+		state.extensionPromptSourceInfos = new Map();
+		state.extensionThemeSourceInfos = new Map();
+		state.workflowResources = [];
+		state.lastSkillPaths = [];
+		const emptySkills = state.skillsOverride ? state.skillsOverride({ skills: [], diagnostics: [] }) : undefined;
+		state.skills = emptySkills?.skills ?? [];
+		state.skillDiagnostics = emptySkills?.diagnostics ?? [];
+		state.lastPromptPaths = [];
+		const emptyPrompts = state.promptsOverride ? state.promptsOverride({ prompts: [], diagnostics: [] }) : undefined;
+		state.prompts = emptyPrompts?.prompts ?? [];
+		state.promptDiagnostics = emptyPrompts?.diagnostics ?? [];
+		state.lastThemePaths = [];
+		const emptyThemes = state.themesOverride ? state.themesOverride({ themes: [], diagnostics: [] }) : undefined;
+		state.themes = emptyThemes?.themes ?? [];
+		state.themeDiagnostics = emptyThemes?.diagnostics ?? [];
+		const emptyAgentsFiles = { agentsFiles: [] };
+		state.agentsFiles = state.agentsFilesOverride
+			? state.agentsFilesOverride(emptyAgentsFiles).agentsFiles
+			: emptyAgentsFiles.agentsFiles;
+		const baseSystemPrompt = state.systemPromptSource
+			? resolvePromptInput(state.systemPromptSource, "system prompt")
+			: undefined;
+		state.systemPrompt = state.systemPromptOverride ? state.systemPromptOverride(baseSystemPrompt) : baseSystemPrompt;
+		const appendSources = state.appendSystemPromptSource ?? [];
+		const baseAppend = appendSources
+			.map((s) => resolvePromptInput(s, "append system prompt"))
+			.filter((s): s is string => s !== undefined);
+		state.appendSystemPrompt = state.appendSystemPromptOverride ? state.appendSystemPromptOverride(baseAppend) : baseAppend;
+		state.loaded = true;
+		return;
+	}
 	const resolveSpan = startTimingSpan("DefaultResourceLoader.reload.resolvePackageResourcePaths");
 	const { resolvedPaths, cliExtensionPaths, builtinPackagePaths } = await resolvePackageResourcePaths(loader, {
 		trustedBorrowedProjectLocalSources: state.trustedBorrowedProjectLocalSources,
@@ -221,8 +257,8 @@ export async function reloadDefaultResourceLoader(
 
 	state.lastSkillPaths = skillPaths;
 	const skillsStartedAt = Date.now();
-	const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPaths");
-	updateSkillsFromPaths(loader, skillPaths, metadataByPath);
+	const skillsSpan = startTimingSpan("DefaultResourceLoader.reload.updateSkillsFromPathsAsync");
+	await updateSkillsFromPathsAsync(loader, skillPaths, metadataByPath);
 	endTimingSpan(skillsSpan);
 	await yieldToEventLoopIfSlow(skillsStartedAt);
 	for (const p of state.additionalSkillPaths) {
@@ -240,8 +276,8 @@ export async function reloadDefaultResourceLoader(
 
 	state.lastPromptPaths = promptPaths;
 	const promptsStartedAt = Date.now();
-	const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPaths");
-	updatePromptsFromPaths(loader, promptPaths, metadataByPath);
+	const promptsSpan = startTimingSpan("DefaultResourceLoader.reload.updatePromptsFromPathsAsync");
+	await updatePromptsFromPathsAsync(loader, promptPaths, metadataByPath);
 	endTimingSpan(promptsSpan);
 	await yieldToEventLoopIfSlow(promptsStartedAt);
 	for (const p of state.additionalPromptTemplatePaths) {
@@ -263,8 +299,8 @@ export async function reloadDefaultResourceLoader(
 
 	state.lastThemePaths = themePaths;
 	const themesStartedAt = Date.now();
-	const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPaths");
-	updateThemesFromPaths(loader, themePaths, metadataByPath);
+	const themesSpan = startTimingSpan("DefaultResourceLoader.reload.updateThemesFromPathsAsync");
+	await updateThemesFromPathsAsync(loader, themePaths, metadataByPath);
 	endTimingSpan(themesSpan);
 	await yieldToEventLoopIfSlow(themesStartedAt);
 	for (const p of state.additionalThemePaths) {

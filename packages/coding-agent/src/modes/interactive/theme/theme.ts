@@ -26,6 +26,7 @@ export {
 	getAvailableThemesWithPaths,
 	getThemeByName,
 	loadThemeFromPath,
+	loadThemeFromContent,
 	setRegisteredThemes,
 	type ThemeInfo,
 } from "./theme-loading.ts";

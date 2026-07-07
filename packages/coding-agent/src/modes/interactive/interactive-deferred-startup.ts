@@ -1,7 +1,22 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
-import { recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes, Text, theme } from "./interactive-mode-deps.ts";
-import { yieldToEventLoop } from "../../utils/event-loop.ts";
+import { recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
+
+export interface DeferredStartupMode {
+    deferredStartupPending: boolean;
+    deferredStartupPromise: Promise<void> | undefined;
+    completeDeferredStartup(): Promise<void>;
+  }
+
+export async function ensureDeferredStartupComplete(mode: DeferredStartupMode): Promise<void> {
+    if (!mode.deferredStartupPending && !mode.deferredStartupPromise) return;
+    mode.deferredStartupPromise ??= mode.completeDeferredStartup();
+    await mode.deferredStartupPromise;
+  }
+
+InteractiveModeBase.prototype.ensureDeferredStartupComplete = async function(this: InteractiveModeBase): Promise<void> {
+    await ensureDeferredStartupComplete(this);
+  };
 
 /**
  * Finishes a startup where extension loading was deferred so the TUI could
@@ -9,15 +24,11 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
  * the same post-load UI wiring as /reload and discloses loaded resources.
  */
 InteractiveModeBase.prototype.completeDeferredStartup = async function(this: InteractiveModeBase): Promise<void> {
-    const loadingIndicator = new Text(theme.fg("dim", "Loading extensions, skills, prompts, themes..."), 1, 0);
-    this.chatContainer.addChild(loadingIndicator);
-    this.ui.requestRender();
-    await yieldToEventLoop();
-
-    try {
-      await this.session.reload({ reason: "startup" });
-    } catch (error) {
-      this.chatContainer.removeChild(loadingIndicator);
+	try {
+		await this.bindCurrentSessionExtensions();
+		await this.session.reload({ reason: "startup" });
+	} catch (error) {
+		this.stopWorkingLoader();
       this.deferredStartupPending = false;
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -25,8 +36,8 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       return;
     }
 
-    this.chatContainer.removeChild(loadingIndicator);
-    this.deferredStartupPending = false;
+	this.stopWorkingLoader();
+	this.deferredStartupPending = false;
     recordTimeSinceReset("deferred-extension-load");
 
     setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
@@ -35,9 +46,12 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
     this.setupExtensionShortcuts(this.session.extensionRunner);
     await applyDeferredModelScope(this);
     await this.retryDeferredModelRestore();
-    this.showLoadedResources({ force: false, showDiagnosticsWhenQuiet: true });
-    this.showStartupNoticesIfNeeded();
-
+	if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
+		this.pendingLoadedResourcesDisclosure = true;
+	} else {
+		this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
+	}
+	this.showStartupNoticesIfNeeded();
     const modelsJsonError = this.session.modelRegistry.getError();
     if (modelsJsonError) {
       this.showError(`models.json error: ${modelsJsonError}`);

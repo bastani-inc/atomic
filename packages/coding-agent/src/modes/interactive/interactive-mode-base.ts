@@ -76,6 +76,9 @@ export class InteractiveModeBase {
   pendingUserInputs: string[] = [];
 
 
+  deferredRenderedUserInputs: string[] = [];
+
+
   loadingAnimation: Loader | undefined = undefined;
 
 
@@ -210,6 +213,12 @@ export class InteractiveModeBase {
 
 
   deferredStartupPromise: Promise<void> | undefined = undefined;
+  deferLoadedResourcesDisclosureUntilAgentEnd = false;
+
+
+  pendingLoadedResourcesDisclosure = false;
+
+
 
 
 

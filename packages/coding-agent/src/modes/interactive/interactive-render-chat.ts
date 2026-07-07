@@ -28,6 +28,25 @@ InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, m
     this.ui.requestRender();
   };
 
+InteractiveModeBase.prototype.renderDeferredUserInput = function(this: InteractiveModeBase, text: string): void {
+    this.deferredRenderedUserInputs.push(text);
+    this.addMessageToChat({ role: "user", content: text } as AgentMessage);
+    this.updatePendingMessagesDisplay();
+    this.ui.requestRender();
+  };
+
+InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function(this: InteractiveModeBase, text: string): boolean {
+    const index = this.deferredRenderedUserInputs.indexOf(text);
+    if (index === -1) return false;
+    this.deferredRenderedUserInputs.splice(index, 1);
+    return true;
+  };
+
+InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function(this: InteractiveModeBase, text: string): void {
+    const index = this.deferredRenderedUserInputs.indexOf(text);
+    if (index !== -1) this.deferredRenderedUserInputs.splice(index, 1);
+  };
+
 InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: InteractiveModeBase): ChatMessageRenderOptions {
     return {
       ui: this.ui,
@@ -168,6 +187,7 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
 
 InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveModeBase, sessionContext: SessionContext, options: { updateFooter?: boolean; populateHistory?: boolean } = {}): void {
     this.pendingTools.clear();
+    this.deferredRenderedUserInputs = [];
 
     if (options.updateFooter) {
       this.footer.invalidate();

@@ -20,6 +20,7 @@ type SubmitContext = {
     prompt: (text: string, options?: object) => Promise<void>;
   };
   flushPendingBashComponents: () => void;
+  renderDeferredUserInput: (text: string) => void;
   onInputCallback?: (text: string) => void;
   pendingUserInputs: string[];
 };
@@ -37,10 +38,12 @@ type DeferredModeContext = {
   options: { deferredModelScopePatterns?: string[] };
   themeController: { applyFromSettings: () => Promise<void> };
   deferredStartupPending: boolean;
+  bindCurrentSessionExtensions: () => Promise<void>;
   maybeSaveImplicitProjectTrustAfterReload: () => void;
   setupAutocompleteProvider: () => void;
   setupExtensionShortcuts: (runner: object) => void;
   retryDeferredModelRestore: () => Promise<void>;
+  stopWorkingLoader: () => void;
   showLoadedResources: (options: { force: boolean; showDiagnosticsWhenQuiet: boolean }) => void;
   showStartupNoticesIfNeeded: () => void;
   updateAvailableProviderCount: () => Promise<void>;
@@ -81,23 +84,17 @@ describe("coding-agent deferred startup input", () => {
 
     await writeFile(
       firstExtension,
-      `import { appendFileSync } from "node:fs";\nexport default function () { appendFileSync(${JSON.stringify(logPath)}, "first\\n"); }\n`,
+      `import { appendFileSync, writeFileSync } from "node:fs";\nexport default function () { appendFileSync(${JSON.stringify(logPath)}, "first\\n"); setImmediate(() => { writeFileSync(${JSON.stringify(markerPath)}, "fired"); appendFileSync(${JSON.stringify(logPath)}, "immediate\\n"); }); }\n`,
     );
     await writeFile(
       secondExtension,
       `import { appendFileSync, existsSync } from "node:fs";\nexport default function () { appendFileSync(${JSON.stringify(logPath)}, existsSync(${JSON.stringify(markerPath)}) ? "second-after-immediate\\n" : "second-before-immediate\\n"); }\n`,
     );
 
-    const immediateDone = new Promise<void>((resolve) => {
-      setImmediate(async () => {
-        await writeFile(markerPath, "fired");
-        await writeFile(logPath, "immediate\n", { flag: "a" });
-        resolve();
-      });
-    });
+    const waitForImmediate = new Promise<void>((resolve) => setImmediate(resolve));
 
     const result = await loadExtensionsCached([firstExtension, secondExtension], dir);
-    await immediateDone;
+    await waitForImmediate;
 
     assert.deepEqual(result.errors, []);
     assert.equal(await Bun.file(logPath).text(), "first\nimmediate\nsecond-after-immediate\n");
@@ -123,10 +120,12 @@ describe("coding-agent deferred startup input", () => {
       options: {},
       themeController: { applyFromSettings: mock(async () => {}) },
       deferredStartupPending: true,
+      bindCurrentSessionExtensions: mock(async () => {}),
       maybeSaveImplicitProjectTrustAfterReload,
       setupAutocompleteProvider: mock(() => {}),
       setupExtensionShortcuts: mock(() => {}),
       retryDeferredModelRestore: mock(async () => {}),
+      stopWorkingLoader: mock(() => {}),
       showLoadedResources: mock(() => {}),
       showStartupNoticesIfNeeded: mock(() => {}),
       updateAvailableProviderCount: mock(async () => {}),
@@ -152,6 +151,7 @@ describe("coding-agent deferred startup input", () => {
       editor: { addToHistory: mock(() => {}), setText: mock(() => {}) },
       session: { isCompacting: false, isStreaming: false, isBashRunning: false, prompt },
       flushPendingBashComponents: mock(() => {}),
+      renderDeferredUserInput: mock(() => {}),
       pendingUserInputs: [],
     };
 

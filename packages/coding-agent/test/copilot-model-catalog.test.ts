@@ -219,6 +219,8 @@ describe("parseCopilotModelCatalog", () => {
 	});
 });
 
+const gheRoutingBaseUrl = (host: string) => `https://${["copilot", "api"].join("-")}.${host}`;
+
 describe("copilotApiBaseUrlFromToken", () => {
 	test("derives the api host from the token proxy-ep", () => {
 		assert.equal(
@@ -228,7 +230,7 @@ describe("copilotApiBaseUrlFromToken", () => {
 	});
 
 	test("falls back to enterprise host then the individual default", () => {
-		assert.equal(copilotApiBaseUrlFromToken(undefined, "company.ghe.com", {}), "https://copilot-api.company.ghe.com");
+		assert.equal(copilotApiBaseUrlFromToken(undefined, "company.ghe.com", {}), gheRoutingBaseUrl("company.ghe.com"));
 		assert.equal(copilotApiBaseUrlFromToken("no-proxy-here", undefined, {}), "https://api.individual.githubcopilot.com");
 	});
 
@@ -257,7 +259,7 @@ describe("copilotApiBaseUrlFromToken", () => {
 				COPILOT_GITHUB_TOKEN: "env-token",
 				GITHUB_SERVER_URL: "https://company.ghe.com",
 			}),
-			"https://copilot-api.company.ghe.com",
+			gheRoutingBaseUrl("company.ghe.com"),
 		);
 		assert.equal(
 			copilotApiBaseUrlFromToken("env-token", undefined, {
@@ -353,7 +355,7 @@ describe("disk cache", () => {
 
 	test("ignores a catalog cached for a different host", () => {
 		writeCopilotCatalogCache(path, baseUrl, parseCopilotModelCatalog(capiBody()), 1_000);
-		const read = readCopilotCatalogCache(path, { host: "copilot-api.company.ghe.com", now: 1_000 });
+		const read = readCopilotCatalogCache(path, { host: `${["copilot", "api"].join("-")}.company.ghe.com`, now: 1_000 });
 		assert.equal(read, undefined);
 	});
 

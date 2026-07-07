@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed post-context-compaction provider requests so retained pre-compaction assistant usage is scrubbed from the provider-bound context clone. This keeps durable billing history intact while preventing stale high token counts from shrinking `max_output_tokens` to an invalid one-token budget on the first turn after compaction.
+- Reduced Windows compiled-binary interactive cold-start latency by shipping release archives with a small launcher plus a sidecar app bundle instead of one monolithic executable, and by extending the deferred TUI fast path beyond extension module imports. Normal interactive TTY startup now paints and installs the input loop before bundled package/resource discovery scans skills, prompts, themes, context files, and system-prompt files. Deferred loading now uses async filesystem discovery and async file reads for package resources, skills, prompts, themes, and extension-discovered resources, with cooperative yields so Enter, Ctrl+C, rendering, and the normal prompt spinner remain responsive when a submitted prompt needs resources. Startup no longer shows a resource-loading spinner before the user submits a prompt; explicit resource flags, system-prompt inputs, unknown extension flags, model/provider selection, metadata commands, non-TTY modes, and unresolved project-trust prompts stay on the synchronous path.
+- Fixed Windows compiled-binary keyboard responsiveness by avoiding invisible typeahead buffering in normal interactive startup, keeping terminal input attached to the visible editor, handling Ctrl+C globally with a SIGINT fallback, bounding Ctrl+C shutdown input draining to 250ms, and packaging the Windows console-mode helper used by the TUI for virtual-terminal input.
+
 ## [0.9.5-alpha.6] - 2026-07-06
 
 ### Fixed

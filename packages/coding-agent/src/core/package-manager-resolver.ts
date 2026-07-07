@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR_NAME } from "../config.ts";
 import { getGitInstallPath } from "./package-manager-paths.ts";
@@ -23,6 +23,11 @@ import type {
 	SourceScope,
 } from "./package-manager-types.ts";
 import type { PackageSource } from "./settings-manager.ts";
+
+async function exists(path: string): Promise<boolean> {
+	try { await access(path); return true; } catch { return false; }
+}
+
 
 export async function resolvePackages(
 	context: PackageManagerContext,
@@ -53,7 +58,7 @@ export async function resolvePackages(
 		const globalEntries = (globalSettings[resourceType] ?? []) as string[];
 		const projectEntries = (projectSettings[resourceType] ?? []) as string[];
 		for (const baseDir of projectBaseDirs) {
-			resolveLocalEntries(
+			await resolveLocalEntries(
 				projectEntries,
 				resourceType,
 				target,
@@ -62,7 +67,7 @@ export async function resolvePackages(
 			);
 		}
 		for (const baseDir of globalBaseDirs) {
-			resolveLocalEntries(
+			await resolveLocalEntries(
 				globalEntries,
 				resourceType,
 				target,
@@ -72,7 +77,7 @@ export async function resolvePackages(
 		}
 	}
 
-	addAutoDiscoveredResources(context, accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
+	await addAutoDiscoveredResources(context, accumulator, globalSettings, projectSettings, globalBaseDir, projectBaseDir);
 	return toResolvedPaths(accumulator);
 }
 
@@ -105,7 +110,7 @@ async function resolvePackageSources(
 
 		if (parsed.type === "local") {
 			for (const baseDir of getBaseDirsForScope(context, scope)) {
-				resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir, {
+				await resolveLocalExtensionSource(parsed, accumulator, filter, { ...metadata, baseDir }, baseDir, {
 					includeProjectLocalResources: options?.includeProjectLocalResources === true,
 				});
 			}
@@ -141,12 +146,12 @@ async function resolvePackageSources(
 			}
 			if (!installedPath) continue;
 			metadata.baseDir = installedPath;
-			collectPackageResources(installedPath, accumulator, filter, metadata);
+			await collectPackageResources(installedPath, accumulator, filter, metadata);
 			continue;
 		}
 
 		let installedPath = getExistingGitInstallPath(context, parsed, scope) ?? getGitInstallPath(context, parsed, scope);
-		if (!existsSync(installedPath)) {
+		if (!(await exists(installedPath))) {
 			const installed = await installMissing();
 			if (!installed) continue;
 		} else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
@@ -154,34 +159,34 @@ async function resolvePackageSources(
 			else await refreshTemporaryGitSource(context, parsed, sourceStr);
 		}
 		metadata.baseDir = installedPath;
-		collectPackageResources(installedPath, accumulator, filter, metadata);
+		await collectPackageResources(installedPath, accumulator, filter, metadata);
 	}
 }
 
-function resolveLocalExtensionSource(
+async function resolveLocalExtensionSource(
 	source: { type: "local"; path: string },
 	accumulator: ResourceAccumulator,
 	filter: PackageFilter | undefined,
 	metadata: PathMetadata,
 	baseDir: string,
 	options?: { includeProjectLocalResources?: boolean },
-): void {
+): Promise<void> {
 	const resolved = resolvePathFromBase(source.path, baseDir);
-	if (!existsSync(resolved)) return;
+	if (!(await exists(resolved))) return;
 
 	try {
-		const stats = statSync(resolved);
+		const stats = await stat(resolved);
 		if (stats.isFile()) {
 			addResource(accumulator.extensions, resolved, { ...metadata, baseDir: dirname(resolved) }, true);
 			return;
 		}
 		if (stats.isDirectory()) {
 			const packageMetadata: PathMetadata = { ...metadata, baseDir: resolved };
-			const packageResources = collectPackageResources(resolved, accumulator, filter, packageMetadata);
+			const packageResources = await collectPackageResources(resolved, accumulator, filter, packageMetadata);
 			const projectLocalResources = options?.includeProjectLocalResources
-				? collectProjectLocalResources(resolved, accumulator, filter, packageMetadata)
+				? await collectProjectLocalResources(resolved, accumulator, filter, packageMetadata)
 				: false;
-			const extensionEntries = resolveExtensionEntries(resolved);
+			const extensionEntries = await resolveExtensionEntries(resolved);
 			const shouldAddDirectoryFallback =
 				extensionEntries !== null || (options?.includeProjectLocalResources === true && !projectLocalResources);
 			if (!packageResources && shouldAddDirectoryFallback) {

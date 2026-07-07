@@ -9,7 +9,7 @@ import type { Skill } from "./skills.ts";
 import type { SourceInfo } from "./source-info.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 import type { Theme } from "../modes/interactive/theme/theme.ts";
-import { updatePromptsFromPaths, updateSkillsFromPaths, updateThemesFromPaths } from "./resource-loader-assets.ts";
+import { updatePromptsFromPathsAsync, updateSkillsFromPathsAsync, updateThemesFromPathsAsync } from "./resource-loader-assets.ts";
 import { clonePackageSources, mergeInheritedStrings } from "./resource-loader-helpers.ts";
 import {
 	collectWorkflowResources,
@@ -220,7 +220,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 		return [...this.workflowResources];
 	}
 
-	extendResources(paths: ResourceExtensionPaths): void {
+	async extendResources(paths: ResourceExtensionPaths): Promise<void> {
 		const skillPaths = normalizeExtensionPaths(this, paths.skillPaths ?? []);
 		const promptPaths = normalizeExtensionPaths(this, paths.promptPaths ?? []);
 		const themePaths = normalizeExtensionPaths(this, paths.themePaths ?? []);
@@ -230,15 +230,15 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		if (skillPaths.length > 0) {
 			this.lastSkillPaths = mergeResourcePaths(this.cwd, this.lastSkillPaths, skillPaths.map((entry) => entry.path));
-			updateSkillsFromPaths(this, this.lastSkillPaths);
+			await updateSkillsFromPathsAsync(this, this.lastSkillPaths);
 		}
 		if (promptPaths.length > 0) {
 			this.lastPromptPaths = mergeResourcePaths(this.cwd, this.lastPromptPaths, promptPaths.map((entry) => entry.path));
-			updatePromptsFromPaths(this, this.lastPromptPaths);
+			await updatePromptsFromPathsAsync(this, this.lastPromptPaths);
 		}
 		if (themePaths.length > 0) {
 			this.lastThemePaths = mergeResourcePaths(this.cwd, this.lastThemePaths, themePaths.map((entry) => entry.path));
-			updateThemesFromPaths(this, this.lastThemePaths);
+			await updateThemesFromPathsAsync(this, this.lastThemePaths);
 		}
 	}
 

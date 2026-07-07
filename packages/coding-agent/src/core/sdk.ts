@@ -38,6 +38,7 @@ import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { time } from "./timings.ts";
 import { defaultToolNames } from "./tools/index.ts";
 
@@ -424,8 +425,8 @@ export async function createAgentSession(
     sessionId: sessionManager.getSessionId(),
     transformContext: async (messages) => {
       const runner = extensionRunnerRef.current;
-      if (!runner) return messages;
-      return runner.emitContext(messages);
+      const transformed = runner ? await runner.emitContext(messages) : messages;
+      return scrubPreCompactionAssistantUsage(transformed, sessionManager.getBranch());
     },
     steeringMode: settingsManager.getSteeringMode(),
     followUpMode: settingsManager.getFollowUpMode(),

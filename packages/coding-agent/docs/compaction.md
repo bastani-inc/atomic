@@ -13,6 +13,7 @@ Atomic's compaction design and terminology are informed by Morph's Context Compa
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`ContextCompactionEntry`, `BranchSummaryEntry`) and active-context rebuild logic
+- [`packages/coding-agent/src/core/provider-context-usage.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/provider-context-usage.ts) - Provider-bound usage scrub that keeps post-compaction token budgeting based on the compacted prompt
 - [`packages/coding-agent/src/core/extensions/session-events.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/extensions/session-events.ts) - Compaction extension event payloads
 
 For TypeScript definitions in your project, inspect `node_modules/@bastani/atomic/dist/`.
@@ -68,6 +69,8 @@ Tool-call/tool-result pairs are also treated as replay dependencies. Validation 
 Atomic records those targets in an append-only `context_compaction` entry. When the active branch is rebuilt, Atomic filters the targeted objects out and reuses every retained entry/content block unchanged. There is no generated summary, no paraphrasing, and no replacement message inserted.
 
 The raw session JSONL remains append-only. Deleted objects stay available in the stored session file and backup snapshot; they are only omitted from future active LLM context on that branch.
+
+Provider-bound context is cloned one more time before each LLM request. Retained assistant messages from before the latest `context_compaction` keep their historical usage in the durable session JSONL, but Atomic zeroes that usage in the request-only clone so provider token-budget estimators do not treat the compacted context as if it still contained the old, larger prompt. The first assistant response after compaction then supplies fresh usage for subsequent turns.
 
 ### Compaction Parameters
 

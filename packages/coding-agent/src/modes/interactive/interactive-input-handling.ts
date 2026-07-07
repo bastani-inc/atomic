@@ -2,6 +2,14 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
+    this.ui.addInputListener((data) => {
+      if (!this.keybindings.matches(data, "app.clear")) return undefined;
+      if (this.ui.hasOverlay()) return undefined;
+      this.handleCtrlC();
+      this.ui.requestRender();
+      return { consume: true };
+    });
+
     // Set up handlers on defaultEditor - they use this.editor for text access
     // so they work correctly regardless of which editor is active
     this.defaultEditor.onEscape = () => {
@@ -296,6 +304,9 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
       // Normal message submission
       // First, move any pending bash components to chat
       this.flushPendingBashComponents();
+      if (!text.startsWith("/")) {
+        this.renderDeferredUserInput(text);
+      }
 
       if (this.onInputCallback) {
         this.onInputCallback(text);
