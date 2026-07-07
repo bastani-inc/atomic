@@ -111,7 +111,11 @@ for platform in "${PLATFORMS[@]}"; do
     echo "Building for $platform..."
     mkdir -p "binaries/$platform"
     if [[ "$platform" == windows-* ]]; then
-        bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
+        # Bun 1.3.14 bytecode-compiled Windows standalone executables can
+        # segfault before user code runs (llint_entry / bytecode alignment).
+        # Keep Windows release binaries standalone-compiled, but ship source
+        # payload instead of embedded bytecode until Bun's fix is available.
+        bun build --compile --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic.exe"
     else
         bun build --compile --bytecode --format=cjs --external mupdf --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target=bun-$platform ./dist/bun/split-loader.js --outfile "binaries/$platform/atomic"
     fi

@@ -118,11 +118,23 @@ function distCandidates(context: BuiltinPackageCandidateContext, descriptor: Bui
 		join(packageDir, "dist", "builtin", descriptor.distDirName),
 	];
 }
+function moduleDirForBuiltinCandidates(packageDir: string): string {
+	try {
+		return dirname(fileURLToPath(import.meta.url));
+	} catch (error) {
+		const isSplitLauncherRuntime = process.env.ATOMIC_CODING_AGENT === "true" &&
+			/(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath);
+		if (isSplitLauncherRuntime) return packageDir;
+		throw error;
+	}
+}
+
 
 function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
+	const packageDir = getPackageDir();
 	const context: BuiltinPackageCandidateContext = {
-		here: dirname(fileURLToPath(import.meta.url)),
-		packageDir: getPackageDir(),
+		here: moduleDirForBuiltinCandidates(packageDir),
+		packageDir,
 		isSourceCheckout: false,
 	};
 	return {

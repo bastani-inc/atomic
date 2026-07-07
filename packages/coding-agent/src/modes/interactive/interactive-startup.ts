@@ -1,10 +1,10 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
+import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
-InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase, targetContainer: Container = this.chatContainer): void {
     if (this.startupNoticesShown) {
       return;
     }
@@ -16,23 +16,23 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
     }
 
     if (changelogMarkdown) {
-      if (this.chatContainer.children.length > 0) {
-        this.chatContainer.addChild(new Spacer(1));
+      if (targetContainer.children.length > 0) {
+        targetContainer.addChild(new Spacer(1));
       }
-      this.chatContainer.addChild(new DynamicBorder());
+      targetContainer.addChild(new DynamicBorder());
       if (this.settingsManager.getCollapseChangelog()) {
         const versionMatch = changelogMarkdown.match(
           /##\s+\[?((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:alpha\.)?(?:0|[1-9]\d*))?)\]?/,
         );
         const latestVersion = versionMatch ? versionMatch[1] : this.version;
         const condensedText = `Updated to v${latestVersion}. Use ${theme.bold("/changelog")} to view full changelog.`;
-        this.chatContainer.addChild(new Text(condensedText, 1, 0));
+        targetContainer.addChild(new Text(condensedText, 1, 0));
       } else {
-        this.chatContainer.addChild(
+        targetContainer.addChild(
           new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
         );
-        this.chatContainer.addChild(new Spacer(1));
-        this.chatContainer.addChild(
+        targetContainer.addChild(new Spacer(1));
+        targetContainer.addChild(
           new Markdown(
             changelogMarkdown.trim(),
             1,
@@ -40,14 +40,14 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
             this.getMarkdownThemeWithSettings(),
           ),
         );
-        this.chatContainer.addChild(new Spacer(1));
+        targetContainer.addChild(new Spacer(1));
       }
-      this.chatContainer.addChild(new DynamicBorder());
+      targetContainer.addChild(new DynamicBorder());
     }
 
     if (this.firstRunNoticeVisible) {
       this.firstRunOnboardingNoticeComponents = [];
-      if (this.chatContainer.children.length > 0) {
+      if (targetContainer.children.length > 0) {
         this.firstRunOnboardingNoticeComponents.push(new Spacer(1));
       }
       this.firstRunOnboardingNoticeComponents.push(
@@ -57,7 +57,7 @@ InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: Intera
         new Spacer(1),
       );
       for (const component of this.firstRunOnboardingNoticeComponents) {
-        this.chatContainer.addChild(component);
+        targetContainer.addChild(component);
       }
       // Mark completion only after queueing the notice in the chat canvas so
       // launches that skip rendering retry the first-run notice next time.
@@ -156,11 +156,9 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       await this.rebindCurrentSession();
     }
 
+    this.attachStartupNoticesContainer();
     // Render initial messages AFTER the initial session binding is in place.
     this.renderInitialMessages();
-
-
-
 	if (this.deferredStartupPending) {
 		setTimeout(() => {
 			if (!this.deferredStartupPending || this.deferredStartupPromise) return;
@@ -203,16 +201,22 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 
 	setTimeout(() => {
 		void this.refreshCopilotModelCatalog();
+    const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
-			if (newVersion) this.showNewVersionNotification(newVersion);
+			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
 		});
 		this.checkForPackageUpdates().then((updates) => {
-			if (updates.length > 0) this.showPackageUpdateNotification(updates);
+			if (updates.length > 0) this.showPackageUpdateNotification(updates, startupNoticesContainer);
 		});
 		this.checkTmuxKeyboardSetup().then((warning) => {
-			if (warning) this.showWarning(warning);
+			if (warning) this.showWarning(warning, startupNoticesContainer);
 		});
-		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+		// When startup is deferred, the RESOURCES disclosure renders after the
+		// deferred extension load; hold the subscription warning until then so
+		// the disclosure always appears first.
+		if (!this.deferredStartupPending && !this.deferredStartupPromise && !this.pendingLoadedResourcesDisclosure) {
+			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, startupNoticesContainer);
+		}
 	}, 500);
 
     // Show startup warnings
@@ -236,9 +240,8 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
     }
 
     if (modelFallbackMessage && !this.deferredStartupPending) {
-      this.showWarning(modelFallbackMessage);
+      this.showWarning(modelFallbackMessage, this.startupNoticesContainer);
     }
-
 
     // CLI-provided startup prompts need extension tools/resources; wait before sending them,
     // but do not block the normal no-prompt input loop from becoming ready.
@@ -283,7 +286,8 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
 		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
 		if (this.pendingLoadedResourcesDisclosure) {
 			this.pendingLoadedResourcesDisclosure = false;
-			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
+			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
+			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
 		}
       } catch (error: unknown) {
 		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;

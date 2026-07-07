@@ -116,15 +116,15 @@ InteractiveModeBase.prototype.showError = function(this: InteractiveModeBase, er
     this.ui.requestRender();
   };
 
-InteractiveModeBase.prototype.showWarning = function(this: InteractiveModeBase, warningMessage: string): void {
-    this.chatContainer.addChild(new Spacer(1));
-    this.chatContainer.addChild(
+InteractiveModeBase.prototype.showWarning = function(this: InteractiveModeBase, warningMessage: string, targetContainer = this.chatContainer): void {
+    targetContainer.addChild(new Spacer(1));
+    targetContainer.addChild(
       new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0),
     );
     this.ui.requestRender();
   };
 
-InteractiveModeBase.prototype.showNewVersionNotification = function(this: InteractiveModeBase, newVersion: string): void {
+InteractiveModeBase.prototype.showNewVersionNotification = function(this: InteractiveModeBase, newVersion: string, targetContainer = this.chatContainer): void {
     const action = theme.fg("accent", `${APP_NAME} update`);
     const updateInstruction =
       theme.fg("muted", `New version ${newVersion} is available. Run `) +
@@ -137,41 +137,41 @@ InteractiveModeBase.prototype.showNewVersionNotification = function(this: Intera
         }`
       : "";
 
-    this.chatContainer.addChild(new Spacer(1));
-    this.chatContainer.addChild(
+    targetContainer.addChild(new Spacer(1));
+    targetContainer.addChild(
       new DynamicBorder((text) => theme.fg("warning", text)),
     );
-    this.chatContainer.addChild(
+    targetContainer.addChild(
       new Text(
         `${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}${changelogLine}`,
         1,
         0,
       ),
     );
-    this.chatContainer.addChild(
+    targetContainer.addChild(
       new DynamicBorder((text) => theme.fg("warning", text)),
     );
     this.ui.requestRender();
   };
 
-InteractiveModeBase.prototype.showPackageUpdateNotification = function(this: InteractiveModeBase, packages: string[]): void {
+InteractiveModeBase.prototype.showPackageUpdateNotification = function(this: InteractiveModeBase, packages: string[], targetContainer = this.chatContainer): void {
     const action = theme.fg("accent", `${APP_NAME} update --extensions`);
     const updateInstruction =
       theme.fg("muted", "Package updates are available. Run ") + action;
     const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
 
-    this.chatContainer.addChild(new Spacer(1));
-    this.chatContainer.addChild(
+    targetContainer.addChild(new Spacer(1));
+    targetContainer.addChild(
       new DynamicBorder((text) => theme.fg("warning", text)),
     );
-    this.chatContainer.addChild(
+    targetContainer.addChild(
       new Text(
         `${theme.bold(theme.fg("warning", "Package Updates Available"))}\n${updateInstruction}\n${theme.fg("muted", "Packages:")}\n${packageLines}`,
         1,
         0,
       ),
     );
-    this.chatContainer.addChild(
+    targetContainer.addChild(
       new DynamicBorder((text) => theme.fg("warning", text)),
     );
     this.ui.requestRender();

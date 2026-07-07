@@ -153,6 +153,17 @@ function findPackageRoot(packageName: string, searchPaths?: string[]): string {
   }
   throw new Error(`Cannot locate package directory for "${packageName}"`);
 }
+function currentModuleDir(): string {
+  try {
+    return path.dirname(fileURLToPath(import.meta.url));
+  } catch (error) {
+    const isSplitLauncherRuntime = process.env.ATOMIC_CODING_AGENT === "true" &&
+      /(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath);
+    if (isSplitLauncherRuntime) return path.join(path.dirname(process.execPath), "dist", "core", "extensions");
+    throw error;
+  }
+}
+
 
 /**
  * Get aliases for jiti (used in Node.js/development mode).
@@ -161,7 +172,7 @@ function findPackageRoot(packageName: string, searchPaths?: string[]): string {
 function getAliases(): Record<string, string> {
   if (_aliases) return _aliases;
 
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const __dirname = currentModuleDir();
   const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
   const typeboxEntry = require.resolve("typebox");

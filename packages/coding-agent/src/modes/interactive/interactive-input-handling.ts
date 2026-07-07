@@ -304,11 +304,11 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
       // Normal message submission
       // First, move any pending bash components to chat
       this.flushPendingBashComponents();
-      if (!text.startsWith("/")) {
-        this.renderDeferredUserInput(text);
-      }
 
       if (this.onInputCallback) {
+        if (!text.startsWith("/")) {
+          this.renderDeferredUserInput(text);
+        }
         this.onInputCallback(text);
       } else {
         this.pendingUserInputs.push(text);

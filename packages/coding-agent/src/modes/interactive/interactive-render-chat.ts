@@ -30,7 +30,12 @@ InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, m
 
 InteractiveModeBase.prototype.renderDeferredUserInput = function(this: InteractiveModeBase, text: string): void {
     this.deferredRenderedUserInputs.push(text);
+    const startIndex = this.chatContainer.children.length;
     this.addMessageToChat({ role: "user", content: text } as AgentMessage);
+    const renderedComponents = this.chatContainer.children.slice(startIndex);
+    const trackedComponents = this.deferredRenderedUserInputComponents.get(text) ?? [];
+    trackedComponents.push(renderedComponents);
+    this.deferredRenderedUserInputComponents.set(text, trackedComponents);
     this.updatePendingMessagesDisplay();
     this.ui.requestRender();
   };
@@ -39,12 +44,28 @@ InteractiveModeBase.prototype.consumeDeferredRenderedUserInput = function(this: 
     const index = this.deferredRenderedUserInputs.indexOf(text);
     if (index === -1) return false;
     this.deferredRenderedUserInputs.splice(index, 1);
+    const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
+    trackedComponents?.shift();
+    if (trackedComponents && trackedComponents.length === 0) {
+      this.deferredRenderedUserInputComponents.delete(text);
+    }
     return true;
   };
 
 InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function(this: InteractiveModeBase, text: string): void {
     const index = this.deferredRenderedUserInputs.indexOf(text);
     if (index !== -1) this.deferredRenderedUserInputs.splice(index, 1);
+    const trackedComponents = this.deferredRenderedUserInputComponents.get(text);
+    const componentsToRemove = trackedComponents?.shift();
+    if (trackedComponents && trackedComponents.length === 0) {
+      this.deferredRenderedUserInputComponents.delete(text);
+    }
+    if (!componentsToRemove) return;
+    for (const component of componentsToRemove) {
+      this.chatContainer.removeChild(component);
+    }
+    this.updatePendingMessagesDisplay();
+    this.ui.requestRender();
   };
 
 InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: InteractiveModeBase): ChatMessageRenderOptions {
@@ -187,7 +208,9 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
 
 InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveModeBase, sessionContext: SessionContext, options: { updateFooter?: boolean; populateHistory?: boolean } = {}): void {
     this.pendingTools.clear();
+    const pendingDeferredInputs = [...this.deferredRenderedUserInputs];
     this.deferredRenderedUserInputs = [];
+    this.deferredRenderedUserInputComponents.clear();
 
     if (options.updateFooter) {
       this.footer.invalidate();
@@ -201,7 +224,7 @@ InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveM
         entry.kind === "tool" &&
         entry.isPartial !== false &&
         component instanceof ToolExecutionComponent
-  ) {
+      ) {
         this.pendingTools.set(entry.toolCallId, component);
       }
       if (options.populateHistory && entry.kind === "user") {
@@ -209,10 +232,24 @@ InteractiveModeBase.prototype.renderSessionContext = function(this: InteractiveM
       }
     }
 
+    for (const input of pendingDeferredInputs) {
+      this.renderDeferredUserInput(input);
+    }
+
     this.ui.requestRender();
   };
 
+InteractiveModeBase.prototype.attachStartupNoticesContainer = function(this: InteractiveModeBase, options: { resetDetached?: boolean } = {}): void {
+    const isAttached = this.chatContainer.children.includes(this.startupNoticesContainer);
+    if (isAttached) return;
+    if (options.resetDetached) {
+      this.startupNoticesContainer.clear();
+    }
+    this.chatContainer.addChild(this.startupNoticesContainer);
+  };
+
 InteractiveModeBase.prototype.renderInitialMessages = function(this: InteractiveModeBase): void {
+    this.attachStartupNoticesContainer({ resetDetached: true });
     // Get aligned messages and entries from session context
     const context = this.sessionManager.buildSessionContext();
     this.renderSessionContext(context, {
@@ -248,6 +285,7 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
 
 InteractiveModeBase.prototype.rebuildChatFromMessages = function(this: InteractiveModeBase): void {
     this.chatContainer.clear();
+    this.attachStartupNoticesContainer();
     const context = this.sessionManager.buildSessionContext();
     this.renderSessionContext(context);
   };

@@ -85,7 +85,7 @@ InteractiveModeBase.prototype.updateAvailableProviderCount = async function(this
     this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
   };
 
-InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async function(this: InteractiveModeBase, model: Model<Api> | undefined = this.session.model): Promise<void> {
+InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async function(this: InteractiveModeBase, model: Model<Api> | undefined = this.session.model, targetContainer = this.chatContainer): Promise<void> {
     if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
       return;
     }
@@ -100,7 +100,7 @@ InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async fu
       this.session.modelRegistry.authStorage.get("anthropic");
     if (storedCredential?.type === "oauth") {
       this.anthropicSubscriptionWarningShown = true;
-      this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
+      this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
       return;
     }
 
@@ -112,7 +112,7 @@ InteractiveModeBase.prototype.maybeWarnAboutAnthropicSubscriptionAuth = async fu
         return;
       }
       this.anthropicSubscriptionWarningShown = true;
-      this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING);
+      this.showWarning(ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, targetContainer);
     } catch {
       // Ignore auth lookup failures for warning-only checks.
     }

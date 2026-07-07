@@ -1,11 +1,13 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type ResourceDiagnostic, type SourceInfo, Spacer, Text, theme } from "./interactive-mode-deps.ts";
+import { type Container, type ResourceDiagnostic, type SourceInfo, Spacer, Text, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveModeBase, options?: {
     extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
     force?: boolean;
     showDiagnosticsWhenQuiet?: boolean;
+    targetContainer?: Container;
   }): void {
+    const targetContainer = options?.targetContainer ?? this.chatContainer;
     const showListing =
       options?.force ||
       this.options.verbose ||
@@ -185,6 +187,7 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
           themesResult.diagnostics,
         ]),
         expandedBody: this.options.verbose ? expandedSections.join("\n\n") : "",
+        targetContainer,
       });
     }
 
@@ -195,14 +198,14 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
           skillDiagnostics,
           sourceInfos,
         );
-        this.chatContainer.addChild(
+        targetContainer.addChild(
           new Text(
             `${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`,
             0,
             0,
           ),
         );
-        this.chatContainer.addChild(new Spacer(1));
+        targetContainer.addChild(new Spacer(1));
       }
 
       const promptDiagnostics = promptsResult.diagnostics;
@@ -211,14 +214,14 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
           promptDiagnostics,
           sourceInfos,
         );
-        this.chatContainer.addChild(
+        targetContainer.addChild(
           new Text(
             `${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`,
             0,
             0,
           ),
         );
-        this.chatContainer.addChild(new Spacer(1));
+        targetContainer.addChild(new Spacer(1));
       }
 
       const extensionDiagnostics: ResourceDiagnostic[] = [];
@@ -252,14 +255,14 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
           extensionDiagnostics,
           sourceInfos,
         );
-        this.chatContainer.addChild(
+        targetContainer.addChild(
           new Text(
             `${theme.fg("warning", "[Extension issues]")}\n${warningLines}`,
             0,
             0,
           ),
         );
-        this.chatContainer.addChild(new Spacer(1));
+        targetContainer.addChild(new Spacer(1));
       }
 
       const themeDiagnostics = themesResult.diagnostics;
@@ -268,14 +271,14 @@ InteractiveModeBase.prototype.showLoadedResources = function(this: InteractiveMo
           themeDiagnostics,
           sourceInfos,
         );
-        this.chatContainer.addChild(
+        targetContainer.addChild(
           new Text(
             `${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`,
             0,
             0,
           ),
         );
-        this.chatContainer.addChild(new Spacer(1));
+        targetContainer.addChild(new Spacer(1));
       }
     }
   };

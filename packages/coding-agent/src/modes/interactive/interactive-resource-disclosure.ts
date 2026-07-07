@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type ResourceDiagnostic, type SourceInfo, Spacer, theme } from "./interactive-mode-deps.ts";
+import { type Container, type ResourceDiagnostic, type SourceInfo, Spacer, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 
 InteractiveModeBase.prototype.formatDiagnostics = function(this: InteractiveModeBase, diagnostics: readonly ResourceDiagnostic[], sourceInfos: Map<string, SourceInfo>): string {
@@ -90,6 +90,7 @@ InteractiveModeBase.prototype.addResourceDisclosure = function(this: Interactive
     themes: ReadonlyArray<{ name?: string; sourcePath?: string }>;
     diagnosticsTotal: number;
     expandedBody: string;
+    targetContainer?: Container;
   }): void {
     const contextLabels = options.contextFiles.map((contextFile) =>
       this.formatContextPath(contextFile.path),
@@ -151,7 +152,8 @@ InteractiveModeBase.prototype.addResourceDisclosure = function(this: Interactive
       options.expandedBody.length > 0 ? `\n\n${options.expandedBody}` : ""
     }`;
 
-    this.chatContainer.addChild(
+    const targetContainer = options.targetContainer ?? this.chatContainer;
+    targetContainer.addChild(
       new ExpandableText(
         () => collapsed,
         () => expanded,
@@ -160,5 +162,5 @@ InteractiveModeBase.prototype.addResourceDisclosure = function(this: Interactive
         0,
       ),
     );
-    this.chatContainer.addChild(new Spacer(1));
+    targetContainer.addChild(new Spacer(1));
   };

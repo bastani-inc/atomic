@@ -10,7 +10,7 @@ declare module "./interactive-mode-base.ts" {
   hasCodexFastModeSupportedModels(): boolean;
   createBaseAutocompleteProvider(): AutocompleteProvider;
   setupAutocompleteProvider(): void;
-  showStartupNoticesIfNeeded(): void;
+  showStartupNoticesIfNeeded(targetContainer?: Container): void;
   hadLastChangelogVersionAtStartup: boolean;
   firstRunNoticeVisible: boolean;
   firstRunOnboardingNoticeComponents: Component[];
@@ -19,7 +19,7 @@ declare module "./interactive-mode-base.ts" {
   clearFirstRunOnboardingUi(): void;
   init(): Promise<void>;
   completeDeferredStartup(): Promise<void>;
-  retryDeferredModelRestore(): Promise<void>;
+  retryDeferredModelRestore(targetContainer?: Container): Promise<void>;
   updateTerminalTitle(): void;
   run(): Promise<void>;
   checkForPackageUpdates(): Promise<string[]>;
@@ -78,11 +78,13 @@ declare module "./interactive-mode-base.ts" {
     themes: ReadonlyArray<{ name?: string; sourcePath?: string }>;
     diagnosticsTotal: number;
     expandedBody: string;
+    targetContainer?: Container;
   }): void;
   showLoadedResources(options?: {
     extensions?: Array<{ path: string; sourceInfo?: SourceInfo }>;
     force?: boolean;
     showDiagnosticsWhenQuiet?: boolean;
+    targetContainer?: Container;
   }): void;
   bindCurrentSessionExtensions(): Promise<void>;
   applyRuntimeSettings(): void;
@@ -162,6 +164,7 @@ declare module "./interactive-mode-base.ts" {
   addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
   renderSessionContext(sessionContext: SessionContext, options?: { updateFooter?: boolean; populateHistory?: boolean }): void;
   renderInitialMessages(): void;
+  attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
   getUserInput(): Promise<string>;
   renderDeferredUserInput(text: string): void;
   consumeDeferredRenderedUserInput(text: string): boolean;
@@ -189,9 +192,9 @@ declare module "./interactive-mode-base.ts" {
   openExternalEditor(): void;
   clearEditor(): void;
   showError(errorMessage: string): void;
-  showWarning(warningMessage: string): void;
-  showNewVersionNotification(newVersion: string): void;
-  showPackageUpdateNotification(packages: string[]): void;
+  showWarning(warningMessage: string, targetContainer?: Container): void;
+  showNewVersionNotification(newVersion: string, targetContainer?: Container): void;
+  showPackageUpdateNotification(packages: string[], targetContainer?: Container): void;
   getAllQueuedMessages(): { steering: string[]; followUp: string[] };
   clearAllQueues(): { steering: string[]; followUp: string[] };
   updatePendingMessagesDisplay(): void;
@@ -214,7 +217,7 @@ declare module "./interactive-mode-base.ts" {
   refreshCopilotModelCatalog(): Promise<void>;
   loadCopilotModelCatalog(): Promise<void>;
   updateAvailableProviderCount(): Promise<void>;
-  maybeWarnAboutAnthropicSubscriptionAuth(model?: Model<Api> | undefined): Promise<void>;
+  maybeWarnAboutAnthropicSubscriptionAuth(model?: Model<Api> | undefined, targetContainer?: Container): Promise<void>;
   showModelSelector(initialSearchInput?: string): void;
   showContextWindowSelector(model: Model<Api>): void;
   showModelsSelector(): Promise<void>;

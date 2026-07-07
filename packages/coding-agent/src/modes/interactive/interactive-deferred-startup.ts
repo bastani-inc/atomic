@@ -1,6 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
-import { recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
+import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveSavedModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
 
 export interface DeferredStartupMode {
     deferredStartupPending: boolean;
@@ -33,6 +33,8 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+      // The RESOURCES disclosure will not render; surface the held warning.
+      void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
       return;
     }
 
@@ -45,13 +47,15 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
     this.setupAutocompleteProvider();
     this.setupExtensionShortcuts(this.session.extensionRunner);
     await applyDeferredModelScope(this);
-    await this.retryDeferredModelRestore();
+    await this.retryDeferredModelRestore(this.startupNoticesContainer);
 	if (this.deferLoadedResourcesDisclosureUntilAgentEnd) {
 		this.pendingLoadedResourcesDisclosure = true;
 	} else {
-		this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true });
+		this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
+		// Keep the subscription warning after the RESOURCES disclosure.
+		void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
 	}
-	this.showStartupNoticesIfNeeded();
+	this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
     const modelsJsonError = this.session.modelRegistry.getError();
     if (modelsJsonError) {
       this.showError(`models.json error: ${modelsJsonError}`);
@@ -100,7 +104,7 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
  * until extensions load; retry the restore now and only surface the fallback
  * warning if it still fails.
  */
-InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: InteractiveModeBase): Promise<void> {
+InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: InteractiveModeBase, targetContainer?: Container): Promise<void> {
     const fallbackMessage = this.options.modelFallbackMessage;
     if (!fallbackMessage) {
       return;
@@ -117,5 +121,5 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
         return;
       }
     }
-    this.showWarning(fallbackMessage);
+    this.showWarning(fallbackMessage, targetContainer);
   };

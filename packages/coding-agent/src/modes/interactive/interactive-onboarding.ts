@@ -43,6 +43,9 @@ InteractiveModeBase.prototype.clearFirstRunOnboardingUi = function(this: Interac
     this.chatContainer.children = this.chatContainer.children.filter(
       (child) => !this.firstRunOnboardingNoticeComponents.includes(child),
     );
+    this.startupNoticesContainer.children = this.startupNoticesContainer.children.filter(
+      (child) => !this.firstRunOnboardingNoticeComponents.includes(child),
+    );
     this.firstRunOnboardingNoticeComponents = [];
   }
   this.ui.requestRender();
