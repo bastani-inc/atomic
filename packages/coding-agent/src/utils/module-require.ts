@@ -12,5 +12,19 @@ import { isBunBinary } from "../config.ts";
  * shipped next to the binary.
  */
 export function createModuleRequire(moduleUrl: string): NodeJS.Require {
-	return createRequire(isBunBinary ? pathToFileURL(process.execPath).href : moduleUrl);
+	return createRequire(resolutionBaseUrl(moduleUrl));
+}
+
+/**
+ * A resolution base URL safe for the current runtime.
+ *
+ * In compiled binaries (monolithic bun or the Atomic split launcher) the
+ * bundled `import.meta.url` is the build machine's source URL — a foreign-OS
+ * `file://` URL that `fileURLToPath` rejects on other platforms (notably a
+ * macOS `file:///Users/...` URL on Windows). Any API that decodes the base
+ * (`createRequire`, jiti's `createJiti`) then throws `ERR_INVALID_FILE_URL_PATH`.
+ * Anchor to the executable instead, which is always a valid local file URL.
+ */
+export function resolutionBaseUrl(moduleUrl: string): string {
+	return isBunBinary ? pathToFileURL(process.execPath).href : moduleUrl;
 }

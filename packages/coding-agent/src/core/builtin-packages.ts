@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, resolve } from "node:path";
 import { getPackageDir } from "../config.ts";
+import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
 
 interface BuiltinPackageDescriptor {
 	readonly packageName: string;
@@ -118,22 +118,13 @@ function distCandidates(context: BuiltinPackageCandidateContext, descriptor: Bui
 		join(packageDir, "dist", "builtin", descriptor.distDirName),
 	];
 }
-function moduleDirForBuiltinCandidates(packageDir: string): string {
-	try {
-		return dirname(fileURLToPath(import.meta.url));
-	} catch (error) {
-		const isSplitLauncherRuntime = process.env.ATOMIC_CODING_AGENT === "true" &&
-			/(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath);
-		if (isSplitLauncherRuntime) return packageDir;
-		throw error;
-	}
-}
-
-
 function getBuiltinPackageCandidateContext(): BuiltinPackageCandidateContext {
 	const packageDir = getPackageDir();
+	// In the split launcher the bundled import.meta.url is a foreign-OS build
+	// path; fall back to the package dir (the executable dir), where `builtin/`
+	// sits, so distCandidates still resolves.
 	const context: BuiltinPackageCandidateContext = {
-		here: moduleDirForBuiltinCandidates(packageDir),
+		here: moduleDirFromMetaUrl(import.meta.url),
 		packageDir,
 		isSourceCheckout: false,
 	};

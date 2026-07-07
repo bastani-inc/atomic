@@ -1,27 +1,13 @@
 import { existsSync, readFileSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { fileURLToPath } from "url";
 import { getHomeDir, normalizePath } from "./utils/paths.ts";
+import { isSplitLauncherRuntime, moduleFileFromMetaUrl } from "./utils/split-launcher.ts";
 
 // =============================================================================
 // Package Detection
 // =============================================================================
 
-const isSplitLauncherRuntime = process.env.ATOMIC_CODING_AGENT === "true" &&
-	/(?:^|[\\/])atomic(?:\.exe)?$/i.test(process.execPath);
-
-function moduleFilenameFromMetaUrl(metaUrl: string): string {
-	try {
-		return fileURLToPath(metaUrl);
-	} catch (error) {
-		if (isSplitLauncherRuntime) {
-			return join(dirname(process.execPath), "app.js");
-		}
-		throw error;
-	}
-}
-
-const __filename = moduleFilenameFromMetaUrl(import.meta.url);
+const __filename = moduleFileFromMetaUrl(import.meta.url, "app.js");
 const __dirname = dirname(__filename);
 
 /**
@@ -33,7 +19,7 @@ const bunFsMarkers = ["$bunfs", "~BUN", "%7EBUN"];
 // Check process.argv[1] as well as import.meta.url: in a CJS (bytecode) bundle
 // import.meta.url is rewritten to the original source path, but argv[1] still
 // points into Bun's virtual filesystem.
-export const isBunBinary = isSplitLauncherRuntime ||
+export const isBunBinary = isSplitLauncherRuntime() ||
 	[import.meta.url, process.argv[1] ?? ""].some((candidate) =>
 		bunFsMarkers.some((marker) => candidate.includes(marker)),
 	);
