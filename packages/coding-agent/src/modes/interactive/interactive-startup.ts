@@ -2,7 +2,6 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
-import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase, targetContainer: Container = this.chatContainer): void {
     if (this.startupNoticesShown) {
@@ -275,27 +274,7 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
     // Main interactive loop
     while (true) {
       const userInput = await this.getUserInput();
-		if (this.deferredStartupPending) {
-			this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
-			this.setWorkingVisible(true);
-			await yieldToEventLoop();
-		}
-      try {
-        await this.ensureDeferredStartupComplete();
-        await this.session.prompt(userInput);
-		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-		if (this.pendingLoadedResourcesDisclosure) {
-			this.pendingLoadedResourcesDisclosure = false;
-			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
-			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
-		}
-      } catch (error: unknown) {
-		this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
-        this.discardDeferredRenderedUserInput(userInput);
-        const errorMessage =
-          error instanceof Error ? error.message : "Unknown error occurred";
-        this.showError(errorMessage);
-      }
+      await this.runUserPromptTurn(userInput);
     }
   };
 

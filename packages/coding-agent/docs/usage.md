@@ -64,7 +64,7 @@ You can submit messages while the agent is still working:
 
 - **Enter** queues a steering message, delivered after the current assistant turn finishes executing its tool calls.
 - **ALT+Enter** queues a follow-up message, delivered after the agent finishes all work.
-- **Escape** aborts and restores queued messages to the editor.
+- **Escape** or **Ctrl+C** aborts the running agent and restores queued messages to the editor. When idle, Ctrl+C clears the editor (press twice to exit).
 - **ALT+Up** retrieves queued messages back to the editor.
 
 On Windows Terminal, ALT+Enter is fullscreen by default. Remap it as described in [Terminal setup](/terminal-setup) if you want Atomic to receive the shortcut.

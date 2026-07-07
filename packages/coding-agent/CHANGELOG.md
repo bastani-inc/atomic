@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed interactive Ctrl+C to interrupt the agent when it is busy: a single Ctrl+C now aborts the running agent turn (restoring queued messages to the editor), a running bash command, an active context compaction, or an auto-retry countdown — matching Escape and common CLI muscle memory. When idle, Ctrl+C keeps its previous behavior (first press clears the editor, a quick double-press exits), and the Ctrl+C immediately following an interrupt clears rather than exits. Escape remains the primary interrupt key.
+
 ### Fixed
 
+- Fixed a noticeable delay before the working spinner appeared after submitting a prompt: the interactive input loop now mounts the spinner immediately on submit (respecting extension `workingVisible` suppression) and yields once so it paints before prompt preflight — extension input hooks, template/skill expansion, auth and compaction checks, and deferred startup completion — runs. Previously the spinner was created only when the agent emitted `agent_start`, so the status row stayed empty during preflight, making Ctrl+C feel unresponsive until the spinner finally appeared. Submissions that resolve without starting an agent turn (e.g. extension slash-commands) clear the pre-shown spinner when idle so it never lingers.
 - Fixed post-context-compaction provider requests so retained pre-compaction assistant usage is scrubbed from the provider-bound context clone. This keeps durable billing history intact while preventing stale high token counts from shrinking `max_output_tokens` to an invalid one-token budget on the first turn after compaction.
 - Fixed auto-compaction continuation for OpenAI Responses providers by normalizing replayed `function_call.id` values to valid `fc_*` item identifiers while preserving `call_id` pairing. This prevents the opaque `400 {"code":"invalid_request_body"}` failure that could appear immediately after compaction even though a manual `Continue` message succeeded.
 - Fixed auto-compaction stalling after a response reaches the maximum output-token limit: length-stopped assistant turns now compact as incomplete work, remove the truncated assistant from retry context, and automatically continue without requiring the user to type `Continue` ([#1662](https://github.com/bastani-inc/atomic/issues/1662)).

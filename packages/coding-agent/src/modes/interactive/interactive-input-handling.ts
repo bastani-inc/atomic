@@ -1,5 +1,41 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
+
+InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
+    // Show the working spinner immediately on submit so there is no visible gap
+    // while prompt preflight runs before the agent emits `agent_start`.
+    this.showWorkingLoaderNow();
+    if (this.deferredStartupPending) {
+      this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
+    }
+    // Yield once so the freshly-mounted spinner paints before synchronous
+    // preflight work can block the event loop.
+    await yieldToEventLoop();
+    try {
+      await this.ensureDeferredStartupComplete();
+      await this.session.prompt(userInput);
+      this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
+      if (this.pendingLoadedResourcesDisclosure) {
+        this.pendingLoadedResourcesDisclosure = false;
+        this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
+        void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+      }
+    } catch (error: unknown) {
+      this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
+      this.discardDeferredRenderedUserInput(userInput);
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error occurred";
+      this.showError(errorMessage);
+    } finally {
+      // A submission that resolves without starting an agent turn (e.g. an
+      // extension slash-command) never emits `agent_end`, so clear the
+      // pre-shown spinner here when idle to avoid a lingering indicator.
+      if (!this.session.isStreaming) {
+        this.stopWorkingLoader();
+      }
+    }
+  };
 
 InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeBase): void {
     this.ui.addInputListener((data) => {

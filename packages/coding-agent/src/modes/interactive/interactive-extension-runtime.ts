@@ -85,6 +85,23 @@ InteractiveModeBase.prototype.stopWorkingLoader = function(this: InteractiveMode
     this.statusContainer.clear();
   };
 
+InteractiveModeBase.prototype.showWorkingLoaderNow = function(this: InteractiveModeBase): void {
+    // Mount the working spinner immediately, regardless of streaming state, so
+    // there is no visible gap between submitting a prompt and the agent turn
+    // actually starting. Prompt preflight (extension input hooks, template/skill
+    // expansion, auth and compaction checks, deferred startup) runs before the
+    // agent emits `agent_start`, which is otherwise the only place the loader is
+    // created. Respect `workingVisible` so extensions can still suppress it.
+    if (!this.workingVisible || this.loadingAnimation) {
+      this.ui.requestRender();
+      return;
+    }
+    this.statusContainer.clear();
+    this.loadingAnimation = this.createWorkingLoader();
+    this.statusContainer.addChild(this.loadingAnimation);
+    this.ui.requestRender();
+  };
+
 InteractiveModeBase.prototype.setWorkingVisible = function(this: InteractiveModeBase, visible: boolean): void {
     this.workingVisible = visible;
     if (!visible) {

@@ -97,6 +97,7 @@ declare module "./interactive-mode-base.ts" {
   getWorkingLoaderMessage(): string;
   createWorkingLoader(): Loader;
   stopWorkingLoader(): void;
+  showWorkingLoaderNow(): void;
   setWorkingVisible(visible: boolean): void;
   setWorkingIndicator(options?: LoaderIndicatorOptions): void;
   setHiddenThinkingLabel(label?: string): void;
@@ -166,12 +167,14 @@ declare module "./interactive-mode-base.ts" {
   renderInitialMessages(): void;
   attachStartupNoticesContainer(options?: { resetDetached?: boolean }): void;
   getUserInput(): Promise<string>;
+  runUserPromptTurn(userInput: string): Promise<void>;
   renderDeferredUserInput(text: string): void;
   consumeDeferredRenderedUserInput(text: string): boolean;
   discardDeferredRenderedUserInput(text: string): void;
   ensureDeferredStartupComplete(): Promise<void>;
   rebuildChatFromMessages(): void;
   handleCtrlC(): void;
+  interruptActiveOperation(): boolean;
   handleCtrlD(): void;
   shutdown(options?: { fromSignal?: boolean }): Promise<void>;
   emergencyTerminalExit(): never;
