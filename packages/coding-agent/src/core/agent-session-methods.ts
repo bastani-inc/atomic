@@ -199,7 +199,7 @@ export interface AgentSessionMethodSurface {
 	abortBranchSummary(): void;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
 	_isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean;
-	_dropTrailingOverflowAssistantErrorIfPresent(): void;
+	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
 	_resumeAfterAutoCompaction(): void;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;

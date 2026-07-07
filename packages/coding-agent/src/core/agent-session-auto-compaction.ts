@@ -99,7 +99,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	// rather than relying on reactive overflow recovery near the cap.
 	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
 	if (shouldCompact(contextTokens, compactionBudget, settings)) {
-		await this._runAutoCompaction("threshold", false);
+		await this._runAutoCompaction("threshold", shouldRetryAfterThresholdCompaction(assistantMessage));
 	}
 }
 
@@ -114,14 +114,20 @@ export function _isCopilotServerCapBelowSelectedContextWindow(this: AgentSession
 	return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 }
 
+export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
+}
+
 /**
- * Internal: remove the trailing overflow error from retry context if it is still present.
+ * Internal: remove an incomplete assistant from retry context before auto-continuing after compaction.
  */
 
-export function _dropTrailingOverflowAssistantErrorIfPresent(this: AgentSession): void {
+export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSession): void {
 	const messages = this.agent.state.messages;
 	const lastMsg = messages[messages.length - 1];
-	if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
+	if (lastMsg?.role !== "assistant") return;
+	const stopReason = (lastMsg as AssistantMessage).stopReason;
+	if (stopReason === "error" || stopReason === "length") {
 		this.agent.state.messages = messages.slice(0, -1);
 	}
 }
@@ -130,8 +136,8 @@ export function _dropTrailingOverflowAssistantErrorIfPresent(this: AgentSession)
  * Internal: schedule a live post-event continuation probe after compaction_end listeners can flush queues.
  */
 
-export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession, 
-	reason: "overflow" | "threshold",
+export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
+	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
 	setTimeout(() => {
@@ -139,7 +145,7 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 			return;
 		}
 
-		if (reason === "overflow" && willRetry) {
+		if (willRetry) {
 			this._resumeAfterAutoCompaction();
 			return;
 		}
@@ -217,8 +223,8 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			return;
 		}
 
-		if (reason === "overflow" && willRetry) {
-			this._dropTrailingOverflowAssistantErrorIfPresent();
+		if (willRetry) {
+			this._dropTrailingAutoCompactionRetryAssistantIfPresent();
 		}
 
 		this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
@@ -250,7 +256,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 export const agentSessionAutoCompactionMethods = {
 	_checkCompaction,
 	_isCopilotServerCapBelowSelectedContextWindow,
-	_dropTrailingOverflowAssistantErrorIfPresent,
+	_dropTrailingAutoCompactionRetryAssistantIfPresent,
 	_schedulePostAutoCompactionContinuationProbe,
 	_resumeAfterAutoCompaction,
 	_runAutoCompaction,
