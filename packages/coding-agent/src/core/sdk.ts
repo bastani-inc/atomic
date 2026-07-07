@@ -38,6 +38,7 @@ import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
+import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { time } from "./timings.ts";
 import { defaultToolNames } from "./tools/index.ts";
@@ -409,7 +410,8 @@ export async function createAgentSession(
       // `reasoning_details` the client re-emits (captured inbound by the SSE
       // interceptor) into that field so multi-turn tool use keeps its thought
       // signature instead of dying on an empty completion. No-op otherwise.
-      return restoreCopilotGeminiReasoningOpaque(replayArgsNormalized, model);
+      const reasoningRestored = restoreCopilotGeminiReasoningOpaque(replayArgsNormalized, model);
+      return sanitizeOpenAIResponsesPayload(reasoningRestored, model);
     },
     onResponse: async (response, _model) => {
       const runner = extensionRunnerRef.current;
