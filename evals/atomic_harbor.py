@@ -201,8 +201,19 @@ class Atomic(BaseInstalledAgent):
             f"mkdir -p {log_session_dir}; "
             f"cp -a {session_dir}/. {log_session_dir}/ 2>/dev/null || true; "
             "}; "
-            "trap sync_atomic_sessions EXIT; "
-            "trap 'sync_atomic_sessions; exit 143' TERM; "
+            "sync_atomic_sessions_loop() { "
+            "while true; do sync_atomic_sessions; sleep 5; done; "
+            "}; "
+            "sync_atomic_sessions_loop & atomic_session_sync_pid=$!; "
+            "cleanup_atomic_sessions() { "
+            "status=${1:-$?}; "
+            "sync_atomic_sessions; "
+            "kill \"$atomic_session_sync_pid\" 2>/dev/null || true; "
+            "wait \"$atomic_session_sync_pid\" 2>/dev/null || true; "
+            "return \"$status\"; "
+            "}; "
+            "trap 'status=$?; cleanup_atomic_sessions \"$status\"; exit \"$status\"' EXIT; "
+            "trap 'cleanup_atomic_sessions 143; exit 143' TERM; "
         )
 
     @with_prompt_template
