@@ -1,10 +1,11 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai/compat";
-import { Container, Text, type TUI } from "@earendil-works/pi-tui";
+import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, test, vi } from "vitest";
 import type { AgentSessionEvent } from "../../../src/core/agent-session.ts";
 import type { SessionContext } from "../../../src/core/session-manager.ts";
 import type { ToolExecutionComponent } from "../../../src/modes/interactive/components/tool-execution.ts";
+import type { ChatMessageEntry, ChatMessageRenderOptions } from "../../../src/modes/interactive/components/chat-message-renderer.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
@@ -30,10 +31,10 @@ const EMPTY_USAGE: Usage = {
 type RenderSessionContextThis = {
 	pendingTools: Map<string, ToolExecutionComponent>;
 	deferredRenderedUserInputs: string[];
-	deferredRenderedUserInputComponents: Map<string, unknown>;
+	deferredRenderedUserInputComponents: Map<string, Component[][]>;
 	chatContainer: Container;
 	footer: { invalidate(): void };
-	ui: TUI;
+	ui: ChatMessageRenderOptions["ui"];
 	settingsManager: {
 		getShowImages(): boolean;
 		getImageWidthCells(): number;
@@ -49,8 +50,8 @@ type RenderSessionContextThis = {
 	getMarkdownThemeWithSettings(): ReturnType<typeof getMarkdownTheme>;
 	getRegisteredToolDefinition(toolName: string): undefined;
 	addMessageToChat(message: AgentMessage, options?: { populateHistory?: boolean }): void;
-	chatMessageRenderOptions(): unknown;
-	addRenderedChatEntry(entry: unknown): unknown;
+	chatMessageRenderOptions(): ChatMessageRenderOptions;
+	addRenderedChatEntry(entry: ChatMessageEntry): Component;
 };
 
 type RenderSessionContext = (
@@ -63,17 +64,17 @@ type HandleEvent = (this: RenderSessionContextThis, event: AgentSessionEvent) =>
 
 function createFakeInteractiveModeThis(): RenderSessionContextThis {
 	const chatContainer = new Container();
-	const proto = InteractiveMode.prototype as unknown as {
-		chatMessageRenderOptions: () => unknown;
-		addRenderedChatEntry: (entry: unknown) => unknown;
+	const proto = InteractiveMode.prototype as {
+		chatMessageRenderOptions: () => ChatMessageRenderOptions;
+		addRenderedChatEntry: (entry: ChatMessageEntry) => Component;
 	};
 	return {
 		pendingTools: new Map<string, ToolExecutionComponent>(),
 		deferredRenderedUserInputs: [],
-		deferredRenderedUserInputComponents: new Map<string, unknown>(),
+		deferredRenderedUserInputComponents: new Map<string, Component[][]>(),
 		chatContainer,
 		footer: { invalidate: vi.fn() },
-		ui: { requestRender: vi.fn() } as unknown as TUI,
+		ui: { requestRender: vi.fn() },
 		settingsManager: {
 			getShowImages: () => false,
 			getImageWidthCells: () => 60,
@@ -147,9 +148,9 @@ describe("InteractiveMode.renderSessionContext", () => {
 	test("keeps unresolved rendered tool calls registered for live completion events", async () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		const renderSessionContext = (
-			InteractiveMode.prototype as unknown as { renderSessionContext: RenderSessionContext }
+			InteractiveMode.prototype as { renderSessionContext: RenderSessionContext }
 		).renderSessionContext;
-		const handleEvent = (InteractiveMode.prototype as unknown as { handleEvent: HandleEvent }).handleEvent;
+		const handleEvent = (InteractiveMode.prototype as { handleEvent: HandleEvent }).handleEvent;
 
 		renderSessionContext.call(fakeThis, createSessionContext([createAssistantToolCallMessage()]));
 
@@ -170,7 +171,7 @@ describe("InteractiveMode.renderSessionContext", () => {
 	test("does not keep completed historical tool calls registered as pending", () => {
 		const fakeThis = createFakeInteractiveModeThis();
 		const renderSessionContext = (
-			InteractiveMode.prototype as unknown as { renderSessionContext: RenderSessionContext }
+			InteractiveMode.prototype as { renderSessionContext: RenderSessionContext }
 		).renderSessionContext;
 
 		renderSessionContext.call(

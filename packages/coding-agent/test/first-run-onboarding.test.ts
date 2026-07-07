@@ -1,13 +1,31 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import type { Component } from "@earendil-works/pi-tui";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { ONBOARDING_COPY } from "../src/modes/interactive/interactive-onboarding.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
-function installSubmitHandler(host: Record<string, unknown>): (text: string) => Promise<void> {
-  const setup = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (this: Record<string, unknown>) => void;
+type SubmitHandlerHost = {
+  defaultEditor?: { onSubmit?: (text: string) => Promise<void> };
+};
+
+function installSubmitHandler<T extends SubmitHandlerHost>(host: T): (text: string) => Promise<void> {
+  const setup = Reflect.get(InteractiveMode.prototype, "setupEditorSubmitHandler") as (this: T) => void;
   setup.call(host);
-  return (host.defaultEditor as { onSubmit: (text: string) => Promise<void> }).onSubmit;
+  const onSubmit = host.defaultEditor?.onSubmit;
+  if (!onSubmit) {
+    throw new Error("setupEditorSubmitHandler did not install an onSubmit handler");
+  }
+  return onSubmit;
+}
+
+type TestComponent = Component & { readonly name: string };
+
+function testComponent(name: string): TestComponent {
+  return {
+    name,
+    render: () => [name],
+  };
 }
 
 beforeAll(() => {
@@ -117,15 +135,15 @@ describe("first-run onboarding", () => {
 
   it("renders first-run notice without changelog markdown", () => {
     const setOnboardedVersion = vi.fn();
-    const children: unknown[] = [];
+    const children: Component[] = [];
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: undefined,
       firstRunNoticeVisible: true,
-      firstRunOnboardingNoticeComponents: [] as unknown[],
+      firstRunOnboardingNoticeComponents: [] as Component[],
       chatContainer: {
         children,
-        addChild(child: unknown) {
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
@@ -145,15 +163,15 @@ describe("first-run onboarding", () => {
 
   it("does not queue startup notices more than once", () => {
     const setOnboardedVersion = vi.fn();
-    const children: unknown[] = [];
+    const children: Component[] = [];
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: undefined,
       firstRunNoticeVisible: true,
-      firstRunOnboardingNoticeComponents: [] as unknown[],
+      firstRunOnboardingNoticeComponents: [] as Component[],
       chatContainer: {
         children,
-        addChild(child: unknown) {
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
@@ -173,17 +191,17 @@ describe("first-run onboarding", () => {
   });
 
   it("renders first-run notice after the changelog so it stays closest to the input", () => {
-    const existingResource = { name: "resource" };
-    const children: unknown[] = [existingResource];
+    const existingResource = testComponent("resource");
+    const children: Component[] = [existingResource];
     const setOnboardedVersion = vi.fn();
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: "## [0.2.0]\n\n- New workflow updates",
       firstRunNoticeVisible: true,
-      firstRunOnboardingNoticeComponents: [] as unknown[],
+      firstRunOnboardingNoticeComponents: [] as Component[],
       chatContainer: {
         children,
-        addChild(child: unknown) {
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
@@ -208,16 +226,16 @@ describe("first-run onboarding", () => {
   });
 
   it("renders first-run notice after a collapsed changelog", () => {
-    const children: unknown[] = [];
+    const children: Component[] = [];
     const setOnboardedVersion = vi.fn();
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: "## [0.2.0]\n\n- New workflow updates",
       firstRunNoticeVisible: true,
-      firstRunOnboardingNoticeComponents: [] as unknown[],
+      firstRunOnboardingNoticeComponents: [] as Component[],
       chatContainer: {
         children,
-        addChild(child: unknown) {
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
@@ -243,15 +261,15 @@ describe("first-run onboarding", () => {
 
   it("does not mark onboarded when only changelog markdown renders", () => {
     const setOnboardedVersion = vi.fn();
-    const children: unknown[] = [];
+    const children: Component[] = [];
     const host = {
       startupNoticesShown: false,
       changelogMarkdown: "## [0.2.0]\n\n- New workflow updates",
       firstRunNoticeVisible: false,
-      firstRunOnboardingNoticeComponents: [] as unknown[],
+      firstRunOnboardingNoticeComponents: [] as Component[],
       chatContainer: {
         children,
-        addChild(child: unknown) {
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
@@ -274,9 +292,9 @@ describe("first-run onboarding", () => {
   });
 
   it("removes rendered onboarding notice components without touching the normal editor", () => {
-    const first = { name: "first" };
-    const cta = [{ name: "border" }, { name: "copy" }, { name: "bottom" }];
-    const last = { name: "last" };
+    const first = testComponent("first");
+    const cta = [testComponent("border"), testComponent("copy"), testComponent("bottom")];
+    const last = testComponent("last");
     const host = {
       firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: cta,
@@ -295,7 +313,7 @@ describe("first-run onboarding", () => {
   });
 
   it("clears stale first-run notice state when starting a new session", async () => {
-    const staleNotice = { name: "notice" };
+    const staleNotice = testComponent("notice");
     const host = {
       loadingAnimation: undefined,
       statusContainer: { clear: vi.fn() },
@@ -306,13 +324,13 @@ describe("first-run onboarding", () => {
       firstRunNoticeVisible: true,
       firstRunOnboardingNoticeComponents: [staleNotice],
       chatContainer: {
-        children: [staleNotice] as unknown[],
-        addChild(child: unknown) {
+        children: [staleNotice],
+        addChild(child: Component) {
           this.children.push(child);
         },
       },
       startupNoticesContainer: {
-        children: [staleNotice] as unknown[],
+        children: [staleNotice],
       },
       ui: { requestRender: vi.fn() },
       handleFatalRuntimeError: vi.fn(),
