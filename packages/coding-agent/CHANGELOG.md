@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Windows native filesystem watchers to canonicalize watched paths before calling `fs.watch`, reject unresolved 8.3 short-name paths, and fall back to polling for unsafe watcher paths. This prevents libuv fs-event assertion crashes when temp, session, footer, or theme paths contain short-name components such as `USERNA~1`.
+
 ## [0.9.5-alpha.8] - 2026-07-08
 
 ### Added

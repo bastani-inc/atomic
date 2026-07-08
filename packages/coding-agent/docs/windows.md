@@ -16,6 +16,10 @@ For most users, [Git for Windows](https://git-scm.com/download/win) is sufficien
 }
 ```
 
+## Filesystem Watchers
+
+On Windows, Atomic canonicalizes paths before starting native filesystem watchers. If a watcher target cannot be canonicalized or still contains an unsafe 8.3 short-name component such as `USERNA~1`, Atomic avoids native `fs.watch` for that target and uses polling where the feature supports it. This protects long-running sessions, async subagent result notifications, footer git status refreshes, and custom theme reloads from Windows/libuv path-prefix assertion crashes.
+
 ## Self-Update Behavior
 
 `atomic update --self` can update Windows installations that Atomic can identify as writable global package-manager installs. `atomic update` includes the same self-update step before updating packages unless you pass `--extensions`.

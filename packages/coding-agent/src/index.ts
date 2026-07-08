@@ -385,6 +385,16 @@ export {
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { createGitEnvironment, GIT_LOCAL_ENV_VARS } from "./utils/git-env.ts";
+export {
+	isSafeFsWatchPathError,
+	isUnsafeWindowsShortPath,
+	resolveNativeWatchPath,
+	SAFE_FS_WATCH_CANONICALIZATION_FAILED,
+	SAFE_FS_WATCH_UNSAFE_WINDOWS_SHORT_PATH,
+	watchWithErrorHandler,
+	type SafeFsWatchErrorCode,
+	type SafeFsWatchPathError,
+} from "./utils/fs-watch.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
 // Shell utilities

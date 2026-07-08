@@ -1,7 +1,7 @@
 import { type ExecFileException, execFile, spawnSync } from "child_process";
 import { existsSync, type FSWatcher, readFileSync, type Stats, statSync, unwatchFile, watchFile } from "fs";
 import { dirname, join, resolve } from "path";
-import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "../utils/fs-watch.ts";
+import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, isSafeFsWatchPathError, watchWithErrorHandler } from "../utils/fs-watch.ts";
 import { createGitEnvironment } from "../utils/git-env.ts";
 
 type GitPaths = {
@@ -295,6 +295,35 @@ export class FooterDataProvider {
 		}
 	}
 
+
+	private installHeadPollingFallback(): void {
+		if (!this.gitPaths || this.headWatchFilePath || this.headWatchFileListener) {
+			return;
+		}
+		this.headWatchFilePath = this.gitPaths.headPath;
+		this.headWatchFileListener = (current, previous) => {
+			if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs || current.size !== previous.size) {
+				this.scheduleRefresh();
+			}
+		};
+		watchFile(this.headWatchFilePath, { interval: 1000 }, this.headWatchFileListener);
+	}
+
+	private installReftableTablesListPolling(tablesListPath: string): void {
+		if (this.reftableTablesListWatchFileListener) {
+			return;
+		}
+		this.reftableTablesListWatchFileListener = (current, previous) => {
+			if (
+				current.mtimeMs !== previous.mtimeMs ||
+				current.ctimeMs !== previous.ctimeMs ||
+				current.size !== previous.size
+			) {
+				this.scheduleReftableRefresh();
+			}
+		};
+		watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListWatchFileListener);
+	}
 	private scheduleGitWatcherRetry(): void {
 		if (this.disposed || this.gitWatcherRetryTimer) {
 			return;
@@ -360,18 +389,18 @@ export class FooterDataProvider {
 					this.scheduleRefresh();
 				}
 			},
-			() => this.handleGitWatcherError(),
+			(error) => {
+				if (isSafeFsWatchPathError(error)) {
+					this.installHeadPollingFallback();
+					return;
+				}
+				this.handleGitWatcherError();
+			},
 		);
 		if (pollGitHead) {
-			this.headWatchFilePath = this.gitPaths.headPath;
-			this.headWatchFileListener = (current, previous) => {
-				if (current.mtimeMs !== previous.mtimeMs || current.ctimeMs !== previous.ctimeMs || current.size !== previous.size) {
-					this.scheduleRefresh();
-				}
-			};
-			watchFile(this.headWatchFilePath, { interval: 1000 }, this.headWatchFileListener);
+			this.installHeadPollingFallback();
 		}
-		if (!this.headWatcher && !pollGitHead) {
+		if (!this.headWatcher && !this.headWatchFileListener) {
 			return;
 		}
 
@@ -386,11 +415,13 @@ export class FooterDataProvider {
 				(_eventType, filename) => {
 					this.handleReftableDirectoryEvent(filename);
 				},
-				() => this.handleGitWatcherError(),
+				(error) => {
+					if (isSafeFsWatchPathError(error)) {
+						return;
+					}
+					this.handleGitWatcherError();
+				},
 			);
-			if (!this.reftableWatcher) {
-				return;
-			}
 
 			const tablesListPath = this.reftableTablesListPath;
 			if (tablesListPath && existsSync(tablesListPath)) {
@@ -399,21 +430,15 @@ export class FooterDataProvider {
 					() => {
 						this.scheduleReftableRefresh();
 					},
-					() => this.handleGitWatcherError(),
+					(error) => {
+						if (isSafeFsWatchPathError(error)) {
+							this.installReftableTablesListPolling(tablesListPath);
+							return;
+						}
+						this.handleGitWatcherError();
+					},
 				);
-				if (!this.reftableTablesListWatcher) {
-					return;
-				}
-				this.reftableTablesListWatchFileListener = (current, previous) => {
-					if (
-						current.mtimeMs !== previous.mtimeMs ||
-						current.ctimeMs !== previous.ctimeMs ||
-						current.size !== previous.size
-					) {
-						this.scheduleReftableRefresh();
-					}
-				};
-				watchFile(tablesListPath, { interval: 250 }, this.reftableTablesListWatchFileListener);
+				this.installReftableTablesListPolling(tablesListPath);
 			}
 		}
 	}

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { isSafeFsWatchPathError, watchWithErrorHandler } from "@bastani/atomic";
 import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { createFileCoalescer } from "../../shared/file-coalescer.ts";
 import {
@@ -21,7 +22,9 @@ import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
 
-type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch">;
+type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch"> & {
+	realpathSync?: typeof fs.realpathSync;
+};
 
 type ResultWatcherTimers = {
 	setTimeout: typeof setTimeout;
@@ -30,9 +33,12 @@ type ResultWatcherTimers = {
 	clearInterval: typeof clearInterval;
 };
 
+type ResultWatcherSafeWatch = typeof watchWithErrorHandler;
+
 type ResultWatcherDeps = {
 	fs?: ResultWatcherFs;
 	timers?: ResultWatcherTimers;
+	safeWatch?: ResultWatcherSafeWatch;
 };
 
 type ResultFileChild = {
@@ -88,7 +94,7 @@ function isNotFoundError(error: unknown): boolean {
 
 function shouldFallBackToPolling(error: unknown): boolean {
 	const code = getErrorCode(error);
-	return code === "EMFILE" || code === "ENOSPC";
+	return code === "EMFILE" || code === "ENOSPC" || isSafeFsWatchPathError(error);
 }
 
 export function createResultWatcher(
@@ -104,6 +110,7 @@ export function createResultWatcher(
 } {
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
+	const safeWatch = deps.safeWatch ?? watchWithErrorHandler;
 
 	const handleResult = async (file: string) => {
 		const resultPath = path.join(resultsDir, file);
@@ -264,13 +271,7 @@ export function createResultWatcher(
 			state.watcherRestartTimer = null;
 		}
 		try {
-			state.watcher = fsApi.watch(resultsDir, (ev, file) => {
-				if (ev !== "rename" || !file) return;
-				const fileName = file.toString();
-				if (!fileName.endsWith(".json")) return;
-				state.resultFileCoalescer.schedule(fileName);
-			});
-			state.watcher.on("error", (error) => {
+			const handleWatcherError = (error: Error) => {
 				if (shouldFallBackToPolling(error)) {
 					startPollingFallback(error);
 					return;
@@ -279,8 +280,17 @@ export function createResultWatcher(
 				state.watcher?.close();
 				state.watcher = null;
 				scheduleRestart();
+			};
+			state.watcher = safeWatch(resultsDir, (ev, file) => {
+				if (ev !== "rename" || !file) return;
+				const fileName = file.toString();
+				if (!fileName.endsWith(".json")) return;
+				state.resultFileCoalescer.schedule(fileName);
+			}, handleWatcherError, {
+				watch: fsApi.watch,
+				realpathSyncNative: fsApi.realpathSync?.native,
 			});
-			state.watcher.unref?.();
+			state.watcher?.unref?.();
 		} catch (error) {
 			if (shouldFallBackToPolling(error)) {
 				startPollingFallback(error);
