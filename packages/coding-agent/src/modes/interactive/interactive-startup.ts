@@ -1,4 +1,4 @@
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
@@ -102,6 +102,12 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.setupEditorSubmitHandler();
 
     this.firstRunNoticeVisible = this.isFirstRunOnboardingEligible();
+
+    seedStartupInput(
+      this.pendingUserInputs,
+      this.defaultEditor,
+      this.options.startupInputCapture?.consume(),
+    );
 
     // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
     // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn

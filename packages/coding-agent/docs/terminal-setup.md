@@ -2,6 +2,10 @@
 
 Atomic uses the [Kitty keyboard protocol](https://sw.kovidgoyal.net/kitty/keyboard-protocol/) for reliable modifier key detection. Most modern terminals support this protocol, but some require configuration.
 
+## Startup typing
+
+On normal interactive TTY startup, Atomic starts a short-lived raw keyboard capture before deferred resources finish loading and hands input to the visible prompt immediately before the TUI starts. Text typed before the prompt box is fully mounted is replayed into the editor. Enter-submitted ordinary prompts are queued for the prompt loop once startup is ready; command-like submissions such as `/settings` or `!pwd` are replayed as editor draft instead, so pressing Enter after mount uses the normal command routing. Startup work that can affect correctness, such as project trust prompts, explicit resource flags, metadata commands, non-TTY input, or explicit provider/model selection, still stays on the synchronous path instead of using this capture.
+
 ## Kitty, iTerm2
 
 Work out of the box.

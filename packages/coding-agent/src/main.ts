@@ -1,10 +1,3 @@
-/**
- * Main entry point for the coding agent CLI.
- *
- * This file handles CLI argument parsing and translates them into
- * createAgentSession() options. The SDK does the heavy lifting.
- */
-
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -27,6 +20,7 @@ import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
+import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
 import { computeDeferExtensions, formatScopedModelList } from "./main-deferred-startup.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
@@ -175,9 +169,8 @@ export async function main(args: string[], options?: MainOptions) {
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
-	// When true, the initial runtime was created without loading extension code so the
-	// TUI can paint immediately; InteractiveMode completes the load in the background.
 	let deferredExtensionLoad = false;
+	let startupEarlyInputCapture: EarlyInputCapture | undefined;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
@@ -211,6 +204,7 @@ export async function main(args: string[], options?: MainOptions) {
 		});
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions;
+			startupEarlyInputCapture ??= startEarlyInputCapture({ enabled: deferExtensions && deprecationWarnings.length === 0 });
 		}
 		const getProjectTrustContext = () =>
 			projectTrustContext ??
@@ -427,18 +421,21 @@ export async function main(args: string[], options?: MainOptions) {
 	time("resolveModelScope");
 	reportDiagnostics(runtime.diagnostics);
 	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
 	const startupBenchmark = isTruthyEnvFlag(getEnvValue(ENV_STARTUP_BENCHMARK));
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red(`Error: ${ENV_STARTUP_BENCHMARK} only supports interactive mode`));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
@@ -459,6 +456,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
 			deferredExtensionLoad,
+			startupInputCapture: startupEarlyInputCapture,
 			deferredModelScopePatterns: deferredExtensionLoad ? (parsed.models ?? settingsManager.getEnabledModels()) : undefined,
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
 		});

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { seedStartupInput } from "../src/modes/interactive/interactive-mode-base.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type SubmitContext = {
@@ -68,5 +69,31 @@ describe("InteractiveMode startup input", () => {
 		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("queued prompt");
 		expect(context.onInputCallback).toBeUndefined();
 		expect(context.pendingUserInputs).toEqual([]);
+	});
+
+	it("seeds captured startup input into the visible editor and prompt queue", () => {
+		const pendingUserInputs: string[] = [];
+		const editor = { setText: vi.fn() };
+
+		seedStartupInput(pendingUserInputs, editor, {
+			text: "draft before paint",
+			submissions: ["submitted before paint"],
+		});
+
+		expect(editor.setText).toHaveBeenCalledWith("draft before paint");
+		expect(pendingUserInputs).toEqual(["submitted before paint"]);
+	});
+
+	it("preserves command-like startup submissions as editor draft for normal routing", () => {
+		const pendingUserInputs: string[] = [];
+		const editor = { setText: vi.fn() };
+
+		seedStartupInput(pendingUserInputs, editor, {
+			text: "unfinished draft",
+			submissions: ["ordinary prompt", "/settings", "!pwd"],
+		});
+
+		expect(pendingUserInputs).toEqual(["ordinary prompt"]);
+		expect(editor.setText).toHaveBeenCalledWith("/settings\n!pwd\nunfinished draft");
 	});
 });

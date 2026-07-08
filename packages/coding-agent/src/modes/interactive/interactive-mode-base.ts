@@ -5,6 +5,27 @@
 import type {} from "./interactive-mode-surface.ts";
 import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
+import type { EarlyInputSnapshot } from "../../main-early-input.ts";
+
+function isCommandLikeStartupInput(text: string): boolean {
+  const trimmed = text.trimStart();
+  return trimmed.startsWith("/") || trimmed.startsWith("!");
+}
+
+export function seedStartupInput(
+  pendingUserInputs: string[],
+  editor: { setText(text: string): void },
+  startupInput: EarlyInputSnapshot | undefined,
+): void {
+  if (!startupInput) return;
+  const draftParts: string[] = [];
+  for (const submission of startupInput.submissions) {
+    if (isCommandLikeStartupInput(submission)) draftParts.push(submission);
+    else pendingUserInputs.push(submission);
+  }
+  if (startupInput.text.length > 0) draftParts.push(startupInput.text);
+  if (draftParts.length > 0) editor.setText(draftParts.join("\n"));
+}
 
 export class InteractiveModeBase {
 
@@ -370,6 +391,7 @@ export class InteractiveModeBase {
         autocompleteMaxVisible,
       },
     );
+
     this.editor = this.defaultEditor;
     this.editorContainer = new Container();
     this.editorContainer.addChild(this.editor as Component);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed normal interactive TTY startup so typing before the prompt box is fully mounted is captured instead of being invisibly blocked by deferred resource initialization. Atomic now starts a short-lived raw input buffer only on the existing deferred-startup fast path, hands it to the visible TUI immediately before prompt startup, replays draft text into the editor, queues only ordinary Enter-submitted prompts for the prompt loop, and preserves command-like early submissions such as `/settings` or `!pwd` as editor draft so normal command routing handles them after mount. Trust prompts, explicit resource flags, metadata commands, non-TTY modes, and explicit provider/model selection stay on the synchronous startup path.
+
 ## [0.9.5-alpha.7] - 2026-07-07
 
 ### Changed
