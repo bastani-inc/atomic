@@ -51,6 +51,14 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly sessionId?: string;
   readonly sessionFile?: string;
   readonly completedAt: number;
+  readonly startedAt?: number;
+  readonly endedAt?: number;
+  readonly durationMs?: number;
+  readonly result?: string;
+  readonly model?: string;
+  readonly fastMode?: boolean;
+  readonly attemptedModels?: WorkflowSerializableValue;
+  readonly modelAttempts?: WorkflowSerializableValue;
 }
 
 /**
@@ -82,6 +90,14 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
     replayKey: s.replayKey,
     ...(s.sessionId !== undefined ? { sessionId: s.sessionId } : {}),
     ...(s.sessionFile !== undefined ? { sessionFile: s.sessionFile } : {}),
+    ...(s.startedAt !== undefined ? { startedAt: s.startedAt } : {}),
+    ...(s.endedAt !== undefined ? { endedAt: s.endedAt } : {}),
+    ...(s.durationMs !== undefined ? { durationMs: s.durationMs } : {}),
+    ...(s.result !== undefined ? { result: s.result } : {}),
+    ...(s.model !== undefined ? { model: s.model } : {}),
+    ...(s.fastMode !== undefined ? { fastMode: s.fastMode } : {}),
+    ...(s.attemptedModels !== undefined ? { attemptedModels: [...s.attemptedModels] } : {}),
+    ...(s.modelAttempts !== undefined ? { modelAttempts: s.modelAttempts as WorkflowSerializableValue } : {}),
   };
 }
 
@@ -144,9 +160,21 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     ...(env.hasOutput !== false && env.output !== undefined ? { output: env.output } : {}),
     ...(env.sessionId !== undefined ? { sessionId: env.sessionId } : {}),
     ...(env.sessionFile !== undefined ? { sessionFile: env.sessionFile } : {}),
+    ...(typeof env.startedAt === "number" ? { startedAt: env.startedAt } : {}),
+    ...(typeof env.endedAt === "number" ? { endedAt: env.endedAt } : {}),
+    ...(typeof env.durationMs === "number" ? { durationMs: env.durationMs } : {}),
+    ...(typeof env.result === "string" ? { result: env.result } : {}),
+    ...(typeof env.model === "string" ? { model: env.model } : {}),
+    ...(typeof env.fastMode === "boolean" ? { fastMode: env.fastMode } : {}),
+    ...(isStringArray(env.attemptedModels) ? { attemptedModels: env.attemptedModels } : {}),
+    ...(Array.isArray(env.modelAttempts) ? { modelAttempts: env.modelAttempts as DurableStageCheckpoint["modelAttempts"] } : {}),
   } as DurableStageCheckpoint;
 }
 
+
+function isStringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
 function decodeLegacy(
   workflowId: string,
   stepName: string,

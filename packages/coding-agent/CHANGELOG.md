@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed the bundled intercom extension to keep broker runtime files under the active Atomic agent directory, including custom `ATOMIC_CODING_AGENT_DIR` values and the legacy `PI_CODING_AGENT_DIR` alias, while documenting the `~/.atomic/agent/intercom/` primary path and `~/.pi/agent/intercom/` fallback. The default pi-compatible `npx --no-install tsx` broker sentinel is now hardened to launch through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries use a narrow internal split-launcher broker handoff, so default startup does not depend on `npx`, `tsx`, or `bun` being on `PATH`; explicit custom broker configs remain supported.
+- Fixed GitHub Copilot Claude/Anthropic Messages streams that cleanly report a terminal stop reason but omit the required `message_stop` SSE event. Atomic now adds that single terminal event only for closed, non-error Copilot `/v1/messages` event streams before provider parsing, including complete final SSE frames that reach EOF without a trailing blank-line separator and GitHub Enterprise/GHE tenant routing hosts such as `copilot-api.<enterprise>.ghe.com`, while leaving malformed, truncated, already well-formed, non-Copilot, look-alike host, non-SSE, Gemini, and OpenAI-style streams to the normal parser/retry behavior.
+- Fixed bundled workflow durable resume hydration so replayed parallel reviewer fanout preserves branch structure and completed workflow stages restore persisted summaries, durations, session/model metadata, and checkpoint contents in status and graph views.
 
 ## [0.9.5-alpha.7] - 2026-07-07
 

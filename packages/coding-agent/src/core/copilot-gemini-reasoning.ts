@@ -1,4 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { maybeRepairCopilotAnthropicMessagesResponse } from "./copilot-anthropic-sse-repair.ts";
+import { isCopilotApiHost } from "./copilot-hosts.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 
 /**
@@ -238,18 +240,6 @@ export function restoreCopilotGeminiReasoningOpaque(
   return { ...payloadObject, messages: nextMessages };
 }
 
-/** Whether the URL targets Copilot's CAPI gateway (`*.githubcopilot.com`). */
-function isCopilotApiHost(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    // Exact host or a real subdomain only — never a look-alike suffix such as
-    // `notgithubcopilot.com` (CodeQL: incomplete URL substring sanitization).
-    return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
-  } catch {
-    return false;
-  }
-}
-
 /** Resolve the request URL string from a `fetch` input argument. */
 function resolveRequestUrl(input: Parameters<typeof fetch>[0]): string | undefined {
   if (typeof input === "string") return input;
@@ -283,20 +273,34 @@ export function maybeRewriteCopilotGeminiResponse(
   });
 }
 
+/**
+ * Apply Copilot response-body transforms before pi-ai parses streamed provider
+ * output. Anthropic Messages repair gets first refusal for `/v1/messages`
+ * streams; other Copilot event streams keep the existing Gemini reasoning bridge.
+ */
+export function maybeRewriteCopilotProviderResponse(
+  url: string | undefined,
+  response: Response,
+): Response {
+  const anthropicRepaired = maybeRepairCopilotAnthropicMessagesResponse(url, response);
+  if (anthropicRepaired !== response) return anthropicRepaired;
+  return maybeRewriteCopilotGeminiResponse(url, response);
+}
+
 let originalFetch: typeof fetch | undefined;
 
 /**
- * Install a `globalThis.fetch` wrapper that rewrites CAPI Gemini SSE responses
- * to bridge `reasoning_opaque` into `reasoning_details` (see
- * {@link createCopilotGeminiSseStream}). Idempotent.
+ * Install a `globalThis.fetch` wrapper that applies Copilot-only stream
+ * compatibility shims before pi-ai parses provider output. Currently this
+ * includes the Gemini `reasoning_opaque` bridge and the Anthropic Messages
+ * terminal `message_stop` repair. Idempotent.
  *
- * The OpenAI SDK used by the `openai-completions` provider resolves
- * `globalThis.fetch` at client-construction time, and a new client is built per
- * request, so wrapping the global before the first request is reliably picked
- * up. Non-Copilot hosts and non-event-stream responses are returned untouched,
- * keeping the blast radius to streaming CAPI Gemini turns only.
+ * SDK clients resolve `globalThis.fetch` at client-construction time, and a new
+ * client is built per request, so wrapping the global before the first request
+ * is reliably picked up. Non-Copilot hosts and non-event-stream responses are
+ * returned untouched by the underlying shims.
  */
-export function installCopilotGeminiReasoningInterceptor(): void {
+export function installCopilotResponseInterceptor(): void {
   if (originalFetch) return;
   if (typeof globalThis.fetch !== "function") return;
   const base = globalThis.fetch;
@@ -306,7 +310,7 @@ export function installCopilotGeminiReasoningInterceptor(): void {
   const wrapped = (async (input, init) => {
     const response = await boundFetch(input, init);
     try {
-      return maybeRewriteCopilotGeminiResponse(resolveRequestUrl(input), response);
+      return maybeRewriteCopilotProviderResponse(resolveRequestUrl(input), response);
     } catch {
       return response;
     }
@@ -319,4 +323,9 @@ export function installCopilotGeminiReasoningInterceptor(): void {
   }
 
   globalThis.fetch = wrapped;
+}
+
+/** Backward-compatible name for the original Gemini-only interceptor export. */
+export function installCopilotGeminiReasoningInterceptor(): void {
+  installCopilotResponseInterceptor();
 }
