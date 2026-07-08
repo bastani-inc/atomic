@@ -292,9 +292,11 @@ describe("maybeRepairCopilotAnthropicMessagesResponse", () => {
 
   it("repairs documented Copilot CAPI host variants", async () => {
     for (const url of [
+      "https://githubcopilot.com/v1/messages",
       "https://api.individual.githubcopilot.com/v1/messages",
       "https://api.githubcopilot.com/v1/messages",
       "https://api.enterprise.githubcopilot.com/v1/messages",
+      "https://copilot-api.company.ghe.com/v1/messages",
     ]) {
       const response = sseResponse();
       const out = maybeRepairCopilotAnthropicMessagesResponse(url, response);
@@ -306,11 +308,30 @@ describe("maybeRepairCopilotAnthropicMessagesResponse", () => {
     }
   });
 
+  it("rejects githubcopilot.com public-host look-alikes", () => {
+    const publicLookalike = sseResponse();
+
+    expect(
+      maybeRepairCopilotAnthropicMessagesResponse(
+        "https://githubcopilot.com.evil.test/v1/messages",
+        publicLookalike,
+      ),
+    ).toBe(publicLookalike);
+  });
+
   it("returns non-Copilot, non-/v1/messages, and non-SSE responses untouched", () => {
     const nonCopilot = sseResponse();
     expect(maybeRepairCopilotAnthropicMessagesResponse("https://api.anthropic.com/v1/messages", nonCopilot)).toBe(
       nonCopilot,
     );
+
+    const gheLookalike = sseResponse();
+    expect(
+      maybeRepairCopilotAnthropicMessagesResponse(
+        "https://copilot-api.company.ghe.com.evil.test/v1/messages",
+        gheLookalike,
+      ),
+    ).toBe(gheLookalike);
 
     const nonMessagesEndpoint = sseResponse();
     expect(

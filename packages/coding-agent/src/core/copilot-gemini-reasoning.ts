@@ -1,5 +1,6 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { maybeRepairCopilotAnthropicMessagesResponse } from "./copilot-anthropic-sse-repair.ts";
+import { isCopilotApiHost } from "./copilot-hosts.ts";
 import { isCopilotGeminiModel } from "./copilot-gemini-payload-sanitizer.ts";
 
 /**
@@ -237,18 +238,6 @@ export function restoreCopilotGeminiReasoningOpaque(
 
   if (!mutated) return payload;
   return { ...payloadObject, messages: nextMessages };
-}
-
-/** Whether the URL targets Copilot's CAPI gateway (`*.githubcopilot.com`). */
-function isCopilotApiHost(url: string): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    // Exact host or a real subdomain only — never a look-alike suffix such as
-    // `notgithubcopilot.com` (CodeQL: incomplete URL substring sanitization).
-    return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
-  } catch {
-    return false;
-  }
 }
 
 /** Resolve the request URL string from a `fetch` input argument. */

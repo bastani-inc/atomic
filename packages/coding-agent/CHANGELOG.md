@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed GitHub Copilot Claude/Anthropic Messages streams that cleanly report a terminal stop reason but omit the required `message_stop` SSE event. Atomic now adds that single terminal event only for closed, non-error Copilot `/v1/messages` event streams before provider parsing, while leaving malformed, truncated, already well-formed, non-Copilot, non-SSE, Gemini, and OpenAI-style streams to the normal parser/retry behavior.
+- Fixed GitHub Copilot Claude/Anthropic Messages streams that cleanly report a terminal stop reason but omit the required `message_stop` SSE event. Atomic now adds that single terminal event only for closed, non-error Copilot `/v1/messages` event streams before provider parsing, including GitHub Enterprise/GHE tenant routing hosts such as `copilot-api.<enterprise>.ghe.com`, while leaving malformed, truncated, already well-formed, non-Copilot, look-alike host, non-SSE, Gemini, and OpenAI-style streams to the normal parser/retry behavior.
 
 ## [0.9.5-alpha.7] - 2026-07-07
 

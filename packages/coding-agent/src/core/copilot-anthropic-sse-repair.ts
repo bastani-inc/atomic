@@ -8,6 +8,8 @@
  * same terminal evidence Anthropic's parser requires for a complete message.
  */
 
+import { isCopilotApiHost } from "./copilot-hosts.ts";
+
 type JsonObject = { [key: string]: JsonValue };
 type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 
@@ -321,14 +323,6 @@ export function createCopilotAnthropicMessagesSseRepairStream(
       return reader.cancel(reason);
     },
   });
-}
-
-/** Whether the URL targets Copilot's CAPI gateway (`*.githubcopilot.com`). */
-function isCopilotApiHost(url: URL): boolean {
-  const host = url.hostname.toLowerCase();
-  // Exact host or a real subdomain only — never a look-alike suffix such as
-  // `notgithubcopilot.com` (CodeQL: incomplete URL substring sanitization).
-  return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
 }
 
 function isCopilotAnthropicMessagesUrl(url: string | undefined): boolean {
