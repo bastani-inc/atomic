@@ -354,7 +354,7 @@ export default function intercom(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "intercom",
 		label: "Intercom",
-		description: `Send a message to another pi session running on this machine.
+		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Usage:
@@ -364,7 +364,7 @@ Usage:
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
-		promptSnippet: "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+		promptSnippet: "Use to coordinate with other local agent sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'" }),
 			to: Type.Optional(Type.String({ description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')" })),

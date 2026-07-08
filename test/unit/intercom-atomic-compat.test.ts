@@ -301,19 +301,20 @@ describe("intercom config path precedence", () => {
 });
 
 type CapturedRegistration = {
-  tools: string[];
+  tools: ToolDefinition[];
   commands: string[];
   shortcuts: string[];
   handlers: string[];
   eventHandlers: string[];
+  toolNames: string[];
 };
 
 function captureIntercomRegistration(env: Record<string, string | undefined>): CapturedRegistration {
-  const captured: CapturedRegistration = { tools: [], commands: [], shortcuts: [], handlers: [], eventHandlers: [] };
+  const captured: CapturedRegistration = { tools: [], commands: [], shortcuts: [], handlers: [], eventHandlers: [], toolNames: [] };
   withEnv(env, () => {
     const api = {
       on: ((event: string) => { captured.handlers.push(event); }) as ExtensionAPI["on"],
-      registerTool: ((tool: ToolDefinition) => { captured.tools.push(tool.name); }) as ExtensionAPI["registerTool"],
+      registerTool: ((tool: ToolDefinition) => { captured.tools.push(tool); captured.toolNames.push(tool.name); }) as ExtensionAPI["registerTool"],
       registerCommand: ((name: string, _options: Omit<RegisteredCommand, "name" | "sourceInfo">) => {
         captured.commands.push(name);
       }) as ExtensionAPI["registerCommand"],
@@ -339,20 +340,35 @@ describe("lazy intercom registration", () => {
       ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
     });
 
-    assert.ok(captured.tools.includes("intercom"));
-    assert.equal(captured.tools.includes("contact_supervisor"), false);
+    assert.ok(captured.toolNames.includes("intercom"));
+    assert.equal(captured.toolNames.includes("contact_supervisor"), false);
     assert.ok(captured.commands.includes("intercom"));
     assert.ok(captured.shortcuts.includes("alt+m"));
     assert.ok(captured.eventHandlers.includes("subagent:control-intercom"));
     assert.ok(captured.eventHandlers.includes("subagent:result-intercom"));
   });
 
+  test("uses Atomic/Pi-neutral model-visible wording for the public intercom tool", () => {
+    const captured = captureIntercomRegistration({
+      PI_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
+      ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: undefined,
+    });
+    const intercomTool = captured.tools.find((tool) => tool.name === "intercom");
+    assert.ok(intercomTool);
+
+    const modelVisibleText = `${intercomTool.description}\n${intercomTool.promptSnippet ?? ""}`;
+    assert.match(modelVisibleText, /another local agent session/);
+    assert.match(modelVisibleText, /other local agent sessions/);
+    assert.doesNotMatch(modelVisibleText, /\bpi session\b/i);
+    assert.doesNotMatch(modelVisibleText, /\blocal pi sessions\b/i);
+  });
+
   test("registers contact_supervisor when PI or ATOMIC subagent bridge metadata exists", () => {
     const piCaptured = captureIntercomRegistration({ PI_SUBAGENT_ORCHESTRATOR_TARGET: "parent" });
     const atomicCaptured = captureIntercomRegistration({ ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET: "parent" });
 
-    assert.ok(piCaptured.tools.includes("contact_supervisor"));
-    assert.ok(atomicCaptured.tools.includes("contact_supervisor"));
+    assert.ok(piCaptured.toolNames.includes("contact_supervisor"));
+    assert.ok(atomicCaptured.toolNames.includes("contact_supervisor"));
   });
 });
 
