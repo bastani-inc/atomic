@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed workflow stage model fallback for unrecoverable context-window overflow: when Atomic's same-model auto-compaction exhausts its recovery attempt, the stage now advances to the next configured `fallbackModels` tier and, once all tiers are exhausted, stops with the terminal context-overflow error instead of compacting and retrying the same model indefinitely.
+- Fixed workflow controlled-pause ordering around unresolved context overflow: paused stages now honor the pause/resume handshake before surfacing the terminal overflow, and a resume message is not sent over an already-recorded unresolved-overflow signal.
+- Fixed reattached workflow stage fallback after unresolved context overflow: if the restored/resumed model tier exhausts context recovery, fallback now continues with the next tier after that resumed model (or stops terminally when it was the final tier) instead of replaying the primary model.
+
 ## [0.9.5-alpha.6] - 2026-07-06
 
 ### Fixed

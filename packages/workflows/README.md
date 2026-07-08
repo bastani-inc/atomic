@@ -326,7 +326,7 @@ Atomic registers the canonical `structured_output` tool only for schema-enabled 
 
 ### Model fallbacks
 
-Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
+Stages and high-level task helpers can retry transient provider/model failures with an ordered `fallbackModels` list. The primary `model` is tried first, then each fallback, and finally the current Atomic-selected model when available. Fallbacks are only used for retryable model/provider failures such as rate limits, quota/auth/provider outages, unavailable models, network timeouts, context-window overflows that Atomic's auto-compaction cannot resolve on the current model, and 5xx errors — ordinary tool, shell, validation, cancellation, and workflow-code failures are not retried.
 
 ```typescript
 import { workflow } from "@bastani/workflows";

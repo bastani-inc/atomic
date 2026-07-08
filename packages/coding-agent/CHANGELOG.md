@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed provider context-window overflow recovery so an exhausted overflow auto-compaction attempt emits an explicit unresolved-overflow signal instead of silently leaving callers to retry the same model, and planner calls that themselves overflow now degrade through the deterministic overflow-eviction ladder rather than throwing before non-model reduction can run. Planner overflow is now recognized whether it is returned as an assistant error message or thrown by the provider stream before `agent.prompt()` completes, so overflow recovery skips the critical planner retry and goes directly to deterministic non-model reduction in both forms.
+- Fixed overflow auto-compaction retry reliability so `AgentSession.prompt()` now waits for the `willRetry: true` post-compaction continuation before resolving. Late unresolved-overflow signals from that continuation are observed by workflow callers before they can mark the original prompt successful.
+
 ## [0.9.5-alpha.7] - 2026-07-07
 
 ### Changed

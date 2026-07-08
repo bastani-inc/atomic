@@ -201,7 +201,8 @@ export interface AgentSessionMethodSurface {
 	_isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
-	_resumeAfterAutoCompaction(): void;
+	_awaitPendingOverflowPostCompactionContinuation(): Promise<void>;
+	_resumeAfterAutoCompaction(): Promise<void>;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
 	setAutoCompactionEnabled(enabled: boolean): void;
 
@@ -335,6 +336,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_steeringMessages: string[];
 	_followUpMessages: string[];
 	_interruptDeliveryQueue: Promise<void>;
+	_pendingOverflowPostCompactionContinuation: Promise<void> | undefined;
+	_overflowPostCompactionContinuationToken: number;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;

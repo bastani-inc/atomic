@@ -50,6 +50,7 @@ export type AgentSessionEvent =
 			result: ContextCompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
+			unresolvedOverflow?: boolean;
 			errorMessage?: string;
 	  }
 	| {

@@ -84,6 +84,8 @@ export class AgentSession {
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	protected _pendingOverflowPostCompactionContinuation: Promise<void> | undefined = undefined;
+	protected _overflowPostCompactionContinuationToken = 0;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;

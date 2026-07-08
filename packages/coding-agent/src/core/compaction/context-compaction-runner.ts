@@ -148,6 +148,7 @@ interface ContextDeletionRun {
 	validatedResult: ValidatedContextDeletionResult | undefined;
 	lastToolError: string | undefined;
 	providerError: string | undefined;
+	providerOverflow: boolean;
 }
 
 async function runContextDeletionAssistant(
@@ -227,7 +228,17 @@ async function runContextDeletionAssistant(
 		await agent.prompt(promptMessage);
 	} catch (error) {
 		if (signal?.aborted) throw new Error("Context compaction failed: Request was aborted");
-		throw new Error(`Context compaction failed: ${formatCopilotProviderError(model.provider, formatErrorMessage(error))}`);
+		const errorMessage = formatErrorMessage(error);
+		const formattedErrorMessage = formatCopilotProviderError(model.provider, errorMessage);
+		if (isContextCompactionOverflowError(model, errorMessage)) {
+			return {
+				validatedResult: deletionTool.getValidatedResult(),
+				lastToolError: deletionTool.getLastError(),
+				providerError: formattedErrorMessage,
+				providerOverflow: true,
+			};
+		}
+		throw new Error(`Context compaction failed: ${formattedErrorMessage}`);
 	} finally {
 		signal?.removeEventListener("abort", abortOnSignal);
 		unsubscribeNudge();
@@ -242,6 +253,7 @@ async function runContextDeletionAssistant(
 				validatedResult: deletionTool.getValidatedResult(),
 				lastToolError: deletionTool.getLastError(),
 				providerError: formattedErrorMessage === agent.state.errorMessage ? undefined : formattedErrorMessage,
+				providerOverflow: true,
 			};
 		}
 		throw new Error(`Context compaction failed: ${formattedErrorMessage}`);
@@ -255,6 +267,7 @@ async function runContextDeletionAssistant(
 		validatedResult: deletionTool.getValidatedResult(),
 		lastToolError: deletionTool.getLastError(),
 		providerError: undefined,
+		providerOverflow: false,
 	};
 }
 
@@ -285,7 +298,7 @@ function formatContextCompactionTargetFailureMessage(
 }
 
 function runFailedAttempt(error: Error): ContextDeletionRunAttempt {
-	return { validatedResult: undefined, lastToolError: undefined, providerError: error.message };
+	return { validatedResult: undefined, lastToolError: undefined, providerError: error.message, providerOverflow: false };
 }
 
 function shouldRethrowPlannerError(error: Error, signal: AbortSignal | undefined, ladder: ContextCompactionLadderOptions | undefined): boolean {
@@ -311,10 +324,12 @@ export async function contextCompact(
 	);
 	const transcript: CompactableTranscript = { ...preparation.transcript, parameters };
 	const attempts: ContextDeletionRunAttempt[] = [];
+	let skipCriticalPlanner = false;
 	try {
 		const standardRun = await runContextDeletionAssistant(transcript, model, apiKey, headers, signal, thinkingLevel, parameters);
 		if (targetMetAcceptedForLadder(standardRun, parameters, ladder)) return standardRun.validatedResult;
 		if (feasibleAccepted(standardRun.validatedResult, ladder?.acceptanceTokenBudget)) return standardRun.validatedResult;
+		skipCriticalPlanner = standardRun.providerOverflow;
 		attempts.push({ ...standardRun });
 	} catch (error) {
 		const formattedError = error instanceof Error ? error : new Error(formatErrorMessage(error));
@@ -326,29 +341,31 @@ export async function contextCompact(
 		throw new Error(formatContextCompactionTargetFailureMessage(attempts, parameters));
 	}
 
-	try {
-		const criticalParameters = criticalCompactionParameters(parameters);
-		const criticalTranscript = relaxTranscriptForCriticalEviction(transcript);
-		const criticalRun = await runContextDeletionAssistant(
-			criticalTranscript,
-			model,
-			apiKey,
-			headers,
-			signal,
-			thinkingLevel,
-			criticalParameters,
-			{
-				promptSuffix: CONTEXT_COMPACTION_CRITICAL_OVERFLOW_PROMPT,
-				acceptanceTokenBudget: ladder.criticalEvictionTokenBudget,
-			},
-		);
-		if (targetMetAcceptedForLadder(criticalRun, parameters, ladder)) return criticalRun.validatedResult;
-		if (feasibleAccepted(criticalRun.validatedResult, ladder.criticalEvictionTokenBudget)) return criticalRun.validatedResult;
-		attempts.push({ ...criticalRun });
-	} catch (error) {
-		const formattedError = error instanceof Error ? error : new Error(formatErrorMessage(error));
-		if (signal?.aborted || formattedError.message === "Context compaction failed: Request was aborted") throw formattedError;
-		attempts.push(runFailedAttempt(formattedError));
+	if (!skipCriticalPlanner) {
+		try {
+			const criticalParameters = criticalCompactionParameters(parameters);
+			const criticalTranscript = relaxTranscriptForCriticalEviction(transcript);
+			const criticalRun = await runContextDeletionAssistant(
+				criticalTranscript,
+				model,
+				apiKey,
+				headers,
+				signal,
+				thinkingLevel,
+				criticalParameters,
+				{
+					promptSuffix: CONTEXT_COMPACTION_CRITICAL_OVERFLOW_PROMPT,
+					acceptanceTokenBudget: ladder.criticalEvictionTokenBudget,
+				},
+			);
+			if (targetMetAcceptedForLadder(criticalRun, parameters, ladder)) return criticalRun.validatedResult;
+			if (feasibleAccepted(criticalRun.validatedResult, ladder.criticalEvictionTokenBudget)) return criticalRun.validatedResult;
+			attempts.push({ ...criticalRun });
+		} catch (error) {
+			const formattedError = error instanceof Error ? error : new Error(formatErrorMessage(error));
+			if (signal?.aborted || formattedError.message === "Context compaction failed: Request was aborted") throw formattedError;
+			attempts.push(runFailedAttempt(formattedError));
+		}
 	}
 
 	try {
