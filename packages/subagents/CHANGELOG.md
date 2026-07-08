@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Updated async/background subagent status widgets so running job, parallel child-agent, chain-step, and nested child rows reuse the same foreground pulsing-dot glyph treatment instead of braille spinner glyphs, while preserving counts, metadata, live-detail hints, and output paths.
+
 ## [0.9.5-alpha.5] - 2026-07-06
 
 ### Changed

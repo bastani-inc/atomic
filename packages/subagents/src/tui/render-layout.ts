@@ -129,6 +129,15 @@ export function pulseGlyph(frame?: number): string {
 	return PULSE_FRAMES[index % PULSE_FRAMES.length]!;
 }
 
+/**
+ * Running async/background subagent pulse. It reuses the exact foreground pulse
+ * glyph frames while accepting an explicit frame advanced by the widget only on
+ * real async progress/status updates, matching foreground result semantics.
+ */
+export function runningPulseGlyph(frame?: number): string {
+	return pulseGlyph(frame);
+}
+
 export function progressRunningSeed(progress: ProgressSeedSource | undefined): number | undefined {
 	if (!progress) return undefined;
 	return runningSeed(

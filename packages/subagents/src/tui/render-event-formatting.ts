@@ -5,7 +5,7 @@ import { formatDuration, formatModelThinking, shortenPath } from "../shared/form
 import { formatNestedAggregate } from "../runs/shared/nested-render.ts";
 import { formatAgentRunningLabel } from "../shared/status-format.ts";
 import { buildLiveStatusLine, formatCurrentToolLine, formatTokenStat, formatToolUseStat, statJoin } from "./render-status-progress.ts";
-import { runningGlyph, runningSeed, truncLine, type Theme } from "./render-layout.ts";
+import { runningGlyph, runningPulseGlyph, truncLine, type Theme } from "./render-layout.ts";
 
 export function formatWidgetAgents(agents: string[]): string {
 	const distinct = [...new Set(agents)];
@@ -40,47 +40,9 @@ export function widgetActivity(job: AsyncJobState): string {
 	return "Done";
 }
 
-export function widgetStepRunningSeed(step: NonNullable<AsyncJobState["steps"]>[number], fallbackIndex?: number): number | undefined {
-	return runningSeed(
-		fallbackIndex,
-		step.index,
-		step.toolCount,
-		step.turnCount,
-		step.tokens?.total,
-		step.lastActivityAt,
-		step.currentToolStartedAt,
-		step.durationMs,
-	);
-}
 
-export function widgetStepsRunningSeed(steps: Array<NonNullable<AsyncJobState["steps"]>[number]> | undefined): number | undefined {
-	let seed: number | undefined;
-	for (const [index, step] of (steps ?? []).entries()) seed = runningSeed(seed, widgetStepRunningSeed(step, index));
-	return seed;
-}
-
-export function widgetJobRunningSeed(job: AsyncJobState): number | undefined {
-	return runningSeed(
-		job.updatedAt,
-		job.lastActivityAt,
-		job.toolCount,
-		job.turnCount,
-		job.totalTokens?.total,
-		job.currentStep,
-		job.runningSteps,
-		job.completedSteps,
-		widgetStepsRunningSeed(job.steps),
-	);
-}
-
-export function widgetJobsRunningSeed(jobs: AsyncJobState[]): number | undefined {
-	let seed: number | undefined;
-	for (const job of jobs) seed = runningSeed(seed, widgetJobRunningSeed(job));
-	return seed;
-}
-
-export function widgetStatusGlyph(job: AsyncJobState, theme: Theme, now?: number): string {
-	if (job.status === "running") return theme.fg("accent", runningGlyph(widgetJobRunningSeed(job), now));
+export function widgetStatusGlyph(job: AsyncJobState, theme: Theme, pulseFrame?: number): string {
+	if (job.status === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
 	if (job.status === "queued") return theme.fg("muted", "◦");
 	if (job.status === "complete") return theme.fg("success", "✓");
 	if (job.status === "paused") return theme.fg("warning", "■");
@@ -89,6 +51,14 @@ export function widgetStatusGlyph(job: AsyncJobState, theme: Theme, now?: number
 
 export function widgetStepGlyph(status: AsyncJobStep["status"], theme: Theme, seed?: number, now?: number): string {
 	if (status === "running") return theme.fg("accent", runningGlyph(seed, now));
+	if (status === "complete" || status === "completed") return theme.fg("success", "✓");
+	if (status === "failed") return theme.fg("error", "✗");
+	if (status === "paused") return theme.fg("warning", "■");
+	return theme.fg("muted", "◦");
+}
+
+export function widgetStepPulseGlyph(status: AsyncJobStep["status"], theme: Theme, pulseFrame?: number): string {
+	if (status === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
 	if (status === "complete" || status === "completed") return theme.fg("success", "✓");
 	if (status === "failed") return theme.fg("error", "✗");
 	if (status === "paused") return theme.fg("warning", "■");
@@ -186,17 +156,14 @@ export function nestedRunName(run: NestedRunSummary): string {
 	return run.id;
 }
 
-export function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepSummary["status"], theme: Theme, seed?: number, now?: number): string {
-	if (state === "running") return theme.fg("accent", runningGlyph(seed, now));
+export function nestedStatusGlyph(state: NestedRunSummary["state"] | NestedStepSummary["status"], theme: Theme, pulseFrame?: number): string {
+	if (state === "running") return theme.fg("accent", runningPulseGlyph(pulseFrame));
 	if (state === "complete" || state === "completed") return theme.fg("success", "✓");
 	if (state === "failed") return theme.fg("error", "✗");
 	if (state === "paused") return theme.fg("warning", "■");
 	return theme.fg("muted", "◦");
 }
 
-export function nestedRunSeed(run: NestedRunSummary): number | undefined {
-	return runningSeed(run.lastUpdate, run.lastActivityAt, run.currentStep, run.toolCount, run.turnCount, run.totalTokens?.total, run.currentToolStartedAt);
-}
 
 export function nestedActivity(input: Pick<NestedRunSummary | NestedStepSummary, "activityState" | "lastActivityAt" | "currentTool" | "currentToolStartedAt" | "currentPath" | "turnCount" | "toolCount">, state: NestedRunSummary["state"] | NestedStepSummary["status"], snapshotNow?: number): string {
 	const facts: string[] = [];
@@ -240,7 +207,7 @@ export function formatNestedWidgetLines(children: NestedRunSummary[] | undefined
 			}
 			const activity = nestedActivity(child, child.state, snapshotNow ?? child.lastUpdate);
 			const error = child.error ? ` · ${child.error}` : "";
-			lines.push(theme.fg("dim", `${prefix}↳ ${nestedStatusGlyph(child.state, theme, nestedRunSeed(child), now)} ${nestedRunName(child)} · ${child.state} · ${activity}${error}`));
+			lines.push(theme.fg("dim", `${prefix}↳ ${nestedStatusGlyph(child.state, theme, now)} ${nestedRunName(child)} · ${child.state} · ${activity}${error}`));
 			if (depth === maxDepth) {
 				const aggregate = formatNestedAggregate([...(child.steps?.flatMap((step) => step.children ?? []) ?? []), ...(child.children ?? [])]);
 				if (aggregate && lines.length < lineBudget) lines.push(theme.fg("dim", `${prefix}  ↳ ${aggregate}`));
@@ -248,7 +215,7 @@ export function formatNestedWidgetLines(children: NestedRunSummary[] | undefined
 			}
 			for (const step of child.steps ?? []) {
 				if (lines.length >= lineBudget) return;
-				lines.push(theme.fg("dim", `${prefix}  ↳ ${nestedStatusGlyph(step.status, theme, undefined, now)} ${step.agent} · ${step.status} · ${nestedActivity(step, step.status, snapshotNow ?? child.lastUpdate)}`));
+				lines.push(theme.fg("dim", `${prefix}  ↳ ${nestedStatusGlyph(step.status, theme, now)} ${step.agent} · ${step.status} · ${nestedActivity(step, step.status, snapshotNow ?? child.lastUpdate)}`));
 				append(step.children, depth + 1, `${prefix}    `);
 			}
 			append(child.children, depth + 1, `${prefix}  `);

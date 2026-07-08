@@ -2,8 +2,10 @@ import type { ExtensionContext } from "@bastani/atomic";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import * as path from "node:path";
 import { MAX_WIDGET_JOBS, WIDGET_KEY, type AsyncJobState } from "../shared/types.ts";
-import { getTermWidth, RUNNING_ANIMATION_MS, runningGlyph, truncLine, type Theme } from "./render-layout.ts";
+import { getTermWidth, runningPulseGlyph, truncLine, type Theme } from "./render-layout.ts";
 import { themeBold } from "./render-status-progress.ts";
+import { advanceResultPulseFrame } from "./render-result-animation.ts";
+import { widgetRenderKey } from "./render-stable-output.ts";
 import {
 	buildSingleWidgetLines,
 	compactSingleWidgetLines,
@@ -13,7 +15,6 @@ import {
 import {
 	widgetActivity,
 	widgetJobName,
-	widgetJobsRunningSeed,
 	widgetStats,
 	widgetStatusGlyph,
 } from "./render-event-formatting.ts";
@@ -26,22 +27,24 @@ class LiveWidgetComponent implements Component {
 		private readonly theme: Theme,
 		private readonly getExpanded: () => boolean,
 		private readonly getNow: () => number,
+		private readonly getPulseFrame: () => number | undefined,
 	) {}
 
 	render(width: number): string[] {
 		const jobs = this.getJobs();
 		const expanded = this.getExpanded();
 		const now = this.getNow();
-		const lines = this.buildLines(jobs, width, expanded, now);
+		const pulseFrame = this.getPulseFrame();
+		const lines = this.buildLines(jobs, width, expanded, now, pulseFrame);
 		this.container.clear();
 		for (const line of fitWidgetLineBudget(lines, this.theme, width, expanded)) this.container.addChild(new Text(line, 1, 0));
 		return this.container.render(width);
 	}
 
-	private buildLines(jobs: AsyncJobState[], width: number, expanded: boolean, now: number): string[] {
-		if (expanded) return buildWidgetLines(jobs, this.theme, width, true, now);
-		if (jobs.length === 1) return compactSingleWidgetLines(jobs[0]!, this.theme, width, now);
-		return buildWidgetLines(jobs, this.theme, width, false, now);
+	private buildLines(jobs: AsyncJobState[], width: number, expanded: boolean, now: number, pulseFrame: number | undefined): string[] {
+		if (expanded) return buildWidgetLines(jobs, this.theme, width, true, now, pulseFrame);
+		if (jobs.length === 1) return compactSingleWidgetLines(jobs[0]!, this.theme, width, now, pulseFrame);
+		return buildWidgetLines(jobs, this.theme, width, false, now, pulseFrame);
 	}
 
 	invalidate(): void {
@@ -49,22 +52,23 @@ class LiveWidgetComponent implements Component {
 	}
 }
 
-function buildWidgetComponent(getJobs: () => AsyncJobState[], getExpanded: () => boolean, getNow: () => number): (_tui: unknown, theme: Theme) => Component {
-	return (_tui, theme) => new LiveWidgetComponent(getJobs, theme, getExpanded, getNow);
+function buildWidgetComponent(getJobs: () => AsyncJobState[], getExpanded: () => boolean, getNow: () => number, getPulseFrame: () => number | undefined): (_tui: unknown, theme: Theme) => Component {
+	return (_tui, theme) => new LiveWidgetComponent(getJobs, theme, getExpanded, getNow, getPulseFrame);
 }
 
 interface RenderRequestingContext {
 	ui: ExtensionContext["ui"] & { requestRender?: () => void };
 }
 
-// There is only ever one async-agents widget per host process, so the widget
-// ticker and mounted component read their driving context/jobs from module-level
+// There is only ever one async-agents widget per host process, so the mounted
+// component reads its driving context/jobs/pulse frame from module-level
 // singletons instead of remounting the widget for every visible update.
 let latestWidgetCtx: ExtensionContext | undefined;
 let latestWidgetJobs: AsyncJobState[] = [];
 let latestWidgetFrameNow = 0;
 let latestWidgetExpanded = false;
-let widgetTimer: ReturnType<typeof setInterval> | undefined;
+let latestWidgetSnapshotKey: string | undefined;
+let latestWidgetPulseFrame: number | undefined;
 let mountedWidgetCtx: ExtensionContext | undefined;
 let mountedWidgetOwnerKey: string | undefined;
 let widgetMounted = false;
@@ -75,6 +79,10 @@ function getLatestWidgetJobs(): AsyncJobState[] {
 
 function getLatestWidgetFrameNow(): number {
 	return latestWidgetFrameNow;
+}
+
+function getLatestWidgetPulseFrame(): number | undefined {
+	return latestWidgetPulseFrame;
 }
 
 function getLatestWidgetExpanded(): boolean {
@@ -94,6 +102,8 @@ function clearLatestWidgetState(): void {
 	latestWidgetJobs = [];
 	latestWidgetFrameNow = 0;
 	latestWidgetExpanded = false;
+	latestWidgetSnapshotKey = undefined;
+	latestWidgetPulseFrame = undefined;
 	mountedWidgetCtx = undefined;
 	mountedWidgetOwnerKey = undefined;
 	widgetMounted = false;
@@ -142,63 +152,35 @@ function unmountWidgetBestEffort(ctx: ExtensionContext | undefined): void {
 	}
 }
 
-function hasAnimatedWidgetJobs(jobs: AsyncJobState[]): boolean {
-	// Animate while any job — or any of its nested steps — is still running so the
-	// header/step spinners never freeze before the work actually settles.
-	return jobs.some((job) => job.status === "running" || job.steps?.some((step) => step.status === "running"));
+function widgetSnapshotKey(jobs: AsyncJobState[]): string {
+	return jobs.map(widgetRenderKey).join("\n");
 }
 
-function refreshAnimatedWidget(): void {
-	if (!latestWidgetCtx?.hasUI) return;
-	try {
-		latestWidgetFrameNow = Date.now();
-		requestWidgetRender(latestWidgetCtx);
-	} catch {
-		// A stale render context means the cosmetic ticker can no longer update the
-		// mounted widget safely; tear it down best-effort and let the next status
-		// update remount on the active host context.
-		stopWidgetAnimation();
-	}
+function refreshWidgetSnapshot(jobs: AsyncJobState[]): void {
+	const snapshotKey = widgetSnapshotKey(jobs);
+	if (snapshotKey === latestWidgetSnapshotKey) return;
+	latestWidgetSnapshotKey = snapshotKey;
+	latestWidgetFrameNow = Date.now();
+	latestWidgetPulseFrame = advanceResultPulseFrame(latestWidgetPulseFrame);
 }
 
-function ensureWidgetAnimation(): void {
-	if (widgetTimer) return;
-	widgetTimer = setInterval(() => {
-		if (!hasAnimatedWidgetJobs(latestWidgetJobs)) {
-			stopWidgetAnimation();
-			return;
-		}
-		refreshAnimatedWidget();
-	}, RUNNING_ANIMATION_MS);
-	widgetTimer.unref?.();
-}
-
-// Stop only the ticker, keeping the last-rendered widget context/jobs intact.
-function stopWidgetTicker(): void {
-	if (widgetTimer) {
-		clearInterval(widgetTimer);
-		widgetTimer = undefined;
-	}
-}
-
-// Full teardown: stop the ticker, clear the mounted widget if possible, and
-// forget the driving context/jobs entirely.
+// Full teardown: clear the mounted widget if possible, and forget the driving
+// context/jobs entirely.
 export function stopWidgetAnimation(): void {
-	stopWidgetTicker();
 	if (widgetMounted) unmountWidgetBestEffort(mountedWidgetCtx);
 	clearLatestWidgetState();
 }
 
-export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now()): string[] {
+export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now(), pulseFrame?: number): string[] {
 	if (jobs.length === 0) return [];
-	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded, now);
+	if (jobs.length === 1) return buildSingleWidgetLines(jobs[0]!, theme, width, expanded, now, pulseFrame);
 	const running = jobs.filter((job) => job.status === "running");
 	const queued = jobs.filter((job) => job.status === "queued");
 	const finished = jobs.filter((job) => job.status !== "running" && job.status !== "queued");
 
 	const lines: string[] = [];
 	const hasActive = running.length > 0 || queued.length > 0;
-	const headerGlyph = running.length > 0 ? runningGlyph(widgetJobsRunningSeed(running), now) : hasActive ? "●" : "○";
+	const headerGlyph = running.length > 0 ? runningPulseGlyph(pulseFrame) : hasActive ? "●" : "○";
 	lines.push(truncLine(`${theme.fg(hasActive ? "accent" : "dim", headerGlyph)} ${theme.fg(hasActive ? "accent" : "dim", "Async agents")} ${theme.fg("dim", "· background")}`, width));
 
 	const items: string[][] = [];
@@ -211,9 +193,9 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (slots <= 0) { hiddenRunning++; continue; }
 		const stats = widgetStats(job, theme);
 		items.push([
-			`${widgetStatusGlyph(job, theme, now)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width, now),
+			...widgetParallelAgentDetails(job, theme, expanded, width, now, pulseFrame),
 		]);
 		slots--;
 	}
@@ -228,9 +210,9 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 		if (slots <= 0) { hiddenFinished++; continue; }
 		const stats = widgetStats(job, theme);
 		items.push([
-			`${widgetStatusGlyph(job, theme, now)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
+			`${widgetStatusGlyph(job, theme, pulseFrame)} ${themeBold(theme, widgetJobName(job))}${stats ? ` ${theme.fg("dim", "·")} ${stats}` : ""}`,
 			`  ${theme.fg("dim", `⎿  ${widgetActivity(job)}`)}`,
-			...widgetParallelAgentDetails(job, theme, expanded, width, now),
+			...widgetParallelAgentDetails(job, theme, expanded, width, now, pulseFrame),
 		]);
 		slots--;
 	}
@@ -280,7 +262,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 	}
 	latestWidgetCtx = ctx;
 	latestWidgetJobs = [...jobs];
-	latestWidgetFrameNow = Date.now();
+	refreshWidgetSnapshot(jobs);
 	if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
 		// Session rebinding can leave the previous host UI alive briefly; clear the
 		// old mount before installing the singleton widget on the new owner/context.
@@ -290,13 +272,10 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		widgetMounted = false;
 	}
 	if (!widgetMounted) {
-		// belowEditor: the widget animates a running glyph / elapsed labels on a
-		// timer. pi-tui full-clears the screen+scrollback whenever a changed line
-		// sits above the viewport fold, so an aboveEditor widget flickers once the
-		// bottom region grows tall and pushes it above the fold. Rendering below the
-		// editor keeps the live line within the bottom viewport (flicker-free), and
-		// matches the workflow companion widget's placement (#1109).
-		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(getLatestWidgetJobs, getLatestWidgetExpanded, getLatestWidgetFrameNow), {
+		// belowEditor keeps the live async widget pinned to the bottom viewport,
+		// matching the workflow companion widget's placement (#1109). The pulse frame
+		// is advanced only by semantic async status updates, not by a cosmetic timer.
+		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(getLatestWidgetJobs, getLatestWidgetExpanded, getLatestWidgetFrameNow, getLatestWidgetPulseFrame), {
 			placement: "belowEditor",
 		});
 		mountedWidgetCtx = ctx;
@@ -311,8 +290,6 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		mountedWidgetOwnerKey = ownerKey;
 		requestWidgetRender(ctx);
 	}
-	// Keep the just-rendered ctx/jobs as the last-rendered state; only the ticker
-	// is conditional on whether anything is still animating.
-	if (hasAnimatedWidgetJobs(jobs)) ensureWidgetAnimation();
-	else stopWidgetTicker();
+	// The async pulse is update-driven like foreground subagent results, so no
+	// periodic cosmetic ticker is needed.
 }

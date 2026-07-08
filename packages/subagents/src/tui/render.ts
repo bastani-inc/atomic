@@ -5,7 +5,7 @@
  * rendering responsibility across sibling modules.
  */
 
-export { PULSE_FRAMES, RUNNING_ANIMATION_MS, RUNNING_FRAMES, currentRunningFrame, pulseGlyph } from "./render-layout.ts";
+export { PULSE_FRAMES, RUNNING_ANIMATION_MS, RUNNING_FRAMES, currentRunningFrame, pulseGlyph, runningPulseGlyph } from "./render-layout.ts";
 export {
 	advanceResultPulseFrame,
 	clearLegacyResultAnimationTimer,

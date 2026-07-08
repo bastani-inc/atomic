@@ -1,14 +1,14 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { buildWidgetLines, currentRunningFrame, RUNNING_ANIMATION_MS, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
-import { type AsyncJobState, theme, withMockedNow } from "./subagents-render-stability-helpers.js";
+import { buildWidgetLines, currentRunningFrame, pulseGlyph, RUNNING_ANIMATION_MS, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
+import { firstSpinnerChar, type AsyncJobState, theme, withMockedNow } from "./subagents-render-stability-helpers.js";
 
-describe("subagent running spinner animation (issue #1084)", () => {
+describe("subagent running pulse animation (issue #1084)", () => {
     afterEach(() => {
         stopResultAnimations();
     });
 
-    test("async widget spinner advances with wall clock for running jobs", () => {
+    test("async widget running glyphs reuse foreground pulse frames and ignore wall-clock time", () => {
         const job: AsyncJobState = {
             asyncId: "abc123",
             asyncDir: "/tmp/abc123",
@@ -21,19 +21,26 @@ describe("subagent running spinner animation (issue #1084)", () => {
             turnCount: 2,
         };
         const first = withMockedNow(10_000, () =>
-            buildWidgetLines([job], theme, 120).join("\n"),
+            buildWidgetLines([job], theme, 120, false, 10_000, 1).join("\n"),
         );
-        const second = withMockedNow(10_000 + RUNNING_ANIMATION_MS, () =>
-            buildWidgetLines([job], theme, 120).join("\n"),
+        const sameFrameLater = withMockedNow(10_000 + RUNNING_ANIMATION_MS, () =>
+            buildWidgetLines([job], theme, 120, false, 10_000, 1).join("\n"),
         );
-        assert.notEqual(
-            second,
+        assert.equal(
+            sameFrameLater,
             first,
-            "running async widget spinner should animate over wall-clock time",
+            "async pulse must not advance from wall-clock time alone",
         );
+        const advanced = buildWidgetLines([job], theme, 120, false, 10_000, 2).join("\n");
+        assert.notEqual(advanced, first, "a semantic progress/status update pulse frame should change the glyph");
+        assert.equal([...first.split("\n")[1]!][0], pulseGlyph(1));
+        assert.equal([...advanced.split("\n")[1]!][0], pulseGlyph(2));
+        assert.equal(firstSpinnerChar(advanced), undefined, "async widget must not render spinner-style glyphs");
+        assert.equal(firstSpinnerChar(first), undefined, "async widget must not render spinner-style glyphs");
+        assert.equal(firstSpinnerChar(sameFrameLater), undefined, "async widget must not render spinner-style glyphs");
     });
 
-    test("async widget honours captured now for job, step, and nested running glyphs", () => {
+    test("async widget honours captured now for job, step, and nested running pulse glyphs", () => {
         const job: AsyncJobState = {
             asyncId: "abc123",
             asyncDir: "/tmp/abc123",
@@ -70,20 +77,27 @@ describe("subagent running spinner animation (issue #1084)", () => {
             ],
         };
 
-        const first = buildWidgetLines([job], theme, 120, true, 10_000).join(
+        const first = buildWidgetLines([job], theme, 120, true, 10_000, 1).join(
             "\n",
         );
-        const second = buildWidgetLines(
+        const sameFrameLater = buildWidgetLines(
             [job],
             theme,
             120,
             true,
             10_000 + RUNNING_ANIMATION_MS,
+            1,
         ).join("\n");
+        assert.equal(
+            sameFrameLater,
+            first,
+            "same pulse frame should keep job, step, and nested glyphs stable across wall-clock advances",
+        );
+        const second = buildWidgetLines([job], theme, 120, true, 10_000, 2).join("\n");
         assert.notEqual(
             second,
             first,
-            "sanity: widget running glyphs should still be sensitive to captured now",
+            "progress/status-update pulse frames should advance job, step, and nested glyphs",
         );
         assert.match(
             first,
@@ -95,12 +109,14 @@ describe("subagent running spinner animation (issue #1084)", () => {
             /leaf-worker/,
             "test fixture should exercise nested step glyphs",
         );
+        assert.equal(firstSpinnerChar(first), undefined, "job, step, and nested running glyphs must not render spinner-style glyphs");
+        assert.equal(firstSpinnerChar(second), undefined, "job, step, and nested running glyphs must not render spinner-style glyphs");
 
         const stableA = withMockedNow(20_000, () =>
-            buildWidgetLines([job], theme, 120, true, 10_000).join("\n"),
+            buildWidgetLines([job], theme, 120, true, 10_000, 1).join("\n"),
         );
         const stableB = withMockedNow(30_000, () =>
-            buildWidgetLines([job], theme, 120, true, 10_000).join("\n"),
+            buildWidgetLines([job], theme, 120, true, 10_000, 1).join("\n"),
         );
         assert.equal(
             stableB,
@@ -109,7 +125,7 @@ describe("subagent running spinner animation (issue #1084)", () => {
         );
     });
 
-    test("multi-job async widget list honours captured now for header and row glyphs", () => {
+    test("multi-job async widget list honours captured now for header and row pulse glyphs", () => {
         const base: AsyncJobState = {
             asyncId: "abc123",
             asyncDir: "/tmp/abc123",
@@ -132,27 +148,36 @@ describe("subagent running spinner animation (issue #1084)", () => {
             },
         ];
 
-        const first = buildWidgetLines(jobs, theme, 120, false, 10_000).join(
+        const first = buildWidgetLines(jobs, theme, 120, false, 10_000, 1).join(
             "\n",
         );
-        const second = buildWidgetLines(
+        const sameFrameLater = buildWidgetLines(
             jobs,
             theme,
             120,
             false,
             10_000 + RUNNING_ANIMATION_MS,
+            1,
         ).join("\n");
+        assert.equal(
+            sameFrameLater,
+            first,
+            "same pulse frame should keep multi-job widget glyphs stable across wall-clock advances",
+        );
+        const second = buildWidgetLines(jobs, theme, 120, false, 10_000, 2).join("\n");
         assert.notEqual(
             second,
             first,
-            "sanity: multi-job widget glyphs should still be sensitive to captured now",
+            "progress/status-update pulse frames should advance multi-job widget glyphs",
         );
+        assert.equal(firstSpinnerChar(first), undefined, "multi-job widget rows must not render spinner-style glyphs");
+        assert.equal(firstSpinnerChar(second), undefined, "multi-job widget rows must not render spinner-style glyphs");
 
         const stableA = withMockedNow(20_000, () =>
-            buildWidgetLines(jobs, theme, 120, false, 10_000).join("\n"),
+            buildWidgetLines(jobs, theme, 120, false, 10_000, 1).join("\n"),
         );
         const stableB = withMockedNow(30_000, () =>
-            buildWidgetLines(jobs, theme, 120, false, 10_000).join("\n"),
+            buildWidgetLines(jobs, theme, 120, false, 10_000, 1).join("\n"),
         );
         assert.equal(
             stableB,
