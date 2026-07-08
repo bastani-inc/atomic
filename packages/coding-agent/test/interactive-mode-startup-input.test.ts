@@ -233,6 +233,18 @@ describe("InteractiveMode startup input", () => {
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
 	});
 
+	it("preserves cooked unfinished draft text after submitted startup input", () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("first submitted\nunfinished draft");
+
+		context.recoverCookedStartupInput();
+
+		expect(context.pendingUserInputs).toEqual(["first submitted"]);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
+	});
+
 	it("recovers a single cooked command-like startup submission", async () => {
 		const context = createSubmitContext();
 		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd");

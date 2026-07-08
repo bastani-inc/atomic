@@ -160,11 +160,24 @@ InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: Interac
     if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return;
     this.startupCookedInputRecovered = true;
     const text = this.editor.getText();
-    const submissions = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const singleCommandLike =
-      submissions.length === 1 &&
-      (submissions[0]?.startsWith("/") || submissions[0]?.startsWith("!"));
-    if (submissions.length < 2 && !singleCommandLike) return;
+    const cookedLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const isCommandLike = (line: string | undefined) =>
+      line !== undefined && (line.startsWith("/") || line.startsWith("!"));
+    const singleCommandLike = cookedLines.length === 1 && isCommandLike(cookedLines[0]);
+    if (cookedLines.length < 2 && !singleCommandLike) return;
+
+    let draftText = "";
+    let submissions = cookedLines;
+    if (
+      this.startupReplayActiveInput === undefined &&
+      cookedLines.length > 1 &&
+      !isCommandLike(cookedLines[0]) &&
+      !isCommandLike(cookedLines[cookedLines.length - 1])
+    ) {
+      draftText = cookedLines[cookedLines.length - 1] ?? "";
+      submissions = cookedLines.slice(0, -1);
+    }
+    if (submissions.length === 0) return;
 
     const activeInput = this.startupReplayActiveInput?.trim();
     if (activeInput) {
@@ -177,7 +190,7 @@ InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: Interac
     }
 
     this.editor.setText("");
-    seedStartupInput(this.pendingUserInputs, this.editor, { text: "", submissions }, this.startupReplayInputs, (draft) => {
+    seedStartupInput(this.pendingUserInputs, this.editor, { text: draftText, submissions }, this.startupReplayInputs, (draft) => {
       this.startupDraftText = draft;
     }, (active) => {
       this.startupReplayActiveInput = active;
