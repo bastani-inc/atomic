@@ -26,9 +26,10 @@ export function seedStartupInput(
     if (commandReplayStarted) {
       startupReplayInputs.push(submission);
     } else if (isCommandLikeStartupInput(submission)) {
+      const commandText = submission.trim();
       commandReplayStarted = true;
-      editor.setText(submission);
-      setStartupReplayActiveInput?.(submission);
+      editor.setText(commandText);
+      setStartupReplayActiveInput?.(commandText);
     } else {
       pendingUserInputs.push(submission);
     }

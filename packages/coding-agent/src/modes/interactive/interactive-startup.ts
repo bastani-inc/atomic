@@ -103,6 +103,13 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.firstRunNoticeVisible = this.isFirstRunOnboardingEligible();
 
+
+    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
+    // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
+    // or download tools on cold machines.
+    this.ui.start();
+    recordTimeSinceReset("time-to-first-frame");
+
     seedStartupInput(
       this.pendingUserInputs,
       this.defaultEditor,
@@ -115,12 +122,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
         this.startupReplayActiveInput = text;
       },
     );
-
-    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
-    // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
-    // or download tools on cold machines.
-    this.ui.start();
-    recordTimeSinceReset("time-to-first-frame");
+    this.ui.requestRender();
     this.isInitialized = true;
 
     await this.themeController.applyFromSettings();

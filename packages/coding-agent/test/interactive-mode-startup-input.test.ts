@@ -22,6 +22,7 @@ type SubmitContext = {
 	renderDeferredUserInput: (text: string) => void;
 	deliverStartupReplayPrompt: (text: string) => void;
 	advanceStartupInputReplay: (text: string) => void;
+	drainStartupReplayCommands: () => Promise<void>;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 	startupReplayInputs: string[];
@@ -30,8 +31,11 @@ type SubmitContext = {
 };
 
 type InputContext = {
+	defaultEditor?: { onSubmit?: (text: string) => void | Promise<void> };
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
+	startupReplayActiveInput?: string;
+	drainStartupReplayCommands?: () => Promise<void>;
 };
 
 type InteractiveModePrivate = {
@@ -64,6 +68,7 @@ function createSubmitContext(): SubmitContext {
 		renderDeferredUserInput: vi.fn(),
 		deliverStartupReplayPrompt: InteractiveMode.prototype.deliverStartupReplayPrompt,
 		advanceStartupInputReplay: InteractiveMode.prototype.advanceStartupInputReplay,
+		drainStartupReplayCommands: InteractiveMode.prototype.drainStartupReplayCommands,
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 	};
@@ -173,6 +178,30 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayActiveInput).toBeUndefined();
 		expect(context.startupReplayInputs).toEqual([]);
 		expect(context.editor.setText).not.toHaveBeenCalledWith("/settings\nsecond prompt");
+	});
+
+	it("advances startup replay when command-like input had leading whitespace", () => {
+		const context = createSubmitContext();
+		context.startupReplayActiveInput = "/settings";
+		context.startupReplayInputs = ["second prompt"];
+
+		context.advanceStartupInputReplay("/settings");
+
+		expect(context.pendingUserInputs).toEqual(["second prompt"]);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+	});
+
+	it("auto-submits captured command-like startup input before later prompts", async () => {
+		const context = createSubmitContext();
+		context.startupReplayActiveInput = "!pwd";
+		context.startupReplayInputs = ["explain result"];
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+		expect(context.startupReplayInputs).toEqual([]);
 	});
 
 	it("keeps later startup commands standalone while replay advances", () => {

@@ -156,8 +156,16 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: Intera
     }
   };
 
+InteractiveModeBase.prototype.drainStartupReplayCommands = async function(this: InteractiveModeBase): Promise<void> {
+    while (this.pendingUserInputs.length === 0 && this.startupReplayActiveInput) {
+      const activeInput = this.startupReplayActiveInput;
+      await this.defaultEditor.onSubmit?.(activeInput);
+      if (this.startupReplayActiveInput?.trim() === activeInput.trim()) break;
+    }
+  };
+
 InteractiveModeBase.prototype.advanceStartupInputReplay = function(this: InteractiveModeBase, submittedText: string): void {
-    if (this.startupReplayActiveInput !== submittedText) return;
+    if (this.startupReplayActiveInput?.trim() !== submittedText.trim()) return;
     this.startupReplayActiveInput = undefined;
 
     while (this.startupReplayInputs.length > 0) {

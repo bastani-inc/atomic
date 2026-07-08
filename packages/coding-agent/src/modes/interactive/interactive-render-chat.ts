@@ -270,17 +270,24 @@ InteractiveModeBase.prototype.renderInitialMessages = function(this: Interactive
   };
 
 InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveModeBase): Promise<string> {
-    const queuedInput = this.pendingUserInputs.shift();
-    if (queuedInput !== undefined) {
-      return queuedInput;
-    }
+    while (true) {
+      const queuedInput = this.pendingUserInputs.shift();
+      if (queuedInput !== undefined) {
+        return queuedInput;
+      }
 
-    return new Promise((resolve) => {
-      this.onInputCallback = (text: string) => {
-        this.onInputCallback = undefined;
-        resolve(text);
-      };
-    });
+      if (this.startupReplayActiveInput) {
+        await this.drainStartupReplayCommands();
+        continue;
+      }
+
+      return new Promise((resolve) => {
+        this.onInputCallback = (text: string) => {
+          this.onInputCallback = undefined;
+          resolve(text);
+        };
+      });
+    }
   };
 
 InteractiveModeBase.prototype.rebuildChatFromMessages = function(this: InteractiveModeBase): void {

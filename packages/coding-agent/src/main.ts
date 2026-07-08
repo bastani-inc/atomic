@@ -21,7 +21,7 @@ import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.t
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
-import { computeDeferExtensions, formatScopedModelList } from "./main-deferred-startup.ts";
+import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
@@ -171,6 +171,10 @@ export async function main(args: string[], options?: MainOptions) {
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
 	let startupEarlyInputCapture: EarlyInputCapture | undefined;
+	startupEarlyInputCapture = startEarlyInputCapture({ enabled: computeStartupInputCaptureEnabled({
+		appMode, stdinIsTTY: process.stdin.isTTY === true, parsed, sessionCwd, projectTrustStore, resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+		resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0), deprecationWarningCount: deprecationWarnings.length,
+	}) });
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,
