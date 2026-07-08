@@ -428,7 +428,8 @@ describe("goal", () => {    type ReviewJsonFinding = {
             ctx.calls.taskOptions["completion-reviewer-1"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
-        assert.equal(reviewerOptions?.tools?.includes("review_decision"), false);
+        assert.equal(reviewerOptions?.tools, undefined);
+        assert.deepEqual(reviewerOptions?.excludedTools, ["ask_user_question"]);
         assert.match(
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
             /echo the prior blocker string/i,

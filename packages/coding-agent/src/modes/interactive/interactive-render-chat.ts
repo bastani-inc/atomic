@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentMessage, type Component, type ContextCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, ContextCompactionSummaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, theme } from "./interactive-mode-deps.ts";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
     const children = this.chatContainer.children;
@@ -270,17 +271,28 @@ InteractiveModeBase.prototype.renderInitialMessages = function(this: Interactive
   };
 
 InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveModeBase): Promise<string> {
-    const queuedInput = this.pendingUserInputs.shift();
-    if (queuedInput !== undefined) {
-      return queuedInput;
+    for (let attempt = 0; !this.startupCookedInputRecovered && attempt < 10; attempt += 1) {
+      await yieldToEventLoop();
+      if (this.recoverCookedStartupInput?.()) break;
     }
+    while (true) {
+      const queuedInput = this.pendingUserInputs.shift();
+      if (queuedInput !== undefined) {
+        return queuedInput;
+      }
 
-    return new Promise((resolve) => {
-      this.onInputCallback = (text: string) => {
-        this.onInputCallback = undefined;
-        resolve(text);
-      };
-    });
+      if (this.startupReplayActiveInput) {
+        await this.drainStartupReplayCommands();
+        continue;
+      }
+
+      return new Promise((resolve) => {
+        this.onInputCallback = (text: string) => {
+          this.onInputCallback = undefined;
+          resolve(text);
+        };
+      });
+    }
   };
 
 InteractiveModeBase.prototype.rebuildChatFromMessages = function(this: InteractiveModeBase): void {

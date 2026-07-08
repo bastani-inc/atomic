@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "fs";
 import { getAgentConfigPaths } from "@bastani/atomic";
 
 export interface IntercomConfig {
-  /** Broker command used to spawn the broker process (e.g. "npx" or "bun") */
+  /** Broker command used to spawn the broker process (e.g. "npx", "bun", or "node") */
   brokerCommand: string;
 
   /** Arguments passed to the broker command before the broker script path */
@@ -24,9 +24,12 @@ export interface IntercomConfig {
 const CONFIG_PATHS = getAgentConfigPaths("intercom", "config.json");
 const CONFIG_PATH = CONFIG_PATHS.find((path) => existsSync(path)) ?? CONFIG_PATHS[0]!;
 
+export const DEFAULT_BROKER_COMMAND = "npx";
+export const DEFAULT_BROKER_ARGS = ["--no-install", "tsx"] as const;
+
 const defaults: IntercomConfig = {
-  brokerCommand: "npx",
-  brokerArgs: ["--no-install", "tsx"],
+  brokerCommand: DEFAULT_BROKER_COMMAND,
+  brokerArgs: [...DEFAULT_BROKER_ARGS],
   confirmSend: false,
   enabled: true,
   replyHint: true,

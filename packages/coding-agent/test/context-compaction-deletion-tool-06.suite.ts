@@ -331,6 +331,48 @@ describe("context compaction tiered fallback ladder", () => {
 		expect(result.stats.tokensAfter).toBeLessThanOrEqual(32);
 	});
 
+	it("degrades planner overflow to deterministic eviction when no planner deletion fits", async () => {
+		const faux = registerFauxProvider();
+		cleanups.push(() => faux.unregister());
+		faux.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "context_length_exceeded: prompt is too long",
+			}),
+		]);
+
+		const result = await contextCompact(preparation(criticalRecentBoundaryTranscript()), faux.getModel(), "test-key", undefined, undefined, "off", {
+			acceptanceTokenBudget: 80,
+			criticalEvictionTokenBudget: 80,
+		});
+
+		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: "old-equivalent" }]);
+		expect(result.stats.tokensAfter).toBeLessThanOrEqual(80);
+		expect(faux.state.callCount).toBe(1);
+	});
+
+	it("degrades thrown planner overflow directly to deterministic eviction without a critical planner call", async () => {
+		const contexts: Context[] = [];
+		const faux = registerFauxProvider();
+		cleanups.push(() => faux.unregister());
+		faux.setResponses([
+			(context) => {
+				contexts.push(context);
+				throw new Error("context_length_exceeded: prompt is too long");
+			},
+		]);
+
+		const result = await contextCompact(preparation(criticalRecentBoundaryTranscript()), faux.getModel(), "test-key", undefined, undefined, "off", {
+			acceptanceTokenBudget: 80,
+			criticalEvictionTokenBudget: 80,
+		});
+
+		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: "old-equivalent" }]);
+		expect(result.stats.tokensAfter).toBeLessThanOrEqual(80);
+		expect(faux.state.callCount).toBe(1);
+		expect(JSON.stringify(contexts)).not.toContain("<critical-overflow-mode>");
+	});
+
 	it("caps planner nudges at CONTEXT_COMPACTION_MAX_PLANNER_NUDGES", async () => {
 		const contexts: Context[] = [];
 		let deletionIndex = 0;

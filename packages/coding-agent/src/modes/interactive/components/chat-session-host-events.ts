@@ -120,6 +120,21 @@ export function applyChatSessionAgentEvent<
       state.statusMessage = "retrying…";
       changed = true;
       break;
+    case "model_fallback_start":
+      state.sdkBusy = true;
+      state.statusMessage = "switching model…";
+      changed = true;
+      break;
+    case "model_fallback_end": {
+      const fallback = event as Extract<AgentSessionEvent, { type: "model_fallback_end" }>;
+      state.statusMessage = fallback.success ? "" : (fallback.finalError ?? "model fallback failed");
+      if (!fallback.success) {
+        state.sdkBusy = false;
+        state.workingMessage = undefined;
+      }
+      changed = true;
+      break;
+    }
     case "auto_retry_end": {
       const retry = event as Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
       state.statusMessage = "";

@@ -108,6 +108,8 @@ You can also trigger compaction manually with `/compact`. Custom summary instruc
 
 If auto-compaction runs while a turn still has queued work (for example a failed tool-call result or a follow-up queued during compaction), Atomic resumes through the same continuation lifecycle as a normal queued turn: provider retry handling runs, additional queued messages drain, and any post-compaction resume failure is surfaced instead of being swallowed silently.
 
+For provider-overflow recovery that succeeds with `willRetry: true`, the public `AgentSession.prompt()` promise remains pending until the post-compaction retry continuation has run through the normal continuation lifecycle. If that continuation exhausts the one compact-and-retry attempt and emits `compaction_end` with `unresolvedOverflow: true`, workflow callers can observe the signal before deciding whether the prompt succeeded or should advance model fallback.
+
 ### Image Context and Compaction
 
 Image content blocks (screenshots, pasted images, image-bearing tool results) are expensive: providers fold image tokens into their reported prompt/input usage, so image-heavy conversations reach the compaction threshold sooner. Atomic accounts for this in two complementary ways:
@@ -558,6 +560,8 @@ ValidatedContextDeletionResult
 | Planner run reaches its 50 real provider-turn cap | No additional provider calls are made for that planner run | The runner evaluates the validated deletions recorded so far against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
 | Planner nudge loop reaches its 50 follow-up cap | No extra follow-ups are queued for that planner run | The runner evaluates the best validated state against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
 | Provider non-overflow error | Nothing persisted unless an overflow-only later tier succeeds | Error propagates for manual/threshold; overflow recovery can continue to lower tiers unless the request was aborted |
+| Overflow planner request itself exceeds the provider context window before producing a usable plan | No model-generated plan is persisted | Overflow auto-compaction marks both assistant state-message overflow and thrown planner/provider overflow explicitly; when no validated deletion fits the budget, it skips the critical overflow planner model call and goes straight to deterministic eviction instead of throwing or looping on planner calls |
+| Overflow recovery exhausts the compact-and-retry attempt without a fitting result | Nothing more is retried on the same model | The session emits `compaction_end` with `unresolvedOverflow: true`; workflow-owned `fallbackModels` can advance to the next configured model tier, and non-workflow callers see the terminal overflow-recovery error |
 | Extension-provided deletion request invalid | Nothing persisted | Extension/caller sees validation failure; extension-provided requests bypass the internal fallback ladder |
 
 

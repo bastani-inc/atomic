@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@bastani/atomic";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;
 type ToolRenderResultArgs = Parameters<ToolResultRenderer>;

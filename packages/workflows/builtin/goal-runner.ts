@@ -9,7 +9,7 @@ import {
   type GoalWorkflowOutputs,
   type ReviewRecord,
 } from "./goal-types.js";
-import { writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
+import { artifactSafeName, writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
 import { appendLifecycleEvent, createGoalLedger, writeGoalLedger } from "./goal-ledger.js";
 import {
   collectRemainingWork,
@@ -17,14 +17,13 @@ import {
 } from "./goal-reducer.js";
 import { formatReviewReport, renderFinalReport } from "./goal-reports.js";
 import {
-  reviewDecisionFromResult,
-  reviewerErrorDecision,
+  parsedReviewDecisionFromResult,
   reviewDecisionToRecord,
 } from "./goal-review.js";
+import { reviewerFailureText } from "./review-convergence.js";
 import {
   WORKER_PREFLIGHT_CONTRACT,
   WORKER_RECEIPT_CONTRACT,
-  goalRunnerTools,
   renderForkedGoalWorkerPrompt,
   renderGoalContinuationPrompt,
   renderReviewerPrompt,
@@ -110,7 +109,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "openrouter/anthropic/claude-opus-4-8:medium",
           "openrouter/z-ai/glm-5.2:xhigh"
       ],
-      tools: goalRunnerTools,
+      excludedTools: ["ask_user_question"],
     };
 
     const reviewerModelConfig = {
@@ -129,7 +128,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "openrouter/anthropic/claude-opus-4-8:high",
           "openrouter/z-ai/glm-5.2:xhigh"
       ],
-      tools: goalRunnerTools,
+      excludedTools: ["ask_user_question"],
       schema: reviewDecisionSchema,
     };
 
@@ -193,6 +192,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           reason: terminalRemainingWork,
           complete_votes: 0,
           review_quorum: reviewQuorum,
+          parsed: false,
+          approved: false,
+          stopReviewLoop: false,
+          nextAction: "needs_human",
+          finalActionRemaining: false,
+          diagnostics: [terminalRemainingWork],
         });
         appendLifecycleEvent(ledger, "status_decided", terminalRemainingWork, turn);
         await writeGoalLedger(ledgerPath, ledger);
@@ -225,6 +230,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           comparisonBaseBranch,
           reviewQuorum,
           blockerThreshold,
+          createPr,
         }),
         reads: [ledgerPath, workTurnPath],
         ...reviewerModelConfig,
@@ -255,36 +261,40 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           failFast: false,
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const structured = reviewerErrorDecision(message);
         reviewResults = [
           {
             name: "reviewer-error",
             stageName: "reviewer-error",
-            text: JSON.stringify(structured, null, 2),
-            structured,
+            text: reviewerFailureText(err),
           },
         ];
       }
 
       latestReviews = await Promise.all(reviewResults.map(async (result) => {
         const reviewerName = result.name ?? result.stageName;
-        const parsed = reviewDecisionFromResult(result) ??
-          reviewerErrorDecision(
-            `Reviewer ${reviewerName} returned no structured decision.`,
-          );
-        const reviewArtifactPath = await writeReviewArtifact(
+        const normalizedReviewerName = reviewerName.replace(/-\d+$/u, "");
+        const parsed = parsedReviewDecisionFromResult(result, reviewerName);
+        const reviewArtifactPath = join(
           artifactDir,
-          reviewerName.replace(/-\d+$/u, ""),
-          parsed,
-          result.text,
+          `review-${artifactSafeName(normalizedReviewerName)}.json`,
         );
-        return reviewDecisionToRecord({
+        const record = reviewDecisionToRecord({
           turn,
-          reviewer: reviewerName.replace(/-\d+$/u, ""),
+          reviewer: normalizedReviewerName,
           artifactPath: reviewArtifactPath,
-          decision: parsed,
+          decision: parsed.decision,
+          parsed: parsed.parsed,
+          diagnostics: parsed.diagnostics,
+          allowFinalActionRemaining: createPr,
         });
+        await writeReviewArtifact(
+          artifactDir,
+          normalizedReviewerName,
+          parsed.decision,
+          result.text,
+          record.convergence_decision,
+        );
+        return record;
       }));
       latestReviewArtifactPaths = latestReviews.map((review) => review.artifact_path);
       latestReviewReportPath = await writeReviewRoundArtifact(
@@ -304,6 +314,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         maxTurns,
         reviewQuorum,
         blockerThreshold,
+        nextActionOnComplete: createPr ? "pull-request" : "finish",
       });
       if (reducerOutcome.blockerObservation !== undefined) {
         ledger.blockers.push(reducerOutcome.blockerObservation);

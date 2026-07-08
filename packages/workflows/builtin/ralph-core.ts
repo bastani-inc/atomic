@@ -5,6 +5,16 @@ import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import { E2E_VERIFICATION_GUIDANCE, LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
 import type { ReviewDecision } from "./ralph-review-gate.js";
+import { reviewDecisionApproved } from "./ralph-review-gate.js";
+import {
+  parseFailureDiagnostics,
+  finalActionRemaining,
+  reviewerFailureText,
+  summarizeReviewConvergence,
+  type ParsedReviewDecision,
+  type ReviewConvergenceSummary,
+} from "./review-convergence.js";
+
 
 export const DEFAULT_MAX_LOOPS = 10;
 const DEFAULT_RESEARCH_DIR = "research";
@@ -200,6 +210,43 @@ export function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDeci
   return result.structured as ReviewDecision | undefined;
 }
 
+export function parsedReviewDecisionFromResult(
+  result: WorkflowTaskResult,
+  reviewer: string,
+): ParsedReviewDecision<ReviewDecision> {
+  const parsed = reviewDecisionFromResult(result);
+  if (parsed !== undefined) {
+    return { decision: parsed, parsed: true, diagnostics: [] };
+  }
+  const diagnostics = parseFailureDiagnostics(reviewer, result.text);
+  return {
+    decision: reviewerErrorDecision(diagnostics.join("\n")),
+    parsed: false,
+    diagnostics,
+  };
+}
+
+export function ralphReviewConvergence(args: {
+  readonly decision: ReviewDecision;
+  readonly parsed: boolean;
+  readonly diagnostics: readonly string[];
+  readonly allowFinalActionRemaining: boolean;
+}): ReviewConvergenceSummary {
+  const approved = reviewDecisionApproved(args.decision, {
+    allowFinalActionRemaining: args.allowFinalActionRemaining,
+  });
+  const hasFinalActionRemaining = args.allowFinalActionRemaining &&
+    finalActionRemaining(args.decision.requirements_traceability);
+  return summarizeReviewConvergence({
+    parsed: args.parsed,
+    approved,
+    stopReviewLoop: args.decision.stop_review_loop,
+    nextAction: approved && hasFinalActionRemaining ? "pull-request" : approved ? "finish" : "implementation",
+    finalActionRemaining: approved && hasFinalActionRemaining,
+    diagnostics: args.diagnostics,
+  });
+}
+
 export function reviewerErrorDecision(error: string): ReviewDecision {
   return {
     findings: [],
@@ -219,14 +266,12 @@ export function reviewerErrorDecision(error: string): ReviewDecision {
 }
 
 export function reviewerErrorResult(
-  error: string,
+  error: unknown,
 ): WorkflowTaskResult {
-  const structured = reviewerErrorDecision(error);
   return {
     name: "reviewer-error",
     stageName: "reviewer-error",
-    text: JSON.stringify(structured, null, 2),
-    structured,
+    text: reviewerFailureText(error),
   };
 }
 
@@ -241,14 +286,17 @@ export function artifactSafeName(value: string): string {
 type ReviewArtifact = {
   readonly reviewer: string;
   readonly decision: ReviewDecision;
+  readonly convergence_decision: ReviewConvergenceSummary;
   readonly raw_text: string;
 };
 
 type ReviewRoundArtifact = {
+  readonly convergence_decision: ReviewConvergenceSummary;
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;
     readonly decision: ReviewDecision;
+    readonly convergence_decision: ReviewConvergenceSummary;
   }[];
 };
 

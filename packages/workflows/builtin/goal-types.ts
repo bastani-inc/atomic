@@ -1,3 +1,5 @@
+import type { ReviewConvergenceSummary } from "./review-convergence.js";
+
 export const DEFAULT_MAX_TURNS = 10;
 // Goal Runner runs three independent reviewer personas; two approvals form a majority.
 export const DEFAULT_REVIEW_QUORUM = 2;
@@ -74,6 +76,10 @@ export type ReviewRecord = ReviewDecision & {
   readonly turn: number;
   readonly reviewer: string;
   readonly artifact_path: string;
+  readonly parsed: boolean;
+  readonly approved: boolean;
+  readonly parse_diagnostics: readonly string[];
+  readonly convergence_decision: ReviewConvergenceSummary;
 };
 
 export type BlockerObservation = {
@@ -82,7 +88,7 @@ export type BlockerObservation = {
   readonly reviewers: readonly string[];
 };
 
-export type ReducerDecision = {
+export type ReducerDecision = ReviewConvergenceSummary & {
   readonly turn: number;
   readonly decision: "complete" | "continue" | "blocked" | "needs_human";
   readonly reason: string;

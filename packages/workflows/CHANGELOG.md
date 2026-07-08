@@ -10,6 +10,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Fixed workflow slash-command overlays so `/workflow <name>` inline input forms, `/workflow connect` session pickers, `/workflow kill` confirmations, and interactive `/workflow resume` selectors hide the host Working spinner while waiting for user input and restore it on submit, cancel, close, dispose, and mount-failure paths. ([#1670](https://github.com/bastani-inc/atomic/issues/1670))
 
+## [0.9.5-alpha.8] - 2026-07-08
+
+### Fixed
+
+- Fixed builtin `goal` and `ralph` reviewer convergence reporting so review artifacts and reducer/controller decisions now persist explicit parse/convergence summaries (`parsed`, `approved`, `stopReviewLoop`, `nextAction`, `finalActionRemaining`, and diagnostics). Malformed or missing structured reviewer output is surfaced as a parse failure distinct from parsed reviewer rejection/findings; PR/MR/review creation is represented as a post-approval final action when it is the only remaining task; successful reviewer convergence records the final action (`pull-request` or `finish`) without consuming another implementation loop; and the workflow authoring docs, default workflow guidance, and create-spec prompt now tell custom reviewer-gated workflows to model authorized PR, release, deployment, or publication work as final actions rather than implementation blockers while writing local, action-oriented prompts that do not rely on workflow/stage names as hidden context.
+
+- Fixed workflow stage model fallback for unrecoverable context-window overflow: when Atomic's same-model auto-compaction exhausts its recovery attempt, the stage now advances to the next configured `fallbackModels` tier and, once all tiers are exhausted, stops with the terminal context-overflow error instead of compacting and retrying the same model indefinitely.
+- Fixed workflow controlled-pause ordering around unresolved context overflow: paused stages now honor the pause/resume handshake before surfacing the terminal overflow, and a resume message is not sent over an already-recorded unresolved-overflow signal.
+- Fixed reattached workflow stage fallback after unresolved context overflow: if the restored/resumed model tier exhausts context recovery, fallback now continues with the next tier after that resumed model (or stops terminally when it was the final tier) instead of replaying the primary model.
+- Fixed durable workflow resume hydration so replayed `ctx.parallel`/`ctx.task` fanout keeps its original branch parentage, completed stages restore persisted summaries, timing, session/model metadata, and DBOS/file checkpoints round-trip the richer stage metadata used by status and graph views.
+
 ## [0.9.5-alpha.6] - 2026-07-06
 
 ### Fixed

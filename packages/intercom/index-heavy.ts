@@ -393,7 +393,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         }
         throw toError(error);
       } finally {
-        if (reconnectPromise === nextReconnectPromise) {
+        if (reconnectPromiseGeneration === generationAtStart) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
         }

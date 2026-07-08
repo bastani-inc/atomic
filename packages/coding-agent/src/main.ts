@@ -1,10 +1,3 @@
-/**
- * Main entry point for the coding agent CLI.
- *
- * This file handles CLI argument parsing and translates them into
- * createAgentSession() options. The SDK does the heavy lifting.
- */
-
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -27,7 +20,8 @@ import { endTimingSpan, printTimings, resetTimings, startTimingSpan, time } from
 import { hasProjectTrustInputs, ProjectTrustStore } from "./core/trust-manager.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataCommand, prepareInitialMessage, resolveAppMode, resolveCliPaths, resolveExcludedToolsForAppMode, toPrintOutputMode } from "./main-app-mode.ts";
-import { computeDeferExtensions, formatScopedModelList } from "./main-deferred-startup.ts";
+import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
+import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
@@ -117,13 +111,21 @@ export async function main(args: string[], options?: MainOptions) {
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
 	const startupProjectTrusted = parsed.projectTrustOverride ?? startupStoredProjectTrust ?? (!startupHasTrustInputs || startupDefaultProjectTrust === "always");
-
+	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions), resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
+	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates), resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	let startupEarlyInputCapture: EarlyInputCapture | undefined = startEarlyInputCapture({ enabled: computeStartupInputCaptureEnabled({
+		appMode, stdinIsTTY: process.stdin.isTTY === true, parsed, sessionCwd: cwd, projectTrustStore, resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+		resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0), deprecationWarningCount: 0,
+	}) });
 	// Run migrations after computing startup project trust so project-local migrations
 	// cannot read or mutate untrusted project config before approval.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd, {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
+	if (deprecationWarnings.length > 0) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
+	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
@@ -141,6 +143,7 @@ export async function main(args: string[], options?: MainOptions) {
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			if (!selectedCwd) {
@@ -166,17 +169,11 @@ export async function main(args: string[], options?: MainOptions) {
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
-	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
-	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
-	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
-	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
 	const authStorage = AuthStorage.create();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
-	// When true, the initial runtime was created without loading extension code so the
-	// TUI can paint immediately; InteractiveMode completes the load in the background.
 	let deferredExtensionLoad = false;
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
@@ -211,6 +208,7 @@ export async function main(args: string[], options?: MainOptions) {
 		});
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions;
+			startupEarlyInputCapture ??= startEarlyInputCapture({ enabled: deferExtensions && deprecationWarnings.length === 0 });
 		}
 		const getProjectTrustContext = () =>
 			projectTrustContext ??
@@ -427,18 +425,21 @@ export async function main(args: string[], options?: MainOptions) {
 	time("resolveModelScope");
 	reportDiagnostics(runtime.diagnostics);
 	if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 	time("createAgentSession");
 
 	if (appMode !== "interactive" && !session.model) {
 		console.error(chalk.red(formatNoModelsAvailableMessage()));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
 	const startupBenchmark = isTruthyEnvFlag(getEnvValue(ENV_STARTUP_BENCHMARK));
 	if (startupBenchmark && appMode !== "interactive") {
 		console.error(chalk.red(`Error: ${ENV_STARTUP_BENCHMARK} only supports interactive mode`));
+		startupEarlyInputCapture?.consume();
 		process.exit(1);
 	}
 
@@ -459,6 +460,7 @@ export async function main(args: string[], options?: MainOptions) {
 			initialMessages: parsed.messages,
 			verbose: parsed.verbose,
 			deferredExtensionLoad,
+			startupInputCapture: startupEarlyInputCapture,
 			deferredModelScopePatterns: deferredExtensionLoad ? (parsed.models ?? settingsManager.getEnabledModels()) : undefined,
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
 		});

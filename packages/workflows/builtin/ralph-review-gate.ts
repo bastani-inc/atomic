@@ -1,3 +1,5 @@
+import { traceabilityProvenExceptFinalAction } from "./review-convergence.js";
+
 /**
  * Review-gate severity logic for the builtin `ralph` workflow.
  *
@@ -102,13 +104,18 @@ export function isBlockingFinding(finding: ReviewFinding): boolean {
  * explicit requirement is proven. P3 nice-to-haves and placeholder/dummy
  * findings do not block approval.
  */
-export function reviewDecisionApproved(decision: ReviewDecision): boolean {
+export function reviewDecisionApproved(
+  decision: ReviewDecision,
+  options: { readonly allowFinalActionRemaining?: boolean } = {},
+): boolean {
   const traceability = decision.requirements_traceability;
   return (
     decision.overall_correctness === "patch is correct" &&
     decision.reviewer_error == null &&
     !decision.findings.some(isBlockingFinding) &&
-    traceability.length > 0 &&
-    traceability.every((entry) => entry.status === "proven")
+    traceabilityProvenExceptFinalAction({
+      traceability,
+      allowFinalActionRemaining: options.allowFinalActionRemaining === true,
+    })
   );
 }

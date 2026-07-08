@@ -1076,11 +1076,13 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
 }
 ```
 
-If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt.
+If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt. Public prompt/RPC callers wait for that post-compaction continuation before the prompt is considered complete.
 
 If compaction was aborted, `result` is `null` and `aborted` is `true`.
 
 If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` is `false`, and `errorMessage` contains the error description.
+
+If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
 ### context_compaction_start / context_compaction_end
 

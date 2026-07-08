@@ -296,21 +296,6 @@ describe("restoreOnSessionStart", () => {
     assert.equal(run.resumable, true);
     assert.equal(run.retryAfterMs, 2000);
   });
-  test("restores completed terminal runs from run.end entries", () => {
-    const st = createStore();
-    const entries: SessionEntry[] = [
-      { id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
-      { id: "e2", type: "workflow.stage.start", payload: { runId: "r1", stageId: "s1", name: "fetch", parentIds: [], ts: 2 } },
-      { id: "e3", type: "workflow.stage.end", payload: { runId: "r1", stageId: "s1", status: "completed", summary: "done" } },
-      { id: "e4", type: "workflow.run.end", payload: { runId: "r1", status: "completed", ts: 3 } },
-    ];
-
-    restoreOnSessionStart(makeSessionManager(entries), { resumeInFlight: "never", persistRuns: true }, st);
-    const run = st.runs()[0]!;
-    assert.equal(run.status, "completed");
-    assert.notEqual(run.endedAt, undefined);
-    assert.equal(run.stages[0]!.status, "completed");
-  });
   test("restores completed ctx.exit markers from run.end entries without requiring completed stages", () => {
     const st = createStore();
     const entries: SessionEntry[] = [

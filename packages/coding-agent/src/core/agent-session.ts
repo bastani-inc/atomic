@@ -71,6 +71,8 @@ export class AgentSession {
 	readonly settingsManager: SettingsManager;
 
 	protected _scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	protected _fallbackModels: string[];
+	protected _fallbackAttemptedKeys: Set<string> = new Set();
 	protected _unsubscribeAgent?: () => void;
 	protected _eventListeners: AgentSessionEventListener[] = [];
 	protected _agentEventQueue: Promise<void> = Promise.resolve();
@@ -84,6 +86,8 @@ export class AgentSession {
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	protected _pendingOverflowPostCompactionContinuation: Promise<void> | undefined = undefined;
+	protected _overflowPostCompactionContinuationToken = 0;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;
@@ -126,6 +130,7 @@ export class AgentSession {
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
+		this._fallbackModels = config.fallbackModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
 		this._cwd = config.cwd;

@@ -13,6 +13,8 @@ const internalPackageNames = new Set(["@bastani/atomic-natives"]);
 const defaultNpmRegistry = "https://registry.npmjs.org";
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
+	["esbuild@0.28.1", "postinstall selects the platform binary used by tsx for the bundled intercom broker"],
+	["fsevents@2.3.3", "optional macOS watcher native dependency pulled by tsx/esbuild"],
 	["protobufjs@7.6.4", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 

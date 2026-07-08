@@ -48,7 +48,7 @@ export function _createRetryPromiseForAgentEnd(this: AgentSession, event: AgentE
 	}
 
 	const settings = this.settingsManager.getRetrySettings();
-	if (!settings.enabled) {
+	if (!settings.enabled && this._fallbackModels.length === 0) {
 		return;
 	}
 
@@ -84,6 +84,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	// This ensures the UI sees the updated queue state
 	if (event.type === "message_start" && event.message.role === "user") {
 		this._overflowRecoveryAttempted = false;
+		this._fallbackAttemptedKeys.clear();
 		const messageText = this._getUserMessageText(event.message);
 		if (messageText) {
 			// Check steering queue first
@@ -148,6 +149,7 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			// retries instead of honoring maxRetries.
 			const assistantFailed = assistantMsg.stopReason === "error" || this._isEmptyCompletion(assistantMsg) || this._isSafetyRefusal(assistantMsg);
 			if (!assistantFailed) {
+				this._fallbackAttemptedKeys.clear();
 				this._overflowRecoveryAttempted = false;
 			}
 

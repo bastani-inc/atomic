@@ -23,6 +23,8 @@ export interface CreateAgentSessionOptions {
   model?: Model<Api>;
   /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
   thinkingLevel?: ThinkingLevel;
+  /** Ordered fallback models for main chat, as provider/model strings with optional :thinkingLevel suffix. Default: settings.fallbackModels */
+  fallbackModels?: string[];
   /** Context window token count. Default: model scalar contextWindow, or settings/session override when supported. */
   contextWindow?: number;
   /** Treat unsupported contextWindow as an error instead of a warning/fallback. */

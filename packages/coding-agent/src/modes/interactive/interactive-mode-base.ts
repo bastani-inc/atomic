@@ -5,6 +5,42 @@
 import type {} from "./interactive-mode-surface.ts";
 import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
+import type { EarlyInputSnapshot } from "../../main-early-input.ts";
+
+function isCommandLikeStartupInput(text: string): boolean {
+  const trimmed = text.trimStart();
+  return trimmed.startsWith("/") || trimmed.startsWith("!");
+}
+
+export function seedStartupInput(
+  pendingUserInputs: string[],
+  editor: { setText(text: string): void },
+  startupInput: EarlyInputSnapshot | undefined,
+  startupReplayInputs: string[] = [],
+  setStartupDraftText?: (text: string) => void,
+  setStartupReplayActiveInput?: (text: string) => void,
+): void {
+  if (!startupInput) return;
+  let commandReplayStarted = false;
+  for (const submission of startupInput.submissions) {
+    if (commandReplayStarted) {
+      startupReplayInputs.push(submission);
+    } else if (isCommandLikeStartupInput(submission)) {
+      const commandText = submission.trim();
+      commandReplayStarted = true;
+      editor.setText(commandText);
+      setStartupReplayActiveInput?.(commandText);
+    } else {
+      pendingUserInputs.push(submission);
+    }
+  }
+  if (startupInput.text.length === 0) return;
+  if (commandReplayStarted) {
+    setStartupDraftText?.(startupInput.text);
+  } else {
+    editor.setText(startupInput.text);
+  }
+}
 
 export class InteractiveModeBase {
 
@@ -76,6 +112,16 @@ export class InteractiveModeBase {
 
 
   pendingUserInputs: string[] = [];
+
+  startupReplayInputs: string[] = [];
+
+
+  startupReplayActiveInput: string | undefined = undefined;
+
+
+  startupDraftText: string | undefined = undefined;
+
+  startupCookedInputRecovered = false;
 
 
   deferredRenderedUserInputs: string[] = [];
@@ -199,7 +245,7 @@ export class InteractiveModeBase {
 
   // Auto-retry state
   retryLoader: Loader | undefined = undefined;
-
+  fallbackLoader: Loader | undefined = undefined;
 
   retryCountdown: CountdownTimer | undefined = undefined;
 
@@ -370,6 +416,7 @@ export class InteractiveModeBase {
         autocompleteMaxVisible,
       },
     );
+
     this.editor = this.defaultEditor;
     this.editorContainer = new Container();
     this.editorContainer.addChild(this.editor as Component);

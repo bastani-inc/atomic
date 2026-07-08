@@ -9,7 +9,6 @@ import {
   WORKER_PREFLIGHT_CONTRACT,
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
-import { reviewDecisionApproved } from "./ralph-review-gate.js";
 import {
   REVIEWER_COUNT,
   artifactSafeName,
@@ -22,8 +21,8 @@ import {
   renderResearchPromptRefinementPrompt,
   renderQaE2eVideoGuidance,
   renderResearchPrompt,
-  reviewDecisionFromResult,
-  reviewerErrorDecision,
+  parsedReviewDecisionFromResult,
+  ralphReviewConvergence,
   reviewerErrorResult,
   taggedPrompt,
   workflowCwdContextSection,
@@ -32,6 +31,7 @@ import {
   type RalphWorkflowOptions,
   type RalphWorkflowResult,
 } from "./ralph-core.js";
+import { summarizeReviewConvergence } from "./review-convergence.js";
 import {
   orchestratorModelConfig,
   promptEngineerModelConfig,
@@ -106,7 +106,7 @@ export async function runRalphWorkflow(
       ? taggedPrompt([
         [
           "role",
-          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR. This will be done in a future stage.",
+          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
         ],
         [
           "objective",
@@ -118,8 +118,8 @@ export async function runRalphWorkflow(
         [
           "research",
           [
-            `The latest research findings for this workflow run are written to: ${researchPath}`,
-            "Read this file before delegating or implementing anything; it is the primary implementation context for Ralph.",
+            `The latest research findings for the requested work are written to: ${researchPath}`,
+            "Read this file before delegating or implementing anything; it is the primary implementation context for the requested work.",
           ].join("\n"),
         ],
         [
@@ -226,6 +226,7 @@ export async function runRalphWorkflow(
       implementationNotesPath,
       orchestratorReportPath,
       qaVideoPath,
+      createPr,
     });
     let reviews: WorkflowTaskResult[];
     try {
@@ -268,38 +269,59 @@ export async function runRalphWorkflow(
         },
       );
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      reviews = [reviewerErrorResult(message)];
+      reviews = [reviewerErrorResult(err)];
     }
     const reviewEntries = await Promise.all(reviews.map(async (review) => {
       const reviewer = review.name ?? review.stageName;
-      const decision = reviewDecisionFromResult(review) ??
-        reviewerErrorDecision(`Reviewer ${reviewer} returned no structured decision.`);
+      const parsed = parsedReviewDecisionFromResult(review, reviewer);
+      const convergenceDecision = ralphReviewConvergence({
+        decision: parsed.decision,
+        parsed: parsed.parsed,
+        diagnostics: parsed.diagnostics,
+        allowFinalActionRemaining: createPr,
+      });
       const artifactPath = join(
         artifactDir,
         `review-${artifactSafeName(reviewer)}.json`,
       );
       await writeJsonArtifact(artifactPath, {
         reviewer,
-        decision,
+        decision: parsed.decision,
+        convergence_decision: convergenceDecision,
         raw_text: review.text,
       });
-      return { reviewer, artifact_path: artifactPath, decision };
+      return {
+        reviewer,
+        artifact_path: artifactPath,
+        decision: parsed.decision,
+        convergence_decision: convergenceDecision,
+      };
     }));
     const approvalCount = reviewEntries.filter((review) =>
-      reviewDecisionApproved(review.decision),
+      review.convergence_decision.approved,
     ).length;
     approved =
       reviewEntries.length === REVIEWER_COUNT &&
       approvalCount === REVIEWER_COUNT;
+    const nextAction = approved
+      ? (createPr ? "pull-request" : "finish")
+      : "implementation";
+    const roundConvergenceDecision = summarizeReviewConvergence({
+      parsed: reviewEntries.every((review) => review.convergence_decision.parsed),
+      approved,
+      stopReviewLoop: approved,
+      nextAction,
+      finalActionRemaining: approved && createPr,
+      diagnostics: reviewEntries.flatMap((review) => review.convergence_decision.diagnostics),
+    });
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
-      { reviews: reviewEntries },
+      { convergence_decision: roundConvergenceDecision, reviews: reviewEntries },
     );
     if (approved) break;
   }
   const qaVideoAvailable = existsSync(qaVideoPath);
-  if (createPr === true) {
+  if (createPr === true && approved) {
     const prResult = await ctx.task("pull-request", {
       prompt: taggedPrompt([
         [
@@ -345,7 +367,7 @@ export async function runRalphWorkflow(
           [
             "Create a provider-appropriate PR/MR/review request only if there are meaningful changes, a remote/branch target is available, credentials are available, and the current state is suitable for review.",
             "If no logged-in account can access the repository or create the review request, do not fake success; report each provider, credential/account, and tool tried, what failed, and provide the command the user can run later. Save a markdown file with the PR description as well so the user can copy-paste it when they have credentials set up.",
-            "When you successfully create or update the review request, create a provider-appropriate comment containing the implementation notes file contents as the last action of this workflow stage.",
+            "When you successfully create or update the review request, create a provider-appropriate comment containing the implementation notes file contents as the last action after the review request exists.",
             "Worktrees are detached HEAD checkouts. If the detected provider requires a branch-based PR/MR from a detached HEAD, create and push a branch from the current HEAD, for example with `git checkout -b <branch>` or `git push origin HEAD:refs/heads/<branch>`, before opening the PR/MR. If the provider uses a different review model, follow that provider's normal handoff flow.",
             "Leave the worktree intact for retries or user recovery.",
             "If PR/MR/review creation is not possible, do not create a standalone comment elsewhere; include the implementation notes path and summary in your report instead.",

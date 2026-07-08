@@ -1,4 +1,4 @@
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
@@ -143,10 +143,110 @@ InteractiveModeBase.prototype.handleClipboardImagePaste = async function(this: I
     });
   };
 
+InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: InteractiveModeBase, text: string): void {
+    if (this.onInputCallback) {
+      if (!text.startsWith("/")) {
+        this.renderDeferredUserInput(text);
+      }
+      const callback = this.onInputCallback;
+      this.onInputCallback = undefined;
+      callback(text);
+    } else {
+      this.pendingUserInputs.push(text);
+    }
+  };
+
+InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: InteractiveModeBase): boolean {
+    if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return true;
+    const text = this.editor.getText();
+    const cookedLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const isCommandLike = (line: string | undefined) =>
+      line !== undefined && (line.startsWith("/") || line.startsWith("!"));
+    const singleCommandLike = cookedLines.length === 1 && isCommandLike(cookedLines[0]);
+    if (cookedLines.length < 2 && !singleCommandLike) return false;
+
+    this.startupCookedInputRecovered = true;
+    const activeInput = this.startupReplayActiveInput?.trim();
+    let draftText = "";
+    let submissions = cookedLines;
+    if (
+      activeInput === undefined &&
+      cookedLines.length > 1 &&
+      !isCommandLike(cookedLines[cookedLines.length - 1]) &&
+      (!isCommandLike(cookedLines[0]) || cookedLines.length > 2)
+    ) {
+      draftText = cookedLines[cookedLines.length - 1] ?? "";
+      submissions = cookedLines.slice(0, -1);
+    } else if (activeInput && cookedLines.length > 1 && !isCommandLike(cookedLines[cookedLines.length - 1])) {
+      draftText = cookedLines[cookedLines.length - 1] ?? "";
+      submissions = cookedLines.slice(0, -1);
+    }
+    if (submissions.length === 0) return true;
+
+    if (activeInput) {
+      const queuedSubmissions =
+        submissions[0] === activeInput ? submissions.slice(1) : submissions;
+      this.editor.setText(draftText);
+      this.startupReplayInputs.push(...queuedSubmissions);
+      return true;
+    }
+
+    this.editor.setText("");
+    seedStartupInput(this.pendingUserInputs, this.editor, { text: draftText, submissions }, this.startupReplayInputs, (draft) => {
+      this.startupDraftText = draft;
+    }, (active) => {
+      this.startupReplayActiveInput = active;
+    });
+    return true;
+  };
+
+InteractiveModeBase.prototype.drainStartupReplayCommands = async function(this: InteractiveModeBase): Promise<void> {
+    while (this.pendingUserInputs.length === 0 && this.startupReplayActiveInput) {
+      const activeInput = this.startupReplayActiveInput;
+      await this.defaultEditor.onSubmit?.(activeInput);
+      if (this.editor.getText().trim() === activeInput.trim()) {
+        this.editor.setText("");
+      }
+      if (this.startupReplayActiveInput?.trim() === activeInput.trim()) break;
+    }
+  };
+
+InteractiveModeBase.prototype.advanceStartupInputReplay = function(this: InteractiveModeBase, submittedText: string): void {
+    if (this.startupReplayActiveInput?.trim() !== submittedText.trim()) return;
+    this.startupReplayActiveInput = undefined;
+
+    while (this.startupReplayInputs.length > 0) {
+      const nextInput = this.startupReplayInputs.shift();
+      if (nextInput === undefined) break;
+      const trimmed = nextInput.trimStart();
+      if (trimmed.startsWith("/") || trimmed.startsWith("!")) {
+        this.startupReplayActiveInput = nextInput.trim();
+        this.editor.setText(this.startupReplayActiveInput);
+        this.ui.requestRender();
+        return;
+      }
+      this.deliverStartupReplayPrompt(nextInput);
+    }
+
+    if (this.startupDraftText !== undefined) {
+      this.editor.setText(this.startupDraftText);
+      this.startupDraftText = undefined;
+      this.ui.requestRender();
+    }
+  };
+
 InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: InteractiveModeBase): void {
     this.defaultEditor.onSubmit = async (text: string) => {
       text = text.trim();
       if (!text) return;
+
+      if (this.startupReplayActiveInput && this.startupReplayActiveInput.trim() !== text.trim()) {
+        this.startupReplayInputs.push(text);
+        this.editor.addToHistory?.(text);
+        this.editor.setText("");
+        return;
+      }
+      try {
 
       // Handle commands
       if (text === "/settings") {
@@ -350,5 +450,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         this.pendingUserInputs.push(text);
       }
       this.editor.addToHistory?.(text);
+      } finally {
+        this.advanceStartupInputReplay?.(text);
+      }
     };
   };

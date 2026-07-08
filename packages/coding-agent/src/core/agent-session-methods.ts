@@ -168,8 +168,8 @@ export interface AgentSessionMethodSurface {
 	setSteeringMode(mode: "all" | "one-at-a-time"): void;
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void;
 
-	_emitModelChanged(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore"): void;
-	_emitModelSelect(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore"): Promise<void>;
+	_emitModelChanged(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): void;
+	_emitModelSelect(nextModel: Model<Api>, previousModel: Model<Api> | undefined, source: "set" | "cycle" | "restore" | "fallback"): Promise<void>;
 	setModel(model: Model<Api>): Promise<void>;
 	cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
 	_cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
@@ -201,7 +201,8 @@ export interface AgentSessionMethodSurface {
 	_isCopilotServerCapBelowSelectedContextWindow(assistantMessage: AssistantMessage): boolean;
 	_dropTrailingAutoCompactionRetryAssistantIfPresent(): void;
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
-	_resumeAfterAutoCompaction(): void;
+	_awaitPendingOverflowPostCompactionContinuation(): Promise<void>;
+	_resumeAfterAutoCompaction(): Promise<void>;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
 	setAutoCompactionEnabled(enabled: boolean): void;
 
@@ -222,6 +223,7 @@ export interface AgentSessionMethodSurface {
 	_isEmptyCompletion(message: AssistantMessage): boolean;
 	_isSafetyRefusal(message: AssistantMessage): boolean;
 	_handleRetryableError(message: AssistantMessage): Promise<boolean>;
+	_trySwitchToFallbackModel(message: AssistantMessage): Promise<boolean>;
 	abortRetry(): void;
 	waitForRetry(): Promise<void>;
 	setAutoRetryEnabled(enabled: boolean): void;
@@ -329,12 +331,17 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 
 export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, AgentSessionPublicSurface {
 	_scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	_fallbackModels: string[];
+	_fallbackAttemptedKeys: Set<string>;
+
 	_unsubscribeAgent?: () => void;
 	_eventListeners: AgentSessionEventListener[];
 	_agentEventQueue: Promise<void>;
 	_steeringMessages: string[];
 	_followUpMessages: string[];
 	_interruptDeliveryQueue: Promise<void>;
+	_pendingOverflowPostCompactionContinuation: Promise<void> | undefined;
+	_overflowPostCompactionContinuationToken: number;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;

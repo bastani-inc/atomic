@@ -6,6 +6,7 @@ import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./sta
 import { asAgentSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
+import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
 
 type PauseRequest = {
@@ -19,6 +20,7 @@ export class StageSessionController {
   private readonly terminatingToolCallIds = new Set<string>();
   private latestStructuredOutputToolErrorValue: string | undefined;
   private unsubscribeTerminateWatcher: (() => void) | undefined;
+  private unresolvedContextOverflowMessage: string | undefined;
   private disposed = false;
   private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
   private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
@@ -325,7 +327,9 @@ export class StageSessionController {
     }
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = result.session.subscribe((event) => {
-      this.recordTerminatingToolCall(event);
+      const terminatingId = terminatingToolCallId(event);
+      if (terminatingId !== undefined) this.terminatingToolCallIds.add(terminatingId);
+      this.unresolvedContextOverflowMessage = unresolvedContextOverflowMessage(event) ?? this.unresolvedContextOverflowMessage;
       this.latestStructuredOutputToolErrorValue =
         structuredOutputToolErrorFromEvent(event) ?? this.latestStructuredOutputToolErrorValue;
     });
@@ -361,24 +365,29 @@ export class StageSessionController {
         continue;
       }
       const promptStartIndex = activeSession.messages.length;
+      this.unresolvedContextOverflowMessage = undefined;
       try {
         await activeSession.prompt(nextText, sdkOptions);
         const pendingPauseAfterPrompt = this.pauseRequest;
         if (pendingPauseAfterPrompt) {
           const { message } = await pendingPauseAfterPrompt.deferred.promise;
+          this.throwUnresolvedContextOverflowIfPresent();
           nextText = message;
           if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
           continue;
         }
+        this.throwUnresolvedContextOverflowIfPresent();
         return { terminalScanStartIndex: promptStartIndex };
       } catch (err) {
         const pendingPauseAfterThrow = this.pauseRequest;
         if (pendingPauseAfterThrow) {
           const { message } = await pendingPauseAfterThrow.deferred.promise;
+          this.throwUnresolvedContextOverflowIfPresent();
           nextText = message;
           if (nextText === undefined) return { terminalScanStartIndex: activeSession.messages.length };
           continue;
         }
+        this.throwUnresolvedContextOverflowIfPresent();
         throw err;
       }
     }
@@ -420,10 +429,10 @@ export class StageSessionController {
         this.notifyModelFallbackMetaChange();
         throw err;
       }
-      this.pendingFallbackWarnings.push(`[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${this.candidateLabel(candidates[0]!)}.`);
-      await this.disposeCurrentSession();
-      this.activeCandidateIndex = undefined;
-      return false;
+      const resumedOverflowNextIndex = nextResumedContextOverflowFallbackIndex(err, this.activeCandidateIndex, candidates.length);
+      if (resumedOverflowNextIndex === "terminal") { this.modelWarnings.push(...this.pendingFallbackWarnings); this.pendingFallbackWarnings.length = 0; this.notifyModelFallbackMetaChange(); throw err; }
+      this.pendingFallbackWarnings.push(resumedOverflowNextIndex === undefined ? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${this.candidateLabel(candidates[0]!)}.` : `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${this.candidateLabel(candidates[resumedOverflowNextIndex]!)}.`);
+      await this.disposeCurrentSession(); this.activeCandidateIndex = resumedOverflowNextIndex; return false;
     }
   }
 
@@ -479,22 +488,12 @@ export class StageSessionController {
   private candidateLabel(candidate: WorkflowResolvedModelCandidate): string {
     return candidate.reasoningLevel !== undefined ? `${candidate.id}:${candidate.reasoningLevel}` : candidate.id;
   }
-
   private isWorkflowFastModeEnabled(): boolean | undefined {
     const model = this.session?.model;
     const settingsManager = this.sessionSettingsManager ?? this.effectiveStageOptions?.settingsManager;
-    if (model === undefined || settingsManager === undefined) return undefined;
-    return shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
+    return model === undefined || settingsManager === undefined
+      ? undefined
+      : shouldApplyCodexFastModeForScope(model, settingsManager.getCodexFastModeSettings(), "workflow");
   }
-
-  private recordTerminatingToolCall(event: unknown): void {
-    if (event === null || typeof event !== "object") return;
-    const record = event as Record<string, unknown>;
-    if (record["type"] !== "tool_execution_end") return;
-    const result = record["result"];
-    if (result === null || typeof result !== "object") return;
-    if ((result as Record<string, unknown>)["terminate"] !== true) return;
-    const callId = record["toolCallId"];
-    if (typeof callId === "string" && callId.length > 0) this.terminatingToolCallIds.add(callId);
-  }
+  private throwUnresolvedContextOverflowIfPresent(): void { const message = this.unresolvedContextOverflowMessage; this.unresolvedContextOverflowMessage = undefined; if (message !== undefined) throw unresolvedContextOverflowFailure(message); }
 }

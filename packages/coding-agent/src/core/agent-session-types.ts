@@ -40,7 +40,7 @@ export type AgentSessionEvent =
 			type: "model_changed";
 			model: Model<Api>;
 			previousModel: Model<Api> | undefined;
-			source: "set" | "cycle" | "restore";
+			source: "set" | "cycle" | "restore" | "fallback";
 	  }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| { type: "context_window_changed"; contextWindow: number }
@@ -50,6 +50,7 @@ export type AgentSessionEvent =
 			result: ContextCompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
+			unresolvedOverflow?: boolean;
 			errorMessage?: string;
 	  }
 	| {
@@ -62,7 +63,9 @@ export type AgentSessionEvent =
 	  }
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
-	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
+	| { type: "model_fallback_start"; from: string; to: string; reason: string; attempt: number }
+	| { type: "model_fallback_end"; success: boolean; from?: string; to?: string; finalError?: string };
 
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
 
@@ -144,6 +147,7 @@ export interface AgentSessionConfig {
 	settingsManager: SettingsManager;
 	cwd: string;
 	scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>;
+	fallbackModels?: string[];
 	resourceLoader: ResourceLoader;
 	customTools?: ToolDefinition[];
 	modelRegistry: ModelRegistry;

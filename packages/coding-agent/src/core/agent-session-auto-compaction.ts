@@ -54,6 +54,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: true,
 				errorMessage:
 					"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 			});
@@ -137,16 +138,40 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
  */
 
 export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
-	_reason: "overflow" | "threshold",
+	reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
+	if (reason === "overflow" && willRetry) {
+		const token = this._overflowPostCompactionContinuationToken + 1;
+		this._overflowPostCompactionContinuationToken = token;
+		let pending: Promise<void>;
+		pending = new Promise<void>((resolve) => {
+			setTimeout(() => {
+				void (async () => {
+					try {
+						if (this._overflowPostCompactionContinuationToken !== token) return;
+						if (this.isCompacting || this.isStreaming) return;
+						await this._resumeAfterAutoCompaction();
+					} finally {
+						if (this._pendingOverflowPostCompactionContinuation === pending) {
+							this._pendingOverflowPostCompactionContinuation = undefined;
+						}
+						resolve();
+					}
+				})();
+			}, 100);
+		});
+		this._pendingOverflowPostCompactionContinuation = pending;
+		return;
+	}
+
 	setTimeout(() => {
 		if (this.isCompacting || this.isStreaming) {
 			return;
 		}
 
 		if (willRetry) {
-			this._resumeAfterAutoCompaction();
+			void this._resumeAfterAutoCompaction();
 			return;
 		}
 
@@ -154,28 +179,37 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 			return;
 		}
 
-		this._resumeAfterAutoCompaction();
+		void this._resumeAfterAutoCompaction();
 	}, 100);
+}
+
+export async function _awaitPendingOverflowPostCompactionContinuation(this: AgentSession): Promise<void> {
+	const pending = this._pendingOverflowPostCompactionContinuation;
+	if (pending === undefined) return;
+	await pending;
 }
 
 /**
  * Internal: resume generation after successful auto-compaction only when active work remains.
  */
 
-export function _resumeAfterAutoCompaction(this: AgentSession): void {
-	void this._runAgentContinue().catch((error) => {
+export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<void> {
+	try {
+		await this._runAgentContinue();
+	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		this._emit({
 			type: "agent_continue_error",
 			source: "post_compaction",
 			errorMessage: `Post-compaction continuation failed: ${message}`,
 		});
-	});
+	}
 }
 
-/**
- * Internal: Run auto-compaction with events.
- */
+
+function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
+	return reason === "overflow" && !aborted ? true : undefined;
+}
 
 export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
 	this._emit({ type: "compaction_start", reason });
@@ -189,6 +223,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: overflowUnresolved(reason),
 			});
 			return;
 		}
@@ -219,6 +254,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 				result: undefined,
 				aborted: false,
 				willRetry: false,
+				unresolvedOverflow: overflowUnresolved(reason),
 			});
 			return;
 		}
@@ -238,6 +274,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			result: undefined,
 			aborted,
 			willRetry: false,
+			unresolvedOverflow: overflowUnresolved(reason, aborted),
 			errorMessage: aborted
 				? undefined
 				: reason === "overflow"
@@ -254,6 +291,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
  */
 
 export const agentSessionAutoCompactionMethods = {
+	_awaitPendingOverflowPostCompactionContinuation,
 	_checkCompaction,
 	_isCopilotServerCapBelowSelectedContextWindow,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
