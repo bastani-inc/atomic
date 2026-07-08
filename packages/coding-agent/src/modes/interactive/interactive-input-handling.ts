@@ -157,12 +157,25 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: Intera
   };
 
 InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: InteractiveModeBase): void {
-    if (this.startupCookedInputRecovered || this.startupReplayActiveInput || this.pendingUserInputs.length > 0) return;
+    if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return;
     this.startupCookedInputRecovered = true;
     const text = this.editor.getText();
-    if (!text.includes("\n")) return;
     const submissions = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    if (submissions.length < 2) return;
+    const singleCommandLike =
+      submissions.length === 1 &&
+      (submissions[0]?.startsWith("/") || submissions[0]?.startsWith("!"));
+    if (submissions.length < 2 && !singleCommandLike) return;
+
+    const activeInput = this.startupReplayActiveInput?.trim();
+    if (activeInput) {
+      const queuedSubmissions =
+        submissions[0] === activeInput ? submissions.slice(1) : submissions;
+      if (queuedSubmissions.length === 0) return;
+      this.editor.setText("");
+      this.startupReplayInputs.push(...queuedSubmissions);
+      return;
+    }
+
     this.editor.setText("");
     seedStartupInput(this.pendingUserInputs, this.editor, { text: "", submissions }, this.startupReplayInputs, (draft) => {
       this.startupDraftText = draft;
@@ -175,6 +188,9 @@ InteractiveModeBase.prototype.drainStartupReplayCommands = async function(this: 
     while (this.pendingUserInputs.length === 0 && this.startupReplayActiveInput) {
       const activeInput = this.startupReplayActiveInput;
       await this.defaultEditor.onSubmit?.(activeInput);
+      if (this.editor.getText().trim() === activeInput.trim()) {
+        this.editor.setText("");
+      }
       if (this.startupReplayActiveInput?.trim() === activeInput.trim()) break;
     }
   };

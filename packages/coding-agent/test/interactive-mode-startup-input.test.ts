@@ -223,7 +223,7 @@ describe("InteractiveMode startup input", () => {
 
 	it("recovers cooked immediate launch input as separate startup submissions", () => {
 		const context = createSubmitContext();
-		vi.mocked(context.editor.getText).mockReturnValue("!pwd\nordinary prompt after command\n/exit");
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd\nordinary prompt after command\n/exit");
 
 		context.recoverCookedStartupInput();
 
@@ -231,6 +231,33 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayInputs).toEqual(["ordinary prompt after command", "/exit"]);
 		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
+	});
+
+	it("recovers a single cooked command-like startup submission", async () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd");
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		context.recoverCookedStartupInput();
+		await context.drainStartupReplayCommands();
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.startupReplayActiveInput).toBeUndefined();
+	});
+
+	it("queues cooked submissions behind an active raw-captured command", async () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\n/exit");
+		context.startupReplayActiveInput = "!pwd";
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("ordinary prompt after command");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.startupReplayActiveInput).toBe("/exit");
+		expect(context.startupReplayInputs).toEqual([]);
 	});
 
 	it("submits replayed bash commands separately from later normal prompts", async () => {
