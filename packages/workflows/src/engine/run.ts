@@ -1,11 +1,5 @@
-import type { RunSnapshot } from "../shared/store-types.js";
-import type {
-  WorkflowDefinition,
-  WorkflowInputValues,
-  WorkflowOutputValues,
-  WorkflowRunContext,
-  WorkflowSerializableValue,
-} from "../shared/types.js";
+import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
+import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues, WorkflowRunContext } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { store as defaultStore } from "../shared/store.js";
@@ -45,12 +39,12 @@ import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
+import type { DurableCompletedStageCheckpoint } from "../durable/stage-primitive.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-import type { StageSnapshot } from "../shared/store-types.js";
 
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -283,6 +277,8 @@ export async function run<
   });
   const workflowBoundaryReplayCounts = new Map<string, number>();
   const nextWorkflowBoundaryReplayKey = (name: string): string => {
+    const durableScopePrefix = pendingChildDurableScope?.scopePrefix;
+    if (durableScopePrefix !== undefined && durableScopePrefix.startsWith(`workflow:${name}:`)) return durableScopePrefix;
     const next = (workflowBoundaryReplayCounts.get(name) ?? 0) + 1;
     workflowBoundaryReplayCounts.set(name, next);
     return `workflow:${name}:${next}`;
@@ -346,12 +342,13 @@ export async function run<
 
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
-  const recordCachedStage = (name: string, replayKey: string, output: WorkflowSerializableValue): void =>
-    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, output, completedStageReplayKeys);
+  const recordCachedStage = (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint): void =>
+    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys);
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
     nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
-    recordCachedTask: (name, replayKey, output) => recordCachedStage(name, replayKey, output),
+    recordCachedTask: (name, replayKey, checkpoint, scope) =>
+      recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys, scope),
   });
   const durableWorkflow = createDurableChildWorkflowPrimitive({
     workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
@@ -426,7 +423,7 @@ export async function run<
     await durableBackend.flush?.();
     const returned = classifyReturnedRunStatus(result);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
-    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ts: Date.now() });
+    appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}), ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}), ts: Date.now() });
     durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
     await durableBackend.flush?.();
     if (opts.persistence && durableBackend.persistent) {
@@ -480,6 +477,8 @@ export async function run<
       ...(metadata.failedStageId !== undefined ? { failedStageId: metadata.failedStageId } : {}),
       resumable: metadata.resumable,
       ...(metadata.retryAfterMs !== undefined ? { retryAfterMs: metadata.retryAfterMs } : {}),
+      ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}),
+      ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}),
       ts: Date.now(),
     });
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);

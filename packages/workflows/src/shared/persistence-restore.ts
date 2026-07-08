@@ -15,7 +15,7 @@ import {
 
 import type { Store } from "./store.js";
 import type { RunSnapshot } from "./store-types.js";
-import type { WorkflowInputValues } from "./types.js";
+import type { WorkflowInputValues, WorkflowSerializableValue } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Config option
@@ -32,7 +32,25 @@ export type ResumeInFlight = "ask" | "auto" | "never";
 export interface SessionEntry {
   readonly id: string;
   readonly type: string;
-  readonly payload: Record<string, unknown>;
+  readonly payload?: Record<string, WorkflowSerializableValue>;
+  readonly customType?: string;
+  readonly data?: Record<string, WorkflowSerializableValue>;
+}
+
+export interface NormalizedSessionEntry {
+  readonly id: string;
+  readonly type: string;
+  readonly payload: Record<string, WorkflowSerializableValue>;
+}
+
+export function normalizeSessionEntries(entries: readonly SessionEntry[]): readonly NormalizedSessionEntry[] {
+  return entries.flatMap((entry): readonly NormalizedSessionEntry[] => {
+    if (entry.type === "custom" && typeof entry.customType === "string" && entry.data !== undefined) {
+      return [{ id: entry.id, type: entry.customType, payload: entry.data }];
+    }
+    if (entry.payload !== undefined) return [{ id: entry.id, type: entry.type, payload: entry.payload }];
+    return [];
+  });
 }
 
 /** Structural type for pi's sessionManager (optional — degrades gracefully). */
@@ -69,7 +87,7 @@ export function scanInFlightRuns(entries: readonly SessionEntry[]): InFlightRun[
   const started = new Map<string, { name: string; inputs: WorkflowInputValues; startTs: number; stageIds: string[] }>();
   const ended = new Set<string>();
 
-  for (const entry of entries) {
+  for (const entry of normalizeSessionEntries(entries)) {
     if (entry.type === "workflow.run.start") {
       const runId = entry.payload["runId"];
       const name = entry.payload["name"];
@@ -168,8 +186,8 @@ export function restoreOnSessionStart(
   const getEntries = sessionManager.getEntries;
   if (typeof getEntries !== "function") return;
 
-  const entries = getEntries.call(sessionManager);
-  const sessionEntries = entries as readonly SessionEntry[];
+  const entries = getEntries.call(sessionManager) as readonly SessionEntry[];
+  const sessionEntries = normalizeSessionEntries(entries);
   restoreTerminalRuns(sessionEntries, store);
   const inFlight = scanInFlightRuns(sessionEntries);
   if (inFlight.length === 0) return;

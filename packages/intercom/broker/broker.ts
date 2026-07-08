@@ -1,16 +1,13 @@
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
 import { randomUUID } from "crypto";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { writeMessage, createMessageReader } from "./framing.js";
-import { getBrokerSocketPath } from "./paths.js";
+import { getBrokerPidPath, getBrokerSocketPath, getIntercomDirPath } from "./paths.js";
 import type { SessionInfo, Message, Attachment, BrokerMessage } from "../types.js";
 
-const INTERCOM_DIR = join(homedir(), CONFIG_DIR_NAME, "agent", "intercom");
+const INTERCOM_DIR = getIntercomDirPath();
 const SOCKET_PATH = getBrokerSocketPath();
-const PID_PATH = join(INTERCOM_DIR, "broker.pid");
+const PID_PATH = getBrokerPidPath();
 
 interface ConnectedSession {
   socket: net.Socket;

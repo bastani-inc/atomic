@@ -2,9 +2,9 @@
   <img src="banner.png" alt="pi-intercom" width="1100">
 </p>
 
-# Pi Intercom
+# Pi / Atomic Intercom
 
-Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
+Direct 1:1 messaging between Atomic or pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
 
 ```text
 User flow: ALT+M or run /intercom to pick a session and send a message
@@ -12,51 +12,53 @@ User flow: ALT+M or run /intercom to pick a session and send a message
 
 ## Why
 
-Sometimes you're running multiple pi sessions — one researching, one executing, one reviewing. Pi-intercom lets you:
+Sometimes you're running multiple Atomic/pi sessions — one researching, one executing, one reviewing. Intercom lets you:
 
 - **User-driven orchestration** — Send context or findings from your research session to your execution session
 - **Agent collaboration** — An agent can reach out to another session when it needs help or wants to share results
-- **Session awareness** — See what other pi sessions are running and their current status
+- **Session awareness** — See what other Atomic/pi sessions are running and their current status
 
-Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
+Unlike pi-messenger (a shared chat room for multi-agent swarms), intercom is for targeted 1:1 communication where you pick the recipient.
 
-Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobailon/pi-subagents): delegated child agents get a child-only `contact_supervisor` tool when `pi-subagents` supplies bridge metadata. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
-Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `ALT+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+Each Atomic/pi session that has intercom loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `ALT+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in session history as extension entries.
 
 ## Install
+
+Atomic bundles `@bastani/intercom` as a first-party extension; no separate install is needed for normal Atomic sessions. For legacy pi installations of the upstream package:
 
 ```bash
 pi install npm:pi-intercom
 ```
 
-Then restart Pi. The extension auto-connects to the broker on startup and registers the bundled `pi-intercom` skill for common coordination patterns.
+Then restart Atomic or Pi. The extension auto-connects to the broker on startup and registers the bundled `intercom` skill for common coordination patterns.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 
 ```xml
-<pi-intercom>
-Coordinate with other local pi sessions on related codebases. Use `/skill:pi-intercom` for patterns.
+<intercom>
+Coordinate with other local Atomic/pi sessions on related codebases. Use `/skill:intercom` for patterns.
 
 **When:** Same codebase (parallel work), reference codebase (consulting patterns), related repos (shared libraries).
 
 **Not when:** Unrelated codebases, trivial questions, or when you can proceed independently.
 
 **Principle:** Prefer `send` for notifications; `ask` only when blocked waiting for input.
-</pi-intercom>
+</intercom>
 ```
 
 A session becomes intercom-connected when all of these are true:
-- the `pi-intercom` extension is installed and loaded in that session
-- `enabled` is not set to `false` in `~/.pi/agent/intercom/config.json`
+- the intercom extension is installed/bundled and loaded in that session
+- `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (Atomic) or the legacy `~/.pi/agent/intercom/config.json` fallback
 - the session has started or reloaded after the extension was installed
 - the local broker is running or can be auto-started
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
-If a session is unnamed, pi-intercom now exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the Pi session title, so `pi --resume` can keep showing the transcript snippet instead of a generic `session-...` name.
+If a session is unnamed, intercom exposes a runtime-only fallback alias like `subagent-chat-1a2b3c4d` so other sessions can still target it. That alias is not persisted as the session title, so resume pickers can keep showing the transcript snippet instead of a generic `session-...` name.
 
 ## Quick Start
 
@@ -359,7 +361,7 @@ Only registered in sessions where `pi-subagents` supplied the required child bri
 
 ## Config
 
-Create `~/.pi/agent/intercom/config.json`:
+Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible installs and fallbacks continue to read `~/.pi/agent/intercom/config.json` when the Atomic config is absent:
 
 ```json
 {
@@ -372,16 +374,18 @@ Create `~/.pi/agent/intercom/config.json`:
 }
 ```
 
+The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). Node-based installs use that runtime with a resolved `tsx` CLI, falling back to Atomic's bundled `jiti` loader when `tsx` is unavailable; Bun source-checkout runs use the current Bun executable directly; standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `brokerCommand` | `"npx"` | Command used to start the local broker process |
+| `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
 | `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
-For example, if you have Bun installed and want it to start the broker directly, use:
+Existing pi-compatible configs that set a custom broker command still work. For example, if you intentionally want to use Bun from `PATH`, configure it explicitly:
 
 ```json
 {
@@ -390,13 +394,13 @@ For example, if you have Bun installed and want it to start the broker directly,
 }
 ```
 
-Pi-intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, show `tool:<name>` during tool execution, and return to `idle` on agent completion. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
+Intercom publishes live session status automatically. Sessions register as `idle`, switch to `thinking` while the agent is running, show `tool:<name>` during tool execution, and return to `idle` on agent completion. If `status` is set in config, it is appended as context instead of replacing the lifecycle status.
 
 ## How It Works
 
 ```mermaid
 graph TB
-    subgraph A["Pi Session A"]
+    subgraph A["Atomic/Pi Session A"]
         A1[Intercom Client]
         A2[intercom tool]
         A3[UI overlays]
@@ -407,7 +411,7 @@ graph TB
         B2[Message Router]
     end
 
-    subgraph B["Pi Session B"]
+    subgraph B["Atomic/Pi Session B"]
         B3[Intercom Client]
         B4[intercom tool]
         B5[UI overlays]
@@ -424,10 +428,12 @@ Messages use length-prefixed JSON over a local socket/pipe transport (4-byte len
 
 Async extension work (startup, inbound flushes, reconnects, overlays, and relays) no-ops if the session shuts down or reloads before it settles.
 
-Runtime files live at `~/.pi/agent/intercom/`:
+Runtime files live under the active agent directory. Atomic defaults to `~/.atomic/agent/intercom/`; setting `ATOMIC_CODING_AGENT_DIR` moves the broker socket, PID, spawn lock, Windows launcher, and config below that directory. The legacy `PI_CODING_AGENT_DIR` alias remains supported when the Atomic variable is unset. Legacy pi-compatible defaults use `~/.pi/agent/intercom/`.
+
 - `broker.sock` — Unix domain socket for communication (macOS/Linux only; Windows uses a named pipe instead)
 - `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
+- `broker.spawn.lock` — Short-lived lock used to avoid duplicate auto-spawns
 - `config.json` — User configuration
 
 ## Design Decisions

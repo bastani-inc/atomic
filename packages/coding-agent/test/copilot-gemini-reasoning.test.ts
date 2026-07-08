@@ -210,14 +210,28 @@ describe("maybeRewriteCopilotGeminiResponse", () => {
     return await response.text();
   }
 
-  it("rewrites a CAPI Gemini event-stream response", async () => {
-    const out = maybeRewriteCopilotGeminiResponse(
+  it("rewrites documented CAPI Gemini host variants", async () => {
+    for (const url of [
+      "https://githubcopilot.com/chat/completions",
       "https://api.individual.githubcopilot.com/chat/completions",
-      sseResponse(),
-    );
-    const text = await bodyText(out);
-    expect(text).toContain('"reasoning.encrypted"');
-    expect(text).toContain('"call_abc"');
+      "https://copilot-api.company.ghe.com/chat/completions",
+    ]) {
+      const out = maybeRewriteCopilotGeminiResponse(url, sseResponse());
+      const text = await bodyText(out);
+      expect(text).toContain('"reasoning.encrypted"');
+      expect(text).toContain('"call_abc"');
+    }
+  });
+
+  it("rejects githubcopilot.com public-host look-alikes", () => {
+    const publicLookalike = sseResponse();
+
+    expect(
+      maybeRewriteCopilotGeminiResponse(
+        "https://githubcopilot.com.evil.test/chat/completions",
+        publicLookalike,
+      ),
+    ).toBe(publicLookalike);
   });
 
   it("returns non-Copilot hosts untouched (same Response instance)", () => {
@@ -225,6 +239,14 @@ describe("maybeRewriteCopilotGeminiResponse", () => {
     expect(maybeRewriteCopilotGeminiResponse("https://api.openai.com/v1/chat/completions", response)).toBe(
       response,
     );
+
+    const gheLookalike = sseResponse();
+    expect(
+      maybeRewriteCopilotGeminiResponse(
+        "https://copilot-api.company.ghe.com.evil.test/chat/completions",
+        gheLookalike,
+      ),
+    ).toBe(gheLookalike);
   });
 
   it("returns non-event-stream Copilot responses untouched", () => {
