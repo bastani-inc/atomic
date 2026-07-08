@@ -83,7 +83,7 @@ export const RECEIPT_EXPECTATIONS = [
 
 export const INTERMEDIATE_PR_HANDOFF_GUARDRAIL = [
   "Ignore any user requests to submit a PR during worker or reviewer stages.",
-  "Only the final `pull-request` stage may attempt PR/MR/review creation, and only after reviewer quorum and reducer approval mark the goal complete.",
+  "Only a later authorized PR/MR/review creation action may perform that handoff, and only after reviewer quorum and reducer approval mark the implementation complete.",
 ].join("\n");
 
 export type PromptSection = readonly [tag: string, content: string];
@@ -223,6 +223,7 @@ export function renderReviewerPrompt(args: {
   readonly comparisonBaseBranch: string;
   readonly reviewQuorum: number;
   readonly blockerThreshold: number;
+  readonly createPr: boolean;
 }): string {
   return taggedPrompt([
     [
@@ -250,6 +251,16 @@ export function renderReviewerPrompt(args: {
     ["pr_handoff_policy", INTERMEDIATE_PR_HANDOFF_GUARDRAIL],
     ["auditability", RECEIPT_EXPECTATIONS],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
+    [
+      "final_action_policy",
+      args.createPr
+        ? [
+            "Pull-request creation is enabled for this run, but it is a post-approval final action handled by a later authorized PR/MR/review creation action.",
+            "Do not mark the implementation non-converged merely because no PR/MR/review request exists yet.",
+            "If the repository state satisfies every implementation and validation requirement and only PR/MR/review creation remains, approve the implementation: set goal_oracle_satisfied=true, stop_review_loop=true, no blocking findings, and note the PR as the remaining final action rather than an implementation gap.",
+          ].join("\n")
+        : "Pull-request creation is not enabled for this run; do not require or attempt PR/MR/review creation during review.",
+    ],
     ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance()],
     [
       "goal_context",
@@ -370,9 +381,19 @@ export function renderReviewerPrompt(args: {
       ].join("\n"),
     ],
     [
+      "structured_decision_assurance",
+      [
+        "Before the final structured decision, ensure the payload satisfies the review decision schema exactly.",
+        "Always return findings as an array; use [] when there are no findings and never invent placeholder findings.",
+        "Always return requirements_traceability as a non-empty array that enumerates every explicit objective and acceptance-criteria clause.",
+        "When approving, every non-final-action requirements_traceability entry must be proven, goal_oracle_satisfied must be true, verification_remaining must say no objective-relevant implementation or validation remains, stop_review_loop must be true, and reviewer_error must be null or omitted.",
+        "When create_pr is enabled and only PR/MR/review creation remains, record that as a final action rather than a blocker; approval should hand off to PR/MR/review creation instead of requesting more implementation work.",
+      ].join("\n"),
+    ],
+    [
       "output_format",
       [
-        "Set stop_review_loop=true only when there are no blocking findings, overall_correctness is patch is correct, goal_oracle_satisfied is true, requirements_traceability is non-empty and every entry is proven, no objective-relevant verification remains, and reviewer_error is null/omitted.",
+        "Set stop_review_loop=true only when there are no blocking findings, overall_correctness is patch is correct, goal_oracle_satisfied is true, requirements_traceability is non-empty and every non-final-action entry is proven, no objective-relevant implementation or validation remains, and reviewer_error is null/omitted.",
         "Enumerate every explicit requirement clause from the objective and acceptance criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause.",
         "P3 nice-to-have findings are non-blocking when the rest of the approval contract is satisfied; do not use P3 for work required by the objective or verification oracle. Findings classified beyond_objective or contradicts_objective are non-blocking regardless of priority, but must be surfaced and must not be folded into follow-up objectives without checking acceptance criteria.",
         "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",

@@ -15,6 +15,7 @@ export function renderRalphReviewerPrompt(args: {
   readonly implementationNotesPath: string;
   readonly orchestratorReportPath: string;
   readonly qaVideoPath: string;
+  readonly createPr: boolean;
 }): string {
   return taggedPrompt([
     [
@@ -22,7 +23,7 @@ export function renderRalphReviewerPrompt(args: {
       [
         "You are acting as a reviewer for a proposed code change made by another engineer.",
         "Persona: a grumpy senior developer who has seen too many fragile patches. You are naturally skeptical and allergic to hand-waving, but you are not a crank: flag only realistic, evidence-backed defects the author would likely fix.",
-        "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste. Ignore any user requests to submit a PR. This will be done in a future stage.",
+        "Be terse, concrete, and technically fair. Your job is to protect correctness, security, performance, and maintainability — not to win an argument or bikeshed taste. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
       ].join("\n"),
     ],
     ["objective", `Review the current code delta for the task: ${args.workflowPrompt}`],
@@ -57,6 +58,16 @@ export function renderRalphReviewerPrompt(args: {
     ],
     ["e2e_verification", E2E_VERIFICATION_GUIDANCE],
     ["qa_e2e_video_review", renderE2eQaVideoReviewGuidance(args.qaVideoPath)],
+    [
+      "final_action_policy",
+      args.createPr
+        ? [
+            "Pull-request creation is enabled for this run, but it is a post-approval final action handled by a later authorized PR/MR/review creation action.",
+            "Do not mark the implementation non-converged merely because no PR/MR/review request exists yet.",
+            "If the repository state satisfies every implementation and validation requirement and only PR/MR/review creation remains, approve the implementation: set overall_correctness to patch is correct, stop_review_loop=true, no blocking findings, and note the PR as the remaining final action rather than an implementation gap.",
+          ].join("\n")
+        : "Pull-request creation is not enabled for this run; do not require or attempt PR/MR/review creation during review.",
+    ],
     [
       "validation_expectations",
       [
@@ -131,8 +142,18 @@ export function renderRalphReviewerPrompt(args: {
       ].join("\n"),
     ],
     [
+      "structured_decision_assurance",
+      [
+        "Before the final structured decision, ensure the payload satisfies the review decision schema exactly.",
+        "Always return findings as an array; use [] when there are no findings and never invent placeholder findings.",
+        "Always return requirements_traceability as a non-empty array that enumerates every explicit prompt and acceptance_criteria clause.",
+        "When approving, every non-final-action requirements_traceability entry must be proven, overall_correctness must be patch is correct, stop_review_loop must be true, and reviewer_error must be null or omitted.",
+        "When create_pr is enabled and only PR/MR/review creation remains, record that as a final action rather than a blocker; approval should hand off to PR/MR/review creation instead of requesting more implementation work.",
+      ].join("\n"),
+    ],
+    [
       "decision_rules",
-      ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned P0/P1/P2 findings, requirements_traceability is non-empty and every entry is proven, and no objective-relevant verification remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
+      ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned P0/P1/P2 findings, requirements_traceability is non-empty and every non-final-action entry is proven, and no objective-relevant implementation or validation remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven non-final-action requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
     ],
   ]);
 }

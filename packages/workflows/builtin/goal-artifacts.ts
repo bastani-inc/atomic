@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
+import type { ReviewConvergenceSummary } from "./review-convergence.js";
 
 export function artifactSafeName(value: string): string {
   const safe = value
@@ -21,6 +22,7 @@ export async function writeReviewArtifact(
   reviewer: string,
   decision: ReviewDecision,
   rawText: string,
+  convergenceDecision: ReviewConvergenceSummary,
 ): Promise<string> {
   const artifactPath = join(
     artifactDir,
@@ -28,7 +30,7 @@ export async function writeReviewArtifact(
   );
   await writeFile(
     artifactPath,
-    `${JSON.stringify({ reviewer, decision, raw_text: rawText }, null, 2)}\n`,
+    `${JSON.stringify({ reviewer, decision, convergence_decision: convergenceDecision, raw_text: rawText }, null, 2)}\n`,
     { encoding: "utf8" },
   );
   return artifactPath;

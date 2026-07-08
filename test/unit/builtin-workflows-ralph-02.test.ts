@@ -370,6 +370,9 @@ describe("ralph", () => {
             false,
         );
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
+        assert.match(reviewerPrompt, /<structured_decision_assurance>/);
+        assert.match(reviewerPrompt, /Always return findings as an array/);
+        assert.match(reviewerPrompt, /requirements_traceability as a non-empty array/);
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.doesNotMatch(reviewerPrompt, /output_format/i);
     });

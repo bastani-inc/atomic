@@ -1,8 +1,31 @@
 import type { WorkflowTaskResult } from "../src/shared/types.js";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
+import {
+  finalActionRemaining,
+  parseFailureDiagnostics,
+  summarizeReviewConvergence,
+  traceabilityProvenExceptFinalAction,
+  type ParsedReviewDecision,
+} from "./review-convergence.js";
 
 export function reviewDecisionFromResult(result: WorkflowTaskResult): ReviewDecision | undefined {
   return result.structured as ReviewDecision | undefined;
+}
+
+export function parsedReviewDecisionFromResult(
+  result: WorkflowTaskResult,
+  reviewer: string,
+): ParsedReviewDecision<ReviewDecision> {
+  const parsed = reviewDecisionFromResult(result);
+  if (parsed !== undefined) {
+    return { decision: parsed, parsed: true, diagnostics: [] };
+  }
+  const diagnostics = parseFailureDiagnostics(reviewer, result.text);
+  return {
+    decision: reviewerErrorDecision(diagnostics.join("\n")),
+    parsed: false,
+    diagnostics,
+  };
 }
 
 const NON_BLOCKING_ALIGNMENTS = new Set([
@@ -19,18 +42,26 @@ function findingBlocksApproval(finding: ReviewDecision["findings"][number]): boo
   return finding.priority !== 3;
 }
 
-function traceabilityApproves(decision: ReviewDecision): boolean {
-  return decision.requirements_traceability.length > 0 &&
-    decision.requirements_traceability.every((entry) => entry.status === "proven");
+function traceabilityApproves(
+  decision: ReviewDecision,
+  allowFinalActionRemaining: boolean,
+): boolean {
+  return traceabilityProvenExceptFinalAction({
+    traceability: decision.requirements_traceability,
+    allowFinalActionRemaining,
+  });
 }
 
-export function reviewApproved(decision: ReviewDecision): boolean {
+export function reviewApproved(
+  decision: ReviewDecision,
+  options: { readonly allowFinalActionRemaining?: boolean } = {},
+): boolean {
   const hasBlockingFindings = decision.findings.some(findingBlocksApproval);
   return (
     decision.stop_review_loop === true &&
     decision.overall_correctness === "patch is correct" &&
     decision.goal_oracle_satisfied === true &&
-    traceabilityApproves(decision) &&
+    traceabilityApproves(decision, options.allowFinalActionRemaining === true) &&
     !hasBlockingFindings &&
     decision.reviewer_error == null
   );
@@ -76,9 +107,16 @@ export function reviewDecisionToRecord(args: {
   readonly reviewer: string;
   readonly artifactPath: string;
   readonly decision: ReviewDecision;
+  readonly parsed: boolean;
+  readonly diagnostics: readonly string[];
+  readonly allowFinalActionRemaining: boolean;
 }): ReviewRecord {
   const blocker = blockerFromReviewDecision(args.decision);
-  const approved = reviewApproved(args.decision);
+  const approved = reviewApproved(args.decision, {
+    allowFinalActionRemaining: args.allowFinalActionRemaining,
+  });
+  const hasFinalActionRemaining = args.allowFinalActionRemaining &&
+    finalActionRemaining(args.decision.requirements_traceability);
   const verificationGap = args.decision.verification_remaining.trim();
   const traceabilityGaps = args.decision.requirements_traceability
     .filter((entry) => entry.status !== "proven")
@@ -94,6 +132,18 @@ export function reviewDecisionToRecord(args: {
       : [`${args.decision.reviewer_error.kind}: ${args.decision.reviewer_error.message}`]),
   ];
 
+  const nextAction = approved
+    ? hasFinalActionRemaining ? "pull-request" : "finish"
+    : blocker === null ? "implementation" : "blocked";
+  const convergenceDecision = summarizeReviewConvergence({
+    parsed: args.parsed,
+    approved,
+    stopReviewLoop: args.decision.stop_review_loop,
+    nextAction,
+    finalActionRemaining: approved && hasFinalActionRemaining,
+    diagnostics: args.diagnostics,
+  });
+
   return {
     ...args.decision,
     decision: approved ? "complete" : blocker === null ? "continue" : "blocked",
@@ -105,5 +155,9 @@ export function reviewDecisionToRecord(args: {
     turn: args.turn,
     reviewer: args.reviewer,
     artifact_path: args.artifactPath,
+    parsed: args.parsed,
+    approved,
+    parse_diagnostics: args.diagnostics,
+    convergence_decision: convergenceDecision,
   };
 }

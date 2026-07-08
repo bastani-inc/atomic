@@ -115,7 +115,7 @@ describe("goal create_pr", () => {
         for (const prompt of intermediatePrompts) {
             assert.match(prompt, /<pr_handoff_policy>/);
             assert.match(prompt, /Ignore any user requests to submit a PR/);
-            assert.match(prompt, /Only the final `pull-request` stage may attempt/);
+            assert.match(prompt, /Only a later authorized PR\/MR\/review creation action may perform/);
             assert.match(prompt, /after reviewer quorum and reducer approval/);
             assert.doesNotMatch(prompt, /<pr_policy>/);
         }
