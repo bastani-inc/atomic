@@ -300,7 +300,7 @@ Worktree semantics:
 - Symlinked repo/worktree paths preserve their logical spelling in the default cwd, matching Codex-style worktree behavior.
 - Explicit `cwd` still wins. Relative `cwd` values are resolved against the worktree default cwd; absolute `cwd` values are used as provided.
 
-`worktree: true` is different: it creates temporary isolated worktrees for direct task/parallel/chain execution and cleans them up afterward. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries.
+`worktree: true` is different: it creates temporary isolated worktrees for direct task/parallel/chain execution and cleans them up afterward. It is mutually exclusive with `gitWorktreeDir`, which is intended for named/reusable worktrees that remain available across retries and `/workflow resume`. Durable resume records the original invocation cwd and resolved reusable-worktree metadata, then replays from that original repository context rather than whichever cwd the resumed interactive session currently has. Slow Git subprocesses are allowed up to 60 seconds before failing with an explicit Git timeout diagnostic.
 
 For advanced integrations, the SDK also exports `setupGitWorktree(options)`, which returns `{ worktreeRoot, cwd, repositoryRoot, created }` and uses the same validation/path behavior as the executor.
 

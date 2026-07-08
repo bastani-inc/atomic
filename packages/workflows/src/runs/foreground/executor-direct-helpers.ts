@@ -235,15 +235,32 @@ export function stageOptionsWithGitWorktree<T extends StageOptions>(options: T |
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
-export function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
+export function setupWorkflowInputGitWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): import("../shared/worktree.js").GitWorktreeSetupResult | undefined {
   if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0) {
-    return workflowInvocationCwd;
+    return undefined;
   }
   return setupGitWorktree({
     gitWorktreeDir: inputDefaults.gitWorktreeDir,
     baseBranch: inputDefaults.baseBranch,
     cwd: workflowInvocationCwd,
-  }).cwd;
+  });
+}
+
+export function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
+  return setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd)?.cwd ?? workflowInvocationCwd;
+}
+
+export function workflowInvocationMetadata(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): {
+  readonly invocationCwd: string;
+  readonly workflowCwd?: string;
+  readonly repositoryRoot?: string;
+  readonly gitWorktreeRoot?: string;
+} {
+  const setup = setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd);
+  return {
+    invocationCwd: workflowInvocationCwd,
+    ...(setup !== undefined ? { workflowCwd: setup.cwd, repositoryRoot: setup.repositoryRoot, gitWorktreeRoot: setup.worktreeRoot } : {}),
+  };
 }
 
 function directWorktreeDiffsDir(options: WorkflowDirectOptions, setup: WorktreeSetup, runId: string, scope: string): string {

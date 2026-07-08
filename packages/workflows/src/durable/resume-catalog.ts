@@ -107,6 +107,10 @@ function parseDurableEntry(raw: Record<string, unknown>): DurableCheckpointEntry
     ...(typeof raw["label"] === "string" ? { label: raw["label"] } : {}),
     ...(typeof raw["rootWorkflowId"] === "string" ? { rootWorkflowId: raw["rootWorkflowId"] } : {}),
     ...(typeof raw["resumable"] === "boolean" ? { resumable: raw["resumable"] } : {}),
+    ...(typeof raw["invocationCwd"] === "string" ? { invocationCwd: raw["invocationCwd"] } : {}),
+    ...(typeof raw["workflowCwd"] === "string" ? { workflowCwd: raw["workflowCwd"] } : {}),
+    ...(typeof raw["repositoryRoot"] === "string" ? { repositoryRoot: raw["repositoryRoot"] } : {}),
+    ...(typeof raw["gitWorktreeRoot"] === "string" ? { gitWorktreeRoot: raw["gitWorktreeRoot"] } : {}),
     ts,
   };
 }
@@ -142,6 +146,10 @@ function entryToResumable(entry: DurableCheckpointEntry, sessionFile: string): R
     ...(entry.label !== undefined ? { label: entry.label } : {}),
     ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
     ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+    ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
+    ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
+    ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
+    ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
     createdAt: entry.ts,
     updatedAt: entry.ts,
   };
@@ -197,6 +205,10 @@ export function persistDurableCacheEntry(
     ...(entry.label !== undefined ? { label: entry.label } : {}),
     ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
     ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+    ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
+    ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
+    ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
+    ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
     ts: entry.ts,
   });
 }

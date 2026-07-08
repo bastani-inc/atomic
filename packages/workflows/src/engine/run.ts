@@ -19,7 +19,7 @@ import { stageControlRegistry as defaultStageControlRegistry } from "../runs/for
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { unknownErrorMessage, findWorkflowExitSignal, parentWorkflowExitAbortReason } from "../runs/foreground/executor-abort.js";
 import { resolveAndValidateInputs, resolveInputConcurrency, resolveInputRuntimeDefaults } from "../runs/foreground/executor-inputs.js";
-import { workflowCwdWithInputWorktree } from "../runs/foreground/executor-direct-helpers.js";
+import { workflowCwdWithInputWorktree, workflowInvocationMetadata } from "../runs/foreground/executor-direct-helpers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
@@ -310,22 +310,19 @@ export async function run<
     },
     runWorkflow: run,
   });
-
-  // Durable workflow registration — register this run for cross-session discovery.
+  const durableRootWorkflowRegistration = {
+    workflowId: runId,
+    name: def.name,
+    inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+    createdAt: runSnapshot.startedAt,
+    status: "running" as const,
+    rootWorkflowId: runId,
+    resumable: true,
+    ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
+  };
   if (opts.continuation === undefined && opts.parentRun === undefined) {
-    // New root run: register it durably so a future session can discover it.
-    durableBackend.registerWorkflow({
-      workflowId: runId,
-      name: def.name,
-      inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
-      createdAt: runSnapshot.startedAt,
-      status: "running",
-      rootWorkflowId: runId,
-      resumable: true,
-      ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
-    });
+    durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, invocationCwd: workflowInvocationCwd });
   } else if (opts.parentRun === undefined) {
-    // Resuming a root workflow: mark it as running again in the backend.
     durableBackend.setWorkflowStatus(runId, "running");
   }
   const tool = createToolPrimitive({
@@ -406,6 +403,10 @@ export async function run<
         if (parentExit !== undefined) return await finalizers.finalizeParentWorkflowExitCancellation(parentExit);
         return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
       }
+    }
+
+    if (opts.continuation === undefined && opts.parentRun === undefined) {
+      durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd) });
     }
 
     const rawResult = await def.run(ctx);

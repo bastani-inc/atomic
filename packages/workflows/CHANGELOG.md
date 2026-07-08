@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `/workflow resume` for workflows that use reusable `gitWorktreeDir`/`git_worktree_dir` worktrees by persisting the original invocation cwd and resolved reusable-worktree metadata, replaying durable resumes from that original repository context instead of the resumed interactive session cwd, and hardening Git subprocess timeouts so slow filesystem timeouts are reported as Git timeouts rather than “not inside a Git repository”.
+
 ## [0.9.5-alpha.8] - 2026-07-08
 
 ### Fixed

@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Windows native filesystem watchers to canonicalize watched paths before calling `fs.watch`, reject unresolved 8.3 short-name paths, and fall back to polling for unsafe watcher paths. This prevents libuv fs-event assertion crashes when temp, session, footer, or theme paths contain short-name components such as `USERNA~1`.
+- Fixed bundled workflow durable resume for reusable `git_worktree_dir` worktrees so resumed runs reuse the original invocation repository/cwd and report slow Git subprocess timeouts as Git timeouts instead of repository-detection failures.
 
 ## [0.9.5-alpha.8] - 2026-07-08
 

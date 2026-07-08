@@ -168,6 +168,7 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-resume-target")!.status, "running");
   });
 
+
   test("scan-only resume entries are hidden from prepared selector catalog", async () => {
     const entry = {
       type: "workflow.durable.checkpoint",

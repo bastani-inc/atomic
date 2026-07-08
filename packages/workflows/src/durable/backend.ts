@@ -197,6 +197,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       inputs: handle.inputs,
       createdAt: handle.createdAt,
       status: handle.status,
+      ...(handle.invocationCwd !== undefined ? { invocationCwd: handle.invocationCwd } : existing?.handle.invocationCwd !== undefined ? { invocationCwd: existing.handle.invocationCwd } : {}),
+      ...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : existing?.handle.workflowCwd !== undefined ? { workflowCwd: existing.handle.workflowCwd } : {}),
+      ...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : existing?.handle.repositoryRoot !== undefined ? { repositoryRoot: existing.handle.repositoryRoot } : {}),
+      ...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : existing?.handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: existing.handle.gitWorktreeRoot } : {}),
       ...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
       completedCheckpoints,
       pendingPrompts,
@@ -285,6 +289,10 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       ...(h.label !== undefined ? { label: h.label } : {}),
       ...(h.rootWorkflowId !== undefined ? { rootWorkflowId: h.rootWorkflowId } : {}),
       ...(h.resumable !== undefined ? { resumable: h.resumable } : {}),
+      ...(h.invocationCwd !== undefined ? { invocationCwd: h.invocationCwd } : {}),
+      ...(h.workflowCwd !== undefined ? { workflowCwd: h.workflowCwd } : {}),
+      ...(h.repositoryRoot !== undefined ? { repositoryRoot: h.repositoryRoot } : {}),
+      ...(h.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: h.gitWorktreeRoot } : {}),
       ts: h.updatedAt,
     };
   }
@@ -337,6 +345,10 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
     ...(handle.label !== undefined ? { label: handle.label } : {}),
     ...(handle.rootWorkflowId !== undefined ? { rootWorkflowId: handle.rootWorkflowId } : {}),
     ...(handle.resumable !== undefined ? { resumable: handle.resumable } : {}),
+    ...(handle.invocationCwd !== undefined ? { invocationCwd: handle.invocationCwd } : {}),
+    ...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : {}),
+    ...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : {}),
+    ...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : {}),
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt,
   };

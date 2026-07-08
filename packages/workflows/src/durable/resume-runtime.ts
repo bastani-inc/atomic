@@ -167,11 +167,14 @@ export function resumeDurableWorkflow(
   // ORIGINAL workflow id as the run id so durable checkpoints replay.
   backend.setWorkflowStatus(resolved.workflowId, "running");
 
-  const accepted: DetachedAccepted = runDetached(def, inputs, {
+  const resumeRunOpts: RunOpts = {
     ...deps.baseRunOpts,
+    ...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
     runId: resolved.workflowId,
     durableBackend: backend,
-  });
+  };
+
+  const accepted: DetachedAccepted = runDetached(def, inputs, resumeRunOpts);
 
   return {
     ok: true,

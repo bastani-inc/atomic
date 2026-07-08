@@ -32,6 +32,14 @@ export interface DurableWorkflowHandle {
   readonly updatedAt: number;
   /** Current durable status. */
   readonly status: DurableWorkflowStatus;
+  /** Original invocation cwd used to resolve repo-relative workflow defaults on resume. */
+  readonly invocationCwd?: string;
+  /** Resolved workflow cwd when an input-bound reusable worktree was set up. */
+  readonly workflowCwd?: string;
+  /** Invoking repository root used for reusable worktree validation. */
+  readonly repositoryRoot?: string;
+  /** Resolved reusable git worktree root, when setup happened at workflow start. */
+  readonly gitWorktreeRoot?: string;
   /** Session file path that caches this workflow's durable metadata. */
   readonly sessionFile?: string;
   /** Number of completed durable checkpoints. */
@@ -158,6 +166,10 @@ export interface DurableCheckpointEntry {
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
+  readonly invocationCwd?: string;
+  readonly workflowCwd?: string;
+  readonly repositoryRoot?: string;
+  readonly gitWorktreeRoot?: string;
   readonly ts: number;
 }
 
@@ -176,6 +188,10 @@ export interface ResumableWorkflowEntry {
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
+  readonly invocationCwd?: string;
+  readonly workflowCwd?: string;
+  readonly repositoryRoot?: string;
+  readonly gitWorktreeRoot?: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

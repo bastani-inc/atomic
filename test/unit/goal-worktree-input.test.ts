@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import goal from "../../packages/workflows/builtin/goal.js";
-import { setupGitWorktree, runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
+import { gitFailureMessage, gitTopLevelFromResult, isGitTimeoutResult, setupGitWorktree, runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 
 function createGitRepo(): { readonly root: string; readonly repo: string } {
   const root = realpathSync.native(mkdtempSync(join(tmpdir(), "atomic-goal-worktree-test-")));
@@ -34,6 +34,22 @@ describe("goal git_worktree_dir input", () => {
     });
   });
 
+  test("formats git subprocess timeouts as timeouts instead of repository detection failures", () => {
+    const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" });
+    const result = { stdout: "", stderr: "", status: null, error };
+    assert.equal(isGitTimeoutResult(result), true);
+    assert.match(gitFailureMessage(result), /timed out after 60000ms/);
+    assert.match(gitFailureMessage(result), /ETIMEDOUT/);
+  });
+
+  test("preserves git timeout diagnostics while validating existing worktree roots", () => {
+    const error = Object.assign(new Error("spawnSync git ETIMEDOUT"), { code: "ETIMEDOUT" });
+    assert.throws(
+      () => gitTopLevelFromResult({ stdout: "", stderr: "", status: null, error }, "/tmp/reused-wt", "gitWorktreeDir /tmp/reused-wt"),
+      /Timed out while validating gitWorktreeDir \/tmp\/reused-wt.*ETIMEDOUT/,
+    );
+  });
+
   test("creates missing relative worktrees from base_branch and reuses existing ones", () => {
     const { root, repo } = createGitRepo();
     try {
@@ -58,6 +74,21 @@ describe("goal git_worktree_dir input", () => {
       assert.equal(reused.created, false);
       assert.equal(reused.worktreeRoot, created.worktreeRoot);
       assert.equal(reused.cwd, created.cwd);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects existing non-worktree roots instead of overwriting partial directories", () => {
+    const { root, repo } = createGitRepo();
+    try {
+      const partialRoot = join(root, "partial-wt");
+      mkdirSync(partialRoot);
+      assert.throws(
+        () => setupGitWorktree({ cwd: repo, gitWorktreeDir: partialRoot, baseBranch: "main" }),
+        /already exists but is not a Git worktree/,
+      );
+      assert.equal(existsSync(partialRoot), true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -5,6 +5,8 @@ import { createGitEnvironment } from "@bastani/atomic";
 import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from "./worktree-types.js";
 
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
+const GIT_COMMAND_TIMEOUT_MS = 60_000;
+
 
 export function runGit(cwd: string, args: string[]): GitResult {
 	const result = spawnSync("git", [
@@ -17,7 +19,7 @@ export function runGit(cwd: string, args: string[]): GitResult {
 		cwd,
 		encoding: "utf-8",
 		env: createGitEnvironment({ GIT_OPTIONAL_LOCKS: "0" }),
-		timeout: 5000,
+		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
 	return {
 		stdout: result.stdout ?? "",
@@ -37,8 +39,26 @@ export function runGitChecked(cwd: string, args: string[]): string {
 	return result.stdout;
 }
 
+function gitErrorCode(error: Error): string | undefined {
+	return "code" in error ? String((error as Error & { readonly code?: unknown }).code) : undefined;
+}
+
+export function isGitTimeoutResult(result: GitResult): boolean {
+	const error = result.error;
+	if (error === undefined) return false;
+	const code = gitErrorCode(error)?.toUpperCase();
+	const message = error.message.toLowerCase();
+	return code === "ETIMEDOUT" || message.includes("etimedout") || message.includes("timed out");
+}
+
 export function gitFailureMessage(result: GitResult): string {
-	if (result.error !== undefined) return result.error.message;
+	if (result.error !== undefined) {
+		const code = gitErrorCode(result.error);
+		if (isGitTimeoutResult(result)) {
+			return `git command timed out after ${GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}`;
+		}
+		return code === undefined ? result.error.message : `${code}: ${result.error.message}`;
+	}
 	return result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`;
 }
 
@@ -124,15 +144,26 @@ function pathExistsSync(value: string): boolean {
 function repositoryRootForGitWorktree(cwd: string): string {
 	const result = runGit(cwd, ["rev-parse", "--show-toplevel"]);
 	if (result.status !== 0) {
+		if (isGitTimeoutResult(result)) {
+			throw new Error(`Timed out while checking the Git repository for gitWorktreeDir from ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+		}
 		throw new Error(`gitWorktreeDir requires the workflow to be invoked from inside a Git repository. Start from a Git checkout or omit gitWorktreeDir. Git reported: ${gitFailureMessage(result)}`);
 	}
 	return result.stdout.trim();
 }
 
-function gitTopLevel(cwd: string): string | undefined {
-	const result = runGit(cwd, ["rev-parse", "--show-toplevel"]);
-	if (result.status !== 0) return undefined;
+export function gitTopLevelFromResult(result: GitResult, cwd: string, description: string): string | undefined {
+	if (result.status !== 0) {
+		if (isGitTimeoutResult(result)) {
+			throw new Error(`Timed out while validating ${description}. Git reported: ${gitFailureMessage(result)}`);
+		}
+		return undefined;
+	}
 	return gitPathFromOutput(result.stdout, cwd);
+}
+
+function gitTopLevel(cwd: string): string | undefined {
+	return gitTopLevelFromResult(runGit(cwd, ["rev-parse", "--show-toplevel"]), cwd, `gitWorktreeDir ${cwd}`);
 }
 
 function gitCommonDirForWorktree(cwd: string): string {

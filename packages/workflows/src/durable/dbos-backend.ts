@@ -359,6 +359,10 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       ...(entry.label !== undefined ? { label: entry.label } : {}),
       ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
       ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+      ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
+      ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
+      ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
+      ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
     });
   }
 }
@@ -395,6 +399,10 @@ function encodeMetadata(entry: DurableCheckpointEntry): WorkflowSerializableValu
       ...(entry.label !== undefined ? { label: entry.label } : {}),
       ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
       ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+      ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
+      ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
+      ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
+      ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
       ts: entry.ts,
     },
   };
@@ -425,7 +433,11 @@ function parseDurableCheckpointEntry(value: WorkflowSerializableValue): DurableC
     || typeof entry.ts !== "number"
     || (entry.label !== undefined && typeof entry.label !== "string")
     || (entry.rootWorkflowId !== undefined && typeof entry.rootWorkflowId !== "string")
-    || (entry.resumable !== undefined && typeof entry.resumable !== "boolean")) {
+    || (entry.resumable !== undefined && typeof entry.resumable !== "boolean")
+    || (entry.invocationCwd !== undefined && typeof entry.invocationCwd !== "string")
+    || (entry.workflowCwd !== undefined && typeof entry.workflowCwd !== "string")
+    || (entry.repositoryRoot !== undefined && typeof entry.repositoryRoot !== "string")
+    || (entry.gitWorktreeRoot !== undefined && typeof entry.gitWorktreeRoot !== "string")) {
     return undefined;
   }
   return {
@@ -440,6 +452,10 @@ function parseDurableCheckpointEntry(value: WorkflowSerializableValue): DurableC
     ...(entry.label !== undefined ? { label: entry.label } : {}),
     ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
     ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+    ...(entry.invocationCwd !== undefined ? { invocationCwd: entry.invocationCwd } : {}),
+    ...(entry.workflowCwd !== undefined ? { workflowCwd: entry.workflowCwd } : {}),
+    ...(entry.repositoryRoot !== undefined ? { repositoryRoot: entry.repositoryRoot } : {}),
+    ...(entry.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: entry.gitWorktreeRoot } : {}),
   };
 }
 
