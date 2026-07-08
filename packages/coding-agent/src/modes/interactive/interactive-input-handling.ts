@@ -439,6 +439,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
           this.renderDeferredUserInput(text);
         }
         this.onInputCallback(text);
+      } else if (this.startupReplayActiveInput) {
+        this.startupReplayInputs.push(text);
       } else {
         this.pendingUserInputs.push(text);
       }

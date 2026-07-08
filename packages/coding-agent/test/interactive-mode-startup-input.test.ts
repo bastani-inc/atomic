@@ -209,6 +209,58 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayInputs).toEqual([]);
 	});
 
+	it("queues later prompts behind an active startup command before input callback install", async () => {
+		const context = createSubmitContext();
+		context.startupReplayActiveInput = "!pwd";
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("later prompt");
+
+		expect(context.pendingUserInputs).toEqual([]);
+		expect(context.startupReplayInputs).toEqual(["later prompt"]);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("later prompt");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+		expect(context.startupReplayInputs).toEqual([]);
+	});
+
+	it("returns prompts that originally preceded startup command replay first", async () => {
+		const pendingUserInputs: string[] = [];
+		const startupReplayInputs: string[] = [];
+		let startupReplayActiveInput: string | undefined;
+		const editor = { setText: vi.fn() };
+
+		seedStartupInput(
+			pendingUserInputs,
+			editor,
+			{
+				text: "",
+				submissions: ["first prompt", "!pwd", "explain result"],
+			},
+			startupReplayInputs,
+			undefined,
+			(text) => {
+				startupReplayActiveInput = text;
+			},
+		);
+
+		const context = createSubmitContext();
+		context.pendingUserInputs = pendingUserInputs;
+		context.startupReplayActiveInput = startupReplayActiveInput;
+		context.startupReplayInputs = startupReplayInputs;
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("first prompt");
+		expect(context.handleBashCommand).not.toHaveBeenCalled();
+		expect(context.startupReplayActiveInput).toBe("!pwd");
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+	});
+
 	it("preserves raw-captured startup ordering across multiple commands and prompts", async () => {
 		const pendingUserInputs: string[] = [];
 		const startupReplayInputs: string[] = [];
