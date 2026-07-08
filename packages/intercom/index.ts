@@ -1,5 +1,5 @@
-import type { ExtensionAPI, ExtensionContext, HandlerFn, MessageRenderer, RegisteredCommand, ToolDefinition } from "@bastani/atomic";
-import { Text } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, MessageRenderer, RegisteredCommand, ToolDefinition } from "@bastani/atomic";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderIntercomToolResult } from "./result-renderers.js";
 
@@ -7,6 +7,7 @@ type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type EventHandler = Parameters<ExtensionAPI["events"]["on"]>[1];
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
+type HandlerFn = (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
 type CapturedHeavy = {
 	tools: Map<string, ToolDefinition>;
 	commands: Map<string, CapturedCommand>;
@@ -136,19 +137,19 @@ async function executeHeavyTool(
 	loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>,
 	name: string,
 	args: Parameters<NonNullable<ToolDefinition["execute"]>>,
-): Promise<ReturnType<NonNullable<ToolDefinition["execute"]>>> {
+): Promise<Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>> {
 	const ctx = args[4];
 	const heavy = await loadHeavy(ctx);
 	const tool = heavy.tools.get(name);
 	if (!tool?.execute) throw new Error(`Intercom tool implementation not found: ${name}`);
-	return tool.execute(...args) as ReturnType<NonNullable<ToolDefinition["execute"]>>;
+	return await tool.execute(...args) as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
 }
 
-async function runHeavyCommand(loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>, args: string | undefined, ctx: ExtensionContext): Promise<void> {
+async function runHeavyCommand(loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>, args: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
 	const heavy = await loadHeavy(ctx);
 	const command = heavy.commands.get("intercom");
 	if (!command) throw new Error("Intercom command implementation not found");
-	await command.handler(args, ctx);
+	await command.handler(args ?? "", ctx);
 }
 
 function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, args: ToolRenderResultArgs): ReturnType<NonNullable<ToolDefinition["renderResult"]>> {

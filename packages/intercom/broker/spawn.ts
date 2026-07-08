@@ -2,16 +2,19 @@ import { spawn } from "child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 import net from "net";
-import { CONFIG_DIR_NAME } from "@bastani/atomic";
-import { getBrokerSocketPath } from "./paths.js";
+import {
+  getBrokerPidPath,
+  getBrokerSocketPath,
+  getBrokerSpawnLockPath,
+  getIntercomDirPath,
+} from "./paths.js";
 
-const INTERCOM_DIR = join(homedir(), CONFIG_DIR_NAME, "agent", "intercom");
+const INTERCOM_DIR = getIntercomDirPath();
 const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BROKER_SOCKET = getBrokerSocketPath();
-const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
-const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
+const BROKER_PID = getBrokerPidPath();
+const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
 
 type BrokerLaunchSpec =
   | {
@@ -43,7 +46,7 @@ export function getWindowsHiddenLauncherPath(intercomDir: string = INTERCOM_DIR)
   return join(intercomDir, "broker-launch.vbs");
 }
 
-function usesDefaultBrokerCommand(brokerCommand: string, brokerArgs: string[]): boolean {
+function usesLegacyTsxBrokerCommand(brokerCommand: string, brokerArgs: string[]): boolean {
   return brokerCommand === "npx"
     && brokerArgs.length === 2
     && brokerArgs[0] === "--no-install"
@@ -54,10 +57,10 @@ export function getWindowsBrokerCommandLine(
   brokerPath: string,
   extensionDir: string = EXTENSION_DIR,
   nodePath: string = process.execPath,
-  brokerCommand = "npx",
-  brokerArgs: string[] = ["--no-install", "tsx"],
+  brokerCommand = "bun",
+  brokerArgs: string[] = [],
 ): string {
-  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
+  if (usesLegacyTsxBrokerCommand(brokerCommand, brokerArgs)) {
     return [quoteWindowsArg(nodePath), quoteWindowsArg(getTsxCliPath(extensionDir)), quoteWindowsArg(brokerPath)].join(" ");
   }
 

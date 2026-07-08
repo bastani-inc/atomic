@@ -29,6 +29,14 @@
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "atomic": {
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "pi": {
     "extensions": [
       "./index.ts"

@@ -281,7 +281,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 
 | Variable | Description |
 |----------|-------------|
-| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent` |
+| `ATOMIC_CODING_AGENT_DIR` | Override config directory; default is `~/.atomic/agent`. Bundled intercom runtime/config files live under its `intercom/` subdirectory |
 | `ATOMIC_CODING_AGENT_SESSION_DIR` | Override session storage directory; overridden by `--session-dir` |
 | `ATOMIC_PACKAGE_DIR` | Override package directory, useful for Nix/Guix store paths |
 | `ATOMIC_OFFLINE` | Disable startup network operations, including update checks, package update checks, and install/update telemetry |
@@ -290,7 +290,7 @@ atomic --tools read,search,find,ls -p "Review the code"
 | `PI_CACHE_RETENTION` | Provider/upstream-specific prompt-cache retention knob; set to `long` where supported |
 | `VISUAL`, `EDITOR` | External editor for CTRL+G |
 
-`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. `PI_CACHE_RETENTION` is not one of those aliases and has no `ATOMIC_*` equivalent. Use `PI_CACHE_RETENTION=long` when configuring prompt-cache retention for providers/upstreams that support long-lived caches.
+`PI_*` aliases are also supported for app-specific `ATOMIC_*` variables for legacy compatibility. For example, intercom honors `PI_CODING_AGENT_DIR` when `ATOMIC_CODING_AGENT_DIR` is unset and still reads legacy `~/.pi/agent/intercom/config.json` when the Atomic config is absent. `PI_CACHE_RETENTION` is not one of those aliases and has no `ATOMIC_*` equivalent. Use `PI_CACHE_RETENTION=long` when configuring prompt-cache retention for providers/upstreams that support long-lived caches.
 
 ## Design Principles
 

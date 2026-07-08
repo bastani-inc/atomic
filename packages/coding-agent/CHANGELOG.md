@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the bundled intercom extension to keep broker runtime files under the active Atomic agent directory, including custom `ATOMIC_CODING_AGENT_DIR` values and the legacy `PI_CODING_AGENT_DIR` alias, while documenting the `~/.atomic/agent/intercom/` primary path and `~/.pi/agent/intercom/` fallback. The default broker runtime now uses `bun` so source-checkout Atomic sessions no longer depend on an unavailable `npx --no-install tsx` path; explicit legacy broker configs remain supported.
+
 ## [0.9.5-alpha.7] - 2026-07-07
 
 ### Changed
