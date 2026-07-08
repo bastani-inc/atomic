@@ -158,8 +158,10 @@ export async function openInlineInputsForm(
   ctx: PiCommandContext,
   opts: OpenInlineFormOpts,
 ): Promise<InlineFormResult> {
-  const setEditor = ctx.ui?.setEditorComponent;
-  const getEditor = ctx.ui?.getEditorComponent;
+  const ui = ctx.ui;
+  const setEditor = ui?.setEditorComponent;
+  const getEditor = ui?.getEditorComponent;
+  const setWorkingVisible = ui?.setWorkingVisible;
   const sendMessage = pi.sendMessage;
   if (typeof setEditor !== "function" || typeof sendMessage !== "function") {
     return { kind: "unsupported" };
@@ -167,6 +169,38 @@ export async function openInlineInputsForm(
   if (opts.fields.length === 0) {
     // Defensive — caller should already have gated on fields.length > 0.
     return { kind: "run", values: coerceValues(opts.fields, {}) };
+  }
+
+  let workingHidden = false;
+  const hideWorking = (): void => {
+    try {
+      setWorkingVisible?.call(ui, false);
+      workingHidden = true;
+    } catch {
+      // If the host rejects Working visibility changes, keep the form path
+      // functional; editor restoration already handles stale contexts below.
+    }
+  };
+  const restoreWorking = (): void => {
+    if (!workingHidden) return;
+    workingHidden = false;
+    try {
+      setWorkingVisible?.call(ui, true);
+    } catch {
+      // A late settle after `/new`, `/resume`, `/fork`, or `/reload` may leave
+      // the command context stale. Do not let Working restoration prevent the
+      // workflow form promise from resolving.
+    }
+  };
+
+  hideWorking();
+
+  let previous: PiEditorFactory | undefined;
+  try {
+    previous = typeof getEditor === "function" ? getEditor.call(ui) : undefined;
+  } catch {
+    restoreWorking();
+    return { kind: "unsupported" };
   }
 
   // ── Seed state ────────────────────────────────────────────────────────
@@ -203,9 +237,6 @@ export async function openInlineInputsForm(
   });
 
 
-  // ── Swap in our editor and await user decision ────────────────────────
-  const previous: PiEditorFactory | undefined =
-    typeof getEditor === "function" ? getEditor.call(ctx.ui) : undefined;
 
   return new Promise<InlineFormResult>((resolve) => {
     let resolved = false;
@@ -214,7 +245,7 @@ export async function openInlineInputsForm(
     const shouldRestorePreviousEditor = (): boolean => {
       if (typeof getEditor !== "function") return true;
       try {
-        return getEditor.call(ctx.ui) === installedFactory;
+        return getEditor.call(ui) === installedFactory;
       } catch (err) {
         // During `/new`, `/resume`, `/fork`, and `/reload`, pi marks the old
         // extension command context as stale before tearing down the old editor
@@ -235,7 +266,7 @@ export async function openInlineInputsForm(
     const restorePreviousEditor = (): void => {
       if (!shouldRestorePreviousEditor()) return;
       try {
-        setEditor.call(ctx.ui, previous);
+        setEditor.call(ui, previous);
       } catch {
         // If the host rejects the previous factory as well, leave the host's
         // current editor alone. The important part is that the workflow command
@@ -250,6 +281,7 @@ export async function openInlineInputsForm(
       activeEditor = undefined;
       // Restore the previous editor (or default if there wasn't one).
       restorePreviousEditor();
+      restoreWorking();
       resolve(result);
     };
 
@@ -277,11 +309,12 @@ export async function openInlineInputsForm(
     installedFactory = factory;
 
     try {
-      setEditor.call(ctx.ui, factory);
+      setEditor.call(ui, factory);
     } catch {
       activeEditor?.dispose?.();
       activeEditor = undefined;
       finalizeForm(formId, "cancel");
+      restoreWorking();
       resolve({ kind: "unsupported" });
       return;
     }
@@ -311,6 +344,7 @@ export async function openInlineInputsForm(
       activeEditor = undefined;
       restorePreviousEditor();
       finalizeForm(formId, "cancel");
+      restoreWorking();
       resolve({ kind: "unsupported" });
     }
   });

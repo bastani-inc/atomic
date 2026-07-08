@@ -14,6 +14,7 @@ export type WorkflowResumeSelectorResult =
 
 export interface WorkflowResumeSelectorUiSurface {
   custom?: PiCustomOverlayFunction;
+  setWorkingVisible?: (visible: boolean) => void;
 }
 
 interface WorkflowResumeSelectorItem {
@@ -103,13 +104,30 @@ export function openWorkflowResumeSelector(
     return [...sessions];
   };
 
+  let workingHidden = false;
+  const hideWorking = (): void => {
+    ui.setWorkingVisible?.(false);
+    workingHidden = true;
+  };
+  const restoreWorking = (): void => {
+    if (!workingHidden) return;
+    workingHidden = false;
+    ui.setWorkingVisible?.(true);
+  };
+
+  hideWorking();
+
   return new Promise<WorkflowResumeSelectorResult>((resolve) => {
     let settled = false;
     const settle = (result: WorkflowResumeSelectorResult, done?: (result: undefined) => void): void => {
       if (settled) return;
       settled = true;
-      resolve(result);
-      done?.(undefined);
+      try {
+        done?.(undefined);
+      } finally {
+        restoreWorking();
+        resolve(result);
+      }
     };
 
     const factory = (
@@ -146,6 +164,12 @@ export function openWorkflowResumeSelector(
       };
     };
 
-    void custom(factory, { overlay: false });
+    try {
+      void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
+        settle({ kind: "close" });
+      });
+    } catch {
+      settle({ kind: "close" });
+    }
   });
 }

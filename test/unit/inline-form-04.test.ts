@@ -86,6 +86,98 @@ test("overlay: openInlineInputsForm emits a custom message and swaps editor", as
   assert.equal(getForm(formId)?.status, "submitted");
 });
 
+test("overlay: openInlineInputsForm hides working while mounted and restores on submit", async () => {
+  _resetForms();
+  const { pi } = makeFakePi();
+  const ctx = makeFakeCtx();
+  const workingCalls: boolean[] = [];
+  ctx.ui.setWorkingVisible = (visible: boolean) => workingCalls.push(visible);
+
+  const pending = openInlineInputsForm(pi as never, ctx as never, {
+    workflowName: "ralph",
+    fields: FIELDS,
+    theme: deriveGraphTheme({}),
+  });
+
+  assert.deepEqual(workingCalls, [false]);
+  const factory = ctx.installed[0]!.factory as
+    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
+  const editor = factory({ requestRender: () => {} }, {}, makeFakeKeybindings());
+  editor.handleInput("h");
+  editor.handleInput("i");
+  for (let i = 0; i < FIELDS.length; i += 1) editor.handleInput("\t");
+  editor.handleInput("\r");
+
+  const result = await pending;
+  assert.equal(result.kind, "run");
+  assert.deepEqual(workingCalls, [false, true]);
+});
+
+test("overlay: openInlineInputsForm restores working on cancel", async () => {
+  _resetForms();
+  const { pi } = makeFakePi();
+  const ctx = makeFakeCtx();
+  const workingCalls: boolean[] = [];
+  ctx.ui.setWorkingVisible = (visible: boolean) => workingCalls.push(visible);
+
+  const pending = openInlineInputsForm(pi as never, ctx as never, {
+    workflowName: "ralph",
+    fields: FIELDS,
+    theme: deriveGraphTheme({}),
+  });
+  const factory = ctx.installed[0]!.factory as
+    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
+  factory({ requestRender: () => {} }, {}, makeFakeKeybindings()).handleInput("\x1b");
+
+  const result = await pending;
+  assert.equal(result.kind, "cancel");
+  assert.deepEqual(workingCalls, [false, true]);
+});
+
+test("overlay: openInlineInputsForm restores working on unsupported setup failure", async () => {
+  _resetForms();
+  const { pi } = makeFakePi();
+  const workingCalls: boolean[] = [];
+  const ctx = {
+    ui: {
+      setWorkingVisible: (visible: boolean) => workingCalls.push(visible),
+      setEditorComponent: () => {
+        throw new Error("cannot install editor");
+      },
+    },
+  };
+
+  const result = await openInlineInputsForm(pi as never, ctx as never, {
+    workflowName: "ralph",
+    fields: FIELDS,
+    theme: deriveGraphTheme({}),
+  });
+
+  assert.equal(result.kind, "unsupported");
+  assert.deepEqual(workingCalls, [false, true]);
+});
+
+test("overlay: openInlineInputsForm restores working on sendMessage failure", async () => {
+  _resetForms();
+  const ctx = makeFakeCtx();
+  const workingCalls: boolean[] = [];
+  ctx.ui.setWorkingVisible = (visible: boolean) => workingCalls.push(visible);
+  const pi = {
+    sendMessage: () => {
+      throw new Error("cannot emit card");
+    },
+  };
+
+  const result = await openInlineInputsForm(pi as never, ctx as never, {
+    workflowName: "ralph",
+    fields: FIELDS,
+    theme: deriveGraphTheme({}),
+  });
+
+  assert.equal(result.kind, "unsupported");
+  assert.deepEqual(workingCalls, [false, true]);
+});
+
 test("overlay: openInlineInputsForm works with pi runtime UI shape", async () => {
   _resetForms();
   const { pi, sentMessages } = makeFakePi();

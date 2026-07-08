@@ -66,6 +66,7 @@ const CONFIRM_OVERLAY: PiOverlayOptions = {
 
 export interface UiSurface {
   custom?: PiCustomOverlayFunction;
+  setWorkingVisible?: (visible: boolean) => void;
 }
 
 export type SessionPickerIntent = "connect" | "kill" | "pause" | "resume";
@@ -113,9 +114,25 @@ export function openSessionPicker(
       return;
     }
 
+    let workingHidden = false;
+    const hideWorking = (): void => {
+      ui.setWorkingVisible?.(false);
+      workingHidden = true;
+    };
+    const restoreWorking = (): void => {
+      if (!workingHidden) return;
+      workingHidden = false;
+      ui.setWorkingVisible?.(true);
+    };
+
+    hideWorking();
     const state = createSessionPickerState();
     let settled = false;
     let unsubscribe: (() => void) | null = null;
+    const cleanupSubscription = (): void => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
 
     const factory = (
       tui: PiCustomOverlayFactoryTui,
@@ -126,10 +143,13 @@ export function openSessionPicker(
       const finish = (result: SessionPickerResult): void => {
         if (settled) return;
         settled = true;
-        unsubscribe?.();
-        unsubscribe = null;
-        done(undefined);
-        resolve(result);
+        cleanupSubscription();
+        try {
+          done(undefined);
+        } finally {
+          restoreWorking();
+          resolve(result);
+        }
       };
       // Re-render on store changes so newly-started runs appear and
       // status icons refresh without the user having to press a key.
@@ -152,10 +172,10 @@ export function openSessionPicker(
         },
         invalidate: () => tui.requestRender?.(),
         dispose: () => {
-          unsubscribe?.();
-          unsubscribe = null;
+          cleanupSubscription();
           if (!settled) {
             settled = true;
+            restoreWorking();
             resolve({ kind: "close" });
           }
         },
@@ -165,7 +185,21 @@ export function openSessionPicker(
     // overlay: false — picker replaces the editor in-place (see header
     // comment). The host owns geometry/focus; no overlayOptions are
     // forwarded by interactive pi today.
-    void custom(factory, { overlay: false });
+    try {
+      void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
+        if (settled) return;
+        settled = true;
+        cleanupSubscription();
+        restoreWorking();
+        resolve({ kind: "close" });
+      });
+    } catch {
+      if (settled) return;
+      settled = true;
+      cleanupSubscription();
+      restoreWorking();
+      resolve({ kind: "close" });
+    }
   });
 }
 
@@ -185,19 +219,47 @@ export function openKillConfirm(
   theme: GraphTheme,
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
+    let workingHidden = false;
+    const hideWorking = (): void => {
+      ui.setWorkingVisible?.(false);
+      workingHidden = true;
+    };
+    const restoreWorking = (): void => {
+      if (!workingHidden) return;
+      workingHidden = false;
+      ui.setWorkingVisible?.(true);
+    };
+
     const custom = ui.custom;
     if (typeof custom !== "function") {
       // Fall back to plain confirm dialog when available.
       if (typeof ui.confirm === "function") {
-        ui.confirm(
-          "Kill workflow run?",
-          `Abort ${run.name} (${run.id.slice(0, 8)})? Active stage work will be discarded.`,
-        ).then(resolve, () => resolve(false));
+        hideWorking();
+        try {
+          void ui.confirm(
+            "Kill workflow run?",
+            `Abort ${run.name} (${run.id.slice(0, 8)})? Active stage work will be discarded.`,
+          ).then(
+            (result) => {
+              restoreWorking();
+              resolve(result);
+            },
+            () => {
+              restoreWorking();
+              resolve(false);
+            },
+          );
+        } catch {
+          restoreWorking();
+          resolve(false);
+        }
         return;
       }
       resolve(false);
       return;
     }
+
+    hideWorking();
 
     const state = createKillConfirmState();
     let settled = false;
@@ -211,8 +273,12 @@ export function openKillConfirm(
       const finish = (result: boolean): void => {
         if (settled) return;
         settled = true;
-        done(undefined);
-        resolve(result);
+        try {
+          done(undefined);
+        } finally {
+          restoreWorking();
+          resolve(result);
+        }
       };
       return {
         render: (width: number) => renderKillConfirm({ width, theme, run, state }),
@@ -228,12 +294,25 @@ export function openKillConfirm(
         dispose: () => {
           if (!settled) {
             settled = true;
+            restoreWorking();
             resolve(false);
           }
         },
       };
     };
 
-    void custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY });
+    try {
+      void Promise.resolve(custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY })).catch(() => {
+        if (settled) return;
+        settled = true;
+        restoreWorking();
+        resolve(false);
+      });
+    } catch {
+      if (settled) return;
+      settled = true;
+      restoreWorking();
+      resolve(false);
+    }
   });
 }
