@@ -1,3 +1,4 @@
+import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type {
   PendingPrompt,
@@ -63,6 +64,7 @@ export abstract class GraphViewState {
   protected getViewportRows?: () => number | undefined;
   protected requestRender?: () => void;
   protected piKeybindings?: unknown;
+  protected footerData?: ReadonlyFooterDataProvider;
 
   /** Active HIL prompt state, set when `_rebuildLayout` sees a new prompt id. */
   protected promptState: PromptCardState | null = null;
@@ -102,6 +104,7 @@ export abstract class GraphViewState {
     this.getViewportRows = opts.getViewportRows;
     this.requestRender = opts.requestRender;
     this.piKeybindings = opts.piKeybindings;
+    this.footerData = opts.footerData;
 
     this._unsubscribe = this.store.subscribe((snap) => {
       this.currentSnapshot = snap;

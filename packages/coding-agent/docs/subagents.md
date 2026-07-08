@@ -105,6 +105,8 @@ Use `interrupt` when you want a resumable stop. Use `resume` to send a follow-up
 
 Background runs are detached. If Atomic has no useful independent work while a background subagent runs, it should end the turn instead of polling in a loop; the run will notify the originating session when it completes.
 
+When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
+
 ## Context and execution modes
 
 Subagents can run with fresh or forked context:

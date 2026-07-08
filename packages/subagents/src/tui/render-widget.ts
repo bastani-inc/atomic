@@ -137,6 +137,28 @@ function getWidgetOwnerKey(ctx: ExtensionContext): string {
 	return `${sessionOwner}|cwd:${cwdOwner}`;
 }
 
+function widgetStatusText(jobs: AsyncJobState[]): string | undefined {
+	if (jobs.length === 0) return undefined;
+	const counts = new Map<string, number>();
+	for (const job of jobs) counts.set(job.status, (counts.get(job.status) ?? 0) + 1);
+	const ordered = ["running", "queued", "complete", "failed", "paused"];
+	const parts = ordered
+		.map((status) => {
+			const count = counts.get(status) ?? 0;
+			return count > 0 ? `${count} ${status}` : undefined;
+		})
+		.filter((part): part is string => part !== undefined);
+	return `Async agents: ${parts.join(", ")}`;
+}
+
+function setWidgetStatus(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
+	try {
+		ctx.ui.setStatus?.(WIDGET_KEY, widgetStatusText(jobs));
+	} catch {
+		// Status mirroring must never prevent the primary widget render path.
+	}
+}
+
 function requestWidgetRender(ctx: ExtensionContext): void {
 	(ctx as RenderRequestingContext).ui.requestRender?.();
 }
@@ -149,6 +171,11 @@ function unmountWidgetBestEffort(ctx: ExtensionContext | undefined): void {
 		// Best-effort teardown only: stale host contexts can reject cleanup during
 		// reload/session rebinding, but local state still needs to move on so the
 		// next status update can mount cleanly on the active UI context.
+	}
+	try {
+		ctx.ui.setStatus?.(WIDGET_KEY, undefined);
+	} catch {
+		// Status mirroring cleanup must never block primary widget teardown.
 	}
 }
 
@@ -253,6 +280,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 			// host session disposal owns cross-owner empty-session teardown.
 			return;
 		}
+		if (ctx.hasUI) setWidgetStatus(ctx, []);
 		stopWidgetAnimation();
 		return;
 	}
@@ -271,6 +299,7 @@ export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void
 		mountedWidgetOwnerKey = undefined;
 		widgetMounted = false;
 	}
+	setWidgetStatus(ctx, jobs);
 	if (!widgetMounted) {
 		// belowEditor keeps the live async widget pinned to the bottom viewport,
 		// matching the workflow companion widget's placement (#1109). The pulse frame

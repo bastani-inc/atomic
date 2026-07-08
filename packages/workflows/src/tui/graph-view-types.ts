@@ -1,3 +1,4 @@
+import type { ReadonlyFooterDataProvider } from "@bastani/atomic";
 import type { Store } from "../shared/store.js";
 import type { GraphTheme } from "./graph-theme.js";
 
@@ -66,4 +67,6 @@ export interface GraphViewOpts {
   requestRender?: () => void;
   /** Host Pi keybindings manager used by run-level prompt cards. */
   piKeybindings?: unknown;
+  /** Host footer/status provider used to surface non-workflow extension statuses inside the fullscreen graph overlay. */
+  footerData?: ReadonlyFooterDataProvider;
 }

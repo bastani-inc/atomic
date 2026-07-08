@@ -5,6 +5,7 @@ import {
   OVERLAY_LINE_COUNT,
   OVERLAY_VERTICAL_MARGIN_ROWS,
 } from "./graph-view-constants.js";
+import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { GraphViewState } from "./graph-view-state.js";
 import { renderOutlinePill } from "./header.js";
 import { NODE_H, NODE_W } from "./layout.js";
@@ -78,12 +79,25 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
    * the header band: `backgroundPanel` chrome, outlined accent pill
    * flush-left, hints flowing right on the centre row.
    */
+  protected _externalStatusText(): string | null {
+    const entries = Array.from(this.footerData?.getExtensionStatuses() ?? [])
+      .filter(([key, value]) => (
+        value.trim().length > 0 &&
+        key !== WORKFLOW_STATUS_KEY &&
+        !key.startsWith(`${WORKFLOW_STATUS_KEY}:`)
+      ))
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (entries.length === 0) return null;
+    return entries.map(([, value]) => value.trim()).join(" · ");
+  }
+
   protected _renderStatusline(width: number): string[] {
     const t = this.graphTheme;
     const chromeBg = hexBg(t.backgroundPanel);
     const text = hexToAnsi(t.text);
     const muted = hexToAnsi(t.textMuted);
     const dim = hexToAnsi(t.dim);
+    const accent = hexToAnsi(t.accent);
 
     const {
       top,
@@ -92,13 +106,17 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
       visibleWidth: pillW,
     } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
 
-    // Hints — `<key> <label>` separated by `  ·  `.
+    // Hints — `<key> <label>` separated by `  ·  `. When other extensions
+    // publish status text (for example the async subagent widget), include it
+    // ahead of the controls so fullscreen workflow overlays do not hide it.
     const sep = `${chromeBg}  ${dim}·${RESET}${chromeBg}  `;
-    const segments = HINT_KEYS.map(
+    const statusText = this._externalStatusText();
+    const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
+    const hintSegments = HINT_KEYS.map(
       ({ key, label }) =>
         `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
     );
-    const hintsStyledRaw = segments.join(sep);
+    const hintsStyledRaw = [...statusSegment, ...hintSegments].join(sep);
 
     const leftEdgePad = 1;
     const rightEdgePad = 2;

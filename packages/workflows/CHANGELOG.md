@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed the fullscreen workflow graph statusline to mirror non-workflow extension statuses, so async/background subagent progress and completion remain visible while the graph overlay is active.
+
 ## [0.9.5-alpha.8] - 2026-07-08
 
 ### Fixed
