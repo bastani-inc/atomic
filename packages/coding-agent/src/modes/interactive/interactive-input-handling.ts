@@ -239,6 +239,13 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
     this.defaultEditor.onSubmit = async (text: string) => {
       text = text.trim();
       if (!text) return;
+
+      if (this.startupReplayActiveInput && this.startupReplayActiveInput.trim() !== text.trim()) {
+        this.startupReplayInputs.push(text);
+        this.editor.addToHistory?.(text);
+        this.editor.setText("");
+        return;
+      }
       try {
 
       // Handle commands
@@ -439,8 +446,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
           this.renderDeferredUserInput(text);
         }
         this.onInputCallback(text);
-      } else if (this.startupReplayActiveInput) {
-        this.startupReplayInputs.push(text);
       } else {
         this.pendingUserInputs.push(text);
       }

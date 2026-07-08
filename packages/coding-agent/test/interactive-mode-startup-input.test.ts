@@ -226,6 +226,21 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayInputs).toEqual([]);
 	});
 
+	it("queues streaming submissions behind an active startup command replay", async () => {
+		const context = createSubmitContext();
+		context.startupReplayActiveInput = "!pwd";
+		context.session.isStreaming = true;
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("later prompt");
+
+		expect(context.session.prompt).not.toHaveBeenCalled();
+		expect(context.pendingUserInputs).toEqual([]);
+		expect(context.startupReplayInputs).toEqual(["later prompt"]);
+		expect(context.startupReplayActiveInput).toBe("!pwd");
+		expect(context.editor.addToHistory).toHaveBeenCalledWith("later prompt");
+	});
+
 	it("returns prompts that originally preceded startup command replay first", async () => {
 		const pendingUserInputs: string[] = [];
 		const startupReplayInputs: string[] = [];

@@ -38,6 +38,7 @@ function baseStartupCaptureInput(overrides: Partial<ComputeStartupInputCaptureIn
 			provider: undefined,
 			model: undefined,
 			resume: false,
+			session: undefined,
 		},
 		sessionCwd,
 		projectTrustStore: { get: () => null },
@@ -94,6 +95,16 @@ describe("computeStartupInputCaptureEnabled", () => {
 	it("does not start pre-session input capture for resume picker startup", () => {
 		const input = baseStartupCaptureInput();
 		input.parsed.resume = true;
+		try {
+			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
+		} finally {
+			removeTempDir(input.sessionCwd);
+		}
+	});
+
+	it("does not start pre-session input capture for session fork confirmation startup", () => {
+		const input = baseStartupCaptureInput();
+		input.parsed.session = "other-project-session";
 		try {
 			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
 		} finally {

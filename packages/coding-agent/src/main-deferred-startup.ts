@@ -24,7 +24,7 @@ export interface ComputeDeferExtensionsInput {
 export interface ComputeStartupInputCaptureInput {
 	appMode: AppMode;
 	stdinIsTTY: boolean;
-	parsed: Pick<Args, "help" | "listModels" | "projectTrustOverride" | "systemPrompt" | "appendSystemPrompt" | "unknownFlags" | "provider" | "model" | "resume">;
+	parsed: Pick<Args, "help" | "listModels" | "projectTrustOverride" | "systemPrompt" | "appendSystemPrompt" | "unknownFlags" | "provider" | "model" | "resume" | "session">;
 	sessionCwd: string;
 	projectTrustStore: Pick<ProjectTrustStore, "get">;
 	resolvedExtensionPathCount: number;
@@ -33,7 +33,7 @@ export interface ComputeStartupInputCaptureInput {
 }
 
 export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCaptureInput): boolean {
-	if (input.parsed.resume) return false;
+	if (input.parsed.resume || input.parsed.session !== undefined) return false;
 	const hasTrustInputs = hasProjectTrustInputs(input.sessionCwd);
 	return input.deprecationWarningCount === 0 && computeDeferExtensions({
 		appMode: input.appMode,
