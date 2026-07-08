@@ -27,6 +27,7 @@ interface SettingsManagerBasicAccessors {
 	setTheme(theme: string): void;
 	getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
 	setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): void;
+	getFallbackModels(): string[];
 	getDefaultContextWindow(): number | undefined;
 	getDefaultContextWindowForModel(provider: string, modelId: string): number | undefined;
 	setDefaultContextWindow(contextWindow: number | undefined): void;
@@ -194,6 +195,13 @@ const basicAccessors: SettingsManagerBasicAccessors = {
 		state.globalSettings.defaultThinkingLevel = level;
 		state.markModified("defaultThinkingLevel");
 		state.save();
+	},
+
+	getFallbackModels() {
+		return (settingsInternals(this).settings.fallbackModels ?? [])
+			.filter((model): model is string => typeof model === "string")
+			.map((model) => model.trim())
+			.filter((model) => model.length > 0);
 	},
 
 	getDefaultContextWindow() {

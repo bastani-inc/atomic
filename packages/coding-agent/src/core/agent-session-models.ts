@@ -45,7 +45,7 @@ export async function _getRequiredRequestAuth(this: AgentSession, model: Model<A
 export function _emitModelChanged(this: AgentSession, 
 	nextModel: Model<Api>,
 	previousModel: Model<Api> | undefined,
-	source: "set" | "cycle" | "restore",
+	source: "set" | "cycle" | "restore" | "fallback",
 ): void {
 	if (modelsAreEqual(previousModel, nextModel)) return;
 	this._emit({
@@ -60,7 +60,7 @@ export function _emitModelChanged(this: AgentSession,
 export async function _emitModelSelect(this: AgentSession, 
 	nextModel: Model<Api>,
 	previousModel: Model<Api> | undefined,
-	source: "set" | "cycle" | "restore",
+	source: "set" | "cycle" | "restore" | "fallback",
 ): Promise<void> {
 	if (modelsAreEqual(previousModel, nextModel)) return;
 	await this._extensionRunner.emit({

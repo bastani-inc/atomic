@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added main-chat `fallbackModels` support for retryable provider/model failures ([#1418](https://github.com/bastani-inc/atomic/issues/1418)). Users can configure an ordered fallback chain in settings or SDK session options with per-candidate reasoning suffixes such as `:high` and `:xhigh`; normal same-model retry remains first when enabled, fallback switches are recorded as session model changes, and the UI reports fallback progress.
+
 ### Fixed
 
 - Fixed provider context-window overflow recovery so an exhausted overflow auto-compaction attempt emits an explicit unresolved-overflow signal instead of silently leaving callers to retry the same model, and planner calls that themselves overflow now degrade through the deterministic overflow-eviction ladder rather than throwing before non-model reduction can run. Planner overflow is now recognized whether it is returned as an assistant error message or thrown by the provider stream before `agent.prompt()` completes, so overflow recovery skips the critical planner retry and goes directly to deterministic non-model reduction in both forms.

@@ -245,7 +245,7 @@ export class InteractiveModeBase {
 
   // Auto-retry state
   retryLoader: Loader | undefined = undefined;
-
+  fallbackLoader: Loader | undefined = undefined;
 
   retryCountdown: CountdownTimer | undefined = undefined;
 

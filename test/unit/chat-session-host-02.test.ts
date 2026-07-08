@@ -47,6 +47,24 @@ function makeHost(
     ...overrides,
   });
 }
+
+test("ChatSessionHost clears busy state when model fallback fails", () => {
+  const host = makeHost();
+  host.applyAgentEvent({ type: "model_fallback_start", from: "a", to: "b", reason: "retryable", attempt: 1 } as never);
+  assert.equal(host.isStreaming(), true);
+
+  host.applyAgentEvent({
+    type: "model_fallback_end",
+    success: false,
+    from: "a",
+    to: "b",
+    finalError: "fallback auth failed",
+  } as never);
+
+  assert.equal(host.isStreaming(), false);
+  assert.equal(host.hasAnimationTick(), false);
+  host.dispose();
+});
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
   const host = makeHost({
     getActionKeyDisplay: (action) => (action === "app.message.dequeue" ? "⌥↑" : action),

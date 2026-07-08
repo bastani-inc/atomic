@@ -34,6 +34,10 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.retryLoader.stop();
           this.retryLoader = undefined;
         }
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
+        }
         this.stopWorkingLoader();
         if (this.workingVisible) {
           this.loadingAnimation = this.createWorkingLoader();
@@ -414,6 +418,33 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
       }
 
+
+      case "model_fallback_start": {
+        this.statusContainer.clear();
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
+        }
+        this.fallbackLoader = new Loader(
+          this.ui,
+          (spinner) => theme.fg("warning", spinner),
+          (text) => theme.fg("muted", text),
+          `Falling back from ${event.from} to ${event.to}...`,
+        );
+        this.statusContainer.addChild(this.fallbackLoader);
+        this.ui.requestRender();
+        break;
+      }
+
+      case "model_fallback_end": {
+        if (this.fallbackLoader) {
+          this.fallbackLoader.stop();
+          this.fallbackLoader = undefined;
+        }
+        this.statusContainer.clear();
+        this.ui.requestRender();
+        break;
+      }
       case "auto_retry_end": {
         // Restore escape handler
         if (this.retryEscapeHandler) {

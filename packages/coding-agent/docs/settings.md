@@ -36,6 +36,7 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
+| `fallbackModels` | string[] | - | Ordered main-chat fallback models, written as `"provider/model"` with optional reasoning suffixes such as `:high` or `:xhigh` |
 
 #### thinkingBudgets
 
@@ -49,6 +50,28 @@ Settings and trust JSON files may start with a UTF-8 BOM, as commonly written by
   }
 }
 ```
+
+#### fallbackModels
+
+`fallbackModels` gives ordinary main-chat turns an ordered model fallback chain. Atomic starts with the selected/default model. If that model exhausts the normal same-model auto-retry loop for a retryable provider/model failure, Atomic switches to the next configured fallback model and continues the same turn. If `retry.enabled` is `false`, Atomic skips same-model retries and moves directly to the next fallback for retryable failures. Non-retryable task failures, cancellations, and context-overflow compaction paths do not trigger model fallback.
+
+Fallback entries should be fully qualified `provider/model` ids. Add a reasoning suffix to a candidate to override the effort for that fallback only; valid suffixes are `:off`, `:minimal`, `:low`, `:medium`, `:high`, and `:xhigh`.
+
+```json
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "high",
+  "fallbackModels": [
+    "anthropic/claude-opus-4-8:xhigh",
+    "github-copilot/gpt-5.5:high"
+  ]
+}
+```
+
+Fallback attempts are visible as model changes in the session transcript and as a fallback status in the UI. Switching providers can change latency, billing, data-handling terms, and subscription/credit usage. Configure only providers you are comfortable sending the current conversation and tool context to.
+
+`enabledModels` is separate: it only controls the interactive Ctrl+P model cycle list and is not used as an implicit fallback chain.
 
 ### Codex Fast Mode
 
@@ -251,6 +274,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 ```json
 {
   "enabledModels": ["claude-*", "gpt-4o", "gemini-2*"],
+  "fallbackModels": ["anthropic/claude-opus-4-8:xhigh", "github-copilot/gpt-5.5:high"],
   "defaultContextWindow": "1m",
   "defaultContextWindows": {
     "github-copilot/claude-opus-4.8": "936k",
@@ -261,6 +285,8 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 ```
 
 Context-window settings are independent of `defaultThinkingLevel`: selecting a larger context window does not change reasoning effort. Interactive users can change the active model's budget through the `/model` selection flow, which prompts for a context window whenever the chosen model supports more than one window and persists the effective selection under `defaultContextWindows["provider/modelId"]`. Atomic treats `defaultContextWindow` as a broad fallback only: if the active model does not support that value, the model's own default is used without a startup warning; targeted `defaultContextWindows` entries still warn when they become unsupported for their exact model. Larger provider context windows can carry higher usage cost. For catalog-advertised GitHub Copilot long-context models (including dynamically populated plain catalog ids such as `github-copilot/claude-sonnet-5`, while namespaced enterprise deployment ids containing `/` are skipped), selecting `1m` raises Atomic's local prompt budget to the largest advertised long-context tier at or below that rounded request (for example `922k` or `936k`) and sends `X-GitHub-Api-Version: 2026-06-01`; GitHub then applies the long-context tier server-side by prompt token count. That tier consumes more Copilot AI credits and requires Copilot long-context/usage-based billing entitlement, otherwise requests over the server cap are rejected with a friendly hint. Custom providers and explicit model overrides can still declare their own selectable `contextWindowOptions`.
+
+`fallbackModels` is independent of both context-window defaults and `enabledModels`: it is consulted only after a retryable main-chat provider/model failure, and each fallback candidate applies its own model-specific context-window defaults when selected.
 
 ### Markdown
 
