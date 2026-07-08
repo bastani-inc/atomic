@@ -101,6 +101,13 @@ function stripEventSeparator(frame: string): string {
   return frame;
 }
 
+function missingFinalFrameSeparator(frame: string): string {
+  if (frame.endsWith("\r\n")) return "\r\n";
+  if (frame.endsWith("\n")) return "\n";
+  if (frame.endsWith("\r")) return "\r";
+  return "\n\n";
+}
+
 function hasKnownAnthropicEventName(eventName: string | undefined): eventName is string {
   return eventName !== undefined && KNOWN_ANTHROPIC_SSE_EVENT_NAMES.has(eventName);
 }
@@ -292,9 +299,21 @@ export function createCopilotAnthropicMessagesSseRepairStream(
           let output = drained.output;
 
           if (buffer.length > 0) {
-            markMalformed(state);
-            output += buffer;
+            const trailingFrame = buffer;
+            const observation = observeSseFrame(trailingFrame, state);
             buffer = "";
+            if (observation === "done") {
+              if (shouldSynthesizeMessageStop(state)) {
+                output += COPILOT_ANTHROPIC_SYNTHETIC_MESSAGE_STOP_EVENT;
+                state.insertedSyntheticStop = true;
+                state.sawMessageStop = true;
+              }
+              state.sawDoneSentinel = true;
+            }
+            output += trailingFrame;
+            if (observation === "data" && shouldSynthesizeMessageStop(state)) {
+              output += missingFinalFrameSeparator(trailingFrame);
+            }
           }
 
           if (shouldSynthesizeMessageStop(state)) {

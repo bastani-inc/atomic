@@ -127,6 +127,22 @@ describe("createCopilotAnthropicMessagesSseRepairStream", () => {
     expect(countOccurrences(out, "event: message_stop")).toBe(1);
   });
 
+  it("repairs a terminal message_delta frame that ends at EOF without a blank-line separator", async () => {
+    const terminalFrameAtEof = terminalMessageDeltaEvent().slice(0, -2);
+    const input = [
+      messageStartEvent(),
+      contentBlockStartEvent(),
+      contentBlockDeltaEvent(),
+      contentBlockStopEvent(),
+      terminalFrameAtEof,
+    ].join("");
+
+    const out = await runRepair([input]);
+
+    expect(out).toBe(`${input}\n\n${COPILOT_ANTHROPIC_SYNTHETIC_MESSAGE_STOP_EVENT}`);
+    expect(countOccurrences(out, "event: message_stop")).toBe(1);
+  });
+
   it("leaves an already well-formed stream byte-for-byte unchanged", async () => {
     const input = `${repairableAnthropicStream()}${messageStopEvent()}`;
 
