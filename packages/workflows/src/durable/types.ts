@@ -9,7 +9,7 @@
  * cross-ref: issue #1498
  */
 
-import type { WorkflowSerializableValue } from "../shared/types.js";
+import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -113,6 +113,19 @@ export interface DurableStageCheckpoint {
   readonly sessionId?: string;
   readonly sessionFile?: string;
   readonly completedAt: number;
+  /** Original stage start timestamp, when available. */
+  readonly startedAt?: number;
+  /** Original stage end timestamp, when available. */
+  readonly endedAt?: number;
+  /** Original stage duration, when available. */
+  readonly durationMs?: number;
+  /** Display/result text recorded for the completed stage. */
+  readonly result?: string;
+  /** Completed stage/task model metadata used to hydrate replayed snapshots. */
+  readonly model?: string;
+  readonly fastMode?: boolean;
+  readonly attemptedModels?: readonly string[];
+  readonly modelAttempts?: readonly WorkflowModelAttempt[];
 }
 
 export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";

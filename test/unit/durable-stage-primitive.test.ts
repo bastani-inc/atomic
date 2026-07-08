@@ -162,7 +162,7 @@ describe("recordStageCheckpoint", () => {
       workflowId: WORKFLOW_ID,
       backend,
       nextReplayKey: () => replayKey,
-      recordCachedStage: (name, key, output) => recorded.push({ name, replayKey: key, output: String(output) }),
+      recordCachedStage: (name, key, checkpoint) => recorded.push({ name, replayKey: key, output: String(checkpoint.output) }),
       stage: () => { throw new Error("live stage should not run"); },
     });
 
@@ -192,7 +192,13 @@ describe("recordStageCheckpoint", () => {
       workflowId: WORKFLOW_ID,
       backend,
       nextReplayKey: () => replayKey,
-      recordCachedTask: (name, key, output) => recorded.push({ name, replayKey: key, text: output.text }),
+      recordCachedTask: (name, key, checkpoint) => {
+        const output = checkpoint.output;
+        if (typeof output !== "object" || output === null || Array.isArray(output)) return;
+        const text = (output as { readonly text?: string }).text;
+        if (text === undefined) return;
+        recorded.push({ name, replayKey: key, text });
+      },
       task: async () => { throw new Error("live task should not run"); },
     });
 

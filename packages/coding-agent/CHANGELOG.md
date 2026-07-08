@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed bundled workflow durable resume hydration so replayed parallel reviewer fanout preserves branch structure and completed workflow stages restore persisted summaries, durations, session/model metadata, and checkpoint contents in status and graph views.
+
 ## [0.9.5-alpha.7] - 2026-07-07
 
 ### Changed

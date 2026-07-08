@@ -10,13 +10,14 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableScope } from "./scoped-backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
+import { stageCheckpointWithOutput, type DurableCompletedStageCheckpoint } from "./stage-primitive.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
   readonly workflowId: string;
   readonly rootWorkflowId: string;
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (name: string) => string;
-  readonly recordCachedStage: (name: string, replayKey: string, output: WorkflowSerializableValue) => void;
+  readonly recordCachedStage: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
   /**
    * Publish the durable scope computed for the next child invocation so the
    * child runner can consume it and route its internal side-effect checkpoints
@@ -49,10 +50,10 @@ export function createDurableChildWorkflowPrimitive(input: {
     // re-execute completed side effects on parent resume.
     // cross-ref: issue #1498.
     input.setChildDurableScope({ rootWorkflowId: input.rootWorkflowId, scopePrefix: replayKey });
-    const cached = input.backend.getStageOutput(input.workflowId, replayKey);
-    if (cached !== undefined && isWorkflowChildResult(cached)) {
+    const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowChildResult);
+    if (cached !== undefined && isWorkflowChildResult(cached.output)) {
       input.recordCachedStage(boundaryName, replayKey, cached);
-      return cached as WorkflowChildResult<TChildOutputs>;
+      return cached.output as WorkflowChildResult<TChildOutputs>;
     }
     const result = await input.workflow(child, ...args);
     await recordCheckpointDurably(input.backend, {
@@ -63,10 +64,12 @@ export function createDurableChildWorkflowPrimitive(input: {
       replayKey,
       output: result as WorkflowSerializableValue,
       completedAt: Date.now(),
+      result: result.status,
     });
     return result as WorkflowChildResult<TChildOutputs>;
   };
 }
+
 
 function isWorkflowChildResult(value: WorkflowSerializableValue): value is WorkflowChildResult<WorkflowOutputValues> {
   return typeof value === "object"

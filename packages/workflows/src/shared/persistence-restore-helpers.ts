@@ -255,6 +255,14 @@ function numericRetryAfterMs(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
+function numericTimestamp(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function numericDuration(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 export function findRunBlockedMetadata(
   entries: readonly SessionEntry[],
   runId: string,
@@ -360,6 +368,8 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
     const retryAfterMs = numericRetryAfterMs(end["retryAfterMs"]);
     const failureMessage = end["failureMessage"];
     const failedStageId = end["failedStageId"];
+    const restoredEndedAt = numericTimestamp(end["endedAt"]);
+    const restoredDurationMs = numericDuration(end["durationMs"]);
     store.recordRunEnd(
       runId,
       status,
@@ -378,6 +388,13 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
         ...(typeof exitReason === "string" ? { exitReason } : {}),
       },
     );
+    const restoredRun = store.runs().find((run) => run.id === runId);
+    if (restoredRun !== undefined && (restoredEndedAt !== undefined || restoredDurationMs !== undefined)) {
+      Object.assign(restoredRun, {
+        ...(restoredEndedAt !== undefined ? { endedAt: restoredEndedAt } : {}),
+        ...(restoredDurationMs !== undefined ? { durationMs: restoredDurationMs } : {}),
+      });
+    }
   }
 }
 
