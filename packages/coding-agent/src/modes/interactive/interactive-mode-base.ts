@@ -121,6 +121,8 @@ export class InteractiveModeBase {
 
   startupDraftText: string | undefined = undefined;
 
+  startupCookedInputRecovered = false;
+
 
   deferredRenderedUserInputs: string[] = [];
 

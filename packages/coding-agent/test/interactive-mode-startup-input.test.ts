@@ -7,6 +7,7 @@ type SubmitContext = {
 	editor: {
 		addToHistory?: (text: string) => void;
 		setText: (text: string) => void;
+		getText: () => string;
 	};
 	ui: { requestRender: () => void };
 	session: {
@@ -23,6 +24,7 @@ type SubmitContext = {
 	deliverStartupReplayPrompt: (text: string) => void;
 	advanceStartupInputReplay: (text: string) => void;
 	drainStartupReplayCommands: () => Promise<void>;
+	recoverCookedStartupInput: () => void;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 	startupReplayInputs: string[];
@@ -36,6 +38,7 @@ type InputContext = {
 	pendingUserInputs: string[];
 	startupReplayActiveInput?: string;
 	drainStartupReplayCommands?: () => Promise<void>;
+	recoverCookedStartupInput?: () => void;
 };
 
 type InteractiveModePrivate = {
@@ -51,6 +54,7 @@ function createSubmitContext(): SubmitContext {
 		editor: {
 			addToHistory: vi.fn(),
 			setText: vi.fn(),
+			getText: vi.fn(() => ""),
 		},
 		ui: {
 			requestRender: vi.fn(),
@@ -69,6 +73,7 @@ function createSubmitContext(): SubmitContext {
 		deliverStartupReplayPrompt: InteractiveMode.prototype.deliverStartupReplayPrompt,
 		advanceStartupInputReplay: InteractiveMode.prototype.advanceStartupInputReplay,
 		drainStartupReplayCommands: InteractiveMode.prototype.drainStartupReplayCommands,
+		recoverCookedStartupInput: InteractiveMode.prototype.recoverCookedStartupInput,
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 	};
@@ -213,6 +218,18 @@ describe("InteractiveMode startup input", () => {
 
 		expect(context.startupReplayActiveInput).toBe("!pwd");
 		expect(context.startupReplayInputs).toEqual(["explain result"]);
+		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
+	});
+
+	it("recovers cooked immediate launch input as separate startup submissions", () => {
+		const context = createSubmitContext();
+		vi.mocked(context.editor.getText).mockReturnValue("!pwd\nordinary prompt after command\n/exit");
+
+		context.recoverCookedStartupInput();
+
+		expect(context.startupReplayActiveInput).toBe("!pwd");
+		expect(context.startupReplayInputs).toEqual(["ordinary prompt after command", "/exit"]);
+		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.editor.setText).toHaveBeenCalledWith("!pwd");
 	});
 

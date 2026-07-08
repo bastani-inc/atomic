@@ -111,13 +111,21 @@ export async function main(args: string[], options?: MainOptions) {
 	const startupGlobalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
 	const startupDefaultProjectTrust = startupGlobalSettingsManager.getDefaultProjectTrust();
 	const startupProjectTrusted = parsed.projectTrustOverride ?? startupStoredProjectTrust ?? (!startupHasTrustInputs || startupDefaultProjectTrust === "always");
-
+	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions), resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
+	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates), resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
+	let startupEarlyInputCapture: EarlyInputCapture | undefined = startEarlyInputCapture({ enabled: computeStartupInputCaptureEnabled({
+		appMode, stdinIsTTY: process.stdin.isTTY === true, parsed, sessionCwd: cwd, projectTrustStore, resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
+		resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0), deprecationWarningCount: 0,
+	}) });
 	// Run migrations after computing startup project trust so project-local migrations
 	// cannot read or mutate untrusted project config before approval.
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd, {
 		projectTrusted: startupProjectTrusted,
 	});
 	time("runMigrations");
+	if (deprecationWarnings.length > 0) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
+	}
 
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: startupProjectTrusted });
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
@@ -135,6 +143,7 @@ export async function main(args: string[], options?: MainOptions) {
 	let sessionManager = await createSessionManager(parsed, cwd, sessionDir, startupSettingsManager);
 	const missingSessionCwdIssue = getMissingSessionCwdIssue(sessionManager, cwd);
 	if (missingSessionCwdIssue) {
+		startupEarlyInputCapture?.consume(); startupEarlyInputCapture = undefined;
 		if (appMode === "interactive") {
 			const selectedCwd = await promptForMissingSessionCwd(missingSessionCwdIssue, startupSettingsManager);
 			if (!selectedCwd) {
@@ -160,21 +169,12 @@ export async function main(args: string[], options?: MainOptions) {
 	const autoTrustOnReloadCwd =
 		parsed.projectTrustOverride === undefined && !hasProjectTrustInputs(sessionCwd) ? sessionCwd : undefined;
 
-	const resolvedExtensionPaths = resolveCliPaths(cwd, parsed.extensions);
-	const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
-	const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
-	const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
 	const builtinPackagePaths = options?.builtinPackagePaths ?? getBuiltinPackagePaths();
 	const authStorage = AuthStorage.create();
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 	const borrowedExtensionSourceTrustByPath = new Map<string, boolean>();
 	let deferredExtensionLoad = false;
-	let startupEarlyInputCapture: EarlyInputCapture | undefined;
-	startupEarlyInputCapture = startEarlyInputCapture({ enabled: computeStartupInputCaptureEnabled({
-		appMode, stdinIsTTY: process.stdin.isTTY === true, parsed, sessionCwd, projectTrustStore, resolvedExtensionPathCount: resolvedExtensionPaths?.length ?? 0,
-		resolvedResourcePathCount: (resolvedSkillPaths?.length ?? 0) + (resolvedPromptTemplatePaths?.length ?? 0) + (resolvedThemePaths?.length ?? 0), deprecationWarningCount: deprecationWarnings.length,
-	}) });
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
 		cwd,
 		agentDir,

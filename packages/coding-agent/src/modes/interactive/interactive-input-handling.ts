@@ -1,4 +1,4 @@
-import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
 import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
@@ -154,6 +154,21 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: Intera
     } else {
       this.pendingUserInputs.push(text);
     }
+  };
+
+InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: InteractiveModeBase): void {
+    if (this.startupCookedInputRecovered || this.startupReplayActiveInput || this.pendingUserInputs.length > 0) return;
+    this.startupCookedInputRecovered = true;
+    const text = this.editor.getText();
+    if (!text.includes("\n")) return;
+    const submissions = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (submissions.length < 2) return;
+    this.editor.setText("");
+    seedStartupInput(this.pendingUserInputs, this.editor, { text: "", submissions }, this.startupReplayInputs, (draft) => {
+      this.startupDraftText = draft;
+    }, (active) => {
+      this.startupReplayActiveInput = active;
+    });
   };
 
 InteractiveModeBase.prototype.drainStartupReplayCommands = async function(this: InteractiveModeBase): Promise<void> {
