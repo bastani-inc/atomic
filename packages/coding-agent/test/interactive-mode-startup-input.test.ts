@@ -24,7 +24,7 @@ type SubmitContext = {
 	deliverStartupReplayPrompt: (text: string) => void;
 	advanceStartupInputReplay: (text: string) => void;
 	drainStartupReplayCommands: () => Promise<void>;
-	recoverCookedStartupInput: () => void;
+	recoverCookedStartupInput: () => boolean;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 	startupReplayInputs: string[];
@@ -38,7 +38,7 @@ type InputContext = {
 	pendingUserInputs: string[];
 	startupReplayActiveInput?: string;
 	drainStartupReplayCommands?: () => Promise<void>;
-	recoverCookedStartupInput?: () => void;
+	recoverCookedStartupInput?: () => boolean;
 };
 
 type InteractiveModePrivate = {
@@ -209,6 +209,48 @@ describe("InteractiveMode startup input", () => {
 		expect(context.startupReplayInputs).toEqual([]);
 	});
 
+	it("preserves raw-captured startup ordering across multiple commands and prompts", async () => {
+		const pendingUserInputs: string[] = [];
+		const startupReplayInputs: string[] = [];
+		let startupReplayActiveInput: string | undefined;
+		const editor = { setText: vi.fn() };
+
+		seedStartupInput(
+			pendingUserInputs,
+			editor,
+			{
+				text: "",
+				submissions: ["!pwd", "explain result", "!date", "explain date"],
+			},
+			startupReplayInputs,
+			undefined,
+			(text) => {
+				startupReplayActiveInput = text;
+			},
+		);
+
+		expect(pendingUserInputs).toEqual([]);
+		expect(startupReplayActiveInput).toBe("!pwd");
+		expect(startupReplayInputs).toEqual(["explain result", "!date", "explain date"]);
+
+		const context = createSubmitContext();
+		context.startupReplayActiveInput = startupReplayActiveInput;
+		context.startupReplayInputs = startupReplayInputs;
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain result");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.startupReplayActiveInput).toBe("!date");
+		expect(context.startupReplayInputs).toEqual(["explain date"]);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("explain date");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("date", false);
+		expect(context.startupReplayActiveInput).toBeUndefined();
+		expect(context.startupReplayInputs).toEqual([]);
+	});
+
 	it("keeps later startup commands standalone while replay advances", () => {
 		const context = createSubmitContext();
 		context.startupReplayActiveInput = "/settings";
@@ -242,6 +284,53 @@ describe("InteractiveMode startup input", () => {
 		expect(context.pendingUserInputs).toEqual(["first submitted"]);
 		expect(context.startupReplayActiveInput).toBeUndefined();
 		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
+	});
+
+	it("replays cooked command-like input after submitted startup input", () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("first submitted\n/settings");
+
+		context.recoverCookedStartupInput();
+
+		expect(context.pendingUserInputs).toEqual(["first submitted"]);
+		expect(context.startupReplayActiveInput).toBe("/settings");
+		expect(context.editor.setText).toHaveBeenCalledWith("/settings");
+	});
+
+	it("preserves cooked draft text behind an active command-like submission", async () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("ordinary prompt after command\nunfinished draft");
+		context.startupReplayActiveInput = "!pwd";
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("ordinary prompt after command");
+
+		expect(context.handleBashCommand).toHaveBeenCalledWith("pwd", false);
+		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
+		expect(context.startupReplayActiveInput).toBeUndefined();
+	});
+
+	it("preserves cooked draft text after a command-like startup submission", () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>).mockReturnValue("!pwd\nordinary prompt\nunfinished draft");
+
+		context.recoverCookedStartupInput();
+
+		expect(context.startupReplayActiveInput).toBe("!pwd");
+		expect(context.startupReplayInputs).toEqual(["ordinary prompt"]);
+		expect(context.startupDraftText).toBe("unfinished draft");
+	});
+
+	it("retries cooked startup recovery until editor text arrives", async () => {
+		const context = createSubmitContext();
+		(context.editor.getText as ReturnType<typeof vi.fn>)
+			.mockReturnValueOnce("")
+			.mockReturnValueOnce("first submitted\nunfinished draft");
+
+		await expect(interactiveModePrototype.getUserInput.call(context)).resolves.toBe("first submitted");
+
+		expect(context.editor.getText).toHaveBeenCalledTimes(2);
 		expect(context.editor.setText).toHaveBeenCalledWith("unfinished draft");
 	});
 

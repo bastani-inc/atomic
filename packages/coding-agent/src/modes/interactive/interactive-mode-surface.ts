@@ -156,7 +156,7 @@ declare module "./interactive-mode-base.ts" {
   handleClipboardImagePaste(): Promise<void>;
   setupEditorSubmitHandler(): void;
   deliverStartupReplayPrompt(text: string): void;
-  recoverCookedStartupInput(): void;
+  recoverCookedStartupInput(): boolean;
   drainStartupReplayCommands(): Promise<void>;
   advanceStartupInputReplay(submittedText: string): void;
   subscribeToAgent(): void;

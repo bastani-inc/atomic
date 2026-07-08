@@ -156,37 +156,39 @@ InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: Intera
     }
   };
 
-InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: InteractiveModeBase): void {
-    if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return;
-    this.startupCookedInputRecovered = true;
+InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: InteractiveModeBase): boolean {
+    if (this.startupCookedInputRecovered || this.pendingUserInputs.length > 0) return true;
     const text = this.editor.getText();
     const cookedLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const isCommandLike = (line: string | undefined) =>
       line !== undefined && (line.startsWith("/") || line.startsWith("!"));
     const singleCommandLike = cookedLines.length === 1 && isCommandLike(cookedLines[0]);
-    if (cookedLines.length < 2 && !singleCommandLike) return;
+    if (cookedLines.length < 2 && !singleCommandLike) return false;
 
+    this.startupCookedInputRecovered = true;
+    const activeInput = this.startupReplayActiveInput?.trim();
     let draftText = "";
     let submissions = cookedLines;
     if (
-      this.startupReplayActiveInput === undefined &&
+      activeInput === undefined &&
       cookedLines.length > 1 &&
-      !isCommandLike(cookedLines[0]) &&
-      !isCommandLike(cookedLines[cookedLines.length - 1])
+      !isCommandLike(cookedLines[cookedLines.length - 1]) &&
+      (!isCommandLike(cookedLines[0]) || cookedLines.length > 2)
     ) {
       draftText = cookedLines[cookedLines.length - 1] ?? "";
       submissions = cookedLines.slice(0, -1);
+    } else if (activeInput && cookedLines.length > 1 && !isCommandLike(cookedLines[cookedLines.length - 1])) {
+      draftText = cookedLines[cookedLines.length - 1] ?? "";
+      submissions = cookedLines.slice(0, -1);
     }
-    if (submissions.length === 0) return;
+    if (submissions.length === 0) return true;
 
-    const activeInput = this.startupReplayActiveInput?.trim();
     if (activeInput) {
       const queuedSubmissions =
         submissions[0] === activeInput ? submissions.slice(1) : submissions;
-      if (queuedSubmissions.length === 0) return;
-      this.editor.setText("");
+      this.editor.setText(draftText);
       this.startupReplayInputs.push(...queuedSubmissions);
-      return;
+      return true;
     }
 
     this.editor.setText("");
@@ -195,6 +197,7 @@ InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: Interac
     }, (active) => {
       this.startupReplayActiveInput = active;
     });
+    return true;
   };
 
 InteractiveModeBase.prototype.drainStartupReplayCommands = async function(this: InteractiveModeBase): Promise<void> {

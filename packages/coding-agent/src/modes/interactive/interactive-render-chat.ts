@@ -271,9 +271,9 @@ InteractiveModeBase.prototype.renderInitialMessages = function(this: Interactive
   };
 
 InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveModeBase): Promise<string> {
-    if (!this.startupCookedInputRecovered) {
+    for (let attempt = 0; !this.startupCookedInputRecovered && attempt < 10; attempt += 1) {
       await yieldToEventLoop();
-      this.recoverCookedStartupInput?.();
+      if (this.recoverCookedStartupInput?.()) break;
     }
     while (true) {
       const queuedInput = this.pendingUserInputs.shift();
