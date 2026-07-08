@@ -365,8 +365,8 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
 
 ```json
 {
-  "brokerCommand": "bun",
-  "brokerArgs": [],
+  "brokerCommand": "npx",
+  "brokerArgs": ["--no-install", "tsx"],
   "confirmSend": false,
   "enabled": true,
   "replyHint": true,
@@ -374,21 +374,23 @@ Create `~/.atomic/agent/intercom/config.json` for Atomic. Legacy pi-compatible i
 }
 ```
 
+The default `npx --no-install tsx` pair is a compatibility sentinel: intercom recognizes it and starts the broker through the current Atomic/Pi runtime (`process.execPath`). Node-based installs use that runtime with a resolved `tsx` CLI, falling back to Atomic's bundled `jiti` loader when `tsx` is unavailable; Bun source-checkout runs use the current Bun executable directly; standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff. Default startup therefore does not rely on `npx`, `tsx`, or `bun` being on `PATH`.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `brokerCommand` | `"bun"` | Command used to start the local broker process |
-| `brokerArgs` | `[]` | Arguments passed to `brokerCommand` before the broker script path |
+| `brokerCommand` | `"npx"` | Command used to start the local broker process; the default sentinel is hardened internally to avoid PATH lookup |
+| `brokerArgs` | `["--no-install", "tsx"]` | Arguments passed to `brokerCommand` before the broker script path |
 | `confirmSend` | false | Show a confirmation dialog before non-reply sends from an interactive session with UI |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Optional custom status suffix shown after the automatic lifecycle status, for example `thinking · researching` |
 
-Existing pi-compatible configs that set a custom broker command still work. For example, a legacy Node/tsx setup can keep:
+Existing pi-compatible configs that set a custom broker command still work. For example, if you intentionally want to use Bun from `PATH`, configure it explicitly:
 
 ```json
 {
-  "brokerCommand": "npx",
-  "brokerArgs": ["--no-install", "tsx"]
+  "brokerCommand": "bun",
+  "brokerArgs": []
 }
 ```
 

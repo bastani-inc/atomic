@@ -2,7 +2,9 @@ import { spawn } from "child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import net from "net";
+import { isBunBinary } from "@bastani/atomic";
 import {
   getBrokerPidPath,
   getBrokerSocketPath,
@@ -15,6 +17,10 @@ const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = getBrokerPidPath();
 const BROKER_SPAWN_LOCK = getBrokerSpawnLockPath();
+
+type BrokerRuntime = "node" | "bun-source" | "bun-binary";
+
+export const INTERNAL_INTERCOM_BROKER_ARG = "--atomic-internal-intercom-broker";
 
 type BrokerLaunchSpec =
   | {
@@ -34,8 +40,55 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function getCurrentBrokerRuntime(): BrokerRuntime {
+  if (!process.versions.bun) return "node";
+  return isBunBinary ? "bun-binary" : "bun-source";
+}
+
+function requireFromExtensionDir(extensionDir: string): NodeJS.Require {
+  return createRequire(join(extensionDir, "package.json"));
+}
+
+function resolveTsxCliPath(extensionDir: string): string | null {
+  try {
+    const tsxMain = requireFromExtensionDir(extensionDir).resolve("tsx");
+    return join(dirname(tsxMain), "cli.mjs");
+  } catch {
+    const bundledTsx = join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+    return existsSync(bundledTsx) ? bundledTsx : null;
+  }
+}
+
 export function getTsxCliPath(extensionDir: string = EXTENSION_DIR): string {
-  return join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+  return resolveTsxCliPath(extensionDir) ?? join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+}
+
+export function getJitiCliPath(extensionDir: string = EXTENSION_DIR): string {
+  try {
+    const jitiPackage = requireFromExtensionDir(extensionDir).resolve("jiti/package.json");
+    return join(dirname(jitiPackage), "lib", "jiti-cli.mjs");
+  } catch {
+    return join(extensionDir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+  }
+}
+
+function getDefaultBrokerRunnerPath(extensionDir: string): string {
+  return resolveTsxCliPath(extensionDir) ?? getJitiCliPath(extensionDir);
+}
+
+function getDefaultBrokerCommandParts(
+  brokerPath: string,
+  extensionDir: string,
+  runtimePath: string,
+  runtime: BrokerRuntime,
+): { command: string; args: string[] } {
+  if (runtime === "bun-source") {
+    return { command: runtimePath, args: [brokerPath] };
+  }
+  if (runtime === "bun-binary") {
+    return { command: runtimePath, args: [INTERNAL_INTERCOM_BROKER_ARG, brokerPath] };
+  }
+  return { command: runtimePath, args: [getDefaultBrokerRunnerPath(extensionDir), brokerPath] };
 }
 
 function quoteWindowsArg(value: string): string {
@@ -46,7 +99,7 @@ export function getWindowsHiddenLauncherPath(intercomDir: string = INTERCOM_DIR)
   return join(intercomDir, "broker-launch.vbs");
 }
 
-function usesLegacyTsxBrokerCommand(brokerCommand: string, brokerArgs: string[]): boolean {
+function usesDefaultBrokerCommand(brokerCommand: string, brokerArgs: string[]): boolean {
   return brokerCommand === "npx"
     && brokerArgs.length === 2
     && brokerArgs[0] === "--no-install"
@@ -57,11 +110,13 @@ export function getWindowsBrokerCommandLine(
   brokerPath: string,
   extensionDir: string = EXTENSION_DIR,
   nodePath: string = process.execPath,
-  brokerCommand = "bun",
-  brokerArgs: string[] = [],
+  brokerCommand = "npx",
+  brokerArgs: string[] = ["--no-install", "tsx"],
+  runtime: BrokerRuntime = getCurrentBrokerRuntime(),
 ): string {
-  if (usesLegacyTsxBrokerCommand(brokerCommand, brokerArgs)) {
-    return [quoteWindowsArg(nodePath), quoteWindowsArg(getTsxCliPath(extensionDir)), quoteWindowsArg(brokerPath)].join(" ");
+  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
+    const launch = getDefaultBrokerCommandParts(brokerPath, extensionDir, nodePath, runtime);
+    return [quoteWindowsArg(launch.command), ...launch.args.map(quoteWindowsArg)].join(" ");
   }
 
   return [quoteWindowsArg(brokerCommand), ...brokerArgs.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
@@ -93,6 +148,7 @@ export function getBrokerLaunchSpec(
   platform: NodeJS.Platform = process.platform,
   intercomDir: string = INTERCOM_DIR,
   nodePath: string = process.execPath,
+  runtime: BrokerRuntime = getCurrentBrokerRuntime(),
 ): BrokerLaunchSpec {
   if (platform === "win32") {
     const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
@@ -101,7 +157,16 @@ export function getBrokerLaunchSpec(
       command: "wscript.exe",
       args: [launcherPath],
       launcherPath,
-      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs),
+      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath, brokerCommand, brokerArgs, runtime),
+    };
+  }
+
+  if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
+    const launch = getDefaultBrokerCommandParts(brokerPath, extensionDir, nodePath, runtime);
+    return {
+      kind: "direct",
+      command: launch.command,
+      args: launch.args,
     };
   }
 

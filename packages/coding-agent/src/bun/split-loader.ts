@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { INTERNAL_INTERCOM_BROKER_ARG, importInternalIntercomBroker } from "./internal-intercom-broker.ts";
 
 const APP_NAME = "atomic";
 
@@ -20,15 +21,26 @@ function readVersion(): string {
 	}
 }
 
-if (args[0] === "--version" || args[0] === "-v") {
-	console.log(readVersion());
-	process.exit(0);
-}
+if (args[0] === INTERNAL_INTERCOM_BROKER_ARG) {
+	if (args.length !== 2) {
+		console.error(`Atomic startup error: ${INTERNAL_INTERCOM_BROKER_ARG} requires exactly one broker module path`);
+		process.exit(1);
+	}
+	void importInternalIntercomBroker(args[1]).catch((error: Error) => {
+		console.error(`Atomic startup error: ${error.message}`);
+		process.exit(1);
+	});
+} else {
+	if (args[0] === "--version" || args[0] === "-v") {
+		console.log(readVersion());
+		process.exit(0);
+	}
 
-const appPath = join(dirname(process.execPath), "app.js");
-if (!existsSync(appPath)) {
-	console.error(`Atomic startup error: missing app bundle at ${appPath}`);
-	process.exit(1);
-}
+	const appPath = join(dirname(process.execPath), "app.js");
+	if (!existsSync(appPath)) {
+		console.error(`Atomic startup error: missing app bundle at ${appPath}`);
+		process.exit(1);
+	}
 
-void import(pathToFileURL(appPath).href);
+	void import(pathToFileURL(appPath).href);
+}

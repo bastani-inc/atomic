@@ -10,7 +10,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - Added preferred `atomic` package manifest metadata alongside the legacy `pi` manifest metadata so Atomic package discovery uses Atomic-branded metadata without breaking pi-compatible installs.
 - Fixed raw TypeScript intercom imports to use the bundled `@earendil-works/pi-tui` package name, matching Atomic's runtime dependency while preserving the public intercom API.
 - Updated intercom documentation to describe Atomic's `~/.atomic/agent/intercom/` primary config/runtime path and legacy `~/.pi/agent/intercom/` fallback.
-- Changed the default intercom broker runtime command from `npx --no-install tsx` to `bun` so source-checkout Atomic sessions start the broker with the repository-supported runtime by default; explicit legacy `brokerCommand`/`brokerArgs` configs remain supported.
+- Hardened default intercom broker startup so the pi-compatible `npx --no-install tsx` sentinel launches through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff instead of treating the Atomic executable as a generic Bun interpreter; explicit custom `brokerCommand`/`brokerArgs` configs remain pass-through overrides.
 
 ## [0.9.4] - 2026-07-03
 

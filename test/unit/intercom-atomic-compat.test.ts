@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, RegisteredCommand, ToolDefinition } from "../../packages/coding-agent/src/index.js";
 import { DefaultResourceLoader } from "../../packages/coding-agent/src/core/resource-loader.js";
@@ -15,9 +15,27 @@ import {
   getBrokerSpawnLockPath,
   getIntercomDirPath,
 } from "../../packages/intercom/broker/paths.js";
+import {
+  getBrokerLaunchSpec,
+  getWindowsBrokerCommandLine,
+  INTERNAL_INTERCOM_BROKER_ARG as SPAWN_INTERNAL_INTERCOM_BROKER_ARG,
+} from "../../packages/intercom/broker/spawn.js";
+import {
+  getBundledIntercomBrokerPath,
+  INTERNAL_INTERCOM_BROKER_ARG as SPLIT_LOADER_INTERNAL_INTERCOM_BROKER_ARG,
+  isBundledIntercomBrokerPath,
+  validateInternalIntercomBrokerPath,
+} from "../../packages/coding-agent/src/bun/internal-intercom-broker.js";
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
+}
+
+function createBundledTsxCli(extensionDir: string): string {
+  const tsxCli = join(extensionDir, "node_modules", "tsx", "dist", "cli.mjs");
+  mkdirSync(dirname(tsxCli), { recursive: true });
+  writeFileSync(tsxCli, "", "utf8");
+  return tsxCli;
 }
 
 function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T {
@@ -92,13 +110,170 @@ function runLoadConfig(home: string): { status?: string; brokerCommand: string; 
 }
 
 describe("intercom default broker runtime", () => {
-  test("uses Bun directly when no intercom config overrides the broker command", () => {
+  test("keeps the pi-compatible npx/tsx sentinel in default user-visible config", () => {
     const home = tempDir("atomic-intercom-config-");
 
     const config = runLoadConfig(home);
 
-    assert.equal(config.brokerCommand, "bun");
-    assert.deepEqual(config.brokerArgs, []);
+    assert.equal(config.brokerCommand, "npx");
+    assert.deepEqual(config.brokerArgs, ["--no-install", "tsx"]);
+  });
+
+  test("hardens the default sentinel to launch through the current runtime and tsx", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const intercomDir = tempDir("atomic-intercom-runtime-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const nodePath = join(extensionDir, "node-runtime");
+    const bundledTsx = createBundledTsxCli(extensionDir);
+
+    const launch = getBrokerLaunchSpec(
+      brokerPath,
+      "npx",
+      ["--no-install", "tsx"],
+      extensionDir,
+      "linux",
+      intercomDir,
+      nodePath,
+      "node",
+    );
+
+    assert.equal(launch.kind, "direct");
+    assert.equal(launch.command, nodePath);
+    assert.notEqual(launch.command, "bun");
+    assert.notEqual(launch.command, "npx");
+    assert.deepEqual(launch.args, [bundledTsx, brokerPath]);
+    assert.equal(basename(launch.args[0] ?? ""), "cli.mjs");
+  });
+
+  test("uses the current Bun runtime directly for the default sentinel without PATH lookup", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const intercomDir = tempDir("atomic-intercom-runtime-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const bunRuntimePath = join(extensionDir, "bun-runtime");
+    const launch = getBrokerLaunchSpec(
+      brokerPath,
+      "npx",
+      ["--no-install", "tsx"],
+      extensionDir,
+      "linux",
+      intercomDir,
+      bunRuntimePath,
+      "bun-source",
+    );
+
+    assert.equal(launch.kind, "direct");
+    assert.equal(launch.command, bunRuntimePath);
+    assert.deepEqual(launch.args, [brokerPath]);
+  });
+
+  test("uses the split Atomic executable handoff for standalone Bun binary default sentinel", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const intercomDir = tempDir("atomic-intercom-runtime-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const atomicExecutable = join(extensionDir, "atomic");
+    const launch = getBrokerLaunchSpec(
+      brokerPath,
+      "npx",
+      ["--no-install", "tsx"],
+      extensionDir,
+      "linux",
+      intercomDir,
+      atomicExecutable,
+      "bun-binary",
+    );
+
+    assert.equal(launch.kind, "direct");
+    assert.equal(launch.command, atomicExecutable);
+    assert.deepEqual(launch.args, [SPAWN_INTERNAL_INTERCOM_BROKER_ARG, brokerPath]);
+  });
+
+  test("keeps the split-loader broker handoff argument in sync", () => {
+    const executablePath = join(tempDir("atomic-binary-dir-"), "atomic");
+    const brokerPath = getBundledIntercomBrokerPath(executablePath);
+
+    assert.equal(SPAWN_INTERNAL_INTERCOM_BROKER_ARG, SPLIT_LOADER_INTERNAL_INTERCOM_BROKER_ARG);
+    assert.equal(isBundledIntercomBrokerPath(brokerPath, executablePath), true);
+    assert.equal(validateInternalIntercomBrokerPath(brokerPath, executablePath), resolve(brokerPath));
+    assert.equal(isBundledIntercomBrokerPath(join(dirname(brokerPath), "not-broker.ts"), executablePath), false);
+    assert.throws(
+      () => validateInternalIntercomBrokerPath(join(dirname(brokerPath), "not-broker.ts"), executablePath),
+      /must resolve to the bundled intercom broker module/,
+    );
+  });
+
+  test("falls back to bundled jiti when tsx is unavailable for Node default sentinel", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const intercomDir = tempDir("atomic-intercom-runtime-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const nodePath = join(extensionDir, "node-runtime");
+    const jitiCli = join(extensionDir, "node_modules", "jiti", "lib", "jiti-cli.mjs");
+    mkdirSync(dirname(jitiCli), { recursive: true });
+    writeFileSync(jitiCli, "", "utf8");
+
+    const launch = getBrokerLaunchSpec(
+      brokerPath,
+      "npx",
+      ["--no-install", "tsx"],
+      extensionDir,
+      "linux",
+      intercomDir,
+      nodePath,
+      "node",
+    );
+
+    assert.equal(launch.kind, "direct");
+    assert.equal(launch.command, nodePath);
+    assert.deepEqual(launch.args, [jitiCli, brokerPath]);
+  });
+
+  test("preserves explicit custom bun broker configs as pass-through overrides", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const intercomDir = tempDir("atomic-intercom-runtime-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const launch = getBrokerLaunchSpec(brokerPath, "bun", [], extensionDir, "linux", intercomDir, "node-runtime");
+
+    assert.equal(launch.kind, "direct");
+    assert.equal(launch.command, "bun");
+    assert.deepEqual(launch.args, [brokerPath]);
+  });
+
+  test("uses the current runtime and tsx in the Windows default launcher command line", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+    const nodePath = String.raw`C:\Program Files\Atomic\node.exe`;
+    const bundledTsx = createBundledTsxCli(extensionDir);
+
+    const commandLine = getWindowsBrokerCommandLine(
+      brokerPath,
+      extensionDir,
+      nodePath,
+      "npx",
+      ["--no-install", "tsx"],
+      "node",
+    );
+
+    assert.ok(commandLine.startsWith(`"${nodePath}" `));
+    assert.ok(commandLine.includes(`"${bundledTsx.replace(/"/g, '""')}"`));
+    assert.ok(commandLine.endsWith(` "${brokerPath.replace(/"/g, '""')}"`));
+    assert.equal(commandLine.includes('"npx"'), false);
+    assert.equal(commandLine.includes('"bun"'), false);
+  });
+
+
+  test("preserves Windows custom broker override command line", () => {
+    const extensionDir = tempDir("atomic-intercom-extension-");
+    const brokerPath = join(extensionDir, "broker", "broker.ts");
+
+    const commandLine = getWindowsBrokerCommandLine(
+      brokerPath,
+      extensionDir,
+      String.raw`C:\Program Files\Atomic\node.exe`,
+      "bun",
+      ["--smol"],
+      "node",
+    );
+
+    assert.equal(commandLine, `"bun" "--smol" "${brokerPath.replace(/"/g, '""')}"`);
   });
 });
 

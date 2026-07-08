@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the bundled intercom extension to keep broker runtime files under the active Atomic agent directory, including custom `ATOMIC_CODING_AGENT_DIR` values and the legacy `PI_CODING_AGENT_DIR` alias, while documenting the `~/.atomic/agent/intercom/` primary path and `~/.pi/agent/intercom/` fallback. The default broker runtime now uses `bun` so source-checkout Atomic sessions no longer depend on an unavailable `npx --no-install tsx` path; explicit legacy broker configs remain supported.
+- Fixed the bundled intercom extension to keep broker runtime files under the active Atomic agent directory, including custom `ATOMIC_CODING_AGENT_DIR` values and the legacy `PI_CODING_AGENT_DIR` alias, while documenting the `~/.atomic/agent/intercom/` primary path and `~/.pi/agent/intercom/` fallback. The default pi-compatible `npx --no-install tsx` broker sentinel is now hardened to launch through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries use a narrow internal split-launcher broker handoff, so default startup does not depend on `npx`, `tsx`, or `bun` being on `PATH`; explicit custom broker configs remain supported.
 
 ## [0.9.5-alpha.7] - 2026-07-07
 
