@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.ts";
 import type { Message } from "./types.ts";
 import { renderContactSupervisorResult } from "./result-renderers.js";
@@ -249,9 +249,11 @@ export function registerContactSupervisorTool(pi: ExtensionAPI, deps: ContactSup
           return {
             content: [{ type: "text", text: `**Reply from supervisor:**\n${replyText}${replyAttachments}` }],
             isError: false,
-            ...(structuredReply
-              ? { details: structuredReply.value !== undefined ? { structuredReply: structuredReply.value } : { structuredReplyParseError: structuredReply.error } }
-              : {}),
+            details: structuredReply
+              ? structuredReply.value !== undefined
+                ? { structuredReply: structuredReply.value }
+                : { structuredReplyParseError: structuredReply.error }
+              : {},
           };
         } catch (error) {
           rejectReplyWaiter(toError(error));

@@ -128,6 +128,33 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(env.output, "result");
   });
 
+  test("stage checkpoint envelope round-trips hydration metadata", () => {
+    const cp: DurableStageCheckpoint = {
+      kind: "stage", workflowId: "wf-stage-meta", checkpointId: "stage:review:1", name: "review",
+      replayKey: "stage:review:1", output: { verdict: "pass" }, completedAt: 3000,
+      startedAt: 1000, endedAt: 3000, durationMs: 2000, result: "review passed",
+      sessionId: "sid", sessionFile: "/tmp/review.jsonl", model: "gpt-test", fastMode: true,
+      attemptedModels: ["gpt-test"], modelAttempts: [{ model: "gpt-test", success: true }],
+    };
+
+    const env = encodeCheckpoint(cp);
+    assert.equal(env.startedAt, 1000);
+    assert.equal(env.durationMs, 2000);
+    assert.equal(env.result, "review passed");
+    assert.deepEqual(env.attemptedModels, ["gpt-test"]);
+
+    const decoded = decodeToCheckpoint("wf-stage-meta", "stage:review:1", env);
+    assert.ok(decoded?.kind === "stage");
+    assert.equal(decoded.startedAt, 1000);
+    assert.equal(decoded.endedAt, 3000);
+    assert.equal(decoded.durationMs, 2000);
+    assert.equal(decoded.result, "review passed");
+    assert.equal(decoded.model, "gpt-test");
+    assert.equal(decoded.fastMode, true);
+    assert.deepEqual(decoded.attemptedModels, ["gpt-test"]);
+    assert.equal(decoded.modelAttempts?.[0]?.success, true);
+  });
+
   test("flush waits for queued async checkpoint writes", async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -311,6 +338,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(entry.status, "paused");
     assert.deepEqual(entry.inputs, { x: 1 });
   });
+
 
   test("hydrateResumableWorkflows discovers all workflows and checkpoints", async () => {
     const hash = durableHash({ name: "t", args: {} });

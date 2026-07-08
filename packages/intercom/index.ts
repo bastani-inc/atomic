@@ -1,57 +1,54 @@
-import type { ExtensionAPI, ExtensionContext, HandlerFn, MessageRenderer, RegisteredCommand, ToolDefinition } from "@bastani/atomic";
-import { Text } from "@mariozechner/pi-tui";
+import type { AgentEndEvent, AgentStartEvent, ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionHandler, MessageRenderer, ModelSelectEvent, RegisteredCommand, SessionShutdownEvent, SessionStartEvent, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent, TurnEndEvent, TurnStartEvent } from "@bastani/atomic";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderIntercomToolResult } from "./result-renderers.js";
 
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type EventHandler = Parameters<ExtensionAPI["events"]["on"]>[1];
+type EventPayload = Parameters<EventHandler>[0];
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
+
+type ForwardedEventMap = {
+	session_start: SessionStartEvent;
+	session_shutdown: SessionShutdownEvent;
+	turn_start: TurnStartEvent;
+	turn_end: TurnEndEvent;
+	agent_start: AgentStartEvent;
+	agent_end: AgentEndEvent;
+	tool_execution_start: ToolExecutionStartEvent;
+	tool_execution_end: ToolExecutionEndEvent;
+	model_select: ModelSelectEvent;
+};
+
+type LazyLifecycleEvent = keyof ForwardedEventMap;
+type ForwardedHandler<K extends LazyLifecycleEvent> = ExtensionHandler<ForwardedEventMap[K]>;
+type ForwardedHandlerMap = { [K in LazyLifecycleEvent]: ForwardedHandler<K>[] };
+type AnyForwardedHandler = { [K in LazyLifecycleEvent]: ForwardedHandler<K> }[LazyLifecycleEvent];
+
 type CapturedHeavy = {
 	tools: Map<string, ToolDefinition>;
 	commands: Map<string, CapturedCommand>;
-	handlers: Map<string, HandlerFn[]>;
+	handlers: ForwardedHandlerMap;
 	shortcuts: Map<string, CapturedShortcut>;
 	eventHandlers: Map<string, EventHandler[]>;
 };
-type LifecycleSnapshot = {
-	event: unknown;
+
+type LifecycleSnapshot<K extends LazyLifecycleEvent> = {
+	event: ForwardedEventMap[K];
 	ctx: ExtensionContext;
 };
 
-type SessionSnapshot = LifecycleSnapshot & {
+type SessionSnapshot = LifecycleSnapshot<"session_start"> & {
 	generation: number;
 };
 
 type ActiveLifecycleState = {
-	turnStart: LifecycleSnapshot | null;
-	agentStart: LifecycleSnapshot | null;
-	activeTools: Map<string, LifecycleSnapshot>;
-	modelSelect: LifecycleSnapshot | null;
+	turnStart: LifecycleSnapshot<"turn_start"> | null;
+	agentStart: LifecycleSnapshot<"agent_start"> | null;
+	activeTools: Map<string, LifecycleSnapshot<"tool_execution_start">>;
+	modelSelect: LifecycleSnapshot<"model_select"> | null;
 };
-
-type LazyLifecycleEvent =
-	| "session_start"
-	| "session_shutdown"
-	| "turn_start"
-	| "turn_end"
-	| "agent_start"
-	| "agent_end"
-	| "tool_execution_start"
-	| "tool_execution_end"
-	| "model_select";
-
-const FORWARDED_EVENTS: readonly LazyLifecycleEvent[] = [
-	"session_start",
-	"session_shutdown",
-	"turn_start",
-	"turn_end",
-	"agent_start",
-	"agent_end",
-	"tool_execution_start",
-	"tool_execution_end",
-	"model_select",
-];
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 
@@ -59,16 +56,67 @@ function hasSubagentIntercomEnv(): boolean {
 	return Object.keys(process.env).some((key) => key.endsWith("_SUBAGENT_ORCHESTRATOR_TARGET"));
 }
 
-function getToolCallId(event: unknown): string | null {
-	if (typeof event !== "object" || event === null || !("toolCallId" in event)) return null;
-	const toolCallId = event.toolCallId;
-	return typeof toolCallId === "string" ? toolCallId : null;
+function createSyntheticSessionStartEvent(): SessionStartEvent {
+	return { type: "session_start", reason: "startup" };
 }
 
-function addHandler(captured: CapturedHeavy, event: string, handler: HandlerFn): void {
-	const handlers = captured.handlers.get(event) ?? [];
-	handlers.push(handler);
-	captured.handlers.set(event, handlers);
+function createForwardedHandlerMap(): ForwardedHandlerMap {
+	return {
+		session_start: [],
+		session_shutdown: [],
+		turn_start: [],
+		turn_end: [],
+		agent_start: [],
+		agent_end: [],
+		tool_execution_start: [],
+		tool_execution_end: [],
+		model_select: [],
+	};
+}
+
+function addHandler<K extends LazyLifecycleEvent>(captured: CapturedHeavy, event: K, handler: ForwardedHandler<K>): void {
+	captured.handlers[event].push(handler);
+}
+
+function captureForwardedHandler(captured: CapturedHeavy, event: "session_start", handler: ForwardedHandler<"session_start">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "session_shutdown", handler: ForwardedHandler<"session_shutdown">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "turn_start", handler: ForwardedHandler<"turn_start">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "turn_end", handler: ForwardedHandler<"turn_end">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "agent_start", handler: ForwardedHandler<"agent_start">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "agent_end", handler: ForwardedHandler<"agent_end">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "tool_execution_start", handler: ForwardedHandler<"tool_execution_start">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "tool_execution_end", handler: ForwardedHandler<"tool_execution_end">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: "model_select", handler: ForwardedHandler<"model_select">): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: LazyLifecycleEvent, handler: AnyForwardedHandler): void;
+function captureForwardedHandler(captured: CapturedHeavy, event: LazyLifecycleEvent, handler: AnyForwardedHandler): void {
+	switch (event) {
+		case "session_start":
+			addHandler(captured, event, handler as ForwardedHandler<"session_start">);
+			return;
+		case "session_shutdown":
+			addHandler(captured, event, handler as ForwardedHandler<"session_shutdown">);
+			return;
+		case "turn_start":
+			addHandler(captured, event, handler as ForwardedHandler<"turn_start">);
+			return;
+		case "turn_end":
+			addHandler(captured, event, handler as ForwardedHandler<"turn_end">);
+			return;
+		case "agent_start":
+			addHandler(captured, event, handler as ForwardedHandler<"agent_start">);
+			return;
+		case "agent_end":
+			addHandler(captured, event, handler as ForwardedHandler<"agent_end">);
+			return;
+		case "tool_execution_start":
+			addHandler(captured, event, handler as ForwardedHandler<"tool_execution_start">);
+			return;
+		case "tool_execution_end":
+			addHandler(captured, event, handler as ForwardedHandler<"tool_execution_end">);
+			return;
+		case "model_select":
+			addHandler(captured, event, handler as ForwardedHandler<"model_select">);
+	}
 }
 
 function addEventHandler(captured: CapturedHeavy, event: string, handler: EventHandler): void {
@@ -77,13 +125,13 @@ function addEventHandler(captured: CapturedHeavy, event: string, handler: EventH
 	captured.eventHandlers.set(event, handlers);
 }
 
-async function dispatchHandlers(captured: CapturedHeavy, eventName: string, event: unknown, ctx: ExtensionContext): Promise<void> {
-	for (const handler of captured.handlers.get(eventName) ?? []) {
+async function dispatchHandlers<K extends LazyLifecycleEvent>(captured: CapturedHeavy, eventName: K, event: ForwardedEventMap[K], ctx: ExtensionContext): Promise<void> {
+	for (const handler of captured.handlers[eventName]) {
 		await handler(event, ctx);
 	}
 }
 
-async function dispatchEventHandlers(captured: CapturedHeavy, eventName: string, payload: unknown): Promise<void> {
+async function dispatchEventHandlers(captured: CapturedHeavy, eventName: string, payload: EventPayload): Promise<void> {
 	for (const handler of captured.eventHandlers.get(eventName) ?? []) {
 		await handler(payload);
 	}
@@ -99,8 +147,8 @@ function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionA
 				return (name: string, options: CapturedCommand) => captured.commands.set(name, options);
 			}
 			if (prop === "on") {
-				return (event: string, handler: HandlerFn) => {
-					addHandler(captured, event, handler);
+				return (event: LazyLifecycleEvent, handler: AnyForwardedHandler) => {
+					captureForwardedHandler(captured, event, handler);
 				};
 			}
 			if (prop === "registerShortcut") {
@@ -136,19 +184,19 @@ async function executeHeavyTool(
 	loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>,
 	name: string,
 	args: Parameters<NonNullable<ToolDefinition["execute"]>>,
-): Promise<ReturnType<NonNullable<ToolDefinition["execute"]>>> {
+): Promise<Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>> {
 	const ctx = args[4];
 	const heavy = await loadHeavy(ctx);
 	const tool = heavy.tools.get(name);
 	if (!tool?.execute) throw new Error(`Intercom tool implementation not found: ${name}`);
-	return tool.execute(...args) as ReturnType<NonNullable<ToolDefinition["execute"]>>;
+	return await tool.execute(...args) as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
 }
 
-async function runHeavyCommand(loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>, args: string | undefined, ctx: ExtensionContext): Promise<void> {
+async function runHeavyCommand(loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>, args: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
 	const heavy = await loadHeavy(ctx);
 	const command = heavy.commands.get("intercom");
 	if (!command) throw new Error("Intercom command implementation not found");
-	await command.handler(args, ctx);
+	await command.handler(args ?? "", ctx);
 }
 
 function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, args: ToolRenderResultArgs): ReturnType<NonNullable<ToolDefinition["renderResult"]>> {
@@ -194,7 +242,7 @@ export default function intercom(pi: ExtensionAPI) {
 				const captured: CapturedHeavy = {
 					tools: new Map(),
 					commands: new Map(),
-					handlers: new Map(),
+					handlers: createForwardedHandlerMap(),
 					shortcuts: new Map(),
 					eventHandlers: new Map(),
 				};
@@ -202,7 +250,7 @@ export default function intercom(pi: ExtensionAPI) {
 				await mod.default(createHeavyProxy(pi, captured));
 				loadedHeavy = captured;
 				if (!sessionSnapshot && ctx) {
-					sessionSnapshot = { event: {}, ctx, generation: ++lifecycleGeneration };
+					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration };
 				}
 				await replaySessionStart(captured);
 				return captured;
@@ -210,88 +258,72 @@ export default function intercom(pi: ExtensionAPI) {
 		}
 		const heavy = await heavyPromise;
 		if (!sessionSnapshot && ctx) {
-			sessionSnapshot = { event: {}, ctx, generation: ++lifecycleGeneration };
+			sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration };
 			await replaySessionStart(heavy);
 		}
 		return heavy;
 	}
 
-	for (const eventName of FORWARDED_EVENTS) {
-		switch (eventName) {
-			case "session_start":
-				pi.on("session_start", async (event, ctx) => {
-					const generation = ++lifecycleGeneration;
-					sessionSnapshot = { event, ctx, generation };
-					if (loadedHeavy) {
-						replayedGeneration = generation;
-						await dispatchHandlers(loadedHeavy, "session_start", event, ctx);
-					}
-				});
-				break;
-			case "session_shutdown":
-				pi.on("session_shutdown", async (event, ctx) => {
-					++lifecycleGeneration;
-					activeLifecycle.turnStart = null;
-					activeLifecycle.agentStart = null;
-					activeLifecycle.activeTools.clear();
-					activeLifecycle.modelSelect = null;
-					if (loadedHeavy) {
-						await dispatchHandlers(loadedHeavy, "session_shutdown", event, ctx);
-					}
-					sessionSnapshot = null;
-					replayedGeneration = lifecycleGeneration;
-				});
-				break;
-			case "turn_start":
-				pi.on("turn_start", async (event, ctx) => {
-					activeLifecycle.turnStart = { event, ctx };
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_start", event, ctx);
-				});
-				break;
-			case "turn_end":
-				pi.on("turn_end", async (event, ctx) => {
-					activeLifecycle.turnStart = null;
-					activeLifecycle.agentStart = null;
-					activeLifecycle.activeTools.clear();
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_end", event, ctx);
-				});
-				break;
-			case "agent_start":
-				pi.on("agent_start", async (event, ctx) => {
-					activeLifecycle.agentStart = { event, ctx };
-					activeLifecycle.activeTools.clear();
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_start", event, ctx);
-				});
-				break;
-			case "agent_end":
-				pi.on("agent_end", async (event, ctx) => {
-					activeLifecycle.agentStart = null;
-					activeLifecycle.activeTools.clear();
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_end", event, ctx);
-				});
-				break;
-			case "tool_execution_start":
-				pi.on("tool_execution_start", async (event, ctx) => {
-					const toolCallId = getToolCallId(event);
-					if (toolCallId) activeLifecycle.activeTools.set(toolCallId, { event, ctx });
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_start", event, ctx);
-				});
-				break;
-			case "tool_execution_end":
-				pi.on("tool_execution_end", async (event, ctx) => {
-					const toolCallId = getToolCallId(event);
-					if (toolCallId) activeLifecycle.activeTools.delete(toolCallId);
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_end", event, ctx);
-				});
-				break;
-			case "model_select":
-				pi.on("model_select", async (event, ctx) => {
-					activeLifecycle.modelSelect = { event, ctx };
-					if (loadedHeavy) await dispatchHandlers(loadedHeavy, "model_select", event, ctx);
-				});
-				break;
+	pi.on("session_start", async (event, ctx) => {
+		const generation = ++lifecycleGeneration;
+		sessionSnapshot = { event, ctx, generation };
+		if (loadedHeavy) {
+			replayedGeneration = generation;
+			await dispatchHandlers(loadedHeavy, "session_start", event, ctx);
 		}
-	}
+	});
+
+	pi.on("session_shutdown", async (event, ctx) => {
+		++lifecycleGeneration;
+		activeLifecycle.turnStart = null;
+		activeLifecycle.agentStart = null;
+		activeLifecycle.activeTools.clear();
+		activeLifecycle.modelSelect = null;
+		if (loadedHeavy) {
+			await dispatchHandlers(loadedHeavy, "session_shutdown", event, ctx);
+		}
+		sessionSnapshot = null;
+		replayedGeneration = lifecycleGeneration;
+	});
+
+	pi.on("turn_start", async (event, ctx) => {
+		activeLifecycle.turnStart = { event, ctx };
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_start", event, ctx);
+	});
+
+	pi.on("turn_end", async (event, ctx) => {
+		activeLifecycle.turnStart = null;
+		activeLifecycle.agentStart = null;
+		activeLifecycle.activeTools.clear();
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_end", event, ctx);
+	});
+
+	pi.on("agent_start", async (event, ctx) => {
+		activeLifecycle.agentStart = { event, ctx };
+		activeLifecycle.activeTools.clear();
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_start", event, ctx);
+	});
+
+	pi.on("agent_end", async (event, ctx) => {
+		activeLifecycle.agentStart = null;
+		activeLifecycle.activeTools.clear();
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_end", event, ctx);
+	});
+
+	pi.on("tool_execution_start", async (event, ctx) => {
+		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_start", event, ctx);
+	});
+
+	pi.on("tool_execution_end", async (event, ctx) => {
+		activeLifecycle.activeTools.delete(event.toolCallId);
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_end", event, ctx);
+	});
+
+	pi.on("model_select", async (event, ctx) => {
+		activeLifecycle.modelSelect = { event, ctx };
+		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "model_select", event, ctx);
+	});
 
 	pi.registerShortcut("alt+m", {
 		description: "Open session intercom overlay",
@@ -322,7 +354,7 @@ export default function intercom(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "intercom",
 		label: "Intercom",
-		description: `Send a message to another pi session running on this machine.
+		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Usage:
@@ -332,7 +364,7 @@ Usage:
   intercom({ action: "reply", message: "..." })                      → Reply to the active/single pending ask
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
-		promptSnippet: "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+		promptSnippet: "Use to coordinate with other local agent sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 		parameters: Type.Object({
 			action: Type.String({ description: "Action: 'list', 'send', 'ask', 'reply', 'pending', or 'status'" }),
 			to: Type.Optional(Type.String({ description: "Target session name or ID (for 'send', 'ask', or disambiguating 'reply')" })),

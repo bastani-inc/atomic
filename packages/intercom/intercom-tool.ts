@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@bastani/atomic";
 import { randomUUID } from "crypto";
 import { Type } from "typebox";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.ts";
 import type { Message } from "./types.ts";
 import { renderIntercomResult } from "./result-renderers.js";
@@ -30,7 +30,7 @@ export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): 
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
-    description: `Send a message to another pi session running on this machine.
+    description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
 
 Usage:
@@ -41,7 +41,7 @@ Usage:
   intercom({ action: "pending" })                                      → List unresolved inbound asks
   intercom({ action: "status" })                  → Show connection status`,
     promptSnippet:
-      "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
+      "Use to coordinate with other local agent sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
     parameters: Type.Object({
       action: Type.String({
@@ -104,6 +104,7 @@ Usage:
             return {
               content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
+              details: {},
             };
           } catch (error) {
             return {
@@ -141,6 +142,7 @@ Usage:
                 return {
                   content: [{ type: "text", text: "Message cancelled by user" }],
                   isError: false,
+                  details: {},
                 };
               }
             }
@@ -268,6 +270,7 @@ Usage:
             return {
               content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
               isError: false,
+              details: {},
             };
           } catch (error) {
             rejectReplyWaiter(toError(error));
@@ -343,6 +346,7 @@ Usage:
             return {
               content: [{ type: "text", text: "No unresolved inbound asks." }],
               isError: false,
+              details: {},
             };
           }
 
@@ -355,6 +359,7 @@ Usage:
           return {
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
             isError: false,
+            details: {},
           };
         }
 
@@ -368,6 +373,7 @@ Usage:
                 text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}`,
               }],
               isError: false,
+              details: {},
             };
           } catch (error) {
             return {
