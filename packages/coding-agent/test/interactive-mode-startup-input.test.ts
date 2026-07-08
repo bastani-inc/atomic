@@ -96,4 +96,17 @@ describe("InteractiveMode startup input", () => {
 		expect(pendingUserInputs).toEqual(["ordinary prompt"]);
 		expect(editor.setText).toHaveBeenCalledWith("/settings\n!pwd\nunfinished draft");
 	});
+
+	it("preserves startup submission order after a command-like input", () => {
+		const pendingUserInputs: string[] = [];
+		const editor = { setText: vi.fn() };
+
+		seedStartupInput(pendingUserInputs, editor, {
+			text: "",
+			submissions: ["first prompt", "/settings", "second prompt"],
+		});
+
+		expect(pendingUserInputs).toEqual(["first prompt"]);
+		expect(editor.setText).toHaveBeenCalledWith("/settings\nsecond prompt");
+	});
 });

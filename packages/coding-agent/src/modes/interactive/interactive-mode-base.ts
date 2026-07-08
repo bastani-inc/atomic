@@ -19,9 +19,17 @@ export function seedStartupInput(
 ): void {
   if (!startupInput) return;
   const draftParts: string[] = [];
+  let shouldPreserveSubmissionsAsDraft = false;
   for (const submission of startupInput.submissions) {
-    if (isCommandLikeStartupInput(submission)) draftParts.push(submission);
-    else pendingUserInputs.push(submission);
+    if (
+      shouldPreserveSubmissionsAsDraft ||
+      isCommandLikeStartupInput(submission)
+    ) {
+      shouldPreserveSubmissionsAsDraft = true;
+      draftParts.push(submission);
+    } else {
+      pendingUserInputs.push(submission);
+    }
   }
   if (startupInput.text.length > 0) draftParts.push(startupInput.text);
   if (draftParts.length > 0) editor.setText(draftParts.join("\n"));
