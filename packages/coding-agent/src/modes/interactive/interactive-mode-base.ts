@@ -16,23 +16,29 @@ export function seedStartupInput(
   pendingUserInputs: string[],
   editor: { setText(text: string): void },
   startupInput: EarlyInputSnapshot | undefined,
+  startupReplayInputs: string[] = [],
+  setStartupDraftText?: (text: string) => void,
+  setStartupReplayActiveInput?: (text: string) => void,
 ): void {
   if (!startupInput) return;
-  const draftParts: string[] = [];
-  let shouldPreserveSubmissionsAsDraft = false;
+  let commandReplayStarted = false;
   for (const submission of startupInput.submissions) {
-    if (
-      shouldPreserveSubmissionsAsDraft ||
-      isCommandLikeStartupInput(submission)
-    ) {
-      shouldPreserveSubmissionsAsDraft = true;
-      draftParts.push(submission);
+    if (commandReplayStarted) {
+      startupReplayInputs.push(submission);
+    } else if (isCommandLikeStartupInput(submission)) {
+      commandReplayStarted = true;
+      editor.setText(submission);
+      setStartupReplayActiveInput?.(submission);
     } else {
       pendingUserInputs.push(submission);
     }
   }
-  if (startupInput.text.length > 0) draftParts.push(startupInput.text);
-  if (draftParts.length > 0) editor.setText(draftParts.join("\n"));
+  if (startupInput.text.length === 0) return;
+  if (commandReplayStarted) {
+    setStartupDraftText?.(startupInput.text);
+  } else {
+    editor.setText(startupInput.text);
+  }
 }
 
 export class InteractiveModeBase {
@@ -105,6 +111,14 @@ export class InteractiveModeBase {
 
 
   pendingUserInputs: string[] = [];
+
+  startupReplayInputs: string[] = [];
+
+
+  startupReplayActiveInput: string | undefined = undefined;
+
+
+  startupDraftText: string | undefined = undefined;
 
 
   deferredRenderedUserInputs: string[] = [];

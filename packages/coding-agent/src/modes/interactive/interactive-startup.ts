@@ -107,6 +107,13 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       this.pendingUserInputs,
       this.defaultEditor,
       this.options.startupInputCapture?.consume(),
+      this.startupReplayInputs,
+      (text) => {
+        this.startupDraftText = text;
+      },
+      (text) => {
+        this.startupReplayActiveInput = text;
+      },
     );
 
     // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.

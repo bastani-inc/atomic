@@ -143,10 +143,48 @@ InteractiveModeBase.prototype.handleClipboardImagePaste = async function(this: I
     });
   };
 
+InteractiveModeBase.prototype.deliverStartupReplayPrompt = function(this: InteractiveModeBase, text: string): void {
+    if (this.onInputCallback) {
+      if (!text.startsWith("/")) {
+        this.renderDeferredUserInput(text);
+      }
+      const callback = this.onInputCallback;
+      this.onInputCallback = undefined;
+      callback(text);
+    } else {
+      this.pendingUserInputs.push(text);
+    }
+  };
+
+InteractiveModeBase.prototype.advanceStartupInputReplay = function(this: InteractiveModeBase, submittedText: string): void {
+    if (this.startupReplayActiveInput !== submittedText) return;
+    this.startupReplayActiveInput = undefined;
+
+    while (this.startupReplayInputs.length > 0) {
+      const nextInput = this.startupReplayInputs.shift();
+      if (nextInput === undefined) break;
+      const trimmed = nextInput.trimStart();
+      if (trimmed.startsWith("/") || trimmed.startsWith("!")) {
+        this.startupReplayActiveInput = nextInput.trim();
+        this.editor.setText(this.startupReplayActiveInput);
+        this.ui.requestRender();
+        return;
+      }
+      this.deliverStartupReplayPrompt(nextInput);
+    }
+
+    if (this.startupDraftText !== undefined) {
+      this.editor.setText(this.startupDraftText);
+      this.startupDraftText = undefined;
+      this.ui.requestRender();
+    }
+  };
+
 InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: InteractiveModeBase): void {
     this.defaultEditor.onSubmit = async (text: string) => {
       text = text.trim();
       if (!text) return;
+      try {
 
       // Handle commands
       if (text === "/settings") {
@@ -350,5 +388,8 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         this.pendingUserInputs.push(text);
       }
       this.editor.addToHistory?.(text);
+      } finally {
+        this.advanceStartupInputReplay?.(text);
+      }
     };
   };
