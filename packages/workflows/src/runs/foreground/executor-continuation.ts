@@ -68,14 +68,23 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
   }
 
   const stagesByReplayIdentity = new Map<string, StageSnapshot[]>();
+  const stagesByDisplayName = new Map<string, StageSnapshot[]>();
   const promptDuplicateCounts = new Map<string, number>();
   for (const stage of continuation.source.stages) {
     const identity = stage.replayKey ?? stage.name;
     const stages = stagesByReplayIdentity.get(identity);
     if (stages === undefined) stagesByReplayIdentity.set(identity, [stage]);
     else stages.push(stage);
-    const duplicateKey = `${identity}\u0001${sortedIdentity(stage.parentIds)}`;
-    promptDuplicateCounts.set(duplicateKey, (promptDuplicateCounts.get(duplicateKey) ?? 0) + 1);
+    const namedStages = stagesByDisplayName.get(stage.name);
+    if (namedStages === undefined) stagesByDisplayName.set(stage.name, [stage]);
+    else namedStages.push(stage);
+    const duplicateKeys = [
+      `${identity}\u0001${sortedIdentity(stage.parentIds)}`,
+      ...(identity === stage.name ? [] : [`${stage.name}\u0001${sortedIdentity(stage.parentIds)}`]),
+    ];
+    for (const duplicateKey of duplicateKeys) {
+      promptDuplicateCounts.set(duplicateKey, (promptDuplicateCounts.get(duplicateKey) ?? 0) + 1);
+    }
   }
 
   const consumedSourceStageIds = new Set<string>();
@@ -126,7 +135,8 @@ export function createContinuationReplayIndex(continuation: RunContinuationOpts 
       let candidates = stagesByReplayIdentity.get(replayKey)?.filter((stage) => !consumedSourceStageIds.has(stage.id)) ?? [];
       if (candidates.length === 0) {
         identity = displayName;
-        candidates = stagesByReplayIdentity.get(displayName)?.filter((stage) => !consumedSourceStageIds.has(stage.id) && stage.replayKey === undefined) ?? [];
+        const namedCandidates = stagesByDisplayName.get(displayName)?.filter((stage) => !consumedSourceStageIds.has(stage.id)) ?? [];
+        candidates = kind === "prompt" ? namedCandidates.filter((stage) => stage.replayKey === undefined) : namedCandidates;
       }
       if (candidates.length === 0) return { kind: "execute", parentIds, answerReplay: "unavailable" };
 

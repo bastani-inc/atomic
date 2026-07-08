@@ -54,7 +54,7 @@ export function createWorkflowStageFactory(input: {
       input.tracker.replaceParents(stageId, scopedParentIds);
     }
 
-    const replayKey = `stage:${name}`;
+    const replayKey = options?.durableReplayKey ?? `stage:${name}`;
     const replayDecision = input.replayIndex.decide({
       displayName: name,
       replayKey,

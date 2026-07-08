@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed durable workflow resume hydration so replayed `ctx.parallel`/`ctx.task` fanout keeps its original branch parentage, completed stages restore persisted summaries, timing, session/model metadata, and DBOS/file checkpoints round-trip the richer stage metadata used by status and graph views.
+
 ## [0.9.5-alpha.6] - 2026-07-06
 
 ### Fixed
