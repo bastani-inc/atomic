@@ -96,8 +96,12 @@ function runLoadConfig(home: string): { status?: string; brokerCommand: string; 
     `const mod = await import(${JSON.stringify(configUrl)});`,
     "console.log(JSON.stringify(mod.loadConfig()));",
   ].join("\n");
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
-  delete env.USERPROFILE;
+  // Point home resolution at the temp dir on every platform. paths.ts:getHomeDir()
+  // prefers USERPROFILE (then HOMEDRIVE+HOMEPATH) over HOME on Windows, so set the
+  // Windows vars too and clear the drive/path fallbacks to keep the test hermetic.
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
+  delete env.HOMEDRIVE;
+  delete env.HOMEPATH;
   delete env.ATOMIC_CODING_AGENT_DIR;
   delete env.PI_CODING_AGENT_DIR;
   const result = spawnSync("bun", ["--eval", script], {
