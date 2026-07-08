@@ -1,6 +1,6 @@
 /** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
-import type { StageContext, StageOptions, WorkflowTaskOptions, WorkflowTaskResult } from "../shared/types.js";
+import type { StageContext, StageOptions, WorkflowChildResult, WorkflowOutputValues, WorkflowTaskOptions, WorkflowTaskResult } from "../shared/types.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -21,17 +21,28 @@ export interface DurableStageDeps {
 export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   if (stage.status !== "completed") return false;
   const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
-  if (deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined) return false;
-  const checkpoint: DurableStageCheckpoint = {
-    kind: "stage",
-    workflowId: deps.workflowId,
-    checkpointId: stableCheckpointId("stage", replayKey),
-    name: stage.name,
-    replayKey,
-    output: stageOutput(stage),
-    completedAt: stage.endedAt ?? Date.now(),
-    ...checkpointMetadata(stage),
-  };
+  const metadata = checkpointMetadata(stage);
+  const hasExistingOutput = deps.backend.getStageOutput(deps.workflowId, replayKey) !== undefined;
+  const checkpoint: DurableStageCheckpoint = hasExistingOutput
+    ? {
+        kind: "stage",
+        workflowId: deps.workflowId,
+        checkpointId: stageMetadataCheckpointId(replayKey, stage),
+        name: stage.name,
+        replayKey,
+        completedAt: stage.endedAt ?? Date.now(),
+        ...metadata,
+      }
+    : {
+        kind: "stage",
+        workflowId: deps.workflowId,
+        checkpointId: stableCheckpointId("stage", replayKey),
+        name: stage.name,
+        replayKey,
+        output: stageOutput(stage),
+        completedAt: stage.endedAt ?? Date.now(),
+        ...metadata,
+      };
   await recordCheckpointDurably(deps.backend, checkpoint);
   return true;
 }
@@ -250,19 +261,22 @@ export function stageCheckpointWithOutput(
   matchesOutput?: (value: WorkflowSerializableValue) => boolean,
 ): DurableCompletedStageCheckpoint | undefined {
   const checkpoints = backend.listCheckpoints(workflowId)
-    .filter((checkpoint): checkpoint is DurableCompletedStageCheckpoint =>
-      checkpoint.kind === "stage" && checkpoint.replayKey === replayKey && checkpoint.output !== undefined,
+    .filter((checkpoint): checkpoint is DurableStageCheckpoint =>
+      checkpoint.kind === "stage" && checkpoint.replayKey === replayKey,
     );
+  const outputCheckpoints = checkpoints.filter((checkpoint): checkpoint is DurableCompletedStageCheckpoint =>
+    checkpoint.output !== undefined,
+  );
   const replayValueCheckpoint = matchesOutput === undefined
-    ? checkpoints[0]
-    : checkpoints.find((checkpoint) => matchesOutput(checkpoint.output));
+    ? outputCheckpoints[0]
+    : outputCheckpoints.find((checkpoint) => matchesOutput(checkpoint.output));
   if (replayValueCheckpoint === undefined) return undefined;
   return mergeCheckpointHydrationMetadata(replayValueCheckpoint, checkpoints);
 }
 
 function mergeCheckpointHydrationMetadata(
   replayValueCheckpoint: DurableCompletedStageCheckpoint,
-  checkpoints: readonly DurableCompletedStageCheckpoint[],
+  checkpoints: readonly DurableStageCheckpoint[],
 ): DurableCompletedStageCheckpoint {
   if (checkpoints.length === 0) return replayValueCheckpoint;
   return {
@@ -281,7 +295,7 @@ function mergeCheckpointHydrationMetadata(
 }
 
 function metadataValue<K extends keyof DurableStageCheckpoint>(
-  checkpoints: readonly DurableCompletedStageCheckpoint[],
+  checkpoints: readonly DurableStageCheckpoint[],
   key: K,
 ): Pick<DurableStageCheckpoint, K> | Record<string, never> {
   const value = checkpoints.find((checkpoint) => checkpoint[key] !== undefined)?.[key];
@@ -312,6 +326,15 @@ function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot): stri
 export function cachedStageId(runId: string, replayKey: string): string {
   return `durable-${durableHash({ runId, replayKey })}`;
 }
+function stageMetadataCheckpointId(replayKey: string, stage: StageSnapshot): string {
+  return `${stableCheckpointId("stage-meta", replayKey)}:${durableHash({
+    stageId: stage.id,
+    endedAt: stage.endedAt ?? 0,
+    durationMs: stage.durationMs ?? 0,
+    result: stage.result ?? "",
+  })}`;
+}
+
 
 export function recordCachedStageIntoStore(
   store: import("../shared/store.js").Store,
@@ -327,10 +350,12 @@ export function recordCachedStageIntoStore(
   const stageId = cachedStageId(runId, replayKey);
   const result = checkpoint?.result ?? (typeof output === "string" ? output : JSON.stringify(output));
   const endedAt = checkpoint?.endedAt ?? checkpoint?.completedAt ?? now;
+  const workflowChild = isWorkflowChildResult(output) ? workflowChildSnapshotFromResult(output) : undefined;
   const snapshot: StageSnapshot = {
     id: stageId, name, status: "completed", parentIds: parentIds !== undefined ? Object.freeze([...parentIds]) : [],
     startedAt: checkpoint?.startedAt ?? endedAt, endedAt, durationMs: checkpoint?.durationMs ?? 0, result,
     replayKey, replayed: true, skippedReason: "durable checkpoint replay", toolEvents: [], attachable: false,
+    ...(workflowChild !== undefined ? { workflowChild } : {}),
     ...(checkpoint?.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
     ...(checkpoint?.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
     ...(checkpoint?.model !== undefined ? { model: checkpoint.model } : {}),
@@ -368,8 +393,30 @@ export function recordCachedStageWithTracker(
   recordCachedStageIntoStore(store, runId, name, replayKey, checkpoint.output, completedStageReplayKeys, parentIds, checkpoint);
   tracker.onSettle(stageId);
 }
-
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   return typeof (value as Record<string, WorkflowSerializableValue>)["text"] === "string";
+}
+
+function isWorkflowChildResult(value: WorkflowSerializableValue): value is WorkflowChildResult<WorkflowOutputValues> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const objectValue = value as Record<string, WorkflowSerializableValue | undefined>;
+  return typeof objectValue["workflow"] === "string"
+    && typeof objectValue["runId"] === "string"
+    && typeof objectValue["status"] === "string"
+    && typeof objectValue["outputs"] === "object"
+    && objectValue["outputs"] !== null
+    && !Array.isArray(objectValue["outputs"]);
+}
+
+function workflowChildSnapshotFromResult(result: WorkflowChildResult<WorkflowOutputValues>): StageSnapshot["workflowChild"] {
+  return {
+    alias: result.workflow,
+    workflow: result.workflow,
+    runId: result.runId,
+    status: result.status,
+    ...(result.exited !== undefined ? { exited: result.exited } : {}),
+    outputs: result.outputs,
+    ...(typeof result.exitReason === "string" ? { exitReason: result.exitReason } : {}),
+  };
 }

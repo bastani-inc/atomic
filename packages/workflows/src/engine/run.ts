@@ -277,6 +277,8 @@ export async function run<
   });
   const workflowBoundaryReplayCounts = new Map<string, number>();
   const nextWorkflowBoundaryReplayKey = (name: string): string => {
+    const durableScopePrefix = pendingChildDurableScope?.scopePrefix;
+    if (durableScopePrefix !== undefined && durableScopePrefix.startsWith(`workflow:${name}:`)) return durableScopePrefix;
     const next = (workflowBoundaryReplayCounts.get(name) ?? 0) + 1;
     workflowBoundaryReplayCounts.set(name, next);
     return `workflow:${name}:${next}`;

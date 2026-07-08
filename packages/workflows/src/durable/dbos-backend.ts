@@ -377,7 +377,7 @@ function isMetadataStep(stepName: string): boolean {
 interface DbosMetadataEnvelope {
   readonly __atomicDurableMetadata: true;
   readonly version: 1;
-  readonly entry: DurableCheckpointEntry;
+  readonly entry: WorkflowSerializableValue;
 }
 
 function encodeMetadata(entry: DurableCheckpointEntry): WorkflowSerializableValue {
@@ -404,7 +404,52 @@ function decodeMetadata(value: WorkflowSerializableValue): DurableCheckpointEntr
   if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
   const raw = value as Partial<DbosMetadataEnvelope>;
   if (raw.__atomicDurableMetadata !== true || raw.version !== METADATA_VERSION) return undefined;
-  return raw.entry;
+  const entry = raw.entry;
+  if (entry === undefined) return undefined;
+  return parseDurableCheckpointEntry(entry);
+}
+
+function parseDurableCheckpointEntry(value: WorkflowSerializableValue): DurableCheckpointEntry | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const entry = value as Partial<DurableCheckpointEntry>;
+  if (entry.type !== "workflow.durable.checkpoint"
+    || typeof entry.workflowId !== "string"
+    || typeof entry.name !== "string"
+    || typeof entry.inputs !== "object"
+    || entry.inputs === null
+    || Array.isArray(entry.inputs)
+    || typeof entry.status !== "string"
+    || !isDurableWorkflowStatus(entry.status)
+    || typeof entry.completedCheckpoints !== "number"
+    || typeof entry.pendingPrompts !== "number"
+    || typeof entry.ts !== "number"
+    || (entry.label !== undefined && typeof entry.label !== "string")
+    || (entry.rootWorkflowId !== undefined && typeof entry.rootWorkflowId !== "string")
+    || (entry.resumable !== undefined && typeof entry.resumable !== "boolean")) {
+    return undefined;
+  }
+  return {
+    type: "workflow.durable.checkpoint",
+    workflowId: entry.workflowId,
+    name: entry.name,
+    inputs: entry.inputs,
+    status: entry.status,
+    completedCheckpoints: entry.completedCheckpoints,
+    pendingPrompts: entry.pendingPrompts,
+    ts: entry.ts,
+    ...(entry.label !== undefined ? { label: entry.label } : {}),
+    ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
+    ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
+  };
+}
+
+function isDurableWorkflowStatus(value: string): value is DurableWorkflowStatus {
+  return value === "running"
+    || value === "paused"
+    || value === "completed"
+    || value === "failed"
+    || value === "cancelled"
+    || value === "blocked";
 }
 
 function dbosStatusToDurable(status: string): DurableWorkflowStatus {

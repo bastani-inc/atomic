@@ -339,6 +339,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.deepEqual(entry.inputs, { x: 1 });
   });
 
+
   test("hydrateResumableWorkflows discovers all workflows and checkpoints", async () => {
     const hash = durableHash({ name: "t", args: {} });
     seedMockWorkflow(sdk, { workflowId: "wf-a", name: "wf-a", status: "PENDING", inputs: { x: 1 } });

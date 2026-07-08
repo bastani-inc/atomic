@@ -45,16 +45,17 @@ export function createDurableChildWorkflowPrimitive(input: {
     const options = args[0] as { readonly stageName?: string } | undefined;
     const boundaryName = options?.stageName ?? `workflow:${child.normalizedName}`;
     const replayKey = input.nextReplayKey(boundaryName);
-    // Route this child's internal side-effect checkpoints under the root
-    // workflow with a stable boundary key, so an interrupted child does not
-    // re-execute completed side effects on parent resume.
-    // cross-ref: issue #1498.
-    input.setChildDurableScope({ rootWorkflowId: input.rootWorkflowId, scopePrefix: replayKey });
     const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowChildResult);
     if (cached !== undefined && isWorkflowChildResult(cached.output)) {
       input.recordCachedStage(boundaryName, replayKey, cached);
       return cached.output as WorkflowChildResult<TChildOutputs>;
     }
+    // Route this child's internal side-effect checkpoints under the root
+    // workflow with the same stable boundary key used by the live boundary
+    // stage, so mixed cached/live repeated child calls do not desynchronize
+    // boundary and durable child-scope ordinals.
+    // cross-ref: issue #1498.
+    input.setChildDurableScope({ rootWorkflowId: input.rootWorkflowId, scopePrefix: replayKey });
     const result = await input.workflow(child, ...args);
     await recordCheckpointDurably(input.backend, {
       kind: "stage",

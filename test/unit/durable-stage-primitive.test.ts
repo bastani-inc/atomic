@@ -72,13 +72,11 @@ describe("recordStageCheckpoint", () => {
     assert.equal(await recordStageCheckpoint(deps(), stage), false);
   });
 
-
-  test("idempotent — recording the same stage twice is a no-op", async () => {
+  test("preserves first replay output when later lifecycle metadata is recorded", async () => {
     const d = deps();
-    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1" }));
-    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT" }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", durationMs: 1000 }));
+    await recordStageCheckpoint(d, makeStage({ replayKey: "rk-1", result: "DIFFERENT", durationMs: 2000 }));
     assert.equal(backend.getStageOutput(WORKFLOW_ID, "rk-1"), "analysis output");
-    assert.equal(backend.getWorkflow(WORKFLOW_ID)!.completedCheckpoints, 1);
   });
 
   test("falls back to status marker when result is empty", async () => {
@@ -421,6 +419,7 @@ describe("run durable flush", () => {
     });
     const store1 = createStore();
     const first = await run(parent, {}, { runId: "wf-repeated-child", store: store1, durableBackend: backend, adapters: { complete: { complete: async (text) => text } } });
+
     exAssert.equal(first.status, "completed");
     exAssert.equal(childRuns, 2);
 

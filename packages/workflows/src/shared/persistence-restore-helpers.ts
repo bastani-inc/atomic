@@ -1,7 +1,7 @@
 import { Value } from "typebox/value";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
-import type { SessionEntry } from "./persistence-restore.js";
+import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
 import type {
   RunStatus,
   StageSnapshot,
