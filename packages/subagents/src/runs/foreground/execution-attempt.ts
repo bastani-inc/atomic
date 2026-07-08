@@ -14,7 +14,7 @@ import { extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
-import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
+import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
 import { assistantStopReason, isAssistantFailureStopReason, shouldStartSubagentFinalDrain } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
 import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
@@ -124,6 +124,14 @@ export async function runSingleAttempt(
 			workflowStageSubagentGuard: options.workflowStageSubagentGuard,
 		}),
 	};
+	const cwdValidation = validatePiSpawnCwd(runCwd);
+	if (!cwdValidation.ok) {
+		cleanupTempDir(tempDir);
+		result.error = cwdValidation.error;
+		return finalizeSingleAttempt({
+			result, progress, exitCode: 1, interruptedByControl, allControlEvents: controlRuntime.allControlEvents, options, shared, startTime,
+		});
+	}
 	const exitCode = await new Promise<number>((resolve) => {
 		const spawnSpec = getPiSpawnCommand(args);
 		const proc = spawn(spawnSpec.command, spawnSpec.args, {
@@ -418,7 +426,7 @@ export async function runSingleAttempt(
 			attemptWatchdog.clear();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
-			if (!result.error) result.error = error instanceof Error ? error.message : String(error);
+			if (!result.error) result.error = formatPiSpawnError(error, spawnSpec, runCwd);
 			finish(1);
 		});
 

@@ -105,6 +105,8 @@ Use `interrupt` when you want a resumable stop. Use `resume` to send a follow-up
 
 Background runs are detached. If Atomic has no useful independent work while a background subagent runs, it should end the turn instead of polling in a loop; the run will notify the originating session when it completes.
 
+When a workflow graph overlay is open, Atomic also publishes the live async subagent summary into the shared status surface. The below-editor async widget remains available when the workflow overlay is hidden, and the overlay statusline keeps the run count/state visible while the graph fills the terminal.
+
 ## Context and execution modes
 
 Subagents can run with fresh or forked context:
@@ -115,6 +117,8 @@ Subagents can run with fresh or forked context:
 For adversarial review or research, prefer fresh context so the specialist inspects the repository directly. Use forked context when a writer needs the parent conversation history in a separate branch.
 
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
+
+When a subagent call, parallel task, chain step, or background run uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level process-spawn errors, so failures point at the requested child workspace rather than at the runtime binary.
 
 ## Nested and fanout boundaries
 

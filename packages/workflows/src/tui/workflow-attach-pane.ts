@@ -32,10 +32,9 @@ import type { StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { expandWorkflowGraph } from "../shared/expanded-workflow-graph.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 /**
- * Surface used to write Pi's footer/status tag while the attach pane is
- * mounted. Passing `undefined` clears the slot — required on dispose so
- * the `pi-workflows/<workflow>[/<stage>]` tag does NOT linger in every
- * subsequent chat message after the overlay is closed.
+ * Surface for the overlay footer/status tag. Passing `undefined` on dispose
+ * prevents `pi-workflows/<workflow>[/<stage>]` from lingering in later chat
+ * messages after the overlay closes.
  * cross-ref: @bastani/atomic docs/extensions.md
  * §Widgets, Status, and Footer (`ctx.ui.setStatus`).
  */
@@ -134,6 +133,7 @@ export class WorkflowAttachPane implements Component {
       initialFocusedStageId,
       getViewportRows: this.getViewportRows,
       piKeybindings: this.piKeybindings,
+      footerData: this.footerData,
       requestRender: () => {
         if (this.mode !== "graph") return;
         this.hostRequestRender?.();

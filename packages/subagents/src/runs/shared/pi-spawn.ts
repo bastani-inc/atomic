@@ -42,9 +42,36 @@ export interface PiSpawnDeps {
 	resolvePackageJson?: () => string;
 	resolvePackageEntry?: () => string;
 	piPackageRoot?: string;
+	statSync?: (filePath: string) => fs.Stats;
 }
 
-interface PiSpawnCommand {
+export type PiSpawnCwdValidationResult = { ok: true } | { ok: false; error: string };
+
+export function validatePiSpawnCwd(cwd: string, deps: PiSpawnDeps = {}): PiSpawnCwdValidationResult {
+	const statSync = deps.statSync ?? fs.statSync;
+	try {
+		const cwdStats = statSync(cwd);
+		if (!cwdStats.isDirectory()) return { ok: false, error: `cwd is not a directory: ${cwd}` };
+		return { ok: true };
+	} catch (error) {
+		const fsError = error as NodeJS.ErrnoException;
+		if (fsError.code === "ENOENT") return { ok: false, error: `cwd does not exist: ${cwd}` };
+		if (fsError.code === "ENOTDIR") return { ok: false, error: `cwd path contains a non-directory component: ${cwd}` };
+		const details = fsError.message ? ` (${fsError.message})` : "";
+		return { ok: false, error: `cwd is not accessible: ${cwd}${details}` };
+	}
+}
+
+export function formatPiSpawnError(error: Error, spawnSpec: PiSpawnCommand, cwd: string): string {
+	const spawnError = error as NodeJS.ErrnoException;
+	const message = error.message || String(error);
+	if (spawnError.code === "ENOENT") {
+		return `failed to spawn subagent runtime '${spawnSpec.command}' from cwd '${cwd}': runtime executable was not found or could not be launched (${message})`;
+	}
+	return `failed to spawn subagent runtime '${spawnSpec.command}' from cwd '${cwd}': ${message}`;
+}
+
+export interface PiSpawnCommand {
 	command: string;
 	args: string[];
 }

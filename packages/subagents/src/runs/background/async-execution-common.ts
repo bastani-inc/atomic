@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { APP_NAME } from "@bastani/atomic";
-import { resolvePiPackageRoot } from "../shared/pi-spawn.ts";
+import { formatPiSpawnError, resolvePiPackageRoot, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
 import { getAsyncConfigPath, TEMP_ROOT_DIR, type SubagentRunMode } from "../../shared/types.ts";
 import type { AsyncExecutionResult, AsyncSpawnResult } from "./async-execution-types.ts";
 
@@ -85,33 +85,38 @@ export function writeAsyncRunnerConfig(cfg: object, suffix: string): string {
 }
 
 export function spawnRunner(cfg: object, suffix: string, cwd: string): AsyncSpawnResult {
+	const cwdValidation = validatePiSpawnCwd(cwd);
+	if (!cwdValidation.ok) return { error: cwdValidation.error };
+
 	if (!jitiCliPath) {
 		return { error: "upstream jiti for TypeScript execution could not be found; ensure package dependencies are installed" };
-	}
-
-	try {
-		const cwdStats = fs.statSync(cwd);
-		if (!cwdStats.isDirectory()) {
-			return { error: `cwd is not a directory: ${cwd}` };
-		}
-	} catch {
-		return { error: `cwd does not exist: ${cwd}` };
 	}
 
 	const cfgPath = writeAsyncRunnerConfig(cfg, suffix);
 	const runner = path.join(path.dirname(fileURLToPath(import.meta.url)), "subagent-runner.ts");
 
-	const proc = spawn(process.execPath, [jitiCliPath, runner, cfgPath], {
-		cwd,
-		detached: true,
-		stdio: "ignore",
-		windowsHide: true,
-	});
+	const spawnSpec = { command: process.execPath, args: [jitiCliPath, runner, cfgPath] };
+	let proc: ReturnType<typeof spawn>;
+	try {
+		proc = spawn(spawnSpec.command, spawnSpec.args, {
+			cwd,
+			detached: true,
+			stdio: "ignore",
+			windowsHide: true,
+		});
+	} catch (error) {
+		const spawnError = error instanceof Error ? error : new Error(String(error));
+		return { error: formatPiSpawnError(spawnError, spawnSpec, cwd) };
+	}
 	proc.on("error", (error) => {
-		console.error(`[${APP_NAME}-subagents] async spawn failed: ${error.message}`);
+		console.error(`[${APP_NAME}-subagents] async spawn failed: ${formatPiSpawnError(error, spawnSpec, cwd)}`);
 	});
 	if (typeof proc.pid !== "number") {
-		return { error: `async runner did not produce a pid for cwd: ${cwd}` };
+		const noPidError = Object.assign(
+			new Error(`spawn ${spawnSpec.command} failed before assigning a pid`),
+			fs.existsSync(spawnSpec.command) ? {} : { code: "ENOENT" },
+		);
+		return { error: formatPiSpawnError(noPidError, spawnSpec, cwd) };
 	}
 	proc.unref();
 	return { pid: proc.pid };

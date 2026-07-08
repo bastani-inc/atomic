@@ -5,7 +5,7 @@ import { appendJsonl } from "../../shared/artifacts.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { getSubagentDepthEnv } from "../../shared/types.ts";
-import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
+import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
 import {
 	assistantStopReason,
 	isAssistantFailureStopReason,
@@ -29,6 +29,17 @@ export function runPiStreaming(
 	registerInterrupt?: (interrupt: (() => void) | undefined) => void,
 	onChildEvent?: (event: ChildEvent) => void,
 ): Promise<RunPiStreamingResult> {
+	const cwdValidation = validatePiSpawnCwd(cwd);
+	if (!cwdValidation.ok) {
+		return Promise.resolve({
+			stderr: "",
+			exitCode: 1,
+			messages: [],
+			usage: emptyUsage(),
+			error: cwdValidation.error,
+			finalOutput: "",
+		});
+	}
 	return new Promise((resolve) => {
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
 		const spawnEnv = {
@@ -273,8 +284,7 @@ export function runPiStreaming(
 			attemptWatchdog.clear();
 			outputStream.end();
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
-			const spawnErrorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
-			const finalError = error ?? assistantError ?? spawnErrorMessage;
+			const finalError = error ?? assistantError ?? formatPiSpawnError(spawnError, spawnSpec, cwd);
 			resolve({
 				stderr,
 				exitCode: 1,

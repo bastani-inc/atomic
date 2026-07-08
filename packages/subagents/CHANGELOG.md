@@ -5,6 +5,8 @@
 ### Fixed
 
 - Fixed background async result watching on Windows to use Atomic's safe watcher path strategy and fall back to polling when native `fs.watch` would receive an unsafe or non-canonical watcher path.
+- Fixed async/background subagent status visibility while the fullscreen workflow graph is active by publishing the live async summary through the shared status surface in addition to the below-editor widget.
+- Fixed foreground and background subagent startup diagnostics so missing or invalid child `cwd` values are reported as working-directory problems before spawn, while runtime spawn failures include the attempted command and cwd instead of ambiguous `ENOENT` output.
 
 ## [0.9.5-alpha.8] - 2026-07-08
 

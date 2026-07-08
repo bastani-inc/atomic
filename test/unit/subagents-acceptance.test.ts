@@ -8,6 +8,8 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js"
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { serializeAgent } from "../../packages/subagents/src/agents/agent-serializer.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
+import { spawnRunner } from "../../packages/subagents/src/runs/background/async-execution-common.js";
+import { runPiStreaming } from "../../packages/subagents/src/runs/background/subagent-runner-streaming.js";
 
 function agentConfig(): AgentConfig {
 	return {
@@ -80,7 +82,74 @@ describe("subagent acceptance removal", () => {
 		});
 	});
 
+	test("foreground reports missing cwd as a cwd problem before spawning", async () => {
+		await withFakeCli(`
+			const fs = require("node:fs");
+			const path = require("node:path");
+			fs.writeFileSync(path.join(process.cwd(), "spawned.marker"), "spawned", "utf8");
+		`, async (dir) => {
+			const missing = join(dir, "missing-cwd");
+			const result = await runSync(dir, [agentConfig()], "fake-worker", "Do not spawn", {
+				cwd: missing,
+				runId: "missing-cwd-foreground",
+				artifactsDir: dir,
+			});
 
+			assert.equal(result.exitCode, 1);
+			assert.equal(result.error, `cwd does not exist: ${missing}`);
+			assert.doesNotMatch(result.error ?? "", /spawn .*ENOENT/i);
+			assert.throws(() => readFileSync(join(missing, "spawned.marker"), "utf8"));
+		});
+	});
+
+	test("background child streaming reports missing cwd before spawning", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-missing-cwd-"));
+		try {
+			const missing = join(dir, "missing-cwd");
+			const result = await runPiStreaming([], missing, join(dir, "output.txt"));
+
+			assert.equal(result.exitCode, 1);
+			assert.equal(result.error, `cwd does not exist: ${missing}`);
+			assert.doesNotMatch(result.error ?? "", /spawn .*ENOENT/i);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("background async runner reports missing cwd before runtime setup", () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-missing-cwd-"));
+		try {
+			const missing = join(dir, "missing-cwd");
+			assert.deepEqual(spawnRunner({}, "missing-cwd", missing), {
+				error: `cwd does not exist: ${missing}`,
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("background async runner returns formatted runtime spawn failure", () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-missing-runtime-"));
+		try {
+			const fakeRuntime = join(dir, "missing-runtime");
+			const scriptPath = join(dir, "spawn-runner-runtime-failure.ts");
+			writeFileSync(scriptPath, `
+				import { spawnRunner } from ${JSON.stringify(join(process.cwd(), "packages/subagents/src/runs/background/async-execution-common.js"))};
+				Object.defineProperty(process, "execPath", { value: ${JSON.stringify(fakeRuntime)} });
+				const result = spawnRunner({}, "missing-runtime", ${JSON.stringify(dir)});
+				console.log(JSON.stringify(result));
+			`, "utf8");
+
+			const proc = spawnSync(process.execPath, [scriptPath], { cwd: process.cwd(), encoding: "utf8" });
+			assert.equal(proc.status, 0, `${proc.stdout}\n${proc.stderr}`);
+			const result = JSON.parse(proc.stdout.trim()) as { error?: string };
+			assert.ok((result.error ?? "").includes(`failed to spawn subagent runtime '${fakeRuntime}'`));
+			assert.ok((result.error ?? "").includes(`from cwd '${dir}'`));
+			assert.doesNotMatch(result.error ?? "", /async runner did not produce a pid/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
 	test("foreground investigation/debugger runs can complete successfully without edits", async () => {
 		await withFakeCli(`
 			console.log(JSON.stringify({
