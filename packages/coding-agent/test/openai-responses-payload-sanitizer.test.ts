@@ -70,6 +70,31 @@ describe("sanitizeOpenAIResponsesPayload", () => {
     assert.equal("id" in input[0]!, false);
   });
 
+
+  test("raises Responses max_output_tokens below the provider minimum", () => {
+    const payload = { max_output_tokens: 1, input: [{ type: "message", content: "hi" }] };
+
+    const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
+
+    assert.notEqual(sanitized, payload);
+    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, 16);
+  });
+
+  test("preserves valid Responses max_output_tokens", () => {
+    const payload = { max_output_tokens: 16, input: [{ type: "message", content: "hi" }] };
+
+    const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
+
+    assert.equal(sanitized, payload);
+  });
+
+  test("raises Responses max_output_tokens even when input is absent", () => {
+    const payload = { max_output_tokens: 1 };
+
+    const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
+
+    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, 16);
+  });
   test("does not change non-Responses payloads", () => {
     const payload = { input: [{ type: "function_call", id: "raw/invalid", call_id: "call_1" }] };
 

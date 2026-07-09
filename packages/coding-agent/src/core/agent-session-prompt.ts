@@ -186,7 +186,7 @@ export async function _runAgentPrompt(this: AgentSession, messages: AgentMessage
 		await this.agent.prompt(messages);
 		await this.waitForRetry();
 		await this._continueQueuedAgentMessages();
-		await this._awaitPendingOverflowPostCompactionContinuation();
+		await this._awaitPendingPostCompactionContinuation();
 	} finally {
 		this._systemPromptOverride = undefined;
 	}

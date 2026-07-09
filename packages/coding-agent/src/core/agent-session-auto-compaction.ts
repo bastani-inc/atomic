@@ -15,6 +15,12 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
  */
 export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
 
+const MIN_OPENAI_RESPONSES_OUTPUT_TOKENS = 16;
+const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_(?:output_|completion_)?tokens\b/;
+const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
+	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_OPENAI_RESPONSES_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
+);
+
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
 	// The agent_end path passes skipAbortedCheck=true; the pre-prompt path passes
 	// false. Only the live turn-completion path may auto-continue a truncated
@@ -122,7 +128,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	// context overflow. Compaction would not free any room, so continue the
 	// generation directly instead of dead-ending on the truncation and leaving
 	// the task half-finished.
-	if (isLiveTurnCompletion && shouldRetryAfterThresholdCompaction(assistantMessage)) {
+	if (isLiveTurnCompletion && isRetryWorthyLengthStop(assistantMessage)) {
 		this._resumeAfterLengthTruncation();
 	}
 }
@@ -138,8 +144,19 @@ export function _isCopilotServerCapBelowSelectedContextWindow(this: AgentSession
 	return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 }
 
-export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boolean {
 	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
+}
+
+export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessage): boolean {
+	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return false;
+	const message = assistantMessage.errorMessage.toLowerCase();
+	if (!OUTPUT_BUDGET_PARAMETER_PATTERN.test(message)) return false;
+	return OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message);
+}
+
+export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+	return isRetryWorthyLengthStop(assistantMessage) || isRetryWorthyOutputBudgetError(assistantMessage);
 }
 
 /**
@@ -161,40 +178,35 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
  */
 
 export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
-	reason: "overflow" | "threshold",
+	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
-	if (reason === "overflow" && willRetry) {
-		const token = this._overflowPostCompactionContinuationToken + 1;
-		this._overflowPostCompactionContinuationToken = token;
+	if (willRetry) {
+		const token = this._postCompactionContinuationToken + 1;
+		this._postCompactionContinuationToken = token;
 		let pending: Promise<void>;
 		pending = new Promise<void>((resolve) => {
 			setTimeout(() => {
 				void (async () => {
 					try {
-						if (this._overflowPostCompactionContinuationToken !== token) return;
+						if (this._postCompactionContinuationToken !== token) return;
 						if (this.isCompacting || this.isStreaming) return;
 						await this._resumeAfterAutoCompaction();
 					} finally {
-						if (this._pendingOverflowPostCompactionContinuation === pending) {
-							this._pendingOverflowPostCompactionContinuation = undefined;
+						if (this._pendingPostCompactionContinuation === pending) {
+							this._pendingPostCompactionContinuation = undefined;
 						}
 						resolve();
 					}
 				})();
 			}, 100);
 		});
-		this._pendingOverflowPostCompactionContinuation = pending;
+		this._pendingPostCompactionContinuation = pending;
 		return;
 	}
 
 	setTimeout(() => {
 		if (this.isCompacting || this.isStreaming) {
-			return;
-		}
-
-		if (willRetry) {
-			void this._resumeAfterAutoCompaction();
 			return;
 		}
 
@@ -206,8 +218,8 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 	}, 100);
 }
 
-export async function _awaitPendingOverflowPostCompactionContinuation(this: AgentSession): Promise<void> {
-	const pending = this._pendingOverflowPostCompactionContinuation;
+export async function _awaitPendingPostCompactionContinuation(this: AgentSession): Promise<void> {
+	const pending = this._pendingPostCompactionContinuation;
 	if (pending === undefined) return;
 	await pending;
 }
@@ -332,7 +344,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
  */
 
 export const agentSessionAutoCompactionMethods = {
-	_awaitPendingOverflowPostCompactionContinuation,
+	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
 	_isCopilotServerCapBelowSelectedContextWindow,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
