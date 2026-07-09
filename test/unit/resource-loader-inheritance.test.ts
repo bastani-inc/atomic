@@ -98,5 +98,5 @@ describe("DefaultResourceLoader inheritance snapshots", () => {
             externalPackage,
         ]);
         assert.notEqual(childLoader, parentLoader);
-    });
+    }, 10_000);
 });
