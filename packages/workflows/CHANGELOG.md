@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Improved workflow extension startup by seeding only the bundled startup registry during extension registration/session start, then loading user, project, and package workflow modules in the background or when `/workflow` commands and workflow tool actions need the full registry.
+- Tightened the workflow-stage resume continuation prompt so resumed agents continue interrupted work only when needed and stop when the original or user-redefined task is already complete.
 
 ### Fixed
 

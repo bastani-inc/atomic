@@ -7,7 +7,10 @@ import {
 
 describe("resume continuation decision", () => {
   test("uses the exact deterministic continuation prompt", () => {
-    assert.equal(RESUME_CONTINUATION_PROMPT, "Continue where you left off.");
+    assert.equal(
+      RESUME_CONTINUATION_PROMPT,
+      "Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.",
+    );
   });
 
   test("resume + gate enabled + not aborted injects", () => {
