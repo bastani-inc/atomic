@@ -186,8 +186,12 @@ describe("workflow lazy-startup continuation fixes", () => {
       });
       const workflowCmd = commands.find((command) => command.name === "workflow");
       assert.ok(workflowCmd);
-      const headlessCtx = { hasUI: false, ui: { notify: () => undefined } };
-      await assert.rejects(async () => { await workflowCmd.options.handler?.("list", headlessCtx); }, /transient refresh failure/);
+      const notices: string[] = [];
+      const headlessCtx = { hasUI: false, ui: { notify: (message: string) => { notices.push(message); } } };
+      await workflowCmd.options.handler?.("list", headlessCtx);
+      assert.equal(refreshCalls, 1);
+      assert.match(notices.join("\n"), /transient refresh failure/);
+      sent.length = 0;
       await workflowCmd.options.handler?.("list", headlessCtx);
       assert.equal(refreshCalls, 2);
       assert.equal(listPayload(sent)?.kind, "list");

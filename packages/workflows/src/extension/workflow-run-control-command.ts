@@ -22,6 +22,7 @@ import {
   resolveRunIdPrefix,
   resolveStageTarget,
 } from "./workflow-targets.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 
 export interface WorkflowRunControlDeps {
   pi: ExtensionAPI;
@@ -62,7 +63,11 @@ async function handleDurableResume(
 ): Promise<boolean> {
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
-  await deps.ensureWorkflowResourcesLoaded();
+  try {
+    await deps.ensureWorkflowResourcesLoaded();
+  } catch (error) {
+    ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+  }
   const runtime = deps.runtimeForContext(ctx);
   const policy = workflowPolicyFromContext(ctx);
   // Hydrate the durable backend from DBOS (if configured) before listing so a
@@ -123,6 +128,13 @@ export async function handleRunControlCommand(
   const fail = (msg: string): void => reporter.error(msg);
   const canOpenPicker = (ui: PiCommandContext["ui"] | undefined): boolean =>
     policy.allowInputPicker && typeof ui?.custom === "function";
+  const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+    } catch (error) {
+      ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+    }
+  };
   const confirmationPrompt = policy.allowHumanInput && typeof ctx.ui?.confirm === "function"
     ? ctx.ui.confirm.bind(ctx.ui)
     : undefined;
@@ -305,7 +317,7 @@ export async function handleRunControlCommand(
               .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
               .map((run) => run.id),
           );
-          await deps.ensureWorkflowResourcesLoaded();
+          await ensureWorkflowResourcesVisible();
           const runtime = deps.runtimeForContext(ctx);
           try {
             const prepared = await runtime.prepareDurableResumable(undefined);
@@ -329,7 +341,7 @@ export async function handleRunControlCommand(
           const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
           const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
           if (isResumableContinuation) {
-            await deps.ensureWorkflowResourcesLoaded();
+            await ensureWorkflowResourcesVisible();
             const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
@@ -403,7 +415,7 @@ export async function handleRunControlCommand(
       return true;
     }
     if (isResumableContinuation) {
-      await deps.ensureWorkflowResourcesLoaded();
+      await ensureWorkflowResourcesVisible();
       const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;

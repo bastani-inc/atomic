@@ -84,6 +84,24 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     assert.equal(pickerCalls, 1);
   });
 
+  test("/workflow list surfaces lazy discovery failures as warnings", async () => {
+    const notices: string[] = [];
+    const commands = registerFactory({
+      refreshWorkflowResources: async () => {
+        throw new Error("broken workflow file");
+      },
+    });
+    const workflowCmd = commands.find((command) => command.name === "workflow");
+    assert.ok(workflowCmd);
+
+    await workflowCmd.options.handler?.("list", { hasUI: true, ui: { notify: (message) => { notices.push(message); } } });
+
+    assert.equal(notices.length, 1);
+    assert.match(notices[0]!, /Workflow discovery diagnostics/);
+    assert.match(notices[0]!, /broken workflow file/);
+    assert.match(notices[0]!, /currently loaded workflow registry/);
+  });
+
   test("/workflow resume for quit-paused live runs does not force durable discovery", async () => {
     let refreshCalls = 0;
     const commands = registerFactory({

@@ -294,12 +294,17 @@ export function createWorkflowExtensionRuntimeState(
   }
 
   async function ensureWorkflowResourcesLoaded(options?: { allowInFlight?: boolean }): Promise<void> {
-    if (pi.disableAsyncDiscovery || discoveryRef.current !== null) return;
-    const generation = workflowDiscoveryGeneration;
-    const pending = lazyDiscoveryPromise ?? trackLazyDiscovery(
-      queueWorkflowResourceReload({ allowInFlight: options?.allowInFlight ?? true }, generation),
-    );
-    await pending;
+    while (!pi.disableAsyncDiscovery && discoveryRef.current === null) {
+      const generation = workflowDiscoveryGeneration;
+      const pending = lazyDiscoveryPromise ?? trackLazyDiscovery(
+        queueWorkflowResourceReload({ allowInFlight: options?.allowInFlight ?? true }, generation),
+      );
+      await pending;
+      if (!isWorkflowDiscoveryCurrent(generation)) continue;
+      if (discoveryRef.current === null) {
+        lazyDiscoveryPromise = null;
+      }
+    }
   }
 
   function startWorkflowDiscoveryWarmup(onSettled?: () => void): void {

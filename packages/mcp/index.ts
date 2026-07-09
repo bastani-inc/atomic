@@ -204,6 +204,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       ) {
         registerProxyTool();
       }
+      let cancelWarmup: (() => void) | null = null;
       const warmup = scheduleMcpStartupWarmup(nextState, {
         shouldContinue: () => generation === lifecycleGeneration && state === nextState,
         onDirectToolsChanged: async () => {
@@ -216,7 +217,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           }
         },
       });
-      const cancelWarmup = () => warmup.cancel();
+      cancelWarmup = () => warmup.cancel();
       startupWarmupCancel = cancelWarmup;
       if (initPromise === promiseRef.current) {
         initPromise = null;

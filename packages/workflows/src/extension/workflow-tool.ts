@@ -26,6 +26,7 @@ import {
 } from "./workflow-tool-inspection.js";
 import { workflowSendAction } from "./workflow-tool-send.js";
 import { isWorkflowStageToolContext, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 
 export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
@@ -50,14 +51,21 @@ export function makeExecuteWorkflowTool(
     }
     const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
     const getRuntime = (): ExtensionRuntime => typeof runtime === "function" ? runtime(ctx) : runtime;
+    const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+      try {
+        await ensureWorkflowResourcesLoaded();
+      } catch (error) {
+        ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
+      }
+    };
 
     switch (action) {
       case "get":
-        await ensureWorkflowResourcesLoaded();
+        await ensureWorkflowResourcesVisible();
         return workflowGetResult(getRuntime(), args);
       case "list":
       case "inputs": {
-        await ensureWorkflowResourcesLoaded();
+        await ensureWorkflowResourcesVisible();
         return getRuntime().dispatch(args, { policy });
       }
       case "run": {
@@ -70,7 +78,7 @@ export function makeExecuteWorkflowTool(
           const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), { policy });
           return workflowRunResultFromDetails(details);
         }
-        await ensureWorkflowResourcesLoaded();
+        await ensureWorkflowResourcesVisible();
         return getRuntime().dispatch(args, { policy });
       }
       case "status": {

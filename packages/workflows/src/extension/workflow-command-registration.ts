@@ -23,7 +23,7 @@ import {
   type WorkflowCommandHandler,
   type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
-import { emitTerminalRunDetailSurface } from "./workflow-command-surfaces.js";
+import { emitTerminalRunDetailSurface, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import {
@@ -80,11 +80,18 @@ async function workflowSlashHandler(
   const fail = (msg: string): void => reporter.error(msg);
   const withImplicitYesFlag = (tokens: string[]): string[] =>
     tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
+  const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+    } catch (error) {
+      ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+    }
+  };
   const showWorkflowInputs = async (
     workflowName: string,
     command: WorkflowCommandOutputDetails["command"] = "inputs",
   ): Promise<void> => {
-    await deps.ensureWorkflowResourcesLoaded();
+    await ensureWorkflowResourcesVisible();
     const result = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
     if (result.action !== "inputs" || !("inputs" in result)) return;
     const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
@@ -104,7 +111,7 @@ async function workflowSlashHandler(
     return;
   }
   if (!subcommand || subcommand === "list") {
-    await deps.ensureWorkflowResourcesLoaded();
+    await ensureWorkflowResourcesVisible();
     const items = deps.runtimeProxy.registry.all().map((def) => ({
       name: def.normalizedName,
       description: def.description,
@@ -169,7 +176,7 @@ async function workflowSlashHandler(
     typeof ctx.ui?.setEditorComponent === "function" || typeof ctx.ui?.custom === "function"
   );
   if (canOpenPicker) {
-    await deps.ensureWorkflowResourcesLoaded();
+    await ensureWorkflowResourcesVisible();
     const schemaResult = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
     const schema = schemaResult.action === "inputs" && "inputs" in schemaResult
       ? (schemaResult as Extract<WorkflowToolResult, { action: "inputs" }>)
@@ -192,7 +199,7 @@ async function workflowSlashHandler(
     }
   }
 
-  await deps.ensureWorkflowResourcesLoaded();
+  await ensureWorkflowResourcesVisible();
   const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
     deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy }),
   );

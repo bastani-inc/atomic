@@ -24,6 +24,7 @@ import {
   resolveToolStageTarget,
   stageFailureMessage,
 } from "./workflow-targets.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 
 export interface WorkflowControlActionDeps {
   getPersistence: () => WorkflowPersistencePort | undefined;
@@ -187,13 +188,19 @@ export async function workflowResumeAction(
     (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable")
   );
   if (isResumableContinuation) {
-    await deps.ensureWorkflowResourcesLoaded();
+    let warning: string | undefined;
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+    } catch (error) {
+      warning = formatWorkflowResourceLoadWarning(error);
+    }
     const continuation = deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy });
+    const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
     return {
       action: "resume",
       runId: continuation.ok ? continuation.runId : stageRunId,
       status: continuation.ok ? "running" : "noop",
-      message: continuation.message,
+      message,
     };
   }
   const result = resumeRun(stageRunId, { stageId: stage.stageId, message: args.message });
