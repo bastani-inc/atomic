@@ -58,7 +58,9 @@ export function registerWorkflowLifecycleHandlers(
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    runtimeState.resetWorkflowDiscoveryForSession();
     deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
+    await runtimeState.ensureWorkflowConfigLoaded();
     killAllRuns({ store, cancellation: cancellationRegistry, persistence: runtimeState.persistenceRef.current });
     store.clear();
     clearForms();
@@ -66,10 +68,14 @@ export function registerWorkflowLifecycleHandlers(
     resetWorkflowHilAnswerNotificationState(runtimeState.hilAnswerNotificationState);
     stageControlRegistry.clear();
     runtimeState.setIntercomParentSession(registerIntercomParentSession(pi));
-    await runtimeState.discoveryPromise;
     runtimeState.setNotificationsActive(true);
+    runtimeState.startWorkflowDiscoveryWarmup(() => {
+      if (!ctx?.ui) return;
+      const diagnostics = formatStartupDiagnostics(null, runtimeState.discoveryRef.current);
+      if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
+    });
     if (ctx?.ui) {
-      const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, runtimeState.discoveryRef.current);
+      const diagnostics = formatStartupDiagnostics(runtimeState.configLoadRef.current, null);
       if (diagnostics !== null) ctx.ui.notify?.(diagnostics, "warning");
       deps.storeWidgetRef.current?.();
       deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
@@ -108,6 +114,7 @@ export function registerWorkflowLifecycleHandlers(
     }
     deps.storeWidgetRef.current?.();
     deps.storeWidgetRef.current = null;
+    runtimeState.resetWorkflowDiscoveryForSession();
     runtimeState.setNotificationsActive(false);
   });
 }

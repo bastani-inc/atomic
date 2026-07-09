@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+
+installSlashDispatchTestHooks();
 
 describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", () => {
     async function registerWorkflowCommand(): Promise<{
@@ -206,6 +209,34 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
             cleanup: () => rm(dir, { recursive: true, force: true }),
         };
     }
+
+    test.serial("session_start defers package workflow module evaluation until /workflow list needs discovery", async () => {
+        const marker = `__atomicLazyWorkflowEval_${Date.now()}`;
+        globalThis[marker] = 0;
+        const source = `import { workflow } from "@bastani/workflows";
+globalThis[${JSON.stringify(marker)}] = (globalThis[${JSON.stringify(marker)}] ?? 0) + 1;
+export default workflow({
+  name: "lazy package workflow",
+  description: "",
+  inputs: {},
+  outputs: {},
+  run: async () => ({}),
+});`;
+        const { handler, sent, cleanup } = await registerWorkflowCommandWithResource("lazy-workflow.js", source);
+        try {
+            assert.equal(globalThis[marker], 0, "session_start should not evaluate package workflow modules synchronously");
+            const { ctx } = commandCtx(false);
+
+            await handler("list", ctx);
+
+            assert.equal(globalThis[marker], 1, "/workflow list should await lazy workflow discovery");
+            const listMessage = sent.find((message) => chatSurfacePayload(message)?.kind === "list");
+            assert.match(listMessage?.content ?? "", /lazy-package-workflow/);
+        } finally {
+            delete globalThis[marker];
+            await cleanup();
+        }
+    });
 
     test.serial("workflowPolicyFromContext derives non-interactive policy from hasUI false", () => {
         assert.equal(

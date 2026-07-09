@@ -21,7 +21,6 @@ import { buildToolMetadata, totalToolCount } from "./tool-metadata.ts";
 import { UiResourceHandler } from "./ui-resource-handler.ts";
 import { openUrl, parallelLimit } from "./utils.ts";
 import { logger } from "./logger.ts";
-import { getMissingConfiguredDirectToolServers } from "./direct-tools.ts";
 
 const FAILURE_BACKOFF_MS = 60 * 1000;
 
@@ -75,10 +74,7 @@ export async function initializeMcp(
   const cachePath = getMetadataCachePath();
   const cacheFileExists = existsSync(cachePath);
   let cache = loadMetadataCache();
-  let bootstrapAll = false;
-
   if (!cacheFileExists) {
-    bootstrapAll = true;
     saveMetadataCache({ version: 1, servers: {} });
   } else if (!cache) {
     cache = { version: 1, servers: {} };
@@ -105,12 +101,10 @@ export async function initializeMcp(
     }
   }
 
-  const startupServers = bootstrapAll
-    ? serverEntries
-    : serverEntries.filter(([, definition]) => {
-        const mode = definition.lifecycle ?? "lazy";
-        return mode === "keep-alive" || mode === "eager";
-      });
+  const startupServers = serverEntries.filter(([, definition]) => {
+    const mode = definition.lifecycle ?? "lazy";
+    return mode === "keep-alive" || mode === "eager";
+  });
 
   if (ctx.hasUI && startupServers.length > 0) {
     ctx.ui.setStatus("mcp", `MCP: connecting to ${startupServers.length} servers...`);
@@ -160,39 +154,6 @@ export async function initializeMcp(
     ctx.ui.notify(msg, "info");
   }
 
-  const envDirect = process.env.MCP_DIRECT_TOOLS;
-  if (envDirect !== "__none__") {
-    const currentCache = loadMetadataCache();
-    const missingCacheServers = getMissingConfiguredDirectToolServers(config, currentCache);
-
-    if (missingCacheServers.length > 0) {
-      const bootstrapResults = await parallelLimit(
-        missingCacheServers.filter(name => !results.some(r => r.name === name && r.connection)),
-        10,
-        async (name) => {
-          const definition = config.mcpServers[name];
-          try {
-            const connection = await manager.connect(name, definition);
-            if (connection.status === "needs-auth") {
-              return { name, ok: false };
-            }
-            const { metadata } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
-            toolMetadata.set(name, metadata);
-            updateMetadataCache(state, name);
-            return { name, ok: true };
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            logger.debug(`MCP: direct-tools bootstrap failed for ${name}: ${message}`);
-            return { name, ok: false };
-          }
-        },
-      );
-      const bootstrapped = bootstrapResults.filter(r => r.ok).map(r => r.name);
-      if (bootstrapped.length > 0 && ctx.hasUI) {
-        ctx.ui.notify(`MCP: direct tools for ${bootstrapped.join(", ")} will be available after restart`, "info");
-      }
-    }
-  }
 
   lifecycle.setReconnectCallback((serverName) => {
     updateServerMetadata(state, serverName);

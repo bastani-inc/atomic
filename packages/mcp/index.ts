@@ -39,6 +39,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   let lifecycleGeneration = 0;
   let registeredDirectToolNames = new Set<string>();
   let registeredProxyTool = false;
+  let startupWarmupCancel: (() => void) | null = null;
 
   async function registerDirectToolsFromConfig(
     config: McpConfig,
@@ -129,12 +130,18 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     type: "string",
   });
 
+  function cancelStartupWarmup(): void {
+    startupWarmupCancel?.();
+    startupWarmupCancel = null;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++lifecycleGeneration;
     const previousState = state;
     state = null;
     initPromise = null;
     registeredDirectToolNames = new Set<string>();
+    cancelStartupWarmup();
 
     try {
       const config = loadMcpConfig(earlyConfigPath, ctx.cwd);
@@ -168,7 +175,10 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         throw new Error("Stale MCP session initialization cancelled before startup");
       }
 
-      const { initializeMcp, updateStatusBar } = await import("./init.ts");
+      const [{ initializeMcp, updateStatusBar }, { scheduleMcpStartupWarmup }] = await Promise.all([
+        import("./init.ts"),
+        import("./startup-warmup.ts"),
+      ]);
       if (generation !== lifecycleGeneration || !isContextActive(ctx)) {
         throw new Error("Stale MCP session initialization cancelled before startup");
       }
@@ -193,6 +203,20 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       ) {
         registerProxyTool();
       }
+      const warmup = scheduleMcpStartupWarmup(nextState, {
+        shouldContinue: () => generation === lifecycleGeneration && state === nextState,
+        onDirectToolsChanged: async () => {
+          if (generation !== lifecycleGeneration || state !== nextState) return;
+          await registerDirectTools(nextState);
+        },
+        onSettled: () => {
+          if (generation === lifecycleGeneration && state === nextState && startupWarmupCancel === cancelWarmup) {
+            startupWarmupCancel = null;
+          }
+        },
+      });
+      const cancelWarmup = () => warmup.cancel();
+      startupWarmupCancel = cancelWarmup;
       if (initPromise === promiseRef.current) {
         initPromise = null;
       }
@@ -226,6 +250,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     state = null;
     initPromise = null;
     registeredDirectToolNames = new Set<string>();
+    cancelStartupWarmup();
 
     try {
       await Promise.all([
@@ -409,7 +434,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           return executeConnect(state, params.connect);
         }
         if (params.describe) {
-          return executeDescribe(state, params.describe);
+          return executeDescribe(state, params.describe, params.server);
         }
         if (params.search) {
           return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas);

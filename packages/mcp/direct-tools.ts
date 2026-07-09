@@ -72,6 +72,37 @@ async function attemptDirectAutoAuth(
   }
 }
 
+interface DirectToolSelection {
+  readonly servers: ReadonlySet<string>;
+  readonly toolsByServer: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+function parseDirectToolSelection(items: readonly string[] | undefined): DirectToolSelection {
+  const servers = new Set<string>();
+  const toolsByServer = new Map<string, Set<string>>();
+  for (const rawItem of items ?? []) {
+    const item = rawItem.replace(/\/+$/, "");
+    if (!item) continue;
+    if (!item.includes("/")) {
+      servers.add(item);
+      continue;
+    }
+    const [server, tool] = item.split("/", 2);
+    if (!server) continue;
+    if (!tool) {
+      servers.add(server);
+      continue;
+    }
+    if (!toolsByServer.has(server)) toolsByServer.set(server, new Set());
+    toolsByServer.get(server)!.add(tool);
+  }
+  return { servers, toolsByServer };
+}
+
+function directToolSelectionIncludes(selection: DirectToolSelection, serverName: string): boolean {
+  return selection.servers.has(serverName) || selection.toolsByServer.has(serverName);
+}
+
 export function resolveDirectTools(
   config: McpConfig,
   cache: MetadataCache | null,
@@ -83,24 +114,7 @@ export function resolveDirectTools(
 
   const seenNames = new Set<string>();
 
-  const envServers = new Set<string>();
-  const envTools = new Map<string, Set<string>>();
-  if (envOverride) {
-    for (let item of envOverride) {
-      item = item.replace(/\/+$/, "");
-      if (item.includes("/")) {
-        const [server, tool] = item.split("/", 2);
-        if (server && tool) {
-          if (!envTools.has(server)) envTools.set(server, new Set());
-          envTools.get(server)!.add(tool);
-        } else if (server) {
-          envServers.add(server);
-        }
-      } else if (item) {
-        envServers.add(item);
-      }
-    }
-  }
+  const envSelection = parseDirectToolSelection(envOverride);
 
   const globalDirect = config.settings?.directTools;
 
@@ -111,10 +125,10 @@ export function resolveDirectTools(
     let toolFilter: true | string[] | false = false;
 
     if (envOverride) {
-      if (envServers.has(serverName)) {
+      if (envSelection.servers.has(serverName)) {
         toolFilter = true;
-      } else if (envTools.has(serverName)) {
-        toolFilter = [...envTools.get(serverName)!];
+      } else if (envSelection.toolsByServer.has(serverName)) {
+        toolFilter = [...envSelection.toolsByServer.get(serverName)!];
       }
     } else {
       if (definition.directTools !== undefined) {
@@ -182,14 +196,18 @@ export function resolveDirectTools(
 export function getMissingConfiguredDirectToolServers(
   config: McpConfig,
   cache: MetadataCache | null,
+  envOverride?: readonly string[],
 ): string[] {
   const missing: string[] = [];
   const globalDirect = config.settings?.directTools;
-
+  const envSelection = parseDirectToolSelection(envOverride);
   for (const [serverName, definition] of Object.entries(config.mcpServers)) {
-    const hasDirectTools = definition.directTools !== undefined
+    const hasConfiguredDirectTools = definition.directTools !== undefined
       ? !!definition.directTools
       : !!globalDirect;
+    const hasDirectTools = envOverride
+      ? directToolSelectionIncludes(envSelection, serverName)
+      : hasConfiguredDirectTools;
 
     if (!hasDirectTools) continue;
 

@@ -30,6 +30,7 @@ export interface WorkflowControlActionDeps {
   reloadWorkflowResources: () => Promise<void> | void;
   runtime: ExtensionRuntime;
   policy: WorkflowExecutionPolicy;
+  ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 }
 
 export function workflowPauseAction(args: WorkflowToolArgs): WorkflowToolResult {
@@ -166,10 +167,10 @@ export function workflowInterruptAction(args: WorkflowToolArgs): WorkflowToolRes
   };
 }
 
-export function workflowResumeAction(
+export async function workflowResumeAction(
   args: WorkflowToolArgs,
-  deps: Pick<WorkflowControlActionDeps, "runtime" | "policy">,
-): WorkflowToolResult {
+  deps: Pick<WorkflowControlActionDeps, "runtime" | "policy" | "ensureWorkflowResourcesLoaded">,
+): Promise<WorkflowToolResult> {
   const target = resolveToolRunTarget(args, "No active run to resume.");
   if (target.kind === "all") return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
   if (target.kind === "ambiguous") return { action: "resume", runId: target.target, status: "noop", message: ambiguousRunMessage(target.target, target.matches) };
@@ -178,12 +179,15 @@ export function workflowResumeAction(
   if (!stage.ok) return { action: "resume", runId: target.runId, status: "noop", message: stage.message };
   const stageRunId = stage.runId ?? target.runId;
   const run = store.runs().find((r) => r.id === stageRunId);
-  const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+  const hadPausedRunState = run?.status === "paused";
+  const hadPausedStageState = run?.stages.some((s) => s.status === "paused") ?? false;
+  const isPaused = hadPausedRunState || hadPausedStageState;
   const isResumableContinuation = run !== undefined && !isPaused && (
     (run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
     (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable")
   );
   if (isResumableContinuation) {
+    await deps.ensureWorkflowResourcesLoaded();
     const continuation = deps.runtime.resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy });
     return {
       action: "resume",
@@ -194,9 +198,10 @@ export function workflowResumeAction(
   }
   const result = resumeRun(stageRunId, { stageId: stage.stageId, message: args.message });
   if (result.ok) {
+    const runLevelResumed = hadPausedRunState && !hadPausedStageState && stage.stageId === undefined && result.snapshot.status === "running";
     const message = result.message ?? (isPaused
       ? result.resumed.length === 0
-        ? `No paused stages on run ${result.runId.slice(0, 8)}.`
+        ? runLevelResumed ? `Resumed run ${result.runId.slice(0, 8)}.` : `No paused stages on run ${result.runId.slice(0, 8)}.`
         : `Resumed ${result.resumed.length} stage(s) on run ${result.runId.slice(0, 8)}${args.message ? ` with message: "${args.message}"` : ""}.`
       : `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
     return { action: "resume", runId: result.runId, status: "ok", message };

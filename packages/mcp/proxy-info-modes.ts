@@ -1,9 +1,10 @@
 import type { McpExtensionState } from "./state.ts";
 import type { ToolMetadata } from "./types.ts";
-import { parseUiPromptHandoff } from "./types.ts";
+import { getServerPrefix, parseUiPromptHandoff } from "./types.ts";
 import { getFailureAgeSeconds } from "./init.ts";
 import { findToolByName, formatSchema } from "./tool-metadata.ts";
 import { truncateAtWord } from "./utils.ts";
+import { hydrateMissingMetadata } from "./metadata-hydration.ts";
 import type { ProxyToolResult } from "./proxy-types.ts";
 
 export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
@@ -140,25 +141,65 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
   };
 }
 
-export function executeDescribe(state: McpExtensionState, toolName: string): ProxyToolResult {
-  let serverName: string | undefined;
-  let toolMeta: ToolMetadata | undefined;
+function findToolMetadata(
+  state: McpExtensionState,
+  toolName: string,
+  server?: string,
+): { serverName: string; toolMeta: ToolMetadata } | null {
+  for (const [serverName, metadata] of state.toolMetadata.entries()) {
+    if (server && serverName !== server) continue;
+    const toolMeta = findToolByName(metadata, toolName);
+    if (toolMeta) return { serverName, toolMeta };
+  }
+  return null;
+}
 
-  for (const [server, metadata] of state.toolMetadata.entries()) {
-    const found = findToolByName(metadata, toolName);
-    if (found) {
-      serverName = server;
-      toolMeta = found;
-      break;
-    }
+function prefixHydrationCandidates(state: McpExtensionState, toolName: string): string[] {
+  const prefixMode = state.config.settings?.toolPrefix ?? "server";
+  if (prefixMode === "none") return [];
+  return Object.keys(state.config.mcpServers)
+    .filter((serverName) => !state.toolMetadata.has(serverName))
+    .map((serverName) => ({ serverName, prefix: getServerPrefix(serverName, prefixMode) }))
+    .filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
+    .sort((a, b) => b.prefix.length - a.prefix.length)
+    .map(({ serverName }) => serverName);
+}
+
+async function hydrateDescribeMetadata(state: McpExtensionState, toolName: string, server?: string): Promise<void> {
+  if (server) {
+    await hydrateMissingMetadata(state, { server });
+    return;
   }
 
-  if (!serverName || !toolMeta) {
+  const candidates = prefixHydrationCandidates(state, toolName);
+  for (const candidate of candidates) {
+    await hydrateMissingMetadata(state, { server: candidate });
+    if (findToolMetadata(state, toolName, candidate)) return;
+  }
+
+  if (findToolMetadata(state, toolName)) return;
+  await hydrateMissingMetadata(state);
+}
+
+export async function executeDescribe(
+  state: McpExtensionState,
+  toolName: string,
+  server?: string,
+): Promise<ProxyToolResult> {
+  let found = findToolMetadata(state, toolName, server);
+  if (!found) {
+    await hydrateDescribeMetadata(state, toolName, server);
+    found = findToolMetadata(state, toolName, server);
+  }
+
+  if (!found) {
     return {
       content: [{ type: "text" as const, text: `Tool "${toolName}" not found. Use mcp({ search: "..." }) to search.` }],
       details: { mode: "describe", error: "tool_not_found", requestedTool: toolName },
     };
   }
+
+  const { serverName, toolMeta } = found;
 
   let text = `${toolMeta.name}\n`;
   text += `Server: ${serverName}\n`;
@@ -181,13 +222,13 @@ export function executeDescribe(state: McpExtensionState, toolName: string): Pro
   };
 }
 
-export function executeSearch(
+export async function executeSearch(
   state: McpExtensionState,
   query: string,
   regex?: boolean,
   server?: string,
   includeSchemas?: boolean,
-): ProxyToolResult {
+): Promise<ProxyToolResult> {
   const showSchemas = includeSchemas !== false;
 
   const matches: Array<{ server: string; tool: ToolMetadata }> = [];
@@ -213,6 +254,7 @@ export function executeSearch(
       details: { mode: "search", error: "invalid_pattern", query },
     };
   }
+  await hydrateMissingMetadata(state, { server });
 
   for (const [serverName, metadata] of state.toolMetadata.entries()) {
     if (server && serverName !== server) continue;
@@ -270,12 +312,16 @@ export function executeSearch(
   };
 }
 
-export function executeList(state: McpExtensionState, server: string): ProxyToolResult {
+export async function executeList(state: McpExtensionState, server: string): Promise<ProxyToolResult> {
   if (!state.config.mcpServers[server]) {
     return {
       content: [{ type: "text" as const, text: `Server "${server}" not found. Use mcp({}) to see available servers.` }],
       details: { mode: "list", server, tools: [], count: 0, error: "not_found" },
     };
+  }
+
+  if (!state.toolMetadata.has(server)) {
+    await hydrateMissingMetadata(state, { server });
   }
 
   const metadata = state.toolMetadata.get(server);

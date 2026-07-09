@@ -31,7 +31,8 @@ export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
   getPersistence: () => WorkflowPersistencePort | undefined,
   reloadWorkflowResources: () => Promise<void> | void,
-) {
+  ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
+): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
   return async function executeWorkflowTool(
     args: WorkflowToolArgs,
     ctx: PiExecuteContext,
@@ -47,16 +48,21 @@ export function makeExecuteWorkflowTool(
         stages: [],
       };
     }
-    const activeRuntime = typeof runtime === "function" ? runtime(ctx) : runtime;
     const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
+    const getRuntime = (): ExtensionRuntime => typeof runtime === "function" ? runtime(ctx) : runtime;
 
     switch (action) {
       case "get":
-        return workflowGetResult(activeRuntime, args);
+        await ensureWorkflowResourcesLoaded();
+        return workflowGetResult(getRuntime(), args);
       case "list":
-      case "inputs":
-      case "run":
-        if (action === "run" && hasDirectExecutionMode(args)) {
+      case "inputs": {
+        await ensureWorkflowResourcesLoaded();
+        return getRuntime().dispatch(args, { policy });
+      }
+      case "run": {
+        const activeRuntime = getRuntime();
+        if (hasDirectExecutionMode(args)) {
           const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
           if (normalModeCount !== 1) {
             throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
@@ -64,7 +70,9 @@ export function makeExecuteWorkflowTool(
           const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), { policy });
           return workflowRunResultFromDetails(details);
         }
+        await ensureWorkflowResourcesLoaded();
         return activeRuntime.dispatch(args, { policy });
+      }
       case "status": {
         const target = args.runId;
         if (target !== undefined) {
@@ -92,7 +100,7 @@ export function makeExecuteWorkflowTool(
       case "interrupt":
         return workflowInterruptAction(args);
       case "resume":
-        return workflowResumeAction(args, { runtime: activeRuntime, policy });
+        return workflowResumeAction(args, { runtime: getRuntime(), policy, ensureWorkflowResourcesLoaded });
       default: {
         const _exhaustive: never = action;
         throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

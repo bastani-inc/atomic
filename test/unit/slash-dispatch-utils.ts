@@ -59,7 +59,6 @@ import {
 import { stageUiBroker } from "../../packages/workflows/src/shared/stage-ui-broker.js";
 import { buildStagePromptAdapter } from "../../packages/workflows/src/shared/stage-prompt.js";
 
-
 export {
     assert,
     parseWorkflowArgs,
@@ -111,11 +110,11 @@ export type {
     StageControlHandle,
 };
 
-beforeEach(() => {
+export function resetSlashDispatchTestStateBeforeEach(): void {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
-});
+}
 
-afterEach(async () => {
+export async function cleanupSlashDispatchTestStateAfterEach(): Promise<void> {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
     stageControlRegistry.clear();
     killAllRuns({ store, cancellation: cancellationRegistry });
@@ -123,7 +122,12 @@ afterEach(async () => {
         jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise),
     );
     store.clear();
-});
+}
+
+export function installSlashDispatchTestHooks(): void {
+    beforeEach(resetSlashDispatchTestStateBeforeEach);
+    afterEach(cleanupSlashDispatchTestStateAfterEach);
+}
 
 export async function writeWorkflowFixture(
     filePath: string,
@@ -144,12 +148,6 @@ export default workflow({
         "utf8",
     );
 }
-
-// ---------------------------------------------------------------------------
-// parseWorkflowArgs
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 
 export interface RegisteredCommand {
     name: string;
