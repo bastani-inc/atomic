@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- Aligned the workflows extension peer dependency with upstream `pi-tui` `^0.80.5` as part of the consolidated dependency refresh.
+
 - Changed the builtin `ralph` workflow review fan-out from three reviewers to two (`reviewer-a` and `reviewer-b`), removing `reviewer-c` and its GLM-led model chain while keeping unanimous approval across the remaining reviewers.
 
 ## [0.9.5-alpha.9] - 2026-07-09

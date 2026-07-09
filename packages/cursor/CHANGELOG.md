@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the Cursor provider dependency with upstream `pi-ai` `^0.80.5` as part of the consolidated dependency refresh; no Cursor provider source changes were needed.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

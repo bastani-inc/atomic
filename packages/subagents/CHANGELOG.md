@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream Pi `^0.80.5` runtime packages as part of the consolidated dependency refresh.
+
 ## [0.9.5-alpha.9] - 2026-07-09
 
 ### Changed
