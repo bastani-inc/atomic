@@ -531,7 +531,7 @@ function stripStyleAndJoin(lines, block) {
       // Strip any complete <style> elements on this line (self-closed or
       // same-line-closed), including their body content.
       line = line
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/g, '')
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
         .replace(/<style\b[^>]*\/\s*>/g, '');
 
       // If a <style> opener remains (multi-line body starts here), strip from
@@ -637,7 +637,7 @@ function extractCss(lines, block, id) {
       // Self-closing: nothing to carbonize.
       if (/<style\b[^>]*\/\s*>/.test(line)) return null;
       // Same-line open + close: extract inner text.
-      const sameLine = line.match(/<style\b[^>]*>([\s\S]*?)<\/style[^>]*>/);
+      const sameLine = line.match(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/);
       if (sameLine) {
         const inner = stripJsxTemplateWrap(sameLine[1]);
         return inner.length > 0 ? inner.split('\n') : null;

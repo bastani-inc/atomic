@@ -1276,7 +1276,7 @@ if (IS_BROWSER) {
 
   function browserPrimaryFont(stack) {
     if (!stack || /var\(/i.test(stack)) return '';
-    return String(stack)
+    return String(stack || '')
       .split(',')
       .map(normalizeBrowserFontName)
       .find(font => font && !GENERIC_FONTS.has(font)) || '';

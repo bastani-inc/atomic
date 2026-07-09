@@ -147,7 +147,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `create-spec` | Turn research into an implementation-ready plan. | `/skill:create-spec from research/docs/2026-03-rate-limit.md` |
 | `prompt-engineer` | Tighten a vague prompt before a long run. | `/skill:prompt-engineer Draft a sharper repo-research prompt for payment retries end to end.` |
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
-| `impeccable` | Critique or refine frontend and product UI. | `/skill:impeccable` |
+| `impeccable` | Critique or refine web/native frontend and product UI; includes detector hooks. | `/skill:impeccable` |
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
 | `effective-liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:effective-liteparse` |
 

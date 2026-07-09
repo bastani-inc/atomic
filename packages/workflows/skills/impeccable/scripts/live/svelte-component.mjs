@@ -97,9 +97,9 @@ export function substitutePropsWithExprs(markup, contract) {
 
 export function parseSvelteComponentFile(content) {
   const text = String(content || '');
-  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script[^>]*>/i);
+  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script>/i);
   const withoutScript = scriptMatch ? text.slice(scriptMatch[0].length) : text;
-  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/i);
+  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style\s*>/i);
   const styleBlock = styleMatch ? styleMatch[0] : '';
   const markup = styleMatch
     ? withoutScript.slice(0, styleMatch.index).trim()
@@ -632,24 +632,15 @@ function inlineSvelteComponentInsertAccept({
 }
 
 function svelteMarkupHasVisibleContent(markup) {
-  const raw = String(markup || '');
-  // Strip script/style/comment blocks to a fixpoint so partially-overlapping
-  // sequences cannot survive a single pass (CodeQL: complete sanitization).
-  let text = raw;
-  let prev;
-  do {
-    prev = text;
-    text = text
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, '')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '');
-  } while (text !== prev);
-  text = text
+  const text = String(markup || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (text.length > 0) return true;
-  return /<(img|svg|canvas|video|audio|picture|input|button|select|textarea)\b/i.test(raw);
+  return /<(img|svg|canvas|video|audio|picture|input|button|select|textarea)\b/i.test(markup || '');
 }
 
 function mergeOriginalTopLevelAttrs(markup, originalMarkup) {
