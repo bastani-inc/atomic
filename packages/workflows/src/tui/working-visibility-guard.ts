@@ -21,8 +21,9 @@ export function createWorkingVisibilityGuard(
 
   return {
     hide: () => {
+      if (typeof setWorkingVisible !== "function") return;
       try {
-        setWorkingVisible?.call(ui, false);
+        setWorkingVisible.call(ui, false);
         hidden = true;
       } catch {
         // Keep workflow overlays functional on stale or partially-compatible
@@ -30,10 +31,10 @@ export function createWorkingVisibilityGuard(
       }
     },
     restore: () => {
-      if (!hidden) return;
+      if (!hidden || typeof setWorkingVisible !== "function") return;
       hidden = false;
       try {
-        setWorkingVisible?.call(ui, true);
+        setWorkingVisible.call(ui, true);
       } catch {
         // A late settle after session replacement should not prevent the
         // command promise from resolving.

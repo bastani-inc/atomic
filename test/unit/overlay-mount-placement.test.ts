@@ -315,6 +315,23 @@ test("openInputsPicker resolves cancel when ui.custom is absent (no mount)", asy
   assert.deepEqual(result, { kind: "cancel" });
 });
 
+test("openInputsPicker hides working while mounted and restores on dispose", async () => {
+  const { surface, calls, workingCalls } = buildCustomSurface();
+  const theme = deriveGraphTheme({});
+
+  const pending = openInputsPicker(surface as InputsUiSurface, {
+    workflowName: "demo",
+    fields: SAMPLE_FIELDS,
+    theme,
+  });
+
+  assert.deepEqual(workingCalls, [false]);
+  calls[0]!.component.dispose?.();
+  const result = await pending;
+  assert.deepEqual(result, { kind: "cancel" });
+  assert.deepEqual(workingCalls, [false, true]);
+});
+
 test("openInputsPicker short-circuits run when fields are empty (no mount)", async () => {
   const { surface, calls } = buildCustomSurface();
   const theme = deriveGraphTheme({});
