@@ -4,6 +4,7 @@ import { getEffectiveInputBudget } from "./context-window.ts";
 import { parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
+import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
 /**
@@ -15,10 +16,16 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
  */
 export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
 
-const MIN_OPENAI_RESPONSES_OUTPUT_TOKENS = 16;
-const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_(?:output_|completion_)?tokens\b/;
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type ProviderErrorDetails = {
+	message?: string;
+	code?: string;
+	param?: string;
+};
+
+const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_output_tokens\b/;
 const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
-	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_OPENAI_RESPONSES_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
+	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_RESPONSES_MAX_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
 );
 
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
@@ -148,11 +155,63 @@ export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boo
 	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
 }
 
+function isJsonRecord(value: JsonValue): value is { [key: string]: JsonValue } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: { [key: string]: JsonValue }, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function parseProviderErrorDetails(errorMessage: string): ProviderErrorDetails | undefined {
+	const start = errorMessage.indexOf("{");
+	const end = errorMessage.lastIndexOf("}");
+	if (start === -1 || end <= start) return undefined;
+
+	try {
+		const parsed = JSON.parse(errorMessage.slice(start, end + 1)) as JsonValue;
+		if (!isJsonRecord(parsed)) return undefined;
+
+		const nestedError = parsed.error;
+		if (nestedError !== undefined && isJsonRecord(nestedError)) {
+			return {
+				message: stringField(nestedError, "message"),
+				code: stringField(nestedError, "code") ?? stringField(parsed, "code"),
+				param: stringField(nestedError, "param") ?? stringField(parsed, "param"),
+			};
+		}
+
+		return {
+			message: stringField(parsed, "message"),
+			code: stringField(parsed, "code"),
+			param: stringField(parsed, "param"),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function isOutputBudgetUnderflowText(text: string): boolean {
+	const message = text.toLowerCase();
+	return OUTPUT_BUDGET_PARAMETER_PATTERN.test(message) && OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message);
+}
+
+function isStructuredOutputBudgetUnderflow(details: ProviderErrorDetails): boolean {
+	const message = details.message?.toLowerCase() ?? "";
+	const param = details.param?.toLowerCase();
+	if (!OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message)) return false;
+	return param !== undefined ? OUTPUT_BUDGET_PARAMETER_PATTERN.test(param) : OUTPUT_BUDGET_PARAMETER_PATTERN.test(message);
+}
+
 export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessage): boolean {
 	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return false;
-	const message = assistantMessage.errorMessage.toLowerCase();
-	if (!OUTPUT_BUDGET_PARAMETER_PATTERN.test(message)) return false;
-	return OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message);
+	if (assistantMessage.api !== "openai-responses") return false;
+
+	const structuredDetails = parseProviderErrorDetails(assistantMessage.errorMessage);
+	if (structuredDetails && isStructuredOutputBudgetUnderflow(structuredDetails)) return true;
+
+	return isOutputBudgetUnderflowText(assistantMessage.errorMessage);
 }
 
 export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {

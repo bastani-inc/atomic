@@ -7,7 +7,7 @@ type JsonValue = string | number | boolean | null | JsonValue[] | JsonObject;
 const RESPONSES_FUNCTION_CALL_ID = /^fc_[A-Za-z0-9_-]{1,61}$/;
 const RESPONSES_FUNCTION_CALL_ID_PREFIX = "fc_";
 const MAX_RESPONSES_FUNCTION_CALL_ID_LENGTH = 64;
-const MIN_RESPONSES_MAX_OUTPUT_TOKENS = 16;
+export const MIN_RESPONSES_MAX_OUTPUT_TOKENS = 16;
 
 function isPlainObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "vitest";
 import {
+  MIN_RESPONSES_MAX_OUTPUT_TOKENS,
   isValidResponsesFunctionCallId,
   responsesFunctionCallIdForCallId,
   sanitizeOpenAIResponsesPayload,
@@ -77,11 +78,11 @@ describe("sanitizeOpenAIResponsesPayload", () => {
     const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
 
     assert.notEqual(sanitized, payload);
-    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, 16);
+    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, MIN_RESPONSES_MAX_OUTPUT_TOKENS);
   });
 
   test("preserves valid Responses max_output_tokens", () => {
-    const payload = { max_output_tokens: 16, input: [{ type: "message", content: "hi" }] };
+    const payload = { max_output_tokens: MIN_RESPONSES_MAX_OUTPUT_TOKENS, input: [{ type: "message", content: "hi" }] };
 
     const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
 
@@ -93,7 +94,7 @@ describe("sanitizeOpenAIResponsesPayload", () => {
 
     const sanitized = sanitizeOpenAIResponsesPayload(payload, responsesModel);
 
-    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, 16);
+    assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, MIN_RESPONSES_MAX_OUTPUT_TOKENS);
   });
   test("does not change non-Responses payloads", () => {
     const payload = { input: [{ type: "function_call", id: "raw/invalid", call_id: "call_1" }] };

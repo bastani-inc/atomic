@@ -138,11 +138,14 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		};
 	}
 
-	function outputBudgetErrorAssistant(errorMessage?: string): AssistantMessage {
+	function outputBudgetErrorAssistant(
+		errorMessage?: string,
+		api: AssistantMessage["api"] = "openai-responses",
+	): AssistantMessage {
 		return {
 			role: "assistant",
 			content: [],
-			api: "openai-responses",
+			api,
 			provider: "github-copilot",
 			model: "gpt-5.5",
 			usage: {
@@ -217,6 +220,56 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		await checkCompaction(assistant);
 
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", true);
+	});
+
+	it("compacts and retries structured OpenAI Responses output-budget underflow errors", async () => {
+		const previousAssistant = previousHighUsageAssistant();
+		const assistant = outputBudgetErrorAssistant(
+			`OpenAI API error (400): {"error":{"message":"Invalid 'max_output_tokens': integer below minimum value. Expected a value >= 16, but got 1 instead.","param":"max_output_tokens","code":"invalid_request_error"}}`,
+		);
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "continue the task" }], timestamp: Date.now() - 1000 },
+			previousAssistant,
+			assistant,
+		];
+		compactionMocks.estimateContextTokens.mockReturnValue({
+			tokens: 190_000,
+			usageTokens: 190_000,
+			trailingTokens: 0,
+			lastUsageIndex: 1,
+		});
+		const runAutoCompactionSpy = vi
+			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.mockResolvedValue();
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", true);
+	});
+
+	it("does not retry non-Responses output-budget-like errors", async () => {
+		const previousAssistant = previousHighUsageAssistant();
+		const assistant = outputBudgetErrorAssistant(undefined, "openai-completions");
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "continue the task" }], timestamp: Date.now() - 1000 },
+			previousAssistant,
+			assistant,
+		];
+		compactionMocks.estimateContextTokens.mockReturnValue({
+			tokens: 190_000,
+			usageTokens: 190_000,
+			trailingTokens: 0,
+			lastUsageIndex: 1,
+		});
+		const runAutoCompactionSpy = vi
+			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.mockResolvedValue();
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 
 	it("does not retry generic invalid request errors after threshold compaction", async () => {
