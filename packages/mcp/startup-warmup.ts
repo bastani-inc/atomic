@@ -69,11 +69,12 @@ export function scheduleMcpStartupWarmup(
     const warmed = results.filter((result) => result.ok).map((result) => result.name);
     if (warmed.length === 0) return;
     updateStatusBar(state);
-    if (state.ui) {
-      state.ui.notify(`MCP: direct tools for ${warmed.join(", ")} will be available after restart`, "info");
-    }
     if (!shouldContinue()) return;
     await options.onDirectToolsChanged?.();
+    if (!shouldContinue()) return;
+    if (state.ui) {
+      state.ui.notify(`MCP: direct tools for ${warmed.join(", ")} are now available`, "info");
+    }
   })()
     .catch((error) => {
       const message = error instanceof Error ? error.message : String(error);

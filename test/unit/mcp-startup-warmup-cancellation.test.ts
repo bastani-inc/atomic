@@ -127,7 +127,11 @@ test("MCP startup warmup hydrates env-selected direct tool servers on cold cache
     async close(name: string): Promise<void> {
       connections.delete(name);
     },
+    getAllConnections(): Map<string, McpConnection> {
+      return connections;
+    },
   } as Pick<McpServerManager, "connect" | "getConnection" | "close"> as McpServerManager;
+  const events: string[] = [];
   const state = {
     manager,
     config,
@@ -139,16 +143,18 @@ test("MCP startup warmup hydrates env-selected direct tool servers on cold cache
     uiServer: null,
     completedUiSessions: [],
     openBrowser: async () => undefined,
+    ui: { notify: (message: string) => { events.push(message); }, setStatus: () => undefined },
   } as unknown as McpExtensionState;
   let directToolCallbacks = 0;
 
-  const handle = scheduleMcpStartupWarmup(state, { onDirectToolsChanged: () => { directToolCallbacks += 1; } });
+  const handle = scheduleMcpStartupWarmup(state, { onDirectToolsChanged: () => { directToolCallbacks += 1; events.push("registered"); } });
   await handle.promise;
 
   assert.deepEqual(connected, ["github"]);
   assert.equal(state.toolMetadata.has("github"), true);
   assert.equal(state.toolMetadata.has("unrelated"), false);
   assert.equal(directToolCallbacks, 1);
+  assert.deepEqual(events, ["registered", "MCP: direct tools for github are now available"]);
 });
 
 test("MCP_DIRECT_TOOLS none disables startup warmup", async () => {

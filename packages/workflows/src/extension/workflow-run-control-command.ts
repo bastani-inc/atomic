@@ -408,6 +408,9 @@ export async function handleRunControlCommand(
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;
     }
+    // A quit, non-paused durable run is a resume shadow rather than a live
+    // stage-control pause. Routing directly to durable resume preserves the
+    // previous snapshot-only diversion without reopening a stale local overlay.
     if (!isPaused && run?.exitReason === "quit" && action === "resume") {
       return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }

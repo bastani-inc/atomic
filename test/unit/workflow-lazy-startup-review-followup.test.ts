@@ -5,6 +5,7 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+import { handleRunControlCommand, type WorkflowRunControlDeps } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 
 interface SelectorComponent {
   handleInput?: (data: string) => void;
@@ -100,6 +101,43 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
 
     assert.equal(refreshCalls, 0);
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+  });
+
+  test("/workflow resume routes quit durable shadows through durable resume", async () => {
+    const runId = "quit-shadow-durable-resume";
+    store.recordRunStart({ id: runId, name: "quit shadow workflow", inputs: {}, status: "running", stages: [], startedAt: Date.now(), exitReason: "quit", resumable: true });
+    let ensureCalls = 0;
+    let preparedTarget: string | undefined;
+    let resumedTarget: string | undefined;
+    const opened: string[] = [];
+    const messages: string[] = [];
+    const runtime = {
+      prepareDurableResumable: async (target?: string) => {
+        preparedTarget = target;
+        return [{ workflowId: runId, name: "quit shadow workflow", status: "paused", completedCheckpoints: 1, pendingPrompts: 0, createdAt: Date.now(), updatedAt: Date.now() }];
+      },
+      resumeDurableWorkflow: (target: string) => {
+        resumedTarget = target;
+        return { ok: true, runId: target, message: `Resumed durable ${target}` };
+      },
+      registry: { has: () => true },
+    } as unknown as ExtensionRuntime;
+    const deps: WorkflowRunControlDeps = {
+      pi: {} as never,
+      overlay: { open: (id) => { if (id) opened.push(id); }, toggle: () => undefined, close: () => undefined },
+      getPersistence: () => undefined,
+      runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => { ensureCalls += 1; },
+    };
+
+    await handleRunControlCommand("resume", [runId], { hasUI: true, ui: { notify: () => undefined } }, { info: (message) => messages.push(message), error: (message) => messages.push(message) }, deps);
+
+    assert.equal(ensureCalls, 1);
+    assert.equal(preparedTarget, runId);
+    assert.equal(resumedTarget, runId);
+    assert.deepEqual(opened, [runId]);
+    assert.deepEqual(messages, [`Resumed durable ${runId}`]);
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
 

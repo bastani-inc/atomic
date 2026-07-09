@@ -65,7 +65,7 @@ Precedence is:
 3. `.mcp.json`
 4. `.pi/mcp.json`
 
-Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections when a valid cache exists; on a cold cache, explicit proxy search/describe/server-list requests may connect the relevant lazy server(s) once to hydrate metadata on demand. `describe` narrows cold-cache hydration to an explicitly requested server or the server identified by the configured tool-name prefix before falling back to broader discovery.
+Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections when a valid cache exists; on a cold cache, explicit proxy search/describe/server-list requests may connect lazy server(s) once to hydrate metadata on demand. `describe` narrows cold-cache hydration to an explicitly requested server or the server identified by the configured tool-name prefix before falling back to broader discovery. Unscoped `search` intentionally hydrates every configured lazy server that lacks cached metadata so the search can see all available tools.
 
 ```
 mcp({ search: "screenshot" })
@@ -232,7 +232,7 @@ To exclude specific tools while still using `directTools: true`, add `excludeToo
 
 Each direct tool costs ~150-300 tokens in the system prompt (name + description + schema). Good for targeted sets of 5-20 tools. For servers with 75+ tools, stick with the proxy or pick specific tools with a `string[]`.
 
-Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup. On the first session after adding `directTools` to a new server, or when a child/subagent selects tools through `MCP_DIRECT_TOOLS`, the cache may not exist yet — tools fall back to proxy-only and only the selected/configured direct-tool servers populate in the background. To force it: `/mcp reconnect <server>`.
+Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup when the cache is warm. On the first session after adding `directTools` to a new server, or when a child/subagent selects tools through `MCP_DIRECT_TOOLS`, the cache may not exist yet — tools fall back to proxy-only while the selected/configured direct-tool servers populate in the background, then the extension refreshes tool registration so the warmed direct tools become available in the current session. To force it immediately: `/mcp reconnect <server>`.
 
 When you change direct-tool toggles in `/mcp` or write new config through `/mcp setup`, the extension triggers Pi's normal reload flow automatically. That refreshes extensions, prompts, skills, and MCP tool registration in one shot, so newly configured direct tools can appear without a manual restart.
 
