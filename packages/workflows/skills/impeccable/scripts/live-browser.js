@@ -5076,7 +5076,7 @@
   }
 
   function extractSvelteComponentStyle(source) {
-    const match = String(source || '').match(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/i);
+    const match = String(source || '').match(/<style\b[^>]*>([\s\S]*?)<\/style\b[^>]*>/i);
     return match ? match[1].trim() : '';
   }
 
@@ -5606,7 +5606,7 @@
     if (!/\.[cm]?[jt]sx$/i.test(String(filePath || ''))) return block;
     return String(block)
       .replace(
-        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style\s*>/g,
+        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style\b[^>]*>/g,
         (_match, attrs, css) => '<style' + attrs + '>' + css + '</style>',
       )
       .replace(/\bclassName\s*=\s*\{\s*`([^`]*?)`\s*\}/g, (_match, value) => {
