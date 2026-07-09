@@ -228,11 +228,11 @@ declare module "./interactive-mode-base.ts" {
   showModelSelector(initialSearchInput?: string): void;
   showContextWindowSelector(model: Model<Api>): void;
   showModelsSelector(): Promise<void>;
-  showUserMessageSelector(): void;
+  showUserMessageSelector(): Promise<void>;
   handleCloneCommand(): Promise<void>;
   maybeSaveImplicitProjectTrustAfterReload(): boolean;
   showTrustSelector(): void;
-  showTreeSelector(initialSelectedId?: string): void;
+  showTreeSelector(initialSelectedId?: string): Promise<void>;
   showSessionSelector(): void;
   handleResumeSession(sessionPath: string, options?: Parameters<ExtensionCommandContext["switchSession"]>[1]): Promise<{ cancelled: boolean }>;
   getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[];

@@ -67,9 +67,9 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ hasSystemPromptInput: true }))).toBe(false);
 	});
 
-	it("still defers when an interactive launch explicitly selects a provider or model", () => {
-		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(true);
-		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(true);
+	it("keeps explicit provider or model selection on the synchronous startup path", () => {
+		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
 	});
 
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {
@@ -116,6 +116,20 @@ describe("computeStartupInputCaptureEnabled", () => {
 			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
 		} finally {
 			removeTempDir(input.sessionCwd);
+		}
+	});
+
+	it("does not start pre-session input capture for explicit provider or model selection", () => {
+		const providerInput = baseStartupCaptureInput();
+		providerInput.parsed.provider = "extension-provider";
+		const modelInput = baseStartupCaptureInput();
+		modelInput.parsed.model = "extension-model";
+		try {
+			expect(computeStartupInputCaptureEnabled(providerInput)).toBe(false);
+			expect(computeStartupInputCaptureEnabled(modelInput)).toBe(false);
+		} finally {
+			removeTempDir(providerInput.sessionCwd);
+			removeTempDir(modelInput.sessionCwd);
 		}
 	});
 });

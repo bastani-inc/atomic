@@ -265,6 +265,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
 			this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
 			// Keep the subscription warning after the RESOURCES disclosure.
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+			this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
 		}
         await this.checkShutdownRequested();
 

@@ -20,6 +20,8 @@ type InputContext = {
 	drainStartupReplayCommands?: () => Promise<void>;
 	recoverCookedStartupInput?: () => boolean;
 	footerDataProvider: { startGitWatcher: () => void };
+	deferredStartupPending?: boolean;
+	ensureDeferredStartupComplete?: () => Promise<void>;
 };
 
 type StartupNoticesContext = {
@@ -145,6 +147,37 @@ describe("InteractiveMode startup latency hooks", () => {
 		await expect(inputPromise).resolves.toBe("ready prompt");
 	});
 
+	it("starts deferred startup in the background after input readiness", async () => {
+		timingMock.labels.length = 0;
+		let markDeferredStarted: (() => void) | undefined;
+		const deferredStarted = new Promise<void>((resolve) => {
+			markDeferredStarted = resolve;
+		});
+		const context: InputContext = {
+			pendingUserInputs: [],
+			startupCookedInputRecovered: true,
+			inputHandlerReadyRecorded: false,
+			footerDataProvider: { startGitWatcher: vi.fn() },
+			deferredStartupPending: true,
+			ensureDeferredStartupComplete: vi.fn(async () => {
+				markDeferredStarted?.();
+			}),
+		};
+
+		const inputPromise = interactiveModePrototype.getUserInput.call(context);
+
+		expect(context.onInputCallback).toBeTypeOf("function");
+		expect(context.ensureDeferredStartupComplete).not.toHaveBeenCalled();
+		context.onInputCallback?.("ready prompt");
+		await expect(inputPromise).resolves.toBe("ready prompt");
+
+		await waitForImmediate();
+		await deferredStarted;
+
+		expect(context.footerDataProvider.startGitWatcher).toHaveBeenCalledTimes(1);
+		expect(context.ensureDeferredStartupComplete).toHaveBeenCalledTimes(1);
+	});
+
 	it("does not record input handler readiness for queued startup input", async () => {
 		timingMock.labels.length = 0;
 		const context: InputContext = {
@@ -207,13 +240,21 @@ describe("InteractiveMode startup latency hooks", () => {
 		expect(context.footerDataProvider.startGitWatcher).not.toHaveBeenCalled();
 	});
 
-	it("does not block first normal prompt on deferred startup", async () => {
+	it("waits for deferred startup before the first normal prompt", async () => {
+		const order: string[] = [];
 		const context = createPromptTurnContext({ deferredStartupPending: true });
+		context.ensureDeferredStartupComplete = vi.fn(async () => {
+			order.push("deferred");
+		});
+		context.session.prompt = vi.fn(async () => {
+			order.push("prompt");
+		});
 
 		await interactiveModePrototype.runUserPromptTurn.call(context, "hello");
 
-		expect(context.ensureDeferredStartupComplete).not.toHaveBeenCalled();
+		expect(order).toEqual(["deferred", "prompt"]);
 		expect(context.session.prompt).toHaveBeenCalledWith("hello");
+		expect(context.deferLoadedResourcesDisclosureUntilAgentEnd).toBe(false);
 	});
 
 	it("waits for deferred startup already in flight before prompting", async () => {

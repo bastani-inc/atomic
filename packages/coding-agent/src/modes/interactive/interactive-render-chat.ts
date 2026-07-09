@@ -297,7 +297,13 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
           void (async () => {
             await yieldToEventLoop();
             this.footerDataProvider.startGitWatcher();
-          })();
+            if (this.deferredStartupPending) {
+              await this.ensureDeferredStartupComplete();
+            }
+          })().catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`Deferred input-readiness startup task failed: ${message}`);
+          });
         }
       });
     }

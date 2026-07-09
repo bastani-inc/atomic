@@ -6,15 +6,15 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
     // Show the working spinner immediately on submit so there is no visible gap
     // while prompt preflight runs before the agent emits `agent_start`.
     this.showWorkingLoaderNow();
-    const deferredStartupAlreadyRunning = this.deferredStartupPromise !== undefined;
-    if (deferredStartupAlreadyRunning) {
+    const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined;
+    if (deferredStartupNeedsPromptGate) {
       this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
     }
     // Yield once so the freshly-mounted spinner paints before synchronous
     // preflight work can block the event loop.
     await yieldToEventLoop();
     try {
-      if (deferredStartupAlreadyRunning) {
+      if (deferredStartupNeedsPromptGate) {
         await this.ensureDeferredStartupComplete();
       }
       await this.session.prompt(userInput);
@@ -23,6 +23,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
         this.pendingLoadedResourcesDisclosure = false;
         this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
         void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
       }
     } catch (error: unknown) {
       this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
@@ -380,6 +381,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
       }
       if (text === "/reload") {
         this.editor.setText("");
+        await this.ensureDeferredStartupComplete();
         await this.handleReloadCommand();
         return;
       }
