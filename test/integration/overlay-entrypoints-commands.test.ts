@@ -312,6 +312,13 @@ describe("/workflow resume — paused vs non-paused branching", () => {
 });
 
 describe("/workflow attach — top-level command", () => {
+  // Hermetic durable backend: without this, tests that fall back to durable
+  // discovery scan the real ~/.atomic/workflow-durable directory, which can
+  // hold tens of thousands of files on dev machines and blow the 5s timeout.
+  beforeEach(() => {
+    setDurableBackend(new InMemoryDurableBackend());
+  });
+  afterEach(() => setDurableBackend(undefined));
   test("attach <runId> opens the overlay", async () => {
     singletonStore.clear();
     const runId = `test-attach-${Date.now()}`;
@@ -349,7 +356,7 @@ describe("/workflow attach — top-level command", () => {
     factory(pi);
     const wfCmd = commands["workflow"]!;
     const { ctx } = buildPrintCtx();
-    // Unknown id — no durable backend configured.
+    // Unknown id — hermetic durable backend has no matching record.
     await wfCmd.options.handler("resume not-a-durable-wf", ctx);
     assert.equal(customCalls.length, 0);
   });

@@ -11,9 +11,9 @@
 			"dependencies": {
 				"@bastani/atomic-natives": "0.0.0",
 				"@bufbuild/protobuf": "^2.12.1",
-				"@earendil-works/pi-agent-core": "^0.80.3",
-				"@earendil-works/pi-ai": "^0.80.3",
-				"@earendil-works/pi-tui": "^0.80.3",
+				"@earendil-works/pi-agent-core": "^0.80.5",
+				"@earendil-works/pi-ai": "^0.80.5",
+				"@earendil-works/pi-tui": "^0.80.5",
 				"@modelcontextprotocol/ext-apps": "^1.7.4",
 				"@modelcontextprotocol/sdk": "^1.25.1",
 				"@mozilla/readability": "^0.6.0",
@@ -27,7 +27,7 @@
 				"ignore": "7.0.5",
 				"jiti": "2.7.0",
 				"linkedom": "^0.18.12",
-				"lru-cache": "11.3.6",
+				"lru-cache": "11.5.2",
 				"markit-ai": "0.5.3",
 				"minimatch": "10.2.5",
 				"open": "^11.0.0",
@@ -44,7 +44,7 @@
 			},
 			"optionalDependencies": {
 				"@mariozechner/clipboard": "0.3.9",
-				"@dbos-inc/dbos-sdk": "4.22.6"
+				"@dbos-inc/dbos-sdk": "4.23.6"
 			},
 			"bin": {
 				"atomic": "dist/cli.js"
@@ -626,9 +626,9 @@
 			"license": "(Apache-2.0 AND BSD-3-Clause)"
 		},
 		"node_modules/@dbos-inc/dbos-sdk": {
-			"version": "4.20.11",
-			"resolved": "https://registry.npmjs.org/@dbos-inc/dbos-sdk/-/dbos-sdk-4.20.11.tgz",
-			"integrity": "sha512-gh2y5yFpRLTfTa5vboAj7NuoWOF4ST4Kam0/13Ixa36oi+4n6YgI+xCsfhpu3r/iPGUDTtL5z8trU+dCyNK22w==",
+			"version": "4.23.6",
+			"resolved": "https://registry.npmjs.org/@dbos-inc/dbos-sdk/-/dbos-sdk-4.23.6.tgz",
+			"integrity": "sha512-Hrdm/WM7DUMqb517ib+msv/pIGnUepP/h3Q62T0j8/LYHRXS2PyOSd76emn1wccPDuTwhUhNyzBfbxoTbW0DJQ==",
 			"license": "MIT",
 			"dependencies": {
 				"commander": "^12.0.0",
@@ -639,24 +639,21 @@
 				"yaml": "^2.8.3"
 			},
 			"bin": {
-				"dbos": "dist/src/cli/cli.js",
-				"dbos-sdk": "dist/src/cli/cli.js"
+				"dbos": "./dist/src/cli/cli.js",
+				"dbos-sdk": "./dist/src/cli/cli.js"
 			},
 			"engines": {
 				"node": ">=20"
 			},
-			"optional": true,
-			"workspaces": [
-				"packages/*"
-			]
+			"optional": true
 		},
 		"node_modules/@earendil-works/pi-agent-core": {
-			"version": "0.80.3",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.3.tgz",
-			"integrity": "sha512-3qw0/GeRQBU/nlGjDe5Yb7ePKTmoxefx2YxyKMFAviFUMXpFexBG/hS7mBtwFahFvzrrTPPoRT6sFIDjwoDWPQ==",
+			"version": "0.80.5",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.5.tgz",
+			"integrity": "sha512-413NZ5BEwSdL+BAtoBlk7hcA3UGvltcdAPtFoMZ1uqLZRNIoFU0WhNXGwv5Sp1SPBmMR6MAc3neoA+MdOlWJ2w==",
 			"license": "MIT",
 			"dependencies": {
-				"@earendil-works/pi-ai": "^0.80.3",
+				"@earendil-works/pi-ai": "^0.80.5",
 				"ignore": "7.0.5",
 				"typebox": "1.1.38",
 				"yaml": "2.9.0"
@@ -666,9 +663,9 @@
 			}
 		},
 		"node_modules/@earendil-works/pi-ai": {
-			"version": "0.80.3",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.3.tgz",
-			"integrity": "sha512-jPZLMeGL5kkMSEAwAklfXTMHqZvfhsJtCCpKGIr5Duk7mc0n4skjB1dugk7y0z3z8ZHIUCmPAWHdyDqgUz5vdA==",
+			"version": "0.80.5",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.5.tgz",
+			"integrity": "sha512-+7UODYKu4o/X8sxTHG8HEV3+O+dOYKg5MeO3MJIFQ+wu65pIWDhjZGc759uWsRr79AhV7MSJEe4GWnFn4l68gw==",
 			"license": "MIT",
 			"dependencies": {
 				"@anthropic-ai/sdk": "0.91.1",
@@ -684,16 +681,16 @@
 				"typebox": "1.1.38"
 			},
 			"bin": {
-				"pi-ai": "dist/cli.js"
+				"pi-ai": "./dist/cli.js"
 			},
 			"engines": {
 				"node": ">=22.19.0"
 			}
 		},
 		"node_modules/@earendil-works/pi-tui": {
-			"version": "0.80.3",
-			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.80.3.tgz",
-			"integrity": "sha512-2BJI6qwRQfnM0Q7seL1+SbacU/jRRjBnN7Hu3n9BjAn7/s5FaBNnvdD1qBQYRsFTHfjqMaDsjYqanPyqwXj99w==",
+			"version": "0.80.5",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-0.80.5.tgz",
+			"integrity": "sha512-raxEUD2CvCDNJuOWEAI+xD7vmxCrGH0NYb31+GQDdL1q9WXn5+uNLgP1vkJfOsTvf9k5zU5sNFA06oBIcWSYtQ==",
 			"license": "MIT",
 			"dependencies": {
 				"get-east-asian-width": "1.6.0",
@@ -3235,9 +3232,9 @@
 			}
 		},
 		"node_modules/lru-cache": {
-			"version": "11.3.6",
-			"resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.3.6.tgz",
-			"integrity": "sha512-Gf/KoL3C/MlI7Bt0PGI9I+TeTC/I6r/csU58N4BSNc4lppLBeKsOdFYkK+dX0ABDUMJNfCHTyPpzwwO21Awd3A==",
+			"version": "11.5.2",
+			"resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.2.tgz",
+			"integrity": "sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==",
 			"license": "BlueOak-1.0.0",
 			"engines": {
 				"node": "20 || >=22"

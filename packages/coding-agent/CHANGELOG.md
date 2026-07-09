@@ -4,6 +4,9 @@
 
 ### Changed
 
+- Synced the upstream Pi runtime dependencies (`@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui`) from `^0.80.3` to `^0.80.5` across Atomic and bundled extensions, refreshed the Dependabot-covered runtime dependencies (`lru-cache`, `@dbos-inc/dbos-sdk`, `napi`, `napi-derive`, and `tree-sitter`) to the latest stable versions, and regenerated Bun/Cargo/npm shrinkwrap lock metadata.
+
+
 - Changed the bundled `ralph` workflow review fan-out from three reviewers to two (`reviewer-a` and `reviewer-b`), removing `reviewer-c` and its GLM-led model chain while keeping unanimous approval across the remaining reviewers.
 
 ## [0.9.5-alpha.9] - 2026-07-09

@@ -30,7 +30,7 @@ describeModelRegistry((context) => {
 			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			[
-				"claude-sonnet-5",
+				"claude-sonnet-5-test",
 				{
 					contextWindow: 200_000,
 					contextWindowOptions: [200_000, 1_000_000],
@@ -45,7 +45,7 @@ describeModelRegistry((context) => {
 				},
 			],
 			[
-				"mai-code-1-flash-picker",
+				"mai-code-2-flash-picker",
 				{
 					contextWindow: 128_000,
 					maxInputTokens: 128_000,
@@ -93,8 +93,8 @@ describeModelRegistry((context) => {
 			setActiveCopilotModelCatalog(copilotCatalog);
 			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
 
-			const claudeSonnet5 = registry.find("github-copilot", "claude-sonnet-5");
-			if (!claudeSonnet5) throw new Error("Missing dynamic github-copilot/claude-sonnet-5 model");
+			const claudeSonnet5 = registry.find("github-copilot", "claude-sonnet-5-test");
+			if (!claudeSonnet5) throw new Error("Missing dynamic github-copilot/claude-sonnet-5-test model");
 			expect(claudeSonnet5.name).toBe("Claude Sonnet 5");
 			expect(claudeSonnet5.provider).toBe("github-copilot");
 			expect(claudeSonnet5.api).toBe("anthropic-messages");
@@ -108,8 +108,8 @@ describeModelRegistry((context) => {
 			expect(claudeSonnet5.maxInputTokens).toBe(936_000);
 			expect(claudeSonnet5.maxTokens).toBe(64_000);
 
-			const maiCodeFlash = registry.find("github-copilot", "mai-code-1-flash-picker");
-			if (!maiCodeFlash) throw new Error("Missing dynamic github-copilot/mai-code-1-flash-picker model");
+			const maiCodeFlash = registry.find("github-copilot", "mai-code-2-flash-picker");
+			if (!maiCodeFlash) throw new Error("Missing dynamic github-copilot/mai-code-2-flash-picker model");
 			expect(maiCodeFlash.name).toBe("MAI-Code-1-Flash");
 			expect(maiCodeFlash.provider).toBe("github-copilot");
 			expect(maiCodeFlash.api).toBe("openai-responses");
