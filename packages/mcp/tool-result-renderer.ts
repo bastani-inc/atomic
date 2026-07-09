@@ -1,7 +1,7 @@
 import type { AgentToolResult, ToolRenderResultOptions } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 
-type McpToolResultDetails = Record<string, unknown> & { error?: unknown };
+export type McpToolResultDetails = Record<string, unknown> & { error?: unknown };
 type McpToolContentBlock = AgentToolResult<McpToolResultDetails>["content"][number];
 
 interface RenderTheme {

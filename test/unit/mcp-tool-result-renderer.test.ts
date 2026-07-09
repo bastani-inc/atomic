@@ -4,15 +4,15 @@ import type { AgentToolResult, ToolRenderResultOptions } from "../../packages/co
 import {
   formatMcpToolResultLines,
   renderMcpToolResult,
+  type McpToolResultDetails,
 } from "../../packages/mcp/tool-result-renderer.ts";
 
-type McpDetails = Record<string, never>;
 
 const theme = {
   fg: (_name: string, text: string) => text,
 };
 
-function textResult(text: string): AgentToolResult<McpDetails> {
+function textResult(text: string): AgentToolResult<McpToolResultDetails> {
   return {
     content: [{ type: "text", text }],
     details: {},
