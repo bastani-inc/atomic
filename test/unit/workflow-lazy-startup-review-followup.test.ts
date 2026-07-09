@@ -1,0 +1,170 @@
+import { afterEach, describe, test } from "bun:test";
+import assert from "node:assert/strict";
+import factory, { type ExtensionAPI, type PiCommandOptions } from "../../packages/workflows/src/extension/index.js";
+import { store } from "../../packages/workflows/src/shared/store.js";
+import type { ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
+import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
+import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
+
+interface SelectorComponent {
+  handleInput?: (data: string) => void;
+}
+
+type SelectorFactory = (
+  tui: { requestRender: () => void },
+  theme: unknown,
+  keys: unknown,
+  done: () => void,
+) => SelectorComponent;
+
+function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name: string; options: PiCommandOptions }> {
+  const commands: Array<{ name: string; options: PiCommandOptions }> = [];
+  const pi = {
+    registerTool: () => undefined,
+    registerCommand: (name: string, options: PiCommandOptions) => { commands.push({ name, options }); },
+    registerMessageRenderer: () => undefined,
+    registerFlag: () => undefined,
+    registerShortcut: () => undefined,
+    sendMessage: () => undefined,
+    createAgentSession: async () => ({
+      session: {
+        prompt: async () => "ok",
+        steer: async () => undefined,
+        followUp: async () => undefined,
+        subscribe: () => () => undefined,
+        sessionFile: undefined,
+        sessionId: "workflow-review-followup-session",
+        setModel: async () => undefined,
+        setThinkingLevel: () => undefined,
+        dispose: async () => undefined,
+      },
+    }),
+    on: () => undefined,
+    ...piOverrides,
+  } as unknown as ExtensionAPI;
+  factory(pi);
+  return commands;
+}
+
+afterEach(() => {
+  store.clear();
+});
+
+describe("workflow lazy-startup review follow-up fixes", () => {
+  test("/workflow resume picker shows live runs when lazy discovery fails", async () => {
+    let refreshCalls = 0;
+    let pickerCalls = 0;
+    const commands = registerFactory({
+      refreshWorkflowResources: async () => {
+        refreshCalls += 1;
+        throw new Error("discovery failed");
+      },
+    });
+    const runId = "picker-live-resume-source";
+    store.recordRunStart({ id: runId, name: "picker workflow", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    assert.equal(store.recordRunPaused(runId), true);
+    const workflowCmd = commands.find((command) => command.name === "workflow");
+    assert.ok(workflowCmd);
+
+    await workflowCmd.options.handler?.("resume", {
+      hasUI: true,
+      ui: {
+        notify: () => undefined,
+        custom: (factoryArg: unknown) => {
+          pickerCalls += 1;
+          const component = (factoryArg as SelectorFactory)({ requestRender: () => undefined }, {}, {}, () => undefined);
+          setImmediate(() => component.handleInput?.("\u001b"));
+          return undefined;
+        },
+      },
+    });
+
+    assert.equal(refreshCalls, 0);
+    assert.equal(pickerCalls, 1);
+  });
+
+  test("/workflow resume for quit-paused live runs does not force durable discovery", async () => {
+    let refreshCalls = 0;
+    const commands = registerFactory({
+      refreshWorkflowResources: async () => {
+        refreshCalls += 1;
+        throw new Error("discovery failed");
+      },
+    });
+    const runId = "quit-paused-resume-source";
+    store.recordRunStart({ id: runId, name: "quit paused workflow", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    assert.equal(store.recordRunPaused(runId, Date.now(), { resumable: true, exitReason: "quit" }), true);
+    const workflowCmd = commands.find((command) => command.name === "workflow");
+    assert.ok(workflowCmd);
+
+    await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+
+    assert.equal(refreshCalls, 0);
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+  });
+
+  test("workflow tool named run re-resolves runtime after lazy discovery", async () => {
+    let ensureCalls = 0;
+    let registryLoaded = false;
+    const runtimeForCurrentRegistry = (): ExtensionRuntime => {
+      const canSeeLazyWorkflow = registryLoaded;
+      return {
+        dispatch: async (): Promise<WorkflowToolResult> => canSeeLazyWorkflow
+          ? { action: "run", name: "lazy model run", runId: "model-run", status: "running", stages: [] }
+          : { action: "run", name: "lazy model run", runId: "", status: "failed", error: "Workflow not found: lazy model run", stages: [] },
+        runDirect: async (): Promise<never> => { throw new Error("runDirect should not run"); },
+      } as unknown as ExtensionRuntime;
+    };
+    const handler = makeExecuteWorkflowTool(
+      runtimeForCurrentRegistry,
+      () => undefined,
+      () => undefined,
+      async () => {
+        ensureCalls += 1;
+        registryLoaded = true;
+      },
+    );
+
+    const result = await handler({ action: "run", workflow: "lazy model run", inputs: {} }, { model: { provider: "fake", id: "model" } } as never);
+
+    assert.equal(ensureCalls, 1);
+    assert.equal(result.action, "run");
+    assert.equal(result.status, "running");
+    assert.equal(result.runId, "model-run");
+  });
+
+  test("workflow tool failed resume re-resolves runtime after lazy discovery", async () => {
+    const sourceRunId = "lazy-tool-model-resume-source";
+    store.recordRunStart({ id: sourceRunId, name: "lazy model resume", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    store.recordStageStart(sourceRunId, { id: "retry-old", name: "retry", status: "failed", parentIds: [], toolEvents: [], error: "boom" });
+    store.recordStageEnd(sourceRunId, { id: "retry-old", name: "retry", status: "failed", parentIds: [], toolEvents: [], error: "boom" });
+    store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
+    let ensureCalls = 0;
+    let registryLoaded = false;
+    const runtimeForCurrentRegistry = (): ExtensionRuntime => {
+      const canResume = registryLoaded;
+      return {
+        resumeFailedRun: () => canResume
+          ? { ok: true, runId: "continued-run", message: "Resuming failed workflow" }
+          : { ok: false, reason: "workflow_not_found", message: "workflow_not_found: lazy model resume" },
+      } as unknown as ExtensionRuntime;
+    };
+    const handler = makeExecuteWorkflowTool(
+      runtimeForCurrentRegistry,
+      () => undefined,
+      () => undefined,
+      async () => {
+        ensureCalls += 1;
+        registryLoaded = true;
+      },
+    );
+
+    const result = await handler({ action: "resume", runId: sourceRunId }, { model: { provider: "fake", id: "model" } } as never);
+
+    assert.equal(ensureCalls, 1);
+    assert.equal(result.action, "resume");
+    assert.equal(result.status, "running");
+    assert.equal(result.runId, "continued-run");
+    assert.match(result.message ?? "", /Resuming failed workflow/);
+  });
+});

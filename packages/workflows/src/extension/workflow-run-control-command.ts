@@ -295,23 +295,23 @@ export async function handleRunControlCommand(
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
-        // Durable entries: a `running` durable handle may be a crashed process
-        // (cross-session crash recovery), so it stays selectable UNLESS it
-        // matches an actively-executing live run in this session.
-        const activeLiveIds = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
-            .map((run) => run.id),
-        );
-        await deps.ensureWorkflowResourcesLoaded();
-        const runtime = deps.runtimeForContext(ctx);
         let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        try {
-          const prepared = await runtime.prepareDurableResumable(undefined);
-          durableEntries = filterSelectorDurableEntries(runtime, prepared)
-            .filter((entry) => !activeLiveIds.has(entry.workflowId));
-        } catch (error) {
-          if (liveRuns.length === 0) {
+        if (liveRuns.length === 0) {
+          // Durable entries: a `running` durable handle may be a crashed process
+          // (cross-session crash recovery), so it stays selectable UNLESS it
+          // matches an actively-executing live run in this session.
+          const activeLiveIds = new Set(
+            topLevelWorkflowRuns(store.runs())
+              .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
+              .map((run) => run.id),
+          );
+          await deps.ensureWorkflowResourcesLoaded();
+          const runtime = deps.runtimeForContext(ctx);
+          try {
+            const prepared = await runtime.prepareDurableResumable(undefined);
+            durableEntries = filterSelectorDurableEntries(runtime, prepared)
+              .filter((entry) => !activeLiveIds.has(entry.workflowId));
+          } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             fail(`Failed to list resumable workflows: ${message}`);
             return true;
@@ -334,7 +334,7 @@ export async function handleRunControlCommand(
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
             const result = resumeRun(resolved.runId, {});
-            if (result.ok && result.mode === "snapshot" && run?.exitReason === "quit") {
+            if (result.ok && !isPaused && result.mode === "snapshot" && run?.exitReason === "quit") {
               return await handleDurableResume(resolved.runId, ctx, reporter, deps);
             }
             if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -408,7 +408,7 @@ export async function handleRunControlCommand(
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;
     }
-    if (run?.exitReason === "quit" && action === "resume") {
+    if (!isPaused && run?.exitReason === "quit" && action === "resume") {
       return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
     const result = resumeRun(stageRunId, { stageId, message });

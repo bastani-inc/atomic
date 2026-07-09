@@ -16,7 +16,6 @@ import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
-import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 
 interface SentMessage {
@@ -237,6 +236,7 @@ describe("workflow lazy-startup continuation fixes", () => {
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
 
+
   test("workflow tool direct task run bypasses workflow discovery", async () => {
     let ensureCalls = 0;
     let runDirectCalls = 0;
@@ -267,6 +267,7 @@ describe("workflow lazy-startup continuation fixes", () => {
     assert.equal(result.runId, "direct-run");
   });
 
+
   test("workflow tool paused resume bypasses workflow discovery", async () => {
     let ensureCalls = 0;
     const runId = "paused-tool-resume-source";
@@ -290,6 +291,7 @@ describe("workflow lazy-startup continuation fixes", () => {
     assert.equal(result.status, "ok");
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
+
   test("/workflow resume lazy-loads resources before failed-run registry lookup", async () => {
     const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-slash-resume-lazy-"));
     try {
@@ -342,10 +344,11 @@ describe("workflow lazy-startup continuation fixes", () => {
         runtime = createExtensionRuntime({ registry: createRegistry([def]), store, adapters: { prompt: { prompt: async () => "new" } } });
       },
     );
-    const result = await handler({ action: "resume", runId: sourceRunId }, {} as never);
+    const result = await handler({ action: "resume", runId: sourceRunId }, { model: { provider: "fake", id: "model" } } as never);
     assert.equal(ensureCalls, 1);
     assert.equal(result.action, "resume");
-    assert.notEqual((result as WorkflowToolResult & { error?: string }).error, "workflow_not_found");
+    assert.equal(result.status, "running");
+    assert.match(result.message ?? "", /Resum/);
   });
 
   test("session_start invalidates stale workflow warmups before they publish old registries", async () => {

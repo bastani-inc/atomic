@@ -154,13 +154,17 @@ function findToolMetadata(
   return null;
 }
 
+function normalizeToolAlias(value: string): string {
+  return value.replace(/-/g, "_");
+}
+
 function prefixHydrationCandidates(state: McpExtensionState, toolName: string): string[] {
   const prefixMode = state.config.settings?.toolPrefix ?? "server";
   if (prefixMode === "none") return [];
+  const normalizedToolName = normalizeToolAlias(toolName);
   return Object.keys(state.config.mcpServers)
-    .filter((serverName) => !state.toolMetadata.has(serverName))
-    .map((serverName) => ({ serverName, prefix: getServerPrefix(serverName, prefixMode) }))
-    .filter(({ prefix }) => prefix.length > 0 && toolName.startsWith(`${prefix}_`))
+    .map((serverName) => ({ serverName, prefix: normalizeToolAlias(getServerPrefix(serverName, prefixMode)) }))
+    .filter(({ prefix }) => prefix.length > 0 && normalizedToolName.startsWith(`${prefix}_`))
     .sort((a, b) => b.prefix.length - a.prefix.length)
     .map(({ serverName }) => serverName);
 }
@@ -172,9 +176,12 @@ async function hydrateDescribeMetadata(state: McpExtensionState, toolName: strin
   }
 
   const candidates = prefixHydrationCandidates(state, toolName);
-  for (const candidate of candidates) {
-    await hydrateMissingMetadata(state, { server: candidate });
-    if (findToolMetadata(state, toolName, candidate)) return;
+  if (candidates.length > 0) {
+    for (const candidate of candidates) {
+      await hydrateMissingMetadata(state, { server: candidate });
+      if (findToolMetadata(state, toolName, candidate)) return;
+    }
+    return;
   }
 
   if (findToolMetadata(state, toolName)) return;

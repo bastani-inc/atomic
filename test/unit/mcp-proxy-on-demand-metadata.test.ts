@@ -135,6 +135,32 @@ describe("MCP proxy on-demand metadata hydration", () => {
     assert.equal(state.toolMetadata.has("unrelated"), false);
   });
 
+  test("cold-cache describe treats hyphen and underscore prefixes as aliases without broad hydration", async () => {
+    const { state, connected } = createState({
+      "github-enterprise": [tool("create_issue", "create issue")],
+      unrelated: [tool("other", "other")],
+    });
+
+    const result = await executeDescribe(state, "github-enterprise_create_issue");
+
+    assert.deepEqual(connected, ["github-enterprise"]);
+    assert.equal(result.details.server, "github-enterprise");
+    assert.equal(state.toolMetadata.has("unrelated"), false);
+  });
+
+  test("cold-cache describe does not broad-hydrate when a prefix candidate misses", async () => {
+    const { state, connected } = createState({
+      github: [tool("list_repos", "list repos")],
+      unrelated: [tool("create_issue", "create issue")],
+    });
+
+    const result = await executeDescribe(state, "github_create_issue");
+
+    assert.deepEqual(connected, ["github"]);
+    assert.equal(result.details.error, "tool_not_found");
+    assert.equal(state.toolMetadata.has("unrelated"), false);
+  });
+
   test("cold-cache server list hydrates requested server", async () => {
     const { state, connected } = createState({ lazy: [tool("cold_tool", "cold listed tool")] });
 

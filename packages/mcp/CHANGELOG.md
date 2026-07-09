@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers before falling back to broader discovery.
+- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers, treats hyphen/underscore prefixes as aliases, and does not fan out to unrelated lazy servers after a prefix-directed miss.
 
 ### Fixed
 

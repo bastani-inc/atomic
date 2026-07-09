@@ -61,8 +61,8 @@ export function makeExecuteWorkflowTool(
         return getRuntime().dispatch(args, { policy });
       }
       case "run": {
-        const activeRuntime = getRuntime();
         if (hasDirectExecutionMode(args)) {
+          const activeRuntime = getRuntime();
           const normalModeCount = directModeCount(args) + (hasNamedExecutionMode(args) ? 1 : 0);
           if (normalModeCount !== 1) {
             throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
@@ -71,7 +71,7 @@ export function makeExecuteWorkflowTool(
           return workflowRunResultFromDetails(details);
         }
         await ensureWorkflowResourcesLoaded();
-        return activeRuntime.dispatch(args, { policy });
+        return getRuntime().dispatch(args, { policy });
       }
       case "status": {
         const target = args.runId;
@@ -100,7 +100,7 @@ export function makeExecuteWorkflowTool(
       case "interrupt":
         return workflowInterruptAction(args);
       case "resume":
-        return workflowResumeAction(args, { runtime: getRuntime(), policy, ensureWorkflowResourcesLoaded });
+        return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
       default: {
         const _exhaustive: never = action;
         throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);
