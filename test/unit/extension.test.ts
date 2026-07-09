@@ -74,6 +74,15 @@ function getSessionBeforeSwitchHandler(): SessionBeforeSwitchHandler {
   return handler;
 }
 
+async function waitForCondition(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true);
+}
+
 beforeEach(() => {
   stageControlRegistry.clear();
   store.clear();
@@ -279,6 +288,7 @@ test("session_start warns when discovered workflows fail validation", async () =
       },
     });
 
+    await waitForCondition(() => notifications.some((entry) => entry.message.includes("Workflow discovery diagnostics")));
     const warning = notifications.find((entry) => entry.message.includes("Workflow discovery diagnostics"));
     assert.notEqual(warning, undefined);
     assert.equal(warning?.type, "warning");

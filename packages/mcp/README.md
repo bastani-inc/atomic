@@ -65,7 +65,7 @@ Precedence is:
 3. `.mcp.json`
 4. `.pi/mcp.json`
 
-Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections.
+Servers are **lazy by default** — they won't connect until you actually call one of their tools. The adapter caches tool metadata so search and describe work without live connections when a valid cache exists; on a cold cache, explicit proxy search/describe/server-list requests may connect lazy server(s) once to hydrate metadata on demand. `describe` narrows cold-cache hydration to an explicitly requested server or the server identified by the configured tool-name prefix before falling back to broader discovery. Unscoped `search` intentionally hydrates every configured lazy server that lacks cached metadata so the search can see all available tools.
 
 ```
 mcp({ search: "screenshot" })
@@ -136,7 +136,7 @@ Pi-specific files are the write targets for imported or shared global servers wh
 
 ### Lifecycle Modes
 
-- **`lazy`** (default) — Don't connect at startup. Connect on first tool call. Disconnect after idle timeout. Cached metadata keeps search/list working without connections.
+- **`lazy`** (default) — Don't connect at startup. Connect on first tool call or explicit cold-cache proxy metadata request (`search`, `describe`, or `server` list). Disconnect after idle timeout. Cached metadata keeps search/list working without connections.
 - **`eager`** — Connect at startup but don't auto-reconnect if the connection drops. No idle timeout by default (set `idleTimeout` explicitly to enable).
 - **`keep-alive`** — Connect at startup. Auto-reconnect via health checks. No idle timeout. Use for servers you always need available.
 
@@ -232,7 +232,7 @@ To exclude specific tools while still using `directTools: true`, add `excludeToo
 
 Each direct tool costs ~150-300 tokens in the system prompt (name + description + schema). Good for targeted sets of 5-20 tools. For servers with 75+ tools, stick with the proxy or pick specific tools with a `string[]`.
 
-Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup. On the first session after adding `directTools` to a new server, the cache won't exist yet — tools fall back to proxy-only and the cache populates in the background. To force it: `/mcp reconnect <server>`.
+Direct tools register from the metadata cache in the Pi agent dir (`~/.pi/agent/mcp-cache.json` by default, or `$PI_CODING_AGENT_DIR/mcp-cache.json` when set), so no server connections are needed at startup when the cache is warm. On the first session after adding `directTools` to a new server, or when a child/subagent selects tools through `MCP_DIRECT_TOOLS`, the cache may not exist yet — tools fall back to proxy-only while the selected/configured direct-tool servers populate in the background, then the extension refreshes tool registration so the warmed direct tools become available in the current session. To force it immediately: `/mcp reconnect <server>`.
 
 When you change direct-tool toggles in `/mcp` or write new config through `/mcp setup`, the extension triggers Pi's normal reload flow automatically. That refreshes extensions, prompts, skills, and MCP tool registration in one shot, so newly configured direct tools can appear without a manual restart.
 
@@ -358,8 +358,8 @@ In interactive sessions, you can also authenticate from `/mcp` with `CTRL+A` or 
 ## How It Works
 
 - One `mcp` tool in context (~200 tokens) instead of hundreds
-- Servers are lazy by default — they connect on first tool call, not at startup
-- Tool metadata is cached to disk so search/list/describe work without live connections
+- Servers are lazy by default — they connect on first tool call or explicit cold-cache proxy metadata request, not at startup
+- Tool metadata is cached to disk so search/list/describe work without live connections when the cache is valid; cold-cache explicit search/describe/server-list requests hydrate metadata on demand
 - Idle servers disconnect after 10 minutes (configurable), reconnect automatically on next use
 - npx-based servers resolve to direct binary paths, skipping the ~143 MB npm parent process
 - MCP server validates arguments, not the adapter

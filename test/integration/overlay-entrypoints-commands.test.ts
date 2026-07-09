@@ -146,8 +146,7 @@ describe("/workflow resume — overlay integration", () => {
     );
   });
 
-  // RFC regression gate: overlay.open MUST be called when resume succeeds.
-  test("resume with no runId surfaces durable history even when live runs exist", async () => {
+  test("resume with no runId prioritizes live picker when live runs exist", async () => {
     singletonStore.clear();
     const liveRunId = `live-run-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -158,12 +157,15 @@ describe("/workflow resume — overlay integration", () => {
     try {
       const { pi, commands } = buildMockPi();
       factory(pi);
-      const { ctx, messages } = buildPrintCtx();
-      void commands["workflow"]!.options.handler("resume", ctx);
+      const { ctx, customCalls } = buildPrintCtxWithRealCustom();
+      const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
       await delay(5);
-      // Live picker should open AND durable entries should be surfaced.
-      const combined = messages.join("\n");
-      assert.match(combined, /durable-cross-session/);
+      assert.ok(customCalls.length >= 1);
+      const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
+      assert.match(text, /live-wf/);
+      assert.doesNotMatch(text, /durable-cross-session/);
+      customCalls[0]!.component.handleInput?.("\u001b");
+      await handlerPromise;
     } finally {
       setDurableBackend(undefined);
     }
@@ -352,7 +354,7 @@ describe("/workflow attach — top-level command", () => {
     assert.equal(customCalls.length, 0);
   });
 
-  test("no-arg resume with live + durable opens the /resume-style selector (issue #1498)", async () => {
+  test("no-arg resume with live + durable opens the live /resume-style selector without durable discovery", async () => {
     singletonStore.clear();
     const liveRunId = `live-combined-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -364,15 +366,15 @@ describe("/workflow attach — top-level command", () => {
       const { pi, commands } = buildMockPi();
       factory(pi);
       const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-      void commands["workflow"]!.options.handler("resume", ctx);
+      const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
       await delay(5);
-      // Combined picker should open showing both live and durable entries.
       assert.ok(customCalls.length >= 1);
       assert.equal(customCalls[0]!.options.overlay, false);
       const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-      // Both live and durable should be visible.
       assert.match(text, /live-wf/);
-      assert.match(text, /durable-wf/);
+      assert.doesNotMatch(text, /durable-wf/);
+      customCalls[0]!.component.handleInput?.("\u001b");
+      await handlerPromise;
     } finally {
       setDurableBackend(undefined);
     }
@@ -428,8 +430,7 @@ describe("/workflow attach — top-level command", () => {
   });
 
 
-  // cross-ref: issue #1498 — mixed resume uses async hydrated durable listing.
-  test("no-arg resume: mixed live+durable uses prepareDurableResumable (async hydration)", async () => {
+  test("no-arg resume with live runs skips async durable hydration", async () => {
     singletonStore.clear();
     const liveRunId = `live-hydrate-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-hydrate-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -441,13 +442,14 @@ describe("/workflow attach — top-level command", () => {
       const { pi, commands } = buildMockPi();
       factory(pi);
       const { ctx, customCalls } = buildPrintCtxWithRealCustom();
-      void commands["workflow"]!.options.handler("resume", ctx);
+      const handlerPromise = commands["workflow"]!.options.handler("resume", ctx);
       await delay(10);
-      // The combined picker should include the durable entry that was only
-      // discoverable through async prepareDurableResumable (DBOS hydration path).
       assert.ok(customCalls.length >= 1);
       const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-      assert.match(text, /durable-hydrate/);
+      assert.match(text, /live-hydrate-wf/);
+      assert.doesNotMatch(text, /durable-hydrate/);
+      customCalls[0]!.component.handleInput?.("\u001b");
+      await handlerPromise;
     } finally {
       setDurableBackend(undefined);
     }

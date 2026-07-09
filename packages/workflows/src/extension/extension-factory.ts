@@ -85,6 +85,7 @@ function factory(pi: ExtensionAPI): void {
     (ctx) => runtimeState.runtimeForContext(ctx),
     () => runtimeState.persistenceRef.current,
     runtimeState.reloadWorkflowResources,
+    runtimeState.ensureWorkflowResourcesLoaded,
   );
 
   registerWorkflowTool(pi, executeWorkflowTool, runtimeState.runWithLifecycleSuppressedForPolicy);
@@ -93,12 +94,14 @@ function factory(pi: ExtensionAPI): void {
     runtimeForContext: runtimeState.runtimeForContext,
     overlay,
     reloadWorkflowResources: runtimeState.reloadWorkflowResources,
+    ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
     runWithLifecycleSuppressedForPolicy: runtimeState.runWithLifecycleSuppressedForPolicy,
     runControl: {
       pi,
       overlay,
       getPersistence: () => runtimeState.persistenceRef.current,
       runtimeForContext: runtimeState.runtimeForContext,
+      ensureWorkflowResourcesLoaded: runtimeState.ensureWorkflowResourcesLoaded,
     },
   });
   registerWorkflowMessageRenderers(pi);

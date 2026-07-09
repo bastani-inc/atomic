@@ -344,6 +344,7 @@ describe("first-run onboarding", () => {
     await handleClearCommand.call(hostWithClear);
     expect(host.ensureDeferredStartupComplete).toHaveBeenCalledTimes(1);
 
+    expect(host.ensureDeferredStartupComplete).toHaveBeenCalledTimes(1);
     expect(host.firstRunNoticeVisible).toBe(false);
     expect(host.firstRunOnboardingNoticeComponents).toEqual([]);
     expect(host.chatContainer.children).not.toContain(staleNotice);

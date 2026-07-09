@@ -12,7 +12,7 @@ import type { GraphOverlayPort } from "../tui/overlay-adapter.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowInputEntry, WorkflowToolResult } from "./render-result.js";
 import type { ExtensionAPI, PiCommandContext, PiArgumentCompletionResult } from "./public-types.js";
-import { workflowArgumentCompletions } from "./workflow-command-completions.js";
+import { workflowArgumentCompletions, workflowArgumentCompletionsNeedWorkflowResources } from "./workflow-command-completions.js";
 import {
   createWorkflowCommandReporter,
   emitWorkflowCommandOutput,
@@ -23,7 +23,7 @@ import {
   type WorkflowCommandHandler,
   type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
-import { emitTerminalRunDetailSurface } from "./workflow-command-surfaces.js";
+import { emitTerminalRunDetailSurface, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import {
@@ -39,6 +39,7 @@ export interface WorkflowSlashCommandDeps {
   runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
   overlay: GraphOverlayPort;
   reloadWorkflowResources: () => Promise<void> | void;
+  ensureWorkflowResourcesLoaded: () => Promise<void> | void;
   runWithLifecycleSuppressedForPolicy: <T>(
     policy: WorkflowExecutionPolicy,
     fn: () => Promise<T>,
@@ -57,8 +58,11 @@ export function registerWorkflowSlashCommand(
     {
       description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
       handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
-      getArgumentCompletions: (partial: string): PiArgumentCompletionResult =>
-        workflowArgumentCompletions(partial, deps.runtimeProxy),
+      getArgumentCompletions: (partial: string): PiArgumentCompletionResult | Promise<PiArgumentCompletionResult> => {
+        const buildCompletions = (): PiArgumentCompletionResult => workflowArgumentCompletions(partial, deps.runtimeProxy);
+        if (!workflowArgumentCompletionsNeedWorkflowResources(partial)) return buildCompletions();
+        return Promise.resolve(deps.ensureWorkflowResourcesLoaded()).then(buildCompletions).catch(buildCompletions);
+      },
     },
     workflowCommands,
   );
@@ -76,10 +80,18 @@ async function workflowSlashHandler(
   const fail = (msg: string): void => reporter.error(msg);
   const withImplicitYesFlag = (tokens: string[]): string[] =>
     tokens.some((t) => t === "--yes" || t === "-y") ? tokens : [...tokens, "-y"];
+  const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+    } catch (error) {
+      ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+    }
+  };
   const showWorkflowInputs = async (
     workflowName: string,
     command: WorkflowCommandOutputDetails["command"] = "inputs",
   ): Promise<void> => {
+    await ensureWorkflowResourcesVisible();
     const result = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
     if (result.action !== "inputs" || !("inputs" in result)) return;
     const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
@@ -99,6 +111,7 @@ async function workflowSlashHandler(
     return;
   }
   if (!subcommand || subcommand === "list") {
+    await ensureWorkflowResourcesVisible();
     const items = deps.runtimeProxy.registry.all().map((def) => ({
       name: def.normalizedName,
       description: def.description,
@@ -163,6 +176,7 @@ async function workflowSlashHandler(
     typeof ctx.ui?.setEditorComponent === "function" || typeof ctx.ui?.custom === "function"
   );
   if (canOpenPicker) {
+    await ensureWorkflowResourcesVisible();
     const schemaResult = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
     const schema = schemaResult.action === "inputs" && "inputs" in schemaResult
       ? (schemaResult as Extract<WorkflowToolResult, { action: "inputs" }>)
@@ -185,6 +199,7 @@ async function workflowSlashHandler(
     }
   }
 
+  await ensureWorkflowResourcesVisible();
   const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
     deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy }),
   );

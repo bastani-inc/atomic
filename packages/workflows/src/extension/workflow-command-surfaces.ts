@@ -45,6 +45,15 @@ export function emitTerminalRunDetailSurface(
   emitChatSurface(pi, { kind: "detail", detail }, { content: renderRunDetail(detail, { width: 100 }) });
 }
 
+
+export function formatWorkflowResourceLoadWarning(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    "Workflow discovery diagnostics: workflow resources could not be fully refreshed.",
+    `- [error DISCOVERY_FAILED] workflow discovery: ${message}`,
+    "Using the currently loaded workflow registry; run `/workflow reload` after fixing the issue.",
+  ].join("\n");
+}
 export function formatStartupDiagnostics(
   configResult: ConfigLoadResult | null,
   discoveryResult: DiscoveryResult | null,

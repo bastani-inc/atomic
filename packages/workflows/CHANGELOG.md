@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Improved workflow extension startup by seeding only the bundled startup registry during extension registration/session start, then loading user, project, and package workflow modules in the background or when `/workflow` commands and workflow tool actions need the full registry.
+
 ### Fixed
+
+- Fixed lazy workflow startup follow-through so `session_start` loads only workflow config before restore/cleanup, discovery diagnostics are reported after deferred discovery settles, failed lazy discovery attempts are retryable, direct workflow-tool `task`/`tasks`/`chain` runs bypass full workflow discovery, named workflow-tool runs and failed-run resume re-resolve their runtime after discovery, paused/current live-run resume and live resume pickers avoid registry discovery, failed/durable resume still loads resources before registry-dependent lookups, and command autocomplete falls back to current/admin completions when lazy discovery fails without evaluating workflow modules on the startup path.
+- Fixed workflow lazy-startup session generation so session restarts and shutdowns invalidate in-flight background discovery before it can publish stale workflow registries into later sessions.
 
 - Fixed workflow failure finalization so structured recoverable auth, rate-limit, and provider-exhaustion metadata captured on the run or its blocking stage (`failedStageId`) no longer allows the top-level run, `/workflow status`, durable status, or lifecycle notice to appear as a successful `completed` state. Goal-like `needs_human`, incomplete, or auth-blocked reducer outputs are still treated as blocked, structured provider/auth fallback exhaustion now preserves an actionable blocked/failure message and resumable metadata, legacy completed snapshots with incomplete returned statuses or structured blocking-stage failures render as blocked, tolerated non-fail-fast branch failures no longer reclassify completed runs, and Goal reviewer-batch fallback exhaustion stops promptly as `needs_human` instead of launching another worker turn.
 - Fixed the fullscreen workflow graph statusline to mirror non-workflow extension statuses, so async/background subagent progress and completion remain visible while the graph overlay is active.

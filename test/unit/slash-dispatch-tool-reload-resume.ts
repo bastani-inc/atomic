@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+
+installSlashDispatchTestHooks();
 
 describe("tool run-control actions", () => {
     function makeToolHandler() {
@@ -205,9 +208,9 @@ describe("tool run-control actions", () => {
             );
             assert.ok(workflowCmd, "expected workflow command registration");
             const completions =
-                workflowCmd.options.getArgumentCompletions?.(
-					"tool-refresh-add",
-				) ?? [];
+                (await workflowCmd.options.getArgumentCompletions?.(
+                    "tool-refresh-add",
+                )) ?? [];
             assert.equal(
                 completions.some(
                     (completion) => completion.label === "tool-refresh-added",
