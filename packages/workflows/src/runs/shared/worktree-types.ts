@@ -65,7 +65,13 @@ export interface GitResult {
 	stdout: string;
 	stderr: string;
 	status: number | null;
+	signal?: NodeJS.Signals | null;
 	error?: Error;
+	argv?: readonly string[];
+	cwd?: string;
+	timeoutMs?: number;
+	elapsedMs?: number;
+	attempts?: number;
 }
 
 export interface GitWorktreeSetupOptions {

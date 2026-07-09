@@ -19,7 +19,7 @@ import { stageControlRegistry as defaultStageControlRegistry } from "../runs/for
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { unknownErrorMessage, findWorkflowExitSignal, parentWorkflowExitAbortReason } from "../runs/foreground/executor-abort.js";
 import { resolveAndValidateInputs, resolveInputConcurrency, resolveInputRuntimeDefaults } from "../runs/foreground/executor-inputs.js";
-import { workflowCwdWithInputWorktree, workflowInvocationMetadata } from "../runs/foreground/executor-direct-helpers.js";
+import { createGitWorktreeSetupCache, workflowCwdWithInputWorktree, workflowInvocationMetadata } from "../runs/foreground/executor-direct-helpers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
@@ -152,11 +152,11 @@ export async function run<
 
   const tracker = new GraphFrontierTracker();
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs);
+  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs), gitWorktreeSetupCache = createGitWorktreeSetupCache();
   const workflowInvocationCwd = opts.cwd ?? process.cwd();
   let workflowCwd: string | undefined;
   const resolveWorkflowCwd = (): string => {
-    workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd);
+    workflowCwd ??= workflowCwdWithInputWorktree(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache);
     return workflowCwd;
   };
   const limiter = createRunLimiter(inputConcurrency ?? opts.config?.defaultConcurrency);
@@ -271,7 +271,7 @@ export async function run<
     limiter,
     inputRuntimeDefaults,
     workflowInvocationCwd,
-    stageRegistry,
+    stageRegistry, gitWorktreeSetupCache,
     exit,
     classifyExecutorFailure,
   });
@@ -406,7 +406,7 @@ export async function run<
     }
 
     if (opts.continuation === undefined && opts.parentRun === undefined) {
-      durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd) });
+      durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
     }
 
     const rawResult = await def.run(ctx);
