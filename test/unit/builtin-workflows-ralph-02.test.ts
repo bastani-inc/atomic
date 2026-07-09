@@ -315,11 +315,7 @@ describe("ralph", () => {
             },
             {
                 task: (name) => {
-                    if (
-                        name === "reviewer-a" ||
-                        name === "reviewer-b" ||
-                        name === "reviewer-c"
-                    ) {
+                    if (name === "reviewer-a" || name === "reviewer-b") {
                         return JSON.stringify({
                             findings: [],
                             overall_correctness: "patch is correct",
@@ -347,26 +343,21 @@ describe("ralph", () => {
         const reviewerOptions = ctx.calls.taskOptions["reviewer-a"]?.[0];
         assert.notEqual(reviewerOptions?.schema, undefined);
         assert.equal(reviewerOptions?.customTools, undefined);
-        const reviewerCOptions = ctx.calls.taskOptions["reviewer-c"]?.[0];
-        assert.equal(reviewerCOptions?.model, "zai/glm-5.2:xhigh");
-        assert.deepEqual(reviewerCOptions?.fallbackModels?.slice(0, 4), [
-            "zai-coding-cn/glm-5.2:xhigh",
-            "openai-codex/gpt-5.5:xhigh",
-            "github-copilot/gpt-5.5:xhigh",
-            "openai/gpt-5.5:xhigh",
-        ]);
+        const reviewerBOptions = ctx.calls.taskOptions["reviewer-b"]?.[0];
+        assert.equal(reviewerBOptions?.model, "openai-codex/gpt-5.5:xhigh");
+        assert.deepEqual(ctx.calls.parallel[0], ["reviewer-a", "reviewer-b"]);
         // Dominated models (benchmark 2026-07-02) must stay out of the chain.
-        const reviewerCFallbacks = reviewerCOptions?.fallbackModels ?? [];
+        const reviewerBFallbacks = reviewerBOptions?.fallbackModels ?? [];
         assert.equal(
-            reviewerCFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
+            reviewerBFallbacks.includes("openrouter/sakana/fugu-ultra:high"),
             true,
         );
         assert.equal(
-            reviewerCFallbacks.some((m) => m.startsWith("sakana/")),
+            reviewerBFallbacks.some((m) => m.startsWith("sakana/")),
             false,
         );
         assert.equal(
-            reviewerCFallbacks.some((m) => /gemini|sonnet/.test(m)),
+            reviewerBFallbacks.some((m) => /gemini|sonnet/.test(m)),
             false,
         );
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
