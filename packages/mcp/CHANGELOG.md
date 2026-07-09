@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Aligned MCP tool result expansion hints with the CLI-wide `Ctrl+o` keybinding copy.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed
