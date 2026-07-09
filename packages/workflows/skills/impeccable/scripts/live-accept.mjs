@@ -400,12 +400,18 @@ function readHtmlAttr(tag, name) {
   return decodeHtmlAttr(match[2]);
 }
 
+const HTML_ATTR_ENTITIES = {
+  '&quot;': '"',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&amp;': '&',
+};
+
 function decodeHtmlAttr(value) {
-  return String(value || '')
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
+  return String(value || '').replace(
+    /&(?:quot|lt|gt|amp);/g,
+    (entity) => HTML_ATTR_ENTITIES[entity] || entity,
+  );
 }
 
 // ---------------------------------------------------------------------------

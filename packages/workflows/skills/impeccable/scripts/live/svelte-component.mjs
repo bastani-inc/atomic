@@ -97,7 +97,7 @@ export function substitutePropsWithExprs(markup, contract) {
 
 export function parseSvelteComponentFile(content) {
   const text = String(content || '');
-  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script>/i);
+  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script\s*>/i);
   const withoutScript = scriptMatch ? text.slice(scriptMatch[0].length) : text;
   const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style\s*>/i);
   const styleBlock = styleMatch ? styleMatch[0] : '';
@@ -632,10 +632,16 @@ function inlineSvelteComponentInsertAccept({
 }
 
 function svelteMarkupHasVisibleContent(markup) {
-  const text = String(markup || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<!--[\s\S]*?-->/g, '')
+  let stripped = String(markup || '');
+  let previous;
+  do {
+    previous = stripped;
+    stripped = stripped
+      .replace(/<script[\s\S]*?<\/script\s*>/gi, '')
+      .replace(/<style[\s\S]*?<\/style\s*>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+  } while (stripped !== previous);
+  const text = stripped
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

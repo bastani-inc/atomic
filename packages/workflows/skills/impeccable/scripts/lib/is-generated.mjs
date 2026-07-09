@@ -13,7 +13,7 @@
  *      within the first ~300 characters — catches non-git projects.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -41,12 +41,12 @@ export function isGeneratedFile(filePath, options = {}) {
 
 function isGitIgnored(absPath, cwd) {
   try {
-    execSync(`git check-ignore --quiet ${JSON.stringify(absPath)}`, {
+    execFileSync('git', ['check-ignore', '--quiet', '--', absPath], {
       cwd,
       stdio: 'ignore',
     });
     return true; // exit 0 = ignored
-  } catch (err) {
+  } catch {
     // Exit code 1 = not ignored. Exit code 128 = not a git repo or other error.
     // In both cases, treat as "not known to be ignored."
     return false;

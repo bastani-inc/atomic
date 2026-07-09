@@ -1,6 +1,11 @@
 /** Check if content looks like a full page (not a component/partial) */
 function isFullPage(content) {
-  const stripped = content.replace(/<!--[\s\S]*?-->/g, '');
+  let stripped = String(content || '');
+  let previous;
+  do {
+    previous = stripped;
+    stripped = stripped.replace(/<!--[\s\S]*?-->/g, '');
+  } while (stripped !== previous);
   return /<!doctype\s|<html[\s>]|<head[\s>]/i.test(stripped);
 }
 
