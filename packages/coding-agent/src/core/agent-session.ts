@@ -89,6 +89,7 @@ export class AgentSession {
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
 	protected _postCompactionContinuationToken = 0;
 	protected _lengthContinuationAttempts = 0;
+	protected _outputBudgetErrorContinuationAttempts = 0;
 	protected _branchSummaryAbortController: AbortController | undefined = undefined;
 	protected _retryAbortController: AbortController | undefined = undefined;
 	protected _retryAttempt = 0;

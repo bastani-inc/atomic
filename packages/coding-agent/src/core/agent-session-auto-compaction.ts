@@ -16,6 +16,8 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
  */
 export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
 
+export const MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS = 1;
+
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 type ProviderErrorDetails = {
 	message?: string;
@@ -126,7 +128,23 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	// rather than relying on reactive overflow recovery near the cap.
 	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
 	if (shouldCompact(contextTokens, compactionBudget, settings)) {
-		await this._runAutoCompaction("threshold", shouldRetryAfterThresholdCompaction(assistantMessage));
+		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage);
+		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
+			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
+				this._emit({
+					type: "compaction_end",
+					reason: "threshold",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				});
+				return;
+			}
+			this._outputBudgetErrorContinuationAttempts += 1;
+		}
+		await this._runAutoCompaction("threshold", willRetry);
 		return;
 	}
 

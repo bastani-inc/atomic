@@ -71,7 +71,6 @@ describe("sanitizeOpenAIResponsesPayload", () => {
     assert.equal("id" in input[0]!, false);
   });
 
-
   test("raises Responses max_output_tokens below the provider minimum", () => {
     const payload = { max_output_tokens: 1, input: [{ type: "message", content: "hi" }] };
 
@@ -96,6 +95,7 @@ describe("sanitizeOpenAIResponsesPayload", () => {
 
     assert.equal((sanitized as { max_output_tokens?: number }).max_output_tokens, MIN_RESPONSES_MAX_OUTPUT_TOKENS);
   });
+
   test("does not change non-Responses payloads", () => {
     const payload = { input: [{ type: "function_call", id: "raw/invalid", call_id: "call_1" }] };
 

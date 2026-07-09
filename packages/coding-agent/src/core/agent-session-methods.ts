@@ -344,6 +344,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_pendingPostCompactionContinuation: Promise<void> | undefined;
 	_postCompactionContinuationToken: number;
 	_lengthContinuationAttempts: number;
+	_outputBudgetErrorContinuationAttempts: number;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;
