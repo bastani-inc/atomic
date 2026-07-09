@@ -422,7 +422,7 @@ export async function run<
     assertWorkflowRunOutputs(def.name, result, def.outputs);
     assertWorkflowCreatedStage(runSnapshot);
     await durableBackend.flush?.();
-    const returned = classifyReturnedRunStatus(result);
+    const returned = classifyReturnedRunStatus(result, runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}), ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}), ts: Date.now() });
     durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);

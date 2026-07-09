@@ -18,6 +18,7 @@ import { stageControlRegistry as defaultStageControlRegistry } from "../foregrou
 import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
+import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,7 +116,7 @@ export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEn
   return topLevelWorkflowRuns(snapshot.runs).map((run) => ({
     runId: run.id,
     name: run.name,
-    status: run.status,
+    status: effectiveRunStatus(run),
     startedAt: run.startedAt,
     durationMs: run.durationMs,
     stageCount: expandWorkflowGraph(snapshot, run.id).stages.length,
@@ -470,7 +471,7 @@ export function inspectRun(
   const detail: RunDetail = {
     runId: copy.id,
     name: copy.name,
-    status: copy.status,
+    status: effectiveRunStatus(copy),
     mode: expandedStages.length > 1 ? "chain" : "single",
     startedAt: copy.startedAt,
     endedAt: copy.endedAt,
@@ -481,7 +482,7 @@ export function inspectRun(
     inputs: copy.inputs,
     stages: expandedStages.map((stage) => structuredClone(stage)),
     result: copy.result,
-    error: copy.error,
+    error: copy.error ?? (effectiveRunStatus(copy) === copy.status ? undefined : (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
     exited: copy.exited,
     exitReason: copy.exitReason,
     failureKind: copy.failureKind,

@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- Fixed workflow failure finalization so structured recoverable auth, rate-limit, and provider-exhaustion metadata captured on the run or its blocking stage (`failedStageId`) no longer allows the top-level run, `/workflow status`, durable status, or lifecycle notice to appear as a successful `completed` state. Goal-like `needs_human`, incomplete, or auth-blocked reducer outputs are still treated as blocked, structured provider/auth fallback exhaustion now preserves an actionable blocked/failure message and resumable metadata, legacy completed snapshots with incomplete returned statuses or structured blocking-stage failures render as blocked, tolerated non-fail-fast branch failures no longer reclassify completed runs, and Goal reviewer-batch fallback exhaustion stops promptly as `needs_human` instead of launching another worker turn.
 - Fixed the fullscreen workflow graph statusline to mirror non-workflow extension statuses, so async/background subagent progress and completion remain visible while the graph overlay is active.
 - Fixed `/workflow resume` for workflows that use reusable `gitWorktreeDir`/`git_worktree_dir` worktrees by persisting the original invocation cwd and resolved reusable-worktree metadata, replaying durable resumes from that original repository context instead of the resumed interactive session cwd, and hardening Git subprocess timeouts so slow filesystem timeouts are reported as Git timeouts rather than “not inside a Git repository”.
 

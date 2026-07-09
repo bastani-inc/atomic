@@ -27,6 +27,7 @@
  */
 
 import type { RunSnapshot, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { elapsedRunMs, elapsedStageMs } from "../shared/timing.js";
 import type { GraphTheme } from "./graph-theme.js";
 import { fmtDuration } from "./status-helpers.js";
@@ -162,7 +163,7 @@ function renderRunEntry(
 function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
   if (!theme) return "#000000";
   if (isQuitRun(run)) return theme.warning;
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "completed": return theme.success;
     case "running":   return theme.warning;
     case "paused":    return theme.warning;
@@ -178,7 +179,7 @@ function runAccent(run: RunSnapshot, theme?: GraphTheme): string {
 
 function runTrailing(run: RunSnapshot, theme?: GraphTheme): { text: string; fg?: string } | undefined {
   if (isQuitRun(run)) return { text: "○ quit", fg: theme?.warning };
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "completed": return { text: "✓ completed", fg: theme?.success };
     case "running":   return { text: "● running", fg: theme?.warning };
     case "paused":    return { text: "❚❚ paused", fg: theme?.warning };
@@ -212,7 +213,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
       : undefined;
 
   if (isQuitRun(run)) return "resumable via /workflow resume";
-  if (run.status === "running") {
+  if (effectiveRunStatus(run) === "running") {
     if (isChain) parts.push(`${done}/${total}`);
     const labels = runningStageLabels(run);
     if (labels) parts.push(labels);
@@ -220,7 +221,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
-  if (run.status === "paused") {
+  if (effectiveRunStatus(run) === "paused") {
     if (isChain) parts.push(`${done}/${total}`);
     const labels = pausedStageLabels(run);
     if (labels) parts.push(labels);
@@ -228,7 +229,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
-  if (run.status === "failed" || run.status === "killed") {
+  if (effectiveRunStatus(run) === "failed" || effectiveRunStatus(run) === "killed") {
     const failed = run.stages.find((s) => s.status === "failed");
     if (failed && isChain) parts.push(`failed at ${failed.name}`);
     else if (failed) parts.push(failed.name);
@@ -239,7 +240,7 @@ function runCardMeta(run: RunSnapshot, now: number): string {
     return parts.join(" · ");
   }
 
-  if (run.status === "completed" || run.status === "skipped" || run.status === "cancelled" || run.status === "blocked") {
+  if (["completed", "skipped", "cancelled", "blocked"].includes(effectiveRunStatus(run))) {
     if (run.exitReason !== undefined && run.exitReason.length > 0) parts.push(run.exitReason);
     if (!isChain && run.stages[0]) parts.push(run.stages[0].name);
     const dur = lastStageDuration(run, now);
@@ -292,7 +293,7 @@ function stageCells(run: RunSnapshot): Array<{ status: StageStatus }> {
 }
 
 function stageStatusFromRun(run: RunSnapshot): StageStatus {
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "completed": return "completed";
     case "skipped":   return "skipped";
     case "cancelled": return "skipped";
@@ -324,22 +325,26 @@ interface Counts {
   paused: number;
   quit: number;
   completed: number;
+  blocked: number;
   failed: number;
   pending: number;
 }
 
 function countBuckets(runs: readonly RunSnapshot[]): Counts {
-  const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, failed: 0, pending: 0 };
+  const c: Counts = { active: 0, paused: 0, quit: 0, completed: 0, blocked: 0, failed: 0, pending: 0 };
   for (const r of runs) {
+    const status = effectiveRunStatus(r);
     if (isQuitRun(r)) c.quit++;
     else if (r.endedAt === undefined) {
-      if (r.status === "pending") c.pending++;
-      else if (r.status === "paused") c.paused++;
-      else if (r.status === "running") c.active++;
-      else if (r.status === "completed") c.completed++;
+      if (status === "pending") c.pending++;
+      else if (status === "paused") c.paused++;
+      else if (status === "running") c.active++;
+      else if (status === "completed") c.completed++;
+      else if (status === "blocked") c.blocked++;
       else c.failed++;
-    } else if (r.status === "completed") c.completed++;
-    else if (r.status === "skipped" || r.status === "cancelled" || r.status === "blocked") c.completed++;
+    } else if (status === "completed") c.completed++;
+    else if (status === "blocked") c.blocked++;
+    else if (status === "skipped" || status === "cancelled") c.completed++;
     else c.failed++;
   }
   return c;
@@ -348,6 +353,7 @@ function countBuckets(runs: readonly RunSnapshot[]): Counts {
 function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}`, fg: theme.success });
+  if (c.blocked > 0) out.push({ text: `↑ ${c.blocked} blocked`, fg: theme.warning });
   if (c.active > 0) out.push({ text: `● ${c.active}`, fg: theme.warning });
   // Keep the word label: the pause glyph is less familiar than the other
   // status glyphs, so this intentional asymmetry improves scanability.
@@ -361,6 +367,7 @@ function themedBadges(c: Counts, theme: GraphTheme): FlatBandBadge[] {
 function plainBadges(c: Counts): FlatBandBadge[] {
   const out: FlatBandBadge[] = [];
   if (c.completed > 0) out.push({ text: `✓ ${c.completed}` });
+  if (c.blocked > 0) out.push({ text: `↑ ${c.blocked} blocked` });
   if (c.active > 0) out.push({ text: `● ${c.active}` });
   // Keep the word label: the pause glyph is less familiar than the other
   // status glyphs, so this intentional asymmetry improves scanability.
@@ -393,7 +400,7 @@ function emptyStateLine(theme?: GraphTheme): string {
 
 function statusIconForRun(run: RunSnapshot): string {
   if (isQuitRun(run)) return "○";
-  switch (run.status) {
+  switch (effectiveRunStatus(run)) {
     case "completed": return "✓";
     case "skipped": return "⊘";
     case "cancelled": return "⊘";

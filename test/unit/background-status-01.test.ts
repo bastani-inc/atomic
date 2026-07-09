@@ -13,6 +13,7 @@ import {
     resumeRun,
     pauseRun,
     interruptRun,
+    inspectRun,
 } from "../../packages/workflows/src/runs/background/status.js";
 import { createStore } from "../../packages/workflows/src/shared/store.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
@@ -145,6 +146,24 @@ describe("statusRuns", () => {
         assert.equal(result.length, 1);
         assert.equal(result[0]!.runId, "r1");
         assert.equal(result[0]!.status, "completed");
+    });
+
+    test("normalizes legacy completed snapshots with incomplete returned status", () => {
+        const st = createStore();
+        st.recordRunStart(makeRun({ id: "legacy-needs-human" }));
+        st.recordRunEnd("legacy-needs-human", "completed", {
+            status: "needs_human",
+            remaining_work: "No API key for provider: github-copilot",
+        });
+
+        const result = statusRuns({ store: st });
+        const inspected = inspectRun("legacy-needs-human", { store: st });
+
+        assert.equal(result[0]!.status, "blocked");
+        assert.equal(inspected.ok, true);
+        if (!inspected.ok) throw new Error("narrowing");
+        assert.equal(inspected.detail.status, "blocked");
+        assert.match(inspected.detail.error ?? "", /No API key for provider: github-copilot/);
     });
 
     test("treats all as a compatibility no-op", () => {
