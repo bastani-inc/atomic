@@ -6,7 +6,20 @@ import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
+/**
+ * Upper bound on consecutive automatic continuations of a response that was
+ * truncated at the output-token cap ("length") while the context is still
+ * below the compaction budget. Each continuation regenerates the cut-off turn,
+ * so a model that insists on emitting more than its per-turn output cap can
+ * still terminate instead of looping forever.
+ */
+export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
+
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	// The agent_end path passes skipAbortedCheck=true; the pre-prompt path passes
+	// false. Only the live turn-completion path may auto-continue a truncated
+	// response — before a fresh user prompt we must not resume the old turn.
+	const isLiveTurnCompletion = skipAbortedCheck;
 	const settings = this.settingsManager.getCompactionSettings();
 	if (!settings.enabled) return;
 
@@ -101,6 +114,16 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
 	if (shouldCompact(contextTokens, compactionBudget, settings)) {
 		await this._runAutoCompaction("threshold", shouldRetryAfterThresholdCompaction(assistantMessage));
+		return;
+	}
+
+	// A response truncated at the output-token cap ("length") with the context
+	// still below the compaction budget is genuine work cut off mid-flight, not a
+	// context overflow. Compaction would not free any room, so continue the
+	// generation directly instead of dead-ending on the truncation and leaving
+	// the task half-finished.
+	if (isLiveTurnCompletion && shouldRetryAfterThresholdCompaction(assistantMessage)) {
+		this._resumeAfterLengthTruncation();
 	}
 }
 
@@ -206,6 +229,24 @@ export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<vo
 	}
 }
 
+/**
+ * Internal: resume a response that was truncated at the output-token cap
+ * ("length") when the context does not warrant compaction. The generation is
+ * continued directly so the model finishes the work it was cut off from, rather
+ * than dead-ending on the truncation. Bounded by MAX_LENGTH_CONTINUATION_ATTEMPTS
+ * so a turn that keeps exceeding the per-turn output cap can still terminate.
+ */
+
+export function _resumeAfterLengthTruncation(this: AgentSession): void {
+	if (this._lengthContinuationAttempts >= MAX_LENGTH_CONTINUATION_ATTEMPTS) return;
+	this._lengthContinuationAttempts += 1;
+	// agent.continue() rejects an assistant tail; drop the incomplete
+	// length-stopped message so the preceding user/tool-result anchors the
+	// continuation. It remains persisted in session history.
+	this._dropTrailingAutoCompactionRetryAssistantIfPresent();
+	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
+}
+
 
 function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
 	return reason === "overflow" && !aborted ? true : undefined;
@@ -297,5 +338,6 @@ export const agentSessionAutoCompactionMethods = {
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
 	_schedulePostAutoCompactionContinuationProbe,
 	_resumeAfterAutoCompaction,
+	_resumeAfterLengthTruncation,
 	_runAutoCompaction,
 };

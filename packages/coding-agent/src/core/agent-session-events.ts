@@ -153,6 +153,13 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 				this._overflowRecoveryAttempted = false;
 			}
 
+			// A non-truncated assistant response means the length-continuation loop
+			// made progress (or the turn completed cleanly), so reset the bounded
+			// output-cap continuation counter.
+			if (assistantMsg.stopReason !== "length") {
+				this._lengthContinuationAttempts = 0;
+			}
+
 			// Reset retry counter immediately on successful assistant response
 			// This prevents accumulation across multiple LLM calls within a turn
 			if (!assistantFailed && this._retryAttempt > 0) {

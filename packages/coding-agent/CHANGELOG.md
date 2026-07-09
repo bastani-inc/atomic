@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed Windows native filesystem watchers to canonicalize watched paths before calling `fs.watch`, reject unresolved 8.3 short-name paths, and fall back to polling for unsafe watcher paths. This prevents libuv fs-event assertion crashes when temp, session, footer, or theme paths contain short-name components such as `USERNA~1`.
+- Fixed responses truncated at the output-token cap (`stopReason: "length"`) dead-ending the model's work with a "maximum output token limit" error when the context was still below the auto-compaction threshold. Previously auto-continuation only happened as a side effect of threshold compaction, so a length truncation with input room to spare left the task half-finished. Length-truncated turns now continue directly without compacting: the incomplete assistant is removed from retry context and the generation resumes automatically so the model finishes where it left off, bounded by a small consecutive-continuation cap so a turn that keeps exceeding the per-turn output cap still terminates. Compaction-driven continuation and fresh user prompts are unaffected.
 - Fixed bundled workflow durable resume for reusable `git_worktree_dir` worktrees so resumed runs reuse the original invocation repository/cwd and report slow Git subprocess timeouts as Git timeouts instead of repository-detection failures.
 
 ## [0.9.5-alpha.8] - 2026-07-08

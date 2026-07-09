@@ -5,6 +5,7 @@ import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../src/core/agent-session.ts";
+import { MAX_LENGTH_CONTINUATION_ATTEMPTS } from "../src/core/agent-session-auto-compaction.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -100,6 +101,19 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		};
 	}
 
+	function belowThresholdLengthStoppedAssistant(): AssistantMessage {
+		const assistant = lengthStoppedAssistant();
+		// Keep the context well below the compaction budget so compaction is a
+		// no-op and only the direct length continuation can fire.
+		assistant.usage = {
+			...assistant.usage,
+			input: 40_000,
+			output: 10_000,
+			totalTokens: 50_000,
+		};
+		return assistant;
+	}
+
 	it("compacts and retries threshold-sized length-stopped responses", async () => {
 		const assistant = lengthStoppedAssistant();
 		session.agent.state.messages = [
@@ -161,5 +175,88 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		expect(waitSpy).toHaveBeenCalledTimes(1);
 		expect(drainSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("continues a below-threshold length-stopped response without compacting", async () => {
+		const userMessage: AgentMessage = {
+			role: "user",
+			content: [{ type: "text", text: "write a long answer" }],
+			timestamp: Date.now() - 1000,
+		};
+		const assistant = belowThresholdLengthStoppedAssistant();
+		sessionManager.appendMessage(userMessage);
+		sessionManager.appendMessage(assistant);
+		session.agent.state.messages = [userMessage, assistant];
+		const runAutoCompactionSpy = vi
+			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.mockResolvedValue();
+		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			// The incomplete length-stopped assistant is dropped so the anchor is a user message.
+			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
+		});
+		vi.spyOn(session, "waitForRetry").mockResolvedValue();
+		vi.spyOn(session as unknown as { _continueQueuedAgentMessages: () => Promise<void> }, "_continueQueuedAgentMessages").mockResolvedValue();
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+		expect(continueSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not continue a below-threshold zero-output length stop", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		assistant.usage = { ...assistant.usage, output: 0, totalTokens: 40_000 };
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		const resumeSpy = vi.spyOn(
+			session as unknown as { _resumeAfterLengthTruncation: () => void },
+			"_resumeAfterLengthTruncation",
+		);
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(resumeSpy).not.toHaveBeenCalled();
+	});
+
+	it("does not resume a length truncation before a fresh user prompt (non-live path)", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		const resumeSpy = vi.spyOn(
+			session as unknown as { _resumeAfterLengthTruncation: () => void },
+			"_resumeAfterLengthTruncation",
+		);
+		const checkCompaction = (
+			session as unknown as { _checkCompaction: (message: AssistantMessage, skipAbortedCheck: boolean) => Promise<void> }
+		)._checkCompaction.bind(session);
+
+		// skipAbortedCheck=false marks the pre-prompt path; a new user turn must not resume the old one.
+		await checkCompaction(assistant, false);
+
+		expect(resumeSpy).not.toHaveBeenCalled();
+	});
+
+	it("stops continuing after MAX_LENGTH_CONTINUATION_ATTEMPTS", async () => {
+		const assistant = belowThresholdLengthStoppedAssistant();
+		session.agent.state.messages = [
+			{ role: "user", content: [{ type: "text", text: "hello" }], timestamp: Date.now() - 1000 },
+			assistant,
+		];
+		(session as unknown as { _lengthContinuationAttempts: number })._lengthContinuationAttempts = MAX_LENGTH_CONTINUATION_ATTEMPTS;
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		vi.spyOn(session, "waitForRetry").mockResolvedValue();
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(continueSpy).not.toHaveBeenCalled();
 	});
 });

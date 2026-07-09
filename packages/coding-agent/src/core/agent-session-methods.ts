@@ -203,6 +203,7 @@ export interface AgentSessionMethodSurface {
 	_schedulePostAutoCompactionContinuationProbe(reason: "overflow" | "threshold", willRetry: boolean): void;
 	_awaitPendingOverflowPostCompactionContinuation(): Promise<void>;
 	_resumeAfterAutoCompaction(): Promise<void>;
+	_resumeAfterLengthTruncation(): void;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
 	setAutoCompactionEnabled(enabled: boolean): void;
 
@@ -342,6 +343,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_interruptDeliveryQueue: Promise<void>;
 	_pendingOverflowPostCompactionContinuation: Promise<void> | undefined;
 	_overflowPostCompactionContinuationToken: number;
+	_lengthContinuationAttempts: number;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;
