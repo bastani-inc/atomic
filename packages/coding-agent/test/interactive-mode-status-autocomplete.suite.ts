@@ -386,3 +386,44 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 	});
 });
 
+
+describe("InteractiveMode deferred workflow autocomplete", () => {
+	function createDeferredWorkflowProvider(): AutocompleteProvider {
+		const fakeThis: any = {
+			deferredStartupPending: true,
+			session: {
+				scopedModels: [],
+				modelRegistry: { getAvailable: () => [] },
+				promptTemplates: [],
+				extensionRunner: { getRegisteredCommands: () => [] },
+				resourceLoader: { getSkills: () => ({ skills: [] }) },
+			},
+			settingsManager: { getEnableSkillCommands: () => false },
+			skillCommands: new Map(),
+			sessionManager: { getCwd: () => process.cwd() },
+			fdPath: null,
+		};
+		Object.setPrototypeOf(fakeThis, (InteractiveMode as any).prototype);
+		return (InteractiveMode as any).prototype.createBaseAutocompleteProvider.call(fakeThis) as AutocompleteProvider;
+	}
+
+	async function suggestionValues(provider: AutocompleteProvider, line: string): Promise<string[]> {
+		const suggestions = await provider.getSuggestions([line], 0, line.length, {
+			signal: new AbortController().signal,
+		});
+		return suggestions?.items.map((item) => item.value) ?? [];
+	}
+
+	test("offers workflow names and inputs before the workflow extension implementation loads", async () => {
+		const provider = createDeferredWorkflowProvider();
+
+		expect(await suggestionValues(provider, "/wor")).toContain("workflow");
+		expect(await suggestionValues(provider, "/workflow ")).toContain("deep-research-codebase ");
+		expect(await suggestionValues(provider, "/workflow list")).toEqual([]);
+		expect(await suggestionValues(provider, "/workflow de")).toEqual(["deep-research-codebase "]);
+		expect(await suggestionValues(provider, "/workflow inputs de")).toEqual(["inputs deep-research-codebase "]);
+		expect(await suggestionValues(provider, "/workflow deep-research-codebase p")).toEqual([
+			"deep-research-codebase prompt=",
+		]);
+	});
+});

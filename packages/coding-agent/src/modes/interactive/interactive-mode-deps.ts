@@ -24,7 +24,7 @@ export { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "../../core/provider-display-nam
 export type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 export { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 export { type SessionContext, SessionManager } from "../../core/session-manager.ts";
-export { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+export { BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 export type { SourceInfo } from "../../core/source-info.ts";
 export { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 export type { TruncationResult } from "../../core/tools/truncate.ts";

@@ -255,6 +255,7 @@ InteractiveModeBase.prototype.showSessionSelector = function(this: InteractiveMo
   };
 
 InteractiveModeBase.prototype.handleResumeSession = async function(this: InteractiveModeBase, sessionPath: string, options?: Parameters<ExtensionCommandContext["switchSession"]>[1]): Promise<{ cancelled: boolean }> {
+    await this.ensureDeferredStartupComplete();
     if (this.loadingAnimation) {
       this.loadingAnimation.stop();
       this.loadingAnimation = undefined;

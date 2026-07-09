@@ -206,8 +206,8 @@ describe("tool run-control actions", () => {
             assert.ok(workflowCmd, "expected workflow command registration");
             const completions =
                 workflowCmd.options.getArgumentCompletions?.(
-                    "tool-refresh-added",
-                ) ?? [];
+					"tool-refresh-add",
+				) ?? [];
             assert.equal(
                 completions.some(
                     (completion) => completion.label === "tool-refresh-added",

@@ -63,10 +63,13 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ listModels: "all" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ resolvedExtensionPathCount: 1 }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ unknownFlagCount: 1 }))).toBe(false);
-		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(false);
-		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ resolvedResourcePathCount: 1 }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ hasSystemPromptInput: true }))).toBe(false);
+	});
+
+	it("still defers when an interactive launch explicitly selects a provider or model", () => {
+		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(true);
+		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(true);
 	});
 
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {
@@ -79,6 +82,10 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ appMode: "print" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ stdinIsTTY: false }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ hasSessionStartEvent: true }))).toBe(false);
+	});
+
+	it("keeps print prompts synchronous so slash commands load before atomic -p runs", () => {
+		expect(computeDeferExtensions(baseInput({ appMode: "print" }))).toBe(false);
 	});
 });
 

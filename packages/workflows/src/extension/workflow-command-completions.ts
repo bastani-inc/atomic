@@ -13,8 +13,9 @@ function completeToken(
     : Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
   const head = argumentText.slice(0, tokenStart);
   const token = argumentText.slice(tokenStart);
+  const normalizedToken = token.trimEnd();
   const filtered = candidates
-    .filter((candidate) => candidate.value.startsWith(token))
+    .filter((candidate) => candidate.value.startsWith(token) && candidate.value.trimEnd() !== normalizedToken)
     .map((candidate) => ({ ...candidate, value: `${head}${candidate.value}` }));
   return filtered.length > 0 ? filtered : null;
 }

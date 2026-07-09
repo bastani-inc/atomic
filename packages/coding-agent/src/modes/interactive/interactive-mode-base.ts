@@ -162,6 +162,7 @@ export class InteractiveModeBase {
   changelogMarkdown: string | undefined = undefined;
 
   startupNoticesShown = false;
+  startupNoticesPrepared = false;
 
   anthropicSubscriptionWarningShown = false;
 
@@ -262,8 +263,13 @@ export class InteractiveModeBase {
   // Deferred extension load state (first paint happens before extensions load)
   deferredStartupPending = false;
 
-
   deferredStartupPromise: Promise<void> | undefined = undefined;
+
+
+  inputHandlerReadyRecorded = false;
+
+  firstSubmitRecorded = false;
+
   deferLoadedResourcesDisclosureUntilAgentEnd = false;
 
 

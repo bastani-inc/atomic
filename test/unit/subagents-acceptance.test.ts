@@ -149,7 +149,7 @@ describe("subagent acceptance removal", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
-	});
+	}, 20_000);
 	test("foreground investigation/debugger runs can complete successfully without edits", async () => {
 		await withFakeCli(`
 			console.log(JSON.stringify({

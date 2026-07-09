@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type AgentMessage, type Component, type ContextCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, ContextCompactionSummaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, theme } from "./interactive-mode-deps.ts";
+import { type AgentMessage, type Component, type ContextCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, ContextCompactionSummaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
@@ -291,6 +291,14 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
           this.onInputCallback = undefined;
           resolve(text);
         };
+        if (!this.inputHandlerReadyRecorded) {
+          this.inputHandlerReadyRecorded = true;
+          recordTimeSinceReset("interactive-input-handler-ready");
+          void (async () => {
+            await yieldToEventLoop();
+            this.footerDataProvider.startGitWatcher();
+          })();
+        }
       });
     }
   };

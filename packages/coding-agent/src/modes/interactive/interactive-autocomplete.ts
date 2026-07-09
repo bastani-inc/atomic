@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
+import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
@@ -235,18 +235,32 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
     // Convert extension commands to SlashCommand format. Built-in command names
     // stay reserved even when a built-in is contextually hidden (for example,
     // /fast without a supported OpenAI model) so extension visibility cannot
-    // change as auth/model state changes.
-    const extensionCommands: SlashCommand[] = this.session.extensionRunner
+    // change as auth/model state changes. While extension loading is deferred,
+    // expose lightweight bundled command metadata without importing heavy
+    // implementations; the submit path loads the implementation on demand.
+    const registeredExtensionCommands = this.session.extensionRunner
       .getRegisteredCommands()
-      .filter((cmd) => !BUILTIN_SLASH_COMMAND_NAMES.has(cmd.name))
-      .map((cmd) => ({
+      .filter((cmd) => !BUILTIN_SLASH_COMMAND_NAMES.has(cmd.name));
+    const registeredNames = new Set(registeredExtensionCommands.map((cmd) => cmd.invocationName));
+    const extensionCommands: SlashCommand[] = [
+      ...(this.deferredStartupPending
+        ? BUNDLED_EXTENSION_SLASH_COMMANDS.filter(
+            (cmd) => !BUILTIN_SLASH_COMMAND_NAMES.has(cmd.name) && !registeredNames.has(cmd.name),
+          ).map((cmd) => ({
+            name: cmd.name,
+            description: cmd.description,
+            getArgumentCompletions: cmd.getArgumentCompletions,
+          }))
+        : []),
+      ...registeredExtensionCommands.map((cmd) => ({
         name: cmd.invocationName,
         description: this.prefixAutocompleteDescription(
           cmd.description,
           cmd.sourceInfo,
         ),
         getArgumentCompletions: cmd.getArgumentCompletions,
-      }));
+      })),
+    ];
 
     // Build skill commands from session.skills (if enabled)
     this.skillCommands.clear();

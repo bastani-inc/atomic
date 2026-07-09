@@ -376,7 +376,7 @@ describe("/workflow interrupt chat command", () => {
                 true,
             );
             const completions =
-                workflowCmd.options.getArgumentCompletions?.("refresh-added");
+                workflowCmd.options.getArgumentCompletions?.("refresh-add");
             assert.equal(
                 completions?.some(
                     (completion) => completion.label === "refresh-added",
@@ -422,8 +422,8 @@ describe("/workflow interrupt chat command", () => {
             );
             const completions =
                 workflowCmd.options.getArgumentCompletions?.(
-                    "refresh-fallback",
-                );
+					"refresh-fall",
+				);
             assert.equal(
                 completions?.some(
                     (completion) => completion.label === "refresh-fallback",

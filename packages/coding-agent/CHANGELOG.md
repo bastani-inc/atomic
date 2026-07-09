@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Improved interactive startup responsiveness by keeping footer git watcher setup out of first paint and deferring it until the first input handler is ready, while preserving lazy footer branch reads and post-frame branch-change re-rendering. Deferred extension/resource loading no longer starts on a blind post-paint timer that can freeze live typing, and ordinary first prompts no longer wait for it before showing submission feedback and starting the model turn. Built-in slash commands stay available immediately, and bundled extension slash commands expose lightweight metadata for autocomplete before their heavy implementations load; explicitly submitted extension slash commands load the implementation on demand and then route the same command. Changelog and first-run notice materialization now happen after the first frame, and startup/input timing probes cover raw-mode enablement, first captured raw key, first frame, input-handler callback installation, and first submit for benchmark/probe runs.
+
 ### Fixed
 
 - Fixed Windows native filesystem watchers to canonicalize watched paths before calling `fs.watch`, reject unresolved 8.3 short-name paths, and fall back to polling for unsafe watcher paths. This prevents libuv fs-event assertion crashes when temp, session, footer, or theme paths contain short-name components such as `USERNA~1`.

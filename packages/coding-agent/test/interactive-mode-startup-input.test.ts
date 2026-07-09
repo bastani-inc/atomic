@@ -16,8 +16,12 @@ type SubmitContext = {
 		isBashRunning: boolean;
 		prompt: (text: string, options?: unknown) => Promise<void>;
 	};
+	deferredStartupPending: boolean;
+	deferredStartupPromise?: Promise<void>;
 	flushPendingBashComponents: () => void;
 	handleBashCommand: (command: string, isExcluded: boolean) => Promise<void>;
+	ensureDeferredStartupComplete: () => Promise<void>;
+	showStatus: (message: string) => void;
 	updateEditorBorderColor: () => void;
 	isBashMode: boolean;
 	renderDeferredUserInput: (text: string) => void;
@@ -25,6 +29,8 @@ type SubmitContext = {
 	advanceStartupInputReplay: (text: string) => void;
 	drainStartupReplayCommands: () => Promise<void>;
 	recoverCookedStartupInput: () => boolean;
+	handleModelCommand: (searchTerm?: string) => Promise<void>;
+	showSettingsSelector: () => void;
 	onInputCallback?: (text: string) => void;
 	pendingUserInputs: string[];
 	startupReplayInputs: string[];
@@ -65,7 +71,10 @@ function createSubmitContext(): SubmitContext {
 			isBashRunning: false,
 			prompt: vi.fn(async () => {}),
 		},
+		deferredStartupPending: false,
 		handleBashCommand: vi.fn(async () => {}),
+		ensureDeferredStartupComplete: vi.fn(async () => {}),
+		showStatus: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
 		isBashMode: false,
 		flushPendingBashComponents: vi.fn(),
@@ -74,6 +83,8 @@ function createSubmitContext(): SubmitContext {
 		advanceStartupInputReplay: InteractiveMode.prototype.advanceStartupInputReplay,
 		drainStartupReplayCommands: InteractiveMode.prototype.drainStartupReplayCommands,
 		recoverCookedStartupInput: InteractiveMode.prototype.recoverCookedStartupInput,
+		handleModelCommand: vi.fn(async () => {}),
+		showSettingsSelector: vi.fn(),
 		pendingUserInputs: [],
 		startupReplayInputs: [],
 	};
@@ -89,6 +100,48 @@ describe("InteractiveMode startup input", () => {
 		expect(context.pendingUserInputs).toEqual(["early prompt"]);
 		expect(context.flushPendingBashComponents).toHaveBeenCalledTimes(1);
 		expect(context.editor.addToHistory).toHaveBeenCalledWith("early prompt");
+	});
+
+	it("loads deferred startup before model slash commands", async () => {
+		const order: string[] = [];
+		const context = createSubmitContext();
+		context.ensureDeferredStartupComplete = vi.fn(async () => {
+			order.push("deferred");
+		});
+		context.handleModelCommand = vi.fn(async (searchTerm?: string) => {
+			order.push(`model:${searchTerm ?? ""}`);
+		});
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("/model gpt-5.5");
+
+		expect(order).toEqual(["deferred", "model:gpt-5.5"]);
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+	});
+
+	it("keeps local slash commands responsive without deferred startup", async () => {
+		const context = createSubmitContext();
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.("/settings");
+
+		expect(context.ensureDeferredStartupComplete).not.toHaveBeenCalled();
+		expect(context.showSettingsSelector).toHaveBeenCalledTimes(1);
+	});
+
+	it("loads deferred startup before explicit extension slash submissions", async () => {
+		const order: string[] = [], context = createSubmitContext();
+		context.deferredStartupPending = true;
+		context.ensureDeferredStartupComplete = vi.fn(async () => {
+			order.push("deferred");
+			context.deferredStartupPending = false;
+		});
+		context.session.prompt = vi.fn(async (text: string) => order.push(`prompt:${text}`));
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+		await context.defaultEditor.onSubmit?.("/workflow list");
+		expect(order).toEqual(["deferred", "prompt:/workflow list"]);
+		expect(context.pendingUserInputs).toEqual([]);
+		expect(context.editor.addToHistory).toHaveBeenCalledWith("/workflow list");
 	});
 
 	it("returns queued startup input before installing a new input callback", async () => {
