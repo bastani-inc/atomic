@@ -51,13 +51,14 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     ]);
     const prefix = config.settings?.toolPrefix ?? "server";
     const envRaw = process.env.MCP_DIRECT_TOOLS;
+    const envDirectTools = envRaw?.split(",").map(s => s.trim()).filter(Boolean);
     const directSpecs = envRaw === "__none__"
       ? []
       : resolveDirectTools(
           config,
           cache,
           prefix,
-          envRaw?.split(",").map(s => s.trim()).filter(Boolean),
+          envDirectTools,
         );
     for (const spec of directSpecs) {
       if (registeredDirectToolNames.has(spec.prefixedName)) continue;
@@ -76,7 +77,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     refreshTools?.();
     return {
       directToolCount: directSpecs.length,
-      missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache),
+      missingConfiguredDirectToolServers: getMissingConfiguredDirectToolServers(config, cache, envDirectTools),
     };
   }
 

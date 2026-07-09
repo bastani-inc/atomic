@@ -1,11 +1,8 @@
-I’m unable to write `C:\dev\github_work\atomic-lazy-startup-worktree\research\docs\2026-07-09-mcp-cold-cache-search-describe-research.md` directly because this session only exposes read/search/list/todo tools and no file write/edit tool. Below is the markdown content for that file.
-
-```md
 # MCP Cold-Cache Lazy Server Search/Describe Research
 
-Date: 2026-07-09  
-Repository: `C:/dev/github_work/atomic-lazy-startup-worktree`  
-Mode: read-only research  
+Date: 2026-07-09
+Repository: `<repo>`
+Mode: read-only research
 Breaking changes allowed: false
 
 ## Analysis: `packages/mcp` cold-cache lazy server explicit info paths
@@ -404,4 +401,3 @@ No required changes:
 - `packages/mcp/startup-warmup.ts`
 - `packages/mcp/server-manager.ts`
 - `packages/mcp/metadata-cache.ts`
-```

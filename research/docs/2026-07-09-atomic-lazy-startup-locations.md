@@ -1,12 +1,10 @@
-I’m unable to write `progress.md` or `research/docs/2026-07-09-atomic-lazy-startup-locations.md` directly because the available toolset is read/search/list only and has no file write/edit capability. Below is the concrete content intended for the requested research document.
-
 ## File Locations for Atomic Lazy / Non-Blocking Startup Surfaces
 
 ### Scope Notes
 
 Read-only research in:
 
-- `C:/dev/github_work/atomic-lazy-startup-worktree`
+- `<repo>`
 
 Covered requested surfaces:
 

@@ -1,13 +1,8 @@
-I’m unable to write `C:\dev\github_work\atomic-lazy-startup-worktree\research\docs\2026-07-09-lazy-startup-current-diff-locations.md` directly because the available toolset is read/search/list only and has no write/edit capability.
-
-Below is the content intended for that file.
-
-```md
 # Lazy Startup Current Diff Locations
 
-Date: 2026-07-09  
-Repository: `C:/dev/github_work/atomic-lazy-startup-worktree`  
-Mode: read-only research  
+Date: 2026-07-09
+Repository: `<repo>`
+Mode: read-only research
 Breaking changes allowed: false
 
 ## Scope
@@ -641,4 +636,3 @@ If behavior changed, PR should update or confirm entries in:
 - `packages/web-access/CHANGELOG.md`
 - `packages/coding-agent/docs/settings.md`
 - `packages/coding-agent/docs/development.md`
-```

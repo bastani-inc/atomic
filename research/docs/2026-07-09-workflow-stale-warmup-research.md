@@ -1,6 +1,3 @@
-I’m unable to write `C:\dev\github_work\atomic-lazy-startup-worktree\research\docs\2026-07-09-workflow-stale-warmup-research.md` because this session exposes only read/search/list/todo tools and no file write/edit tool. Below is the Markdown content intended for that file.
-
-```markdown
 # Workflow Stale Warmup Research — 2026-07-09
 
 ## Analysis: Workflow lazy discovery warmup generation and stale registry publication
@@ -389,4 +386,3 @@ Internal-only additions are sufficient:
 8. In `startWorkflowDiscoveryWarmup()`, check generation before queueing after the macrotask and pass the captured generation to the queued reload.
 9. Keep `trackLazyDiscovery()` identity cleanup unchanged so lazy discovery remains retryable.
 10. Add the stale warmup regression test verifying that an old warmup cannot publish an old registry into a later session.
-```

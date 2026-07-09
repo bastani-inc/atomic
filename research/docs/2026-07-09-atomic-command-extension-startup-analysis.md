@@ -1,7 +1,3 @@
-I’m unable to update `progress.md` or create `research/docs/2026-07-09-atomic-command-extension-startup-analysis.md` directly because the available toolset in this session has read/search/list tools but no filesystem write/edit tool. Below is the full content intended for that research document.
-
----
-
 ## Analysis: Atomic command, extension, and startup loading path
 
 ### Overview
