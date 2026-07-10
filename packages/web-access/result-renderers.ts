@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@bastani/atomic";
-import { Box, Text } from "@mariozechner/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { formatSeconds } from "./utils.js";
 
 type ToolResultRenderer = NonNullable<ToolDefinition["renderResult"]>;

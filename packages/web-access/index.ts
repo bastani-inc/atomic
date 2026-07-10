@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext, HandlerFn, MessageRenderer, Regist
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderWebAccessToolResult } from "./result-renderers.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";

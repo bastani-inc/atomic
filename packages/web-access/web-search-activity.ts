@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@bastani/atomic";
-import { Text, truncateToWidth } from "@mariozechner/pi-tui";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { activityMonitor, type ActivityEntry } from "./activity.js";
 
 export interface ActivityWidgetState {
