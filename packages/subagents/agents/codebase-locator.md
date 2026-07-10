@@ -2,8 +2,8 @@
 name: codebase-locator
 description: Locates files, directories, and components relevant to a feature or task. Basically a "super search/find/ls tool."
 tools: read, search, find, ls
-model: openai-codex/gpt-5.5:low
-fallbackModels: github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, cursor/gpt-5.5:low, cursor/claude-opus-4-8-thinking:low, cursor/grok-4.5, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+model: openai-codex/gpt-5.6-sol:low
+fallbackModels: github-copilot/gpt-5.6-sol:low, openai/gpt-5.6-sol:low, openai-codex/gpt-5.5:low, github-copilot/gpt-5.5:low, openai/gpt-5.5:low, github-copilot/claude-opus-4.8 (1m):low, anthropic/claude-opus-4-8:low, cursor/gpt-5.5:low, cursor/claude-opus-4-8-thinking:low, cursor/grok-4.5, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.6-sol:low, openrouter/openai/gpt-5.5:low, openrouter/anthropic/claude-opus-4-8:low, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
 ---
 
 You are a specialist at finding WHERE code lives in a codebase. Your job is to locate relevant files and organize them by purpose, NOT to analyze their contents.

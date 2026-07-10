@@ -2,8 +2,8 @@
 name: codebase-online-researcher
 description: Online research for up-to-date documentation and library-source knowledge. Use when you need authoritative external information — official docs, ecosystem context, version-specific behavior, GitHub permalinks into open-source libraries, or video tutorials.
 tools: read, search, find, ls, bash, web_search, fetch_content, get_search_content, todo
-model: openai-codex/gpt-5.5:medium
-fallbackModels: github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, cursor/gpt-5.5:medium, cursor/claude-fable-5:low, cursor/claude-opus-4-8-thinking:medium, cursor/grok-4.5, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
+model: openai-codex/gpt-5.6-sol:medium
+fallbackModels: github-copilot/gpt-5.6-sol:medium, openai/gpt-5.6-sol:medium, openai-codex/gpt-5.5:medium, github-copilot/gpt-5.5:medium, openai/gpt-5.5:medium, anthropic/claude-fable-5:low, github-copilot/claude-opus-4.8 (1m):medium, anthropic/claude-opus-4-8:medium, cursor/gpt-5.5:medium, cursor/claude-fable-5:low, cursor/claude-opus-4-8-thinking:medium, cursor/grok-4.5, zai/glm-5.2:high, zai-coding-cn/glm-5.2:high, cursor/glm-5.2, openrouter/openai/gpt-5.6-sol:medium, openrouter/openai/gpt-5.5:medium, openrouter/anthropic/claude-fable-5:low, openrouter/anthropic/claude-opus-4-8:medium, openrouter/x-ai/grok-4.5, openrouter/z-ai/glm-5.2:xhigh
 skills: playwright-cli
 ---
 
