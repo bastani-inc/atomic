@@ -4,6 +4,7 @@ import { cancellationRegistry } from "../runs/background/cancellation-registry.j
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
 import { restoreOnSessionStart } from "../shared/persistence-restore.js";
+import { findResumableWorkflowNotices } from "../shared/resumable-workflow-notices.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
@@ -57,7 +58,7 @@ export function registerWorkflowLifecycleHandlers(
     return { cancel: true };
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     runtimeState.resetWorkflowDiscoveryForSession();
     deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
     await runtimeState.ensureWorkflowConfigLoaded();
@@ -95,6 +96,21 @@ export function registerWorkflowLifecycleHandlers(
         );
         seedWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState, store.snapshot());
       });
+      const reason = typeof event === "object" && event !== null && "reason" in event
+        ? (event as { readonly reason?: string }).reason
+        : undefined;
+      if (reason === "startup" || reason === "resume") {
+        const getEntries = sessionManager.getEntries;
+        if (typeof getEntries === "function") {
+          const resumable = findResumableWorkflowNotices(getEntries.call(sessionManager));
+          if (resumable.length > 0) {
+            const commands = resumable
+              .map((workflow) => `\`${workflow.name}\` (${workflow.workflowId.slice(0, 8)}): /workflow resume ${workflow.workflowId}`)
+              .join("\n");
+            ctx?.ui?.notify?.(`This session has resumable workflows:\n${commands}`, "info");
+          }
+        }
+      }
     }
   });
 
