@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { createDurableStagePrimitive, createStageReplayKeyGenerator, recordStageCheckpoint, recordStageSessionCheckpoint } from "../../packages/workflows/src/durable/stage-primitive.js";
+import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 const WORKFLOW_ID = "wf-stage-session-resume";
@@ -104,7 +105,7 @@ describe("durable stage session resume", () => {
 
     assert.equal(await stage("analyze").prompt("continue"), "resumed");
     assert.equal(observed, "/tmp/prior.jsonl");
-    assert.equal(observedPrompt, "Continue");
+    assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
   });
 
   test("mid-session resume does not eagerly read throwing StageContext getters", async () => {
@@ -135,7 +136,7 @@ describe("durable stage session resume", () => {
     });
 
     assert.equal(await stage("analyze").prompt("continue"), "resumed");
-    assert.equal(observedPrompt, "Continue");
+    assert.equal(observedPrompt, RESUME_CONTINUATION_PROMPT);
   });
 
   test("updates session metadata across repeated resumes", async () => {

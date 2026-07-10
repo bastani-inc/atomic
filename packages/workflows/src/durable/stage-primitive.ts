@@ -7,6 +7,7 @@ import type { DurableWorkflowBackend } from "./backend.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import { durableHash } from "./backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
+import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
 import type { DurableStageCheckpoint } from "./types.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
 
@@ -66,7 +67,7 @@ export async function recordStageSessionCheckpoint(deps: DurableStageDeps, stage
   return true;
 }
 
-const MID_SESSION_RESUME_PROMPT = "Continue";
+const MID_SESSION_RESUME_PROMPT = RESUME_CONTINUATION_PROMPT;
 
 function withMidSessionResumePrompt<T extends StageContext>(stage: T, enabled: boolean): T {
   if (!enabled) return stage;

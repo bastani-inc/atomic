@@ -1,6 +1,7 @@
 import type { WorkflowChainOptions, WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../../shared/types.js";
 import type { ParallelFailFastScope } from "../../runs/foreground/executor-types.js";
 import type { EngineRuntime } from "../runtime.js";
+import { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 import {
   applyTaskContext,
   structuredTaskOutputText,
@@ -51,7 +52,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
       });
       const stage = stageHandle.context;
       const promptText = resolvedTaskOptions.resumeFromSessionFile !== undefined
-        ? "Continue"
+        ? RESUME_CONTINUATION_PROMPT
         : applyTaskContext(`${taskReadInstruction(resolvedTaskOptions)}${taskPrompt(resolvedTaskOptions)}`, taskPrevious(resolvedTaskOptions));
       const rawOutput = await stage.prompt(promptText, taskPromptOptions(resolvedTaskOptions));
       const structured = typeof rawOutput === "string" ? undefined : rawOutput;
