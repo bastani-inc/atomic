@@ -35,7 +35,7 @@ import {
   registerHilAnswerNoticeRenderer,
 } from "./hil-answer-notifications.js";
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
-import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
+import { makeMcpPort, makePersistencePort, makeUsageRollupPort } from "./workflow-ports.js";
 import { inFlightRunCount, reloadBlockedMessage, WorkflowReloadBlockedError } from "./workflow-targets.js";
 
 export interface WorkflowExtensionRuntimeState {
@@ -64,6 +64,7 @@ export function createWorkflowExtensionRuntimeState(
 ): WorkflowExtensionRuntimeState {
   const persistenceRef = { current: makePersistencePort(pi, WORKFLOW_CONFIG_DEFAULTS.persistRuns) };
   const mcpPort = makeMcpPort(pi);
+  const usageRollupPort = makeUsageRollupPort(pi);
   const runtimeConfigRef: { current: WorkflowRuntimeConfig } = {
     current: {
       maxDepth: WORKFLOW_CONFIG_DEFAULTS.maxDepth,
@@ -133,6 +134,7 @@ export function createWorkflowExtensionRuntimeState(
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
+      usageRollup: usageRollupPort,
       intercom: intercomPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,
@@ -181,6 +183,7 @@ export function createWorkflowExtensionRuntimeState(
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
+      usageRollup: usageRollupPort,
       intercom: intercomPort,
       config: runtimeConfigRef.current,
       models,
@@ -221,6 +224,7 @@ export function createWorkflowExtensionRuntimeState(
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
       mcp: mcpPort,
+      usageRollup: usageRollupPort,
       intercom: intercomPort,
       config: runtimeConfigRef.current,
       resolveDefaultStageSessionDir,

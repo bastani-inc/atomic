@@ -171,6 +171,8 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "copy", description: "Copy last agent message to clipboard" },
 	{ name: "name", description: "Set session display name" },
 	{ name: "session", description: "Show session info and stats" },
+	{ name: "context", description: "Show context-window usage and transitive cost summary" },
+	{ name: "cost", description: "Show self, descendant, and total session cost" },
 	{ name: "changelog", description: "Show changelog entries" },
 	{
 		name: ATOMIC_GUIDE_COMMAND_NAME,

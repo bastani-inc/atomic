@@ -24,6 +24,7 @@ import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT } from "../shared/types.ts";
+import { liveSubagentDetails, reportSubagentStarted, reportSubagentUsage, reportSubagentUsageForRoot } from "../shared/usage-rollup.ts";
 import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
 import { beginApiLifecycle, getApiScopedSet } from "./api-lifecycle.ts";
@@ -168,6 +169,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		const state: SubagentState = {
 			baseCwd: "",
 			currentSessionId: null,
+			currentRootSessionId: null,
 			asyncJobs: new Map(),
 			subagentInProgress: false,
 			foregroundRuns: new Map(),
@@ -382,10 +384,14 @@ DIAGNOSTICS:
 		registrationFailureCleanups.push(notifyCleanup);
 		const visibleControlNotices = getApiScopedSet(pi, "__piSubagentVisibleControlNoticesByApi");
 		const startedEventHandler = (payload: unknown) => {
-			if (lifecycle.isCurrent()) handleStarted(payload);
+			if (!lifecycle.isCurrent()) return;
+			handleStarted(payload);
+			reportSubagentStarted(pi, state.currentRootSessionId, payload as { id?: unknown; asyncDir?: unknown });
 		};
 		const completeEventHandler = (payload: unknown) => {
-			if (lifecycle.isCurrent()) handleComplete(payload);
+			if (!lifecycle.isCurrent()) return;
+			handleComplete(payload);
+			reportSubagentUsageForRoot(pi, state.currentRootSessionId, payload as Details);
 		};
 		const controlEventHandler = (payload: unknown) => {
 			if (!lifecycle.isCurrent()) return;
@@ -440,8 +446,16 @@ DIAGNOSTICS:
 		};
 		lifecycle.setCleanup(runtimeCleanup);
 		runtimeCleanupInstalled = true;
+		pi.on("tool_execution_update", (event, ctx) => {
+			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
+			const details = liveSubagentDetails(event.partialResult);
+			if (!details) return;
+			reportSubagentUsage(pi, ctx, details);
+		});
 		pi.on("tool_result", (event, ctx) => {
 			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
+			reportSubagentUsage(pi, ctx, event.details as Details);
+			state.currentRootSessionId = ctx.sessionManager.getSessionId();
 			if (!ctx.hasUI) return;
 			state.lastUiContext = ctx;
 			hydrateActiveJobs(ctx);
@@ -453,6 +467,7 @@ DIAGNOSTICS:
 		const resetSessionState = (ctx: ExtensionContext) => {
 			state.baseCwd = ctx.cwd;
 			state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+			state.currentRootSessionId = ctx.sessionManager.getSessionId();
 			state.lastUiContext = ctx;
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);

@@ -23,6 +23,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
     appendEntry: notInitialized,
     setSessionName: notInitialized,
     getSessionName: notInitialized,
+		getSessionId: notInitialized,
     setLabel: notInitialized,
     getActiveTools: notInitialized,
     getAllTools: notInitialized,

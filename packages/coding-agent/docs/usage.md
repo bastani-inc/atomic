@@ -15,6 +15,8 @@ The interface has four main areas:
 
 The editor can be replaced temporarily by built-in UI such as `/settings` or by custom extension UI.
 
+The footer's dollar amount and token/cache badges (`↑`, `↓`, `R`, `W`) are transitive: they include the current session plus its subagent, nested subagent, and workflow-stage descendants, and they climb live as those descendants spend — workflow stages report incrementally on every turn, not only when a stage finishes, including when `/workflow` is the first thing typed in a fresh chat. The context-window percentage stays current-session only, since it measures this session's prompt against its own model window. On subscription/OAuth models the dollar figure can stay `$0.000` when the provider reports no per-token price, while the token badges still climb, so delegated spend remains visible. Use `/cost` to reconcile descendant session files and show a self, per-descendant, and total breakdown.
+
 ### Editor Features
 
 | Feature | How |
@@ -44,7 +46,9 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |
-| `/session` | Show session file, ID, messages, tokens, and cost |
+| `/session` | Show session file, ID, messages, tokens, and self cost |
+| `/context` | Show current-session context-window usage plus a transitive cost summary |
+| `/cost` | Reconcile descendant session files and show self, per-descendant, and total cost |
 | `/tree` | Jump to any point in the session and continue from there |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |

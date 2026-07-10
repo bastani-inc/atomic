@@ -236,6 +236,8 @@ function checkpointMetadata(stage: StageSnapshot): Partial<DurableStageCheckpoin
     ...(stage.result !== undefined ? { result: stage.result } : {}),
     ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
     ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
+    ...(stage.usage !== undefined ? { usage: stage.usage } : {}),
+    ...(stage.usageComplete !== undefined ? { usageComplete: stage.usageComplete } : {}),
     ...(stage.model !== undefined ? { model: stage.model } : {}),
     ...(stage.fastMode !== undefined ? { fastMode: stage.fastMode } : {}),
     ...(stage.attemptedModels !== undefined ? { attemptedModels: [...stage.attemptedModels] } : {}),
@@ -292,6 +294,8 @@ function mergeCheckpointHydrationMetadata(
     ...(replayValueCheckpoint.fastMode === undefined ? metadataValue(checkpoints, "fastMode") : {}),
     ...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
     ...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
+    ...(replayValueCheckpoint.usage === undefined ? metadataValue(checkpoints, "usage") : {}),
+    ...(replayValueCheckpoint.usageComplete === undefined ? metadataValue(checkpoints, "usageComplete") : {}),
   };
 }
 
@@ -363,6 +367,8 @@ export function recordCachedStageIntoStore(
     ...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
     ...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
     ...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
+    ...(checkpoint?.usage !== undefined ? { usage: checkpoint.usage } : {}),
+    ...(checkpoint?.usageComplete !== undefined ? { usageComplete: checkpoint.usageComplete } : {}),
   };
   store.recordStageStart(runId, snapshot);
   store.recordStageEnd(runId, snapshot);

@@ -83,6 +83,8 @@ export function createWorkflowStageFactory(input: {
         ...(replaySource.result !== undefined ? { result: replaySource.result } : {}),
         ...(replaySource.sessionId !== undefined ? { sessionId: replaySource.sessionId } : {}),
         ...(replaySource.sessionFile !== undefined ? { sessionFile: replaySource.sessionFile } : {}),
+        ...(replaySource.usage !== undefined ? { usage: replaySource.usage } : {}),
+        ...(replaySource.usageComplete !== undefined ? { usageComplete: replaySource.usageComplete } : {}),
         replayedFromStageId: replaySource.id,
         replayed: true,
       } : {}),
@@ -181,6 +183,7 @@ export function createWorkflowStageFactory(input: {
 
     const disposeInnerContext = async (): Promise<void> => {
       unsubscribeAskUserQuestionWatcher();
+      stopInterimUsageTracking();
       activeAskUserQuestionCalls.clear();
       state.activeAskUserQuestionAnonymousCalls = 0;
       input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);
@@ -195,7 +198,50 @@ export function createWorkflowStageFactory(input: {
       if (meta.sessionFile !== undefined) stageSnapshot.sessionFile = meta.sessionFile;
       if (meta.sessionId !== undefined || meta.sessionFile !== undefined) input.activeStore.recordStageSession(input.runId, stageId, meta);
       void input.opts.onStageSession?.(input.runId, stageSnapshot);
+      startInterimUsageTracking();
     };
+    let stageUsageSettled = true;
+    let unsubscribeInterimUsage: (() => void) | undefined;
+    const recordStageUsage = (): void => {
+      const transitive = innerCtx.__agentSession()?.getTransitiveUsage?.();
+      if (!transitive) return;
+      stageSnapshot.usage = transitive.total;
+      stageSnapshot.usageComplete = transitive.complete;
+      stageUsageSettled = transitive.complete;
+      input.activeStore.recordStageUsage?.(input.runId, stageId, transitive.total, transitive.complete);
+    };
+    const emitStageRollup = (settled: boolean): void => {
+      if (!stageSnapshot.usage || !stageSnapshot.sessionId) return;
+      input.opts.usageRollup?.emitStageRollup(stageId, stageSnapshot.usage, {
+        label: name,
+        sessionId: stageSnapshot.sessionId,
+        sessionFile: stageSnapshot.sessionFile,
+        settled,
+      });
+    };
+    // Push interim (unsettled) usage to the launching session whenever the
+    // stage's own turn ends OR one of the stage session's descendants changes.
+    // Deep research workflows spend heavily in subagents below a stage
+    // AgentSession; forwarding descendant_usage_changed is what makes that
+    // nested spend visible in the parent footer while the stage turn is still
+    // running. The rollup chokepoint is a keyed upsert, so repeated interim
+    // reports for the same stage session replace (never double-count) the
+    // prior value; the final settled report is emitted once the stage completes.
+    const startInterimUsageTracking = (): void => {
+      if (unsubscribeInterimUsage) return;
+      unsubscribeInterimUsage = innerCtx.subscribe((event) => {
+        const eventType = (event as { type?: unknown }).type;
+        if (eventType !== "agent_end" && eventType !== "descendant_usage_changed") return;
+        captureStageSessionMeta();
+        recordStageUsage();
+        emitStageRollup(false);
+      });
+    };
+    const stopInterimUsageTracking = (): void => {
+      unsubscribeInterimUsage?.();
+      unsubscribeInterimUsage = undefined;
+    };
+    startInterimUsageTracking();
     const releaseLiveHandle = async (): Promise<void> => {
       if (state.liveHandleReleased) return;
       state.liveHandleReleased = true;
@@ -242,9 +288,9 @@ export function createWorkflowStageFactory(input: {
       stageSnapshot.endedAt = Date.now();
       stageSnapshot.durationMs = elapsedStageMs(stageSnapshot, stageSnapshot.endedAt);
       applyModelFallbackMeta(innerCtx.__modelFallbackMeta());
+      recordStageUsage();
       input.activeStore.recordStageEnd(input.runId, stageSnapshot);
       stageUiBroker.cancelStagePrompt(input.runId, stageId, new Error(`atomic-workflows: stage ${stageId} completed with pending custom UI`));
-      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
       if (input.opts.persistence) {
         appendStageStartOnce();
         appendStageEnd(input.opts.persistence, {
@@ -262,10 +308,14 @@ export function createWorkflowStageFactory(input: {
           ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
           ...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
           ...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
+          ...(stageSnapshot.usage !== undefined ? { usage: stageSnapshot.usage } : {}),
+          ...(stageSnapshot.usageComplete !== undefined ? { usageComplete: stageSnapshot.usageComplete } : {}),
           ...(stageSnapshot.result !== undefined && stageSnapshot.status === "completed" ? { summary: stageSnapshot.result } : {}),
           ...stageReplayFields(stageSnapshot),
         });
       }
+      emitStageRollup(stageUsageSettled);
+      await input.opts.onStageEnd?.(input.runId, stageSnapshot);
       stageFailFastScope?.activeStages.delete(stageId);
       input.tracker.onSettle(stageId);
       return true;

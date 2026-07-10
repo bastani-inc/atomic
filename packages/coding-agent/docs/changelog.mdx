@@ -4,6 +4,15 @@ description: "What's new in Atomic"
 ---
 
 <Update label="July 10, 2026">
+## Transitive session spend
+
+- **Delegated work appears in the footer.** The interactive status-bar dollar amount and token/cache badges (`↑`, `↓`, `R`, `W`) now include the current session plus subagents, nested subagents, and workflow-stage descendants.
+- **Live workflows update the launcher.** Background `/workflow` runs and subagent-heavy workflows such as `deep-research-codebase` stream unsettled usage rollups back to the launching chat while child agents are still running.
+- **Context remains current-session only.** The context-window percentage still describes the active session; use `/cost` for the self/descendant/total breakdown and durable reconciliation.
+
+</Update>
+<Update label="July 10, 2026">
+
 
 ## Pi 0.80.6 compatibility
 

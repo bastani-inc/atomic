@@ -87,6 +87,15 @@ export interface TokenUsage {
 	total: number;
 }
 
+export interface AtomicUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	totalTokens: number;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
 export type ActivityState = "active_long_running" | "needs_attention";
 export type ControlEventType = "active_long_running" | "needs_attention";
 export type ControlNotificationChannel = "event" | "async" | "intercom";
@@ -271,6 +280,11 @@ export interface Details {
 	runId?: string;
 	context?: "fresh" | "fork";
 	results: SingleResult[];
+	transitiveUsage?: AtomicUsage;
+	/** False when `transitiveUsage` is a lower-bound fallback because session-tree usage was unavailable. */
+	transitiveUsageComplete?: boolean;
+	/** Session files covered by `transitiveUsage`, used for live/durable aliasing. */
+	transitiveUsageSessionFiles?: string[];
 	controlEvents?: ControlEvent[];
 	asyncId?: string;
 	asyncDir?: string;

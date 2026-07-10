@@ -125,6 +125,7 @@ describe("restoreOnSessionStart", () => {
   });
   test("stage session metadata is restored from stage.end entries", () => {
     const st = createStore();
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.25 } };
     const entries: SessionEntry[] = [
       { id: "e1", type: "workflow.run.start", payload: { runId: "r1", name: "wf", inputs: {}, ts: 1 } },
       { id: "e2", type: "workflow.stage.start", payload: { runId: "r1", stageId: "s1", name: "review", parentIds: [], ts: 2 } },
@@ -137,6 +138,8 @@ describe("restoreOnSessionStart", () => {
           status: "failed",
           sessionId: "session-1",
           sessionFile: "/tmp/session-1.jsonl",
+          usage,
+          usageComplete: false,
         },
       },
     ];
@@ -144,6 +147,8 @@ describe("restoreOnSessionStart", () => {
     const stage = st.runs()[0]?.stages[0];
     assert.equal(stage?.sessionId, "session-1");
     assert.equal(stage?.sessionFile, "/tmp/session-1.jsonl");
+    assert.deepEqual(stage?.usage, usage);
+    assert.equal(stage?.usageComplete, false);
   });
   test("stage snapshots are rebuilt from session entries", () => {
     const st = createStore();

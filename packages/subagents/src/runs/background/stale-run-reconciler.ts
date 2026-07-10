@@ -4,6 +4,7 @@ import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { RESULTS_DIR, type AsyncParallelGroupStatus, type AsyncStatus, type NestedRunSummary, type SubagentRunMode } from "../../shared/types.ts";
 import { normalizeParallelGroups } from "./parallel-groups.ts";
 import { nestedSummaryFromAsyncStatus, projectNestedEvents, resolveNestedAsyncDir, writeNestedEvent, type NestedRoute } from "../shared/nested-events.ts";
+import { usageRollupFromModelAttempts } from "../../shared/usage-rollup.ts";
 
 export type PidLiveness = "alive" | "dead" | "unknown";
 
@@ -191,6 +192,18 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 		steps: repairedSteps,
 	};
 	const resultAgent = repairedSteps[status.currentStep ?? 0]?.agent ?? repairedSteps[0]?.agent ?? "subagent";
+	const resultChildren = repairedSteps.map((step) => ({
+		agent: step.agent,
+		output: step.status === "complete" || step.status === "completed" ? "" : message,
+		error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
+		success: step.status === "complete" || step.status === "completed",
+		model: step.model,
+		fastMode: step.fastMode,
+		attemptedModels: step.attemptedModels,
+		modelAttempts: step.modelAttempts,
+		sessionFile: step.sessionFile,
+	}));
+	const transitiveRollup = usageRollupFromModelAttempts(resultChildren);
 	return {
 		status: repairedStatus,
 		message,
@@ -201,17 +214,10 @@ function buildFailedRepair(status: AsyncStatus, asyncDir: string, now: number, r
 			success: false,
 			state: "failed",
 			summary: message,
-			results: repairedSteps.map((step) => ({
-				agent: step.agent,
-				output: step.status === "complete" || step.status === "completed" ? "" : message,
-				error: step.status === "complete" || step.status === "completed" ? undefined : step.error ?? message,
-				success: step.status === "complete" || step.status === "completed",
-				model: step.model,
-				fastMode: step.fastMode,
-				attemptedModels: step.attemptedModels,
-				modelAttempts: step.modelAttempts,
-				sessionFile: step.sessionFile,
-			})),
+			results: resultChildren,
+			transitiveUsage: transitiveRollup.usage,
+			transitiveUsageComplete: transitiveRollup.complete,
+			transitiveUsageSessionFiles: transitiveRollup.sessionFiles,
 			exitCode: 1,
 			timestamp: now,
 			durationMs: Math.max(0, now - status.startedAt),

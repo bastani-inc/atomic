@@ -50,6 +50,8 @@ export function createReplayStageContext(input: {
       ...(stageSnapshot.skippedReason !== undefined ? { skippedReason: stageSnapshot.skippedReason } : {}),
       ...(stageSnapshot.sessionId !== undefined ? { sessionId: stageSnapshot.sessionId } : {}),
       ...(stageSnapshot.sessionFile !== undefined ? { sessionFile: stageSnapshot.sessionFile } : {}),
+      ...(stageSnapshot.usage !== undefined ? { usage: stageSnapshot.usage } : {}),
+      ...(stageSnapshot.usageComplete !== undefined ? { usageComplete: stageSnapshot.usageComplete } : {}),
       ...stageReplayFields(stageSnapshot),
     });
   };
