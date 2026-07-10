@@ -1,6 +1,6 @@
 /**
- * Custom `EditorComponent` swapped in via `ctx.ui.setEditorComponent` while
- * an inline workflow form is active. Owns ALL keystrokes during fill-out:
+ * Custom `EditorComponent` mounted as non-overlay `ctx.ui.custom()` while an
+ * inline workflow form is active. Owns ALL keystrokes during fill-out:
  *
  *   tab / shift+tab     — move focus across form fields and the final Submit action
  *   ↑/↓                 — move focus (or caret between logical lines in `text`)
@@ -27,8 +27,7 @@
  *
  * On submit/cancel the editor calls back to the orchestrator which:
  *   1. Marks the form state finalized (renderer flips to frozen view)
- *   2. Restores the previously-installed editor via `setEditorComponent`
- *   3. Resolves the open() promise so the slash command can proceed
+ *   2. Resolves the host custom UI so the slash command can proceed
  *
  * Render: intentionally returns no rows. The chat-history card is the single
  * visible editing surface; this component is a headless keystroke router so

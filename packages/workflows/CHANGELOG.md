@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow slash-command overlays so `/workflow <name>` inline input forms, `/workflow connect` session pickers, `/workflow kill` confirmations, and interactive `/workflow resume` selectors hide the host Working spinner while waiting for user input and restore it on submit, cancel, close, dispose, and mount-failure paths. ([#1670](https://github.com/bastani-inc/atomic/issues/1670))
+- Fixed workflow slash-command input surfaces so `/workflow <name>` inline input forms and `/workflow connect`/input/resume pickers mount through host-managed inline custom UI and rely on Atomic's central waiting-for-user-input suppression for the global `Working...` loader, instead of manually toggling loader visibility in each overlay. ([#1670](https://github.com/bastani-inc/atomic/issues/1670))
 
 ## [0.9.5-alpha.9] - 2026-07-09
 

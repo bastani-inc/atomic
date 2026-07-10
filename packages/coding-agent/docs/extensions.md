@@ -2420,6 +2420,8 @@ See [github-issue-autocomplete.ts](https://github.com/bastani-inc/atomic/blob/ma
 
 For complex UI, use `ctx.ui.custom()`. This temporarily replaces the editor with your component until `done()` is called:
 
+Non-overlay custom components (the default, or `{ overlay: false }`) are treated as blocking user input: Atomic suppresses the global `Working...` loader while the component is mounted and restores normal loader behavior when it settles or is dismissed. Use `{ overlay: true }` for passive/floating views that should not automatically suppress the loader.
+
 ```typescript
 import { Text, type Component } from "@earendil-works/pi-tui";
 

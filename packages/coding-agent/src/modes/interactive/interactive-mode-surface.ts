@@ -98,6 +98,8 @@ declare module "./interactive-mode-base.ts" {
   createWorkingLoader(): Loader;
   stopWorkingLoader(): void;
   showWorkingLoaderNow(): void;
+  isWorkingLoaderAllowed(): boolean;
+  refreshWorkingLoaderVisibility(): void;
   setWorkingVisible(visible: boolean): void;
   setWorkingIndicator(options?: LoaderIndicatorOptions): void;
   setHiddenThinkingLabel(label?: string): void;

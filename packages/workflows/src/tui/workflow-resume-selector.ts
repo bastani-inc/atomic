@@ -6,7 +6,6 @@ import type {
   PiCustomOverlayFunction,
 } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
-import { createWorkingVisibilityGuard } from "./working-visibility-guard.js";
 
 export type WorkflowResumeSelectorResult =
   | { kind: "live"; runId: string }
@@ -15,7 +14,6 @@ export type WorkflowResumeSelectorResult =
 
 export interface WorkflowResumeSelectorUiSurface {
   custom?: PiCustomOverlayFunction;
-  setWorkingVisible?: (visible: boolean) => void;
 }
 
 interface WorkflowResumeSelectorItem {
@@ -105,9 +103,7 @@ export function openWorkflowResumeSelector(
     return [...sessions];
   };
 
-  const { hide: hideWorking, restore: restoreWorking } = createWorkingVisibilityGuard(ui);
 
-  hideWorking();
 
   return new Promise<WorkflowResumeSelectorResult>((resolve) => {
     let settled = false;
@@ -117,7 +113,6 @@ export function openWorkflowResumeSelector(
       try {
         done?.(undefined);
       } finally {
-        restoreWorking();
         resolve(result);
       }
     };

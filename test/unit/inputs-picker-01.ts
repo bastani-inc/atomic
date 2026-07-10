@@ -9,43 +9,44 @@ import { FIELDS, mountInputsPicker, OVERLAY_FIELDS } from "./inputs-picker-helpe
 export function registerInputsPickerSuite1(): void {
   // ── Overlay mount adapter ─────────────────────────────────────────────────
 
-  test("openInputsPicker hides Working while mounted and restores it on submit", async () => {
+  test("openInputsPicker leaves Working visibility to the host on submit", async () => {
     const mounted = mountInputsPicker();
     assert.deepEqual(mounted.customOptions, [{ overlay: false }]);
-    assert.deepEqual(mounted.workingCalls, [false]);
+    assert.deepEqual(mounted.workingCalls, []);
 
     mounted.component.handleInput?.("\t"); // focus Submit
     mounted.component.handleInput?.("\r");
 
     assert.deepEqual(await mounted.promise, { kind: "run", values: { prompt: "ready" } });
-    assert.deepEqual(mounted.workingCalls, [false, true]);
+    assert.deepEqual(mounted.workingCalls, []);
   });
 
-  test("openInputsPicker restores Working on cancel", async () => {
+  test("openInputsPicker leaves Working visibility to the host on cancel", async () => {
     const mounted = mountInputsPicker();
-    assert.deepEqual(mounted.workingCalls, [false]);
+    assert.deepEqual(mounted.workingCalls, []);
 
     mounted.component.handleInput?.("\x1b");
 
     assert.deepEqual(await mounted.promise, { kind: "cancel" });
-    assert.deepEqual(mounted.workingCalls, [false, true]);
+    assert.deepEqual(mounted.workingCalls, []);
   });
 
-  test("openInputsPicker restores Working on dispose", async () => {
+  test("openInputsPicker leaves Working visibility to the host on dispose", async () => {
     const mounted = mountInputsPicker();
-    assert.deepEqual(mounted.workingCalls, [false]);
+    assert.deepEqual(mounted.workingCalls, []);
 
     mounted.component.dispose?.();
 
     assert.deepEqual(await mounted.promise, { kind: "cancel" });
-    assert.deepEqual(mounted.workingCalls, [false, true]);
+    assert.deepEqual(mounted.workingCalls, []);
   });
 
-  test("openInputsPicker restores Working when custom UI is unavailable", async () => {
+  test("openInputsPicker leaves Working visibility untouched when custom UI is unavailable", async () => {
     const workingCalls: boolean[] = [];
+    const surface = { setWorkingVisible: (visible: boolean) => workingCalls.push(visible) };
 
     const result = await openInputsPicker(
-      { setWorkingVisible: (visible) => workingCalls.push(visible) },
+      surface as Parameters<typeof openInputsPicker>[0],
       {
         workflowName: "ralph",
         fields: OVERLAY_FIELDS,
@@ -55,7 +56,7 @@ export function registerInputsPickerSuite1(): void {
     );
 
     assert.deepEqual(result, { kind: "cancel" });
-    assert.deepEqual(workingCalls, [false, true]);
+    assert.deepEqual(workingCalls, []);
   });
 
   // ── State construction ─────────────────────────────────────────────────────

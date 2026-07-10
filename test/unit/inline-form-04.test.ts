@@ -5,12 +5,12 @@
  *   - inline-form-store: state seeding + lifecycle (createForm, finalize)
  *   - inline-form-card:  renders live + frozen views; routes status text
  *   - inline-form-editor: routes keystrokes per type without rendering a duplicate box
- *   - inline-form-overlay: emits sendMessage, swaps editor, restores it
+ *   - inline-form-overlay: emits sendMessage and mounts inline custom UI
  *
  * The editor side is exercised through its public surface (handleInput /
  * render). The overlay test uses a minimal `pi`/`ctx` mock that records
- * sendMessage + setEditorComponent calls — same pattern as the existing
- * extension test suite.
+ * sendMessage + custom UI mounts — same pattern as the existing extension test
+ * suite.
  */
 import { test } from "bun:test";
 import assert from "node:assert/strict";
@@ -31,10 +31,9 @@ import {
 import { deriveGraphTheme } from "../../packages/workflows/src/tui/graph-theme.ts";
 import { visibleWidth } from "../../packages/workflows/src/tui/text-helpers.ts";
 import type { WorkflowInputEntry } from "../../packages/workflows/src/extension/render-result.ts";
-import { makeFakeKeybindings } from "../support/fake-keybindings.ts";
 
 import { FIELDS, makeState, plain, ansi, assertLinesWithinWidth, makeEditor, makeFakePi, makeFakeCtx } from "./inline-form-helpers.ts";
-test("overlay: openInlineInputsForm emits a custom message and swaps editor", async () => {
+test("overlay: openInlineInputsForm emits a custom message and mounts inline custom UI", async () => {
   _resetForms();
   const { pi, sentMessages } = makeFakePi();
   const ctx = makeFakeCtx();
@@ -56,16 +55,11 @@ test("overlay: openInlineInputsForm emits a custom message and swaps editor", as
   const formId = sentMessages[0]!.details!.formId!;
   assert.match(formId, /^wf-/);
 
-  // An editor factory was installed.
+  // An inline custom UI was mounted in the editor slot.
   assert.equal(ctx.installed.length, 1);
-  const installed = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor)
-    | undefined;
-  assert.equal(typeof installed, "function");
+  assert.deepEqual(ctx.installed[0]!.options, { overlay: false });
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
 
-  // Build the editor via the installed factory and submit it.
-  const tui = { requestRender: () => {} };
-  const editor = installed!(tui, {}, makeFakeKeybindings());
   // Fill required prompt, tab to the visible Submit section, and submit.
   editor.handleInput("h");
   editor.handleInput("i");
@@ -78,15 +72,11 @@ test("overlay: openInlineInputsForm emits a custom message and swaps editor", as
     assert.equal(result.values.focus, "standard");
   }
 
-  // Editor restored (setEditorComponent called again with previous = undefined).
-  assert.equal(ctx.installed.length, 2);
-  assert.equal(ctx.installed[1]!.factory, undefined);
-
   // Form state remained in the store, status: submitted (sticky scrollback).
   assert.equal(getForm(formId)?.status, "submitted");
 });
 
-test("overlay: openInlineInputsForm hides working while mounted and restores on submit", async () => {
+test("overlay: openInlineInputsForm leaves Working visibility to the host on submit", async () => {
   _resetForms();
   const { pi } = makeFakePi();
   const ctx = makeFakeCtx();
@@ -99,10 +89,8 @@ test("overlay: openInlineInputsForm hides working while mounted and restores on 
     theme: deriveGraphTheme({}),
   });
 
-  assert.deepEqual(workingCalls, [false]);
-  const factory = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
-  const editor = factory({ requestRender: () => {} }, {}, makeFakeKeybindings());
+  assert.deepEqual(workingCalls, []);
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
   editor.handleInput("h");
   editor.handleInput("i");
   for (let i = 0; i < FIELDS.length; i += 1) editor.handleInput("\t");
@@ -110,10 +98,10 @@ test("overlay: openInlineInputsForm hides working while mounted and restores on 
 
   const result = await pending;
   assert.equal(result.kind, "run");
-  assert.deepEqual(workingCalls, [false, true]);
+  assert.deepEqual(workingCalls, []);
 });
 
-test("overlay: openInlineInputsForm restores working on cancel", async () => {
+test("overlay: openInlineInputsForm leaves Working visibility to the host on cancel", async () => {
   _resetForms();
   const { pi } = makeFakePi();
   const ctx = makeFakeCtx();
@@ -125,24 +113,20 @@ test("overlay: openInlineInputsForm restores working on cancel", async () => {
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
-  const factory = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
-  factory({ requestRender: () => {} }, {}, makeFakeKeybindings()).handleInput("\x1b");
+  (ctx.installed[0]!.component as InlineFormEditor).handleInput("\x1b");
 
   const result = await pending;
   assert.equal(result.kind, "cancel");
-  assert.deepEqual(workingCalls, [false, true]);
+  assert.deepEqual(workingCalls, []);
 });
 
-test("overlay: openInlineInputsForm restores working on unsupported setup failure", async () => {
+test("overlay: openInlineInputsForm resolves unsupported when custom UI mount fails", async () => {
   _resetForms();
   const { pi } = makeFakePi();
-  const workingCalls: boolean[] = [];
   const ctx = {
     ui: {
-      setWorkingVisible: (visible: boolean) => workingCalls.push(visible),
-      setEditorComponent: () => {
-        throw new Error("cannot install editor");
+      custom: () => {
+        throw new Error("cannot mount editor");
       },
     },
   };
@@ -154,14 +138,11 @@ test("overlay: openInlineInputsForm restores working on unsupported setup failur
   });
 
   assert.equal(result.kind, "unsupported");
-  assert.deepEqual(workingCalls, [false, true]);
 });
 
-test("overlay: openInlineInputsForm restores working on sendMessage failure", async () => {
+test("overlay: openInlineInputsForm resolves unsupported on sendMessage failure", async () => {
   _resetForms();
   const ctx = makeFakeCtx();
-  const workingCalls: boolean[] = [];
-  ctx.ui.setWorkingVisible = (visible: boolean) => workingCalls.push(visible);
   const pi = {
     sendMessage: () => {
       throw new Error("cannot emit card");
@@ -175,19 +156,14 @@ test("overlay: openInlineInputsForm restores working on sendMessage failure", as
   });
 
   assert.equal(result.kind, "unsupported");
-  assert.deepEqual(workingCalls, [false, true]);
+  assert.equal(ctx.installed.length, 0);
 });
 
-test("overlay: openInlineInputsForm works with pi runtime UI shape", async () => {
+
+test("overlay: openInlineInputsForm works with pi runtime custom UI shape", async () => {
   _resetForms();
   const { pi, sentMessages } = makeFakePi();
-  const baseCtx = makeFakeCtx();
-  const ctx = {
-    installed: baseCtx.installed,
-    ui: {
-      setEditorComponent: baseCtx.ui.setEditorComponent,
-    },
-  };
+  const ctx = makeFakeCtx();
 
   const pending = openInlineInputsForm(pi as never, ctx as never, {
     workflowName: "ralph",
@@ -197,12 +173,8 @@ test("overlay: openInlineInputsForm works with pi runtime UI shape", async () =>
 
   assert.equal(sentMessages.length, 1);
   assert.equal(ctx.installed.length, 1);
-  const installed = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor)
-    | undefined;
-  assert.equal(typeof installed, "function");
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
 
-  const editor = installed!({ requestRender: () => {} }, {}, makeFakeKeybindings());
   editor.setUseTerminalCursor(true);
   assert.equal(editor.getUseTerminalCursor(), true);
   editor.setAutocompleteMaxVisible(30);
@@ -216,30 +188,12 @@ test("overlay: openInlineInputsForm works with pi runtime UI shape", async () =>
   editor.insertTextAtCursor("\x1b");
   const result = await pending;
   assert.equal(result.kind, "cancel");
-  assert.equal(ctx.installed[1]!.factory, undefined);
 });
 
-test("overlay: installed editor accepts pi setup before card render", async () => {
+test("overlay: mounted editor accepts pi setup before card render", async () => {
   _resetForms();
   const { pi, sentMessages } = makeFakePi();
-  let editor: InlineFormEditor | undefined;
-  const ctx = {
-    ui: {
-      setEditorComponent: (factory: unknown | undefined) => {
-        if (typeof factory !== "function") return;
-        editor = (factory as (tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor)(
-          { requestRender: () => {} },
-          {},
-          {},
-        );
-        editor.setUseTerminalCursor(true);
-        editor.setAutocompleteMaxVisible(30);
-        editor.setMaxHeight(4);
-        editor.setHistoryStorage({});
-      },
-    },
-  };
-
+  const ctx = makeFakeCtx();
   const pending = openInlineInputsForm(pi as never, ctx as never, {
     workflowName: "ralph",
     fields: FIELDS,
@@ -247,7 +201,11 @@ test("overlay: installed editor accepts pi setup before card render", async () =
   });
 
   assert.equal(sentMessages.length, 1);
-  assert.ok(editor);
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
+  editor.setUseTerminalCursor(true);
+  editor.setAutocompleteMaxVisible(30);
+  editor.setMaxHeight(4);
+  editor.setHistoryStorage({});
   assert.equal(editor.getUseTerminalCursor(), true);
   assert.equal(editor.getAutocompleteMaxVisible(), 20);
   editor.handleInput("o");
@@ -258,21 +216,12 @@ test("overlay: installed editor accepts pi setup before card render", async () =
   assert.equal(result.kind, "run");
 });
 
-test("overlay: host editor setup failure resolves unsupported without emitting card", async () => {
+test("overlay: custom mount failure resolves unsupported and freezes the card", async () => {
   _resetForms();
   const { pi, sentMessages } = makeFakePi();
   const ctx = {
     ui: {
-      setEditorComponent: (factory: unknown | undefined) => {
-        assert.equal(typeof factory, "function");
-        const editor = (factory as (tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor)(
-          { requestRender: () => {} },
-          {},
-          makeFakeKeybindings(),
-        );
-        assert.equal(typeof editor.setUseTerminalCursor, "function");
-        throw new TypeError("nextEditor.setUseTerminalCursor is not a function");
-      },
+      custom: () => Promise.reject(new TypeError("nextEditor.setUseTerminalCursor is not a function")),
     },
   };
 
@@ -283,7 +232,9 @@ test("overlay: host editor setup failure resolves unsupported without emitting c
   });
 
   assert.equal(result.kind, "unsupported");
-  assert.equal(sentMessages.length, 0);
+  assert.equal(sentMessages.length, 1);
+  const formId = sentMessages[0]!.details!.formId!;
+  assert.equal(getForm(formId)?.status, "cancelled");
 });
 
 test("overlay: cancelling via esc returns {kind:'cancel'} and renders no artefact", async () => {
@@ -296,9 +247,7 @@ test("overlay: cancelling via esc returns {kind:'cancel'} and renders no artefac
     fields: FIELDS,
     theme: deriveGraphTheme({}),
   });
-  const factory = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
-  const editor = factory({ requestRender: () => {} }, {}, makeFakeKeybindings());
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
   editor.handleInput("\x1b");
   const result = await pending;
   assert.equal(result.kind, "cancel");
@@ -309,25 +258,10 @@ test("overlay: cancelling via esc returns {kind:'cancel'} and renders no artefac
   assert.deepEqual(rendered.render(80), []);
 });
 
-test("overlay: late settle after host editor reset does not restore stale previous editor", async () => {
+test("overlay: late settle after host reset resolves without stale editor restoration", async () => {
   _resetForms();
   const { pi } = makeFakePi();
-  const previousFactory = () => ({
-    render: () => [],
-    handleInput: () => undefined,
-    invalidate: () => undefined,
-  });
-  const installed: { factory: unknown | undefined }[] = [];
-  let current: unknown | undefined = previousFactory;
-  const ctx = {
-    ui: {
-      setEditorComponent: (factory: unknown | undefined) => {
-        current = factory;
-        installed.push({ factory });
-      },
-      getEditorComponent: () => current,
-    },
-  };
+  const ctx = makeFakeCtx();
 
   const pending = openInlineInputsForm(pi as never, ctx as never, {
     workflowName: "ralph",
@@ -335,27 +269,16 @@ test("overlay: late settle after host editor reset does not restore stale previo
     theme: deriveGraphTheme({}),
   });
 
-  assert.equal(installed.length, 1);
-  const formFactory = installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
-  const editor = formFactory({ requestRender: () => {} }, {}, makeFakeKeybindings());
-
-  // Simulate pi's `/new` session-replacement reset restoring the default editor
-  // before the old workflow form promise settles.
-  ctx.ui.setEditorComponent(undefined);
+  assert.equal(ctx.installed.length, 1);
+  const editor = ctx.installed[0]!.component as InlineFormEditor;
   editor.handleInput("\x1b");
 
   const result = await pending;
   assert.equal(result.kind, "cancel");
-  assert.equal(
-    installed.length,
-    2,
-    "old form must not write previousFactory into the new session",
-  );
-  assert.equal(installed[1]!.factory, undefined);
+  assert.equal(ctx.installed.length, 1);
 });
 
-test("overlay: missing setEditorComponent → immediate unsupported (headless)", async () => {
+test("overlay: missing custom UI → immediate unsupported (headless)", async () => {
   _resetForms();
   const { pi } = makeFakePi();
   const ctx = { ui: {} } as never;
@@ -381,10 +304,8 @@ test("overlay: prefilled values seed rawText", async () => {
   const state = getForm(formId)!;
   assert.equal(state.rawText.prompt, "already typed");
   assert.equal(state.rawText.focus, "exhaustive");
-  // Cancel so the promise resolves and we don't leak a timer.
-  const factory = ctx.installed[0]!.factory as
-    | ((tui: unknown, theme: unknown, kb: unknown) => InlineFormEditor);
-  factory({ requestRender: () => {} }, {}, makeFakeKeybindings()).handleInput("\x1b");
+  // Cancel so the promise resolves.
+  (ctx.installed[0]!.component as InlineFormEditor).handleInput("\x1b");
   await pending;
 });
 
