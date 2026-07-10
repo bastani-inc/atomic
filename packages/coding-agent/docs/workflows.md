@@ -19,6 +19,8 @@ Use direct chat only for tiny, deterministic, low-risk work where workflow track
 - **Model fallback chains** - Retry important stages on fallback models when providers fail
 - **Package distribution** - Ship workflows through Atomic packages, settings, or conventional directories
 
+
+Workflow stage sessions are counted in the parent session's transitive cost. Completed stages persist their usage snapshots and emit rollups, including internal stage sessions hidden from normal resume lists, so the interactive footer's dollar amount reflects workflow spend while context-window percentage remains self-only.
 **Example use cases:**
 - Any non-trivial task with a clear objective and verifiable done criteria
 - Small, outcome-driven code or docs changes with explicit done criteria

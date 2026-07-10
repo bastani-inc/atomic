@@ -1,6 +1,7 @@
 import { sep } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
 import { FooterComponent, UsageMeterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
@@ -14,6 +15,22 @@ type AssistantUsage = {
 	cacheWrite: number;
 	cost: { total: number };
 };
+
+function emptyUsage(): Usage {
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+}
+
+function toUsage(usage: AssistantUsage | undefined): Usage {
+	if (!usage) return emptyUsage();
+	return {
+		input: usage.input,
+		output: usage.output,
+		cacheRead: usage.cacheRead,
+		cacheWrite: usage.cacheWrite,
+		totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: usage.cost.total },
+	};
+}
 
 function createSession(options: {
 	sessionName: string;
@@ -38,6 +55,7 @@ function createSession(options: {
 						},
 					},
 				];
+	const selfUsage = toUsage(usage);
 
 	const session = {
 		state: {
@@ -57,6 +75,13 @@ function createSession(options: {
 		getContextUsage: () => ({
 			contextWindow: options.contextWindow ?? 200_000,
 			percent: options.contextPercent ?? 12.3,
+		}),
+		getTransitiveUsage: () => ({
+			self: selfUsage,
+			descendants: emptyUsage(),
+			total: selfUsage,
+			complete: true,
+			breakdown: [],
 		}),
 		modelRegistry: {
 			isUsingOAuth: () => false,

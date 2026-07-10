@@ -202,6 +202,11 @@ export function createExtensionAPI(
       runtime.unregisterProvider(name, extension.path);
     },
 
+
+    getSessionId(): string {
+      runtime.assertActive();
+      return runtime.getSessionId();
+    },
     events: eventBus,
   } as ExtensionAPI;
 

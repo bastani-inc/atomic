@@ -8,6 +8,7 @@ import type {
   WorkflowPersistencePort,
   WorkflowMcpPort,
   WorkflowModelCatalogPort,
+  WorkflowUsageRollupPort,
 } from "../../shared/types.js";
 import type { RunStatus, RunSnapshot, StageSnapshot, WorkflowOverlayAdapter } from "../../shared/store-types.js";
 import type { Store } from "../../shared/store.js";
@@ -48,6 +49,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port; forwards per-stage allow/deny to the MCP adapter. */
   mcp?: WorkflowMcpPort;
+  /** Usage rollup port; forwards completed stage spend to the parent session. */
+  usageRollup?: WorkflowUsageRollupPort;
   /** Cancellation registry; the executor registers an ActiveRunController per run. */
   cancellation?: CancellationRegistry;
   /** Overlay adapter for displaying run progress in the UI layer. */

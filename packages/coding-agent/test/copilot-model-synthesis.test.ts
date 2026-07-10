@@ -79,6 +79,15 @@ describe("synthesizeCopilotCatalogModels", () => {
 		assert.equal(mai?.maxTokens, 128_000);
 	});
 
+	test("copies known pricing for dynamic OpenAI-family catalog models", () => {
+		const cost = { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25, tiers: [{ inputTokensAbove: 272_000, input: 10, output: 45, cacheRead: 1, cacheWrite: 12.5 }] };
+		const models = synthesizeCopilotCatalogModels(new Map([["gpt-5.6-sol", chatEntry({ displayName: "GPT-5.6 Sol" })]]), new Set(), { ...template, costById: new Map([["gpt-5.6-sol", cost]]) });
+		const synthesized = models.find((model) => model.id === "gpt-5.6-sol");
+		assert.deepEqual(synthesized?.cost, cost);
+		assert.notEqual(synthesized?.cost, cost);
+		assert.notEqual(synthesized?.cost.tiers, cost.tiers);
+	});
+
 	test("gates selectable thinking levels by advertised CAPI reasoning_effort arrays", () => {
 		const models = synthesizeCopilotCatalogModels(
 			new Map([

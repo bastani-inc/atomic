@@ -54,6 +54,8 @@ export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => 
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
+export type GetSessionIdHandler = () => string;
+
 
 export type GetActiveToolsHandler = () => string[];
 
@@ -105,6 +107,7 @@ export interface ExtensionActions {
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
+	getSessionId: GetSessionIdHandler;
 	setLabel: SetLabelHandler;
 	getActiveTools: GetActiveToolsHandler;
 	getAllTools: GetAllToolsHandler;

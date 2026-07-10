@@ -35,6 +35,8 @@ The human slash commands remain registered and continue to use their separate pa
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 
+Completed subagent runs report their transitive usage back to the parent session. The parent footer's dollar figure therefore includes foreground and async/background subagent spend (including nested subagents) exactly once, while the footer token badges and context percentage remain scoped to the parent session.
+
 ## Migration from acceptance gates
 
 If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:

@@ -15,6 +15,14 @@ const ADAPTIVE_THINKING_LEVEL_MAP: Model<Api>["thinkingLevelMap"] = { minimal: "
 export interface CopilotModelTemplate {
 	baseUrl: string;
 	headers?: Record<string, string>;
+	costById?: ReadonlyMap<string, Model<Api>["cost"]>;
+}
+
+function cloneCost(cost: Model<Api>["cost"] | undefined): Model<Api>["cost"] {
+	return {
+		...(cost ?? ZERO_COST),
+		...(cost?.tiers ? { tiers: cost.tiers.map((tier) => ({ ...tier })) } : {}),
+	};
 }
 
 export function copilotThinkingLevelMapFor(entry: CopilotModelContext, api: Api): Model<Api>["thinkingLevelMap"] | undefined {
@@ -86,7 +94,7 @@ export function synthesizeCopilotCatalogModels(
 			thinkingLevelMap: copilotThinkingLevelMapFor(entry, api),
 			compat: entry.supports?.adaptiveThinking ? ({ forceAdaptiveThinking: true } as Model<Api>["compat"]) : undefined,
 			input: entry.supports?.vision ? ["text", "image"] : ["text"],
-			cost: ZERO_COST,
+			cost: cloneCost(template.costById?.get(id)),
 			maxInputTokens: entry.maxInputTokens,
 			contextWindow: entry.contextWindow,
 			maxTokens: entry.maxTokens ?? entry.limits?.maxOutputTokens ?? entry.maxInputTokens ?? entry.contextWindow,

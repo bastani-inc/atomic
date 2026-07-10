@@ -45,11 +45,9 @@ import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backe
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
-
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
 export function run<
@@ -222,6 +220,7 @@ export async function run<
     executionMode: opts.executionMode,
     defaultSessionDir: opts.defaultSessionDir,
     persistence: opts.persistence,
+    usageRollup: opts.usageRollup,
     onStageStart: opts.onStageStart,
     onStageEnd: durableOnStageEnd,
     onStageSession: durableOnStageSession,
@@ -243,6 +242,7 @@ export async function run<
     store: opts.store,
     persistence: opts.persistence,
     mcp: opts.mcp,
+    usageRollup: opts.usageRollup,
     cancellation: opts.cancellation,
     overlay: opts.overlay,
     config: opts.config,

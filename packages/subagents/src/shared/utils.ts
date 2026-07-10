@@ -7,6 +7,7 @@ import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import { getAgentDir as getAtomicAgentDir } from "@bastani/atomic";
 import { formatToolCall } from "./formatters.ts";
+import { usageRollupFromResults } from "./usage-rollup.ts";
 import type { AgentProgress, AsyncStatus, Details, DisplayItem, ErrorInfo, SingleResult, ToolCallSummary } from "./types.ts";
 
 // ============================================================================
@@ -252,9 +253,14 @@ export function compactForegroundResult(result: SingleResult): SingleResult {
 }
 
 export function compactForegroundDetails(details: Details): Details {
+	const results = details.results.map(compactForegroundResult);
+	const rollup = results.length > 0 ? usageRollupFromResults(results) : undefined;
 	return {
 		...details,
-		results: details.results.map(compactForegroundResult),
+		results,
+		transitiveUsage: rollup?.usage ?? details.transitiveUsage,
+		transitiveUsageComplete: rollup?.complete ?? details.transitiveUsageComplete,
+		transitiveUsageSessionFiles: rollup?.sessionFiles ?? details.transitiveUsageSessionFiles,
 		progress: details.progress
 			? details.progress.map(compactCompletedProgress)
 			: undefined,

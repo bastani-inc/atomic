@@ -9,6 +9,7 @@
  * cross-ref: issue #1498
  */
 
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -134,6 +135,8 @@ export interface DurableStageCheckpoint {
   readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
+  readonly usage?: Usage;
+  readonly usageComplete?: boolean;
 }
 
 export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";

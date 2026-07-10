@@ -78,6 +78,7 @@ export interface Store {
   recordStageWorkflowChildRun(runId: string, stageId: string, ref: WorkflowChildRunRef): boolean;
   recordToolStart(runId: string, stageId: string, evt: ToolEvent): void;
   recordToolEnd(runId: string, stageId: string, evt: ToolEvent): void;
+  recordStageUsage?(runId: string, stageId: string, usage: import("@earendil-works/pi-ai/compat").Usage, usageComplete?: boolean): void;
   recordStageEnd(runId: string, stage: StageSnapshot): void;
   /**
    * Records the end of a run.

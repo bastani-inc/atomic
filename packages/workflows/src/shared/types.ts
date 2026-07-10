@@ -14,6 +14,7 @@ import type {
   SettingsManager,
   ToolDefinition,
 } from "@bastani/atomic";
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { TSchema } from "typebox";
 import type * as AuthoringContract from "./authoring-contract.js";
 
@@ -234,6 +235,10 @@ export interface WorkflowMcpPort {
   setScope(stageId: string, allow: string[] | null, deny: string[] | null): void;
   /** Restore unrestricted MCP access after the stage settles. */
   clearScope(stageId: string): void;
+}
+
+export interface WorkflowUsageRollupPort {
+  emitStageRollup(stageId: string, usage: Usage, meta: { label?: string; sessionId: string; sessionFile?: string; settled?: boolean }): void;
 }
 
 /**

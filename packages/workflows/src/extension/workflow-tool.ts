@@ -32,7 +32,7 @@ export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
   getPersistence: () => WorkflowPersistencePort | undefined,
   reloadWorkflowResources: () => Promise<void> | void,
-  ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
+  ensureWorkflowResourcesLoaded?: () => Promise<void> | void,
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
   return async function executeWorkflowTool(
     args: WorkflowToolArgs,
@@ -51,9 +51,10 @@ export function makeExecuteWorkflowTool(
     }
     const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
     const getRuntime = (): ExtensionRuntime => typeof runtime === "function" ? runtime(ctx) : runtime;
+    const ensureWorkflowResources = ensureWorkflowResourcesLoaded ?? reloadWorkflowResources;
     const ensureWorkflowResourcesVisible = async (): Promise<void> => {
       try {
-        await ensureWorkflowResourcesLoaded();
+        await ensureWorkflowResources();
       } catch (error) {
         ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
       }
@@ -108,7 +109,7 @@ export function makeExecuteWorkflowTool(
       case "interrupt":
         return workflowInterruptAction(args);
       case "resume":
-        return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
+        return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded: ensureWorkflowResources });
       default: {
         const _exhaustive: never = action;
         throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

@@ -36,6 +36,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "context_compaction_start"; reason: "manual" }
 	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "descendant_usage_changed" }
 	| {
 			type: "model_changed";
 			model: Model<Api>;
