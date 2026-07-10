@@ -41,6 +41,11 @@ const JsonSchemaObject = Type.Unsafe({
 	description: "Plain JSON Schema object for structured output.",
 });
 
+const MaxOutputSchema = Type.Object({
+	bytes: Type.Optional(Type.Number()),
+	lines: Type.Optional(Type.Number()),
+}, { additionalProperties: false });
+
 const TaskItem = Type.Object({
 	agent: Type.String(), 
 	task: Type.String(), 
@@ -201,6 +206,7 @@ export const SubagentParams = Type.Object({
 	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
 	cwd: Type.Optional(Type.String()),
+	maxOutput: Type.Optional(MaxOutputSchema),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
 	includeProgress: Type.Optional(Type.Boolean({ description: "Include full progress in result (default: false)" })),
 	share: Type.Optional(Type.Boolean({ description: "Upload session to GitHub Gist for sharing (default: false)" })),
@@ -219,4 +225,4 @@ export const SubagentParams = Type.Object({
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
-});
+}, { additionalProperties: false });

@@ -29,11 +29,9 @@ Atomic decides whether to call the bundled `subagent` tool, which specialist fit
 
 ## Tool calls are non-interactive
 
-Programmatic `subagent(...)` execution calls always start without opening a clarification TUI or waiting for user input. This applies to foreground and background single, top-level parallel, and chain runs. Ask any necessary questions in the parent conversation before delegating.
+Programmatic `subagent(...)` execution calls always start without opening a clarification TUI or waiting for user input. This applies to single, parallel, chain, foreground, background, and fanout runs. Ask any necessary questions in the parent conversation before delegating.
 
-The public tool schema does not include `clarify`. For compatibility with resumed sessions and older callers, a legacy `clarify` property is ignored rather than rejected, including `clarify: true`; it can never make a tool call interactive or force an async request into the foreground.
-
-Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands use a separate slash-command bridge. They remain registered and keep their existing direct-launch behavior; the programmatic tool normalization does not alter slash dispatch.
+Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands use a separate slash-command execution path. They remain registered and retain their existing behavior and internal launch mechanisms.
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 

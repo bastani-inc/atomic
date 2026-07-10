@@ -336,9 +336,9 @@ The `oracle` and `worker` builtins are designed for an explicit decision loop. A
 
 ## Non-interactive tool calls and slash launches
 
-Every programmatic `subagent(...)` execution starts non-interactively. Single, top-level parallel, and chain calls never open the clarification UI or wait for terminal input, in foreground or background mode. The public tool schema no longer includes `clarify`; resumed or legacy calls that still send it are accepted for compatibility, but the value is ignored and execution remains non-interactive. Gather any needed context and ask the user questions in the parent conversation before calling the tool.
+Every programmatic `subagent(...)` execution starts non-interactively. Single, parallel, chain, foreground, background, and fanout calls never open the clarification UI or wait for terminal input. Gather any needed context and ask the user questions in the parent conversation before calling the tool.
 
-Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands continue through their separate slash bridge and retain their existing behavior. These shortcuts currently launch directly, including when `--bg` is present; programmatic normalization does not change their registration or dispatch.
+Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands continue through their separate slash-command execution path and retain their existing behavior and internal launch mechanisms.
 
 ## Agents and chains
 
@@ -641,7 +641,7 @@ If you are writing an agent that orchestrates subagents, the bundled skill helps
 
 ## Programmatic tool usage
 
-These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead. Execution calls are always non-interactive; do not pass `clarify`.
+These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead. All execution calls are non-interactive.
 
 ### Execution examples
 
@@ -867,7 +867,7 @@ Makes top-level calls use background execution when the request does not explici
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 single, parallel, and chain runs into background mode. Programmatic tool calls already bypass clarification unconditionally; nested calls keep their own inherited settings.
+Forces depth-0 single, parallel, and chain runs into background mode. Programmatic calls remain non-interactive in both foreground and background mode; nested calls keep their own inherited settings.
 
 ### `parallel`
 

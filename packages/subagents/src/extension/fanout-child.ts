@@ -231,7 +231,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		label: "Subagent",
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",
-			"Execution calls always start non-interactively; legacy clarification input is ignored.",
+			"Execution calls always start non-interactively.",
 			"Allowed management/control actions: list, get, status, interrupt, resume, doctor.",
 			"Agent config mutation actions create, update, and delete are blocked in this mode.",
 		].join("\n"),

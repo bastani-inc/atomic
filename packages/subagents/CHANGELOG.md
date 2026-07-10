@@ -2,13 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Programmatic `subagent(...)` execution now has an exclusively non-interactive public contract across single, parallel, chain, foreground, background, and fanout calls. Human-entered slash commands continue through their separate execution path with their existing behavior and internal launch mechanisms.
+
 ### Changed
 
 - Aligned the subagents extension peer dependencies with upstream Pi `^0.80.5` runtime packages as part of the consolidated dependency refresh.
 
 ### Fixed
 
-- Fixed programmatic `subagent(...)` single, parallel, and chain execution so foreground and background tool calls always bypass clarification, including legacy `clarify: true` input; removed `clarify` from the public schema while ignoring it at runtime for compatibility, without changing slash-command dispatch.
 - Fixed Bun source-checkout subagent launches to reuse the current TypeScript Atomic CLI entrypoint instead of falling back to an unrelated `atomic` executable on `PATH`, while preserving JavaScript, compiled-runtime, and cross-platform spawn behavior.
 
 ## [0.9.5-alpha.9] - 2026-07-09

@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { Value } from "typebox/value";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,10 +17,7 @@ import {
 	type SingleResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
-import {
-	createProgrammaticSubagentToolEntrypoint,
-	prepareProgrammaticSubagentArguments,
-} from "../../packages/subagents/src/extension/programmatic-tool.js";
+import { createProgrammaticSubagentToolEntrypoint } from "../../packages/subagents/src/extension/programmatic-tool.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 
 type EventHandler = (data: unknown) => void;
@@ -120,12 +118,17 @@ function makeExecutor(
 }
 
 describe("programmatic subagent tool boundary", () => {
-	test("removes clarify from the public schema and ignores legacy runtime input", async () => {
-		assert.equal(Object.hasOwn(SubagentParams.properties, "clarify"), false);
-		assert.deepEqual(
-			prepareProgrammaticSubagentArguments({ agent: "worker", task: "fix it", clarify: true }),
-			{ agent: "worker", task: "fix it" },
-		);
+	test("accepts supported output limits, rejects clarification, and normalizes execution", async () => {
+		assert.equal(Value.Check(SubagentParams, {
+			agent: "worker",
+			task: "fix it",
+			maxOutput: { bytes: 1024, lines: 100 },
+		}), true);
+		assert.equal(Value.Check(SubagentParams, {
+			agent: "worker",
+			task: "fix it",
+			clarify: true,
+		}), false);
 
 		let received: Record<string, unknown> | undefined;
 		const entrypoint = createProgrammaticSubagentToolEntrypoint(async (_id, params) => {
@@ -133,8 +136,8 @@ describe("programmatic subagent tool boundary", () => {
 			return { content: [{ type: "text", text: "ok" }], details: { mode: "single", results: [] } };
 		});
 		await entrypoint.execute(
-			"legacy",
-			{ agent: "worker", task: "fix it", clarify: true } as never,
+			"single",
+			{ agent: "worker", task: "fix it" },
 			new AbortController().signal,
 			undefined,
 			{} as never,
@@ -142,7 +145,7 @@ describe("programmatic subagent tool boundary", () => {
 
 		assert.deepEqual(received, { agent: "worker", task: "fix it", clarify: false });
 	});
-	test("foreground single execution ignores clarify:true without opening the UI", async () => {
+	test("foreground single execution stays non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-single-"));
 		try {
 			let customCalls = 0;
@@ -157,7 +160,7 @@ describe("programmatic subagent tool boundary", () => {
 
 			const result = await entrypoint.execute(
 				"single",
-				{ agent: "worker", task: "fix it", clarify: true } as never,
+				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
 				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -171,7 +174,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("asyncByDefault dispatches omitted async with legacy clarify:true in the background without UI", async () => {
+	test("asyncByDefault dispatches omitted async in the background without UI", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-default-"));
 		try {
 			let customCalls = 0;
@@ -193,7 +196,7 @@ describe("programmatic subagent tool boundary", () => {
 
 			const result = await entrypoint.execute(
 				"async-default",
-				{ agent: "worker", task: "fix it", clarify: true } as never,
+				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
 				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -208,7 +211,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("authorized fanout child registers the same legacy-compatible non-interactive boundary", async () => {
+	test("authorized fanout child registers the same non-interactive boundary", async () => {
 		const previousChild = process.env[SUBAGENT_CHILD_ENV];
 		const previousFanout = process.env[SUBAGENT_FANOUT_CHILD_ENV];
 		let registered: ToolDefinition | undefined;
@@ -224,12 +227,11 @@ describe("programmatic subagent tool boundary", () => {
 
 			assert.ok(registered);
 			assert.equal(Object.hasOwn((registered.parameters as typeof SubagentParams).properties, "clarify"), false);
-			assert.deepEqual(registered.prepareArguments?.({ agent: "worker", clarify: true }), { agent: "worker" });
 
 			let customCalls = 0;
 			const result = await registered.execute(
-				"fanout-legacy",
-				{ chain: [{ agent: "debugger" }], clarify: true } as never,
+				"fanout-chain",
+				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
 				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -244,7 +246,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("foreground sequential chain bypasses omitted-default clarification and hands {previous} to the next step", async () => {
+	test("foreground sequential chain stays non-interactive and hands {previous} to the next step", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-chain-"));
 		try {
 			let customCalls = 0;
@@ -264,7 +266,7 @@ describe("programmatic subagent tool boundary", () => {
 						{ agent: "scout", task: "inspect the failure" },
 						{ agent: "worker", task: "implement from {previous}" },
 					],
-				} as never,
+				},
 				new AbortController().signal,
 				undefined,
 				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -279,7 +281,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("foreground parallel execution ignores legacy clarification", async () => {
+	test("foreground parallel execution stays non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-parallel-"));
 		try {
 			let customCalls = 0;
@@ -299,8 +301,7 @@ describe("programmatic subagent tool boundary", () => {
 						{ agent: "alpha", task: "inspect alpha" },
 						{ agent: "beta", task: "inspect beta" },
 					],
-					clarify: true,
-				} as never,
+				},
 				new AbortController().signal,
 				undefined,
 				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -314,7 +315,7 @@ describe("programmatic subagent tool boundary", () => {
 		}
 	});
 
-	test("async single, parallel, and sequential-chain launches ignore legacy clarification", async () => {
+	test("async single, parallel, and sequential-chain launches stay non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-async-"));
 		try {
 			let customCalls = 0;
@@ -335,20 +336,18 @@ describe("programmatic subagent tool boundary", () => {
 			const ctx = makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); });
 			const signal = new AbortController().signal;
 
-			await entrypoint.execute("async-single", { agent: "alpha", task: "one", async: true, clarify: true } as never, signal, undefined, ctx);
+			await entrypoint.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
 			await entrypoint.execute("async-parallel", {
 				tasks: [{ agent: "alpha", task: "one" }, { agent: "beta", task: "two" }],
 				async: true,
-				clarify: true,
-			} as never, signal, undefined, ctx);
+			}, signal, undefined, ctx);
 			await entrypoint.execute("async-chain", {
 				chain: [
 					{ agent: "alpha", task: "first" },
 					{ agent: "beta", task: "continue from {previous}" },
 				],
 				async: true,
-				clarify: true,
-			} as never, signal, undefined, ctx);
+			}, signal, undefined, ctx);
 
 			assert.equal(customCalls, 0);
 			assert.deepEqual(asyncSingle, [{ agent: "alpha", task: "one" }]);
@@ -386,12 +385,11 @@ describe("programmatic subagent tool boundary", () => {
 			registerSubagentExtension(pi);
 
 			assert.ok(registered);
-			assert.deepEqual(registered.prepareArguments?.({ agent: "worker", clarify: true }), { agent: "worker" });
 
 			let customCalls = 0;
 			const result = await registered.execute(
-				"parent-legacy",
-				{ chain: [{ agent: "debugger" }], clarify: true } as never,
+				"parent-chain",
+				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
 				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
@@ -403,9 +401,9 @@ describe("programmatic subagent tool boundary", () => {
 
 			const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as never;
 			for (const args of [
-				{ agent: "worker", async: true, clarify: true },
-				{ tasks: [{ agent: "worker", task: "one" }], async: true, clarify: true },
-				{ chain: [{ agent: "worker", task: "one" }], async: true, clarify: true },
+				{ agent: "worker", async: true },
+				{ tasks: [{ agent: "worker", task: "one" }], async: true },
+				{ chain: [{ agent: "worker", task: "one" }], async: true },
 			]) {
 				const component = registered.renderCall?.(args as never, theme, {} as never);
 				assert.match(component?.render(120).join("\n") ?? "", /\[async\]/);

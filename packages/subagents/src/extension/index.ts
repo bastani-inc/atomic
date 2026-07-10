@@ -325,7 +325,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		label: "Subagent",
 		description: `Delegate to subagents or manage agent definitions.
 EXECUTION (use exactly ONE mode):
-• Execution calls always start non-interactively; the public tool has no clarification parameter.
+• Execution calls always start non-interactively.
 • Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
 • SINGLE: { agent, task? } - one task; omit task for self-contained agents
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
