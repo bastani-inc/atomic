@@ -114,8 +114,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const comparisonBaseBranch = normalizeBranchInput(inputs.base_branch, "origin/main");
     const { ledger, ledgerPath, artifactDir } = await createGoalLedger(objective, acceptanceCriteria);
 
-    // Chains curated from Atomic's agentic-coding benchmark (see
-    // ralph-models.ts for the frontier data and drop rationale).
+    // Chains curated from Atomic's agentic-coding benchmark; see ralph-models.ts for frontier data and drop rationale.
     const workerModelConfig = {
       model: "openai-codex/gpt-5.6-sol:medium",
       fallbackModels: [
@@ -127,6 +126,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         "anthropic/claude-fable-5:low",
         "github-copilot/claude-opus-4.8 (1m):medium",
         "anthropic/claude-opus-4-8:medium",
+        "cursor/gpt-5.6-sol:medium",
         "cursor/gpt-5.5:medium",
         "cursor/claude-fable-5:low",
         "cursor/claude-opus-4-8-thinking:medium",
@@ -147,15 +147,16 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
     const reviewerModelConfig = {
       model: "anthropic/claude-fable-5:high",
       fallbackModels: [
-        "openai-codex/gpt-5.6-sol:xhigh",
-        "github-copilot/gpt-5.6-sol:xhigh",
-        "openai/gpt-5.6-sol:xhigh",
+        "openai-codex/gpt-5.6-sol:max",
+        "github-copilot/gpt-5.6-sol:max",
+        "openai/gpt-5.6-sol:max",
         "openai-codex/gpt-5.5:xhigh",
         "github-copilot/gpt-5.5:xhigh",
         "openai/gpt-5.5:xhigh",
         "github-copilot/claude-opus-4.8 (1m):high",
         "anthropic/claude-opus-4-8:high",
         "cursor/claude-fable-5:high",
+        "cursor/gpt-5.6-sol:max",
         "cursor/gpt-5.5:high",
         "cursor/claude-opus-4-8-thinking:high",
         "cursor/grok-4.5",
@@ -163,7 +164,7 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         "zai-coding-cn/glm-5.2:xhigh",
         "cursor/glm-5.2",
         "openrouter/anthropic/claude-fable-5:high",
-        "openrouter/openai/gpt-5.6-sol:xhigh",
+        "openrouter/openai/gpt-5.6-sol:max",
         "openrouter/sakana/fugu-ultra:high",
         "openrouter/openai/gpt-5.5:xhigh",
         "openrouter/anthropic/claude-opus-4-8:high",
