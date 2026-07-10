@@ -1,11 +1,16 @@
 import type { AgentToolUpdateCallback, ExtensionAPI, ExtensionContext, ToolInfo } from "@bastani/atomic";
-import type { McpExtensionState } from "./state.ts";
-import type { McpConfig } from "./types.ts";
-import type { MetadataCache } from "./metadata-cache.ts";
+import type { McpExtensionState } from "./state.js";
+import type { McpConfig } from "./types.js";
+import type { MetadataCache } from "./metadata-cache.js";
+import type { ProxyToolResult } from "./proxy-types.js";
+import { waitForCaller } from "./caller-wait.js";
+import { McpSessionCleanupBarrier } from "./session-cleanup-barrier.js";
+import { McpStateChangedError } from "./state-lease.js";
+import { registerMcpCommands } from "./command-registration.js";
 import { Type } from "typebox";
-import { loadMcpConfig } from "./config.ts";
-import { getConfigPathFromArgv } from "./utils.ts";
-import { renderMcpToolResult } from "./tool-result-renderer.ts";
+import { loadMcpConfig } from "./config.js";
+import { getConfigPathFromArgv } from "./utils.js";
+import { renderMcpToolResult } from "./tool-result-renderer.js";
 
 /**
  * Marker substring from the host's stale-context error (see ExtensionRunner.invalidate).
@@ -13,16 +18,19 @@ import { renderMcpToolResult } from "./tool-result-renderer.ts";
  * workflow child stage session, or a reload/replace) without emitting `session_shutdown`.
  */
 const STALE_EXTENSION_CONTEXT_MARKER = "extension ctx is stale";
+const STALE_INITIALIZATION_PREFIX = "Stale MCP session initialization cancelled";
+
+interface ActiveMcpSession {
+  readonly generation: number;
+  readonly ctx: ExtensionContext;
+  readonly cleanup: Promise<void>;
+}
 
 function isStaleExtensionContextError(error: unknown): boolean {
   return error instanceof Error && error.message.includes(STALE_EXTENSION_CONTEXT_MARKER);
 }
 
-/**
- * Probe whether a captured extension context is still active. Every `ctx` getter runs
- * the host's `assertActive()` guard, so a cheap property read surfaces staleness without
- * mutating anything. Returns false when the context has been invalidated by a dispose.
- */
+/** Probe the host guard to determine whether a captured context remains active. */
 function isContextActive(ctx: ExtensionContext): boolean {
   try {
     void ctx.cwd;
@@ -40,14 +48,17 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   let registeredDirectToolNames = new Set<string>();
   let registeredProxyTool = false;
   let startupWarmupCancel: (() => void) | null = null;
+  let activeSession: ActiveMcpSession | null = null;
+  let stateOwner: ActiveMcpSession | null = null;
+  const cleanupBarrier = new McpSessionCleanupBarrier();
 
   async function registerDirectToolsFromConfig(
     config: McpConfig,
     cache: MetadataCache | null,
   ): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
     const [{ resolveDirectTools, createDirectToolExecutor, getMissingConfiguredDirectToolServers }, { truncateAtWord }] = await Promise.all([
-      import("./direct-tools.ts"),
-      import("./utils.ts"),
+      import("./direct-tools.js"),
+      import("./utils.js"),
     ]);
     const prefix = config.settings?.toolPrefix ?? "server";
     const envRaw = process.env.MCP_DIRECT_TOOLS;
@@ -69,7 +80,11 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         description: spec.description || "(no description)",
         promptSnippet: truncateAtWord(spec.description, 100) || `MCP tool from ${spec.serverName}`,
         parameters: Type.Unsafe((spec.inputSchema || { type: "object", properties: {} }) as never),
-        execute: createDirectToolExecutor(() => state, () => initPromise, spec),
+        execute: createDirectToolExecutor(
+          () => ensureMcpInitialized(),
+          (candidate) => isOwnedState(candidate),
+          spec,
+        ),
         renderResult: renderMcpToolResult,
       });
     }
@@ -82,43 +97,49 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   }
 
   async function registerDirectTools(nextState: McpExtensionState): Promise<{ directToolCount: number; missingConfiguredDirectToolServers: string[] }> {
-    const { loadMetadataCache } = await import("./metadata-cache.ts");
+    const { loadMetadataCache } = await import("./metadata-cache.js");
     return registerDirectToolsFromConfig(nextState.config, loadMetadataCache());
   }
 
-  async function shutdownOAuthFlow(): Promise<void> {
-    const { shutdownOAuth } = await import("./mcp-auth-flow.ts");
-    await shutdownOAuth();
+  async function shutdownOAuthFlow(reason: string): Promise<void> {
+    const { shutdownOAuth } = await import("./mcp-auth-flow.js");
+    await shutdownOAuth(reason);
   }
 
   async function shutdownState(currentState: McpExtensionState | null, reason: string): Promise<void> {
     if (!currentState) return;
-
-    if (currentState.uiServer) {
-      currentState.uiServer.close(reason);
-      currentState.uiServer = null;
-    }
-
-    let flushError: unknown;
+    const failures: unknown[] = [];
+    const uiServer = currentState.uiServer;
+    currentState.uiServer = null;
     try {
-      const { flushMetadataCache } = await import("./init.ts");
+      uiServer?.close(reason);
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      const { flushMetadataCache } = await import("./init.js");
       flushMetadataCache(currentState);
     } catch (error) {
-      flushError = error;
+      failures.push(error);
     }
-
     try {
       await currentState.lifecycle.gracefulShutdown();
     } catch (error) {
-      if (flushError) {
-        console.error("MCP: graceful shutdown failed after metadata flush error", error);
-      } else {
-        throw error;
-      }
+      failures.push(error);
     }
+    for (const error of failures.slice(1)) {
+      console.error("MCP: additional state shutdown failure", error);
+    }
+    if (failures.length > 0) throw failures[0];
+  }
 
-    if (flushError) {
-      throw flushError;
+  async function cleanupSessionResources(currentState: McpExtensionState | null, reason: string, label: string): Promise<void> {
+    const results = await Promise.allSettled([
+      shutdownState(currentState, reason),
+      shutdownOAuthFlow(reason),
+    ]);
+    for (const result of results) {
+      if (result.status === "rejected") console.error(label, result.reason);
     }
   }
 
@@ -136,18 +157,147 @@ export default function mcpAdapter(pi: ExtensionAPI) {
     startupWarmupCancel = null;
   }
 
+  function isCurrentSession(session: ActiveMcpSession): boolean {
+    return activeSession === session
+      && lifecycleGeneration === session.generation
+      && isContextActive(session.ctx);
+  }
+
+  function isOwnedState(candidate: McpExtensionState, owner = stateOwner): boolean {
+    return state === candidate && owner !== null && stateOwner === owner && isCurrentSession(owner);
+  }
+
+  function assertOwnedState(candidate: McpExtensionState, owner: ActiveMcpSession): void {
+    if (!isOwnedState(candidate, owner)) throw new McpStateChangedError();
+  }
+
+  async function initializeSession(
+    session: ActiveMcpSession,
+    expectedPromise: { current: Promise<McpExtensionState> | null },
+  ): Promise<McpExtensionState> {
+    await session.cleanup;
+    if (!isCurrentSession(session)) {
+      throw new Error(`${STALE_INITIALIZATION_PREFIX} before startup`);
+    }
+
+    const [{ initializeMcp, updateStatusBar }, { scheduleMcpStartupWarmup }] = await Promise.all([
+      import("./init.js"),
+      import("./startup-warmup.js"),
+    ]);
+    if (!isCurrentSession(session)) {
+      throw new Error(`${STALE_INITIALIZATION_PREFIX} before startup`);
+    }
+
+    let candidate: McpExtensionState | null = null;
+    try {
+      candidate = await initializeMcp(pi, session.ctx);
+      const initializedState = candidate;
+      if (!isCurrentSession(session) || initPromise !== expectedPromise.current) {
+        throw new Error(`${STALE_INITIALIZATION_PREFIX} after startup`);
+      }
+
+      const directToolState = await registerDirectTools(initializedState);
+      if (!isCurrentSession(session) || initPromise !== expectedPromise.current) {
+        throw new Error(`${STALE_INITIALIZATION_PREFIX} after tool registration`);
+      }
+      if (
+        initializedState.config.settings?.disableProxyTool !== true
+        || directToolState.directToolCount === 0
+        || directToolState.missingConfiguredDirectToolServers.length > 0
+      ) {
+        registerProxyTool();
+      }
+
+      updateStatusBar(initializedState);
+      let cancelWarmup: (() => void) | null = null;
+      const warmup = scheduleMcpStartupWarmup(initializedState, {
+        shouldContinue: () => isCurrentSession(session) && state === initializedState,
+        onDirectToolsChanged: async () => {
+          if (!isCurrentSession(session) || state !== initializedState) return;
+          await registerDirectTools(initializedState);
+        },
+        onSettled: () => {
+          if (isCurrentSession(session) && state === initializedState && startupWarmupCancel === cancelWarmup) {
+            startupWarmupCancel = null;
+          }
+        },
+      });
+      cancelWarmup = () => warmup.cancel();
+      startupWarmupCancel = cancelWarmup;
+      stateOwner = session;
+      state = initializedState;
+      return initializedState;
+    } catch (error) {
+      if (candidate && state !== candidate) {
+        try {
+          await shutdownState(candidate, "failed_initialization");
+        } catch (cleanupError) {
+          console.error("MCP: failed to clean unpublished initialization state", cleanupError);
+        }
+      }
+      throw error;
+    }
+  }
+
+  function ensureMcpInitialized(): Promise<McpExtensionState> {
+    const session = activeSession;
+    if (!session || session.generation !== lifecycleGeneration || !isContextActive(session.ctx)) {
+      return Promise.reject(new Error("MCP initialization unavailable: no active session"));
+    }
+    if (state) {
+      if (stateOwner === session && isOwnedState(state, session)) return Promise.resolve(state);
+      return Promise.reject(new Error("MCP initialization unavailable: stale session state"));
+    }
+    if (initPromise) return initPromise;
+
+    const expectedPromise: { current: Promise<McpExtensionState> | null } = { current: null };
+    const attempt = initializeSession(session, expectedPromise);
+    expectedPromise.current = attempt;
+    initPromise = attempt;
+    void attempt.then(
+      () => {
+        if (initPromise === attempt) initPromise = null;
+      },
+      (error: unknown) => {
+        if (activeSession !== session || session.generation !== lifecycleGeneration) return;
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.startsWith(STALE_INITIALIZATION_PREFIX) && !isStaleExtensionContextError(error)) {
+          console.error(
+            `MCP initialization failed for session generation ${session.generation}; a later MCP call will retry:`,
+            error,
+          );
+        }
+        if (initPromise === attempt) initPromise = null;
+      },
+    );
+    return attempt;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     const generation = ++lifecycleGeneration;
     const previousState = state;
+    const retiredInitialization = initPromise;
     state = null;
+    stateOwner = null;
     initPromise = null;
     registeredDirectToolNames = new Set<string>();
     cancelStartupWarmup();
+    const previousStateCleanup = cleanupSessionResources(
+      previousState,
+      "session_restart",
+      "MCP: failed to shut down previous session state",
+    );
+    const cleanup = cleanupBarrier.retain([retiredInitialization, previousStateCleanup]);
+    const isStartCurrent = (): boolean => generation === lifecycleGeneration && isContextActive(ctx);
+    await cleanup;
+    if (!isStartCurrent()) return;
 
     try {
       const config = loadMcpConfig(earlyConfigPath, ctx.cwd);
-      const { loadMetadataCache } = await import("./metadata-cache.ts");
+      const { loadMetadataCache } = await import("./metadata-cache.js");
+      if (!isStartCurrent()) return;
       const directToolState = await registerDirectToolsFromConfig(config, loadMetadataCache());
+      if (!isStartCurrent()) return;
       if (
         config.settings?.disableProxyTool !== true
         || directToolState.directToolCount === 0
@@ -156,208 +306,44 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         registerProxyTool();
       }
     } catch (error) {
-      if (isStaleExtensionContextError(error)) return;
+      if (!isStartCurrent() || isStaleExtensionContextError(error)) return;
       console.error("MCP: failed to register cached startup tools; enabling MCP proxy fallback", error);
       registerProxyTool();
     }
 
-    const promiseRef: { current: Promise<McpExtensionState> | null } = { current: null };
-    const promise = (async () => {
-      try {
-        await Promise.all([
-          shutdownState(previousState, "session_restart"),
-          shutdownOAuthFlow(),
-        ]);
-      } catch (error) {
-        console.error("MCP: failed to shut down previous session state", error);
-      }
-
-      if (generation !== lifecycleGeneration || !isContextActive(ctx)) {
-        throw new Error("Stale MCP session initialization cancelled before startup");
-      }
-
-      const [{ initializeMcp, updateStatusBar }, { scheduleMcpStartupWarmup }] = await Promise.all([
-        import("./init.ts"),
-        import("./startup-warmup.ts"),
-      ]);
-      if (generation !== lifecycleGeneration || !isContextActive(ctx)) {
-        throw new Error("Stale MCP session initialization cancelled before startup");
-      }
-
-      const nextState = await initializeMcp(pi, ctx);
-      if (generation !== lifecycleGeneration || initPromise !== promiseRef.current || !isContextActive(ctx)) {
-        try {
-          await shutdownState(nextState, "stale_session_start");
-        } catch (error) {
-          console.error("MCP: failed to clean stale session state", error);
-        }
-        throw new Error("Stale MCP session initialization cancelled after startup");
-      }
-
-      state = nextState;
-      updateStatusBar(nextState);
-      const directToolState = await registerDirectTools(nextState);
-      if (
-        nextState.config.settings?.disableProxyTool !== true
-        || directToolState.directToolCount === 0
-        || directToolState.missingConfiguredDirectToolServers.length > 0
-      ) {
-        registerProxyTool();
-      }
-      let cancelWarmup: (() => void) | null = null;
-      const warmup = scheduleMcpStartupWarmup(nextState, {
-        shouldContinue: () => generation === lifecycleGeneration && state === nextState,
-        onDirectToolsChanged: async () => {
-          if (generation !== lifecycleGeneration || state !== nextState) return;
-          await registerDirectTools(nextState);
-        },
-        onSettled: () => {
-          if (generation === lifecycleGeneration && state === nextState && startupWarmupCancel === cancelWarmup) {
-            startupWarmupCancel = null;
-          }
-        },
-      });
-      cancelWarmup = () => warmup.cancel();
-      startupWarmupCancel = cancelWarmup;
-      if (initPromise === promiseRef.current) {
-        initPromise = null;
-      }
-      return nextState;
-    })();
-    promiseRef.current = promise;
-    initPromise = promise;
-    promise.catch((err) => {
-      if (generation !== lifecycleGeneration) {
-        return;
-      }
-      if (initPromise !== promise && initPromise !== null) {
-        return;
-      }
-      const message = err instanceof Error ? err.message : String(err);
-      if (
-        !message.startsWith("Stale MCP session initialization cancelled") &&
-        !isStaleExtensionContextError(err)
-      ) {
-        console.error("MCP initialization failed:", err);
-      }
-      if (initPromise === promise) {
-        initPromise = null;
-      }
-    });
+    if (!isStartCurrent()) return;
+    activeSession = { generation, ctx, cleanup };
+    void ensureMcpInitialized().catch(() => undefined);
   });
 
   pi.on("session_shutdown", async () => {
     ++lifecycleGeneration;
     const currentState = state;
+    const retiredInitialization = initPromise;
+    activeSession = null;
     state = null;
+    stateOwner = null;
     initPromise = null;
     registeredDirectToolNames = new Set<string>();
     cancelStartupWarmup();
 
-    try {
-      await Promise.all([
-        shutdownState(currentState, "session_shutdown"),
-        shutdownOAuthFlow(),
-      ]);
-    } catch (error) {
-      console.error("MCP: session shutdown cleanup failed", error);
-    }
+    const stateCleanup = cleanupSessionResources(
+      currentState,
+      "session_shutdown",
+      "MCP: session shutdown cleanup failed",
+    );
+    await cleanupBarrier.retain([retiredInitialization, stateCleanup]);
   });
 
-  pi.registerCommand("mcp", {
-    description: "Show MCP server status",
-    handler: async (args, ctx) => {
-      if (!state && initPromise) {
-        try {
-          state = await initPromise;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (ctx.hasUI) ctx.ui.notify(`MCP initialization failed: ${message}`, "error");
-          return;
-        }
-      }
-      if (!state) {
-        if (ctx.hasUI) ctx.ui.notify("MCP not initialized", "error");
-        return;
-      }
-
-      const { showStatus, showTools, reconnectServers, logoutServer, openMcpPanel, openMcpSetup } = await import("./commands.ts");
-      const parts = args?.trim()?.split(/\s+/) ?? [];
-      const subcommand = parts[0] ?? "";
-      const targetServer = parts[1];
-      const rest = parts.slice(1).join(" ");
-
-      switch (subcommand) {
-        case "reconnect":
-          await reconnectServers(state, ctx, targetServer);
-          break;
-        case "tools":
-          await showTools(state, ctx);
-          break;
-        case "setup": {
-          const result = await openMcpSetup(state, pi, ctx, earlyConfigPath, "setup");
-          if (result?.configChanged) {
-            await ctx.reload();
-            return;
-          }
-          break;
-        }
-        case "logout": {
-          const serverName = rest;
-          if (!serverName) {
-            if (ctx.hasUI) ctx.ui.notify("Usage: /mcp logout <server>", "error");
-            return;
-          }
-          await logoutServer(serverName, state, ctx);
-          break;
-        }
-        case "status":
-        case "":
-        default:
-          if (ctx.hasUI) {
-            const result = await openMcpPanel(state, pi, ctx, earlyConfigPath);
-            if (result?.configChanged) {
-              await ctx.reload();
-              return;
-            }
-          } else {
-            await showStatus(state, ctx);
-          }
-          break;
-      }
-    },
-  });
-
-  pi.registerCommand("mcp-auth", {
-    description: "Authenticate with an MCP server (OAuth)",
-    handler: async (args, ctx) => {
-      const serverName = args?.trim();
-      if (!serverName && !ctx.hasUI) {
-        return;
-      }
-
-      if (!state && initPromise) {
-        try {
-          state = await initPromise;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          if (ctx.hasUI) ctx.ui.notify(`MCP initialization failed: ${message}`, "error");
-          return;
-        }
-      }
-      if (!state) {
-        if (ctx.hasUI) ctx.ui.notify("MCP not initialized", "error");
-        return;
-      }
-
-      const { authenticateServer, openMcpAuthPanel } = await import("./commands.ts");
-      if (!serverName) {
-        await openMcpAuthPanel(state, pi, ctx, earlyConfigPath);
-        return;
-      }
-
-      await authenticateServer(serverName, state.config, ctx);
-    },
+  registerMcpCommands(pi, earlyConfigPath, async () => {
+    const readyState = await ensureMcpInitialized();
+    const readyOwner = stateOwner;
+    if (!readyOwner) throw new McpStateChangedError();
+    assertOwnedState(readyState, readyOwner);
+    return {
+      state: readyState,
+      assertActive: () => assertOwnedState(readyState, readyOwner),
+    };
   });
 
   function registerProxyTool(): void {
@@ -390,7 +376,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         includeSchemas?: boolean;
         server?: string;
         action?: string;
-      }, _signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined, _ctx: ExtensionContext) {
+      }, signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<Record<string, unknown>> | undefined, _ctx: ExtensionContext) {
+        signal?.throwIfAborted();
         let parsedArgs: Record<string, unknown> | undefined;
         if (params.args) {
           try {
@@ -407,44 +394,65 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           }
         }
 
-        if (!state && initPromise) {
-          try {
-            state = await initPromise;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            return {
-              content: [{ type: "text" as const, text: `MCP initialization failed: ${message}` }],
-              details: { error: "init_failed", message },
-            };
-          }
-        }
-        if (!state) {
+        let readyState: McpExtensionState;
+        try {
+          readyState = await waitForCaller(ensureMcpInitialized, signal);
+        } catch (error) {
+          signal?.throwIfAborted();
+          const message = error instanceof Error ? error.message : String(error);
           return {
-            content: [{ type: "text" as const, text: "MCP not initialized" }],
-            details: { error: "not_initialized" },
+            content: [{ type: "text" as const, text: `MCP initialization failed: ${message}` }],
+            details: { error: "init_failed", message },
           };
         }
+        signal?.throwIfAborted();
+        const readyOwner = stateOwner;
+        if (!readyOwner || !isOwnedState(readyState, readyOwner)) {
+          return {
+            content: [{ type: "text" as const, text: "MCP session changed during initialization" }],
+            details: { error: "init_cancelled", message: "Session changed before MCP execution" },
+          };
+        }
+        const assertActive = (): void => assertOwnedState(readyState, readyOwner);
 
-        const { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } = await import("./proxy-modes.ts");
-        if (params.action === "ui-messages") {
-          return executeUiMessages(state);
+        const { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } = await import("./proxy-modes.js");
+        signal?.throwIfAborted();
+        try {
+          assertActive();
+        } catch (error) {
+          if (error instanceof McpStateChangedError) {
+            return {
+              content: [{ type: "text" as const, text: "MCP session changed during execution" }],
+              details: { error: "state_changed", message: "Session changed before MCP execution completed" },
+            };
+          }
+          throw error;
         }
-        if (params.tool) {
-          return executeCall(state, params.tool, parsedArgs, params.server, getPiTools);
-        }
-        if (params.connect) {
-          return executeConnect(state, params.connect);
-        }
-        if (params.describe) {
-          return executeDescribe(state, params.describe, params.server);
-        }
-        if (params.search) {
-          return executeSearch(state, params.search, params.regex, params.server, params.includeSchemas);
-        }
-        if (params.server) {
-          return executeList(state, params.server);
-        }
-        return executeStatus(state);
+        const stateChangedResult = (): ProxyToolResult => ({
+          content: [{ type: "text" as const, text: "MCP session changed during execution" }],
+          details: { error: "state_changed", message: "Session changed before MCP execution completed" },
+        });
+        const finish = async (start: () => ProxyToolResult | Promise<ProxyToolResult>): Promise<ProxyToolResult> => {
+          try {
+            signal?.throwIfAborted();
+            assertActive();
+            const result = await start();
+            signal?.throwIfAborted();
+            assertActive();
+            return result;
+          } catch (error) {
+            signal?.throwIfAborted();
+            if (error instanceof McpStateChangedError) return stateChangedResult();
+            throw error;
+          }
+        };
+        if (params.action === "ui-messages") return finish(() => executeUiMessages(readyState, assertActive));
+        if (params.tool) return finish(() => executeCall(readyState, params.tool!, parsedArgs, params.server, getPiTools, signal, undefined, assertActive));
+        if (params.connect) return finish(() => executeConnect(readyState, params.connect!, signal, undefined, assertActive));
+        if (params.describe) return finish(() => executeDescribe(readyState, params.describe!, params.server, signal, assertActive));
+        if (params.search) return finish(() => executeSearch(readyState, params.search!, params.regex, params.server, params.includeSchemas, signal, assertActive));
+        if (params.server) return finish(() => executeList(readyState, params.server!, signal, assertActive));
+        return finish(() => executeStatus(readyState, assertActive));
       },
     });
   }

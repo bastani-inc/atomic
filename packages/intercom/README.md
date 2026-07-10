@@ -24,7 +24,7 @@ Intercom also integrates with delegated subagents: child agents get a child-only
 
 ## In One Minute
 
-Each Atomic/pi session that has intercom loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `ALT+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in session history as extension entries.
+Each Atomic/pi session that has intercom loaded and enabled can connect to a tiny local broker over a local IPC transport. The lightweight extension exposes the tool and overlay immediately; normal sessions initialize the broker client on first intercom use, while delegated child sessions with supervisor bridge metadata warm it in the background. Concurrent callers share one initialization attempt, and a failed attempt is diagnosed and retried on later use. Lazy broker state is leased to its session: replay and live turn/agent/tool/model events are forwarded in order, shutdown waits for retired replay and initializer cleanup before replacement, calls spanning teardown reject, and a restarted session initializes a fresh candidate rather than reusing old broker state. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in session history as extension entries.
 
 ## Install
 
@@ -34,7 +34,7 @@ Atomic bundles `@bastani/intercom` as a first-party extension; no separate insta
 pi install npm:pi-intercom
 ```
 
-Then restart Atomic or Pi. The extension auto-connects to the broker on startup and registers the bundled `intercom` skill for common coordination patterns.
+Then restart Atomic or Pi. The extension registers the bundled `intercom` skill at startup; the broker connection starts on first intercom use (or is warmed for delegated child sessions that carry supervisor bridge metadata).
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executeDescribe, executeList, executeSearch } from "../../packages/mcp/proxy-info-modes.ts";
-import type { McpExtensionState } from "../../packages/mcp/state.ts";
-import type { McpTool, ServerDefinition } from "../../packages/mcp/types.ts";
-import type { McpServerManager } from "../../packages/mcp/server-manager.ts";
+import { executeDescribe, executeList, executeSearch } from "../../packages/mcp/proxy-info-modes.js";
+import type { McpExtensionState } from "../../packages/mcp/state.js";
+import type { McpTool, ServerDefinition } from "../../packages/mcp/types.js";
+import type { McpServerManager } from "../../packages/mcp/server-manager.js";
 
 const originalEnv = process.env.ATOMIC_CODING_AGENT_DIR;
 let tmpRoot = "";

@@ -2,7 +2,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import { CONFIG_DIR_NAME } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
 import { getActiveGoogleEmail, isGeminiWebAvailable } from "./gemini-web.js";
-import { isBrowserCookieAccessAllowed } from "./gemini-web-config.ts";
+import { isBrowserCookieAccessAllowed } from "./gemini-web-config.js";
 import { deleteResult, getAllResults } from "./storage.js";
 import { loadConfigForExtensionInit, resolveWorkflow, saveConfig, type WebSearchWorkflow } from "./web-search-config.js";
 

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const repoRoot = resolve(__dirname, "../../../../..");
+const subprocessTimeoutMs = 10_000;
 
 function readRepoFile(path: string): string {
 	return readFileSync(resolve(repoRoot, path), "utf-8");
@@ -46,6 +47,7 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 				ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE: sentinelPath,
 			},
 			encoding: "utf-8",
+			timeout: subprocessTimeoutMs,
 		});
 
 		expect(result.status, result.stderr || result.stdout).toBe(0);
@@ -55,18 +57,21 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 	}
 }
 
-function assertWebAccessRetriesFailedHeavyInitialization(): void {
+function assertWebAccessRetriesRejectedInitializer(): void {
 	const tempDir = mkdtempSync(join(tmpdir(), "atomic-web-access-retry-"));
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readRepoFile("packages/web-access/index.ts"));
+		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readRepoFile("packages/web-access/lifecycle-lease.ts"));
 		writeFileSync(join(tempDir, "result-renderers.ts"), "export function renderWebAccessToolResult() { return undefined; }\n");
 		writeFileSync(join(tempDir, "index-heavy.ts"), `
 let attempts = 0;
 export default async function webAccessHeavy(pi) {
 	attempts += 1;
-	if (attempts === 1) throw new Error("simulated heavy startup failure");
-	pi.registerTool({ name: "web_search", execute: async () => ({ ok: true, attempts }) });
+	if (attempts === 1) throw new Error("simulated initializer rejection");
+	await new Promise((resolve) => setTimeout(resolve, 20));
+	pi.registerTool({ name: "web_search", execute: async () => ({ tool: "search", attempts }) });
+	pi.registerTool({ name: "fetch_content", execute: async () => ({ tool: "fetch", attempts }) });
 }
 `);
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
@@ -82,24 +87,30 @@ const pi = {
 };
 webAccess(pi);
 const webSearch = tools.find((tool) => tool.name === "web_search");
-if (!webSearch) throw new Error("web_search was not registered");
+const fetchContent = tools.find((tool) => tool.name === "fetch_content");
+if (!webSearch || !fetchContent) throw new Error("web tools were not registered");
+const signal = new AbortController().signal;
 try {
-  await webSearch.execute({ query: "first" });
+  await webSearch.execute("first", { query: "first" }, signal, undefined, {});
   throw new Error("first execution unexpectedly succeeded");
 } catch (error) {
-  if (!String(error?.message ?? error).includes("simulated heavy startup failure")) throw error;
+  if (!String(error?.message ?? error).includes("simulated initializer rejection")) throw error;
 }
-const result = await webSearch.execute({ query: "retry" });
+const result = await Promise.all([
+  webSearch.execute("retry-search", { query: "retry" }, signal, undefined, {}),
+  fetchContent.execute("retry-fetch", { url: "https://example.test" }, signal, undefined, {}),
+]);
 console.log(JSON.stringify(result));
 `;
 		const result = spawnSync("bun", ["--eval", script], {
 			cwd: repoRoot,
 			env: process.env,
 			encoding: "utf-8",
+			timeout: subprocessTimeoutMs,
 		});
 		expect(result.status, result.stderr || result.stdout).toBe(0);
 		expect(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "{}"))
-			.toEqual({ ok: true, attempts: 2 });
+			.toEqual([{ tool: "search", attempts: 2 }, { tool: "fetch", attempts: 2 }]);
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
@@ -178,6 +189,7 @@ process.exit(0);
 			cwd: repoRoot,
 			env: childEnv,
 			encoding: "utf-8",
+			timeout: subprocessTimeoutMs,
 		});
 		expect(result.status, result.stderr || result.stdout).toBe(0);
 		expect(JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1) ?? "[]")).toEqual(options.expectedTools);
@@ -208,7 +220,7 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(source).toContain('pi.on("session_shutdown"');
 		expect(source).toContain('prop === "registerShortcut"');
 		expect(source).toContain('pi.registerShortcut(shortcut');
-		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "web_search", args)');
+		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args)');
 		expect(source).not.toContain('prop === "registerShortcut" || prop === "on" || prop === "registerMessageRenderer"');
 	});
 
@@ -228,8 +240,8 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(source).toContain('prop === "registerShortcut"');
 		expect(source).toContain('pi.registerShortcut("alt+m"');
 		expect(source).toContain('SUBAGENT_CONTROL_INTERCOM_EVENT');
-		expect(source).toContain('dispatchEventHandlers(heavy, eventName, payload)');
-		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "intercom", args)');
+		expect(source).toContain('dispatchEventHandlers(handle.heavy, eventName, payload)');
+		expect(source).toContain('renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args)');
 		expect(source).not.toContain('return () => undefined');
 	});
 
@@ -243,15 +255,15 @@ describe("regression #1223 lazy built-in startup imports", () => {
 		expect(textBeforeLoadHeavy(intercomSource)).not.toContain('import("./index-heavy.js")');
 		expect(webSource).not.toMatch(/void\s+loadHeavy\(/);
 		expect(intercomSource).not.toMatch(/void\s+import\(["']\.\/index-heavy\.js["']\)/);
-		expect(webSource).toContain('handler: async (ctx) => {\n\t\t\t\tconst heavy = await loadHeavy();');
-		expect(intercomSource).toContain('handler: async (ctx) => {\n\t\t\tconst heavy = await loadHeavy(ctx);');
+		expect(webSource).toContain('handler: async (ctx) => {\n\t\t\t\tconst handle = await loadHeavy();');
+		expect(intercomSource).toContain('handler: async (ctx) => {\n\t\t\tconst handle = await loadHeavy(ctx);');
 
 		assertColdRegistrationDoesNotImportHeavy("packages/web-access/index.ts");
 		assertColdRegistrationDoesNotImportHeavy("packages/intercom/index.ts");
 	});
 
-	it("allows web-access lazy heavy imports to retry after initialization failure", () => {
-		assertWebAccessRetriesFailedHeavyInitialization();
+	it("allows concurrent web tools to retry one rejected initializer as a single flight", () => {
+		assertWebAccessRetriesRejectedInitializer();
 	});
 
 	it("keeps the MCP proxy fallback until cached direct tools are available", () => {

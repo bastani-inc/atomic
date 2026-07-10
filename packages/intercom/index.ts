@@ -1,14 +1,14 @@
-import type { AgentEndEvent, AgentStartEvent, ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionHandler, MessageRenderer, ModelSelectEvent, RegisteredCommand, SessionShutdownEvent, SessionStartEvent, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent, TurnEndEvent, TurnStartEvent } from "@bastani/atomic";
+import type { AgentEndEvent, AgentStartEvent, ExtensionAPI, ExtensionContext, ExtensionHandler, MessageRenderer, ModelSelectEvent, RegisteredCommand, SessionShutdownEvent, SessionStartEvent, ToolDefinition, ToolExecutionEndEvent, ToolExecutionStartEvent, TurnEndEvent, TurnStartEvent } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderIntercomToolResult } from "./result-renderers.js";
-
+import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
+import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type EventHandler = Parameters<ExtensionAPI["events"]["on"]>[1];
 type EventPayload = Parameters<EventHandler>[0];
 type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
-
 type ForwardedEventMap = {
 	session_start: SessionStartEvent;
 	session_shutdown: SessionShutdownEvent;
@@ -20,12 +20,10 @@ type ForwardedEventMap = {
 	tool_execution_end: ToolExecutionEndEvent;
 	model_select: ModelSelectEvent;
 };
-
 type LazyLifecycleEvent = keyof ForwardedEventMap;
 type ForwardedHandler<K extends LazyLifecycleEvent> = ExtensionHandler<ForwardedEventMap[K]>;
 type ForwardedHandlerMap = { [K in LazyLifecycleEvent]: ForwardedHandler<K>[] };
 type AnyForwardedHandler = { [K in LazyLifecycleEvent]: ForwardedHandler<K> }[LazyLifecycleEvent];
-
 type CapturedHeavy = {
 	tools: Map<string, ToolDefinition>;
 	commands: Map<string, CapturedCommand>;
@@ -33,51 +31,40 @@ type CapturedHeavy = {
 	shortcuts: Map<string, CapturedShortcut>;
 	eventHandlers: Map<string, EventHandler[]>;
 };
-
 type LifecycleSnapshot<K extends LazyLifecycleEvent> = {
 	event: ForwardedEventMap[K];
 	ctx: ExtensionContext;
 };
-
+type ShutdownSnapshot = LifecycleSnapshot<"session_shutdown"> & { generation: number };
+type IntercomLease = LifecycleLease<ShutdownSnapshot>;
 type SessionSnapshot = LifecycleSnapshot<"session_start"> & {
 	generation: number;
+	lease: IntercomLease;
 };
-
+type IntercomHeavyHandle = HeavyHandle<CapturedHeavy>;
+type HeavyAttempt = { lease: IntercomLease; promise: Promise<IntercomHeavyHandle> };
+type ReplayAttempt = { lease: IntercomLease; heavy: CapturedHeavy; promise: Promise<void> };
 type ActiveLifecycleState = {
-	turnStart: LifecycleSnapshot<"turn_start"> | null;
-	agentStart: LifecycleSnapshot<"agent_start"> | null;
-	activeTools: Map<string, LifecycleSnapshot<"tool_execution_start">>;
-	modelSelect: LifecycleSnapshot<"model_select"> | null;
+	turnStart: LifecycleSnapshot<"turn_start"> | null; agentStart: LifecycleSnapshot<"agent_start"> | null;
+	activeTools: Map<string, LifecycleSnapshot<"tool_execution_start">>; modelSelect: LifecycleSnapshot<"model_select"> | null;
 };
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
-
 function hasSubagentIntercomEnv(): boolean {
 	return Object.keys(process.env).some((key) => key.endsWith("_SUBAGENT_ORCHESTRATOR_TARGET"));
 }
-
 function createSyntheticSessionStartEvent(): SessionStartEvent {
 	return { type: "session_start", reason: "startup" };
 }
-
 function createForwardedHandlerMap(): ForwardedHandlerMap {
 	return {
-		session_start: [],
-		session_shutdown: [],
-		turn_start: [],
-		turn_end: [],
-		agent_start: [],
-		agent_end: [],
-		tool_execution_start: [],
-		tool_execution_end: [],
-		model_select: [],
+		session_start: [], session_shutdown: [], turn_start: [], turn_end: [], agent_start: [],
+		agent_end: [], tool_execution_start: [], tool_execution_end: [], model_select: [],
 	};
 }
-
 function addHandler<K extends LazyLifecycleEvent>(captured: CapturedHeavy, event: K, handler: ForwardedHandler<K>): void {
 	captured.handlers[event].push(handler);
 }
-
 function captureForwardedHandler(captured: CapturedHeavy, event: "session_start", handler: ForwardedHandler<"session_start">): void;
 function captureForwardedHandler(captured: CapturedHeavy, event: "session_shutdown", handler: ForwardedHandler<"session_shutdown">): void;
 function captureForwardedHandler(captured: CapturedHeavy, event: "turn_start", handler: ForwardedHandler<"turn_start">): void;
@@ -118,25 +105,21 @@ function captureForwardedHandler(captured: CapturedHeavy, event: LazyLifecycleEv
 			addHandler(captured, event, handler as ForwardedHandler<"model_select">);
 	}
 }
-
 function addEventHandler(captured: CapturedHeavy, event: string, handler: EventHandler): void {
 	const handlers = captured.eventHandlers.get(event) ?? [];
 	handlers.push(handler);
 	captured.eventHandlers.set(event, handlers);
 }
-
 async function dispatchHandlers<K extends LazyLifecycleEvent>(captured: CapturedHeavy, eventName: K, event: ForwardedEventMap[K], ctx: ExtensionContext): Promise<void> {
 	for (const handler of captured.handlers[eventName]) {
 		await handler(event, ctx);
 	}
 }
-
 async function dispatchEventHandlers(captured: CapturedHeavy, eventName: string, payload: EventPayload): Promise<void> {
 	for (const handler of captured.eventHandlers.get(eventName) ?? []) {
 		await handler(payload);
 	}
 }
-
 function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionAPI {
 	return new Proxy(pi, {
 		get(target, prop, receiver) {
@@ -179,26 +162,6 @@ function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionA
 		},
 	}) as ExtensionAPI;
 }
-
-async function executeHeavyTool(
-	loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>,
-	name: string,
-	args: Parameters<NonNullable<ToolDefinition["execute"]>>,
-): Promise<Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>> {
-	const ctx = args[4];
-	const heavy = await loadHeavy(ctx);
-	const tool = heavy.tools.get(name);
-	if (!tool?.execute) throw new Error(`Intercom tool implementation not found: ${name}`);
-	return await tool.execute(...args) as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
-}
-
-async function runHeavyCommand(loadHeavy: (ctx?: ExtensionContext) => Promise<CapturedHeavy>, args: string | undefined, ctx: ExtensionCommandContext): Promise<void> {
-	const heavy = await loadHeavy(ctx);
-	const command = heavy.commands.get("intercom");
-	if (!command) throw new Error("Intercom command implementation not found");
-	await command.handler(args ?? "", ctx);
-}
-
 function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, args: ToolRenderResultArgs): ReturnType<NonNullable<ToolDefinition["renderResult"]>> {
 	const renderer = loadedHeavy?.tools.get(name)?.renderResult;
 	if (renderer) return renderer(...args);
@@ -206,157 +169,254 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 }
 
 export default function intercom(pi: ExtensionAPI) {
-	let heavyPromise: Promise<CapturedHeavy> | null = null;
-	let loadedHeavy: CapturedHeavy | null = null;
+	let heavyAttempt: HeavyAttempt | null = null;
+	let loadedHeavy: IntercomHeavyHandle | null = null;
 	let sessionSnapshot: SessionSnapshot | null = null;
 	let lifecycleGeneration = 0;
+	let nextLeaseId = 1;
+	let activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++);
 	let replayedGeneration = 0;
+	let replayAttempt: ReplayAttempt | null = null;
+	const lifecycleForward = new SerializedLifecycleForwarder();
+	const invalidatedMessage = "Intercom initialization was invalidated by session shutdown";
 	const activeLifecycle: ActiveLifecycleState = {
 		turnStart: null,
 		agentStart: null,
 		activeTools: new Map(),
 		modelSelect: null,
 	};
-
-	async function replaySessionStart(heavy: CapturedHeavy): Promise<void> {
-		if (!sessionSnapshot || replayedGeneration === sessionSnapshot.generation) return;
-		replayedGeneration = sessionSnapshot.generation;
-		await dispatchHandlers(heavy, "session_start", sessionSnapshot.event, sessionSnapshot.ctx);
-		if (activeLifecycle.turnStart) {
-			await dispatchHandlers(heavy, "turn_start", activeLifecycle.turnStart.event, activeLifecycle.turnStart.ctx);
-		}
-		if (activeLifecycle.modelSelect) {
-			await dispatchHandlers(heavy, "model_select", activeLifecycle.modelSelect.event, activeLifecycle.modelSelect.ctx);
-		}
-		if (activeLifecycle.agentStart) {
-			await dispatchHandlers(heavy, "agent_start", activeLifecycle.agentStart.event, activeLifecycle.agentStart.ctx);
-		}
-		for (const activeTool of activeLifecycle.activeTools.values()) {
-			await dispatchHandlers(heavy, "tool_execution_start", activeTool.event, activeTool.ctx);
+	function assertLease(lease: IntercomLease): void {
+		assertCurrentLifecycleLease(activeLease, lease, invalidatedMessage);
+	}
+	function createHandle(heavy: CapturedHeavy, lease: IntercomLease): IntercomHeavyHandle {
+		return { heavy, assertCurrent: () => assertLease(lease) };
+	}
+	async function waitForPriorCleanup(lease: IntercomLease): Promise<void> {
+		await lease.priorCleanup;
+		assertLease(lease);
+	}
+	function isReplaySnapshotCurrent(snapshot: SessionSnapshot, lease: IntercomLease): boolean {
+		assertLease(lease);
+		return sessionSnapshot === snapshot;
+	}
+	async function replaySessionStart(heavy: CapturedHeavy, lease: IntercomLease, onReplay?: (ctx: ExtensionContext) => void): Promise<void> {
+		for (;;) {
+			assertLease(lease);
+			const snapshot = sessionSnapshot;
+			if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) return;
+			const active = {
+				turnStart: activeLifecycle.turnStart,
+				modelSelect: activeLifecycle.modelSelect,
+				agentStart: activeLifecycle.agentStart,
+				activeTools: [...activeLifecycle.activeTools.values()],
+			};
+			onReplay?.(snapshot.ctx);
+			await dispatchHandlers(heavy, "session_start", snapshot.event, snapshot.ctx);
+			if (!isReplaySnapshotCurrent(snapshot, lease)) continue;
+			if (active.turnStart) await dispatchHandlers(heavy, "turn_start", active.turnStart.event, active.turnStart.ctx);
+			if (!isReplaySnapshotCurrent(snapshot, lease)) continue;
+			if (active.modelSelect) await dispatchHandlers(heavy, "model_select", active.modelSelect.event, active.modelSelect.ctx);
+			if (!isReplaySnapshotCurrent(snapshot, lease)) continue;
+			if (active.agentStart) await dispatchHandlers(heavy, "agent_start", active.agentStart.event, active.agentStart.ctx);
+			if (!isReplaySnapshotCurrent(snapshot, lease)) continue;
+			for (const activeTool of active.activeTools) {
+				await dispatchHandlers(heavy, "tool_execution_start", activeTool.event, activeTool.ctx);
+				if (!isReplaySnapshotCurrent(snapshot, lease)) break;
+			}
+			if (!isReplaySnapshotCurrent(snapshot, lease)) continue;
+			replayedGeneration = snapshot.generation;
+			return;
 		}
 	}
-
-	async function loadHeavy(ctx?: ExtensionContext): Promise<CapturedHeavy> {
-		if (!heavyPromise) {
-			heavyPromise = (async () => {
-				const captured: CapturedHeavy = {
-					tools: new Map(),
-					commands: new Map(),
-					handlers: createForwardedHandlerMap(),
-					shortcuts: new Map(),
-					eventHandlers: new Map(),
-				};
-				const mod = await import("./index-heavy.js");
-				await mod.default(createHeavyProxy(pi, captured));
-				loadedHeavy = captured;
-				if (!sessionSnapshot && ctx) {
-					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration };
+	async function ensureSessionStartReplayed(heavy: CapturedHeavy, lease: IntercomLease, onReplay?: (ctx: ExtensionContext) => void): Promise<void> {
+		await waitForPriorCleanup(lease);
+		const snapshot = sessionSnapshot;
+		if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) return;
+		const existing = replayAttempt;
+		if (existing?.lease === lease && existing.heavy === heavy) return existing.promise;
+		let promise: Promise<void>;
+		promise = lifecycleForward.enqueue(() => replaySessionStart(heavy, lease, onReplay)).finally(() => {
+			if (replayAttempt?.promise === promise) replayAttempt = null;
+		});
+		replayAttempt = { lease, heavy, promise };
+		await promise;
+	}
+	async function loadHeavy(ctx?: ExtensionContext): Promise<IntercomHeavyHandle> {
+		const lease = activeLease;
+		if (lease.retired) throw new Error("Intercom initialization unavailable: no active session");
+		await waitForPriorCleanup(lease);
+		const existing = heavyAttempt;
+		if (existing?.lease === lease) {
+			const handle = await existing.promise;
+			assertLease(lease);
+			if (!sessionSnapshot && ctx) {
+				sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration, lease };
+			}
+			await ensureSessionStartReplayed(handle.heavy, lease);
+			assertLease(lease);
+			return handle;
+		}
+		let promise: Promise<IntercomHeavyHandle>;
+		promise = (async (): Promise<IntercomHeavyHandle> => {
+			const captured: CapturedHeavy = {
+				tools: new Map(), commands: new Map(), handlers: createForwardedHandlerMap(),
+				shortcuts: new Map(), eventHandlers: new Map(),
+			};
+			let replayCtx: ExtensionContext | null = null;
+			let cleaned = false;
+			const cleanupCandidate = async (): Promise<void> => {
+				const shutdown = lease.shutdown;
+				const cleanupCtx = shutdown?.ctx ?? replayCtx;
+				if (!cleanupCtx || cleaned) return;
+				cleaned = true;
+				const event = shutdown?.event ?? { type: "session_shutdown", reason: "quit" };
+				try {
+					await dispatchHandlers(captured, "session_shutdown", event, cleanupCtx);
+				} catch (cleanupError) {
+					console.error("Intercom failed to clean rejected lazy candidate:", cleanupError);
 				}
-				await replaySessionStart(captured);
-				return captured;
-			})();
-		}
-		const heavy = await heavyPromise;
-		if (!sessionSnapshot && ctx) {
-			sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration };
-			await replaySessionStart(heavy);
-		}
-		return heavy;
+			};
+			try {
+				const mod = await import("./index-heavy.js");
+				assertLease(lease);
+				await mod.default(createHeavyProxy(pi, captured));
+				assertLease(lease);
+				if (!sessionSnapshot && ctx) {
+					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration, lease };
+				}
+				await ensureSessionStartReplayed(captured, lease, (replayContext) => { replayCtx = replayContext; });
+				assertLease(lease);
+				const handle = createHandle(captured, lease);
+				loadedHeavy = handle;
+				return handle;
+			} catch (error) {
+				await cleanupCandidate();
+				throw error;
+			}
+		})();
+		heavyAttempt = { lease, promise };
+		void promise.then(
+			() => undefined,
+			(error: unknown) => {
+				if (heavyAttempt?.promise === promise) heavyAttempt = null;
+				const message = error instanceof Error ? error.message : String(error);
+				console.error(`Intercom heavy initialization failed; a later call will retry: ${message}`, error);
+			},
+		);
+		return promise;
 	}
-
 	pi.on("session_start", async (event, ctx) => {
+		if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
+		const lease = activeLease;
+		await waitForPriorCleanup(lease);
 		const generation = ++lifecycleGeneration;
-		sessionSnapshot = { event, ctx, generation };
-		if (loadedHeavy) {
-			replayedGeneration = generation;
-			await dispatchHandlers(loadedHeavy, "session_start", event, ctx);
-		}
+		sessionSnapshot = { event, ctx, generation, lease };
+		if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
 	});
-
 	pi.on("session_shutdown", async (event, ctx) => {
-		++lifecycleGeneration;
+		const lease = activeLease;
+		const generation = ++lifecycleGeneration;
+		retireLifecycleLease(lease, { event, ctx, generation });
+		const retiredHeavy = loadedHeavy?.heavy ?? null;
+		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
+		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
+		sessionSnapshot = null;
+		heavyAttempt = null;
+		loadedHeavy = null;
+		replayAttempt = null;
+		replayedGeneration = generation;
 		activeLifecycle.turnStart = null;
 		activeLifecycle.agentStart = null;
 		activeLifecycle.activeTools.clear();
 		activeLifecycle.modelSelect = null;
-		if (loadedHeavy) {
-			await dispatchHandlers(loadedHeavy, "session_shutdown", event, ctx);
+		const publishedCleanup = retiredHeavy
+			? lifecycleForward.enqueue(() => dispatchHandlers(retiredHeavy, "session_shutdown", event, ctx))
+			: Promise.resolve();
+		const retainedCleanup = retainSettledLifecycleCleanup(lease, [publishedCleanup, retiredAttempt, retiredReplay, lifecycleForward.settled]);
+		try {
+			await publishedCleanup;
+		} finally {
+			await retainedCleanup;
 		}
-		sessionSnapshot = null;
-		replayedGeneration = lifecycleGeneration;
 	});
-
 	pi.on("turn_start", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.turnStart = { event, ctx };
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_start", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_start", event, ctx));
 	});
-
 	pi.on("turn_end", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.turnStart = null;
 		activeLifecycle.agentStart = null;
 		activeLifecycle.activeTools.clear();
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "turn_end", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "turn_end", event, ctx));
 	});
-
 	pi.on("agent_start", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.agentStart = { event, ctx };
 		activeLifecycle.activeTools.clear();
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_start", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_start", event, ctx));
 	});
-
 	pi.on("agent_end", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.agentStart = null;
 		activeLifecycle.activeTools.clear();
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "agent_end", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "agent_end", event, ctx));
 	});
-
 	pi.on("tool_execution_start", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_start", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_start", event, ctx));
 	});
-
 	pi.on("tool_execution_end", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.activeTools.delete(event.toolCallId);
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "tool_execution_end", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_end", event, ctx));
 	});
-
 	pi.on("model_select", async (event, ctx) => {
+		if (activeLease.retired) return;
 		activeLifecycle.modelSelect = { event, ctx };
-		if (loadedHeavy) await dispatchHandlers(loadedHeavy, "model_select", event, ctx);
+		const heavy = loadedHeavy?.heavy;
+		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "model_select", event, ctx));
 	});
-
 	pi.registerShortcut("alt+m", {
 		description: "Open session intercom overlay",
 		handler: async (ctx) => {
-			const heavy = await loadHeavy(ctx);
-			const handler = heavy.shortcuts.get("alt+m")?.handler;
+			const handle = await loadHeavy(ctx);
+			handle.assertCurrent();
+			const handler = handle.heavy.shortcuts.get("alt+m")?.handler;
 			if (!handler) throw new Error("Intercom shortcut implementation not found: alt+m");
 			await handler(ctx);
+			handle.assertCurrent();
 		},
 	});
-
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
 		pi.events.on(eventName, (payload) => {
-			void loadHeavy().then((heavy) => dispatchEventHandlers(heavy, eventName, payload)).catch((error) => {
+			void loadHeavy().then(async (handle) => {
+				handle.assertCurrent();
+				await dispatchEventHandlers(handle.heavy, eventName, payload);
+				handle.assertCurrent();
+			}).catch((error) => {
 				console.error(`Intercom event relay failed (${eventName}):`, error);
 			});
 		});
 	}
-
 	if (hasSubagentIntercomEnv()) {
 		pi.on("session_start", (_event, ctx) => {
-			void loadHeavy(ctx).catch((error) => {
-				console.error("Intercom initialization failed:", error);
-			});
+			void loadHeavy(ctx).catch(() => undefined);
 		});
 	}
-
 	pi.registerTool({
 		name: "intercom",
 		label: "Intercom",
 		description: `Send a message to another local agent session running on this machine.
 Use this to communicate findings, request help, or coordinate work with other sessions.
-
 Usage:
   intercom({ action: "list" })                    → List active sessions
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message
@@ -378,7 +438,7 @@ Usage:
 			replyTo: Type.Optional(Type.String({ description: "Message ID to reply to (for threading or responding to an 'ask')" })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "intercom", args),
-		renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "intercom", args),
+		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "intercom", args),
 		renderCall(args, theme) {
 			const input = args as { action?: string; to?: string; message?: string };
 			const target = input.to ? ` ${input.to}` : "";
@@ -419,7 +479,7 @@ Usage:
 				}, { description: "Structured interview request for reason='interview_request'" })),
 			}),
 			execute: (...args) => executeHeavyTool(loadHeavy, "contact_supervisor", args),
-			renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "contact_supervisor", args),
+			renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "contact_supervisor", args),
 			renderCall(args, theme) {
 				const input = args as { reason?: string; message?: string; interview?: { title?: string } };
 				const reason = input.reason ?? "contact";

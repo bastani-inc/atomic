@@ -1,13 +1,15 @@
-import type { McpExtensionState } from "./state.ts";
-import type { ToolMetadata } from "./types.ts";
-import { getServerPrefix, parseUiPromptHandoff } from "./types.ts";
-import { getFailureAgeSeconds } from "./init.ts";
-import { findToolByName, formatSchema } from "./tool-metadata.ts";
-import { truncateAtWord } from "./utils.ts";
-import { hydrateMissingMetadata } from "./metadata-hydration.ts";
-import type { ProxyToolResult } from "./proxy-types.ts";
+import type { McpExtensionState } from "./state.js";
+import type { ToolMetadata } from "./types.js";
+import { getServerPrefix, parseUiPromptHandoff } from "./types.js";
+import { getFailureAgeSeconds } from "./init.js";
+import { findToolByName, formatSchema } from "./tool-metadata.js";
+import { truncateAtWord } from "./utils.js";
+import { hydrateMissingMetadata } from "./metadata-hydration.js";
+import type { ProxyToolResult } from "./proxy-types.js";
+import { assertMcpStateLease, type AssertMcpStateLease } from "./state-lease.js";
 
-export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
+export function executeUiMessages(state: McpExtensionState, assertActive?: AssertMcpStateLease): ProxyToolResult {
+  assertMcpStateLease(assertActive);
   const sessions = state.completedUiSessions;
 
   if (sessions.length === 0) {
@@ -71,6 +73,7 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
   }
 
   const count = sessions.length;
+  assertMcpStateLease(assertActive);
   state.completedUiSessions = [];
 
   return {
@@ -85,7 +88,8 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
   };
 }
 
-export function executeStatus(state: McpExtensionState): ProxyToolResult {
+export function executeStatus(state: McpExtensionState, assertActive?: AssertMcpStateLease): ProxyToolResult {
+  assertMcpStateLease(assertActive);
   const servers: Array<{ name: string; status: string; toolCount: number; failedAgo: number | null }> = [];
 
   for (const name of Object.keys(state.config.mcpServers)) {
@@ -169,33 +173,46 @@ function prefixHydrationCandidates(state: McpExtensionState, toolName: string): 
     .map(({ serverName }) => serverName);
 }
 
-async function hydrateDescribeMetadata(state: McpExtensionState, toolName: string, server?: string): Promise<void> {
+async function hydrateDescribeMetadata(
+  state: McpExtensionState,
+  toolName: string,
+  server?: string,
+  signal?: AbortSignal,
+  assertActive?: AssertMcpStateLease,
+): Promise<void> {
+  signal?.throwIfAborted();
+  assertMcpStateLease(assertActive);
   if (server) {
-    await hydrateMissingMetadata(state, { server });
+    await hydrateMissingMetadata(state, { server }, signal, assertActive);
     return;
   }
 
   const candidates = prefixHydrationCandidates(state, toolName);
   if (candidates.length > 0) {
     for (const candidate of candidates) {
-      await hydrateMissingMetadata(state, { server: candidate });
+      await hydrateMissingMetadata(state, { server: candidate }, signal, assertActive);
       if (findToolMetadata(state, toolName, candidate)) return;
     }
     return;
   }
 
   if (findToolMetadata(state, toolName)) return;
-  await hydrateMissingMetadata(state);
+  await hydrateMissingMetadata(state, undefined, signal, assertActive);
 }
 
 export async function executeDescribe(
   state: McpExtensionState,
   toolName: string,
   server?: string,
+  signal?: AbortSignal,
+  assertActive?: AssertMcpStateLease,
 ): Promise<ProxyToolResult> {
+  signal?.throwIfAborted();
+  assertMcpStateLease(assertActive);
   let found = findToolMetadata(state, toolName, server);
   if (!found) {
-    await hydrateDescribeMetadata(state, toolName, server);
+    await hydrateDescribeMetadata(state, toolName, server, signal, assertActive);
+    assertMcpStateLease(assertActive);
     found = findToolMetadata(state, toolName, server);
   }
 
@@ -235,7 +252,11 @@ export async function executeSearch(
   regex?: boolean,
   server?: string,
   includeSchemas?: boolean,
+  signal?: AbortSignal,
+  assertActive?: AssertMcpStateLease,
 ): Promise<ProxyToolResult> {
+  signal?.throwIfAborted();
+  assertMcpStateLease(assertActive);
   const showSchemas = includeSchemas !== false;
 
   const matches: Array<{ server: string; tool: ToolMetadata }> = [];
@@ -261,7 +282,8 @@ export async function executeSearch(
       details: { mode: "search", error: "invalid_pattern", query },
     };
   }
-  await hydrateMissingMetadata(state, { server });
+  await hydrateMissingMetadata(state, { server }, signal, assertActive);
+  assertMcpStateLease(assertActive);
 
   for (const [serverName, metadata] of state.toolMetadata.entries()) {
     if (server && serverName !== server) continue;
@@ -319,7 +341,14 @@ export async function executeSearch(
   };
 }
 
-export async function executeList(state: McpExtensionState, server: string): Promise<ProxyToolResult> {
+export async function executeList(
+  state: McpExtensionState,
+  server: string,
+  signal?: AbortSignal,
+  assertActive?: AssertMcpStateLease,
+): Promise<ProxyToolResult> {
+  signal?.throwIfAborted();
+  assertMcpStateLease(assertActive);
   if (!state.config.mcpServers[server]) {
     return {
       content: [{ type: "text" as const, text: `Server "${server}" not found. Use mcp({}) to see available servers.` }],
@@ -328,7 +357,8 @@ export async function executeList(state: McpExtensionState, server: string): Pro
   }
 
   if (!state.toolMetadata.has(server)) {
-    await hydrateMissingMetadata(state, { server });
+    await hydrateMissingMetadata(state, { server }, signal, assertActive);
+    assertMcpStateLease(assertActive);
   }
 
   const metadata = state.toolMetadata.get(server);

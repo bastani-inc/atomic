@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.5` as part of the consolidated dependency refresh; no MCP source changes were needed.
 
+### Fixed
+
+- Replaced one-shot detached MCP startup with generation-safe, retryable single-flight initialization shared by background startup, proxy/direct tools, and readiness-critical commands. Initialization fast paths now validate the active context and exact session lease, commands retain the state they initialized across lazy module imports, and stale or unpublished state cannot execute or publish after shutdown, restart, or context disposal. Replacement startup normally waits for retired initialization plus state/OAuth cleanup, but bounded observed teardown prevents non-abortable SDK work from permanently poisoning later sessions while fencing late completion.
+- Made readiness, lazy-connection, manager-close, and UI-start waits caller-local across direct tools and proxy connect/call/search/describe/list paths. Pre-aborted calls start no producer; one aborted waiter rejects promptly with its exact reason; late shared failures stay observed; late UI runtimes are closed; and proxy modes plus metadata hydration revalidate session ownership after waits and before metadata mutation or SDK side effects.
+- Completed MCP Apps cancellation lifecycles for direct and proxy UI calls by emitting exactly one terminal `tool-cancelled` before session teardown, preserving the exact host abort reason over SDK wrappers, isolating notification failures, keeping success `tool-result` mutually exclusive, forwarding real cancellation events from reused runtimes, and observing asynchronous browser AppBridge send failures.
+
 ## [0.9.5-alpha.9] - 2026-07-09
 
 ### Changed

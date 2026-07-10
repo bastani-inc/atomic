@@ -102,6 +102,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 				frames: params.frames,
 				model: params.model,
 			});
+			signal?.throwIfAborted();
 			const successful = fetchResults.filter((r) => !r.error).length;
 			const totalChars = fetchResults.reduce((sum, r) => sum + r.content.length, 0);
 
@@ -120,7 +121,7 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 				if (result.error) {
 					return {
 						content: [{ type: "text", text: `Error: ${result.error}` }],
-						details: { urls: urlList, urlCount: 1, successful: 0, error: result.error, responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
+						details: { outcome: "all_failed", stage: "fetch", urls: urlList, urlCount: 1, successful: 0, error: result.error, responseId, prompt: params.prompt, timestamp: params.timestamp, frames: params.frames },
 					};
 				}
 
@@ -177,9 +178,13 @@ export function registerContentTools(pi: ExtensionAPI, deps: RegisterContentTool
 			}
 			output += `\n---\nUse get_search_content({ responseId: "${responseId}", urlIndex: 0 }) to retrieve full content.`;
 
+			const allFailed = successful === 0;
 			return {
 				content: [{ type: "text", text: output }],
-				details: { urls: urlList, urlCount: urlList.length, successful, totalChars, responseId },
+				details: {
+					...(allFailed ? { outcome: "all_failed", stage: "fetch", error: `All ${urlList.length} URL fetch(es) failed`, failedUrls: urlList.length } : {}),
+					urls: urlList, urlCount: urlList.length, successful, totalChars, responseId,
+				},
 			};
 		},
 

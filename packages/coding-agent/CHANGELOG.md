@@ -12,6 +12,8 @@
 ### Fixed
 
 - Fixed CLI resolution of unknown/custom model IDs with a recognized `:<thinking>` suffix so the suffix is applied as the thinking level instead of leaking into the synthesized model ID, while preserving registered and unrecognized colon-bearing model IDs.
+- Fixed bundled MCP readiness so failed background initialization is retryable and single-flight within the active session, stale retries cannot publish after shutdown, replacement startup waits for retired initializer/state/OAuth cleanup, and proxy/direct readiness plus lazy-connection and OAuth waits use caller-local cancellation without stopping shared producers. Direct executors reject old-state work on success and failure paths after replacement and close stale newly opened Apps views, SDK resource/tool requests receive the invocation signal, and UI-backed MCP Apps calls emit one terminal cancellation before teardown while preserving the exact host reason over SDK/notification failures.
+- Fixed bundled web-access and Intercom lazy wrappers to retire session-scoped candidates on shutdown, reject calls spanning teardown, and initialize fresh state after restart; host cancellation after web provider/curator execution now preserves its exact abort reason while explicit curator user cancellation remains a normal result.
 
 ## [0.9.5-alpha.9] - 2026-07-09
 

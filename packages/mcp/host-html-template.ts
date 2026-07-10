@@ -1,4 +1,4 @@
-import type { UiHostContext, UiResourceContent, UiResourceCsp } from "./types.ts";
+import type { UiHostContext, UiResourceContent, UiResourceCsp } from "./types.js";
 
 // Use locally bundled AppBridge to avoid CDN Zod bundling issues
 const DEFAULT_APP_BRIDGE_MODULE_URL = "/app-bridge.bundle.js";
@@ -292,7 +292,9 @@ export function buildHostHtmlTemplate(input: HostHtmlTemplateInput): string {
     });
     eventSource.addEventListener("tool-cancelled", (event) => {
       try {
-        bridge.sendToolCancelled(JSON.parse(event.data));
+        void bridge.sendToolCancelled(JSON.parse(event.data)).catch((error) => {
+          showError("Failed to forward cancellation: " + String(error));
+        });
       } catch (error) {
         showError("Failed to forward cancellation: " + String(error));
       }

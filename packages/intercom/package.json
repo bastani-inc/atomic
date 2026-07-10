@@ -18,10 +18,7 @@
     ".": "./index.ts"
   },
   "files": [
-    "index.ts",
-    "types.ts",
-    "config.ts",
-    "reply-tracker.ts",
+    "*.ts",
     "broker/**/*.ts",
     "ui/**/*.ts",
     "skills/**/*",

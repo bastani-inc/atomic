@@ -10,7 +10,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- Reset failed lazy web-access initialization attempts so a later `web_search`/`fetch_content` invocation can retry loading the heavy provider module instead of reusing a rejected startup promise ([#1704](https://github.com/bastani-inc/atomic/issues/1704)).
+- Retry failed lazy initialization and initial or later-generation lifecycle replays before a subsequent `web_search` or `fetch_content` executes, while concurrent cold/retry callers share one attempt ([#1704](https://github.com/bastani-inc/atomic/issues/1704)).
+- Made lazy lifecycle replay generation-safe and session-leased: replay is committed only after successful dispatch, lifecycle changes during replay advance to the latest snapshot, shutdown does not report completion until retired replay/initializer cleanup settles, calls spanning teardown reject, and replacement wrappers cannot be mutated by late old cleanup.
+- Recheck each invocation's abort signal after shared lazy initialization and provider/curator execution, preserving the exact host abort reason without cancelling initialization for other callers while keeping explicit curator user cancellation result-shaped.
+- Classify non-empty all-failed search/fetch batches as host-visible tool errors with provider/fetch stage diagnostics while retaining per-item payloads and keeping partial successes successful.
 
 ## [0.9.4] - 2026-07-03
 

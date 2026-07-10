@@ -1,11 +1,11 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
-import { IntercomClient } from "./broker/client.ts";
-import { spawnBrokerIfNeeded } from "./broker/spawn.ts";
-import { InlineMessageComponent } from "./ui/inline-message.ts";
-import { loadConfig, type IntercomConfig } from "./config.ts";
-import type { SessionInfo, Message } from "./types.ts";
-import { ReplyTracker } from "./reply-tracker.ts";
+import { IntercomClient } from "./broker/client.js";
+import { spawnBrokerIfNeeded } from "./broker/spawn.js";
+import { InlineMessageComponent } from "./ui/inline-message.js";
+import { loadConfig, type IntercomConfig } from "./config.js";
+import type { SessionInfo, Message } from "./types.js";
+import { ReplyTracker } from "./reply-tracker.js";
 import { registerContactSupervisorTool } from "./contact-supervisor-tool.js";
 import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";

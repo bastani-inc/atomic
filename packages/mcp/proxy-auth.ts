@@ -1,8 +1,8 @@
-import type { McpExtensionState } from "./state.ts";
-import { authenticate, supportsOAuth } from "./mcp-auth-flow.ts";
-import { formatAuthRequiredMessage } from "./utils.ts";
+import type { McpExtensionState } from "./state.js";
+import { authenticate, supportsOAuth } from "./mcp-auth-flow.js";
+import { formatAuthRequiredMessage } from "./utils.js";
 
-type AutoAuthResult =
+export type AutoAuthResult =
   | { status: "skipped" }
   | { status: "success" }
   | { status: "failed"; message: string };

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import { renderWebAccessToolResult } from "./result-renderers.js";
+import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, type LifecycleLease } from "./lifecycle-lease.js";
 
 type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
@@ -15,12 +16,18 @@ type CapturedHeavy = {
 	handlers: Map<string, HandlerFn[]>;
 	shortcuts: Map<string, CapturedShortcut>;
 };
+type ShutdownSnapshot = { event: unknown; ctx: ExtensionContext; generation: number };
+type WebLease = LifecycleLease<ShutdownSnapshot>;
 type SessionSnapshot = {
 	eventName: "session_start" | "session_tree";
 	event: unknown;
 	ctx: ExtensionContext;
 	generation: number;
+	lease: WebLease;
 };
+type HeavyHandle = { heavy: CapturedHeavy; assertCurrent: () => void };
+type HeavyAttempt = { lease: WebLease; promise: Promise<HeavyHandle> };
+type ReplayAttempt = { lease: WebLease; heavy: CapturedHeavy; promise: Promise<void> };
 
 function addHandler(captured: CapturedHeavy, event: string, handler: HandlerFn): void {
 	const handlers = captured.handlers.get(event) ?? [];
@@ -65,22 +72,54 @@ function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): ExtensionA
 	}) as ExtensionAPI;
 }
 
-async function executeHeavyTool(
-	loadHeavy: () => Promise<CapturedHeavy>,
-	name: string,
-	args: Parameters<NonNullable<ToolDefinition["execute"]>>,
-): Promise<ReturnType<NonNullable<ToolDefinition["execute"]>>> {
-	const heavy = await loadHeavy();
-	const tool = heavy.tools.get(name);
-	if (!tool?.execute) throw new Error(`Web access tool implementation not found: ${name}`);
-	return tool.execute(...args) as ReturnType<NonNullable<ToolDefinition["execute"]>>;
+function waitForCaller<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+	if (!signal) return promise;
+	signal.throwIfAborted();
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const finish = (callback: () => void): void => {
+			if (settled) return;
+			settled = true;
+			signal.removeEventListener("abort", onAbort);
+			callback();
+		};
+		const onAbort = (): void => finish(() => reject(signal.reason));
+		signal.addEventListener("abort", onAbort, { once: true });
+		void promise.then((value) => finish(() => resolve(value)), (error: unknown) => finish(() => reject(error)));
+		if (signal.aborted) onAbort();
+	});
 }
 
-async function runHeavyCommand(loadHeavy: () => Promise<CapturedHeavy>, name: string, args: string | undefined, ctx: ExtensionContext): Promise<void> {
-	const heavy = await loadHeavy();
-	const command = heavy.commands.get(name);
+async function executeHeavyTool(
+	loadHeavy: () => Promise<HeavyHandle>,
+	name: string,
+	args: Parameters<NonNullable<ToolDefinition["execute"]>>,
+): Promise<Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>> {
+	args[2]?.throwIfAborted();
+	const handle = await waitForCaller(loadHeavy(), args[2]);
+	args[2]?.throwIfAborted();
+	handle.assertCurrent();
+	const tool = handle.heavy.tools.get(name);
+	if (!tool?.execute) throw new Error(`Web access tool implementation not found: ${name}`);
+	let result: Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
+	try {
+		result = await tool.execute(...args);
+	} catch (error) {
+		args[2]?.throwIfAborted();
+		throw error;
+	}
+	args[2]?.throwIfAborted();
+	handle.assertCurrent();
+	return result as Awaited<ReturnType<NonNullable<ToolDefinition["execute"]>>>;
+}
+
+async function runHeavyCommand(loadHeavy: () => Promise<HeavyHandle>, name: string, args: string | undefined, ctx: ExtensionContext): Promise<void> {
+	const handle = await loadHeavy();
+	handle.assertCurrent();
+	const command = handle.heavy.commands.get(name);
 	if (!command) throw new Error(`Web access command implementation not found: ${name}`);
 	await command.handler(args, ctx);
+	handle.assertCurrent();
 }
 
 function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, args: ToolRenderResultArgs): ReturnType<NonNullable<ToolDefinition["renderResult"]>> {
@@ -106,62 +145,161 @@ function getInitialShortcutConfig(): { curate: string; activity: string } {
 	return defaults;
 }
 
+function isAllFailedWebResult(toolName: string, details: unknown): boolean {
+	if (toolName !== "web_search" && toolName !== "fetch_content") return false;
+	if (!details || typeof details !== "object") return false;
+	return Reflect.get(details, "outcome") === "all_failed";
+}
+
 export default function webAccess(pi: ExtensionAPI) {
-	let heavyPromise: Promise<CapturedHeavy> | null = null;
-	let loadedHeavy: CapturedHeavy | null = null;
+	let heavyAttempt: HeavyAttempt | null = null;
+	let loadedHeavy: HeavyHandle | null = null;
 	let sessionSnapshot: SessionSnapshot | null = null;
 	let lifecycleGeneration = 0;
+	let nextLeaseId = 1;
+	let activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++);
 	let replayedGeneration = 0;
+	let replayAttempt: ReplayAttempt | null = null;
+	const invalidatedMessage = "Web access initialization was invalidated by session shutdown";
 
-	async function replayCurrentSession(heavy: CapturedHeavy): Promise<void> {
-		if (!sessionSnapshot || replayedGeneration === sessionSnapshot.generation) return;
-		replayedGeneration = sessionSnapshot.generation;
-		await dispatchHandlers(heavy, sessionSnapshot.eventName, sessionSnapshot.event, sessionSnapshot.ctx);
+	function assertLease(lease: WebLease): void {
+		assertCurrentLifecycleLease(activeLease, lease, invalidatedMessage);
 	}
 
-	async function loadHeavy(): Promise<CapturedHeavy> {
-		if (!heavyPromise) {
-			heavyPromise = (async () => {
-				const captured: CapturedHeavy = { tools: new Map(), commands: new Map(), handlers: new Map(), shortcuts: new Map() };
-				const mod = await import("./index-heavy.js");
-				await mod.default(createHeavyProxy(pi, captured));
-				loadedHeavy = captured;
-				await replayCurrentSession(captured);
-				return captured;
-			})().catch((error) => {
-				heavyPromise = null;
-				loadedHeavy = null;
-				throw error;
-			});
+	function createHandle(heavy: CapturedHeavy, lease: WebLease): HeavyHandle {
+		return { heavy, assertCurrent: () => assertLease(lease) };
+	}
+
+	async function waitForPriorCleanup(lease: WebLease): Promise<void> {
+		await lease.priorCleanup;
+		assertLease(lease);
+	}
+
+	async function replayCurrentSession(heavy: CapturedHeavy, lease: WebLease, onReplay?: (ctx: ExtensionContext) => void): Promise<void> {
+		for (;;) {
+			assertLease(lease);
+			const snapshot = sessionSnapshot;
+			if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) return;
+			onReplay?.(snapshot.ctx);
+			await dispatchHandlers(heavy, snapshot.eventName, snapshot.event, snapshot.ctx);
+			assertLease(lease);
+			if (sessionSnapshot === snapshot) {
+				replayedGeneration = snapshot.generation;
+				return;
+			}
 		}
-		return heavyPromise;
+	}
+
+	async function ensureCurrentSessionReplayed(heavy: CapturedHeavy, lease: WebLease, onReplay?: (ctx: ExtensionContext) => void): Promise<void> {
+		await waitForPriorCleanup(lease);
+		const snapshot = sessionSnapshot;
+		if (!snapshot || snapshot.lease !== lease || replayedGeneration === snapshot.generation) return;
+		const existing = replayAttempt;
+		if (existing?.lease === lease && existing.heavy === heavy) return existing.promise;
+		let promise: Promise<void>;
+		promise = replayCurrentSession(heavy, lease, onReplay).finally(() => {
+			if (replayAttempt?.promise === promise) replayAttempt = null;
+		});
+		replayAttempt = { lease, heavy, promise };
+		await promise;
+	}
+
+	async function loadHeavy(): Promise<HeavyHandle> {
+		const lease = activeLease;
+		if (lease.retired) throw new Error("Web access initialization unavailable: no active session");
+		await waitForPriorCleanup(lease);
+		const existing = heavyAttempt;
+		if (existing?.lease === lease) {
+			const handle = await existing.promise;
+			assertLease(lease);
+			await ensureCurrentSessionReplayed(handle.heavy, lease);
+			assertLease(lease);
+			return handle;
+		}
+		let promise: Promise<HeavyHandle>;
+		promise = (async (): Promise<HeavyHandle> => {
+			const captured: CapturedHeavy = { tools: new Map(), commands: new Map(), handlers: new Map(), shortcuts: new Map() };
+			let replayCtx: ExtensionContext | null = null;
+			let cleaned = false;
+			const cleanupCandidate = async (): Promise<void> => {
+				const shutdown = lease.shutdown;
+				const cleanupCtx = shutdown?.ctx ?? replayCtx;
+				if (!cleanupCtx || cleaned) return;
+				cleaned = true;
+				try {
+					await dispatchHandlers(captured, "session_shutdown", shutdown?.event ?? { type: "session_shutdown", reason: "quit" }, cleanupCtx);
+				} catch (cleanupError) {
+					console.error("[pi-web-access] Failed to clean rejected lazy candidate:", cleanupError);
+				}
+			};
+			try {
+				const mod = await import("./index-heavy.js");
+				assertLease(lease);
+				await mod.default(createHeavyProxy(pi, captured));
+				assertLease(lease);
+				await ensureCurrentSessionReplayed(captured, lease, (ctx) => { replayCtx = ctx; });
+				assertLease(lease);
+				const handle = createHandle(captured, lease);
+				loadedHeavy = handle;
+				return handle;
+			} catch (error) {
+				await cleanupCandidate();
+				throw error;
+			}
+		})();
+		heavyAttempt = { lease, promise };
+		void promise.then(
+			() => undefined,
+			() => { if (heavyAttempt?.promise === promise) heavyAttempt = null; },
+		);
+		return promise;
 	}
 
 	pi.on("session_start", async (event, ctx) => {
+		if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
+		const lease = activeLease;
+		await waitForPriorCleanup(lease);
 		const generation = ++lifecycleGeneration;
-		sessionSnapshot = { eventName: "session_start", event, ctx, generation };
-		if (loadedHeavy) {
-			replayedGeneration = generation;
-			await dispatchHandlers(loadedHeavy, "session_start", event, ctx);
-		}
+		sessionSnapshot = { eventName: "session_start", event, ctx, generation, lease };
+		if (loadedHeavy) await ensureCurrentSessionReplayed(loadedHeavy.heavy, lease);
 	});
 
 	pi.on("session_tree", async (event, ctx) => {
+		const lease = activeLease;
+		if (lease.retired) return;
+		await lease.priorCleanup;
+		if (activeLease !== lease || lease.retired) return;
 		const generation = ++lifecycleGeneration;
-		sessionSnapshot = { eventName: "session_tree", event, ctx, generation };
-		if (loadedHeavy) {
-			replayedGeneration = generation;
-			await dispatchHandlers(loadedHeavy, "session_tree", event, ctx);
-		}
+		sessionSnapshot = { eventName: "session_tree", event, ctx, generation, lease };
+		if (loadedHeavy) await ensureCurrentSessionReplayed(loadedHeavy.heavy, lease);
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
-		++lifecycleGeneration;
-		if (loadedHeavy) {
-			await dispatchHandlers(loadedHeavy, "session_shutdown", event, ctx);
-		}
+		const lease = activeLease;
+		const generation = ++lifecycleGeneration;
+		const shutdown = { event, ctx, generation };
+		retireLifecycleLease(lease, shutdown);
+		const retiredHeavy = loadedHeavy?.heavy ?? null;
+		const retiredAttempt = heavyAttempt?.lease === lease ? heavyAttempt.promise : null;
+		const retiredReplay = replayAttempt?.lease === lease ? replayAttempt.promise : null;
 		sessionSnapshot = null;
-		replayedGeneration = lifecycleGeneration;
+		heavyAttempt = null;
+		loadedHeavy = null;
+		replayAttempt = null;
+		replayedGeneration = generation;
+		const publishedCleanup = retiredHeavy
+			? dispatchHandlers(retiredHeavy, "session_shutdown", event, ctx)
+			: Promise.resolve();
+		const retainedCleanup = retainSettledLifecycleCleanup(lease, [publishedCleanup, retiredAttempt, retiredReplay]);
+		try {
+			await publishedCleanup;
+		} finally {
+			await retainedCleanup;
+		}
+	});
+
+	pi.on("tool_result", (event) => {
+		if (isAllFailedWebResult(event.toolName, event.details)) return { isError: true };
 	});
 
 	const shortcuts = getInitialShortcutConfig();
@@ -169,10 +307,12 @@ export default function webAccess(pi: ExtensionAPI) {
 		pi.registerShortcut(shortcut, {
 			description: name === "curate" ? "Open web search curator" : "Show web search activity",
 			handler: async (ctx) => {
-				const heavy = await loadHeavy();
-				const handler = heavy.shortcuts.get(shortcut)?.handler;
+				const handle = await loadHeavy();
+				handle.assertCurrent();
+				const handler = handle.heavy.shortcuts.get(shortcut)?.handler;
 				if (!handler) throw new Error(`Web access shortcut implementation not found: ${shortcut}`);
 				await handler(ctx);
+				handle.assertCurrent();
 			},
 		});
 	}
@@ -193,7 +333,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			workflow: Type.Optional(Type.String({ enum: ["none", "summary-review"], description: "Search workflow mode: none = no curator, summary-review = open curator with auto summary draft (default)" })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "web_search", args),
-		renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "web_search", args),
+		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "web_search", args),
 		renderCall(args, theme) {
 			const input = args as { query?: string; queries?: string[] };
 			const label = input.queries?.length ? `${input.queries.length} queries` : input.query ?? "(no query)";
@@ -211,7 +351,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			maxTokens: Type.Optional(Type.Integer({ minimum: 1000, maximum: 50000, description: "Maximum tokens of code/documentation context to return (default: 5000)" })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "code_search", args),
-		renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "code_search", args),
+		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "code_search", args),
 	});
 
 	pi.registerTool({
@@ -229,7 +369,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			model: Type.Optional(Type.String({ description: "Override the Gemini model for video/YouTube analysis." })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "fetch_content", args),
-		renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "fetch_content", args),
+		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "fetch_content", args),
 	});
 
 	pi.registerTool({
@@ -245,7 +385,7 @@ export default function webAccess(pi: ExtensionAPI) {
 			urlIndex: Type.Optional(Type.Number({ description: "Get content for URL at index" })),
 		}),
 		execute: (...args) => executeHeavyTool(loadHeavy, "get_search_content", args),
-		renderResult: (...args) => renderHeavyToolResult(loadedHeavy, "get_search_content", args),
+		renderResult: (...args) => renderHeavyToolResult(loadedHeavy?.heavy ?? null, "get_search_content", args),
 	});
 
 	for (const [name, description] of [

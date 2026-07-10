@@ -251,6 +251,33 @@ describe("package metadata", () => {
         assert.deepEqual(workflowsPackageJson.pi.builtin, ["./builtin"]);
     });
 
+    test("Intercom ships all top-level runtime TypeScript modules through a bounded pattern", () => {
+        const topLevelPattern = "*.ts";
+        assert.ok(intercomPackageJson.files.includes(topLevelPattern));
+        const matchedTopLevelModules = new Set(
+            new Bun.Glob(topLevelPattern).scanSync({
+                cwd: "packages/intercom",
+                onlyFiles: true,
+            }),
+        );
+        for (const runtimeModule of [
+            "index-heavy.ts",
+            "result-renderers.ts",
+            "lifecycle-lease.ts",
+            "lazy-tool-execution.ts",
+        ]) {
+            assert.ok(
+                matchedTopLevelModules.has(runtimeModule),
+                `${runtimeModule} must be included by ${topLevelPattern}`,
+            );
+        }
+        assert.ok(intercomPackageJson.files.includes("broker/**/*.ts"));
+        assert.ok(intercomPackageJson.files.includes("ui/**/*.ts"));
+        assert.ok(intercomPackageJson.files.includes("skills/**/*"));
+        assert.ok(intercomPackageJson.files.includes("README.md"));
+        assert.ok(intercomPackageJson.files.includes("CHANGELOG.md"));
+    });
+
     test("natives package follows the generated NAPI-RS package layout", () => {
         assert.equal(nativesPackageJson.name, "@bastani/atomic-natives");
         assert.equal(nativesPackageJson.main, "./native/index.js");

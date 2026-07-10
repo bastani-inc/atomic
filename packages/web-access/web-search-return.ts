@@ -48,6 +48,7 @@ function storeAndPublishSearch(pi: ExtensionAPI, results: QueryResultData[]): st
 export function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchReturnDeps): SearchReturnPayload {
 	const sc = opts.results.filter(r => !r.error).length;
 	const tr = opts.results.reduce((sum, r) => sum + r.results.length, 0);
+	const allFailed = opts.results.length > 0 && sc === 0;
 
 	const hasApprovedSummary = typeof opts.approvedSummary === "string" && opts.approvedSummary.trim().length > 0;
 	let output = "";
@@ -98,6 +99,12 @@ export function buildSearchReturn(opts: SearchReturnOptions, deps: BuildSearchRe
 	return {
 		content: [{ type: "text", text: output.trim() }],
 		details: {
+			...(allFailed ? {
+				outcome: "all_failed",
+				stage: "provider_execution",
+				failedQueries: opts.results.length,
+				error: `All ${opts.results.length} search provider request(s) failed`,
+			} : {}),
 			queries: opts.queryList,
 			queryCount: opts.queryList.length,
 			successfulQueries: sc,

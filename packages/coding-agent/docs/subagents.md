@@ -118,6 +118,8 @@ For adversarial review or research, prefer fresh context so the specialist inspe
 
 For parallel implementation work, `worktree: true` can give each child an isolated git worktree so concurrent edits do not clobber each other.
 
+Fresh child processes use normal Atomic package discovery when an agent omits `extensions`, so bundled lightweight MCP, web-access, and Intercom wrappers are available just as they are in the parent. An explicit `extensions` field (including an empty list) intentionally switches the child to extension-allowlist mode and excludes unlisted builtins; it does not inherit the parent's normal discovery set.
+
 When a subagent call, parallel task, chain step, or background run uses a `cwd`, Atomic validates that working directory before starting the child runtime. Missing or non-directory paths are reported as `cwd` problems instead of lower-level process-spawn errors, so failures point at the requested child workspace rather than at the runtime binary.
 
 ## Nested and fanout boundaries
