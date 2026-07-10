@@ -9,6 +9,10 @@
 
 - Changed the bundled `ralph` workflow review fan-out from three reviewers to two (`reviewer-a` and `reviewer-b`), removing `reviewer-c` and its GLM-led model chain while keeping unanimous approval across the remaining reviewers.
 
+### Fixed
+
+- Fixed CLI resolution of unknown/custom model IDs with a recognized `:<thinking>` suffix so the suffix is applied as the thinking level instead of leaking into the synthesized model ID, while preserving registered and unrecognized colon-bearing model IDs.
+
 ## [0.9.5-alpha.9] - 2026-07-09
 
 ### Changed
