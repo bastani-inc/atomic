@@ -320,6 +320,16 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         this.editor.setText("");
         return;
       }
+      if (text === "/context") {
+        this.handleContextCommand();
+        this.editor.setText("");
+        return;
+      }
+      if (text === "/cost") {
+        this.editor.setText("");
+        await this.handleCostCommand();
+        return;
+      }
       if (text === "/changelog") {
         this.handleChangelogCommand();
         this.editor.setText("");

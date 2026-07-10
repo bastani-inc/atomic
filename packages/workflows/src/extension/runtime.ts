@@ -21,6 +21,7 @@ import {
   type WorkflowDetails,
   type WorkflowModelCatalogPort,
   type WorkflowExecutionPolicy,
+  type WorkflowUsageRollupPort,
 } from "../shared/types.js";
 import type { StageAdapters } from "../runs/foreground/stage-runner.js";
 import { resolveAndValidateInputs, runChain, runParallel, runTask, type RunOpts } from "../runs/foreground/executor.js";
@@ -67,14 +68,11 @@ export interface ExtensionRuntimeOpts {
   /** Stage adapters forwarded to the executor (prompt/complete). */
   adapters?: StageAdapters;
 
-  /** Store override (defaults to the singleton store). */
   store?: Store;
-  /** Cancellation registry forwarded to the executor. */
   cancellation?: CancellationRegistry;
-  /** Persistence port forwarded to the executor. */
   persistence?: WorkflowPersistencePort;
-  /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
+  usageRollup?: WorkflowUsageRollupPort;
   /** Workflow-native pi-intercom result/control event delivery. */
   intercom?: WorkflowResultIntercomPort;
   /**
@@ -155,6 +153,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const cancellation = opts.cancellation;
   const persistence = opts.persistence;
   const mcp = opts.mcp;
+  const usageRollup = opts.usageRollup;
   const config = opts.config;
   const intercom = opts.intercom;
   const models = opts.models;
@@ -188,6 +187,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       cancellation,
       persistence,
       mcp,
+      usageRollup,
       config: effectiveConfig,
       models,
       ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
@@ -434,7 +434,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     get registry(): WorkflowRegistry {
       return registry;
     },
-
     async dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult> {
       await ensureDbosReady();
       const defaultSessionDir = resolveDefaultStageSessionDir?.();
@@ -446,6 +445,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
         jobs,
         persistence,
         mcp,
+        usageRollup,
         config,
         models,
         policy: options?.policy,

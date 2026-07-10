@@ -3,8 +3,8 @@
  * cross-ref: spec §5.5
  */
 
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
-
 export type RunStatus = "pending" | "running" | "paused" | WorkflowExitStatus | "failed" | "killed";
 export type StageStatus =
   | "pending"
@@ -205,6 +205,9 @@ export interface StageSnapshot {
    */
   sessionId?: string;
   sessionFile?: string;
+  usage?: Usage;
+  /** True when `usage` is an exact settled stage total; false marks a lower-bound persisted rollup. */
+  usageComplete?: boolean;
   /** Effective model id selected for this stage after fallback resolution. */
   model?: string;
   /** True when Codex fast mode applied to this workflow stage. */

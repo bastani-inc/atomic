@@ -6,6 +6,7 @@
  * through gracefully when the runtime doesn't support the method.
  */
 
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import type { WorkflowExitStatus, WorkflowInputValues, WorkflowOutputValues } from "./types.js";
 import type {
   WorkflowFailureCode,
@@ -91,6 +92,8 @@ export interface StageEndPayload {
   readonly skippedReason?: string;
   readonly sessionId?: string;
   readonly sessionFile?: string;
+  readonly usage?: Usage;
+  readonly usageComplete?: boolean;
   readonly replayKey?: string;
   readonly replayedFromStageId?: string;
   readonly replayed?: boolean;
@@ -208,6 +211,8 @@ export function appendStageEnd(
     ...(payload.skippedReason !== undefined ? { skippedReason: payload.skippedReason } : {}),
     ...(payload.sessionId !== undefined ? { sessionId: payload.sessionId } : {}),
     ...(payload.sessionFile !== undefined ? { sessionFile: payload.sessionFile } : {}),
+    ...(payload.usage !== undefined ? { usage: payload.usage } : {}),
+    ...(payload.usageComplete !== undefined ? { usageComplete: payload.usageComplete } : {}),
     ...(payload.replayKey !== undefined ? { replayKey: payload.replayKey } : {}),
     ...(payload.replayedFromStageId !== undefined ? { replayedFromStageId: payload.replayedFromStageId } : {}),
     ...(payload.replayed !== undefined ? { replayed: payload.replayed } : {}),

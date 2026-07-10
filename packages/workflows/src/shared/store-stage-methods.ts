@@ -22,6 +22,7 @@ type StageStoreMethods = Pick<
   | "recordStageWorkflowChildRun"
   | "recordToolStart"
   | "recordToolEnd"
+  | "recordStageUsage"
   | "recordStageEnd"
   | "recordStageSession"
   | "recordStageAttachable"
@@ -87,6 +88,16 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
       context.bumpAndNotify();
     },
 
+    recordStageUsage(runId: string, stageId: string, usage: import("@earendil-works/pi-ai/compat").Usage, usageComplete?: boolean): void {
+      const run = context.findRun(runId);
+      if (!run) return;
+      const stage = context.findStage(run, stageId);
+      if (!stage) return;
+      stage.usage = usage;
+      if (usageComplete !== undefined) stage.usageComplete = usageComplete;
+      context.bumpAndNotify();
+    },
+
     recordStageEnd(runId: string, stage: StageSnapshot): void {
       const run = context.findRun(runId);
       if (!run) return;
@@ -107,6 +118,8 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
       existing.error = stage.error;
       if (stage.sessionId !== undefined) existing.sessionId = stage.sessionId;
       if (stage.sessionFile !== undefined) existing.sessionFile = stage.sessionFile;
+      if (stage.usage !== undefined) existing.usage = stage.usage;
+      if (stage.usageComplete !== undefined) existing.usageComplete = stage.usageComplete;
       existing.failureKind = stage.failureKind;
       existing.failureCode = stage.failureCode;
       existing.failureRecoverability = stage.failureRecoverability;

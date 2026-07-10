@@ -35,7 +35,9 @@ import { agentSessionRetryMethods } from "./agent-session-retry.ts";
 import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
+import { agentSessionTransitiveUsageMethods } from "./agent-session-transitive-usage.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
+import type { TransitiveUsageAggregator } from "./transitive-usage.ts";
 import type {
 	AgentSessionConfig,
 	AgentSessionEventListener,
@@ -64,6 +66,7 @@ export type {
 } from "./agent-session-types.ts";
 export { parseSkillBlock } from "./agent-session-skill-block.ts";
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
+export type { DescendantUsageReport, TransitiveUsage } from "./transitive-usage.ts";
 
 export class AgentSession {
 	readonly agent: Agent;
@@ -127,6 +130,8 @@ export class AgentSession {
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
 	protected _asyncJobManagerSessionId: symbol;
+	protected _transitiveUsageAggregator!: TransitiveUsageAggregator;
+	protected _unsubscribeDescendantUsage?: () => void;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -156,6 +161,7 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+		internals._initializeTransitiveUsage();
 	}
 }
 
@@ -178,4 +184,5 @@ Object.assign(
 	agentSessionBashMethods,
 	agentSessionTreeMethods,
 	agentSessionExportMethods,
+	agentSessionTransitiveUsageMethods,
 );

@@ -173,6 +173,7 @@ export interface ExtensionAPI {
   getWorkflowResources?: () => readonly WorkflowResourceInfo[];
   refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
   getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
+  getSessionId?: () => string;
   registerShortcut?: (
     key: string,
     opts: {

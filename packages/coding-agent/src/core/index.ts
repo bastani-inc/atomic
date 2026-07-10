@@ -7,9 +7,11 @@ export {
 	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type DescendantUsageReport,
 	type ModelCycleResult,
 	type PromptOptions,
 	type SessionStats,
+	type TransitiveUsage,
 } from "./agent-session.ts";
 export {
 	AgentSessionRuntime,

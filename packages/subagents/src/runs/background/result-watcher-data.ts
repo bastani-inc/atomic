@@ -22,6 +22,9 @@ export interface ResultFileData {
 	mode?: string;
 	summary?: string;
 	results?: ResultFileChild[];
+	transitiveUsage?: unknown;
+	transitiveUsageComplete?: boolean;
+	transitiveUsageSessionFiles?: string[];
 	nestedChildren?: unknown;
 	sessionId?: string;
 	cwd?: string;

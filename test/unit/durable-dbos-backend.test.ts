@@ -129,12 +129,15 @@ describe("DbosDurableBackend (mock SDK)", () => {
   });
 
   test("stage checkpoint envelope round-trips hydration metadata", () => {
+    const usage = { input: 12, output: 3, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 1.25 } };
     const cp: DurableStageCheckpoint = {
       kind: "stage", workflowId: "wf-stage-meta", checkpointId: "stage:review:1", name: "review",
       replayKey: "stage:review:1", output: { verdict: "pass" }, completedAt: 3000,
       startedAt: 1000, endedAt: 3000, durationMs: 2000, result: "review passed",
       sessionId: "sid", sessionFile: "/tmp/review.jsonl", model: "gpt-test", fastMode: true,
       attemptedModels: ["gpt-test"], modelAttempts: [{ model: "gpt-test", success: true }],
+      usage,
+      usageComplete: false,
     };
 
     const env = encodeCheckpoint(cp);
@@ -142,6 +145,8 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(env.durationMs, 2000);
     assert.equal(env.result, "review passed");
     assert.deepEqual(env.attemptedModels, ["gpt-test"]);
+    assert.deepEqual(env.usage, usage);
+    assert.equal(env.usageComplete, false);
 
     const decoded = decodeToCheckpoint("wf-stage-meta", "stage:review:1", env);
     assert.ok(decoded?.kind === "stage");
@@ -153,6 +158,8 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(decoded.fastMode, true);
     assert.deepEqual(decoded.attemptedModels, ["gpt-test"]);
     assert.equal(decoded.modelAttempts?.[0]?.success, true);
+    assert.deepEqual(decoded.usage, usage);
+    assert.equal(decoded.usageComplete, false);
   });
 
   test("flush waits for queued async checkpoint writes", async () => {

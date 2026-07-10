@@ -16,10 +16,32 @@ import type { ProviderCompat, ProviderOverride } from "./model-registry-types.ts
 const GITHUB_COPILOT_API_VERSION_HEADER = "X-GitHub-Api-Version";
 const GITHUB_COPILOT_API_VERSION = "2026-06-01";
 
+
+function hasKnownCost(cost: Model<Api>["cost"]): boolean {
+	if (cost.input > 0 || cost.output > 0 || cost.cacheRead > 0 || cost.cacheWrite > 0) return true;
+	return cost.tiers?.some((tier) => tier.input > 0 || tier.output > 0 || tier.cacheRead > 0 || tier.cacheWrite > 0) ?? false;
+}
+
+function shouldUseCost(existing: Model<Api>["cost"] | undefined, candidate: Model<Api>["cost"]): boolean {
+	if (!hasKnownCost(candidate)) return false;
+	if (!existing) return true;
+	return !existing.tiers?.length && Boolean(candidate.tiers?.length);
+}
+function copilotCostByModelId(): Map<string, Model<Api>["cost"]> {
+	const costs = new Map<string, Model<Api>["cost"]>();
+	for (const provider of getProviders()) {
+		if (provider === "github-copilot") continue;
+		for (const model of getModels(provider as KnownProvider) as Model<Api>[]) {
+			if (shouldUseCost(costs.get(model.id), model.cost)) costs.set(model.id, model.cost);
+		}
+	}
+	return costs;
+}
+
 function withDynamicGitHubCopilotModels(provider: string, models: Model<Api>[]): Model<Api>[] {
 	if (provider !== "github-copilot") return models;
 	const existingIds = new Set(models.map((model) => model.id));
-	const template = copilotTemplateFromModels(models);
+	const template = { ...copilotTemplateFromModels(models), costById: copilotCostByModelId() };
 	const dynamicModels = synthesizeCopilotCatalogModels(getActiveCopilotModelCatalog(), existingIds, template);
 	return dynamicModels.length === 0 ? models : [...models, ...dynamicModels];
 }

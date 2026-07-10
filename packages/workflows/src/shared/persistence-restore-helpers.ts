@@ -1,4 +1,5 @@
 import { Value } from "typebox/value";
+import type { Usage } from "@earendil-works/pi-ai/compat";
 import { workflowSerializableObjectSchema } from "./serializable.js";
 import type { Store } from "./store.js";
 import type { NormalizedSessionEntry as SessionEntry } from "./persistence-restore.js";
@@ -76,6 +77,8 @@ export function _buildStageSnapshots(
       const skippedReason = entry.payload["skippedReason"];
       const sessionId = entry.payload["sessionId"];
       const sessionFile = entry.payload["sessionFile"];
+      const usage = entry.payload["usage"];
+      const usageComplete = entry.payload["usageComplete"];
       if (typeof stageId !== "string") continue;
       endedStages.add(stageId);
       const snap = stageMap.get(stageId);
@@ -93,6 +96,8 @@ export function _buildStageSnapshots(
         if (typeof skippedReason === "string") snap.skippedReason = skippedReason;
         if (typeof sessionId === "string") snap.sessionId = sessionId;
         if (typeof sessionFile === "string") snap.sessionFile = sessionFile;
+        if (isUsage(usage)) snap.usage = usage;
+        if (typeof usageComplete === "boolean") snap.usageComplete = usageComplete;
         Object.assign(snap, replayMetadata(entry.payload), workflowChildMetadata(entry.payload));
       }
     }
@@ -110,6 +115,18 @@ export function _buildStageSnapshots(
   }
 
   return [...stageMap.values()];
+}
+
+function isUsage(value: unknown): value is Usage {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<Usage>;
+  return typeof candidate.input === "number" &&
+    typeof candidate.output === "number" &&
+    typeof candidate.cacheRead === "number" &&
+    typeof candidate.cacheWrite === "number" &&
+    typeof candidate.cost === "object" &&
+    candidate.cost !== null &&
+    typeof candidate.cost.total === "number";
 }
 
 function hasRestoredAncestor(

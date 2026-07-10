@@ -182,6 +182,20 @@ export function makeStageChatViewForSlashCommand(callbacks: {
 }
 
 export function fakeFooterAgentSession(isStreaming = false): AgentSession {
+    const usage = {
+        input: 1200,
+        output: 3400,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 4600,
+        cost: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            total: 0.123,
+        },
+    };
     return {
         state: {
             model: {
@@ -197,23 +211,7 @@ export function fakeFooterAgentSession(isStreaming = false): AgentSession {
             getEntries: () => [
                 {
                     type: "message",
-                    message: {
-                        role: "assistant",
-                        usage: {
-                            input: 1200,
-                            output: 3400,
-                            cacheRead: 0,
-                            cacheWrite: 0,
-                            totalTokens: 4600,
-                            cost: {
-                                input: 0,
-                                output: 0,
-                                cacheRead: 0,
-                                cacheWrite: 0,
-                                total: 0.123,
-                            },
-                        },
-                    },
+                    message: { role: "assistant", usage },
                 },
             ],
         },
@@ -227,6 +225,20 @@ export function fakeFooterAgentSession(isStreaming = false): AgentSession {
             tokens: 46800,
             contextWindow: 200000,
             percent: 23.4,
+        }),
+        getTransitiveUsage: () => ({
+            self: usage,
+            descendants: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            total: usage,
+            complete: true,
+            breakdown: [],
         }),
         isStreaming,
     } as unknown as AgentSession;

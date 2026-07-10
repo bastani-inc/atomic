@@ -18,7 +18,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
-import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
+import type { WorkflowDefinition, WorkflowPersistencePort, WorkflowUsageRollupPort } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
@@ -318,6 +318,13 @@ describe("dispatch run forwards persistence", () => {
     const { persistence } = makePersistence();
     const opts: DispatcherOpts = { registry, persistence };
     assert.equal(opts.persistence, persistence);
+  });
+
+  test("DispatcherOpts accepts usageRollup field — type-level check", () => {
+    const registry = createRegistry([]);
+    const usageRollup: WorkflowUsageRollupPort = { emitStageRollup: () => undefined };
+    const opts: DispatcherOpts = { registry, usageRollup };
+    assert.equal(opts.usageRollup, usageRollup);
   });
 
   test("dispatch without persistence — background run still completes", async () => {

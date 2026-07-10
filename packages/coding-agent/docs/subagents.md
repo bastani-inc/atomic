@@ -49,6 +49,8 @@ Intercom connection remains tool-driven. Foreground and background launches do n
 
 Atomic's implementation adapts the prompt foreground release and later-result recovery contracts proven in `nicobailon/pi-subagents` commits `1b55c8c`, `589e51e`, `68fb528`, and `9dfe3df`; it retains Atomic's broker and raw-TypeScript architecture rather than copying upstream's filesystem transport.
 
+Completed subagent runs report their transitive usage back to the parent session. The parent footer's dollar figure therefore includes foreground and async/background subagent spend (including nested subagents) exactly once, while the footer token badges and context percentage remain scoped to the parent session.
+
 ## Migration from acceptance gates
 
 If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:

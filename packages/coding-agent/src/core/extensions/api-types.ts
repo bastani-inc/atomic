@@ -313,4 +313,6 @@ export interface ExtensionAPI {
 
 	/** Shared event bus for extension communication. */
 	events: EventBus;
+	/** Current root session id for session-scoped extension events. */
+	getSessionId(): string;
 }

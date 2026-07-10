@@ -180,6 +180,9 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			getSessionName: () => {
 				return this.sessionManager.getSessionName();
 			},
+			getSessionId: () => {
+				return this.sessionManager.getSessionId();
+			},
 			setLabel: (entryId, label) => {
 				this.sessionManager.appendLabelChange(entryId, label);
 			},

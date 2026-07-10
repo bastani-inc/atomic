@@ -48,10 +48,12 @@ export {
 	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
+	type DescendantUsageReport,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
 	type PromptOptions,
 	parseSkillBlock,
+	type TransitiveUsage,
 	type SessionStats,
 } from "./core/agent-session.ts";
 // Auth and model registry

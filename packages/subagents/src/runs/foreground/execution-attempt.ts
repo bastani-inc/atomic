@@ -7,6 +7,7 @@ import {
 	INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, getSubagentDepthEnv,
 } from "../../shared/types.ts";
 import { extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
+import { usageCostTotal } from "../../shared/usage-rollup.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
@@ -299,7 +300,7 @@ export async function runSingleAttempt(
 						result.usage.output += u.output || 0;
 						result.usage.cacheRead += u.cacheRead || 0;
 						result.usage.cacheWrite += u.cacheWrite || 0;
-						result.usage.cost += u.cost?.total || 0;
+						result.usage.cost += usageCostTotal(u.cost);
 						progress.tokens = result.usage.input + result.usage.output;
 					}
 					if (!result.model && evt.message.model) result.model = evt.message.model;

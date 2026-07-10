@@ -364,13 +364,13 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	};
 
 	const handleComplete = (data: unknown) => {
-		const result = data as { id?: string; success?: boolean; asyncDir?: string };
+		const result = data as { id?: string; success?: boolean; asyncDir?: string; state?: string };
 		const asyncId = result.id;
 		if (!asyncId) return;
 		const job = state.asyncJobs.get(asyncId);
 		let nestedRefreshFailed = false;
 		if (job) {
-			job.status = result.success ? "complete" : "failed";
+			job.status = result.state === "paused" ? "paused" : result.success ? "complete" : "failed";
 			job.updatedAt = Date.now();
 			if (result.asyncDir) job.asyncDir = result.asyncDir;
 			try {
