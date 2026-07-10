@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -26,8 +25,14 @@ function parseFixtureResult<T>(result: ReturnType<typeof spawnSync>): T {
 	return JSON.parse(String(result.stdout).trim().split(/\r?\n/).at(-1) ?? "{}") as T;
 }
 
+export function createRepositoryFixtureDir(name: string): string {
+	const fixtureRoot = resolve(repoRoot, ".atomic-test-fixtures");
+	mkdirSync(fixtureRoot, { recursive: true });
+	return mkdtempSync(join(fixtureRoot, `${name}-`));
+}
+
 export function runWebFixture<T>(heavySource: string, scriptBody: string): T {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-web-lazy-hardening-"));
+	const tempDir = createRepositoryFixtureDir("web-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/web-access/index.ts"), "utf-8"));
@@ -59,7 +64,7 @@ ${scriptBody}
 }
 
 export function runIntercomFixture<T>(heavySource: string, scriptBody: string, eager = false): T {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-intercom-lazy-hardening-"));
+	const tempDir = createRepositoryFixtureDir("intercom-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/intercom/index.ts"), "utf-8"));

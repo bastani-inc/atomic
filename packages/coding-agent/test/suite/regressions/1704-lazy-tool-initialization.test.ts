@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { buildSearchReturn } from "../../../../web-access/web-search-return.js";
 
-import { repoRoot, runIntercomFixture, runWebFixture } from "./lazy-tool-fixtures.js";
+import { createRepositoryFixtureDir, repoRoot, runIntercomFixture, runWebFixture } from "./lazy-tool-fixtures.js";
 
 interface FetchClassificationFixtureResult {
 	failed: { details: { outcome: string; stage: string; failedUrls: number; successful: number } };
@@ -14,7 +13,7 @@ interface FetchClassificationFixtureResult {
 }
 
 function runFetchClassificationFixture(): FetchClassificationFixtureResult {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-fetch-classification-"));
+	const tempDir = createRepositoryFixtureDir("fetch-classification");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "content-tools.ts"), readFileSync(resolve(repoRoot, "packages/web-access/content-tools.ts"), "utf-8"));

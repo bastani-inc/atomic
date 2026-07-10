@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createRepositoryFixtureDir } from "./lazy-tool-fixtures.js";
 
 const repoRoot = resolve(__dirname, "../../../../..");
 const subprocessTimeoutMs = 10_000;
@@ -58,7 +59,7 @@ await new Promise((resolve) => setTimeout(resolve, 250));
 }
 
 function assertWebAccessRetriesRejectedInitializer(): void {
-	const tempDir = mkdtempSync(join(tmpdir(), "atomic-web-access-retry-"));
+	const tempDir = createRepositoryFixtureDir("web-access-retry");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readRepoFile("packages/web-access/index.ts"));

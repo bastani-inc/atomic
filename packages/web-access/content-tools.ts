@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	renderCodeSearchResult,
