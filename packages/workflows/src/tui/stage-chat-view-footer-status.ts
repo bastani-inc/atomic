@@ -78,6 +78,19 @@ export function renderFooterWithOrchestratorReturnHint(
   );
   return lines;
 }
+export function renderReadOnlyArchiveFooter(
+  ctx: StageChatViewContext,
+  width: number,
+): string[] {
+  const closeHint =
+    paint("esc", ctx.theme.text, { bold: true }) +
+    paint(" to close", ctx.theme.textMuted);
+  return [
+    mergeOrchestratorReturnHintIntoLine(ctx, closeHint, width, {
+      minimumPrefixWidth: visibleWidth(closeHint) + 1,
+    }),
+  ];
+}
 
 export function embedOrchestratorReturnHintInWidget(
   ctx: StageChatViewContext,
@@ -102,21 +115,45 @@ function mergeOrchestratorReturnHintIntoLine(
   ctx: StageChatViewContext,
   line: string,
   width: number,
-  options: { preserveTrailingBorder?: boolean; rightMargin?: number } = {},
+  options: {
+    preserveTrailingBorder?: boolean;
+    rightMargin?: number;
+    minimumPrefixWidth?: number;
+  } = {},
 ): string {
   const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
-  const plain = `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`;
-  const styled =
-    paint("ctrl+d", ctx.theme.text, { bold: true }) +
-    paint(" graph · ", ctx.theme.textMuted) +
-    paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
-    paint(` copy mode ${copyModeState}`, ctx.theme.textMuted);
+  const fullHint = {
+    plain: `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
+    styled:
+      paint("ctrl+d", ctx.theme.text, { bold: true }) +
+      paint(" graph · ", ctx.theme.textMuted) +
+      paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
+      paint(` copy mode ${copyModeState}`, ctx.theme.textMuted),
+  };
+  const compactHint = {
+    plain: `ctrl+d · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
+    styled:
+      paint("ctrl+d", ctx.theme.text, { bold: true }) +
+      paint(" · ", ctx.theme.textMuted) +
+      paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
+      paint(` ${copyModeState}`, ctx.theme.textMuted),
+  };
   const trailingBorder = options.preserveTrailingBorder === true
     ? trailingWidgetBorderChar(line)
     : "";
   const suffixWidth = visibleWidth(trailingBorder);
-  const hintWidth = visibleWidth(plain);
   const requestedRightMargin = Math.max(0, Math.floor(options.rightMargin ?? 0));
+  const minimumPrefixWidth = Math.max(
+    0,
+    Math.floor(options.minimumPrefixWidth ?? 0),
+  );
+  const fullRequiredWidth =
+    suffixWidth +
+    requestedRightMargin +
+    minimumPrefixWidth +
+    visibleWidth(fullHint.plain);
+  const hint = fullRequiredWidth <= width ? fullHint : compactHint;
+  const hintWidth = visibleWidth(hint.plain);
   const rightMargin = Math.min(
     requestedRightMargin,
     Math.max(0, width - suffixWidth - hintWidth),
@@ -124,7 +161,13 @@ function mergeOrchestratorReturnHintIntoLine(
   const hintStart = Math.max(0, width - suffixWidth - rightMargin - hintWidth);
   const prefix = truncateToWidth(line, hintStart, "", true);
   const gap = Math.max(0, hintStart - visibleWidth(prefix));
-  return prefix + " ".repeat(gap) + styled + " ".repeat(rightMargin) + trailingBorder;
+  return (
+    prefix +
+    " ".repeat(gap) +
+    hint.styled +
+    " ".repeat(rightMargin) +
+    trailingBorder
+  );
 }
 
 export function banner(

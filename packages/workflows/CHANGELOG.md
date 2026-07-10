@@ -14,6 +14,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Aligned durable mid-chat workflow resumes with the standard pause/resume continuation prompt so resumed stages continue only when their scoped work remains unfinished.
 
+### Fixed
+
+- Fixed archived/read-only workflow transcript views to use the standard responsive footer and Ctrl+T copy-mode toggle/status, enabling normal terminal or tmux text selection while preserving Escape and Ctrl+D navigation ([#1706](https://github.com/bastani-inc/atomic/issues/1706)).
+
 ## [0.9.5-alpha.9] - 2026-07-09
 
 ### Changed

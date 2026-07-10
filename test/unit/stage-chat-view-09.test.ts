@@ -109,6 +109,63 @@ describe("StageChatView", () => {
         assert.deepEqual(state.promptCalls, []);
         view.dispose();
     });
+    test("read-only archive footer matches live workflow controls and toggles copy mode", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "completed");
+        let detached = 0;
+        let closed = 0;
+        let renderRequests = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            onDetach: () => {
+                detached += 1;
+            },
+            onClose: () => {
+                closed += 1;
+            },
+            requestRender: () => {
+                renderRequests += 1;
+            },
+        });
+
+        const offLines = view.render(96).map(stripAnsi);
+        const offFooter = offLines.find((line) => line.includes("copy mode off"));
+        assert.equal(
+            offFooter,
+            "esc to close" + " ".repeat(49) + "ctrl+d graph · ctrl+t copy mode off",
+        );
+        assert.equal(offLines.filter((line) => line.includes("esc to close")).length, 1);
+        assert.doesNotMatch(offLines.join("\n"), /esc close|return to graph/);
+        const narrowFooter = view
+            .render(40)
+            .map(stripAnsi)
+            .find((line) => line.includes("ctrl+t off"));
+        assert.equal(narrowFooter, "esc to close" + " ".repeat(9) + "ctrl+d · ctrl+t off");
+        assert.equal(narrowFooter?.length, 40);
+
+        assert.equal(view.wantsMouseScrollTracking(), true);
+        assert.equal(view.handleInput("\x14"), true);
+        assert.equal(view.wantsMouseScrollTracking(), false);
+        const onFooter = view
+            .render(96)
+            .map(stripAnsi)
+            .find((line) => line.includes("copy mode on"));
+        assert.equal(
+            onFooter,
+            "esc to close" + " ".repeat(50) + "ctrl+d graph · ctrl+t copy mode on",
+        );
+        assert.equal(renderRequests, 1);
+
+        assert.equal(view.handleInput("\x04"), true);
+        assert.equal(detached, 1);
+        assert.equal(view.handleInput("\x1b"), true);
+        assert.equal(closed, 1);
+        view.dispose();
+    });
 
     test("skipped stages without a live handle render as read-only archives", () => {
         const store = createStore();

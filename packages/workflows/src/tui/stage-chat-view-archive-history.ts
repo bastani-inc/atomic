@@ -24,7 +24,7 @@ export function renderReadOnlyArchiveBody(
   }
 
   const t = ctx.theme;
-  const calloutRows = 6;
+  const calloutRows = 5;
   const transcriptBudget = Math.max(1, budget - calloutRows);
   const lines = ctx.chatHost.renderBody(width, transcriptBudget);
   const callout: string[] = [];
@@ -42,17 +42,6 @@ export function renderReadOnlyArchiveBody(
   callout.push(
     ...new Text(
       paint("This node is no longer attached to a live chat session.", t.textMuted),
-      2,
-      0,
-    ).render(width),
-  );
-  callout.push(
-    ...new Text(
-      paint("esc", t.accent, { bold: true }) +
-        paint(" close", t.textMuted) +
-        paint("  ·  ", t.dim) +
-        paint("ctrl+d", t.accent, { bold: true }) +
-        paint(" return to graph", t.textMuted),
       2,
       0,
     ).render(width),
@@ -111,17 +100,6 @@ function renderReadOnlyPromptArchiveBody(
   bodyLines.push(...new Text(paint("your response", t.textMuted, { bold: true }), 2, 0).render(innerWidth));
   bodyLines.push(...new Text(paint(answer, answer.startsWith("(") ? t.dim : t.text), 4, 0).render(innerWidth));
   bodyLines.push("");
-  bodyLines.push(
-    ...new Text(
-      paint("esc", t.accent, { bold: true }) +
-        paint(" close", t.textMuted) +
-        paint("  ·  ", t.dim) +
-        paint("ctrl+d", t.accent, { bold: true }) +
-        paint(" return to graph", t.textMuted),
-      2,
-      0,
-    ).render(innerWidth),
-  );
 
   const title = stage.status === "skipped" ? "QUESTION SKIPPED" : "QUESTION ASKED";
   const cardLines = renderRoundedBoxLines({

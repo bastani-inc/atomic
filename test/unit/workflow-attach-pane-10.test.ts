@@ -300,6 +300,34 @@ describe("WorkflowAttachPane", () => {
         pane.dispose();
         assert.deepEqual(mouseTracking, [true, true, false, true, true, false]);
     });
+    test("read-only stage copy mode releases terminal mouse tracking and ctrl+d returns to graph", () => {
+        const store = createStore();
+        setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "completed" }]);
+        const mouseTracking: boolean[] = [];
+        const pane = new WorkflowAttachPane({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageControlRegistry: createStageControlRegistry(),
+            onClose: () => {},
+            setMouseScrollTracking: (enabled) => mouseTracking.push(enabled),
+        });
+
+        pane.handleInput(Key.enter);
+        assert.equal(pane._mode, "stage-chat");
+        assert.match(pane.render(96).join("\n"), /copy mode off/);
+
+        pane.handleInput("\x1b[116;5u");
+        assert.equal(pane.wantsMouseScrollTracking(), false);
+        assert.match(pane.render(96).join("\n"), /copy mode on/);
+        assert.equal(mouseTracking.at(-1), false);
+
+        pane.handleInput(Key.ctrl("d"));
+        assert.equal(pane._mode, "graph");
+        assert.equal(pane.wantsMouseScrollTracking(), true);
+        assert.equal(mouseTracking.at(-1), true);
+        pane.dispose();
+    });
 
     test("forwards getViewportRows to graph mode", () => {
         // The host provides terminal.rows through `getViewportRows`; the

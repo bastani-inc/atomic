@@ -35,6 +35,7 @@ import { renderCustomUi } from "./stage-chat-view-custom-ui.js";
 import {
   renderFooterWithOrchestratorReturnHint,
   renderHeader,
+  renderReadOnlyArchiveFooter,
   sepRule,
 } from "./stage-chat-view-footer-status.js";
 import { handleStageChatInput } from "./stage-chat-view-input.js";
@@ -127,9 +128,11 @@ export class StageChatView implements Component, Focusable {
     const workingLines = chatChromeHidden ? [] : this.chatHost.renderWorkingStatus(w);
     const usageLines = chatChromeHidden ? [] : this.chatHost.renderUsage(w);
     const editorLines = chatChromeHidden ? [] : this.chatHost.renderEditor(w);
-    const footerLines = chatChromeHidden
+    const footerLines = customUiActive || promptActive
       ? []
-      : renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
+      : readOnlyArchive
+        ? renderReadOnlyArchiveFooter(ctx, w)
+        : renderFooterWithOrchestratorReturnHint(ctx, w, this.chatHost.renderFooter(w));
 
     const totalRows = viewLineCount(ctx);
     const plan = planStageChatFrame({
