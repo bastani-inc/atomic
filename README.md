@@ -93,8 +93,6 @@ See [Providers & Models](./packages/coding-agent/README.md#providers--models) fo
 
 > ⚠️ Workflows run with agent permission checks **disabled** so pipelines don't block on prompts. Run autonomous workflows inside a devcontainer, VM, or remote dev machine — not your host machine.
 
-> ⚠️ **Workflow migration note:** The `defineWorkflow(...).compile()` builder API was removed in [#1457](https://github.com/bastani-inc/atomic/pull/1457). Custom workflows must now author with the `workflow({ name?, description, inputs, outputs, run })` object form — import `workflow` from `@bastani/workflows` and `Type` from `typebox` — and compose child workflows with normal TypeScript module imports passed to `ctx.workflow(workflowDefinition, options)` (registry names and path objects are no longer accepted). If an existing workflow no longer loads, ask Atomic to update it using the [workflow migration guide](./packages/coding-agent/docs/workflows.md#migrating-from-the-defineworkflow-builder-api) and the [workflow composition example](./packages/workflows/README.md#example-4--compose-workflows).
-
 <details>
 <summary><b>Prerequisites, devcontainer</b></summary>
 
