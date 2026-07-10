@@ -41,6 +41,7 @@ function createTaskPrimitive(runtime: EngineRuntime): WorkflowTaskPrimitive {
       const resolvedTaskOptions = stageOptionsWithGitWorktree(
         stageOptionsWithInputDefaults(taskOptions, runtime.inputRuntimeDefaults),
         runtime.workflowInvocationCwd,
+        runtime.gitWorktreeSetupCache,
       ) ?? taskOptions;
       const stageOptions = taskStageOptions(resolvedTaskOptions);
       const stageHandle = runtime.spawnStage(name, {

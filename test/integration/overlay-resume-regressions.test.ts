@@ -42,6 +42,7 @@ describe("/workflow resume — durable regression coverage", () => {
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
       getPersistence: () => undefined,
       runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => undefined,
     });
 
     assert.equal(capturedPolicy?.mode, "non_interactive");
@@ -81,6 +82,7 @@ describe("/workflow resume — durable regression coverage", () => {
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
       getPersistence: () => undefined,
       runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => undefined,
     });
 
     const joined = messages.join("\n");
@@ -118,6 +120,7 @@ describe("/workflow resume — durable regression coverage", () => {
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
       getPersistence: () => undefined,
       runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => undefined,
     });
 
     const joined = messages.join("\n");

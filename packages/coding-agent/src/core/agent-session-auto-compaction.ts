@@ -4,9 +4,37 @@ import { getEffectiveInputBudget } from "./context-window.ts";
 import { parseCopilotPromptLimitError } from "./copilot-errors.ts";
 import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./compaction/index.ts";
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
+import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 
+/**
+ * Upper bound on consecutive automatic continuations of a response that was
+ * truncated at the output-token cap ("length") while the context is still
+ * below the compaction budget. Each continuation regenerates the cut-off turn,
+ * so a model that insists on emitting more than its per-turn output cap can
+ * still terminate instead of looping forever.
+ */
+export const MAX_LENGTH_CONTINUATION_ATTEMPTS = 3;
+
+export const MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS = 1;
+
+type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type ProviderErrorDetails = {
+	message?: string;
+	code?: string;
+	param?: string;
+};
+
+const OUTPUT_BUDGET_PARAMETER_PATTERN = /\bmax_output_tokens\b/;
+const OUTPUT_BUDGET_UNDERFLOW_PATTERN = new RegExp(
+	`(?:integer\\s+below\\s+minimum\\s+value|expected\\s+(?:a\\s+)?value\\s*>=\\s*${MIN_RESPONSES_MAX_OUTPUT_TOKENS}|got\\s+1\\s+instead)`,
+);
+
 export async function _checkCompaction(this: AgentSession, assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<void> {
+	// The agent_end path passes skipAbortedCheck=true; the pre-prompt path passes
+	// false. Only the live turn-completion path may auto-continue a truncated
+	// response — before a fresh user prompt we must not resume the old turn.
+	const isLiveTurnCompletion = skipAbortedCheck;
 	const settings = this.settingsManager.getCompactionSettings();
 	if (!settings.enabled) return;
 
@@ -100,7 +128,33 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 	// rather than relying on reactive overflow recovery near the cap.
 	const compactionBudget = this.model ? getEffectiveInputBudget(this.model) : contextWindow;
 	if (shouldCompact(contextTokens, compactionBudget, settings)) {
-		await this._runAutoCompaction("threshold", shouldRetryAfterThresholdCompaction(assistantMessage));
+		const willRetry = shouldRetryAfterThresholdCompaction(assistantMessage);
+		if (willRetry && isRetryWorthyOutputBudgetError(assistantMessage)) {
+			if (this._outputBudgetErrorContinuationAttempts >= MAX_OUTPUT_BUDGET_ERROR_CONTINUATION_ATTEMPTS) {
+				this._emit({
+					type: "compaction_end",
+					reason: "threshold",
+					result: undefined,
+					aborted: false,
+					willRetry: false,
+					errorMessage:
+						"Output-budget recovery stopped after a compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
+				});
+				return;
+			}
+			this._outputBudgetErrorContinuationAttempts += 1;
+		}
+		await this._runAutoCompaction("threshold", willRetry);
+		return;
+	}
+
+	// A response truncated at the output-token cap ("length") with the context
+	// still below the compaction budget is genuine work cut off mid-flight, not a
+	// context overflow. Compaction would not free any room, so continue the
+	// generation directly instead of dead-ending on the truncation and leaving
+	// the task half-finished.
+	if (isLiveTurnCompletion && isRetryWorthyLengthStop(assistantMessage)) {
+		this._resumeAfterLengthTruncation();
 	}
 }
 
@@ -115,8 +169,71 @@ export function _isCopilotServerCapBelowSelectedContextWindow(this: AgentSession
 	return promptLimitError !== undefined && getEffectiveInputBudget(this.model) > promptLimitError.limitTokens;
 }
 
-export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+export function isRetryWorthyLengthStop(assistantMessage: AssistantMessage): boolean {
 	return assistantMessage.stopReason === "length" && assistantMessage.usage.output > 0;
+}
+
+function isJsonRecord(value: JsonValue): value is { [key: string]: JsonValue } {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: { [key: string]: JsonValue }, key: string): string | undefined {
+	const value = record[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function parseProviderErrorDetails(errorMessage: string): ProviderErrorDetails | undefined {
+	const start = errorMessage.indexOf("{");
+	const end = errorMessage.lastIndexOf("}");
+	if (start === -1 || end <= start) return undefined;
+
+	try {
+		const parsed = JSON.parse(errorMessage.slice(start, end + 1)) as JsonValue;
+		if (!isJsonRecord(parsed)) return undefined;
+
+		const nestedError = parsed.error;
+		if (nestedError !== undefined && isJsonRecord(nestedError)) {
+			return {
+				message: stringField(nestedError, "message"),
+				code: stringField(nestedError, "code") ?? stringField(parsed, "code"),
+				param: stringField(nestedError, "param") ?? stringField(parsed, "param"),
+			};
+		}
+
+		return {
+			message: stringField(parsed, "message"),
+			code: stringField(parsed, "code"),
+			param: stringField(parsed, "param"),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+function isOutputBudgetUnderflowText(text: string): boolean {
+	const message = text.toLowerCase();
+	return OUTPUT_BUDGET_PARAMETER_PATTERN.test(message) && OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message);
+}
+
+function isStructuredOutputBudgetUnderflow(details: ProviderErrorDetails): boolean {
+	const message = details.message?.toLowerCase() ?? "";
+	const param = details.param?.toLowerCase();
+	if (!OUTPUT_BUDGET_UNDERFLOW_PATTERN.test(message)) return false;
+	return param !== undefined ? OUTPUT_BUDGET_PARAMETER_PATTERN.test(param) : OUTPUT_BUDGET_PARAMETER_PATTERN.test(message);
+}
+
+export function isRetryWorthyOutputBudgetError(assistantMessage: AssistantMessage): boolean {
+	if (assistantMessage.stopReason !== "error" || !assistantMessage.errorMessage) return false;
+	if (assistantMessage.api !== "openai-responses") return false;
+
+	const structuredDetails = parseProviderErrorDetails(assistantMessage.errorMessage);
+	if (structuredDetails && isStructuredOutputBudgetUnderflow(structuredDetails)) return true;
+
+	return isOutputBudgetUnderflowText(assistantMessage.errorMessage);
+}
+
+export function shouldRetryAfterThresholdCompaction(assistantMessage: AssistantMessage): boolean {
+	return isRetryWorthyLengthStop(assistantMessage) || isRetryWorthyOutputBudgetError(assistantMessage);
 }
 
 /**
@@ -138,40 +255,35 @@ export function _dropTrailingAutoCompactionRetryAssistantIfPresent(this: AgentSe
  */
 
 export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
-	reason: "overflow" | "threshold",
+	_reason: "overflow" | "threshold",
 	willRetry: boolean,
 ): void {
-	if (reason === "overflow" && willRetry) {
-		const token = this._overflowPostCompactionContinuationToken + 1;
-		this._overflowPostCompactionContinuationToken = token;
+	if (willRetry) {
+		const token = this._postCompactionContinuationToken + 1;
+		this._postCompactionContinuationToken = token;
 		let pending: Promise<void>;
 		pending = new Promise<void>((resolve) => {
 			setTimeout(() => {
 				void (async () => {
 					try {
-						if (this._overflowPostCompactionContinuationToken !== token) return;
+						if (this._postCompactionContinuationToken !== token) return;
 						if (this.isCompacting || this.isStreaming) return;
 						await this._resumeAfterAutoCompaction();
 					} finally {
-						if (this._pendingOverflowPostCompactionContinuation === pending) {
-							this._pendingOverflowPostCompactionContinuation = undefined;
+						if (this._pendingPostCompactionContinuation === pending) {
+							this._pendingPostCompactionContinuation = undefined;
 						}
 						resolve();
 					}
 				})();
 			}, 100);
 		});
-		this._pendingOverflowPostCompactionContinuation = pending;
+		this._pendingPostCompactionContinuation = pending;
 		return;
 	}
 
 	setTimeout(() => {
 		if (this.isCompacting || this.isStreaming) {
-			return;
-		}
-
-		if (willRetry) {
-			void this._resumeAfterAutoCompaction();
 			return;
 		}
 
@@ -183,8 +295,8 @@ export function _schedulePostAutoCompactionContinuationProbe(this: AgentSession,
 	}, 100);
 }
 
-export async function _awaitPendingOverflowPostCompactionContinuation(this: AgentSession): Promise<void> {
-	const pending = this._pendingOverflowPostCompactionContinuation;
+export async function _awaitPendingPostCompactionContinuation(this: AgentSession): Promise<void> {
+	const pending = this._pendingPostCompactionContinuation;
 	if (pending === undefined) return;
 	await pending;
 }
@@ -204,6 +316,24 @@ export async function _resumeAfterAutoCompaction(this: AgentSession): Promise<vo
 			errorMessage: `Post-compaction continuation failed: ${message}`,
 		});
 	}
+}
+
+/**
+ * Internal: resume a response that was truncated at the output-token cap
+ * ("length") when the context does not warrant compaction. The generation is
+ * continued directly so the model finishes the work it was cut off from, rather
+ * than dead-ending on the truncation. Bounded by MAX_LENGTH_CONTINUATION_ATTEMPTS
+ * so a turn that keeps exceeding the per-turn output cap can still terminate.
+ */
+
+export function _resumeAfterLengthTruncation(this: AgentSession): void {
+	if (this._lengthContinuationAttempts >= MAX_LENGTH_CONTINUATION_ATTEMPTS) return;
+	this._lengthContinuationAttempts += 1;
+	// agent.continue() rejects an assistant tail; drop the incomplete
+	// length-stopped message so the preceding user/tool-result anchors the
+	// continuation. It remains persisted in session history.
+	this._dropTrailingAutoCompactionRetryAssistantIfPresent();
+	this._schedulePostAutoCompactionContinuationProbe("threshold", true);
 }
 
 
@@ -291,11 +421,12 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
  */
 
 export const agentSessionAutoCompactionMethods = {
-	_awaitPendingOverflowPostCompactionContinuation,
+	_awaitPendingPostCompactionContinuation,
 	_checkCompaction,
 	_isCopilotServerCapBelowSelectedContextWindow,
 	_dropTrailingAutoCompactionRetryAssistantIfPresent,
 	_schedulePostAutoCompactionContinuationProbe,
 	_resumeAfterAutoCompaction,
+	_resumeAfterLengthTruncation,
 	_runAutoCompaction,
 };

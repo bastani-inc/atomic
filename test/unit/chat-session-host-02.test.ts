@@ -66,6 +66,7 @@ test("ChatSessionHost clears busy state when model fallback fails", () => {
   host.dispose();
 });
 test("ChatSessionHost preserves compaction queued messages when flush fails", async () => {
+  const statusMessages: string[] = [];
   const host = makeHost({
     getActionKeyDisplay: (action) => (action === "app.message.dequeue" ? "⌥↑" : action),
     commands: {
@@ -74,6 +75,7 @@ test("ChatSessionHost preserves compaction queued messages when flush fails", as
       },
       followUp: async () => {},
     },
+    showStatus: (message) => statusMessages.push(message),
   });
 
   host.applyAgentEvent({ type: "compaction_start", reason: "manual" } as never);
@@ -99,6 +101,11 @@ test("ChatSessionHost preserves compaction queued messages when flush fails", as
   assert.match(pending, /second/);
   assert.equal(host.restoreQueuedMessagesToEditor(), true);
   assert.equal(host.inputText(), "first\n\nsecond");
+  assert.doesNotMatch(host.statusText(), /Restored .*queued message/);
+  assert.deepEqual(
+    statusMessages.filter((message) => /Restored .*queued message/.test(message)),
+    [],
+  );
   host.dispose();
 });
 test("ChatSessionHost delegates handled slash commands before prompt routing", async () => {

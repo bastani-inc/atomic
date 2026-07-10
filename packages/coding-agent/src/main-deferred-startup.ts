@@ -63,9 +63,9 @@ export function computeDeferExtensions(input: ComputeDeferExtensionsInput): bool
 		input.resolvedExtensionPathCount === 0 &&
 		input.resolvedResourcePathCount === 0 &&
 		!input.hasSystemPromptInput &&
-		input.unknownFlagCount === 0 &&
 		input.provider === undefined &&
-		input.model === undefined
+		input.model === undefined &&
+		input.unknownFlagCount === 0
 	);
 }
 

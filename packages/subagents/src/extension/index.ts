@@ -7,21 +7,18 @@ import { APP_NAME, getEnvValue } from "@bastani/atomic";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@bastani/atomic";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
-import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
+import { getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
-import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { advanceResultPulseFrame, renderLiveSubagentResult, renderSubagentResult, stopResultAnimations, stopWidgetAnimation, type SubagentResultRenderState } from "../tui/render.ts";
 import { SubagentParams } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
-import { createResultWatcher } from "../runs/background/result-watcher.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
 import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
-import { cleanupOldNestedRuntimeDirs } from "../runs/shared/nested-events.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
@@ -29,6 +26,7 @@ import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT, WIDGET_KEY } from "../shared/types.ts";
 import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
+import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
 export { loadConfig } from "./config.ts";
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -171,12 +169,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	}
 	ensureAccessibleDir(RESULTS_DIR);
 	ensureAccessibleDir(ASYNC_DIR);
-	cleanupOldChainDirs();
 	const config = loadConfig();
 	const asyncByDefault = config.asyncByDefault === true;
 	const tempArtifactsDir = getArtifactsDir(null);
-	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
-	cleanupOldNestedRuntimeDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
@@ -197,16 +192,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			clear: () => {},
 		},
 	};
-	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
-		pi,
-		state,
-		RESULTS_DIR,
-		10 * 60 * 1000,
-	);
-	startResultWatcher();
-	primeExistingResults();
+	const maintenance = createSubagentStartupMaintenance(pi, state, {
+		resultsDir: RESULTS_DIR,
+		artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
+		resultTtlMs: 10 * 60 * 1000,
+	});
+	maintenance.scheduleStartupCleanup();
+	maintenance.startResultWatcherDeferred();
+	maintenance.primeExistingResultsDeferred();
 	const runtimeCleanup = () => {
-		stopResultWatcher();
+		maintenance.stop();
 		stopWidgetAnimation();
 		stopResultAnimations();
 		clearPendingForegroundControlNotices(state);
@@ -430,13 +425,7 @@ DIAGNOSTICS:
 		if (state.asyncJobs.size > 0) ensurePoller();
 	});
 	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
-		try {
-			const sessionFile = ctx.sessionManager.getSessionFile();
-			if (sessionFile) {
-				cleanupOldArtifacts(getArtifactsDir(sessionFile), DEFAULT_ARTIFACT_CONFIG.cleanupDays);
-			}
-		} catch {
-		}
+		maintenance.cleanupSessionArtifactsDeferred(ctx);
 	};
 	const resetSessionState = (ctx: ExtensionContext) => {
 		state.baseCwd = ctx.cwd;
@@ -447,7 +436,7 @@ DIAGNOSTICS:
 		resetJobs(ctx);
 		hydrateActiveJobs(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
-		primeExistingResults();
+		maintenance.primeExistingResultsDeferred();
 	};
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);
@@ -462,7 +451,7 @@ DIAGNOSTICS:
 		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {
 			delete globalStore[eventUnsubscribeStoreKey];
 		}
-		stopResultWatcher();
+		maintenance.stop();
 		stopWidgetAnimation();
 		stopResultAnimations();
 		if (state.poller) clearInterval(state.poller);

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+
+installSlashDispatchTestHooks();
 
 describe("factory command registration (real factory)", () => {
     /** Import factory and call it with a mock pi whose registry contains known workflows. */
@@ -158,11 +161,8 @@ describe("getArgumentCompletions includes workflow names", () => {
 
         const workflowCmd = commands.find((c) => c.name === "workflow");
         let completions: PiArgumentCompletion[] | null | undefined;
-        assert.doesNotThrow(() => {
-            completions = workflowCmd!.options.getArgumentCompletions?.(" ") as
-                | PiArgumentCompletion[]
-                | null
-                | undefined;
+        await assert.doesNotReject(async () => {
+            completions = (await workflowCmd!.options.getArgumentCompletions?.(" ")) ?? null;
         });
         const labels = (completions ?? []).map((c) => c.label);
         assert.ok(labels.includes("list"), "admin subcommands offered");

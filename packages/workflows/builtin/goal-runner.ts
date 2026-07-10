@@ -8,6 +8,7 @@ import {
   type GoalWorkflowInputs,
   type GoalWorkflowOutputs,
   type ReviewRecord,
+  type ReducerDecision,
 } from "./goal-types.js";
 import { artifactSafeName, writeReviewArtifact, writeReviewRoundArtifact } from "./goal-artifacts.js";
 import { appendLifecycleEvent, createGoalLedger, writeGoalLedger } from "./goal-ledger.js";
@@ -75,6 +76,27 @@ type GoalWorkflowOptions = {
   readonly workflowStartCwd: string;
 };
 
+function reviewerExecutionFailedDecision(input: {
+  readonly turn: number;
+  readonly reviewQuorum: number;
+  readonly reviews: readonly ReviewRecord[];
+  readonly reason: string;
+}): ReducerDecision {
+  return {
+    turn: input.turn,
+    decision: "needs_human",
+    reason: input.reason,
+    complete_votes: input.reviews.filter((review) => review.decision === "complete").length,
+    review_quorum: input.reviewQuorum,
+    parsed: input.reviews.every((review) => review.parsed),
+    approved: false,
+    stopReviewLoop: false,
+    nextAction: "needs_human",
+    finalActionRemaining: false,
+    diagnostics: input.reviews.flatMap((review) => review.parse_diagnostics),
+  };
+}
+
 export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkflowOptions): Promise<GoalWorkflowOutputs> {
     const inputs = ctx.inputs;
     const createPr = options.createPr;
@@ -102,11 +124,17 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "anthropic/claude-fable-5:low",
           "github-copilot/claude-opus-4.8 (1m):medium",
           "anthropic/claude-opus-4-8:medium",
+          "cursor/gpt-5.5:medium",
+          "cursor/claude-fable-5:low",
+          "cursor/claude-opus-4-8-thinking:medium",
+          "cursor/grok-4.5",
           "zai/glm-5.2:high",
           "zai-coding-cn/glm-5.2:high",
+          "cursor/glm-5.2",
           "openrouter/openai/gpt-5.5:medium",
           "openrouter/anthropic/claude-fable-5:low",
           "openrouter/anthropic/claude-opus-4-8:medium",
+          "openrouter/x-ai/grok-4.5",
           "openrouter/z-ai/glm-5.2:xhigh"
       ],
       excludedTools: ["ask_user_question"],
@@ -120,12 +148,18 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
           "openai/gpt-5.5:xhigh",
           "github-copilot/claude-opus-4.8 (1m):high",
           "anthropic/claude-opus-4-8:high",
+          "cursor/claude-fable-5:high",
+          "cursor/gpt-5.5:high",
+          "cursor/claude-opus-4-8-thinking:high",
+          "cursor/grok-4.5",
           "zai/glm-5.2:xhigh",
           "zai-coding-cn/glm-5.2:xhigh",
+          "cursor/glm-5.2",
           "openrouter/anthropic/claude-fable-5:high",
           "openrouter/sakana/fugu-ultra:high",
           "openrouter/openai/gpt-5.5:xhigh",
           "openrouter/anthropic/claude-opus-4-8:high",
+          "openrouter/x-ai/grok-4.5",
           "openrouter/z-ai/glm-5.2:xhigh"
       ],
       excludedTools: ["ask_user_question"],
@@ -255,12 +289,14 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       ];
 
       let reviewResults: WorkflowTaskResult[];
+      let reviewerBatchFailed = false;
       try {
         reviewResults = await ctx.parallel(reviewerSteps, {
           task: objective,
-          failFast: false,
+          failFast: true,
         });
       } catch (err) {
+        reviewerBatchFailed = true;
         reviewResults = [
           {
             name: "reviewer-error",
@@ -308,6 +344,20 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         `Recorded ${latestReviews.length} reviewer decisions.`,
         turn,
       );
+      if (reviewerBatchFailed) {
+        terminalRemainingWork = collectRemainingWork(latestReviews);
+        const reason = `Reviewer execution failed before quorum could be established. Remaining work: ${terminalRemainingWork}`;
+        ledger.decisions.push(reviewerExecutionFailedDecision({
+          turn,
+          reviewQuorum,
+          reviews: latestReviews,
+          reason,
+        }));
+        ledger.status = "needs_human";
+        appendLifecycleEvent(ledger, "status_decided", reason, turn);
+        await writeGoalLedger(ledgerPath, ledger);
+        break;
+      }
 
       const reducerOutcome = reduceGoalDecision(ledger, latestReviews, {
         turn,

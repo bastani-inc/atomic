@@ -151,6 +151,14 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 			if (!assistantFailed) {
 				this._fallbackAttemptedKeys.clear();
 				this._overflowRecoveryAttempted = false;
+				this._outputBudgetErrorContinuationAttempts = 0;
+			}
+
+			// A non-truncated assistant response means the length-continuation loop
+			// made progress (or the turn completed cleanly), so reset the bounded
+			// output-cap continuation counter.
+			if (assistantMsg.stopReason !== "length") {
+				this._lengthContinuationAttempts = 0;
 			}
 
 			// Reset retry counter immediately on successful assistant response

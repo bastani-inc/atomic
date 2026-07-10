@@ -79,9 +79,9 @@
   "dependencies": {
     "@bastani/atomic-natives": "0.0.0",
     "@bufbuild/protobuf": "^2.12.1",
-    "@earendil-works/pi-agent-core": "^0.80.3",
-    "@earendil-works/pi-ai": "^0.80.3",
-    "@earendil-works/pi-tui": "^0.80.3",
+    "@earendil-works/pi-agent-core": "^0.80.5",
+    "@earendil-works/pi-ai": "^0.80.5",
+    "@earendil-works/pi-tui": "^0.80.5",
     "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "@mozilla/readability": "^0.6.0",
@@ -95,7 +95,7 @@
     "ignore": "7.0.5",
     "jiti": "2.7.0",
     "linkedom": "^0.18.12",
-    "lru-cache": "11.3.6",
+    "lru-cache": "11.5.2",
     "markit-ai": "0.5.3",
     "minimatch": "10.2.5",
     "open": "^11.0.0",
@@ -118,7 +118,7 @@
   },
   "optionalDependencies": {
     "@mariozechner/clipboard": "0.3.9",
-    "@dbos-inc/dbos-sdk": "4.22.6"
+    "@dbos-inc/dbos-sdk": "4.23.6"
   },
   "devDependencies": {
     "@types/cross-spawn": "6.0.6",

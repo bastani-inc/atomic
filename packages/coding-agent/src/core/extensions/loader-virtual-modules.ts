@@ -79,6 +79,7 @@ let _transpileCacheDir: string | null = null;
 function getTranspileCacheDir(): string {
   if (_transpileCacheDir) return _transpileCacheDir;
   _transpileCacheDir = getExtensionTranspileCacheDir();
+  fs.mkdirSync(_transpileCacheDir, { recursive: true });
   pruneStaleTranspileCaches(_transpileCacheDir);
   return _transpileCacheDir;
 }
@@ -218,11 +219,11 @@ function getAliases(): Record<string, string> {
   return _aliases;
 }
 
-/** Internal hooks for extension-loader alias regression tests. */
 export const extensionLoaderTestHooks = {
   loadVirtualModules,
   getAliases,
   findPackageRoot,
+  getTranspileCacheDir,
 };
 
 /**

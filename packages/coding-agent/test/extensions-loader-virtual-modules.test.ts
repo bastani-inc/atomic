@@ -100,4 +100,11 @@ describe("extension loader package-root resolution", () => {
 			expect(exists, `alias ${specifier} -> ${target} does not exist`).toBe(true);
 		}
 	});
+
+	it("creates the versioned jiti fsCache directory before extension imports", () => {
+		const cacheDir = extensionLoaderTestHooks.getTranspileCacheDir();
+
+		expect(fs.existsSync(cacheDir)).toBe(true);
+		expect(fs.statSync(cacheDir).isDirectory()).toBe(true);
+	});
 });

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.5` as part of the consolidated dependency refresh; no MCP source changes were needed.
+
+## [0.9.5-alpha.9] - 2026-07-09
+
+### Changed
+
+- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Warmed direct tools are registered live in the current session after metadata refresh rather than requiring restart. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers, treats hyphen/underscore prefixes as aliases, and does not fan out to unrelated lazy servers after a prefix-directed miss; cold-cache proxy `search` intentionally hydrates all matching lazy servers so unscoped searches can see every configured tool.
+
+### Fixed
+
+- Aligned MCP tool result expansion hints with the CLI-wide `Ctrl+o` keybinding copy.
+- Fixed MCP background direct-tool warmup cancellation so stale in-flight connects are discarded before metadata/cache mutation, direct-tool refresh callbacks are guarded to the active session, completed warmups clear their active handle safely, and env-selected direct tool servers hydrate without forcing every lazy server eager.
+
 ## [0.9.4] - 2026-07-03
 
 ### Changed

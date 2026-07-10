@@ -224,7 +224,6 @@ describe("ralph convergence decision artifacts", () => {
         task: (name) => {
           if (name === "reviewer-a") return "not json";
           if (name === "reviewer-b") return ralphReview("continue");
-          if (name === "reviewer-c") return ralphReview("complete");
           return undefined;
         },
       },

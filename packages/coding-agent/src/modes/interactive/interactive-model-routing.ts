@@ -287,7 +287,8 @@ InteractiveModeBase.prototype.showModelsSelector = async function(this: Interact
     });
   };
 
-InteractiveModeBase.prototype.showUserMessageSelector = function(this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.showUserMessageSelector = async function(this: InteractiveModeBase): Promise<void> {
+    await this.ensureDeferredStartupComplete();
     const userMessages = this.session.getUserMessagesForForking();
 
     if (userMessages.length === 0) {
@@ -302,6 +303,7 @@ InteractiveModeBase.prototype.showUserMessageSelector = function(this: Interacti
         userMessages.map((m) => ({ id: m.entryId, text: m.text })),
         async (entryId) => {
           try {
+            await this.ensureDeferredStartupComplete();
             const result = await this.runtimeHost.fork(entryId);
             if (result.cancelled) {
               done();

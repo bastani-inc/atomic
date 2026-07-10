@@ -97,9 +97,9 @@ export function substitutePropsWithExprs(markup, contract) {
 
 export function parseSvelteComponentFile(content) {
   const text = String(content || '');
-  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script[^>]*>/i);
+  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/i);
   const withoutScript = scriptMatch ? text.slice(scriptMatch[0].length) : text;
-  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/i);
+  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/i);
   const styleBlock = styleMatch ? styleMatch[0] : '';
   const markup = styleMatch
     ? withoutScript.slice(0, styleMatch.index).trim()
@@ -107,7 +107,7 @@ export function parseSvelteComponentFile(content) {
   const cssLines = styleBlock
     ? styleBlock
       .replace(/^<style\b[^>]*>/i, '')
-      .replace(/<\/style\s*>$/i, '')
+      .replace(/<\/style\b[^>]*>$/i, '')
       .split('\n')
       .map((line) => line.trimEnd())
     : [];
@@ -290,7 +290,7 @@ function appendCssToSvelteStyle(lines, cssLines) {
 
 function findLastStyleCloseLine(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (/<\/style\s*>/.test(lines[i])) return i;
+    if (/<\/style\b[^>]*>/.test(lines[i])) return i;
   }
   return -1;
 }
@@ -632,24 +632,21 @@ function inlineSvelteComponentInsertAccept({
 }
 
 function svelteMarkupHasVisibleContent(markup) {
-  const raw = String(markup || '');
-  // Strip script/style/comment blocks to a fixpoint so partially-overlapping
-  // sequences cannot survive a single pass (CodeQL: complete sanitization).
-  let text = raw;
-  let prev;
+  let stripped = String(markup || '');
+  let previous;
   do {
-    prev = text;
-    text = text
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script[^>]*>/gi, '')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/gi, '')
+    previous = stripped;
+    stripped = stripped
+      .replace(/<script[\s\S]*?<\/script\b[^>]*>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style\b[^>]*>/gi, ' ')
       .replace(/<!--[\s\S]*?-->/g, '');
-  } while (text !== prev);
-  text = text
+  } while (stripped !== previous);
+  const text = stripped
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   if (text.length > 0) return true;
-  return /<(img|svg|canvas|video|audio|picture|input|button|select|textarea)\b/i.test(raw);
+  return /<(img|svg|canvas|video|audio|picture|input|button|select|textarea)\b/i.test(markup || '');
 }
 
 function mergeOriginalTopLevelAttrs(markup, originalMarkup) {

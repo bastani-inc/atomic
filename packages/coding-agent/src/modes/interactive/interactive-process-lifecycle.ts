@@ -246,9 +246,5 @@ InteractiveModeBase.prototype.handleDequeue = function(this: InteractiveModeBase
     const restored = this.restoreQueuedMessagesToEditor();
     if (restored === 0) {
       this.showStatus("No queued messages to restore");
-    } else {
-      this.showStatus(
-        `Restored ${restored} queued message${restored > 1 ? "s" : ""} to editor`,
-      );
     }
   };

@@ -6,36 +6,74 @@ import type { GitResult, GitWorktreeSetupOptions, GitWorktreeSetupResult } from 
 
 const DISABLED_GIT_HOOKS_PATH = process.platform === "win32" ? "NUL" : "/dev/null";
 const GIT_COMMAND_TIMEOUT_MS = 60_000;
+const GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS = 2;
 
+export type GitRunner = (cwd: string, args: readonly string[]) => GitResult;
 
-export function runGit(cwd: string, args: string[]): GitResult {
-	const result = spawnSync("git", [
+let gitRunnerOverride: GitRunner | undefined;
+
+function gitCommandArgs(args: readonly string[]): string[] {
+	return [
 		"-c",
 		`core.hooksPath=${DISABLED_GIT_HOOKS_PATH}`,
 		"-c",
 		"core.fsmonitor=false",
 		...args,
-	], {
+	];
+}
+
+function gitCommandArgv(args: readonly string[]): string[] {
+	return ["git", ...gitCommandArgs(args)];
+}
+
+function withGitResultDiagnostics(result: GitResult, cwd: string, args: readonly string[]): GitResult {
+	return {
+		...result,
+		argv: result.argv ?? gitCommandArgv(args),
+		cwd: result.cwd ?? cwd,
+		timeoutMs: result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS,
+	};
+}
+
+function runGitProcess(cwd: string, args: readonly string[]): GitResult {
+	const startedAt = Date.now();
+	const result = spawnSync("git", gitCommandArgs(args), {
 		cwd,
 		encoding: "utf-8",
-		env: createGitEnvironment({ GIT_OPTIONAL_LOCKS: "0" }),
+		env: createGitEnvironment({
+			GIT_OPTIONAL_LOCKS: "0",
+			GIT_TERMINAL_PROMPT: "0",
+			GCM_INTERACTIVE: "never",
+		}),
 		timeout: GIT_COMMAND_TIMEOUT_MS,
 	});
 	return {
 		stdout: result.stdout ?? "",
 		stderr: result.stderr ?? "",
-		status: result.status,
+		status: result.status ?? null,
+		signal: result.signal ?? null,
+		elapsedMs: Math.max(0, Date.now() - startedAt),
 		...(result.error === undefined ? {} : { error: result.error }),
 	};
 }
 
-export function runGitChecked(cwd: string, args: string[]): string {
-	const result = runGit(cwd, args);
-	if (result.status !== 0) {
-		const command = `git -C ${cwd} ${args.join(" ")}`;
-		const message = result.stderr.trim() || result.stdout.trim() || `${command} failed`;
-		throw new Error(message);
+export function withGitRunnerForTest<T>(runner: GitRunner, callback: () => T): T {
+	const previous = gitRunnerOverride;
+	gitRunnerOverride = runner;
+	try {
+		return callback();
+	} finally {
+		gitRunnerOverride = previous;
 	}
+}
+
+export function runGit(cwd: string, args: readonly string[]): GitResult {
+	return withGitResultDiagnostics((gitRunnerOverride ?? runGitProcess)(cwd, args), cwd, args);
+}
+
+export function runGitChecked(cwd: string, args: readonly string[]): string {
+	const result = runGit(cwd, args);
+	if (result.status !== 0) throw new Error(gitFailureMessage(result));
 	return result.stdout;
 }
 
@@ -51,15 +89,76 @@ export function isGitTimeoutResult(result: GitResult): boolean {
 	return code === "ETIMEDOUT" || message.includes("etimedout") || message.includes("timed out");
 }
 
+function formatGitDiagnosticArg(value: string): string {
+	if (/^[A-Za-z0-9_./:@%+=,\\-]+$/.test(value)) return value;
+	return JSON.stringify(value);
+}
+
+function formatGitCommand(argv: readonly string[]): string {
+	return argv.map(formatGitDiagnosticArg).join(" ");
+}
+
+function gitDiagnosticSuffix(result: GitResult): string {
+	const details: string[] = [];
+	if (result.argv !== undefined && result.argv.length > 0) details.push(`command: ${formatGitCommand(result.argv)}`);
+	if (result.cwd !== undefined) details.push(`cwd: ${result.cwd}`);
+	if (result.timeoutMs !== undefined) details.push(`timeout: ${result.timeoutMs}ms`);
+	if (result.elapsedMs !== undefined) details.push(`elapsed: ${result.elapsedMs}ms`);
+	details.push(`status: ${result.status === null ? "null" : result.status}`);
+	if (result.signal !== undefined) details.push(`signal: ${result.signal ?? "null"}`);
+	if (result.attempts !== undefined && result.attempts > 1) details.push(`attempts: ${result.attempts}`);
+	return details.length === 0 ? "" : ` (${details.join("; ")})`;
+}
+
 export function gitFailureMessage(result: GitResult): string {
 	if (result.error !== undefined) {
 		const code = gitErrorCode(result.error);
 		if (isGitTimeoutResult(result)) {
-			return `git command timed out after ${GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}`;
+			return `git command timed out after ${result.timeoutMs ?? GIT_COMMAND_TIMEOUT_MS}ms${code === undefined ? "" : ` (${code})`}: ${result.error.message}${gitDiagnosticSuffix(result)}`;
 		}
-		return code === undefined ? result.error.message : `${code}: ${result.error.message}`;
+		return `${code === undefined ? result.error.message : `${code}: ${result.error.message}`}${gitDiagnosticSuffix(result)}`;
 	}
-	return result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`;
+	return `${result.stderr.trim() || result.stdout.trim() || `git exited with status ${result.status}`}${gitDiagnosticSuffix(result)}`;
+}
+
+function runGitReadOnlyProbe(cwd: string, args: readonly string[]): GitResult {
+	let attempts = 1;
+	let result = runGit(cwd, args);
+	while (attempts < GIT_READ_ONLY_PROBE_TIMEOUT_ATTEMPTS && result.status !== 0 && isGitTimeoutResult(result)) {
+		attempts += 1;
+		result = runGit(cwd, args);
+	}
+	return attempts > 1 ? { ...result, attempts } : result;
+}
+
+export interface GitWorktreeSetupCache {
+	get(options: GitWorktreeSetupOptions): GitWorktreeSetupResult;
+}
+
+function gitWorktreeSetupCacheKey(options: GitWorktreeSetupOptions): string {
+	return JSON.stringify([
+		path.resolve(options.cwd),
+		options.gitWorktreeDir.trim(),
+		options.baseBranch?.trim() ?? "",
+	]);
+}
+
+export function createGitWorktreeSetupCache(): GitWorktreeSetupCache {
+	const results = new Map<string, GitWorktreeSetupResult>();
+	return {
+		get(options) {
+			const key = gitWorktreeSetupCacheKey(options);
+			const cached = results.get(key);
+			if (cached !== undefined) return cached;
+			const setup = setupGitWorktree(options);
+			results.set(key, setup);
+			return setup;
+		},
+	};
+}
+
+export function setupGitWorktreeCached(options: GitWorktreeSetupOptions, cache?: GitWorktreeSetupCache): GitWorktreeSetupResult {
+	return cache?.get(options) ?? setupGitWorktree(options);
 }
 
 function quoteShellArg(value: string): string {
@@ -142,7 +241,7 @@ function pathExistsSync(value: string): boolean {
 }
 
 function repositoryRootForGitWorktree(cwd: string): string {
-	const result = runGit(cwd, ["rev-parse", "--show-toplevel"]);
+	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]);
 	if (result.status !== 0) {
 		if (isGitTimeoutResult(result)) {
 			throw new Error(`Timed out while checking the Git repository for gitWorktreeDir from ${cwd}. Git reported: ${gitFailureMessage(result)}`);
@@ -163,12 +262,17 @@ export function gitTopLevelFromResult(result: GitResult, cwd: string, descriptio
 }
 
 function gitTopLevel(cwd: string): string | undefined {
-	return gitTopLevelFromResult(runGit(cwd, ["rev-parse", "--show-toplevel"]), cwd, `gitWorktreeDir ${cwd}`);
+	return gitTopLevelFromResult(runGitReadOnlyProbe(cwd, ["rev-parse", "--show-toplevel"]), cwd, `gitWorktreeDir ${cwd}`);
 }
 
 function gitCommonDirForWorktree(cwd: string): string {
-	const result = runGit(cwd, ["rev-parse", "--git-common-dir"]);
-	if (result.status !== 0) throw new Error(gitFailureMessage(result));
+	const result = runGitReadOnlyProbe(cwd, ["rev-parse", "--git-common-dir"]);
+	if (result.status !== 0) {
+		if (isGitTimeoutResult(result)) {
+			throw new Error(`Timed out while validating Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+		}
+		throw new Error(`Failed to validate Git common directory for gitWorktreeDir ${cwd}. Git reported: ${gitFailureMessage(result)}`);
+	}
 	const gitPath = gitPathFromOutput(result.stdout, cwd);
 	if (gitPath === undefined) throw new Error("git rev-parse --git-common-dir returned an empty path");
 	return gitPath;

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+
+installSlashDispatchTestHooks();
 
 describe("/workflow interrupt chat command", () => {
     test.serial.each([["completed"], ["failed"], ["killed"]] as const)(
@@ -376,7 +379,9 @@ describe("/workflow interrupt chat command", () => {
                 true,
             );
             const completions =
-                workflowCmd.options.getArgumentCompletions?.("refresh-added");
+                (await workflowCmd.options.getArgumentCompletions?.(
+                    "refresh-add",
+                )) ?? [];
             assert.equal(
                 completions?.some(
                     (completion) => completion.label === "refresh-added",
@@ -421,9 +426,9 @@ describe("/workflow interrupt chat command", () => {
                 true,
             );
             const completions =
-                workflowCmd.options.getArgumentCompletions?.(
-                    "refresh-fallback",
-                );
+                (await workflowCmd.options.getArgumentCompletions?.(
+                    "refresh-fall",
+                )) ?? [];
             assert.equal(
                 completions?.some(
                     (completion) => completion.label === "refresh-fallback",

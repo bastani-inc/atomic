@@ -63,10 +63,13 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ listModels: "all" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ resolvedExtensionPathCount: 1 }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ unknownFlagCount: 1 }))).toBe(false);
-		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(false);
-		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ resolvedResourcePathCount: 1 }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ hasSystemPromptInput: true }))).toBe(false);
+	});
+
+	it("keeps explicit provider or model selection on the synchronous startup path", () => {
+		expect(computeDeferExtensions(baseInput({ provider: "anthropic" }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
 	});
 
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {
@@ -79,6 +82,10 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ appMode: "print" }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ stdinIsTTY: false }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ hasSessionStartEvent: true }))).toBe(false);
+	});
+
+	it("keeps print prompts synchronous so slash commands load before atomic -p runs", () => {
+		expect(computeDeferExtensions(baseInput({ appMode: "print" }))).toBe(false);
 	});
 });
 
@@ -109,6 +116,20 @@ describe("computeStartupInputCaptureEnabled", () => {
 			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
 		} finally {
 			removeTempDir(input.sessionCwd);
+		}
+	});
+
+	it("does not start pre-session input capture for explicit provider or model selection", () => {
+		const providerInput = baseStartupCaptureInput();
+		providerInput.parsed.provider = "extension-provider";
+		const modelInput = baseStartupCaptureInput();
+		modelInput.parsed.model = "extension-model";
+		try {
+			expect(computeStartupInputCaptureEnabled(providerInput)).toBe(false);
+			expect(computeStartupInputCaptureEnabled(modelInput)).toBe(false);
+		} finally {
+			removeTempDir(providerInput.sessionCwd);
+			removeTempDir(modelInput.sessionCwd);
 		}
 	});
 });

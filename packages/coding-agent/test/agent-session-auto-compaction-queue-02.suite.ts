@@ -90,7 +90,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
 
-		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
 		const agent = new Agent({
 			initialState: {
 				model,

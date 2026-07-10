@@ -192,10 +192,6 @@ export function restoreQueuedMessagesToEditor<
   state.compactionQueuedMessages = [];
   setChatSessionEditorText(state, restoredText);
   state.getAgentSession?.()?.clearQueue();
-  notifyChatSessionStatus(
-    state,
-    `Restored ${queuedMessages.length} queued message${queuedMessages.length === 1 ? "" : "s"} to editor`,
-  );
   state.requestRender?.();
   return true;
 }

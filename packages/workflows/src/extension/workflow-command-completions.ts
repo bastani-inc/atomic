@@ -13,8 +13,9 @@ function completeToken(
     : Math.max(argumentText.lastIndexOf(" "), argumentText.lastIndexOf("\t")) + 1;
   const head = argumentText.slice(0, tokenStart);
   const token = argumentText.slice(tokenStart);
+  const normalizedToken = token.trimEnd();
   const filtered = candidates
-    .filter((candidate) => candidate.value.startsWith(token))
+    .filter((candidate) => candidate.value.startsWith(token) && candidate.value.trimEnd() !== normalizedToken)
     .map((candidate) => ({ ...candidate, value: `${head}${candidate.value}` }));
   return filtered.length > 0 ? filtered : null;
 }
@@ -48,6 +49,17 @@ function runIdItems(): PiArgumentCompletion[] {
     label: run.id.slice(0, 8),
     description: `${run.name} — ${run.status}`,
   }));
+}
+
+export function workflowArgumentCompletionsNeedWorkflowResources(partial: string): boolean {
+  const parts = partial.trim().split(/\s+/).filter(Boolean);
+  const subcommand = parts[0] ?? "";
+  if (!partial.includes(" ")) return true;
+  if (!subcommand || subcommand === "inputs") return true;
+  if (["status", "connect", "resume", "attach", "pause", "interrupt", "kill", "reload"].includes(subcommand)) {
+    return false;
+  }
+  return true;
 }
 
 export function workflowArgumentCompletions(

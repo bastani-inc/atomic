@@ -1,3 +1,5 @@
+import { recordTimeSinceReset } from "./core/timings.ts";
+
 export interface EarlyInputState {
 	text: string;
 	submissions: string[];
@@ -117,6 +119,7 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	const state: EarlyInputState = { text: "", submissions: [] };
 	const wasRaw = stdin.isRaw === true;
 	let consumed = false;
+	let firstRawKeyRecorded = false;
 	let onData: (chunk: Buffer | string) => void;
 	const registeredProcessListeners: Array<{ event: EarlyInputProcessEvent; listener: EarlyInputProcessListener }> = [];
 	let pendingEscapeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,6 +157,10 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 		processLike.on(event, listener);
 	};
 	onData = (chunk: Buffer | string) => {
+		if (!firstRawKeyRecorded) {
+			firstRawKeyRecorded = true;
+			recordTimeSinceReset("startup-input-first-raw-key");
+		}
 		const text = chunk.toString();
 		if (text.includes("\x03")) {
 			forwardSignal("SIGINT");
@@ -165,6 +172,7 @@ export function startEarlyInputCapture(options: StartEarlyInputCaptureOptions): 
 	};
 
 	stdin.setRawMode(true);
+	recordTimeSinceReset("startup-input-raw-mode-enabled");
 	stdin.setEncoding?.("utf8");
 	stdin.on("data", onData);
 	registerProcessListener("exit", cleanup);

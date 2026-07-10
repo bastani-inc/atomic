@@ -54,6 +54,10 @@ Never use `__dirname` directly for package assets.
 - Rendered TUI lines with ANSI codes
 - Last messages sent to the LLM
 
+## Startup timing probes
+
+Set `ATOMIC_TIMING=1` when profiling startup. Normal interactive launches print the initial startup group before `interactiveMode.run()` starts the TUI loop, so marks reached later in the interactive lifecycle are not printed during ordinary sessions. Use `ATOMIC_STARTUP_BENCHMARK=1` for first-frame/deferred-startup probes; it initializes interactive mode, explicitly completes deferred startup work, emits marks such as `time-to-first-frame`, `startup-input-raw-mode-enabled`, `startup-input-first-raw-key`, and `deferred-extension-load` when reached, then exits without submitting a prompt. During normal startup, built-in commands and lightweight bundled extension command metadata are available for autocomplete immediately, while heavy extension implementations load only when an extension command or another extension-aware action is invoked. Targeted tests/probes can also assert later interactive marks such as `interactive-input-handler-ready` and `interactive-first-submit`.
+
 ## Testing
 
 ```bash

@@ -38,7 +38,6 @@ import {
   researchModelConfig,
   reviewerAModelConfig,
   reviewerBModelConfig,
-  reviewerCModelConfig,
 } from "./ralph-models.js";
 export async function runRalphWorkflow(
   ctx: WorkflowRunContext<RalphInputs>,
@@ -251,16 +250,6 @@ export async function runRalphWorkflow(
               orchestratorReportPath,
             ],
             ...reviewerBModelConfig,
-          },
-          {
-            name: "reviewer-c",
-            task: reviewPrompt,
-            reads: [
-              researchPath,
-              implementationNotesPath,
-              orchestratorReportPath,
-            ],
-            ...reviewerCModelConfig,
           },
         ],
         {

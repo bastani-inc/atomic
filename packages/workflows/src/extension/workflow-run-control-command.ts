@@ -22,12 +22,14 @@ import {
   resolveRunIdPrefix,
   resolveStageTarget,
 } from "./workflow-targets.js";
+import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 
 export interface WorkflowRunControlDeps {
   pi: ExtensionAPI;
   overlay: GraphOverlayPort;
   getPersistence: () => WorkflowPersistencePort | undefined;
   runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
+  ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 }
 
 function resolveAttachStageId(runId: string, stageTarget: string | undefined): string | undefined | false {
@@ -61,6 +63,11 @@ async function handleDurableResume(
 ): Promise<boolean> {
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
+  try {
+    await deps.ensureWorkflowResourcesLoaded();
+  } catch (error) {
+    ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+  }
   const runtime = deps.runtimeForContext(ctx);
   const policy = workflowPolicyFromContext(ctx);
   // Hydrate the durable backend from DBOS (if configured) before listing so a
@@ -121,6 +128,13 @@ export async function handleRunControlCommand(
   const fail = (msg: string): void => reporter.error(msg);
   const canOpenPicker = (ui: PiCommandContext["ui"] | undefined): boolean =>
     policy.allowInputPicker && typeof ui?.custom === "function";
+  const ensureWorkflowResourcesVisible = async (): Promise<void> => {
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+    } catch (error) {
+      ctx.ui?.notify(formatWorkflowResourceLoadWarning(error), "warning");
+    }
+  };
   const confirmationPrompt = policy.allowHumanInput && typeof ctx.ui?.confirm === "function"
     ? ctx.ui.confirm.bind(ctx.ui)
     : undefined;
@@ -293,22 +307,23 @@ export async function handleRunControlCommand(
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
-        // Durable entries: a `running` durable handle may be a crashed process
-        // (cross-session crash recovery), so it stays selectable UNLESS it
-        // matches an actively-executing live run in this session.
-        const activeLiveIds = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
-            .map((run) => run.id),
-        );
-        const runtime = deps.runtimeForContext(ctx);
         let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        try {
-          const prepared = await runtime.prepareDurableResumable(undefined);
-          durableEntries = filterSelectorDurableEntries(runtime, prepared)
-            .filter((entry) => !activeLiveIds.has(entry.workflowId));
-        } catch (error) {
-          if (liveRuns.length === 0) {
+        if (liveRuns.length === 0) {
+          // Durable entries: a `running` durable handle may be a crashed process
+          // (cross-session crash recovery), so it stays selectable UNLESS it
+          // matches an actively-executing live run in this session.
+          const activeLiveIds = new Set(
+            topLevelWorkflowRuns(store.runs())
+              .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
+              .map((run) => run.id),
+          );
+          await ensureWorkflowResourcesVisible();
+          const runtime = deps.runtimeForContext(ctx);
+          try {
+            const prepared = await runtime.prepareDurableResumable(undefined);
+            durableEntries = filterSelectorDurableEntries(runtime, prepared)
+              .filter((entry) => !activeLiveIds.has(entry.workflowId));
+          } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             fail(`Failed to list resumable workflows: ${message}`);
             return true;
@@ -326,11 +341,12 @@ export async function handleRunControlCommand(
           const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
           const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
           if (isResumableContinuation) {
+            await ensureWorkflowResourcesVisible();
             const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
             const result = resumeRun(resolved.runId, {});
-            if (result.ok && result.mode === "snapshot" && run?.exitReason === "quit") {
+            if (result.ok && !isPaused && result.mode === "snapshot" && run?.exitReason === "quit") {
               return await handleDurableResume(resolved.runId, ctx, reporter, deps);
             }
             if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -389,7 +405,9 @@ export async function handleRunControlCommand(
       return true;
     }
     const run = store.runs().find((r) => r.id === stageRunId);
-    const isPaused = run?.status === "paused" || (run?.stages.some((s) => s.status === "paused") ?? false);
+    const hadPausedRunState = run?.status === "paused";
+    const hadPausedStageState = run?.stages.some((s) => s.status === "paused") ?? false;
+    const isPaused = hadPausedRunState || hadPausedStageState;
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
     const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
     if (isActivelyRunning && action === "resume") {
@@ -397,17 +415,21 @@ export async function handleRunControlCommand(
       return true;
     }
     if (isResumableContinuation) {
+      await ensureWorkflowResourcesVisible();
       const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;
+    }
+    // A quit, non-paused durable run is a resume shadow rather than a live
+    // stage-control pause. Routing directly to durable resume preserves the
+    // previous snapshot-only diversion without reopening a stale local overlay.
+    if (!isPaused && run?.exitReason === "quit" && action === "resume") {
+      return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
     const result = resumeRun(stageRunId, { stageId, message });
     if (!result.ok) {
       fail(`Run not found: ${stageRunId.slice(0, 8)}`);
       return true;
-    }
-    if (result.mode === "snapshot" && run?.exitReason === "quit" && action === "resume") {
-      return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
     if (!isPaused) {
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -415,9 +437,12 @@ export async function handleRunControlCommand(
       return true;
     }
     if (!message && stageId && policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
-    result.resumed.length === 0
-      ? fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`)
-      : print(`Resumed ${result.resumed.length} stage(s) on run ${stageRunId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`);
+    if (result.resumed.length === 0) {
+      const runLevelResumed = hadPausedRunState && !hadPausedStageState && stageId === undefined && result.snapshot.status === "running";
+      runLevelResumed ? print(`Resumed run ${stageRunId.slice(0, 8)}.`) : fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`);
+    } else {
+      print(`Resumed ${result.resumed.length} stage(s) on run ${stageRunId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`);
+    }
     return true;
   }
 

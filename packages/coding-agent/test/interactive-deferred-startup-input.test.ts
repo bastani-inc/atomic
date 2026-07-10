@@ -32,4 +32,26 @@ describe("deferred startup input readiness", () => {
 
 		expect(mode.starts).toBe(0);
 	});
+
+	it("fails open and clears pending state when deferred startup rejects", async () => {
+		const mode = createMode();
+		mode.completeDeferredStartup = () => Promise.reject(new Error("boom"));
+
+		await expect(ensureDeferredStartupComplete(mode)).resolves.toBeUndefined();
+
+		expect(mode.deferredStartupPending).toBe(false);
+		expect(mode.deferredStartupPromise).toBeUndefined();
+	});
+
+	it("fails open when deferred startup throws synchronously", async () => {
+		const mode = createMode();
+		mode.completeDeferredStartup = () => {
+			throw new Error("boom");
+		};
+
+		await expect(ensureDeferredStartupComplete(mode)).resolves.toBeUndefined();
+
+		expect(mode.deferredStartupPending).toBe(false);
+		expect(mode.deferredStartupPromise).toBeUndefined();
+	});
 });

@@ -13,6 +13,7 @@ import { createWorkflowStageFactory } from "../runs/foreground/executor-stage-fa
 import { createWorkflowBoundaryFactory, type WorkflowBoundaryStage } from "../runs/foreground/executor-child-boundary.js";
 import type { GraphFrontierTracker } from "./graph-inference.js";
 import type { EngineChildRunOptions, EngineStageRuntimeOptions, EngineWorkflowBoundaryOptions } from "./options.js";
+import type { GitWorktreeSetupCache } from "../runs/foreground/executor-direct-helpers.js";
 
 export interface EngineRuntimeInput {
   readonly runId: string;
@@ -31,6 +32,7 @@ export interface EngineRuntimeInput {
   readonly limiter: ConcurrencyLimiter;
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
+  readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
   readonly stageRegistry: StageControlRegistry;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: LiveStageRuntime["classifyExecutorFailure"];
@@ -73,6 +75,7 @@ export class EngineRuntime {
   readonly exit: WorkflowExitManager;
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
+  readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
 
   private readonly spawnAgentStage: (
     name: string,
@@ -93,6 +96,7 @@ export class EngineRuntime {
     this.exit = input.exit;
     this.inputRuntimeDefaults = input.inputRuntimeDefaults;
     this.workflowInvocationCwd = input.workflowInvocationCwd;
+    this.gitWorktreeSetupCache = input.gitWorktreeSetupCache;
 
     // The runtime only wires host-injected ports; stage sessions are still
     // created lazily by the stage runner through input.adapters.agentSession.
@@ -108,6 +112,7 @@ export class EngineRuntime {
       limiter: input.limiter,
       inputRuntimeDefaults: input.inputRuntimeDefaults,
       workflowInvocationCwd: input.workflowInvocationCwd,
+      gitWorktreeSetupCache: input.gitWorktreeSetupCache,
       stageRegistry: input.stageRegistry,
       exit: input.exit,
       classifyExecutorFailure: input.classifyExecutorFailure,

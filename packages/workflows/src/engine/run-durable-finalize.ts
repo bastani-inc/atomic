@@ -38,8 +38,7 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 
   const durableStatus = toDurableStatus(status);
   if (durableStatus !== undefined) {
-    const resumable = status === "blocked" ? false : input.runSnapshot.resumable;
-    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, resumable);
+    input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
   }
   try {
     await input.durableBackend.flush?.();

@@ -467,7 +467,7 @@ export async function main(args: string[], options?: MainOptions) {
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");
-			await interactiveMode.deferredStartupPromise;
+			await interactiveMode.ensureDeferredStartupComplete();
 			printTimings();
 			interactiveMode.stop();
 			stopThemeWatcher();

@@ -1,6 +1,7 @@
 // @ts-nocheck
 import { describe, test } from "bun:test";
 import {
+    installSlashDispatchTestHooks,
     assert,
     parseWorkflowArgs,
     tokenizeWorkflowArgs,
@@ -62,6 +63,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+
+installSlashDispatchTestHooks();
 
 describe("/workflow <name> --help prints schema without dispatching", () => {
     test.serial("--help token short-circuits to the schema printer", async () => {

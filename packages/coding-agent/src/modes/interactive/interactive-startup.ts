@@ -3,10 +3,24 @@ import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, s
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 
+function prepareStartupNotices(mode: InteractiveModeBase): void {
+    if (mode.startupNoticesPrepared) return;
+    mode.startupNoticesPrepared = true;
+    mode.hadLastChangelogVersionAtStartup = Boolean(mode.settingsManager.getLastChangelogVersion?.());
+    if (mode.changelogMarkdown === undefined) {
+      mode.changelogMarkdown = mode.getChangelogForDisplay?.();
+    }
+    mode.initializeFirstRunOnboardingMarkers?.();
+    if (!mode.firstRunNoticeVisible) {
+      mode.firstRunNoticeVisible = mode.isFirstRunOnboardingEligible?.() ?? false;
+    }
+  }
+
 InteractiveModeBase.prototype.showStartupNoticesIfNeeded = function(this: InteractiveModeBase, targetContainer: Container = this.chatContainer): void {
     if (this.startupNoticesShown) {
       return;
     }
+    prepareStartupNotices(this);
     this.startupNoticesShown = true;
 
     const changelogMarkdown = this.changelogMarkdown;
@@ -71,10 +85,7 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.registerSignalHandlers();
 
-    // Load changelog (only show new entries, skip for resumed sessions)
-    this.hadLastChangelogVersionAtStartup = Boolean(this.settingsManager.getLastChangelogVersion());
-    this.changelogMarkdown = this.getChangelogForDisplay();
-    this.initializeFirstRunOnboardingMarkers();
+    // Changelog and first-run onboarding are prepared lazily after first paint.
 
     // Add header container as first child. Populate it after theme initialization.
     this.ui.addChild(this.headerContainer);
@@ -101,8 +112,6 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.setupKeyHandlers();
     this.setupEditorSubmitHandler();
 
-    this.firstRunNoticeVisible = this.isFirstRunOnboardingEligible();
-
     seedStartupInput(
       this.pendingUserInputs,
       this.defaultEditor,
@@ -116,17 +125,17 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
       },
     );
 
-    // Start the UI before initializing extensions so session_start handlers can use interactive dialogs.
-    // fd/rg readiness is intentionally checked after first paint because ensureTool may spawn
-    // or download tools on cold machines.
+    // Start UI before extension/session work; fd/rg readiness and git watching move after first paint.
     this.ui.start();
     recordTimeSinceReset("time-to-first-frame");
+    this.footerDataProvider.onBranchChange(() => {
+      this.ui.requestRender();
+    });
     this.isInitialized = true;
 
     await this.themeController.applyFromSettings();
 
-    // Add the quiet startup identity (unless silenced). Resource details are
-    // disclosed separately in the chat canvas via the tools/resources toggle.
+    // Add the quiet startup identity unless silenced.
     if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
       this.builtInHeader = new ExpandableText(
         () => this.getStartupIdentityText(),
@@ -171,21 +180,10 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
     this.attachStartupNoticesContainer();
     // Render initial messages AFTER the initial session binding is in place.
     this.renderInitialMessages();
-	if (this.deferredStartupPending) {
-		setTimeout(() => {
-			if (!this.deferredStartupPending || this.deferredStartupPromise) return;
-			void this.ensureDeferredStartupComplete();
-		}, 2000);
-	}
     // Set up theme file watcher
     onThemeChange(() => {
       this.ui.invalidate();
       this.updateEditorBorderColor();
-      this.ui.requestRender();
-    });
-
-    // Set up git branch watcher (uses provider instead of footer)
-    this.footerDataProvider.onBranchChange(() => {
       this.ui.requestRender();
     });
 

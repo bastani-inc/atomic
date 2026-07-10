@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 const claudeModel = {
 	provider: "anthropic",
@@ -55,5 +56,25 @@ describe("applyDeferredModelScope", () => {
 
 		expect(mode.session.setModel).toHaveBeenCalledWith(claudeModel);
 		expect(setThinkingLevel).not.toHaveBeenCalled();
+	});
+});
+
+describe("retryDeferredModelRestore", () => {
+	it("suppresses stale no-model fallback warnings when deferred model scope selected a ready model", async () => {
+		const mode = {
+			options: { modelFallbackMessage: "No models available" },
+			sessionManager: { buildSessionContext: () => ({ model: undefined }) },
+			session: {
+				model: claudeModel,
+				modelRegistry: { hasConfiguredAuth: vi.fn(() => true) },
+				setModel: vi.fn(),
+			},
+			showWarning: vi.fn(),
+		};
+
+		await InteractiveMode.prototype.retryDeferredModelRestore.call(mode as never);
+
+		expect(mode.session.modelRegistry.hasConfiguredAuth).toHaveBeenCalledWith(claudeModel);
+		expect(mode.showWarning).not.toHaveBeenCalled();
 	});
 });

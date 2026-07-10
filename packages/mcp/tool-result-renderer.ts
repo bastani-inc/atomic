@@ -1,7 +1,7 @@
-import type { AgentToolResult, ToolRenderResultOptions } from "@bastani/atomic";
+import { keyText, type AgentToolResult, type ToolRenderResultOptions } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 
-type McpToolResultDetails = Record<string, unknown> & { error?: unknown };
+export type McpToolResultDetails = Record<string, unknown> & { error?: unknown };
 type McpToolContentBlock = AgentToolResult<McpToolResultDetails>["content"][number];
 
 interface RenderTheme {
@@ -58,7 +58,7 @@ export function renderMcpToolResult(
     .map((line) => line === "…" ? theme.fg("muted", line) : theme.fg("toolOutput", line))
     .join("\n");
   const hint = display.truncated && !options.expanded
-    ? `\n${theme.fg("muted", "(CTRL+O Expand)")}`
+    ? `\n${theme.fg("muted", `(${keyText("app.tools.expand")} Expand)`)}`
     : "";
 
   return new Text(`${output}${hint}`, 0, 0);

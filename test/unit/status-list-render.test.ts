@@ -57,6 +57,12 @@ function makeRun(over: Partial<RunSnapshot>): RunSnapshot {
     exited: over.exited,
     exitReason: over.exitReason,
     resumable: over.resumable,
+    failureKind: over.failureKind,
+    failureCode: over.failureCode,
+    failureRecoverability: over.failureRecoverability,
+    failureDisposition: over.failureDisposition,
+    failureMessage: over.failureMessage,
+    failedStageId: over.failedStageId,
   };
 }
 
@@ -131,6 +137,108 @@ describe("renderStatusList — populated", () => {
     // Trailing hint references the most-recently-active run (def456, 42s ago).
     assert.match(plain, /▸ \/workflow status def456/);
     assert.match(plain, /drill into a run/);
+  });
+
+  test("blocked terminal runs are not counted as successful completions", () => {
+    const now = 1_000_000;
+    const out = renderStatusList([
+      makeRun({
+        id: "blk123uuid",
+        name: "auth-blocked",
+        status: "blocked",
+        startedAt: now - 10_000,
+        endedAt: now - 1_000,
+      }),
+    ], { now, width: 100 });
+
+    assert.match(out, /↑ 1 blocked/);
+    assert.match(out, /↑\s+blk123\s+auth-blocked\s+↑ blocked/);
+    assert.doesNotMatch(out, /✓ 1/);
+    assert.doesNotMatch(out, /✓ completed/);
+  });
+
+  test("legacy completed snapshots with incomplete returned status render blocked", () => {
+    const now = 1_000_000;
+    const out = renderStatusList([
+      makeRun({
+        id: "old123uuid",
+        name: "goal",
+        status: "completed",
+        startedAt: now - 10_000,
+        endedAt: now - 1_000,
+        result: {
+          status: "needs_human",
+          remaining_work: "No API key for provider: github-copilot",
+        },
+      }),
+    ], { now, width: 100 });
+
+    assert.match(out, /↑ 1 blocked/);
+    assert.match(out, /↑\s+old123\s+goal\s+↑ blocked/);
+    assert.doesNotMatch(out, /✓ 1/);
+    assert.doesNotMatch(out, /✓ completed/);
+  });
+
+  test("legacy completed snapshots with structured recoverable stage failures render blocked without status output", () => {
+    const now = 1_000_000;
+    const out = renderStatusList([
+      makeRun({
+        id: "auth00uuid",
+        name: "goal",
+        status: "completed",
+        startedAt: now - 10_000,
+        endedAt: now - 1_000,
+        failedStageId: "reviewer-a",
+        stages: [
+          makeStage("reviewer-a", "reviewer-a", "failed", {
+            error: "A required model provider API key is missing. Configure the provider credentials and resume the workflow.",
+            failureKind: "auth",
+            failureCode: "missing_api_key",
+            failureRecoverability: "recoverable",
+            failureDisposition: "active_blocked",
+            failureMessage: "No API key for provider: github-copilot",
+          }),
+        ],
+        result: {
+          remaining_work: "Reviewer execution failed",
+        },
+      }),
+    ], { now, width: 100 });
+
+    assert.match(out, /↑ 1 blocked/);
+    assert.match(out, /↑\s+auth00\s+goal\s+↑ blocked/);
+    assert.doesNotMatch(out, /✓ 1/);
+    assert.doesNotMatch(out, /✓ completed/);
+  });
+
+  test("completed snapshots with tolerated recoverable stage failures stay completed", () => {
+    const now = 1_000_000;
+    const out = renderStatusList([
+      makeRun({
+        id: "okauthuuid",
+        name: "ralph",
+        status: "completed",
+        startedAt: now - 10_000,
+        endedAt: now - 1_000,
+        stages: [
+          makeStage("reviewer-a", "reviewer-a", "failed", {
+            error: "A required model provider API key is missing. Configure the provider credentials and resume the workflow.",
+            failureKind: "auth",
+            failureCode: "missing_api_key",
+            failureRecoverability: "recoverable",
+            failureDisposition: "active_blocked",
+            failureMessage: "No API key for provider: github-copilot",
+          }),
+          makeStage("reviewer-b", "reviewer-b", "completed", { result: "approved" }),
+        ],
+        result: { result: "approved" },
+      }),
+    ], { now, width: 100 });
+
+    assert.match(out, /✓ 1/);
+    assert.match(out, /✓\s+okauth\s+ralph\s+✓ completed/);
+    assert.doesNotMatch(out, /↑ 1 blocked/);
+    assert.doesNotMatch(out, /↑ blocked/);
   });
 
   test("quit run renders as resumable instead of failed", () => {

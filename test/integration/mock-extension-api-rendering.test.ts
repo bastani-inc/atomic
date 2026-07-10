@@ -68,48 +68,45 @@ describe("MockExtensionAPI — slash command registration", () => {
     await cmd.options.handler("run my-wf", { ui: { notify: (m: string) => messages.push(m) } });
     assert.ok(messages.length > 0);
   });
-  test("/workflow getArgumentCompletions returns all subcommands for empty partial", () => {
+  test("/workflow getArgumentCompletions returns all subcommands for empty partial", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const completions = cmd.options.getArgumentCompletions?.("");
-    assert.equal(Array.isArray(completions), true);
-    assert.equal(typeof (completions as Promise<unknown> | null)?.then, "undefined");
-    const labels = completions!.map((c) => c.label);
+    const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
+    const labels = completions.map((c) => c.label);
     for (const sub of ["list", "status", "connect", "interrupt", "kill", "resume", "inputs"]) {
       assert.ok(labels.includes(sub));
     }
     assert.equal(labels.includes("session"), false);
   });
 
-  test("/workflow getArgumentCompletions filters by partial", () => {
+  test("/workflow getArgumentCompletions filters by partial", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const completions = cmd.options.getArgumentCompletions?.("li");
-    assert.notEqual(completions, undefined);
-    assert.ok(completions!.length > 0);
-    assert.equal(completions!.every((c) => c.label.startsWith("li")), true);
+    const completions = (await cmd.options.getArgumentCompletions?.("li")) ?? [];
+    assert.ok(completions.length > 0);
+    assert.equal(completions.every((c) => c.label.startsWith("li")), true);
   });
 
-  test("/workflow getArgumentCompletions covers subcommand arguments", () => {
+  test("/workflow getArgumentCompletions covers subcommand arguments", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputs = cmd.options.getArgumentCompletions?.("inputs de");
-    assert.ok(inputs?.some((c) => c.value === "inputs deep-research-codebase "));
+    const inputs = (await cmd.options.getArgumentCompletions?.("inputs de")) ?? [];
+    assert.ok(inputs.some((c) => c.value === "inputs deep-research-codebase "));
 
-    const status = cmd.options.getArgumentCompletions?.("status --");
-    assert.equal(status?.some((c) => c.value === "status --all ") ?? false, false);
+    const status = (await cmd.options.getArgumentCompletions?.("status --")) ?? [];
+    assert.equal(status.some((c) => c.value === "status --all "), false);
 
-    const interrupt = cmd.options.getArgumentCompletions?.("interrupt -");
-    assert.ok(interrupt?.some((c) => c.value === "interrupt -y "));
+    const interrupt = (await cmd.options.getArgumentCompletions?.("interrupt -")) ?? [];
+    assert.ok(interrupt.some((c) => c.value === "interrupt -y "));
 
-    const kill = cmd.options.getArgumentCompletions?.("kill -");
-    assert.ok(kill?.some((c) => c.value === "kill -y "));
+    const kill = (await cmd.options.getArgumentCompletions?.("kill -")) ?? [];
+    assert.ok(kill.some((c) => c.value === "kill -y "));
   });
 
-  test("/workflow getArgumentCompletions covers workflow run inputs and flags", () => {
+  test("/workflow getArgumentCompletions covers workflow run inputs and flags", async () => {
     const cmd = getCommand(mock.commands, "workflow")!;
-    const inputKeys = cmd.options.getArgumentCompletions?.("deep-research-codebase p");
-    assert.ok(inputKeys?.some((c) => c.value === "deep-research-codebase prompt="));
+    const inputKeys = (await cmd.options.getArgumentCompletions?.("deep-research-codebase p")) ?? [];
+    assert.ok(inputKeys.some((c) => c.value === "deep-research-codebase prompt="));
 
-    const flags = cmd.options.getArgumentCompletions?.("deep-research-codebase --");
-    assert.ok(flags?.some((c) => c.value === "deep-research-codebase --no-picker "));
+    const flags = (await cmd.options.getArgumentCompletions?.("deep-research-codebase --")) ?? [];
+    assert.ok(flags.some((c) => c.value === "deep-research-codebase --no-picker "));
   });
 
 });

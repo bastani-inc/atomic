@@ -23,14 +23,18 @@ import {
   createWorktrees,
   diffWorktrees,
   findWorktreeTaskCwdConflict,
-  setupGitWorktree,
+  setupGitWorktreeCached,
   formatWorktreeDiffSummary,
   formatWorktreeTaskCwdConflict,
+  type GitWorktreeSetupCache,
+  type GitWorktreeSetupResult,
   type WorktreeSetup,
 } from "../shared/worktree.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { isWorkflowExitStatus } from "./executor-abort.js";
 import { directTaskWithDefaults, resolveWorkflowPath, taskBaseDir, withoutUndefinedProperties } from "./executor-task-prompts.js";
+export { createGitWorktreeSetupCache } from "../shared/worktree.js";
+export type { GitWorktreeSetupCache } from "../shared/worktree.js";
 
 export function directModelRequestsFromChain(
   chain: readonly WorkflowChainStep[],
@@ -223,40 +227,40 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(options: T
   return { ...defaults, ...withoutUndefinedProperties(options ?? {}) } as T;
 }
 
-export function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowInvocationCwd: string): T | undefined {
+export function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowInvocationCwd: string, cache?: GitWorktreeSetupCache): T | undefined {
   if (options === undefined) return undefined;
   if (typeof options.gitWorktreeDir !== "string" || options.gitWorktreeDir.trim().length === 0) return options;
-  const setup = setupGitWorktree({
+  const setup = setupGitWorktreeCached({
     gitWorktreeDir: options.gitWorktreeDir,
     baseBranch: options.baseBranch,
     cwd: workflowInvocationCwd,
-  });
+  }, cache);
   const explicitCwd = resolveWorktreeCwdOverride(options.cwd, setup.cwd);
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
-export function setupWorkflowInputGitWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): import("../shared/worktree.js").GitWorktreeSetupResult | undefined {
+export function setupWorkflowInputGitWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string, cache?: GitWorktreeSetupCache): GitWorktreeSetupResult | undefined {
   if (typeof inputDefaults.gitWorktreeDir !== "string" || inputDefaults.gitWorktreeDir.trim().length === 0) {
     return undefined;
   }
-  return setupGitWorktree({
+  return setupGitWorktreeCached({
     gitWorktreeDir: inputDefaults.gitWorktreeDir,
     baseBranch: inputDefaults.baseBranch,
     cwd: workflowInvocationCwd,
-  });
+  }, cache);
 }
 
-export function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): string {
-  return setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd)?.cwd ?? workflowInvocationCwd;
+export function workflowCwdWithInputWorktree(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string, cache?: GitWorktreeSetupCache): string {
+  return setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache)?.cwd ?? workflowInvocationCwd;
 }
 
-export function workflowInvocationMetadata(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string): {
+export function workflowInvocationMetadata(inputDefaults: Partial<StageOptions>, workflowInvocationCwd: string, cache?: GitWorktreeSetupCache): {
   readonly invocationCwd: string;
   readonly workflowCwd?: string;
   readonly repositoryRoot?: string;
   readonly gitWorktreeRoot?: string;
 } {
-  const setup = setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd);
+  const setup = setupWorkflowInputGitWorktree(inputDefaults, workflowInvocationCwd, cache);
   return {
     invocationCwd: workflowInvocationCwd,
     ...(setup !== undefined ? { workflowCwd: setup.cwd, repositoryRoot: setup.repositoryRoot, gitWorktreeRoot: setup.worktreeRoot } : {}),

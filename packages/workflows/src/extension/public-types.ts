@@ -61,7 +61,7 @@ export type PiArgumentCompletionResult = PiArgumentCompletion[] | null;
 export interface PiCommandOptions {
   description: string;
   handler: (args: string, ctx: PiCommandContext) => Promise<void> | void;
-  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult;
+  getArgumentCompletions?: (partial: string) => PiArgumentCompletionResult | Promise<PiArgumentCompletionResult>;
 }
 
 export interface PiRuntimeModel {

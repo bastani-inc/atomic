@@ -21,15 +21,15 @@ const DEFAULT_RESEARCH_DIR = "research";
 const IMPLEMENTATION_NOTES_FILENAME = "implementation-notes.md";
 const QA_E2E_VIDEO_FILENAME = "qa-e2e-evidence.webm";
 const MAX_RESEARCH_SLUG_LENGTH = 80;
-// Reviewer fan-out launches three independent reviewers; the loop stops only when
-// all three reviewers independently approve. Approval is severity-aware: a
-// reviewer approves when it judged the patch correct, reported no reviewer_error,
-// and filed no *blocking* (P0/P1/P2) finding. P3 nice-to-haves no longer keep the
+// Reviewer fan-out launches two independent reviewers; the loop stops only when
+// both reviewers independently approve. Approval is severity-aware: a reviewer
+// approves when it judged the patch correct, reported no reviewer_error, and
+// filed no *blocking* (P0/P1/P2) finding. P3 nice-to-haves no longer keep the
 // loop iterating, so a single low-priority nit (or a placeholder finding) can no
 // longer strand an otherwise-approved patch. Requiring unanimous approval still
-// means a blocking finding from any one reviewer keeps the loop going. See
+// means a blocking finding from either reviewer keeps the loop going. See
 // ./ralph-review-gate.ts for the gate types and decision logic.
-export const REVIEWER_COUNT = 3;
+export const REVIEWER_COUNT = 2;
 
 const reviewFindingSchema = Type.Object(
   {

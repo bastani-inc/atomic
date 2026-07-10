@@ -15,6 +15,13 @@ import type {
   StoreSnapshot,
 } from "../shared/store-types.js";
 import { isTopLevelWorkflowRun } from "../shared/run-visibility.js";
+import {
+  actionableReturnedStatusText,
+  effectiveRunStatus,
+  isReturnedBlockedWorkflowStatus,
+  normalizeReturnedWorkflowStatus,
+  structuredRecoverableWorkflowFailureText,
+} from "../shared/returned-run-status.js";
 import { deriveGraphThemeFromPiTheme, type GraphTheme } from "../tui/graph-theme.js";
 import { renderWorkflowNoticeCard, type WorkflowNoticeTone } from "../tui/workflow-notice-card.js";
 
@@ -299,13 +306,13 @@ function makeTerminalNotice(
   const failedStage = run.failedStageId
     ? run.stages.find((stage) => stage.id === run.failedStageId)
     : undefined;
-  const error = run.error ?? (kind === "blocked" ? run.exitReason : undefined);
+  const error = run.error ?? returnedNoticeError(run, kind) ?? (kind === "blocked" ? run.exitReason : undefined);
   return {
     kind,
     scope: "run",
     runId: run.id,
     workflowName: run.name,
-    status: run.status,
+    status: effectiveRunStatus(run),
     ...(error ? { error: truncateSnippet(error) } : {}),
     ...(run.failedStageId ? { failedStageId: run.failedStageId } : {}),
     ...(failedStage ? { stageId: failedStage.id, stageName: failedStage.name } : {}),
@@ -330,11 +337,20 @@ function jsonString(value: string): string {
 }
 
 function terminalNoticeKind(run: RunSnapshot): "completed" | "failed" | "blocked" | undefined {
-  if (run.status === "failed" || run.status === "blocked") return run.status;
-  if (run.status !== "completed") return undefined;
-  const returnedStatus = run.result?.["status"];
-  if (returnedStatus === "failed" || returnedStatus === "blocked") return returnedStatus;
+  const status = effectiveRunStatus(run);
+  if (status === "failed" || status === "blocked") return status;
+  if (status !== "completed") return undefined;
   return "completed";
+}
+
+function returnedNoticeError(run: RunSnapshot, kind: "completed" | "failed" | "blocked"): string | undefined {
+  const structuredFailureText = structuredRecoverableWorkflowFailureText(run);
+  if (kind === "blocked" && structuredFailureText !== undefined) return structuredFailureText;
+  const returnedStatus = normalizeReturnedWorkflowStatus(run.result?.["status"]);
+  if (returnedStatus === undefined) return undefined;
+  if (kind === "failed" && returnedStatus === "failed") return actionableReturnedStatusText(run.result);
+  if (kind === "blocked" && isReturnedBlockedWorkflowStatus(returnedStatus)) return actionableReturnedStatusText(run.result);
+  return undefined;
 }
 
 function terminalRunKey(kind: "completed" | "failed" | "blocked", runId: string): string {

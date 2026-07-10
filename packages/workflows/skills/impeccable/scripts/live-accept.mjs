@@ -400,12 +400,18 @@ function readHtmlAttr(tag, name) {
   return decodeHtmlAttr(match[2]);
 }
 
+const HTML_ATTR_ENTITIES = {
+  '&quot;': '"',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&amp;': '&',
+};
+
 function decodeHtmlAttr(value) {
-  return String(value || '')
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
+  return String(value || '').replace(
+    /&(?:quot|lt|gt|amp);/g,
+    (entity) => HTML_ATTR_ENTITIES[entity] || entity,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -531,8 +537,8 @@ function stripStyleAndJoin(lines, block) {
       // Strip any complete <style> elements on this line (self-closed or
       // same-line-closed), including their body content.
       line = line
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style[^>]*>/g, '')
-        .replace(/<style\b[^>]*\/\s*>/g, '');
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/g, ' ')
+        .replace(/<style\b[^>]*\/\s*>/g, ' ');
 
       // If a <style> opener remains (multi-line body starts here), strip from
       // the opener to end-of-line and flip into skip mode.
@@ -544,10 +550,10 @@ function stripStyleAndJoin(lines, block) {
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
-      const closeIdx = line.search(/<\/style\s*>/);
+      const closeIdx = line.search(/<\/style\b[^>]*>/);
       if (closeIdx !== -1) {
         inStyle = false;
-        out.push(line.slice(closeIdx).replace(/<\/style\s*>/, ''));
+        out.push(line.slice(closeIdx).replace(/<\/style\b[^>]*>/, ' '));
       }
       // else: skip line entirely
     }
@@ -637,7 +643,7 @@ function extractCss(lines, block, id) {
       // Self-closing: nothing to carbonize.
       if (/<style\b[^>]*\/\s*>/.test(line)) return null;
       // Same-line open + close: extract inner text.
-      const sameLine = line.match(/<style\b[^>]*>([\s\S]*?)<\/style[^>]*>/);
+      const sameLine = line.match(/<style\b[^>]*>([\s\S]*?)<\/style\b[^>]*>/);
       if (sameLine) {
         const inner = stripJsxTemplateWrap(sameLine[1]);
         return inner.length > 0 ? inner.split('\n') : null;
@@ -650,7 +656,7 @@ function extractCss(lines, block, id) {
       // Detect </style> anywhere on the line — JSX template-literal closes
       // (`}</style>`) put the close mid-line, and we don't want to absorb the
       // template-literal punctuation as CSS content.
-      const closeIdx = line.indexOf('</style>');
+      const closeIdx = line.search(/<\/style\b[^>]*>/);
       if (closeIdx !== -1) break;
       content.push(line);
     }

@@ -1,25 +1,29 @@
 import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.ts";
-import { pasteClipboardImageToEditor } from "./interactive-mode-deps.ts";
+import { pasteClipboardImageToEditor, recordTimeSinceReset } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.runUserPromptTurn = async function(this: InteractiveModeBase, userInput: string): Promise<void> {
     // Show the working spinner immediately on submit so there is no visible gap
     // while prompt preflight runs before the agent emits `agent_start`.
     this.showWorkingLoaderNow();
-    if (this.deferredStartupPending) {
+    const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined;
+    if (deferredStartupNeedsPromptGate) {
       this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
     }
     // Yield once so the freshly-mounted spinner paints before synchronous
     // preflight work can block the event loop.
     await yieldToEventLoop();
     try {
-      await this.ensureDeferredStartupComplete();
+      if (deferredStartupNeedsPromptGate) {
+        await this.ensureDeferredStartupComplete();
+      }
       await this.session.prompt(userInput);
       this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
       if (this.pendingLoadedResourcesDisclosure) {
         this.pendingLoadedResourcesDisclosure = false;
         this.showLoadedResources({ force: true, showDiagnosticsWhenQuiet: true, targetContainer: this.startupNoticesContainer });
         void this.maybeWarnAboutAnthropicSubscriptionAuth(undefined, this.startupNoticesContainer);
+        this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
       }
     } catch (error: unknown) {
       this.deferLoadedResourcesDisclosureUntilAgentEnd = false;
@@ -83,18 +87,27 @@ InteractiveModeBase.prototype.setupKeyHandlers = function(this: InteractiveModeB
     this.defaultEditor.onAction("app.thinking.cycle", () =>
       this.cycleThinkingLevel(),
     );
-    this.defaultEditor.onAction("app.model.cycleForward", () =>
-      this.cycleModel("forward"),
-    );
-    this.defaultEditor.onAction("app.model.cycleBackward", () =>
-      this.cycleModel("backward"),
-    );
+    this.defaultEditor.onAction("app.model.cycleForward", () => {
+      void (async () => {
+        await this.ensureDeferredStartupComplete();
+        await this.cycleModel("forward");
+      })();
+    });
+    this.defaultEditor.onAction("app.model.cycleBackward", () => {
+      void (async () => {
+        await this.ensureDeferredStartupComplete();
+        await this.cycleModel("backward");
+      })();
+    });
 
     // Global debug handler on TUI (works regardless of focus)
     this.ui.onDebug = () => this.handleDebugCommand();
-    this.defaultEditor.onAction("app.model.select", () =>
-      this.showModelSelector(),
-    );
+    this.defaultEditor.onAction("app.model.select", () => {
+      void (async () => {
+        await this.ensureDeferredStartupComplete();
+        this.showModelSelector();
+      })();
+    });
     this.defaultEditor.onAction("app.tools.expand", () =>
       this.toggleToolOutputExpansion(),
     );
@@ -237,6 +250,10 @@ InteractiveModeBase.prototype.advanceStartupInputReplay = function(this: Interac
 
 InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: InteractiveModeBase): void {
     this.defaultEditor.onSubmit = async (text: string) => {
+      if (!this.firstSubmitRecorded) {
+        this.firstSubmitRecorded = true;
+        recordTimeSinceReset("interactive-first-submit");
+      }
       text = text.trim();
       if (!text) return;
 
@@ -247,7 +264,6 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         return;
       }
       try {
-
       // Handle commands
       if (text === "/settings") {
         this.showSettingsSelector();
@@ -261,6 +277,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
       }
       if (text === "/scoped-models") {
         this.editor.setText("");
+        await this.ensureDeferredStartupComplete();
         await this.showModelsSelector();
         return;
       }
@@ -269,6 +286,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
           ? text.slice(7).trim()
           : undefined;
         this.editor.setText("");
+        await this.ensureDeferredStartupComplete();
         await this.handleModelCommand(searchTerm);
         return;
       }
@@ -363,6 +381,7 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
       }
       if (text === "/reload") {
         this.editor.setText("");
+        await this.ensureDeferredStartupComplete();
         await this.handleReloadCommand();
         return;
       }
@@ -392,6 +411,15 @@ InteractiveModeBase.prototype.setupEditorSubmitHandler = function(this: Interact
         return;
       }
 
+      if (text.startsWith("/") && this.deferredStartupPending) {
+        this.editor.addToHistory?.(text);
+        this.editor.setText("");
+        this.ui.requestRender();
+        await yieldToEventLoop();
+        await this.ensureDeferredStartupComplete();
+        await this.session.prompt(text);
+        return;
+      }
       // Handle bash command (! for normal, !! for excluded from context)
       if (text.startsWith("!")) {
         const isExcluded = text.startsWith("!!");

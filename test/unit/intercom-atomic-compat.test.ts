@@ -59,7 +59,7 @@ function withEnv<T>(updates: Record<string, string | undefined>, fn: () => T): T
 describe("intercom Atomic agent-dir paths", () => {
   test("uses the default Atomic agent directory for broker runtime files", () => {
     const home = tempDir("atomic-intercom-home-");
-    withEnv({ HOME: home, USERPROFILE: undefined, ATOMIC_CODING_AGENT_DIR: undefined, PI_CODING_AGENT_DIR: undefined }, () => {
+    withEnv({ HOME: home, USERPROFILE: undefined, HOMEDRIVE: undefined, HOMEPATH: undefined, ATOMIC_CODING_AGENT_DIR: undefined, PI_CODING_AGENT_DIR: undefined }, () => {
       const agentDir = join(home, ".atomic", "agent");
       assert.equal(getIntercomDirPath(), join(agentDir, "intercom"));
       assert.equal(getBrokerSocketPath("darwin"), join(agentDir, "intercom", "broker.sock"));

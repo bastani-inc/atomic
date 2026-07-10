@@ -6,11 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned the workflows extension peer dependency with upstream `pi-tui` `^0.80.5` as part of the consolidated dependency refresh.
+
+- Changed the builtin `ralph` workflow review fan-out from three reviewers to two (`reviewer-a` and `reviewer-b`), removing `reviewer-c` and its GLM-led model chain while keeping unanimous approval across the remaining reviewers.
+
+## [0.9.5-alpha.9] - 2026-07-09
+
+### Changed
+
+- Improved workflow extension startup by seeding only the bundled startup registry during extension registration/session start, then loading user, project, and package workflow modules in the background or when `/workflow` commands and workflow tool actions need the full registry.
+- Tightened the workflow-stage resume continuation prompt so resumed agents continue interrupted work only when needed and stop when the original or user-redefined task is already complete.
+- Updated the bundled `impeccable` skill from upstream 3.8.0 to 3.9.1, adding native platform guidance, hooks support, expanded detector rules, and the latest reference/script fixes ([#1696](https://github.com/bastani-inc/atomic/issues/1696)).
+
 ### Fixed
 
 - Fixed workflow slash-command overlays so `/workflow <name>` inline input forms, `/workflow connect` session pickers, `/workflow kill` confirmations, and interactive `/workflow resume` selectors hide the host Working spinner while waiting for user input and restore it on submit, cancel, close, dispose, and mount-failure paths. ([#1670](https://github.com/bastani-inc/atomic/issues/1670))
+- Hardened the bundled `impeccable` skill's local detector/live scripts against CodeQL-reported sanitization and command-injection patterns by tightening HTML block stripping, avoiding shell interpolation for `git check-ignore`, escaping Svelte preview CSS selectors correctly, and fixing the `ms*` JSX style prefix conversion.
+- Fixed lazy workflow startup follow-through so `session_start` loads only workflow config before restore/cleanup, discovery diagnostics are reported after deferred discovery settles, failed lazy discovery attempts are retryable, direct workflow-tool `task`/`tasks`/`chain` runs bypass full workflow discovery, named workflow-tool runs and failed-run resume re-resolve their runtime after discovery, paused/current live-run resume and live resume pickers avoid registry discovery, failed/durable resume still loads resources before registry-dependent lookups, and command autocomplete falls back to current/admin completions when lazy discovery fails without evaluating workflow modules on the startup path.
+- Fixed workflow lazy-startup session generation so session restarts and shutdowns invalidate in-flight background discovery before it can publish stale workflow registries into later sessions.
+
+- Fixed workflow failure finalization so structured recoverable auth, rate-limit, and provider-exhaustion metadata captured on the run or its blocking stage (`failedStageId`) no longer allows the top-level run, `/workflow status`, durable status, or lifecycle notice to appear as a successful `completed` state. Goal-like `needs_human`, incomplete, or auth-blocked reducer outputs are still treated as blocked, structured provider/auth fallback exhaustion now preserves an actionable blocked/failure message and resumable metadata, legacy completed snapshots with incomplete returned statuses or structured blocking-stage failures render as blocked, tolerated non-fail-fast branch failures no longer reclassify completed runs, and Goal reviewer-batch fallback exhaustion stops promptly as `needs_human` instead of launching another worker turn.
 - Fixed the fullscreen workflow graph statusline to mirror non-workflow extension statuses, so async/background subagent progress and completion remain visible while the graph overlay is active.
-- Fixed `/workflow resume` for workflows that use reusable `gitWorktreeDir`/`git_worktree_dir` worktrees by persisting the original invocation cwd and resolved reusable-worktree metadata, replaying durable resumes from that original repository context instead of the resumed interactive session cwd, and hardening Git subprocess timeouts so slow filesystem timeouts are reported as Git timeouts rather than “not inside a Git repository”.
+- Fixed `/workflow resume` and fresh runs for workflows that use reusable `gitWorktreeDir`/`git_worktree_dir` worktrees by persisting the original invocation cwd and resolved reusable-worktree metadata, replaying durable resumes from that original repository context instead of the resumed interactive session cwd, caching repeated per-run reusable-worktree setup, retrying transient read-only Git `rev-parse` timeouts, hardening Git subprocesses against interactive prompts, and reporting exact Git command/cwd/timeout/elapsed/status/signal diagnostics when worktree preflight fails.
 
 ## [0.9.5-alpha.8] - 2026-07-08
 

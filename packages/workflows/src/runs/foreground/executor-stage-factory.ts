@@ -24,7 +24,7 @@ import type { LiveStageMutableState, LiveStageRuntime, StageContextWithMeta, Sta
 import { createStageControlHandle } from "./executor-stage-control.js";
 import { createTrackedStageCaller } from "./executor-stage-call.js";
 import { createStageContext } from "./executor-stage-context.js";
-import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults } from "./executor-direct-helpers.js";
+import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults, type GitWorktreeSetupCache } from "./executor-direct-helpers.js";
 
 export function createWorkflowStageFactory(input: {
   readonly runId: string;
@@ -38,6 +38,7 @@ export function createWorkflowStageFactory(input: {
   readonly limiter: ConcurrencyLimiter;
   readonly inputRuntimeDefaults: Partial<StageOptions>;
   readonly workflowInvocationCwd: string;
+  readonly gitWorktreeSetupCache: GitWorktreeSetupCache;
   readonly stageRegistry: StageControlRegistry;
   readonly exit: WorkflowExitManager;
   readonly classifyExecutorFailure: (error: unknown) => WorkflowFailure;
@@ -45,7 +46,7 @@ export function createWorkflowStageFactory(input: {
 }): (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope) => StageContextWithMeta {
   return (name: string, options?: StageOptions, stageFailFastScope?: ParallelFailFastScope): StageContextWithMeta => {
     input.exit.throwIfWorkflowExitSelected();
-    options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults), input.workflowInvocationCwd);
+    options = stageOptionsWithGitWorktree(stageOptionsWithInputDefaults(options, input.inputRuntimeDefaults), input.workflowInvocationCwd, input.gitWorktreeSetupCache);
     const stageId = crypto.randomUUID();
     const provisionalParentIds = input.tracker.onSpawn(stageId, name);
     const scopedParentIds = input.opts.continuation === undefined ? stageFailFastScope?.parentIds : undefined;
