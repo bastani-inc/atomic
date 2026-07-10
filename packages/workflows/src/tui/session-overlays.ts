@@ -9,16 +9,16 @@
  *
  * Mount mode
  * ----------
- * The session picker uses `{ overlay: false }` — pi's interactive
- * `ExtensionUiController.custom` REPLACES the editor component with the
- * mounted picker (`editorContainer.clear(); addChild(picker)`), so the
- * picker renders **inline** in the chat layout at the editor's natural
- * position. This is what gives us the target spacing in
- * `ui/workflows/Screenshot 2026-05-13 at 1.11.49 AM.png`: the picker
- * sits just below the submitted `/workflow …` command at the picker's
- * natural ~9-row height, with no host `Working…` / widget / status bar
- * chrome wedged between command and picker (those rows are owned by
- * the editor area we just replaced).
+ * The session picker uses `{ overlay: false }` — Atomic's interactive host
+ * treats non-overlay `ctx.ui.custom()` as blocking user input, suppresses its
+ * global `Working…` loader while the component is mounted, and replaces the
+ * editor component with the mounted picker (`editorContainer.clear();
+ * addChild(picker)`). The picker therefore renders **inline** in the chat
+ * layout at the editor's natural position. This gives us the target spacing in
+ * `ui/workflows/Screenshot 2026-05-13 at 1.11.49 AM.png`: the picker sits just
+ * below the submitted `/workflow …` command at the picker's natural ~9-row
+ * height, with no host `Working…` / widget / status bar chrome wedged between
+ * command and picker.
  *
  * The kill-confirm intentionally stays on `{ overlay: true }` — it is a
  * destructive modal and reads better as a centered popup over the
@@ -116,6 +116,10 @@ export function openSessionPicker(
     const state = createSessionPickerState();
     let settled = false;
     let unsubscribe: (() => void) | null = null;
+    const cleanupSubscription = (): void => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
 
     const factory = (
       tui: PiCustomOverlayFactoryTui,
@@ -126,10 +130,12 @@ export function openSessionPicker(
       const finish = (result: SessionPickerResult): void => {
         if (settled) return;
         settled = true;
-        unsubscribe?.();
-        unsubscribe = null;
-        done(undefined);
-        resolve(result);
+        cleanupSubscription();
+        try {
+          done(undefined);
+        } finally {
+          resolve(result);
+        }
       };
       // Re-render on store changes so newly-started runs appear and
       // status icons refresh without the user having to press a key.
@@ -152,8 +158,7 @@ export function openSessionPicker(
         },
         invalidate: () => tui.requestRender?.(),
         dispose: () => {
-          unsubscribe?.();
-          unsubscribe = null;
+          cleanupSubscription();
           if (!settled) {
             settled = true;
             resolve({ kind: "close" });
@@ -165,7 +170,19 @@ export function openSessionPicker(
     // overlay: false — picker replaces the editor in-place (see header
     // comment). The host owns geometry/focus; no overlayOptions are
     // forwarded by interactive pi today.
-    void custom(factory, { overlay: false });
+    try {
+      void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
+        if (settled) return;
+        settled = true;
+        cleanupSubscription();
+        resolve({ kind: "close" });
+      });
+    } catch {
+      if (settled) return;
+      settled = true;
+      cleanupSubscription();
+      resolve({ kind: "close" });
+    }
   });
 }
 
@@ -189,10 +206,21 @@ export function openKillConfirm(
     if (typeof custom !== "function") {
       // Fall back to plain confirm dialog when available.
       if (typeof ui.confirm === "function") {
-        ui.confirm(
-          "Kill workflow run?",
-          `Abort ${run.name} (${run.id.slice(0, 8)})? Active stage work will be discarded.`,
-        ).then(resolve, () => resolve(false));
+        try {
+          void ui.confirm(
+            "Kill workflow run?",
+            `Abort ${run.name} (${run.id.slice(0, 8)})? Active stage work will be discarded.`,
+          ).then(
+            (result) => {
+              resolve(result);
+            },
+            () => {
+              resolve(false);
+            },
+          );
+        } catch {
+          resolve(false);
+        }
         return;
       }
       resolve(false);
@@ -211,8 +239,11 @@ export function openKillConfirm(
       const finish = (result: boolean): void => {
         if (settled) return;
         settled = true;
-        done(undefined);
-        resolve(result);
+        try {
+          done(undefined);
+        } finally {
+          resolve(result);
+        }
       };
       return {
         render: (width: number) => renderKillConfirm({ width, theme, run, state }),
@@ -234,6 +265,16 @@ export function openKillConfirm(
       };
     };
 
-    void custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY });
+    try {
+      void Promise.resolve(custom(factory, { overlay: true, overlayOptions: CONFIRM_OVERLAY })).catch(() => {
+        if (settled) return;
+        settled = true;
+        resolve(false);
+      });
+    } catch {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }
   });
 }

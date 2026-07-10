@@ -172,9 +172,7 @@ async function workflowSlashHandler(
   const wantsPickerSkip = inputTokens.includes("--no-picker");
   let mergedInputs = inputs;
   let pickerWasShown = false;
-  const canOpenPicker = policy.allowInputPicker && !wantsPickerSkip && (
-    typeof ctx.ui?.setEditorComponent === "function" || typeof ctx.ui?.custom === "function"
-  );
+  const canOpenPicker = policy.allowInputPicker && !wantsPickerSkip && typeof ctx.ui?.custom === "function";
   if (canOpenPicker) {
     await ensureWorkflowResourcesVisible();
     const schemaResult = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
@@ -188,9 +186,7 @@ async function workflowSlashHandler(
     if (fields.length > 0 && (inputTokens.length === 0 || missingRequired)) {
       pickerWasShown = true;
       const pickerTheme = deriveGraphTheme({});
-      let pickerResult = typeof ctx.ui?.setEditorComponent === "function"
-        ? await openInlineInputsForm(pi, ctx, { workflowName, fields, prefilled: inputs, theme: pickerTheme })
-        : { kind: "unsupported" as const };
+      let pickerResult = await openInlineInputsForm(pi, ctx, { workflowName, fields, prefilled: inputs, theme: pickerTheme });
       if (pickerResult.kind === "unsupported" && typeof ctx.ui?.custom === "function") {
         pickerResult = await openInputsPicker(ctx.ui, { workflowName, fields, prefilled: inputs, theme: pickerTheme });
       }

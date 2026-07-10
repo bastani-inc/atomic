@@ -247,6 +247,13 @@ export function buildInteractiveHostCustomUi(): {
       clear: () => undefined,
       addChild: () => undefined,
     },
+    statusContainer: {
+      clear: () => undefined,
+      addChild: () => undefined,
+    },
+    session: { isStreaming: false },
+    workingVisible: true,
+    loadingAnimation: undefined,
     keybindings: {},
     ui: {
       setFocus: (target: unknown) => {

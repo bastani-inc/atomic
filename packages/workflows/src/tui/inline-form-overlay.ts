@@ -8,10 +8,9 @@
  *
  *   `openInlineInputsForm(pi, ctx, …)` — drive a single form. Mutates the
  *                                       chat by emitting a custom message,
- *                                       swaps in our editor, awaits user
- *                                       input, then restores the prior
- *                                       editor and resolves with the
- *                                       coerced values (or cancel).
+ *                                       mounts our editor as inline custom UI,
+ *                                       awaits user input, then resolves with
+ *                                       the coerced values (or cancel).
  *
  * The card stays in chat scrollback forever (frozen view after exit).
  *
@@ -25,10 +24,7 @@ import type {
   ExtensionAPI,
   PiCommandContext,
 } from "../extension/index.js";
-import type {
-  PiEditorComponent,
-  PiEditorFactory,
-} from "../extension/wiring.js";
+import type { PiEditorComponent } from "../extension/wiring.js";
 import type { WorkflowInputEntry } from "../extension/render-result.js";
 import type { WorkflowInputValues } from "../shared/types.js";
 import type { GraphTheme } from "./graph-theme.js";
@@ -140,28 +136,27 @@ export function registerInlineFormRenderer(pi: ExtensionAPI, theme: GraphTheme):
 /**
  * Open an inline form. Returns a Promise that resolves with the user's
  * coerced values on submit, `{kind:"cancel"}` on esc, or
- * `{kind:"unsupported"}` when the host cannot mount a custom editor. The
+ * `{kind:"unsupported"}` when the host cannot mount inline custom UI. The
  * unsupported result lets callers fall back to another picker surface instead
- * of surfacing a host `setEditorComponent` exception to the user.
+ * of surfacing a host custom UI exception to the user.
  *
  * Requirements:
  *   - `pi.sendMessage` is available to add the sticky form card
- *   - `ctx.ui.setEditorComponent` is available and accepts the richer
- *     pi custom editor surface
+ *   - `ctx.ui.custom` is available to mount the focused inline editor surface
  *
- * On any missing or incompatible surface we resolve `unsupported` so the
- * caller can keep the existing missing-required-input path or use a supported
- * overlay picker.
+ * Atomic suppresses the global Working loader for the non-overlay custom UI
+ * mount while the form is waiting on user input; this overlay intentionally
+ * leaves that global state to the host/runtime layer.
  */
 export async function openInlineInputsForm(
   pi: ExtensionAPI,
   ctx: PiCommandContext,
   opts: OpenInlineFormOpts,
 ): Promise<InlineFormResult> {
-  const setEditor = ctx.ui?.setEditorComponent;
-  const getEditor = ctx.ui?.getEditorComponent;
+  const ui = ctx.ui;
+  const custom = ui?.custom;
   const sendMessage = pi.sendMessage;
-  if (typeof setEditor !== "function" || typeof sendMessage !== "function") {
+  if (typeof custom !== "function" || typeof sendMessage !== "function") {
     return { kind: "unsupported" };
   }
   if (opts.fields.length === 0) {
@@ -202,118 +197,74 @@ export async function openInlineInputsForm(
     status: "editing",
   });
 
+  try {
+    (sendMessage as unknown as (
+      msg: {
+        customType: string;
+        content?: string;
+        display?: boolean;
+        details?: FormMessageDetails;
+      },
+      options?: { excludeFromContext?: boolean },
+    ) => void).call(pi, {
+      customType: CUSTOM_TYPE,
+      content: opts.workflowName,
+      display: true,
+      details: { formId },
+    }, {
+      // The input form is a transient UI surface, not conversation. Keep it
+      // out of LLM context so spawning the picker and exiting without
+      // running the workflow never leaks the form into the model.
+      excludeFromContext: true,
+    });
+  } catch {
+    finalizeForm(formId, "cancel");
+    return { kind: "unsupported" };
+  }
 
-  // ── Swap in our editor and await user decision ────────────────────────
-  const previous: PiEditorFactory | undefined =
-    typeof getEditor === "function" ? getEditor.call(ctx.ui) : undefined;
-
-  return new Promise<InlineFormResult>((resolve) => {
-    let resolved = false;
-    let activeEditor: PiEditorComponent | undefined;
-    let installedFactory: PiEditorFactory | undefined;
-    const shouldRestorePreviousEditor = (): boolean => {
-      if (typeof getEditor !== "function") return true;
-      try {
-        return getEditor.call(ctx.ui) === installedFactory;
-      } catch (err) {
-        // During `/new`, `/resume`, `/fork`, and `/reload`, pi marks the old
-        // extension command context as stale before tearing down the old editor
-        // surface. A workflow form that settles after that point must not write
-        // its captured pre-switch editor factory back into the fresh session.
-        if (
-          err instanceof Error &&
-          err.message.includes("This extension ctx is stale")
-        ) {
-          return false;
-        }
-        // Preserve the previous best-effort behavior for older or unusual hosts:
-        // if introspection fails for a non-stale reason, still try the restore
-        // and let the existing setEditor catch below keep the command safe.
-        return true;
-      }
-    };
-    const restorePreviousEditor = (): void => {
-      if (!shouldRestorePreviousEditor()) return;
-      try {
-        setEditor.call(ctx.ui, previous);
-      } catch {
-        // If the host rejects the previous factory as well, leave the host's
-        // current editor alone. The important part is that the workflow command
-        // resolves without rethrowing the host editor setup failure.
-      }
-    };
-    const settle = (result: InlineFormResult): void => {
-      if (resolved) return;
-      resolved = true;
+  let settled = false;
+  let activeEditor: PiEditorComponent | undefined;
+  const finalizeIfNeeded = (result: InlineFormResult): InlineFormResult => {
+    if (!settled) {
+      settled = true;
       finalizeForm(formId, result.kind === "run" ? "submit" : "cancel");
-      activeEditor?.dispose?.();
-      activeEditor = undefined;
-      // Restore the previous editor (or default if there wasn't one).
-      restorePreviousEditor();
-      resolve(result);
-    };
-
-    const factory: PiEditorFactory = (tui, _editorTheme, kb): PiEditorComponent => {
-      activeEditor = new InlineFormEditor(tui as { requestRender?: () => void }, {
-        formId,
-        theme: opts.theme,
-        // Pi injects its `KeybindingsManager` as the third factory arg; the
-        // editor uses it to route text-editing actions (delete word, line
-        // jump, etc.) through the user's resolved keybindings. Older hosts
-        // and tests pass a non-keybindings shape — the editor's
-        // `isKeybindingsLike` guard handles that gracefully.
-        keybindings: kb as ConstructorParameters<typeof InlineFormEditor>[1]["keybindings"],
-        onExit: (outcome) => {
-          if (outcome === "submit") {
-            settle({ kind: "run", values: coerceValues(opts.fields, state.rawText) });
-          } else {
-            settle({ kind: "cancel" });
-          }
-        },
-      });
-      return activeEditor;
-    };
-
-    installedFactory = factory;
-
-    try {
-      setEditor.call(ctx.ui, factory);
-    } catch {
-      activeEditor?.dispose?.();
-      activeEditor = undefined;
-      finalizeForm(formId, "cancel");
-      resolve({ kind: "unsupported" });
-      return;
     }
+    return result;
+  };
+  const factory = (
+    tui: { requestRender?: () => void },
+    _editorTheme: unknown,
+    kb: unknown,
+    done: (result: InlineFormResult) => void,
+  ): PiEditorComponent => {
+    activeEditor = new InlineFormEditor(tui, {
+      formId,
+      theme: opts.theme,
+      // Pi injects its `KeybindingsManager` as the third factory arg; the
+      // editor uses it to route text-editing actions (delete word, line
+      // jump, etc.) through the user's resolved keybindings. Older hosts
+      // and tests pass a non-keybindings shape — the editor's
+      // `isKeybindingsLike` guard handles that gracefully.
+      keybindings: kb as ConstructorParameters<typeof InlineFormEditor>[1]["keybindings"],
+      onExit: (outcome) => {
+        const result: InlineFormResult = outcome === "submit"
+          ? { kind: "run", values: coerceValues(opts.fields, state.rawText) }
+          : { kind: "cancel" };
+        done(finalizeIfNeeded(result));
+      },
+    });
+    return activeEditor;
+  };
 
-    try {
-      (sendMessage as unknown as (
-        msg: {
-          customType: string;
-          content?: string;
-          display?: boolean;
-          details?: FormMessageDetails;
-        },
-        options?: { excludeFromContext?: boolean },
-      ) => void).call(pi, {
-        customType: CUSTOM_TYPE,
-        content: opts.workflowName,
-        display: true,
-        details: { formId },
-      }, {
-        // The input form is a transient UI surface, not conversation. Keep it
-        // out of LLM context so spawning the picker and exiting without
-        // running the workflow never leaks the form into the model.
-        excludeFromContext: true,
-      });
-    } catch {
-      activeEditor?.dispose?.();
-      activeEditor = undefined;
-      restorePreviousEditor();
-      finalizeForm(formId, "cancel");
-      resolve({ kind: "unsupported" });
-    }
-  });
+  try {
+    const result = await Promise.resolve(custom.call(ui, factory, { overlay: false }));
+    if (result !== undefined) return finalizeIfNeeded(result as InlineFormResult);
+  } catch {
+    // If the host rejects mounting the inline custom UI, freeze the card as a
+    // cancelled artefact and let the caller fall back to another picker surface.
+  }
+  activeEditor?.dispose?.();
+  return finalizeIfNeeded({ kind: "unsupported" });
 }
 
 // ---------------------------------------------------------------------------

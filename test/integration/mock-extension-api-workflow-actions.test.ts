@@ -15,6 +15,10 @@ import type {
   PiMessageRendererResult,
   PiToolOpts,
 } from "./mock-extension-api-helpers.js";
+import type {
+  PiCustomComponent,
+  PiCustomOverlayFunction,
+} from "../../packages/workflows/src/extension/ui-surface.js";
 
 describe("MockExtensionAPI — tool list returns bundled workflow names", () => {
   let mock: ReturnType<typeof makeMock>;
@@ -236,6 +240,42 @@ describe("MockExtensionAPI — /workflow <name> dispatches run not unknown-subco
         m.includes("Workflow not found"),
     );
     assert.equal(dispatchedSent || errored, true);
+  });
+});
+
+describe("MockExtensionAPI — workflow input picker capability gates", () => {
+  let mock: ReturnType<typeof makeMock>;
+
+  beforeEach(() => {
+    mock = makeMock();
+    factory(mock);
+  });
+
+  test("custom-only UI hosts reach the inline workflow input form", async () => {
+    const cmd = getCommand(mock.commands, "workflow")!;
+    const messages: string[] = [];
+    let customMounts = 0;
+    const custom: PiCustomOverlayFunction = (mountFactory) => {
+      customMounts++;
+      const componentPromise = Promise.resolve(mountFactory(
+        { requestRender: () => undefined },
+        {},
+        {},
+        () => undefined,
+      ));
+      void componentPromise.then((component: PiCustomComponent) => component.dispose?.());
+      return { kind: "cancel" };
+    };
+
+    await cmd.options.handler("deep-research-codebase", {
+      ui: { notify: (message: string) => messages.push(message), custom },
+    });
+
+    assert.equal(customMounts, 1);
+    assert.ok(
+      mock.sent.some((message) => message.customType === "workflows:input-form"),
+      "custom-only hosts should open the inline form instead of skipping to the fallback picker",
+    );
   });
 });
 

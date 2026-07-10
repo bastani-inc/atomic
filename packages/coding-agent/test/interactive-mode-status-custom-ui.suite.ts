@@ -11,11 +11,29 @@ describe("InteractiveMode.showExtensionCustom host custom UI state", () => {
 				clear: vi.fn(),
 				addChild: vi.fn(),
 			},
+      statusContainer: {
+        clear: vi.fn(),
+        addChild: vi.fn(),
+      },
+      loadingAnimation: undefined,
+      workingVisible: true,
+      runtimeHost: {
+        session: { isStreaming: false },
+      },
 			keybindings: {},
-			ui: {
-				setFocus: vi.fn(),
-				requestRender: vi.fn(),
-			},
+      ui: {
+        setFocus: vi.fn(),
+        requestRender: vi.fn(),
+        showOverlay: vi.fn(() => ({
+          hide: vi.fn(),
+          setHidden: vi.fn(),
+          isHidden: vi.fn(() => false),
+          focus: vi.fn(),
+          unfocus: vi.fn(),
+          isFocused: vi.fn(() => true),
+        })),
+        hideOverlay: vi.fn(),
+      },
 			blockingInlineCustomUiDepth: 0,
 			deferredInlineCustomUiFocusDepth: 0,
 			pendingInlineCustomUiFocus: undefined,
@@ -161,5 +179,77 @@ describe("InteractiveMode.showExtensionCustom host custom UI state", () => {
 			{ blockingInlineCustomUiActive: false, blockingInlineCustomUiDepth: 0 },
 		]);
 	});
+
+  test("suppresses the Working loader while a non-overlay custom UI is active", async () => {
+    const fakeThis = createCustomUiHostFixture();
+    const firstLoader = { stop: vi.fn() };
+    const secondLoader = { stop: vi.fn() };
+    fakeThis.createWorkingLoader = vi
+      .fn()
+      .mockReturnValueOnce(firstLoader)
+      .mockReturnValueOnce(secondLoader);
+    const component = {
+      render: () => [],
+      invalidate: vi.fn(),
+      dispose: vi.fn(),
+    };
+    let doneCustomUi: ((result: string) => void) | undefined;
+
+    fakeThis.showWorkingLoaderNow();
+    expect(fakeThis.createWorkingLoader).toHaveBeenCalledTimes(1);
+    expect(fakeThis.loadingAnimation).toBe(firstLoader);
+
+    const promise = (InteractiveMode as any).prototype.showExtensionCustom.call(
+      fakeThis,
+      (_tui: unknown, _theme: unknown, _keybindings: unknown, done: (result: string) => void) => {
+        doneCustomUi = done;
+        return component;
+      },
+    );
+
+    expect(firstLoader.stop).toHaveBeenCalledTimes(1);
+    expect(fakeThis.loadingAnimation).toBe(undefined);
+    fakeThis.runtimeHost.session.isStreaming = true;
+    fakeThis.showWorkingLoaderNow();
+    expect(fakeThis.createWorkingLoader).toHaveBeenCalledTimes(1);
+
+    await Promise.resolve();
+    doneCustomUi?.("done");
+    await expect(promise).resolves.toBe("done");
+    expect(fakeThis.createWorkingLoader).toHaveBeenCalledTimes(2);
+    expect(fakeThis.loadingAnimation).toBe(secondLoader);
+  });
+
+  test("does not suppress the Working loader for overlay custom UI", async () => {
+    const fakeThis = createCustomUiHostFixture();
+    const loader = { stop: vi.fn() };
+    fakeThis.createWorkingLoader = vi.fn(() => loader);
+    const component = {
+      render: () => [],
+      invalidate: vi.fn(),
+      dispose: vi.fn(),
+    };
+    let doneCustomUi: ((result: string) => void) | undefined;
+
+    fakeThis.showWorkingLoaderNow();
+    const promise = (InteractiveMode as any).prototype.showExtensionCustom.call(
+      fakeThis,
+      (_tui: unknown, _theme: unknown, _keybindings: unknown, done: (result: string) => void) => {
+        doneCustomUi = done;
+        return component;
+      },
+      { overlay: true },
+    );
+
+    expect(loader.stop).not.toHaveBeenCalled();
+    expect(fakeThis.getHostCustomUiState()).toEqual({
+      blockingInlineCustomUiActive: false,
+      blockingInlineCustomUiDepth: 0,
+    });
+
+    await Promise.resolve();
+    doneCustomUi?.("done");
+    await expect(promise).resolves.toBe("done");
+  });
 });
 

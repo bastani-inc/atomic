@@ -91,8 +91,8 @@ InteractiveModeBase.prototype.showWorkingLoaderNow = function(this: InteractiveM
     // actually starting. Prompt preflight (extension input hooks, template/skill
     // expansion, auth and compaction checks, deferred startup) runs before the
     // agent emits `agent_start`, which is otherwise the only place the loader is
-    // created. Respect `workingVisible` so extensions can still suppress it.
-    if (!this.workingVisible || this.loadingAnimation) {
+    // created. Respect extension and host custom-UI suppression.
+    if (!this.isWorkingLoaderAllowed() || this.loadingAnimation) {
       this.ui.requestRender();
       return;
     }
@@ -102,9 +102,12 @@ InteractiveModeBase.prototype.showWorkingLoaderNow = function(this: InteractiveM
     this.ui.requestRender();
   };
 
-InteractiveModeBase.prototype.setWorkingVisible = function(this: InteractiveModeBase, visible: boolean): void {
-    this.workingVisible = visible;
-    if (!visible) {
+InteractiveModeBase.prototype.isWorkingLoaderAllowed = function(this: InteractiveModeBase): boolean {
+    return this.workingVisible && this.blockingInlineCustomUiDepth === 0;
+  };
+
+InteractiveModeBase.prototype.refreshWorkingLoaderVisibility = function(this: InteractiveModeBase): void {
+    if (!this.isWorkingLoaderAllowed()) {
       this.stopWorkingLoader();
       this.ui.requestRender();
       return;
@@ -115,6 +118,11 @@ InteractiveModeBase.prototype.setWorkingVisible = function(this: InteractiveMode
       this.statusContainer.addChild(this.loadingAnimation);
     }
     this.ui.requestRender();
+  };
+
+InteractiveModeBase.prototype.setWorkingVisible = function(this: InteractiveModeBase, visible: boolean): void {
+    this.workingVisible = visible;
+    this.refreshWorkingLoaderVisibility();
   };
 
 InteractiveModeBase.prototype.setWorkingIndicator = function(this: InteractiveModeBase, options?: LoaderIndicatorOptions): void {
@@ -218,8 +226,13 @@ InteractiveModeBase.prototype.resetExtensionUI = function(this: InteractiveModeB
     this.setupAutocompleteProvider();
     this.defaultEditor.onExtensionShortcut = undefined;
     this.updateTerminalTitle();
+    this.blockingInlineCustomUiDepth = 0;
+    this.deferredInlineCustomUiFocusDepth = 0;
+    this.pendingInlineCustomUiFocus = undefined;
+    this.notifyHostCustomUiStateListeners();
     this.workingMessage = undefined;
     this.workingVisible = true;
+    this.refreshWorkingLoaderVisibility();
     this.setWorkingIndicator();
     if (this.loadingAnimation) {
       this.loadingAnimation.setMessage(

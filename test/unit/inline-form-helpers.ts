@@ -4,13 +4,13 @@
  *
  *   - inline-form-store: state seeding + lifecycle (createForm, finalize)
  *   - inline-form-card:  renders live + frozen views; routes status text
- *   - inline-form-editor: routes keystrokes per type without rendering a duplicate box
- *   - inline-form-overlay: emits sendMessage, swaps editor, restores it
+ *   - inline-form-overlay: emits sendMessage, mounts the editor with custom UI,
+ *     and resolves when the mounted editor exits
  *
  * The editor side is exercised through its public surface (handleInput /
  * render). The overlay test uses a minimal `pi`/`ctx` mock that records
- * sendMessage + setEditorComponent calls — same pattern as the existing
- * extension test suite.
+ * sendMessage + custom UI mounts — same pattern as the existing extension test
+ * suite.
  */
 import { test } from "bun:test";
 import assert from "node:assert/strict";
@@ -170,23 +170,32 @@ export function makeFakePi(): FakePiSurface {
 
 interface FakeCtx {
   ui: {
-    setEditorComponent: (factory: unknown | undefined) => void;
-    getEditorComponent?: () => unknown | undefined;
+    custom: (factory: unknown, options?: unknown) => Promise<unknown>;
+    setWorkingVisible?: (visible: boolean) => void;
   };
-  installed: { factory: unknown | undefined }[];
+  installed: Array<{
+    factory: unknown;
+    options: unknown;
+    component: unknown;
+    done: (result: unknown) => void;
+  }>;
 }
 
 export function makeFakeCtx(): FakeCtx {
-  const installed: { factory: unknown | undefined }[] = [];
-  let current: unknown | undefined;
+  const installed: FakeCtx["installed"] = [];
   return {
     installed,
     ui: {
-      setEditorComponent: (factory) => {
-        current = factory;
-        installed.push({ factory });
-      },
-      getEditorComponent: () => current,
+      custom: (factory, options) => new Promise<unknown>((resolve) => {
+        const done = (result: unknown): void => resolve(result);
+        const component = (factory as (
+          tui: unknown,
+          theme: unknown,
+          keybindings: unknown,
+          done: (result: unknown) => void,
+        ) => unknown)({ requestRender: () => {} }, {}, makeFakeKeybindings(), done);
+        installed.push({ factory, options, component, done });
+      }),
     },
   };
 }

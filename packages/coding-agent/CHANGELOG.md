@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- Fixed non-overlay `ctx.ui.custom()` components to suppress the global `Working...` loader while Atomic is waiting for user input, then automatically re-enable normal loader behavior when the custom UI settles or is dismissed. Floating `{ overlay: true }` custom UIs continue to leave the loader visible for passive views over active work. ([#1670](https://github.com/bastani-inc/atomic/issues/1670))
 - Fixed CLI resolution of unknown/custom model IDs with a recognized `:<thinking>` suffix so the suffix is applied as the thinking level instead of leaking into the synthesized model ID, while preserving registered and unrecognized colon-bearing model IDs.
 
 ## [0.9.5-alpha.9] - 2026-07-09

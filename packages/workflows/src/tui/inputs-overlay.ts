@@ -15,17 +15,16 @@
  *
  * Mount mode
  * ----------
- * Uses the same bottom-pinned primitive as `ask_user_question`: hide the
- * host working-loader row for the lifetime of the blocking picker and mount
- * with `{ overlay: false }`. pi's interactive `ExtensionUiController.custom`
- * then REPLACES the editor with the mounted component
- * (`editorContainer.clear(); addChild(component)`), which puts the focused
- * picker in the bottom editor slot instead of a floating overlay. Suppressing
- * `Working…` while mounted keeps host chrome from being wedged between the
- * `/workflow …` command and the picker, avoiding the prior bottom-anchored
- * overlay regression captured in
- * `ui/workflows/Screenshot 2026-05-13 at 1.09.32 AM.png` without overlay
- * anchor/padding tricks — the host owns geometry.
+ * Uses the same bottom-pinned primitive as `ask_user_question`: mount with
+ * `{ overlay: false }`. Atomic's interactive host treats non-overlay
+ * `ctx.ui.custom()` as blocking user input, suppresses its global `Working…`
+ * loader while the component is mounted, and replaces the editor with the
+ * mounted picker (`editorContainer.clear(); addChild(component)`). That puts
+ * the focused picker in the bottom editor slot instead of a floating overlay,
+ * keeping host chrome from being wedged between the `/workflow …` command and
+ * the picker. This avoids the prior bottom-anchored overlay regression captured
+ * in `ui/workflows/Screenshot 2026-05-13 at 1.09.32 AM.png` without overlay
+ * anchor/padding tricks — the host owns geometry and Working-state suppression.
  *
  * cross-ref:
  *   - src/tui/inputs-picker.ts (pure state + render)
@@ -51,7 +50,6 @@ import {
 
 export interface InputsUiSurface {
   custom?: PiCustomOverlayFunction;
-  setWorkingVisible?: (visible: boolean) => void;
 }
 
 export type InputsPickerResult =
@@ -90,22 +88,8 @@ export function openInputsPicker(
       return;
     }
 
-    let workingHidden = false;
-    const hideWorking = (): void => {
-      ui.setWorkingVisible?.(false);
-      workingHidden = true;
-    };
-    const restoreWorking = (): void => {
-      if (!workingHidden) return;
-      workingHidden = false;
-      ui.setWorkingVisible?.(true);
-    };
-
-    hideWorking();
-
     const custom = ui.custom;
     if (typeof custom !== "function") {
-      restoreWorking();
       resolve({ kind: "cancel" });
       return;
     }
@@ -120,7 +104,6 @@ export function openInputsPicker(
       settled = true;
       if (cursorTimer) clearInterval(cursorTimer);
       cursorTimer = null;
-      restoreWorking();
       resolve(result);
     };
 
@@ -145,7 +128,6 @@ export function openInputsPicker(
         try {
           done(undefined);
         } finally {
-          restoreWorking();
           resolve(result);
         }
       };

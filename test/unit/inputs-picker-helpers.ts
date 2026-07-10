@@ -50,11 +50,12 @@ export function mountInputsPicker(): MountedInputsPicker {
     }
     component = mounted;
   };
+  const surface = {
+    custom,
+    setWorkingVisible: (visible: boolean) => workingCalls.push(visible),
+  };
   const promise = openInputsPicker(
-    {
-      custom,
-      setWorkingVisible: (visible) => workingCalls.push(visible),
-    },
+    surface,
     {
       workflowName: "ralph",
       fields: OVERLAY_FIELDS,

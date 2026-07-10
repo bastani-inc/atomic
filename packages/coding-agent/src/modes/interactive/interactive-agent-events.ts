@@ -39,7 +39,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.fallbackLoader = undefined;
         }
         this.stopWorkingLoader();
-        if (this.workingVisible) {
+        if (this.isWorkingLoaderAllowed()) {
           this.loadingAnimation = this.createWorkingLoader();
           this.statusContainer.addChild(this.loadingAnimation);
         }

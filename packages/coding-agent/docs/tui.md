@@ -99,6 +99,8 @@ pi.on("session_start", async (_event, ctx) => {
 
 Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable operation. If the signal aborts, Atomic dismisses the custom UI and rejects the returned promise with the signal reason. For overlays, use `options.onHandle` to receive an overlay handle for programmatic visibility control.
 
+While a non-overlay custom UI is mounted (the default, or `{ overlay: false }`), Atomic treats the app as waiting for user input and suppresses the global `Working...` loader. The loader is re-enabled automatically when the custom UI settles or is dismissed. Floating overlays opened with `{ overlay: true }` do not suppress `Working...` automatically because they can be passive views over active work.
+
 ## Overlays
 
 Overlays render components on top of existing content without clearing the screen. Pass `{ overlay: true }` to `ctx.ui.custom()`:

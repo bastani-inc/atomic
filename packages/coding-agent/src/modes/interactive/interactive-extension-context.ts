@@ -41,6 +41,7 @@ InteractiveModeBase.prototype.notifyHostCustomUiStateListeners = function(this: 
 InteractiveModeBase.prototype.beginHostInlineCustomUi = function(this: InteractiveModeBase): () => void {
     let released = false;
     this.blockingInlineCustomUiDepth++;
+    this.refreshWorkingLoaderVisibility();
     this.notifyHostCustomUiStateListeners();
     return () => {
       if (released) return;
@@ -50,6 +51,7 @@ InteractiveModeBase.prototype.beginHostInlineCustomUi = function(this: Interacti
         this.blockingInlineCustomUiDepth - 1,
       );
       this.notifyHostCustomUiStateListeners();
+      this.refreshWorkingLoaderVisibility();
     };
   };
 
