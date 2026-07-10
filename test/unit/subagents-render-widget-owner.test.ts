@@ -17,6 +17,7 @@ interface WidgetCall {
 interface MakeCtxOptions {
 	statuses?: Map<string, string>;
 	setStatus?: (key: string, value: string | undefined) => void;
+	setWidget?: ExtensionContext["ui"]["setWidget"];
 }
 
 const tempRoots: string[] = [];
@@ -36,13 +37,14 @@ function makeCtx(cwd: string, sessionFile: string, options: MakeCtxOptions = {})
 			else options.statuses?.set(key, value);
 		}
 		: undefined);
+	const setWidget = options.setWidget ?? ((key: string, content: SetWidgetArgs[1], widgetOptions?: SetWidgetArgs[2]) => {
+		widgetCalls.push({ key, content, options: widgetOptions });
+	});
 	const ctx = {
 		hasUI: true,
 		cwd,
 		ui: {
-			setWidget: (key: string, content: SetWidgetArgs[1], options?: SetWidgetArgs[2]) => {
-				widgetCalls.push({ key, content, options });
-			},
+			setWidget,
 			setStatus,
 			getToolsExpanded: () => false,
 			setToolsExpanded: () => {},
@@ -200,6 +202,75 @@ describe("subagent render widget logical owner stability", () => {
 		assert.equal(undefinedCalls(active.widgetCalls), 0);
 		assert.equal(undefinedCalls(stale.widgetCalls), 0);
 		assert.equal(statuses.get(WIDGET_KEY), "Async agents: 1 running");
+	});
+
+	test("stale session teardown cannot unmount another owner's active widget", () => {
+		const cwd = makeTempRoot("atomic-widget-owner-cwd-");
+		const otherCwd = makeTempRoot("atomic-widget-owner-other-");
+		const active = makeCtx(cwd, path.join(cwd, "session.jsonl"));
+		const stale = makeCtx(otherCwd, path.join(otherCwd, "session.jsonl"));
+
+		renderWidget(active.ctx, [makeJob()]);
+		stopWidgetAnimation(stale.ctx);
+
+		assert.equal(undefinedCalls(active.widgetCalls), 0);
+		assert.equal(active.renderCount(), 0);
+	});
+
+	test("same-surface workflow-stage API cannot replace or stop the parent API widget", () => {
+		const cwd = makeTempRoot("atomic-widget-api-owner-");
+		const sessionFile = path.join(cwd, "session.jsonl");
+		const statuses = new Map<string, string>();
+		const parent = makeCtx(cwd, sessionFile, { statuses });
+		const stage = makeCtx(cwd, sessionFile, { statuses, setWidget: parent.ctx.ui.setWidget });
+		const parentApi = {};
+		const stageApi = {};
+
+		renderWidget(parent.ctx, [makeJob()], parentApi);
+		renderWidget(stage.ctx, [makeJob()], stageApi);
+		renderWidget(stage.ctx, [], stageApi);
+		assert.equal(statuses.get(WIDGET_KEY), "Async agents: 1 running", "stage empty updates must preserve parent status");
+		stopWidgetAnimation(undefined, stageApi);
+		renderWidget(parent.ctx, [makeJob("complete")], parentApi);
+
+		assert.equal(mountCalls(parent.widgetCalls), 1);
+		assert.equal(mountCalls(stage.widgetCalls), 0, "stage must not replace the parent mount");
+		assert.equal(undefinedCalls(parent.widgetCalls), 0, "stage teardown must not clear the parent mount");
+		assert.equal(parent.renderCount(), 1, "parent owner remains live after stage teardown");
+		stopWidgetAnimation(undefined, parentApi);
+	});
+
+	test("independent widget surfaces can mount and tear down concurrently", () => {
+		const cwd = makeTempRoot("atomic-widget-independent-parent-");
+		const otherCwd = makeTempRoot("atomic-widget-independent-stage-");
+		const parent = makeCtx(cwd, path.join(cwd, "session.jsonl"));
+		const stage = makeCtx(otherCwd, path.join(otherCwd, "session.jsonl"));
+		const parentApi = {};
+		const stageApi = {};
+
+		renderWidget(parent.ctx, [makeJob()], parentApi);
+		renderWidget(stage.ctx, [makeJob()], stageApi);
+		assert.equal(mountCalls(parent.widgetCalls), 1);
+		assert.equal(mountCalls(stage.widgetCalls), 1);
+
+		stopWidgetAnimation(undefined, stageApi);
+		assert.equal(undefinedCalls(stage.widgetCalls), 1);
+		assert.equal(undefinedCalls(parent.widgetCalls), 0);
+		stopWidgetAnimation(undefined, parentApi);
+		assert.equal(undefinedCalls(parent.widgetCalls), 1);
+	});
+
+	test("API teardown bypasses stale logical context matching", () => {
+		const cwd = makeTempRoot("atomic-widget-authoritative-teardown-");
+		const mounted = makeCtx(cwd, path.join(cwd, "mounted.jsonl"));
+		const stale = makeCtx(cwd, path.join(cwd, "stale.jsonl"), { setWidget: mounted.ctx.ui.setWidget });
+		const api = {};
+
+		renderWidget(mounted.ctx, [makeJob()], api);
+		stopWidgetAnimation(stale.ctx, api);
+		assert.equal(undefinedCalls(mounted.widgetCalls), 0, "context-driven stale teardown remains guarded");
+		stopWidgetAnimation(undefined, api);
+		assert.equal(undefinedCalls(mounted.widgetCalls), 1, "API shutdown authoritatively releases its mount");
 	});
 
 	test("status cleanup failures do not block widget teardown", () => {

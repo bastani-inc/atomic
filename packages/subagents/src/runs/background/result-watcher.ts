@@ -21,6 +21,7 @@ import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-
 
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
+const DIRECTORY_RESCAN_DELAY_MS = 50;
 
 type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch"> & {
 	realpathSync?: typeof fs.realpathSync;
@@ -111,6 +112,7 @@ export function createResultWatcher(
 	const fsApi = deps.fs ?? fs;
 	const timers = deps.timers ?? { setTimeout, clearTimeout, setInterval, clearInterval };
 	const safeWatch = deps.safeWatch ?? watchWithErrorHandler;
+	let directoryRescanTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const handleResult = async (file: string) => {
 		const resultPath = path.join(resultsDir, file);
@@ -231,6 +233,15 @@ export function createResultWatcher(
 		}
 	};
 
+	const scheduleDirectoryRescan = () => {
+		if (directoryRescanTimer) timers.clearTimeout(directoryRescanTimer);
+		directoryRescanTimer = timers.setTimeout(() => {
+			directoryRescanTimer = null;
+			primeExistingResults();
+		}, DIRECTORY_RESCAN_DELAY_MS);
+		directoryRescanTimer.unref?.();
+	};
+
 	const startPollingFallback = (reason: unknown) => {
 		state.watcher?.close();
 		state.watcher = null;
@@ -281,11 +292,16 @@ export function createResultWatcher(
 				state.watcher = null;
 				scheduleRestart();
 			};
-			state.watcher = safeWatch(resultsDir, (ev, file) => {
-				if (ev !== "rename" || !file) return;
-				const fileName = file.toString();
-				if (!fileName.endsWith(".json")) return;
-				state.resultFileCoalescer.schedule(fileName);
+			state.watcher = safeWatch(resultsDir, (_event, file) => {
+				// Atomic writes may surface only their hidden temporary rename on
+				// macOS/Bun. Treat every watcher event as directory activity and
+				// rescan shortly after the write settles instead of trusting the
+				// event type or filename. Keep the final-name fast path when present.
+				if (file) {
+					const fileName = file.toString();
+					if (fileName.endsWith(".json")) state.resultFileCoalescer.schedule(fileName);
+				}
+				scheduleDirectoryRescan();
 			}, handleWatcherError, {
 				watch: fsApi.watch,
 				realpathSyncNative: fsApi.realpathSync?.native,
@@ -310,6 +326,8 @@ export function createResultWatcher(
 			timers.clearInterval(state.watcherRestartTimer);
 		}
 		state.watcherRestartTimer = null;
+		if (directoryRescanTimer) timers.clearTimeout(directoryRescanTimer);
+		directoryRescanTimer = null;
 		state.resultFileCoalescer.clear();
 	};
 

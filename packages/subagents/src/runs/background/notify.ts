@@ -3,7 +3,7 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
-import { buildCompletionKey, getGlobalSeenMap, markSeenWithTtl } from "./completion-dedupe.ts";
+import { buildCompletionKey, markSeenWithTtl } from "./completion-dedupe.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
 
 interface ChainStepResult {
@@ -40,22 +40,55 @@ interface SubagentResult {
 	totalTasks?: number;
 }
 
-export default function registerSubagentNotify(pi: ExtensionAPI): void {
-	const unsubscribeStoreKey = "__pi_subagents_notify_unsubscribe__";
-	const globalStore = globalThis as Record<string, unknown>;
-	const previousUnsubscribe = globalStore[unsubscribeStoreKey];
-	if (typeof previousUnsubscribe === "function") {
+interface NotifyRegistration {
+	unsubscribe: () => void;
+}
+
+function getNotifyRegistry(): WeakMap<ExtensionAPI, NotifyRegistration> {
+	const key = "__piSubagentsNotifyRegistrations";
+	const store = globalThis as Record<string, unknown>;
+	const existing = store[key];
+	if (existing instanceof WeakMap) return existing as WeakMap<ExtensionAPI, NotifyRegistration>;
+	const registry = new WeakMap<ExtensionAPI, NotifyRegistration>();
+	store[key] = registry;
+	return registry;
+}
+
+function getNotifySeenRegistry(): WeakMap<ExtensionAPI, Map<string, number>> {
+	const key = "__piSubagentsNotifySeenByApi";
+	const store = globalThis as Record<string, unknown>;
+	const existing = store[key];
+	if (existing instanceof WeakMap) return existing as WeakMap<ExtensionAPI, Map<string, number>>;
+	const registry = new WeakMap<ExtensionAPI, Map<string, number>>();
+	store[key] = registry;
+	return registry;
+}
+
+function getNotifySeen(pi: ExtensionAPI): Map<string, number> {
+	const registry = getNotifySeenRegistry();
+	const existing = registry.get(pi);
+	if (existing) return existing;
+	const seen = new Map<string, number>();
+	registry.set(pi, seen);
+	return seen;
+}
+
+export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
+	const registry = getNotifyRegistry();
+	const previous = registry.get(pi);
+	if (previous) {
 		try {
-			previousUnsubscribe();
+			previous.unsubscribe();
 		} catch {
 			// Best effort cleanup for stale handlers from an older reload.
 		}
 	}
-
-	const seen = getGlobalSeenMap("__pi_subagents_notify_seen__");
+	const seen = getNotifySeen(pi);
 	const ttlMs = 10 * 60 * 1000;
 
+	let registration: NotifyRegistration;
 	const handleComplete = (data: unknown) => {
+		if (registry.get(pi) !== registration) return;
 		const result = data as SubagentResult;
 		const now = Date.now();
 		const key = buildCompletionKey(result, "notify");
@@ -104,5 +137,12 @@ export default function registerSubagentNotify(pi: ExtensionAPI): void {
 		);
 	};
 
-	globalStore[unsubscribeStoreKey] = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	const unsubscribe = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete);
+	registration = { unsubscribe };
+	registry.set(pi, registration);
+	return () => {
+		if (registry.get(pi) !== registration) return;
+		registry.delete(pi);
+		unsubscribe();
+	};
 }

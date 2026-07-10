@@ -14,6 +14,12 @@ interface SlashSnapshot {
 	version: number;
 }
 
+export interface SlashSnapshotStore {
+	liveSnapshots: Map<string, SlashSnapshot>;
+	finalSnapshots: Map<string, SlashSnapshot>;
+	versionCounter: number;
+}
+
 interface SequentialChainStepLike {
 	agent: string;
 	task?: string;
@@ -25,9 +31,26 @@ interface ParallelChainStepLike {
 
 type ChainStepLike = SequentialChainStepLike | ParallelChainStepLike;
 
-const liveSnapshots = new Map<string, SlashSnapshot>();
-const finalSnapshots = new Map<string, SlashSnapshot>();
-let versionCounter = 1;
+const defaultStoreOwner = {};
+
+function getStoreRegistry(): WeakMap<object, SlashSnapshotStore> {
+	const key = "__piSubagentSlashSnapshotStores";
+	const globalStore = globalThis as Record<string, unknown>;
+	const existing = globalStore[key];
+	if (existing instanceof WeakMap) return existing as WeakMap<object, SlashSnapshotStore>;
+	const registry = new WeakMap<object, SlashSnapshotStore>();
+	globalStore[key] = registry;
+	return registry;
+}
+
+export function getSlashSnapshotStore(owner: object = defaultStoreOwner): SlashSnapshotStore {
+	const registry = getStoreRegistry();
+	const existing = registry.get(owner);
+	if (existing) return existing;
+	const store = { liveSnapshots: new Map(), finalSnapshots: new Map(), versionCounter: 1 };
+	registry.set(owner, store);
+	return store;
+}
 
 const EMPTY_MESSAGES: Message[] = [];
 const EMPTY_USAGE: Usage = {
@@ -39,8 +62,8 @@ const EMPTY_USAGE: Usage = {
 	turns: 0,
 };
 
-function nextVersion(): number {
-	return versionCounter++;
+function nextVersion(store: SlashSnapshotStore): number {
+	return store.versionCounter++;
 }
 
 function cloneUsage(): Usage {
@@ -51,7 +74,7 @@ function createPlaceholderResult(
 	agent: string,
 	task: string,
 	status: "pending" | "running",
-	index: number,
+	index?: number,
 ): SingleResult {
 	return {
 		agent,
@@ -60,7 +83,7 @@ function createPlaceholderResult(
 		messages: EMPTY_MESSAGES,
 		usage: cloneUsage(),
 		progress: {
-			index,
+			index: index ?? 0,
 			agent,
 			status,
 			task,
@@ -162,7 +185,7 @@ function buildSingleInitialResult(params: SubagentParamsLike): AgentToolResult<D
 		details: {
 			mode: "single",
 			...(params.context ? { context: params.context } : {}),
-			results: [createPlaceholderResult(agent, task, "running", 0)],
+			results: [createPlaceholderResult(agent, task, "running")],
 			progress: [{
 				index: 0,
 				agent,
@@ -178,14 +201,15 @@ function buildSingleInitialResult(params: SubagentParamsLike): AgentToolResult<D
 	};
 }
 
-export function buildSlashInitialResult(requestId: string, params: SubagentParamsLike): SlashMessageDetails {
+export function buildSlashInitialResult(requestId: string, params: SubagentParamsLike, owner?: object): SlashMessageDetails {
+	const store = getSlashSnapshotStore(owner);
 	const result = (params.tasks?.length ?? 0) > 0
 		? buildParallelInitialResult(params)
 		: (params.chain?.length ?? 0) > 0
 			? buildChainInitialResult(params)
 			: buildSingleInitialResult(params);
-	liveSnapshots.set(requestId, { result, version: nextVersion() });
-	finalSnapshots.delete(requestId);
+	store.liveSnapshots.set(requestId, { result, version: nextVersion(store) });
+	store.finalSnapshots.delete(requestId);
 	return { requestId, result };
 }
 
@@ -201,8 +225,9 @@ function cloneResultsWithProgress(
 	});
 }
 
-export function applySlashUpdate(requestId: string, update: SlashSubagentUpdate): void {
-	const snapshot = liveSnapshots.get(requestId);
+export function applySlashUpdate(requestId: string, update: SlashSubagentUpdate, owner?: object): void {
+	const store = getSlashSnapshotStore(owner);
+	const snapshot = store.liveSnapshots.get(requestId);
 	if (!snapshot) return;
 	const progress = update.progress;
 	if (!progress || !snapshot.result.details) return;
@@ -213,30 +238,32 @@ export function applySlashUpdate(requestId: string, update: SlashSubagentUpdate)
 		results: cloneResultsWithProgress(snapshot.result.details.results, progress),
 		...(snapshot.result.details.mode === "chain" && currentStepIndex >= 0 ? { currentStepIndex } : {}),
 	};
-	liveSnapshots.set(requestId, {
+	store.liveSnapshots.set(requestId, {
 		result: {
 			...snapshot.result,
 			details: nextDetails,
 		},
-		version: nextVersion(),
+		version: nextVersion(store),
 	});
 }
 
-export function finalizeSlashResult(response: SlashSubagentResponse): SlashMessageDetails {
+export function finalizeSlashResult(response: SlashSubagentResponse, owner?: object): SlashMessageDetails {
+	const store = getSlashSnapshotStore(owner);
 	const snapshot = {
 		result: response.result,
-		version: nextVersion(),
+		version: nextVersion(store),
 	};
-	finalSnapshots.set(response.requestId, snapshot);
-	liveSnapshots.delete(response.requestId);
+	store.finalSnapshots.set(response.requestId, snapshot);
+	store.liveSnapshots.delete(response.requestId);
 	return {
 		requestId: response.requestId,
 		result: response.result,
 	};
 }
 
-export function failSlashResult(requestId: string, params: SubagentParamsLike, message: string): SlashMessageDetails {
-	const initial = buildSlashInitialResult(requestId, params).result;
+export function failSlashResult(requestId: string, params: SubagentParamsLike, message: string, owner?: object): SlashMessageDetails {
+	const store = getSlashSnapshotStore(owner);
+	const initial = buildSlashInitialResult(requestId, params, owner).result;
 	const failedResults = initial.details.results.map((result) => ({
 		...result,
 		exitCode: 1,
@@ -251,9 +278,9 @@ export function failSlashResult(requestId: string, params: SubagentParamsLike, m
 			progress: failedResults.map((entry) => entry.progress!).filter(Boolean),
 		},
 	};
-	const snapshot = { result, version: nextVersion() };
-	finalSnapshots.set(requestId, snapshot);
-	liveSnapshots.delete(requestId);
+	const snapshot = { result, version: nextVersion(store) };
+	store.finalSnapshots.set(requestId, snapshot);
+	store.liveSnapshots.delete(requestId);
 	return { requestId, result };
 }
 
@@ -269,25 +296,28 @@ export function resolveSlashMessageDetails(value: unknown): SlashMessageDetails 
 	return isSlashMessageDetails(value) ? value : undefined;
 }
 
-export function getSlashRenderableSnapshot(details: SlashMessageDetails): SlashSnapshot {
-	return finalSnapshots.get(details.requestId)
-		?? liveSnapshots.get(details.requestId)
+export function getSlashRenderableSnapshot(details: SlashMessageDetails, owner?: object): SlashSnapshot {
+	const store = getSlashSnapshotStore(owner);
+	return store.finalSnapshots.get(details.requestId)
+		?? store.liveSnapshots.get(details.requestId)
 		?? { result: details.result, version: 0 };
 }
 
-export function restoreSlashFinalSnapshots(entries: unknown[]): void {
-	liveSnapshots.clear();
-	finalSnapshots.clear();
+export function restoreSlashFinalSnapshots(entries: unknown[], owner?: object): void {
+	const store = getSlashSnapshotStore(owner);
+	store.liveSnapshots.clear();
+	store.finalSnapshots.clear();
 	for (const entry of entries) {
 		const e = entry as { type?: string; customType?: string; details?: unknown };
 		if (e?.type !== "custom_message" || e.customType !== SLASH_RESULT_TYPE) continue;
 		const details = resolveSlashMessageDetails(e.details);
 		if (!details) continue;
-		finalSnapshots.set(details.requestId, { result: details.result, version: nextVersion() });
+		store.finalSnapshots.set(details.requestId, { result: details.result, version: nextVersion(store) });
 	}
 }
 
-export function clearSlashSnapshots(): void {
-	liveSnapshots.clear();
-	finalSnapshots.clear();
+export function clearSlashSnapshots(owner?: object): void {
+	const store = getSlashSnapshotStore(owner);
+	store.liveSnapshots.clear();
+	store.finalSnapshots.clear();
 }

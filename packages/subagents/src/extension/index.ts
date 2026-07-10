@@ -23,9 +23,10 @@ import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
-import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT, WIDGET_KEY } from "../shared/types.ts";
+import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT } from "../shared/types.ts";
 import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
+import { beginApiLifecycle, getApiScopedSet } from "./api-lifecycle.ts";
 export { loadConfig } from "./config.ts";
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
 	if (parentSessionFile) {
@@ -59,9 +60,6 @@ function isSlashResultRunning(result: { details?: Details }): boolean {
 function isSlashResultError(result: { details?: Details }): boolean {
 	return result.details?.results.some((entry) => entry.exitCode !== 0 && entry.progress?.status !== "running") || false;
 }
-function isStaleExtensionContextError(error: unknown): boolean {
-	return error instanceof Error && error.message.includes("Extension context no longer active");
-}
 type SubagentToolRenderState = SubagentResultRenderState;
 function rebuildSlashResultContainer(
 	container: Container,
@@ -80,13 +78,14 @@ function createSlashResultComponent(
 	details: SlashMessageDetails,
 	options: { expanded: boolean },
 	theme: ExtensionContext["ui"]["theme"],
+	owner: ExtensionAPI,
 ): Container {
 	const container = new Container();
 	let lastVersion = -1;
 	let lastSnapshotNow = 0;
 	let pulseFrame = 0;
 	container.render = (width: number): string[] => {
-		const snapshot = getSlashRenderableSnapshot(details);
+		const snapshot = getSlashRenderableSnapshot(details, owner);
 		if (snapshot.version !== lastVersion) {
 			lastVersion = snapshot.version;
 			lastSnapshotNow = Date.now();
@@ -157,169 +156,162 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		if (getEnvValue(SUBAGENT_FANOUT_CHILD_ENV) === "1") registerFanoutChildSubagentExtension(pi);
 		return;
 	}
-	const globalStore = globalThis as Record<string, unknown>;
-	const runtimeCleanupStoreKey = "__piSubagentRuntimeCleanup";
-	const previousRuntimeCleanup = globalStore[runtimeCleanupStoreKey];
-	if (typeof previousRuntimeCleanup === "function") {
-		try {
-			previousRuntimeCleanup();
-		} catch {
-		}
-	}
-	ensureAccessibleDir(RESULTS_DIR);
-	ensureAccessibleDir(ASYNC_DIR);
-	const config = loadConfig();
-	const asyncByDefault = config.asyncByDefault === true;
-	const tempArtifactsDir = getArtifactsDir(null);
-	const state: SubagentState = {
-		baseCwd: "",
-		currentSessionId: null,
-		asyncJobs: new Map(),
-		subagentInProgress: false,
-		foregroundRuns: new Map(),
-		foregroundControls: new Map(),
-		lastForegroundControlId: null,
-		pendingForegroundControlNotices: new Map(),
-		cleanupTimers: new Map(),
-		lastUiContext: null,
-		poller: null,
-		completionSeen: new Map(),
-		watcher: null,
-		watcherRestartTimer: null,
-		resultFileCoalescer: {
-			schedule: () => false,
-			clear: () => {},
-		},
-	};
-	const maintenance = createSubagentStartupMaintenance(pi, state, {
-		resultsDir: RESULTS_DIR,
-		artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
-		resultTtlMs: 10 * 60 * 1000,
-	});
-	maintenance.scheduleStartupCleanup();
-	maintenance.startResultWatcherDeferred();
-	maintenance.primeExistingResultsDeferred();
-	const runtimeCleanup = () => {
-		maintenance.stop();
-		stopWidgetAnimation();
-		stopResultAnimations();
-		clearPendingForegroundControlNotices(state);
-		if (state.poller) {
-			clearInterval(state.poller);
-			state.poller = null;
-		}
-	};
-	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
-	const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
-	const executor = createSubagentExecutor({
-		pi,
-		state,
-		config,
-		asyncByDefault,
-		tempArtifactsDir,
-		getSubagentSessionRoot,
-		expandTilde,
-		discoverAgents,
-	});
-	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
-		const details = resolveSlashMessageDetails(message.details);
-		if (!details) return undefined;
-		return createSlashResultComponent(details, options, theme);
-	});
-	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
-		const content = typeof message.content === "string" ? message.content : "";
-		const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
-		if (!details) return new Text(content, 0, 0);
-		const icon = details.status === "completed"
-			? theme.fg("success", "✓")
-			: details.status === "paused"
-				? theme.fg("warning", "■")
-				: theme.fg("error", "✗");
-		const parts: string[] = [];
-		if (details.taskInfo) parts.push(details.taskInfo);
-		if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
-		let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
-		if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
-		const trimmedPreview = details.resultPreview.trim();
-		const previewLines = options.expanded
-			? trimmedPreview.split("\n").filter((line) => line.trim())
-			: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
-		for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
-			text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
-		}
-		if (!options.expanded && trimmedPreview.includes("\n")) {
-			text += `\n  ${theme.fg("dim", "ctrl+o full notification")}`;
-		}
-		if (details.sessionLabel && details.sessionValue) {
-			text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
-		}
-		return new Text(text, 0, 0);
-	});
-	pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
-		const details = message.details as SubagentControlMessageDetails | undefined;
-		if (!details?.event) return undefined;
-		const content = typeof message.content === "string" ? message.content : undefined;
-		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
-	});
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
-		if (ctx.hasUI) {
-			state.lastUiContext = ctx;
-			ctx.ui.setToolsExpanded(false);
-		}
-		return executor.execute(id, params, signal, onUpdate, ctx);
-	};
-	const slashBridge = registerSlashSubagentBridge({
-		events: pi.events,
-		getContext: () => state.lastUiContext,
-		execute: (id, params, signal, onUpdate, ctx) =>
-			executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
-	});
-	const promptTemplateBridge = registerPromptTemplateDelegationBridge({
-		events: pi.events,
-		getContext: () => state.lastUiContext,
-		execute: async (requestId, request, signal, ctx, onUpdate) => {
-			if (request.tasks && request.tasks.length > 0) {
+	const lifecycle = beginApiLifecycle(pi);
+	const registrationFailureCleanups: Array<() => void> = [];
+	let runtimeCleanupInstalled = false;
+	try {
+		ensureAccessibleDir(RESULTS_DIR);
+		ensureAccessibleDir(ASYNC_DIR);
+		const config = loadConfig();
+		const asyncByDefault = config.asyncByDefault === true;
+		const tempArtifactsDir = getArtifactsDir(null);
+		const state: SubagentState = {
+			baseCwd: "",
+			currentSessionId: null,
+			asyncJobs: new Map(),
+			subagentInProgress: false,
+			foregroundRuns: new Map(),
+			foregroundControls: new Map(),
+			lastForegroundControlId: null,
+			pendingForegroundControlNotices: new Map(),
+			cleanupTimers: new Map(),
+			lastUiContext: null,
+			poller: null,
+			completionSeen: new Map(),
+			watcher: null,
+			watcherRestartTimer: null,
+			resultFileCoalescer: {
+				schedule: () => false,
+				clear: () => {},
+			},
+		};
+		const maintenance = createSubagentStartupMaintenance(pi, state, {
+			resultsDir: RESULTS_DIR,
+			artifactCleanupDays: DEFAULT_ARTIFACT_CONFIG.cleanupDays,
+			resultTtlMs: 10 * 60 * 1000,
+		});
+		maintenance.scheduleStartupCleanup();
+		registrationFailureCleanups.push(() => maintenance.stop());
+		maintenance.startResultWatcherDeferred();
+		maintenance.primeExistingResultsDeferred();
+		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+		const executor = createSubagentExecutor({
+			pi,
+			state,
+			config,
+			asyncByDefault,
+			tempArtifactsDir,
+			getSubagentSessionRoot,
+			expandTilde,
+			discoverAgents,
+		});
+		pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
+			const details = resolveSlashMessageDetails(message.details);
+			if (!details) return undefined;
+			return createSlashResultComponent(details, options, theme, pi);
+		});
+		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
+			const content = typeof message.content === "string" ? message.content : "";
+			const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
+			if (!details) return new Text(content, 0, 0);
+			const icon = details.status === "completed"
+				? theme.fg("success", "✓")
+				: details.status === "paused"
+					? theme.fg("warning", "■")
+					: theme.fg("error", "✗");
+			const parts: string[] = [];
+			if (details.taskInfo) parts.push(details.taskInfo);
+			if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
+			let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
+			if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
+			const trimmedPreview = details.resultPreview.trim();
+			const previewLines = options.expanded
+				? trimmedPreview.split("\n").filter((line) => line.trim())
+				: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
+			for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
+				text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
+			}
+			if (!options.expanded && trimmedPreview.includes("\n")) {
+				text += `\n  ${theme.fg("dim", "ctrl+o full notification")}`;
+			}
+			if (details.sessionLabel && details.sessionValue) {
+				text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
+			}
+			return new Text(text, 0, 0);
+		});
+		pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
+			const details = message.details as SubagentControlMessageDetails | undefined;
+			if (!details?.event) return undefined;
+			const content = typeof message.content === "string" ? message.content : undefined;
+			return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
+		});
+		const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+			if (ctx.hasUI) {
+				state.lastUiContext = ctx;
+				ctx.ui.setToolsExpanded(false);
+			}
+			return executor.execute(id, params, signal, onUpdate, ctx);
+		};
+		const slashBridge = registerSlashSubagentBridge({
+			events: pi.events,
+			getContext: () => state.lastUiContext,
+			execute: (id, params, signal, onUpdate, ctx) =>
+				executeSubagentCollapsed(id, params, signal, onUpdate, ctx),
+		});
+		registrationFailureCleanups.push(() => {
+			slashBridge.cancelAll();
+			slashBridge.dispose();
+		});
+		const promptTemplateBridge = registerPromptTemplateDelegationBridge({
+			events: pi.events,
+			getContext: () => state.lastUiContext,
+			execute: async (requestId, request, signal, ctx, onUpdate) => {
+				if (request.tasks && request.tasks.length > 0) {
+					return executeSubagentCollapsed(
+						requestId,
+						{
+							tasks: request.tasks,
+							context: request.context,
+							cwd: request.cwd,
+							worktree: request.worktree,
+							async: false,
+						},
+						signal,
+						onUpdate,
+						ctx,
+					);
+				}
 				return executeSubagentCollapsed(
 					requestId,
 					{
-						tasks: request.tasks,
+						agent: request.agent,
+						task: request.task,
 						context: request.context,
 						cwd: request.cwd,
-						worktree: request.worktree,
+						model: request.model,
 						async: false,
 					},
 					signal,
 					onUpdate,
 					ctx,
 				);
-			}
-			return executeSubagentCollapsed(
-				requestId,
-				{
-					agent: request.agent,
-					task: request.task,
-					context: request.context,
-					cwd: request.cwd,
-					model: request.model,
-					async: false,
-				},
-				signal,
-				onUpdate,
-				ctx,
-			);
-		},
-	});
-	function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
-		if (!tasks || tasks.length === 0) return 0;
-		return tasks.reduce((total, task) => {
-			const count = typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
-			return total + count;
-		}, 0);
-	}
-	const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
-		name: "subagent",
-		label: "Subagent",
-		description: `Delegate to subagents or manage agent definitions.
+			},
+		});
+		registrationFailureCleanups.push(() => {
+			promptTemplateBridge.cancelAll();
+			promptTemplateBridge.dispose();
+		});
+		function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
+			if (!tasks || tasks.length === 0) return 0;
+			return tasks.reduce((total, task) => {
+				const count = typeof task.count === "number" && Number.isInteger(task.count) && task.count >= 1 ? task.count : 1;
+				return total + count;
+			}, 0);
+		}
+		const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
+			name: "subagent",
+			label: "Subagent",
+			description: `Delegate to subagents or manage agent definitions.
 EXECUTION (use exactly ONE mode):
 • Execution calls always start non-interactively.
 • Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
@@ -345,133 +337,147 @@ CONTROL:
 • { action: "resume", id: "...", message: "...", index?: 0 } - follow up with a live async child or revive a completed async/foreground child from its session
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
-		parameters: SubagentParams,
-		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-		execute: executeSubagentCollapsed,
-		renderCall(args, theme) {
-			if (args.action) {
-				const target = args.agent || args.chainName || "";
+			parameters: SubagentParams,
+			promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
+			execute(id, params, signal, onUpdate, ctx) {
+				const executionSignal = signal ?? ctx.signal ?? new AbortController().signal;
+				return executeSubagentCollapsed(id, params as SubagentParamsLike, executionSignal, onUpdate, ctx);
+			},
+			renderCall(args, theme) {
+				if (args.action) {
+					const target = args.agent || args.chainName || "";
+					return new Text(
+						`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
+						0, 0,
+					);
+				}
+				const isParallel = (args.tasks?.length ?? 0) > 0;
+				const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
+				const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
+				if (args.chain?.length)
+					return new Text(
+						`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
+						0,
+						0,
+					);
+				if (isParallel)
+					return new Text(
+						`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
+						0,
+						0,
+					);
 				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}${args.action}${target ? ` ${theme.fg("accent", target)}` : ""}`,
-					0, 0,
-				);
-			}
-			const isParallel = (args.tasks?.length ?? 0) > 0;
-			const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-			const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
-			if (args.chain?.length)
-				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
+					`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}${asyncLabel}`,
 					0,
 					0,
 				);
-			if (isParallel)
-				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
-					0,
-					0,
-				);
-			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent "))}${theme.fg("accent", args.agent || "?")}${asyncLabel}`,
-				0,
-				0,
-			);
-		},
-		renderResult(result, options, theme, context) {
-			return renderLiveSubagentResult(result, options, theme, context);
-		},
-	};
-	pi.registerTool(tool);
-	registerSlashCommands(pi, state);
-	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
-	const controlNoticeSeenStoreKey = "__piSubagentVisibleControlNotices";
-	const previousEventUnsubscribes = globalStore[eventUnsubscribeStoreKey];
-	if (Array.isArray(previousEventUnsubscribes)) {
-		for (const unsubscribe of previousEventUnsubscribes) {
-			if (typeof unsubscribe !== "function") continue;
-			try {
-				unsubscribe();
-			} catch {
-			}
+			},
+			renderResult(result, options, theme, context) {
+				return renderLiveSubagentResult(result, options, theme, context);
+			},
+		};
+		pi.registerTool(tool);
+		registerSlashCommands(pi, state);
+		const notifyCleanup = registerSubagentNotify(pi);
+		registrationFailureCleanups.push(notifyCleanup);
+		const visibleControlNotices = getApiScopedSet(pi, "__piSubagentVisibleControlNoticesByApi");
+		const startedEventHandler = (payload: unknown) => {
+			if (lifecycle.isCurrent()) handleStarted(payload);
+		};
+		const completeEventHandler = (payload: unknown) => {
+			if (lifecycle.isCurrent()) handleComplete(payload);
+		};
+		const controlEventHandler = (payload: unknown) => {
+			if (!lifecycle.isCurrent()) return;
+			handleSubagentControlNotice({
+				pi,
+				state,
+				visibleControlNotices,
+				details: payload as SubagentControlMessageDetails,
+			});
+		};
+		const eventUnsubscribes: Array<() => void> = [];
+		for (const [event, handler] of [
+			[SUBAGENT_ASYNC_STARTED_EVENT, startedEventHandler],
+			[SUBAGENT_ASYNC_COMPLETE_EVENT, completeEventHandler],
+			[SUBAGENT_CONTROL_EVENT, controlEventHandler],
+		] as const) {
+			const unsubscribe = pi.events.on(event, handler);
+			eventUnsubscribes.push(unsubscribe);
+			registrationFailureCleanups.push(unsubscribe);
 		}
-	}
-	registerSubagentNotify(pi);
-	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
-	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
-	globalStore[controlNoticeSeenStoreKey] = visibleControlNotices;
-	const controlEventHandler = (payload: unknown) => {
-		handleSubagentControlNotice({
-			pi,
-			state,
-			visibleControlNotices,
-			details: payload as SubagentControlMessageDetails,
+		let cleaned = false;
+		const runtimeCleanup = () => {
+			if (cleaned) return;
+			cleaned = true;
+			const cleanupSteps: Array<() => void> = [
+				...eventUnsubscribes,
+				notifyCleanup,
+				() => maintenance.stop(),
+				() => stopWidgetAnimation(undefined, pi),
+				() => stopResultAnimations(),
+				() => {
+					if (state.poller) clearInterval(state.poller);
+					state.poller = null;
+				},
+				() => clearPendingForegroundControlNotices(state),
+				...Array.from(state.cleanupTimers.values(), (timer) => () => clearTimeout(timer)),
+				() => state.cleanupTimers.clear(),
+				() => state.asyncJobs.clear(),
+				() => clearSlashSnapshots(pi),
+				() => slashBridge.cancelAll(),
+				() => slashBridge.dispose(),
+				() => promptTemplateBridge.cancelAll(),
+				() => promptTemplateBridge.dispose(),
+			];
+			for (const cleanup of cleanupSteps) {
+				try {
+					cleanup();
+				} catch {
+					// Cleanup is exhaustive and best effort so later owned resources release.
+				}
+			}
+		};
+		lifecycle.setCleanup(runtimeCleanup);
+		runtimeCleanupInstalled = true;
+		pi.on("tool_result", (event, ctx) => {
+			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
+			if (!ctx.hasUI) return;
+			state.lastUiContext = ctx;
+			hydrateActiveJobs(ctx);
+			if (state.asyncJobs.size > 0) ensurePoller();
 		});
-	};
-	const eventUnsubscribes = [
-		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, handleStarted),
-		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete),
-		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
-	];
-	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
-	pi.on("tool_result", (event, ctx) => {
-		if (event.toolName !== "subagent") return;
-		if (!ctx.hasUI) return;
-		state.lastUiContext = ctx;
-		hydrateActiveJobs(ctx);
-		if (state.asyncJobs.size > 0) ensurePoller();
-	});
-	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
-		maintenance.cleanupSessionArtifactsDeferred(ctx);
-	};
-	const resetSessionState = (ctx: ExtensionContext) => {
-		state.baseCwd = ctx.cwd;
-		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
-		state.lastUiContext = ctx;
-		cleanupSessionArtifacts(ctx);
-		clearPendingForegroundControlNotices(state);
-		resetJobs(ctx);
-		hydrateActiveJobs(ctx);
-		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
-		maintenance.primeExistingResultsDeferred();
-	};
-	pi.on("session_start", (_event, ctx) => {
-		resetSessionState(ctx);
-	});
-	pi.on("session_shutdown", () => {
-		for (const unsubscribe of eventUnsubscribes) {
-			try {
-				unsubscribe();
-			} catch {
+		const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
+			maintenance.cleanupSessionArtifactsDeferred(ctx);
+		};
+		const resetSessionState = (ctx: ExtensionContext) => {
+			state.baseCwd = ctx.cwd;
+			state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+			state.lastUiContext = ctx;
+			cleanupSessionArtifacts(ctx);
+			clearPendingForegroundControlNotices(state);
+			resetJobs(ctx);
+			hydrateActiveJobs(ctx);
+			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
+			maintenance.primeExistingResultsDeferred();
+		};
+		pi.on("session_start", (_event, ctx) => {
+			if (lifecycle.isCurrent()) resetSessionState(ctx);
+		});
+		pi.on("session_shutdown", () => {
+			lifecycle.dispose();
+		});
+	} catch (error) {
+		if (!runtimeCleanupInstalled) {
+			for (const cleanup of registrationFailureCleanups.reverse()) {
+				try {
+					cleanup();
+				} catch {
+					// Continue releasing partial-registration resources.
+				}
 			}
 		}
-		if (globalStore[eventUnsubscribeStoreKey] === eventUnsubscribes) {
-			delete globalStore[eventUnsubscribeStoreKey];
-		}
-		maintenance.stop();
-		stopWidgetAnimation();
-		stopResultAnimations();
-		if (state.poller) clearInterval(state.poller);
-		state.poller = null;
-		clearPendingForegroundControlNotices(state);
-		for (const timer of state.cleanupTimers.values()) {
-			clearTimeout(timer);
-		}
-		state.cleanupTimers.clear();
-		state.asyncJobs.clear();
-		clearSlashSnapshots();
-		slashBridge.cancelAll();
-		slashBridge.dispose();
-		promptTemplateBridge.cancelAll();
-		promptTemplateBridge.dispose();
-		if (globalStore[runtimeCleanupStoreKey] === runtimeCleanup) {
-			delete globalStore[runtimeCleanupStoreKey];
-		}
-		try {
-			if (state.lastUiContext?.hasUI) {
-				state.lastUiContext.ui.setWidget(WIDGET_KEY, undefined);
-			}
-		} catch (error) {
-			if (!isStaleExtensionContextError(error)) throw error;
-		}
-	});
+		lifecycle.dispose();
+		throw error;
+	}
 }

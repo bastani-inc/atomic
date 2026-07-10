@@ -160,7 +160,7 @@ async function requestSlashRun(
 			if (done || !data || typeof data !== "object") return;
 			const update = data as SlashSubagentUpdate;
 			if (update.requestId !== requestId) return;
-			applySlashUpdate(requestId, update);
+			applySlashUpdate(requestId, update, pi);
 			if (!ctx.hasUI) return;
 			const tool = update.currentTool ? ` ${update.currentTool}` : "";
 			const count = update.toolCount ?? 0;
@@ -260,7 +260,7 @@ async function runSlashSubagent(
 ): Promise<void> {
 	if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
 	const requestId = randomUUID();
-	const initialDetails = buildSlashInitialResult(requestId, params);
+	const initialDetails = buildSlashInitialResult(requestId, params, pi);
 	const initialText = extractSlashMessageText(initialDetails.result.content) || "Running subagent...";
 	pi.sendMessage({
 		customType: SLASH_RESULT_TYPE,
@@ -272,7 +272,7 @@ async function runSlashSubagent(
 
 	try {
 		const response = await requestSlashRun(pi, ctx, requestId, params);
-		const finalDetails = finalizeSlashResult(response);
+		const finalDetails = finalizeSlashResult(response, pi);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: buildSlashExportText(response),
@@ -288,7 +288,7 @@ async function runSlashSubagent(
 		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		const failedDetails = failSlashResult(requestId, params, message);
+		const failedDetails = failSlashResult(requestId, params, message, pi);
 		pi.sendMessage({
 			customType: SLASH_RESULT_TYPE,
 			content: `## Subagent result\n\n${message}`,

@@ -60,53 +60,81 @@ interface RenderRequestingContext {
 	ui: ExtensionContext["ui"] & { requestRender?: () => void };
 }
 
-// There is only ever one async-agents widget per host process, so the mounted
-// component reads its driving context/jobs/pulse frame from module-level
-// singletons instead of remounting the widget for every visible update.
-let latestWidgetCtx: ExtensionContext | undefined;
-let latestWidgetJobs: AsyncJobState[] = [];
-let latestWidgetFrameNow = 0;
-let latestWidgetExpanded = false;
-let latestWidgetSnapshotKey: string | undefined;
-let latestWidgetPulseFrame: number | undefined;
-let mountedWidgetCtx: ExtensionContext | undefined;
-let mountedWidgetOwnerKey: string | undefined;
-let widgetMounted = false;
-
-function getLatestWidgetJobs(): AsyncJobState[] {
-	return latestWidgetJobs;
+interface WidgetAnimationState {
+	latestCtx?: ExtensionContext;
+	latestJobs: AsyncJobState[];
+	frameNow: number;
+	expanded: boolean;
+	snapshotKey?: string;
+	pulseFrame?: number;
+	mountedCtx?: ExtensionContext;
+	mountedOwnerKey?: string;
+	surfaceKey?: object;
+	mounted: boolean;
 }
 
-function getLatestWidgetFrameNow(): number {
-	return latestWidgetFrameNow;
+interface WidgetSurfaceState {
+	activeOwner?: object;
 }
 
-function getLatestWidgetPulseFrame(): number | undefined {
-	return latestWidgetPulseFrame;
+interface WidgetRegistry {
+	states: WeakMap<object, WidgetAnimationState>;
+	surfaces: WeakMap<object, WidgetSurfaceState>;
 }
 
-function getLatestWidgetExpanded(): boolean {
-	// LiveWidgetComponent re-renders outside a specific renderWidget() call, so
-	// remember the last expansion state observed from a live host UI. Workflow
-	// stage-node detach can briefly repaint the mounted singleton with a stale or
-	// no-UI context before the next subagent status update refreshes it; falling
-	// back to the cached value avoids a transient collapse while jobs keep running.
-	if (!latestWidgetCtx?.hasUI) return latestWidgetExpanded;
-	const expanded = latestWidgetCtx.ui.getToolsExpanded?.();
-	if (typeof expanded === "boolean") latestWidgetExpanded = expanded;
-	return latestWidgetExpanded;
+const defaultWidgetOwner = {};
+
+function getWidgetRegistry(): WidgetRegistry {
+	const key = "__piSubagentWidgetRegistry";
+	const globalStore = globalThis as Record<string, unknown>;
+	const existing = globalStore[key] as WidgetRegistry | undefined;
+	if (existing?.states instanceof WeakMap && existing.surfaces instanceof WeakMap) return existing;
+	const registry: WidgetRegistry = { states: new WeakMap(), surfaces: new WeakMap() };
+	globalStore[key] = registry;
+	return registry;
 }
 
-function clearLatestWidgetState(): void {
-	latestWidgetCtx = undefined;
-	latestWidgetJobs = [];
-	latestWidgetFrameNow = 0;
-	latestWidgetExpanded = false;
-	latestWidgetSnapshotKey = undefined;
-	latestWidgetPulseFrame = undefined;
-	mountedWidgetCtx = undefined;
-	mountedWidgetOwnerKey = undefined;
-	widgetMounted = false;
+function getWidgetState(owner: object): WidgetAnimationState {
+	const registry = getWidgetRegistry();
+	const existing = registry.states.get(owner);
+	if (existing) return existing;
+	const state: WidgetAnimationState = {
+		latestJobs: [],
+		frameNow: 0,
+		expanded: false,
+		mounted: false,
+	};
+	registry.states.set(owner, state);
+	return state;
+}
+
+function getSurfaceState(surfaceKey: object): WidgetSurfaceState {
+	const registry = getWidgetRegistry();
+	const existing = registry.surfaces.get(surfaceKey);
+	if (existing) return existing;
+	const surface = {};
+	registry.surfaces.set(surfaceKey, surface);
+	return surface;
+}
+
+function getExpanded(state: WidgetAnimationState): boolean {
+	if (!state.latestCtx?.hasUI) return state.expanded;
+	const expanded = state.latestCtx.ui.getToolsExpanded?.();
+	if (typeof expanded === "boolean") state.expanded = expanded;
+	return state.expanded;
+}
+
+function clearWidgetState(state: WidgetAnimationState): void {
+	state.latestCtx = undefined;
+	state.latestJobs = [];
+	state.frameNow = 0;
+	state.expanded = false;
+	state.snapshotKey = undefined;
+	state.pulseFrame = undefined;
+	state.mountedCtx = undefined;
+	state.mountedOwnerKey = undefined;
+	state.surfaceKey = undefined;
+	state.mounted = false;
 }
 
 function getWidgetOwnerKey(ctx: ExtensionContext): string {
@@ -183,19 +211,33 @@ function widgetSnapshotKey(jobs: AsyncJobState[]): string {
 	return jobs.map(widgetRenderKey).join("\n");
 }
 
-function refreshWidgetSnapshot(jobs: AsyncJobState[]): void {
+function refreshWidgetSnapshot(state: WidgetAnimationState, jobs: AsyncJobState[]): void {
 	const snapshotKey = widgetSnapshotKey(jobs);
-	if (snapshotKey === latestWidgetSnapshotKey) return;
-	latestWidgetSnapshotKey = snapshotKey;
-	latestWidgetFrameNow = Date.now();
-	latestWidgetPulseFrame = advanceResultPulseFrame(latestWidgetPulseFrame);
+	if (snapshotKey === state.snapshotKey) return;
+	state.snapshotKey = snapshotKey;
+	state.frameNow = Date.now();
+	state.pulseFrame = advanceResultPulseFrame(state.pulseFrame);
 }
 
-// Full teardown: clear the mounted widget if possible, and forget the driving
-// context/jobs entirely.
-export function stopWidgetAnimation(): void {
-	if (widgetMounted) unmountWidgetBestEffort(mountedWidgetCtx);
-	clearLatestWidgetState();
+function releaseMountedWidget(state: WidgetAnimationState, owner: object): void {
+	if (state.mounted) unmountWidgetBestEffort(state.mountedCtx);
+	if (state.surfaceKey) {
+		const surface = getSurfaceState(state.surfaceKey);
+		if (surface.activeOwner === owner) surface.activeOwner = undefined;
+	}
+	clearWidgetState(state);
+}
+
+// Full teardown. Explicit API ownership is authoritative; logical context
+// matching only protects context-driven teardown from stale session wrappers.
+export function stopWidgetAnimation(ownerCtx?: ExtensionContext, owner: object = defaultWidgetOwner): void {
+	const state = getWidgetState(owner);
+	if (ownerCtx && state.mounted && state.mountedOwnerKey !== getWidgetOwnerKey(ownerCtx)) return;
+	if (state.surfaceKey && getSurfaceState(state.surfaceKey).activeOwner !== owner) {
+		clearWidgetState(state);
+		return;
+	}
+	releaseMountedWidget(state, owner);
 }
 
 export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = getTermWidth(), expanded = false, now: number = Date.now(), pulseFrame?: number): string[] {
@@ -268,57 +310,54 @@ export function buildWidgetLines(jobs: AsyncJobState[], theme: Theme, width = ge
 	return lines;
 }
 
-/**
- * Render the async jobs widget
- */
-export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[]): void {
+/** Render the async jobs widget for one ExtensionAPI owner. */
+export function renderWidget(ctx: ExtensionContext, jobs: AsyncJobState[], owner: object = defaultWidgetOwner): void {
+	const state = getWidgetState(owner);
 	const ownerKey = getWidgetOwnerKey(ctx);
+	const requestedSurfaceKey = ctx.ui.setWidget;
+	const requestedSurface = getSurfaceState(requestedSurfaceKey);
 	if (jobs.length === 0) {
-		if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
-			// With no visible job frame, stale-owner empty updates and newly-active
-			// empty owners are indistinguishable here. Preserve active-widget safety;
-			// host session disposal owns cross-owner empty-session teardown.
-			return;
-		}
+		if (requestedSurface.activeOwner && requestedSurface.activeOwner !== owner) return;
+		if (state.surfaceKey && getSurfaceState(state.surfaceKey).activeOwner !== owner) return;
+		if (state.mounted && state.mountedOwnerKey !== ownerKey) return;
 		if (ctx.hasUI) setWidgetStatus(ctx, []);
-		stopWidgetAnimation();
+		stopWidgetAnimation(ctx, owner);
 		return;
 	}
 	if (!ctx.hasUI) {
-		stopWidgetAnimation();
+		stopWidgetAnimation(ctx, owner);
 		return;
 	}
-	latestWidgetCtx = ctx;
-	latestWidgetJobs = [...jobs];
-	refreshWidgetSnapshot(jobs);
-	if (widgetMounted && mountedWidgetOwnerKey !== ownerKey) {
-		// Session rebinding can leave the previous host UI alive briefly; clear the
-		// old mount before installing the singleton widget on the new owner/context.
-		unmountWidgetBestEffort(mountedWidgetCtx);
-		mountedWidgetCtx = undefined;
-		mountedWidgetOwnerKey = undefined;
-		widgetMounted = false;
+	// Workflow stages forward the host's setWidget function, which identifies the
+	// shared widget surface. A stage cannot replace a parent already active there.
+	if (!state.mounted && requestedSurface.activeOwner && requestedSurface.activeOwner !== owner) return;
+	state.latestCtx = ctx;
+	state.latestJobs = [...jobs];
+	refreshWidgetSnapshot(state, jobs);
+	if (state.mounted && state.mountedOwnerKey !== ownerKey) {
+		releaseMountedWidget(state, owner);
+		state.latestCtx = ctx;
+		state.latestJobs = [...jobs];
+		refreshWidgetSnapshot(state, jobs);
 	}
 	setWidgetStatus(ctx, jobs);
-	if (!widgetMounted) {
-		// belowEditor keeps the live async widget pinned to the bottom viewport,
-		// matching the workflow companion widget's placement (#1109). The pulse frame
-		// is advanced only by semantic async status updates, not by a cosmetic timer.
-		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(getLatestWidgetJobs, getLatestWidgetExpanded, getLatestWidgetFrameNow, getLatestWidgetPulseFrame), {
-			placement: "belowEditor",
-		});
-		mountedWidgetCtx = ctx;
-		mountedWidgetOwnerKey = ownerKey;
-		widgetMounted = true;
+	if (!state.mounted) {
+		const surface = getSurfaceState(requestedSurfaceKey);
+		if (surface.activeOwner && surface.activeOwner !== owner) return;
+		ctx.ui.setWidget(WIDGET_KEY, buildWidgetComponent(
+			() => state.latestJobs,
+			() => getExpanded(state),
+			() => state.frameNow,
+			() => state.pulseFrame,
+		), { placement: "belowEditor" });
+		state.mountedCtx = ctx;
+		state.mountedOwnerKey = ownerKey;
+		state.surfaceKey = requestedSurfaceKey;
+		state.mounted = true;
+		surface.activeOwner = owner;
 	} else {
-		// The mounted widget reads latestWidgetJobs via getLatestWidgetJobs(), so a
-		// visible->visible update only needs to ask the host to render in place. Keep
-		// teardown pointed at the freshest same-owner wrapper because older wrappers
-		// can go stale after host session/context rebinding.
-		mountedWidgetCtx = ctx;
-		mountedWidgetOwnerKey = ownerKey;
+		state.mountedCtx = ctx;
+		state.mountedOwnerKey = ownerKey;
 		requestWidgetRender(ctx);
 	}
-	// The async pulse is update-driven like foreground subagent results, so no
-	// periodic cosmetic ticker is needed.
 }
