@@ -20,7 +20,6 @@ import { validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { createStructuredOutputRuntime } from "../shared/structured-output.ts";
 import { buildWorkflowGraphSnapshot } from "../shared/workflow-graph.ts";
 import { buildChainExecutionDetails, buildChainExecutionErrorResult } from "./chain-execution-details.ts";
-import type { BehaviorOverride } from "./chain-clarify.ts";
 import type { ChainExecutionMutableState, ChainExecutionResult, ChainRuntimeContext } from "./chain-execution-types.ts";
 
 export async function runSequentialChainStep(input: {
@@ -29,9 +28,8 @@ export async function runSequentialChainStep(input: {
 	seqStep: SequentialStep;
 	stepIndex: number;
 	stepTemplate: string;
-	tuiOverride?: BehaviorOverride;
 }): Promise<ChainExecutionResult | undefined> {
-	const { context, state, seqStep, stepIndex, stepTemplate, tuiOverride } = input;
+	const { context, state, seqStep, stepIndex, stepTemplate } = input;
 	const agentConfig = context.agents.find((agent) => agent.name === seqStep.agent);
 	if (!agentConfig) {
 		removeChainDir(context.chainDir);
@@ -43,11 +41,11 @@ export async function runSequentialChainStep(input: {
 	}
 
 	const stepOverride: StepOverrides = {
-		output: tuiOverride?.output !== undefined ? tuiOverride.output : seqStep.output,
+		output: seqStep.output,
 		outputMode: seqStep.outputMode,
-		reads: tuiOverride?.reads !== undefined ? tuiOverride.reads : seqStep.reads,
-		progress: tuiOverride?.progress !== undefined ? tuiOverride.progress : seqStep.progress,
-		skills: tuiOverride?.skills !== undefined ? tuiOverride.skills : normalizeSkillInput(seqStep.skill),
+		reads: seqStep.reads,
+		progress: seqStep.progress,
+		skills: normalizeSkillInput(seqStep.skill),
 	};
 	const behavior = suppressProgressForReadOnlyTask(
 		resolveStepBehavior(agentConfig, stepOverride, context.chainSkills),
@@ -73,8 +71,7 @@ export async function runSequentialChainStep(input: {
 	stepTask = prefix + stepTask + suffix;
 
 	const effectiveModel =
-		tuiOverride?.model
-		?? (seqStep.model ? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider) : null)
+		(seqStep.model ? resolveModelCandidate(seqStep.model, context.availableModels, context.ctx.model?.provider) : null)
 		?? resolveModelCandidate(agentConfig.model, context.availableModels, context.ctx.model?.provider);
 	const outputPath = typeof behavior.output === "string"
 		? (path.isAbsolute(behavior.output) ? behavior.output : path.join(context.chainDir, behavior.output))

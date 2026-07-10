@@ -2,13 +2,13 @@
 
 ## [Unreleased]
 
-### Breaking Changes
-
-- Programmatic `subagent(...)` execution now has an exclusively non-interactive public contract across single, parallel, chain, foreground, background, and fanout calls. Human-entered slash commands continue through their separate execution path with their existing behavior and internal launch mechanisms.
-
 ### Changed
 
 - Aligned the subagents extension peer dependencies with upstream Pi `^0.80.5` runtime packages as part of the consolidated dependency refresh.
+
+### Removed
+
+- Removed the unreachable subagent launch preview/editor TUI and its internal execution plumbing; supported launches now dispatch directly without waiting for terminal input.
 
 ### Fixed
 

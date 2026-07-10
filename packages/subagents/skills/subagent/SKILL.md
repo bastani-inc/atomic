@@ -389,11 +389,11 @@ subagent({
 
 If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists. The builtin specialists do not carry `intercom`, so they will not produce coordination pings; the parent must check status explicitly.
 
-## Non-Interactive Tool Execution
+## Non-Interactive Execution
 
-Every programmatic `subagent(...)` execution is non-interactive. Single, parallel, chain, foreground, background, and fanout calls start without a clarification TUI or terminal input.
+Every supported subagent launch starts immediately without a preview/editor prompt or terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution.
 
-Resolve questions in the parent conversation before launching children. Use `interview` when the user must answer a question, then put the resolved scope and validation contract in the child task. Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands use a separate execution path and retain their existing behavior and internal launch mechanisms.
+Resolve questions in the parent conversation before launching children. Use `interview` when the user must answer a question, then put the resolved scope and validation contract in the child task. Human slash commands retain their separate parsing and event-bridge path.
 
 ## Worktree Isolation
 

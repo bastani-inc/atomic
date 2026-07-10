@@ -14,7 +14,6 @@ import {
 import { buildChainSummary } from "../../shared/formatters.ts";
 import { ChainOutputValidationError, validateChainOutputBindings } from "../shared/chain-outputs.ts";
 import { buildChainExecutionDetails } from "./chain-execution-details.ts";
-import { resolveChainClarification } from "./chain-execution-clarify.ts";
 import { runDynamicParallelChainStep } from "./chain-execution-dynamic-step.ts";
 import { runStaticParallelChainStep } from "./chain-execution-parallel-step.ts";
 import { runSequentialChainStep } from "./chain-execution-sequential-step.ts";
@@ -45,7 +44,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		artifactsDir,
 		artifactConfig,
 		includeProgress,
-		clarify,
 		onUpdate,
 		onControlEvent,
 		controlConfig,
@@ -113,9 +111,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 	}
 
 	const chainDir = createChainDir(runId, chainDirBase);
-	const hasParallelSteps = chainSteps.some((step) => isParallelStep(step) || isDynamicParallelStep(step));
-	let templates: ResolvedTemplates = resolveChainTemplates(chainSteps);
-	let tuiBehaviorOverrides: Awaited<ReturnType<typeof resolveChainClarification>>["tuiBehaviorOverrides"];
+	const templates: ResolvedTemplates = resolveChainTemplates(chainSteps);
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	const context: ChainRuntimeContext = {
@@ -150,15 +146,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		makeDetailsInput,
 	};
 
-	const clarification = await resolveChainClarification({
-		context,
-		templates,
-		shouldClarify: clarify !== false && ctx.hasUI && !hasParallelSteps,
-	});
-	if (clarification.result) return clarification.result;
-	templates = clarification.templates;
-	tuiBehaviorOverrides = clarification.tuiBehaviorOverrides;
-
 	for (let stepIndex = 0; stepIndex < chainSteps.length; stepIndex++) {
 		const step = chainSteps[stepIndex]!;
 		const stepTemplates = templates[stepIndex]!;
@@ -180,7 +167,6 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				seqStep: step as SequentialStep,
 				stepIndex,
 				stepTemplate: stepTemplates as string,
-				tuiOverride: tuiBehaviorOverrides?.[stepIndex],
 			});
 		}
 		if (earlyResult) return earlyResult;

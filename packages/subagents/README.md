@@ -334,11 +334,11 @@ Background runs are detached. If the parent agent has other independent work, it
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
-## Non-interactive tool calls and slash launches
+## Non-interactive execution
 
-Every programmatic `subagent(...)` execution starts non-interactively. Single, parallel, chain, foreground, background, and fanout calls never open the clarification UI or wait for terminal input. Gather any needed context and ask the user questions in the parent conversation before calling the tool.
+Every supported subagent launch starts immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution. Gather any needed context and ask the user questions in the parent conversation before launching.
 
-Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands continue through their separate slash-command execution path and retain their existing behavior and internal launch mechanisms.
+The human slash commands remain on their separate parsing and event-bridge path, including background and fork flags.
 
 ## Agents and chains
 
@@ -867,7 +867,7 @@ Makes top-level calls use background execution when the request does not explici
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 single, parallel, and chain runs into background mode. Programmatic calls remain non-interactive in both foreground and background mode; nested calls keep their own inherited settings.
+Forces depth-0 single, parallel, and chain runs into background mode. Calls remain non-interactive in both foreground and background mode; nested calls keep their own inherited settings.
 
 ### `parallel`
 

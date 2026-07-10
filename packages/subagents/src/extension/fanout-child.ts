@@ -14,7 +14,6 @@ import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi
 import { getArtifactsDir } from "../shared/artifacts.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
 import { loadConfig } from "./config.ts";
-import { createProgrammaticSubagentToolEntrypoint } from "./programmatic-tool.ts";
 import { SubagentParams } from "./schemas.ts";
 
 function getSubagentSessionRoot(parentSessionFile: string | null): string {
@@ -225,7 +224,6 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		allowMutatingManagementActions: false,
 	});
 
-	const programmaticEntrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
@@ -236,7 +234,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 			"Agent config mutation actions create, update, and delete are blocked in this mode.",
 		].join("\n"),
 		parameters: SubagentParams,
-		...programmaticEntrypoint,
+		execute: executor.execute,
 	};
 
 	pi.registerTool(tool);

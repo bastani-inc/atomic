@@ -23,7 +23,6 @@ import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
-import { createProgrammaticSubagentToolEntrypoint } from "./programmatic-tool.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT, WIDGET_KEY } from "../shared/types.ts";
 import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
@@ -288,7 +287,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 						cwd: request.cwd,
 						worktree: request.worktree,
 						async: false,
-						clarify: false,
 					},
 					signal,
 					onUpdate,
@@ -304,7 +302,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					cwd: request.cwd,
 					model: request.model,
 					async: false,
-					clarify: false,
 				},
 				signal,
 				onUpdate,
@@ -319,7 +316,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return total + count;
 		}, 0);
 	}
-	const programmaticEntrypoint = createProgrammaticSubagentToolEntrypoint(executeSubagentCollapsed);
 	const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 		name: "subagent",
 		label: "Subagent",
@@ -351,7 +347,7 @@ DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
 		parameters: SubagentParams,
 		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-		...programmaticEntrypoint,
+		execute: executeSubagentCollapsed,
 		renderCall(args, theme) {
 			if (args.action) {
 				const target = args.agent || args.chainName || "";

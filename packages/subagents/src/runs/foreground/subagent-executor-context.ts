@@ -100,18 +100,12 @@ export function prepareExecutionContext(input: {
 	const hasChain = (effectiveParams.chain?.length ?? 0) > 0;
 	const hasTasks = (effectiveParams.tasks?.length ?? 0) > 0;
 	const hasSingle = !hasChain && !hasTasks && Boolean(effectiveParams.agent);
-	const allowClarifyTaskPrompt = hasChain
-		&& effectiveParams.clarify === true
-		&& ctx.hasUI
-		&& !(effectiveParams.chain?.some(isSettingsParallelStep) ?? false);
-
 	const validationError = validateExecutionInput(
 		effectiveParams,
 		agents,
 		hasChain,
 		hasTasks,
 		hasSingle,
-		allowClarifyTaskPrompt,
 	);
 	if (validationError) return { error: validationError };
 
@@ -121,9 +115,7 @@ export function prepareExecutionContext(input: {
 	} catch (error) {
 		return { error: toExecutionErrorResult(effectiveParams, error) };
 	}
-	const requestedAsync = effectiveParams.async ?? deps.asyncByDefault;
-	const backgroundRequestedWhileClarifying = (hasChain || hasTasks) && requestedAsync && effectiveParams.clarify === true;
-	const effectiveAsync = requestedAsync && effectiveParams.clarify !== true;
+	const effectiveAsync = effectiveParams.async ?? deps.asyncByDefault;
 	const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
 	const artifactConfig: ArtifactConfig = {
@@ -175,7 +167,6 @@ export function prepareExecutionContext(input: {
 		sessionFileForIndex: childSessionFileForIndex,
 		artifactConfig,
 		artifactsDir,
-		backgroundRequestedWhileClarifying,
 		effectiveAsync,
 		controlConfig,
 		intercomBridge,

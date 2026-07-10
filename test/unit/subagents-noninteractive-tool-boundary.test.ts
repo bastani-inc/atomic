@@ -17,7 +17,6 @@ import {
 	type SingleResult,
 } from "../../packages/subagents/src/shared/types.js";
 import { registerSlashSubagentBridge } from "../../packages/subagents/src/slash/slash-bridge.js";
-import { createProgrammaticSubagentToolEntrypoint } from "../../packages/subagents/src/extension/programmatic-tool.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 
 type EventHandler = (data: unknown) => void;
@@ -118,7 +117,7 @@ function makeExecutor(
 }
 
 describe("programmatic subagent tool boundary", () => {
-	test("accepts supported output limits, rejects clarification, and normalizes execution", async () => {
+	test("accepts supported output limits and rejects unknown fields", () => {
 		assert.equal(Value.Check(SubagentParams, {
 			agent: "worker",
 			task: "fix it",
@@ -127,24 +126,10 @@ describe("programmatic subagent tool boundary", () => {
 		assert.equal(Value.Check(SubagentParams, {
 			agent: "worker",
 			task: "fix it",
-			clarify: true,
+			unsupported: true,
 		}), false);
-
-		let received: Record<string, unknown> | undefined;
-		const entrypoint = createProgrammaticSubagentToolEntrypoint(async (_id, params) => {
-			received = params as unknown as Record<string, unknown>;
-			return { content: [{ type: "text", text: "ok" }], details: { mode: "single", results: [] } };
-		});
-		await entrypoint.execute(
-			"single",
-			{ agent: "worker", task: "fix it" },
-			new AbortController().signal,
-			undefined,
-			{} as never,
-		);
-
-		assert.deepEqual(received, { agent: "worker", task: "fix it", clarify: false });
 	});
+
 	test("foreground single execution stays non-interactive", async () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-tool-single-"));
 		try {
@@ -156,14 +141,12 @@ describe("programmatic subagent tool boundary", () => {
 					return makeResult(agent, task);
 				},
 			});
-			const entrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
-
-			const result = await entrypoint.execute(
+			const result = await executor.execute(
 				"single",
 				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 
 			assert.equal(result.isError, undefined);
@@ -192,14 +175,12 @@ describe("programmatic subagent tool boundary", () => {
 					return makeResult(agent, task);
 				},
 			}, true);
-			const entrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
-
-			const result = await entrypoint.execute(
+			const result = await executor.execute(
 				"async-default",
 				{ agent: "worker", task: "fix it" },
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 
 			assert.equal(result.content[0]?.type === "text" ? result.content[0].text : "", "background started");
@@ -226,15 +207,13 @@ describe("programmatic subagent tool boundary", () => {
 			registerFanoutChildSubagentExtension(pi);
 
 			assert.ok(registered);
-			assert.equal(Object.hasOwn((registered.parameters as typeof SubagentParams).properties, "clarify"), false);
-
 			let customCalls = 0;
 			const result = await registered.execute(
 				"fanout-chain",
 				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
-				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 			assert.equal(customCalls, 0);
 			assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /First step in chain must have a task/);
@@ -257,9 +236,7 @@ describe("programmatic subagent tool boundary", () => {
 					return makeResult(agent, task, agent === "scout" ? "handoff payload" : "implemented");
 				},
 			});
-			const entrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
-
-			const result = await entrypoint.execute(
+			const result = await executor.execute(
 				"chain",
 				{
 					chain: [
@@ -269,7 +246,7 @@ describe("programmatic subagent tool boundary", () => {
 				},
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 
 			assert.equal(result.isError, undefined);
@@ -292,9 +269,7 @@ describe("programmatic subagent tool boundary", () => {
 					return makeResult(agent, task);
 				},
 			});
-			const entrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
-
-			const result = await entrypoint.execute(
+			const result = await executor.execute(
 				"parallel",
 				{
 					tasks: [
@@ -304,7 +279,7 @@ describe("programmatic subagent tool boundary", () => {
 				},
 				new AbortController().signal,
 				undefined,
-				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 
 			assert.equal(result.isError, undefined);
@@ -332,16 +307,15 @@ describe("programmatic subagent tool boundary", () => {
 					return { content: [{ type: "text", text: "chain started" }], details: { mode: params.resultMode ?? "chain", results: [] } };
 				},
 			});
-			const entrypoint = createProgrammaticSubagentToolEntrypoint(executor.execute);
-			const ctx = makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected clarification UI"); });
+			const ctx = makeContext(cwd, () => { customCalls += 1; throw new Error("unexpected UI prompt"); });
 			const signal = new AbortController().signal;
 
-			await entrypoint.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
-			await entrypoint.execute("async-parallel", {
+			await executor.execute("async-single", { agent: "alpha", task: "one", async: true }, signal, undefined, ctx);
+			await executor.execute("async-parallel", {
 				tasks: [{ agent: "alpha", task: "one" }, { agent: "beta", task: "two" }],
 				async: true,
 			}, signal, undefined, ctx);
-			await entrypoint.execute("async-chain", {
+			await executor.execute("async-chain", {
 				chain: [
 					{ agent: "alpha", task: "first" },
 					{ agent: "beta", task: "continue from {previous}" },
@@ -392,7 +366,7 @@ describe("programmatic subagent tool boundary", () => {
 				{ chain: [{ agent: "debugger" }] },
 				new AbortController().signal,
 				undefined,
-				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected clarification UI"); }),
+				makeContext(process.cwd(), () => { customCalls += 1; throw new Error("unexpected UI prompt"); }),
 			);
 			assert.equal(customCalls, 0);
 			assert.match(result.content[0]?.type === "text" ? result.content[0].text : "", /First step in chain must have a task/);
@@ -434,11 +408,11 @@ describe("programmatic subagent tool boundary", () => {
 
 		events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
 			requestId: "slash-chain",
-			params: { chain: [{ agent: "worker", task: "one" }], clarify: true },
+			params: { chain: [{ agent: "worker", task: "one" }], async: true },
 		});
 		await response;
 
-		assert.deepEqual(received, { chain: [{ agent: "worker", task: "one" }], clarify: true });
+		assert.deepEqual(received, { chain: [{ agent: "worker", task: "one" }], async: true });
 		bridge.dispose();
 	});
 

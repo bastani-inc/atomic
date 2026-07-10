@@ -1,13 +1,9 @@
-import { randomUUID } from "node:crypto";
-import { APP_NAME } from "@bastani/atomic";
-import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
-import { discoverAvailableSkills, normalizeSkillInput } from "../../agents/skills.ts";
+import { normalizeSkillInput } from "../../agents/skills.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
-import { resolveStepBehavior } from "../../shared/settings.ts";
 import {
 	INTERCOM_BRIDGE_MARKER,
 	resolveSubagentIntercomTarget,
@@ -58,7 +54,6 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		artifactConfig,
 		artifactsDir,
 		onUpdate,
-		sessionRoot,
 		controlConfig,
 	} = data;
 	const onControlEvent = createForegroundControlNotifier(data, deps);
@@ -78,96 +73,19 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const knownModelProviders = collectKnownModelProviders(ctx.modelRegistry);
 	let task = params.task ?? "";
-	let modelOverride: string | undefined = resolveModelCandidate(
+	const modelOverride: string | undefined = resolveModelCandidate(
 		(params.model as string | undefined) ?? agentConfig.model,
 		availableModels,
 		currentProvider,
 	);
-	let skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
+	const skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	const rawOutput = params.output !== undefined ? params.output : agentConfig.output;
-	let effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
+	const effectiveOutput = normalizeSingleOutputOverride(rawOutput, agentConfig.output);
 	const effectiveOutputMode = params.outputMode ?? "inline";
 	const depthPolicy = resolveSubagentDepthPolicy(ctx, deps.config.maxSubagentDepth);
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
-
-	if (params.clarify === true && ctx.hasUI) {
-		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride });
-		const availableSkills = discoverAvailableSkills(effectiveCwd);
-
-		const result = await ctx.ui.custom<ChainClarifyResult>(
-			(tui, theme, _kb, done) =>
-				new ChainClarifyComponent(
-					tui, theme,
-					[agentConfig],
-					[task],
-					task,
-					undefined,
-					[behavior],
-					availableModels,
-					currentProvider,
-					availableSkills,
-					done,
-					"single",
-				),
-			{ overlay: true, overlayOptions: { anchor: "center", width: 84, maxHeight: "80%" } },
-		);
-
-		if (!result || !result.confirmed) {
-			return { content: [{ type: "text", text: "Cancelled" }], details: { mode: "single", results: [] } };
-		}
-
-		task = result.templates[0]!;
-		const override = result.behaviorOverrides[0];
-		if (override?.model) modelOverride = override.model;
-		if (override?.output !== undefined) effectiveOutput = normalizeSingleOutputOverride(override.output, agentConfig.output);
-		if (override?.skills !== undefined) skillOverride = override.skills;
-
-		if (result.runInBackground) {
-			if (!deps.runtime.isAsyncAvailable()) {
-				return {
-					content: [{ type: "text", text: `Background mode requires upstream jiti for TypeScript execution but it could not be found. Ensure the ${APP_NAME}-subagents package dependencies are installed.` }],
-					isError: true,
-					details: { mode: "single" as const, results: [] },
-				};
-			}
-			const id = randomUUID();
-			const asyncCtx = {
-				pi: deps.pi,
-				cwd: ctx.cwd,
-				currentSessionId: deps.state.currentSessionId!,
-				currentModelProvider: ctx.model?.provider,
-				currentModel: currentModelFullId(ctx.model),
-			};
-			return deps.runtime.executeAsyncSingle(id, {
-				agent: params.agent!,
-				task: params.context === "fork" ? wrapForkTask(task) : task,
-				agentConfig,
-				ctx: asyncCtx,
-				availableModels,
-				knownModelProviders,
-				cwd: effectiveCwd,
-				maxOutput: params.maxOutput,
-				artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-				artifactConfig,
-				shareEnabled,
-				sessionRoot,
-				sessionFile: sessionFileForIndex(0),
-				skills: skillOverride === false ? [] : skillOverride,
-				output: effectiveOutput,
-				outputMode: effectiveOutputMode,
-				modelOverride,
-				maxSubagentDepth,
-				workflowStageSubagentGuard,
-				worktreeSetupHook: deps.config.worktreeSetupHook,
-				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
-				controlConfig,
-				controlIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-				childIntercomTarget: data.intercomBridge.active ? (agent, index) => resolveSubagentIntercomTarget(id, agent, index) : undefined,
-			});
-		}
-	}
 
 	if (params.context === "fork") {
 		task = wrapForkTask(task);

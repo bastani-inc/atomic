@@ -27,11 +27,11 @@ Research the upstream library behavior online, then compare it with our local im
 
 Atomic decides whether to call the bundled `subagent` tool, which specialist fits each part, and whether the work should run as a single child, parallel group, chain, foreground run, or background run.
 
-## Tool calls are non-interactive
+## Subagent execution is non-interactive
 
-Programmatic `subagent(...)` execution calls always start without opening a clarification TUI or waiting for user input. This applies to single, parallel, chain, foreground, background, and fanout runs. Ask any necessary questions in the parent conversation before delegating.
+Supported subagent launches start immediately without opening a preview/editor prompt or waiting for terminal input. This applies to single, parallel, chain, foreground, background, fanout, prompt-template, and human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` execution. Ask any necessary questions in the parent conversation before delegating.
 
-Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands use a separate slash-command execution path. They remain registered and retain their existing behavior and internal launch mechanisms.
+The human slash commands remain registered and continue to use their separate parsing and event-bridge path, including background and fork flags.
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 

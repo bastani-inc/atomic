@@ -406,7 +406,7 @@ export function registerSlashCommands(
 			if (inline.reads && Array.isArray(inline.reads) && inline.reads.length > 0) {
 				finalTask = `[Read from: ${inline.reads.join(", ")}]\n\n${finalTask}`;
 			}
-			const params: SubagentParamsLike = { agent: agentName, task: finalTask, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { agent: agentName, task: finalTask, agentScope: "both" };
 			if (inline.output !== undefined) params.output = inline.output;
 			if (inline.outputMode !== undefined) params.outputMode = inline.outputMode;
 			if (inline.skill !== undefined) params.skill = inline.skill;
@@ -433,7 +433,7 @@ export function registerSlashCommands(
 				...(config.skill !== undefined ? { skill: config.skill } : {}),
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
-			const params: SubagentParamsLike = { chain, task: parsed.task, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { chain, task: parsed.task, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
@@ -462,7 +462,7 @@ export function registerSlashCommands(
 				ctx.ui.notify(`Unknown chain: ${chainName}`, "error");
 				return;
 			}
-			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { chain: mapSavedChainSteps(chain), task, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);
@@ -485,7 +485,7 @@ export function registerSlashCommands(
 				...(config.skill !== undefined ? { skill: config.skill } : {}),
 				...(config.progress !== undefined ? { progress: config.progress } : {}),
 			}));
-			const params: SubagentParamsLike = { tasks, clarify: false, agentScope: "both" };
+			const params: SubagentParamsLike = { tasks, agentScope: "both" };
 			if (bg) params.async = true;
 			if (fork) params.context = "fork";
 			await runSlashSubagent(pi, ctx, params);

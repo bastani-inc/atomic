@@ -9,7 +9,6 @@ export function validateExecutionInput(
 	hasChain: boolean,
 	hasTasks: boolean,
 	hasSingle: boolean,
-	allowClarifyTaskPrompt: boolean,
 ): SubagentToolResult | null {
 	if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
 		return {
@@ -69,7 +68,7 @@ export function validateExecutionInput(
 				isError: true,
 				details: { mode: "chain" as const, results: [] },
 			};
-		} else if (!(firstStep as SequentialStep).task && !params.task && !allowClarifyTaskPrompt) {
+		} else if (!(firstStep as SequentialStep).task && !params.task) {
 			return {
 				content: [{ type: "text", text: "First step in chain must have a task" }],
 				isError: true,

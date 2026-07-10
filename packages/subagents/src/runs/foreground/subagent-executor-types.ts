@@ -37,7 +37,6 @@ export interface SubagentParamsLike {
 	worktree?: boolean;
 	context?: "fresh" | "fork";
 	async?: boolean;
-	clarify?: boolean;
 	share?: boolean;
 	control?: ControlConfig;
 	sessionDir?: string;
@@ -92,7 +91,6 @@ export interface ExecutionContextData {
 	sessionFileForIndex: (idx?: number) => string | undefined;
 	artifactConfig: ArtifactConfig;
 	artifactsDir: string;
-	backgroundRequestedWhileClarifying: boolean;
 	effectiveAsync: boolean;
 	controlConfig: ResolvedControlConfig;
 	intercomBridge: IntercomBridgeState;
