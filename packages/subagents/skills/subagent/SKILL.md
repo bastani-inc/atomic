@@ -60,7 +60,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one async writer (`debugger` for correctness-shaped work, `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one async writer applies them. The parent can express the sequence up front as an async/background chain when the workflow is known, or continue with explicit follow-up subagent runs after each async completion. For an initial chain, pass `async: true` so the main chat is unblocked; do not set `clarify: true` unless the user explicitly wants the foreground clarify UI. Treat an async writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one async writer (`debugger` for correctness-shaped work, `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one async writer applies them. The parent can express the sequence up front as an async/background chain when the workflow is known, or continue with explicit follow-up subagent runs after each async completion. For an initial chain, pass `async: true` so the main chat is unblocked; programmatic runs cannot enter clarification mode, so resolve any questions with the user before launching. Treat an async writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
 
 ### Parallel research technique
 
@@ -389,20 +389,11 @@ subagent({
 
 If the run already has an active intercom bridge target, needs-attention notifications can also prepare a compact intercom ping for the orchestrator. When a child route is available, the ping tells the orchestrator which agent needs attention and includes the exact `intercom({ action: "send", to: "..." })` target for a nudge. Do not invent a target or ask the child to self-report when no bridge exists. The builtin specialists do not carry `intercom`, so they will not produce coordination pings; the parent must check status explicitly.
 
-## Clarify TUI
+## Non-Interactive Tool Execution
 
-Single and parallel runs support a clarification TUI when you want to preview or edit parameters before launch:
+Every programmatic `subagent(...)` execution is non-interactive. Single, top-level parallel, and chain calls start without a clarification TUI in both foreground and background mode. Do not pass `clarify`: it is absent from the public schema, and a legacy `clarify` value is ignored rather than allowed to block execution.
 
-```typescript
-subagent({
-  agent: "debugger",
-  task: "Patch the failing test in test/unit/foo.test.ts",
-  clarify: true
-})
-```
-
-Chains default to clarify mode; set `clarify: false` to skip it. Clarify edits affect only the next run; use management actions, settings, or markdown files for persistent changes.
-For programmatic background launches, use `async: true`. Set `clarify: false` when you want to bypass chain clarification explicitly; `clarify: true` keeps the run foreground for the clarify UI.
+Clarify requirements in the parent conversation before launching children. Use `interview` when the user must answer a question, then put the resolved scope and validation contract in the child task. Use `async: true` for background execution; it never waits for terminal input. Human-entered slash commands use a separate bridge and retain their own behavior.
 
 ## Worktree Isolation
 
@@ -633,7 +624,7 @@ clarify → validation contract → parallel discovery → async writer (debugge
 
 The validation contract defines completion before code is written: expected behavior, checks, commands or user flows to exercise, and evidence the writer should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the writer’s own assumptions. Subagent runs do not carry a structured `acceptance` field, infer acceptance policies, inject acceptance-report prompts, or run acceptance gates; put any evidence requirements directly in the task text. Do not set removed acceptance config fields on `subagent()` calls, chain steps, parallel task items, or agent frontmatter; move those requirements into the assigned task text instead.
 
-The first writer implements the approved change. The parent continues with independent inspection or validation prep while it runs, not parallel edits to the same worktree. When the async writer completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Parallel specialist reviewers inspect the resulting diff from fresh context. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as an initial async chain when the workflow is already clear, or as follow-up subagent runs after each async completion. Initial chains should pass `async: true` so the main chat is unblocked; avoid `clarify: true` unless the user asked for foreground clarification. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
+The first writer implements the approved change. The parent continues with independent inspection or validation prep while it runs, not parallel edits to the same worktree. When the async writer completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Parallel specialist reviewers inspect the resulting diff from fresh context. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as an initial async chain when the workflow is already clear, or as follow-up subagent runs after each async completion. Initial chains should pass `async: true` so the main chat is unblocked; ask the user any needed questions before the non-interactive tool launch. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
 
 For complex work, risky changes, broad refactors, or many changed lines, increase review and validation fanout rather than trusting one reviewer. Use distinct angles such as correctness/regressions (`codebase-analyzer`), failure-mode hunt (`debugger` inspect-only), pattern fit (`codebase-pattern-finder`), prior-decision conformance (`codebase-research-*`), and external-spec conformance (`codebase-online-researcher`). When reviewers find non-trivial issues or the fix writer touches many lines, run another focused review round before final validation.
 

@@ -334,24 +334,11 @@ Background runs are detached. If the parent agent has other independent work, it
 
 The `oracle` and `worker` builtins are designed for an explicit decision loop. A typical pattern is to ask `oracle` for diagnosis and a recommended execution prompt, then only run `worker` after the main agent approves that direction.
 
-## Clarify and launch UI
+## Non-interactive tool calls and slash launches
 
-Chains open a clarify UI by default so you can preview and edit the workflow before it runs. Single and parallel tool calls can opt into the same flow with `clarify: true`; slash commands launch directly.
+Every programmatic `subagent(...)` execution starts non-interactively. Single, top-level parallel, and chain calls never open the clarification UI or wait for terminal input, in foreground or background mode. The public tool schema no longer includes `clarify`; resumed or legacy calls that still send it are accepted for compatibility, but the value is ignored and execution remains non-interactive. Gather any needed context and ask the user questions in the parent conversation before calling the tool.
 
-Common clarify keys:
-
-- `Enter` runs in the foreground, or in the background if background is toggled on
-- `Escape` Cancel/Back
-- `↑↓` moves between steps or tasks
-- `e` edits the task/template
-- `m` selects a model
-- `t` selects thinking level
-- `s` selects skills
-- `b` toggles background execution
-- `w` edits output/write behavior where supported
-- `r` edits reads where supported
-- `p` toggles progress tracking where supported
-Picker screens use `↑↓`, `Enter`, `Escape`, and type-to-filter. The full-screen editor supports word wrapping, paste, `Escape` Save, and `CTRL+C` Discard.
+Human-entered `/run`, `/chain`, `/parallel`, and `/run-chain` commands continue through their separate slash bridge and retain their existing behavior. These shortcuts currently launch directly, including when `--bg` is present; programmatic normalization does not change their registration or dispatch.
 
 ## Agents and chains
 
@@ -654,7 +641,7 @@ If you are writing an agent that orchestrates subagents, the bundled skill helps
 
 ## Programmatic tool usage
 
-These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead.
+These are the parameters the LLM passes when it calls the `subagent` tool. Most users ask naturally or use slash commands instead. Execution calls are always non-interactive; do not pass `clarify`.
 
 ### Execution examples
 
@@ -804,9 +791,8 @@ Agent definitions are not loaded into context by default. Management actions let
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Steps and chain parallel tasks support `phase`, `label`, `as`, and `outputSchema` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |
 | `chainDir` | string | temp chain dir | Persistent directory for chain artifacts. |
-| `clarify` | boolean | true for chains | Show TUI preview/edit flow. |
 | `agentScope` | `user \| project \| both` | `both` | Agent discovery scope. Project wins on collisions. |
-| `async` | boolean | false | Background execution. For chains, `clarify: true` explicitly keeps the run foreground for the clarify UI. |
+| `async` | boolean | false | Background execution. Programmatic calls start without prompting in either foreground or background mode. |
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write debug artifacts. |
@@ -881,7 +867,7 @@ Makes top-level calls use background execution when the request does not explici
 { "forceTopLevelAsync": true }
 ```
 
-Forces depth-0 single, parallel, and chain runs into background mode and bypasses clarify UI by forcing `clarify: false`. Nested calls keep their own inherited settings.
+Forces depth-0 single, parallel, and chain runs into background mode. Programmatic tool calls already bypass clarification unconditionally; nested calls keep their own inherited settings.
 
 ### `parallel`
 

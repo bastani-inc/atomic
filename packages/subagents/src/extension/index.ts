@@ -17,13 +17,13 @@ import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
-import { inspectSubagentStatus } from "../runs/background/run-status.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi-args.ts";
 import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import { createProgrammaticSubagentToolEntrypoint } from "./programmatic-tool.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT, WIDGET_KEY } from "../shared/types.ts";
 import { clearPendingForegroundControlNotices, formatSubagentControlNotice, handleSubagentControlNotice, SUBAGENT_CONTROL_MESSAGE_TYPE, type SubagentControlMessageDetails } from "./control-notices.ts";
 import { createSubagentStartupMaintenance } from "./startup-maintenance.ts";
@@ -319,11 +319,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			return total + count;
 		}, 0);
 	}
+	const programmaticEntrypoint = createProgrammaticSubagentToolEntrypoint(executeSubagentCollapsed);
 	const tool: ToolDefinition<typeof SubagentParams, Details, SubagentToolRenderState> = {
 		name: "subagent",
 		label: "Subagent",
 		description: `Delegate to subagents or manage agent definitions.
 EXECUTION (use exactly ONE mode):
+• Execution calls always start non-interactively; the public tool has no clarification parameter.
 • Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
 • SINGLE: { agent, task? } - one task; omit task for self-contained agents
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
@@ -349,9 +351,7 @@ DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
 		parameters: SubagentParams,
 		promptGuidelines: DEFAULT_PROMPT_GUIDANCE,
-		execute(id, params, signal, onUpdate, ctx) {
-			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
-		},
+		...programmaticEntrypoint,
 		renderCall(args, theme) {
 			if (args.action) {
 				const target = args.agent || args.chainName || "";
@@ -362,7 +362,7 @@ DIAGNOSTICS:
 			}
 			const isParallel = (args.tasks?.length ?? 0) > 0;
 			const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-			const asyncLabel = args.async === true && args.clarify !== true && !isParallel ? theme.fg("warning", " [async]") : "";
+			const asyncLabel = args.async === true ? theme.fg("warning", " [async]") : "";
 			if (args.chain?.length)
 				return new Text(
 					`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
@@ -371,7 +371,7 @@ DIAGNOSTICS:
 				);
 			if (isParallel)
 				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`,
+					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
 					0,
 					0,
 				);
