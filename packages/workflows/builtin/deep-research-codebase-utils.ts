@@ -37,6 +37,9 @@ export const FILE_ONLY_OUTPUT = "file-only" satisfies WorkflowOutputMode;
 export const PLANNER_MODEL_CONFIG = {
   model: "anthropic/claude-fable-5:high",
   fallbackModels: [
+    "openai-codex/gpt-5.6-sol:xhigh",
+    "github-copilot/gpt-5.6-sol:xhigh",
+    "openai/gpt-5.6-sol:xhigh",
     "openai-codex/gpt-5.5:xhigh",
     "github-copilot/gpt-5.5:xhigh",
     "openai/gpt-5.5:xhigh",
@@ -50,6 +53,7 @@ export const PLANNER_MODEL_CONFIG = {
     "zai-coding-cn/glm-5.2:xhigh",
     "cursor/glm-5.2",
     "openrouter/anthropic/claude-fable-5:high",
+    "openrouter/openai/gpt-5.6-sol:xhigh",
     "openrouter/sakana/fugu-ultra:high",
     "openrouter/openai/gpt-5.5:xhigh",
     "openrouter/anthropic/claude-opus-4-8:high",
@@ -64,8 +68,11 @@ export const PLANNER_MODEL_CONFIG = {
 // and glm-5.2:high (36%/$2.84) back it up; unbenchmarked minis/haiku/flash
 // are excluded.
 export const EXPLORER_MODEL_CONFIG = {
-  model: "openai-codex/gpt-5.5:low",
+  model: "openai-codex/gpt-5.6-sol:low",
   fallbackModels: [
+    "github-copilot/gpt-5.6-sol:low",
+    "openai/gpt-5.6-sol:low",
+    "openai-codex/gpt-5.5:low",
     "github-copilot/gpt-5.5:low",
     "openai/gpt-5.5:low",
     "github-copilot/claude-opus-4.8 (1m):low",
@@ -76,6 +83,7 @@ export const EXPLORER_MODEL_CONFIG = {
     "zai/glm-5.2:high",
     "zai-coding-cn/glm-5.2:high",
     "cursor/glm-5.2",
+    "openrouter/openai/gpt-5.6-sol:low",
     "openrouter/openai/gpt-5.5:low",
     "openrouter/anthropic/claude-opus-4-8:low",
     "openrouter/x-ai/grok-4.5",

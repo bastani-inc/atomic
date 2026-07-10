@@ -17,6 +17,9 @@ import { reviewDecisionSchema } from "./ralph-core.js";
 export const promptEngineerModelConfig = {
     model: "anthropic/claude-fable-5:high",
     fallbackModels: [
+      "openai-codex/gpt-5.6-sol:xhigh",
+      "github-copilot/gpt-5.6-sol:xhigh",
+      "openai/gpt-5.6-sol:xhigh",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -30,6 +33,7 @@ export const promptEngineerModelConfig = {
       "zai-coding-cn/glm-5.2:xhigh",
       "cursor/glm-5.2",
       "openrouter/anthropic/claude-fable-5:high",
+      "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
@@ -40,32 +44,39 @@ export const promptEngineerModelConfig = {
 };
 
 export const researchModelConfig = {
-    model: "openai-codex/gpt-5.5:medium",
+    model: "openai-codex/gpt-5.6-sol:medium",
     fallbackModels: [
-        "github-copilot/gpt-5.5:medium",
-        "openai/gpt-5.5:medium",
-        "anthropic/claude-fable-5:low",
-        "github-copilot/claude-opus-4.8 (1m):medium",
-        "anthropic/claude-opus-4-8:medium",
-        "cursor/gpt-5.5:medium",
-        "cursor/claude-fable-5:low",
-        "cursor/claude-opus-4-8-thinking:medium",
-        "cursor/grok-4.5",
-        "zai/glm-5.2:high",
-        "zai-coding-cn/glm-5.2:high",
-        "cursor/glm-5.2",
-        "openrouter/openai/gpt-5.5:medium",
-        "openrouter/anthropic/claude-fable-5:low",
-        "openrouter/anthropic/claude-opus-4-8:medium",
-        "openrouter/x-ai/grok-4.5",
-        "openrouter/z-ai/glm-5.2:high"
+      "github-copilot/gpt-5.6-sol:medium",
+      "openai/gpt-5.6-sol:medium",
+      "openai-codex/gpt-5.5:medium",
+      "github-copilot/gpt-5.5:medium",
+      "openai/gpt-5.5:medium",
+      "anthropic/claude-fable-5:low",
+      "github-copilot/claude-opus-4.8 (1m):medium",
+      "anthropic/claude-opus-4-8:medium",
+      "cursor/gpt-5.5:medium",
+      "cursor/claude-fable-5:low",
+      "cursor/claude-opus-4-8-thinking:medium",
+      "cursor/grok-4.5",
+      "zai/glm-5.2:high",
+      "zai-coding-cn/glm-5.2:high",
+      "cursor/glm-5.2",
+      "openrouter/openai/gpt-5.6-sol:medium",
+      "openrouter/openai/gpt-5.5:medium",
+      "openrouter/anthropic/claude-fable-5:low",
+      "openrouter/anthropic/claude-opus-4-8:medium",
+      "openrouter/x-ai/grok-4.5",
+      "openrouter/z-ai/glm-5.2:high"
     ],
     excludedTools: ["ask_user_question"],
 };
 
 export const orchestratorModelConfig = {
-    model: "anthropic/claude-fable-5:high",
+    model: "openai-codex/gpt-5.6-sol:xhigh",
     fallbackModels: [
+      "github-copilot/gpt-5.6-sol:xhigh",
+      "openai/gpt-5.6-sol:xhigh",
+      "anthropic/claude-fable-5:high",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -78,6 +89,7 @@ export const orchestratorModelConfig = {
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
       "cursor/glm-5.2",
+      "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
@@ -91,6 +103,9 @@ export const orchestratorModelConfig = {
 export const reviewerAModelConfig = {
     model: "anthropic/claude-fable-5:high",
     fallbackModels: [
+      "openai-codex/gpt-5.6-sol:xhigh",
+      "github-copilot/gpt-5.6-sol:xhigh",
+      "openai/gpt-5.6-sol:xhigh",
       "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
@@ -104,6 +119,7 @@ export const reviewerAModelConfig = {
       "zai-coding-cn/glm-5.2:xhigh",
       "cursor/glm-5.2",
       "openrouter/anthropic/claude-fable-5:high",
+      "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/sakana/fugu-ultra:high",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-opus-4-8:high",
@@ -115,8 +131,11 @@ export const reviewerAModelConfig = {
 };
 
 export const reviewerBModelConfig = {
-    model: "openai-codex/gpt-5.5:xhigh",
+    model: "openai-codex/gpt-5.6-sol:xhigh",
     fallbackModels: [
+      "github-copilot/gpt-5.6-sol:xhigh",
+      "openai/gpt-5.6-sol:xhigh",
+      "openai-codex/gpt-5.5:xhigh",
       "github-copilot/gpt-5.5:xhigh",
       "openai/gpt-5.5:xhigh",
       "anthropic/claude-fable-5:high",
@@ -129,6 +148,7 @@ export const reviewerBModelConfig = {
       "zai/glm-5.2:xhigh",
       "zai-coding-cn/glm-5.2:xhigh",
       "cursor/glm-5.2",
+      "openrouter/openai/gpt-5.6-sol:xhigh",
       "openrouter/openai/gpt-5.5:xhigh",
       "openrouter/anthropic/claude-fable-5:high",
       "openrouter/sakana/fugu-ultra:high",
