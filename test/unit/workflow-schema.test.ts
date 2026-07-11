@@ -1,4 +1,5 @@
 import { describe, test } from "bun:test";
+import { validateToolCall } from "@earendil-works/pi-ai/compat";
 import assert from "node:assert/strict";
 import { Value } from "typebox/value";
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
@@ -190,6 +191,44 @@ describe("WorkflowParametersSchema stage options", () => {
       task: { name: "planner", prompt: "plan" },
       fallbackModels: [false],
     }), false);
+  });
+
+  test("validates output values without coercing false", () => {
+    const tools = [
+      {
+        name: "workflow",
+        description: "Run a workflow",
+        parameters: WorkflowParametersSchema,
+      },
+    ];
+    const validated = validateToolCall(tools, {
+      type: "toolCall",
+      id: "workflow-call",
+      name: "workflow",
+      arguments: {
+        output: false,
+        task: { name: "worker", task: "work", output: false },
+      },
+    }) as {
+      output?: string | false;
+      task?: { output?: string | false };
+    };
+    const validatedPath = validateToolCall(tools, {
+      type: "toolCall",
+      id: "workflow-path-call",
+      name: "workflow",
+      arguments: { output: "false" },
+    }) as { output?: string | false };
+
+    assert.equal(validated.output, false);
+    assert.equal(validated.task?.output, false);
+    assert.equal(validatedPath.output, "false");
+    assert.throws(() => validateToolCall(tools, {
+      type: "toolCall",
+      id: "workflow-invalid-output-call",
+      name: "workflow",
+      arguments: { output: true },
+    }));
   });
 
 });

@@ -71,8 +71,21 @@ const StageSessionOptionProperties = {
   forkFromSessionFile: Type.Optional(Type.String()),
 };
 
+// Keep this union opaque to Value.Convert: branch ordering otherwise coerces
+// boolean false to "false", or the legitimate string path "false" to false.
+const WorkflowOutputSchema = Type.Unsafe<string | false>({
+  not: {
+    not: {
+      anyOf: [
+        { type: "string" },
+        { const: false },
+      ],
+    },
+  },
+});
+
 const WorkflowTaskOptionProperties = {
-  output: Type.Optional(Type.Union([Type.String(), Type.Literal(false)])),
+  output: Type.Optional(WorkflowOutputSchema),
   outputMode: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("file-only")])),
   reads: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Literal(false)])),
   worktree: Type.Optional(Type.Boolean()),
