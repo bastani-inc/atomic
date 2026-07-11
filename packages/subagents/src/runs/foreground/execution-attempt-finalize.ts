@@ -33,8 +33,8 @@ export function finalizeSingleAttempt(input: {
 		return result;
 	}
 	if (result.detached) {
-		result.exitCode = 0;
-		result.finalOutput = "Detached for intercom coordination.";
+		result.exitCode = -2;
+		result.finalOutput = "Detached for intercom coordination; awaiting the child's eventual result.";
 		return result;
 	}
 

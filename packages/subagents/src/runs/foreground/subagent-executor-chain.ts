@@ -7,7 +7,7 @@ import { resolveSubagentDepthPolicy } from "../../shared/types.ts";
 import type { ChainStep } from "../../shared/settings.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { wrapChainTasksForFork } from "./subagent-executor-input.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun } from "./subagent-executor-status.ts";
+import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 
 export async function runChainPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<import("../../shared/types.ts").SubagentToolResult> {
 	const {
@@ -64,6 +64,7 @@ export async function runChainPath(data: ExecutionContextData, deps: ResolvedExe
 		worktreeSetupHook: deps.config.worktreeSetupHook,
 		worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
 		runSync: deps.runtime.runSync,
+		onDetachedExit: (index, result) => replaceForegroundRunChild(deps.state, runId, index, result),
 	});
 
 	const chainDetails = chainResult.details ? compactForegroundDetails({ ...chainResult.details, runId }) : undefined;

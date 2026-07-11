@@ -121,6 +121,7 @@ export async function runSequentialChainStep(input: {
 		intercomSessionName: context.childIntercomTarget?.(seqStep.agent, flatIndex),
 		orchestratorIntercomTarget: context.orchestratorIntercomTarget,
 		nestedRoute: context.params.nestedRoute,
+		onDetachedExit: (recovered) => context.onDetachedExit?.(flatIndex, recovered),
 		modelOverride: effectiveModel,
 		availableModels: context.availableModels,
 		knownModelProviders: context.knownModelProviders,

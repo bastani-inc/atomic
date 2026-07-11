@@ -112,6 +112,7 @@ export async function runStaticParallelChainStep(input: {
 			maxSubagentDepth: context.params.maxSubagentDepth,
 			workflowStageSubagentGuard: context.params.workflowStageSubagentGuard,
 			runSync: context.executeRunSync,
+			onDetachedExit: context.onDetachedExit,
 		});
 		state.globalTaskIndex += step.parallel.length;
 		for (const result of parallelResults) {

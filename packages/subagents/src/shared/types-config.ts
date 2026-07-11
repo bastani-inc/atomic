@@ -13,6 +13,7 @@ import type {
 	MaxOutputConfig,
 	OutputMode,
 	ResolvedControlConfig,
+	SingleResult,
 } from "./types-results.ts";
 
 // ============================================================================
@@ -58,6 +59,7 @@ export interface RunSyncOptions {
 	interruptSignal?: AbortSignal;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
+	onDetachedExit?: (result: SingleResult) => void;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;

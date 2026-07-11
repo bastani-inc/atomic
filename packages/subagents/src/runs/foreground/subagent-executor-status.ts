@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@bastani/atomic";
-import { compactForegroundDetails, getSingleResultOutput } from "../../shared/utils.ts";
+import { compactForegroundDetails, compactForegroundResult, getSingleResultOutput } from "../../shared/utils.ts";
 import {
 	attachNestedChildrenToResultChildren,
 	buildSubagentResultIntercomPayload,
@@ -77,6 +77,39 @@ export function foregroundStatusResult(control: ForegroundControl): SubagentTool
 	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
 }
 
+export function retainedForegroundStatusResult(state: SubagentState, runId: string): SubagentToolResult | undefined {
+	const run = state.foregroundRuns?.get(runId);
+	if (!run) return undefined;
+	const statuses = run.children.map((child) => child.status);
+	const stateLabel = statuses.includes("detached") ? "detached"
+		: statuses.includes("failed") ? "failed"
+		: statuses.includes("paused") ? "paused"
+		: statuses.every((status) => status === "completed") ? "completed"
+		: statuses[0] ?? "unknown";
+	const lines = [`Run: ${run.runId}`, `State: ${stateLabel}`, `Mode: ${run.mode}`];
+	for (const child of run.children) {
+		lines.push(`Child ${child.index + 1}: ${child.agent} (${child.status})`);
+		const output = child.result ? getSingleResultOutput(child.result) : "";
+		if (output) lines.push(output);
+		else if (child.result?.error) lines.push(child.result.error);
+	}
+	return { content: [{ type: "text", text: lines.join("\n") }], details: { mode: "management", results: [] } };
+}
+
+const earlyDetachedResults = new WeakMap<SubagentState, Map<string, Map<number, SingleResult>>>();
+const MAX_EARLY_DETACHED_RUNS = 50;
+const MAX_EARLY_DETACHED_CHILDREN_PER_RUN = 50;
+
+
+function takeEarlyDetachedResult(state: SubagentState, runId: string, index: number): SingleResult | undefined {
+	const byRun = earlyDetachedResults.get(state);
+	const byIndex = byRun?.get(runId);
+	const result = byIndex?.get(index);
+	byIndex?.delete(index);
+	if (byIndex?.size === 0) byRun?.delete(runId);
+	return result;
+}
+
 export function rememberForegroundRun(state: SubagentState, input: { runId: string; mode: "single" | "parallel" | "chain"; cwd: string; results: SingleResult[] }): void {
 	state.foregroundRuns ??= new Map();
 	state.foregroundRuns.set(input.runId, {
@@ -84,18 +117,57 @@ export function rememberForegroundRun(state: SubagentState, input: { runId: stri
 		mode: input.mode,
 		cwd: input.cwd,
 		updatedAt: Date.now(),
-		children: input.results.map((result, index) => ({
-			agent: result.agent,
-			index,
-			status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached }),
-			...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
-		})),
+		children: input.results.map((originalResult, index) => {
+			const result = takeEarlyDetachedResult(state, input.runId, index) ?? originalResult;
+			return {
+				agent: result.agent,
+				index,
+				status: resolveSubagentResultStatus({ exitCode: result.exitCode, interrupted: result.interrupted, detached: result.detached }),
+				...(result.sessionFile ? { sessionFile: result.sessionFile } : {}),
+				result,
+			};
+		}),
 	});
 	while (state.foregroundRuns.size > 50) {
 		const oldest = [...state.foregroundRuns.values()].sort((left, right) => left.updatedAt - right.updatedAt)[0];
 		if (!oldest) break;
 		state.foregroundRuns.delete(oldest.runId);
 	}
+}
+
+export function replaceForegroundRunChild(state: SubagentState, runId: string, index: number, result: SingleResult): void {
+	const retainedResult = compactForegroundResult(result);
+	const run = state.foregroundRuns?.get(runId);
+	if (!run) {
+		let byRun = earlyDetachedResults.get(state);
+		if (!byRun) {
+			byRun = new Map();
+			earlyDetachedResults.set(state, byRun);
+		}
+		let byIndex = byRun.get(runId);
+		if (!byIndex) {
+			byIndex = new Map();
+			byRun.set(runId, byIndex);
+		}
+		byIndex.set(index, retainedResult);
+		while (byIndex.size > MAX_EARLY_DETACHED_CHILDREN_PER_RUN) {
+			const oldestIndex = byIndex.keys().next().value;
+			if (oldestIndex === undefined) break;
+			byIndex.delete(oldestIndex);
+		}
+		while (byRun.size > MAX_EARLY_DETACHED_RUNS) {
+			const oldestRun = byRun.keys().next().value;
+			if (oldestRun === undefined) break;
+			byRun.delete(oldestRun);
+		}
+		return;
+	}
+	const child = run.children.find((entry) => entry.index === index);
+	if (!child || child.status !== "detached") return;
+	child.status = resolveSubagentResultStatus({ exitCode: retainedResult.exitCode, interrupted: retainedResult.interrupted, detached: retainedResult.detached });
+	child.result = retainedResult;
+	if (retainedResult.sessionFile) child.sessionFile = retainedResult.sessionFile;
+	run.updatedAt = Date.now();
 }
 
 export function emitControlNotification(input: {

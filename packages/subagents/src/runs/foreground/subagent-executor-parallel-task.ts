@@ -51,6 +51,7 @@ interface ForegroundParallelRunInput {
 	liveResults: (SingleResult | undefined)[];
 	liveProgress: (AgentProgress | undefined)[];
 	onUpdate?: (r: SubagentToolResult) => void;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 	worktreeSetup?: WorktreeSetup;
 	runtime: Pick<SubagentExecutorRuntimeDeps, "runSync">;
 }
@@ -108,6 +109,7 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 			onControlEvent: input.onControlEvent,
 			intercomSessionName: input.childIntercomTarget?.(task.agent, index),
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
+			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,

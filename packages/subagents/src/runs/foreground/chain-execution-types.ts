@@ -87,6 +87,7 @@ export interface ChainExecutionParams {
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
 	runSync?: RunSyncDependency;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }
 
 export interface ChainExecutionResult {
@@ -136,6 +137,7 @@ export interface ParallelChainRunInput {
 	workflowStageSubagentGuard?: boolean;
 	nestedRoute?: NestedRouteInfo;
 	runSync: RunSyncDependency;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }
 
 export interface ChainExecutionMutableState {
@@ -180,4 +182,5 @@ export interface ChainRuntimeContext {
 	totalSteps: number;
 	executeRunSync: RunSyncDependency;
 	makeDetailsInput(overrides?: Pick<Partial<ChainExecutionDetailsInput>, "currentStepIndex" | "currentFlatIndex">): ChainExecutionDetailsInput;
+	onDetachedExit?: (index: number, result: SingleResult) => void;
 }

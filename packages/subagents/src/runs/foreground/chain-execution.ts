@@ -144,6 +144,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		totalSteps,
 		executeRunSync,
 		makeDetailsInput,
+		onDetachedExit: params.onDetachedExit,
 	};
 
 	for (let stepIndex = 0; stepIndex < chainSteps.length; stepIndex++) {

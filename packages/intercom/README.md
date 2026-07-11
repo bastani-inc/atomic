@@ -24,7 +24,7 @@ Intercom also integrates with delegated subagents: child agents get a child-only
 
 ## In One Minute
 
-Each Atomic/pi session that has intercom loaded and enabled can connect to a tiny local broker over a local IPC transport. The lightweight extension exposes the tool and overlay immediately; normal sessions initialize the broker client on first intercom use, while delegated child sessions with supervisor bridge metadata warm it in the background. Concurrent callers share one initialization attempt, and a failed attempt is diagnosed and retried on later use. Lazy broker state is leased to its session: replay and live turn/agent/tool/model events are forwarded in order, shutdown waits for retired replay and initializer cleanup before replacement, calls spanning teardown reject, and a restarted session initializes a fresh candidate rather than reusing old broker state. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in session history as extension entries.
+Interactive parents lazily connect to the tiny local broker when an Intercom tool is used or immediately before a foreground child launches; the launch waits for inbound handlers and broker readiness so child coordination is available from its first turn. Delegated foreground and background children with supervisor bridge metadata register before agent work begins. The lightweight extension avoids importing the heavy runtime for unused parent sessions, disabled sessions, and noninteractive management-only work, and concurrent tool callers share one import and connection attempt. Definition/control-only subagent actions (`list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, and `doctor`) do not warm Intercom; `resume` may relaunch or contact a child and therefore retains readiness gating. If optional Intercom import, broker startup, or connection fails, the parent or child session continues with a diagnostic and later calls may retry. Lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 
@@ -34,7 +34,7 @@ Atomic bundles `@bastani/intercom` as a first-party extension; no separate insta
 pi install npm:pi-intercom
 ```
 
-Then restart Atomic or Pi. The extension registers the bundled `intercom` skill at startup; the broker connection starts on first intercom use (or is warmed for delegated child sessions that carry supervisor bridge metadata).
+Then restart Atomic or Pi. The extension registers the bundled `intercom` skill at startup. Interactive parents connect lazily on Intercom use or foreground-child launch, while bridged children connect before agent work begins; disabled sessions and noninteractive management-only operations do not load the heavy runtime or start the broker.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 
@@ -240,6 +240,8 @@ If any are missing, the session falls back to the regular `intercom` tool.
 | `progress_update` | Fire-and-forget update to the supervisor | Meaningful progress or unexpected discoveries that change the plan |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
+
+During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges the commit before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched messages keep their queued-until-idle behavior, and cancellation/replacement invalidates stale handshakes.
 
 ### Example: Blocked Subagent Asks for Guidance
 

@@ -123,6 +123,7 @@ export async function runParallelChainTasks(input: ParallelChainRunInput): Promi
 			intercomSessionName: input.childIntercomTarget?.(task.agent, input.globalTaskIndex + taskIndex),
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 			nestedRoute: input.nestedRoute,
+			onDetachedExit: (recovered) => input.onDetachedExit?.(input.globalTaskIndex + taskIndex, recovered),
 			modelOverride: effectiveModel,
 			availableModels: input.availableModels,
 			knownModelProviders: input.knownModelProviders,
