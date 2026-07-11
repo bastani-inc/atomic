@@ -6,6 +6,23 @@ import type { AgentConfig } from "../../packages/subagents/src/agents/agents.js"
 /** Shared fixtures for the subagent attempt-watchdog and model-candidate
  * filtering test suites (split to satisfy the 500-line file gate). */
 
+const transientRemovalCodes = new Set(["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM"]);
+
+async function removeFixtureDir(dir: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error
+        ? String(error.code)
+        : undefined;
+      if (!code || !transientRemovalCodes.has(code) || attempt >= 5) throw error;
+      await Bun.sleep(100 * (attempt + 1));
+    }
+  }
+}
+
 export function agentConfig(): AgentConfig {
   return {
     name: "fake-worker",
@@ -46,7 +63,7 @@ export async function withFakeCli<T>(script: string, fn: (dir: string) => Promis
     else process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = previousWall;
     if (previousKill === undefined) delete process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
     else process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = previousKill;
-    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    await removeFixtureDir(dir);
   }
 }
 
