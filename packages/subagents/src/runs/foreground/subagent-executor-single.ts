@@ -1,6 +1,9 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
+import { injectSingleProgressInstruction, resolveSingleProgress, writeInitialProgressFile } from "../../shared/settings.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
@@ -38,6 +41,15 @@ function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string
 		lines.push("", `Output artifact: ${result.artifactPaths.outputPath}`);
 	}
 	return lines.join("\n");
+}
+
+function cleanupTransientProgress(progressDir: string | undefined, artifactsEnabled: boolean): void {
+	if (!progressDir || artifactsEnabled) return;
+	try {
+		fs.rmSync(progressDir, { recursive: true, force: true });
+	} catch {
+		// Scratch cleanup must never replace the child run's result or original error.
+	}
 }
 
 export async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
@@ -86,6 +98,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
+	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
 		task = wrapForkTask(task);
@@ -95,6 +108,13 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
+	}
+	// Single-agent progress is isolated by run so the injected contract cannot
+	// overwrite a project's own progress.md or collide with another child.
+	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
+	if (progressDir) {
+		writeInitialProgressFile(progressDir);
+		task = injectSingleProgressInstruction(task, progressDir);
 	}
 	task = injectSingleOutputInstruction(task, outputPath);
 
@@ -140,38 +160,49 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		}
 		: undefined;
 
-	const r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
-		cwd: effectiveCwd,
-		signal,
-		interruptSignal: interruptController.signal,
-		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-		intercomEvents: deps.pi.events,
-		runId,
-		sessionDir: sessionDirForIndex(0),
-		sessionFile: sessionFileForIndex(0),
-		share: shareEnabled,
-		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-		artifactConfig,
-		maxOutput: params.maxOutput,
-		outputPath,
-		outputMode: effectiveOutputMode,
-		maxSubagentDepth,
-		workflowStageSubagentGuard,
-		onUpdate: forwardSingleUpdate,
-		controlConfig,
-		onControlEvent,
-		intercomSessionName: childIntercomTarget,
-		orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-		nestedRoute: foregroundControl?.nestedRoute,
-		onDetachedExit: (result) => replaceForegroundRunChild(deps.state, runId, 0, result),
-		index: 0,
-		modelOverride,
-		availableModels,
-		knownModelProviders,
-		preferredModelProvider: currentProvider,
-		currentModel: currentModelFullId(ctx.model),
-		skills: effectiveSkills,
-	});
+	let r: SingleResult;
+	try {
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+			cwd: effectiveCwd,
+			signal,
+			interruptSignal: interruptController.signal,
+			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+			intercomEvents: deps.pi.events,
+			runId,
+			sessionDir: sessionDirForIndex(0),
+			sessionFile: sessionFileForIndex(0),
+			share: shareEnabled,
+			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
+			artifactConfig,
+			maxOutput: params.maxOutput,
+			outputPath,
+			outputMode: effectiveOutputMode,
+			maxSubagentDepth,
+			workflowStageSubagentGuard,
+			onUpdate: forwardSingleUpdate,
+			controlConfig,
+			onControlEvent,
+			intercomSessionName: childIntercomTarget,
+			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			nestedRoute: foregroundControl?.nestedRoute,
+			onDetachedExit: (result) => {
+				cleanupTransientProgress(progressDir, artifactConfig.enabled);
+				if (result) replaceForegroundRunChild(deps.state, runId, 0, result);
+			},
+			index: 0,
+			modelOverride,
+			availableModels,
+			knownModelProviders,
+			preferredModelProvider: currentProvider,
+			currentModel: currentModelFullId(ctx.model),
+			skills: effectiveSkills,
+		});
+	} catch (error) {
+		cleanupTransientProgress(progressDir, artifactConfig.enabled);
+		throw error;
+	}
+	// Detached children still own this storage until their process closes.
+	if (!r.detached) cleanupTransientProgress(progressDir, artifactConfig.enabled);
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;

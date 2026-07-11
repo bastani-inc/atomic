@@ -5,6 +5,7 @@
 ### Added
 
 - Added model-capability-aware `max` reasoning suffix support to subagent model/fallback parsing and child CLI forwarding ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Added root single-agent `progress` calls so `progress: true` maintains a run-scoped `progress.md` under isolated artifact storage for foreground, background, and revived runs without overwriting a child-working-directory file; inherited defaults are suppressed for read-only tasks, and artifacts-disabled foreground storage is removed after the child exits.
 
 ### Changed
 

@@ -658,6 +658,9 @@ These are the parameters the LLM passes when it calls the `subagent` tool. Most 
 { agent: "scout", task: "review the design", cwd: "packages/api", reads: ["docs/design.md", "../shared.md"] }
 // Forked context
 { agent: "worker", task: "continue this thread", context: "fork" }
+// Maintain a run-scoped progress.md under isolated artifact storage
+{ agent: "worker", task: "implement the approved fix", progress: true }
+
 
 // Parallel
 { tasks: [{ agent: "scout", task: "a" }, { agent: "reviewer", task: "b" }] }
@@ -788,6 +791,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
 | `reads` | `string[] \| false` | - | Single-agent files to read before execution, or `false` to disable. Relative paths resolve against the effective child `cwd`; absolute paths pass through. |
+| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, foreground storage is removed after the child exits. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |
@@ -801,7 +805,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `cwd` | string | runtime cwd | Override working directory. |
 | `maxOutput` | object | 200KB, 5000 lines | Final output truncation limits. |
 | `artifacts` | boolean | true | Write debug artifacts. |
-| `includeProgress` | boolean | false | Include full progress in result. |
+| `includeProgress` | boolean | false | Include detailed runtime progress telemetry in the final result. This does not create or maintain `progress.md`; use `progress` for that. |
 | `share` | boolean | false | Upload session export to GitHub Gist. |
 | `sessionDir` | string | derived | Override session log directory. |
 
@@ -996,6 +1000,8 @@ For existing subagent integrations and saved definitions:
 ## Live progress
 
 Foreground runs show compact live progress for single, chain, and parallel modes: current tool, recent output, token counts, duration, activity freshness, current-tool duration, and chain graph metadata when available.
+
+File-based tracking and returned telemetry are separate. On a single-agent call, `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and asks the child to maintain it in foreground or background mode without writing `progress.md` into the child working directory. `progress: false` disables an agent's `defaultProgress`. `includeProgress: true` only adds detailed runtime progress data to the final foreground tool result; it does not enable the file.
 
 Press `CTRL+O` to expand the full streaming view with complete output per step.
 

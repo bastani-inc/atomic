@@ -4,6 +4,7 @@ import { getEnvValue } from "@bastani/atomic";
 import { buildSkillInjection, resolveSkillsWithFallback } from "../../agents/skills.ts";
 import { getSubagentCodexFastModeSettings, resolveSubagentCodexFastModeScope, resolveSubagentModelFastModeMetadata } from "../../shared/fast-mode.ts";
 import { resolveEffectiveThinking } from "../../shared/model-info.ts";
+import { injectSingleProgressInstruction, writeInitialProgressFile } from "../../shared/settings.ts";
 import { ASYNC_DIR, RESULTS_DIR, SUBAGENT_ASYNC_STARTED_EVENT, resolveChildMaxSubagentDepth } from "../../shared/types.ts";
 import { resolveChildCwd } from "../../shared/utils.ts";
 import { applyThinkingSuffix, SUBAGENT_INTERCOM_SESSION_NAME_ENV } from "../shared/pi-args.ts";
@@ -16,7 +17,7 @@ import {
 	formatAsyncStartedMessage,
 	formatAsyncStartError,
 	piPackageRoot,
-	spawnRunner,
+	spawnRunner as defaultSpawnRunner,
 } from "./async-execution-common.ts";
 import type { AsyncExecutionResult, AsyncSingleParams, AsyncSpawnResult } from "./async-execution-types.ts";
 
@@ -46,6 +47,7 @@ export function executeAsyncSingle(
 		controlIntercomTarget,
 		childIntercomTarget,
 		nestedRoute,
+		spawnRunner = defaultSpawnRunner,
 	} = params;
 	const task = params.task ?? "";
 	const runnerCwd = resolveChildCwd(ctx.cwd, cwd);
@@ -81,7 +83,16 @@ export function executeAsyncSingle(
 	const outputMode = params.outputMode ?? "inline";
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
 	if (validationError) return formatAsyncStartError("single", validationError);
-	const taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
+	let taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
+	// Keep each child's progress contract outside its cwd and isolated by run;
+	// artifacts-disabled async runs use their already run-owned async directory.
+	if (params.progress) {
+		const progressDir = artifactConfig.enabled && artifactsDir
+			? path.join(artifactsDir, "progress", id)
+			: path.join(asyncDir, "progress");
+		writeInitialProgressFile(progressDir);
+		taskWithOutputInstruction = injectSingleProgressInstruction(taskWithOutputInstruction, progressDir);
+	}
 	const model = applyThinkingSuffix(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,
