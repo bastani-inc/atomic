@@ -12,7 +12,7 @@ function eventBus(emitter: EventEmitter) {
     emit(channel: string, data: unknown) { emitter.emit(channel, data); },
   };
 }
-async function handoff(bus: ReturnType<typeof eventBus>, route: { requestId: string; childIntercomTarget?: string; runId?: string; agent?: string; childIndex?: number; runtimeGeneration?: number }): Promise<void> {
+async function handoff(bus: ReturnType<typeof eventBus>, route: { requestId: string; childIntercomTarget: string; runtimeGeneration?: number }): Promise<void> {
   const complete = { messageId: route.requestId, senderId: "child-id", runtimeGeneration: 1, ...route };
   bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...complete, phase: "probe" });
   await Bun.sleep(1);
@@ -188,19 +188,19 @@ describe("foreground intercom detach routing", () => {
     });
   });
 
-  test("rejects partial fallback routes and accepts a complete exact tuple", async () => {
+  test("rejects missing and incorrect exact targets", async () => {
     await withFakeCliEvent(successEvent("normal"), 120, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
-        cwd: dir, runId: "tuple-run", index: 3, intercomSessionName: "child-a", allowIntercomDetach: true, intercomEvents: bus,
+        cwd: dir, runId: "exact-run", index: 3, intercomSessionName: "child-a", allowIntercomDetach: true, intercomEvents: bus,
       });
       await Bun.sleep(20);
-      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "partial", runId: "tuple-run", agent: "fake-worker" });
-      await Bun.sleep(20);
-      await handoff(bus, { requestId: "complete", runId: "tuple-run", agent: "fake-worker", childIndex: 3 });
+      bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { requestId: "missing", runId: "exact-run", agent: "fake-worker", childIndex: 3 });
+      await handoff(bus, { requestId: "wrong", childIntercomTarget: "child-b" });
       const result = await pending;
-      assert.equal(result.detached, true);
+      assert.equal(result.detached, undefined);
+      assert.equal(result.exitCode, 0);
     });
   });
 

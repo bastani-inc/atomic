@@ -199,9 +199,6 @@ export async function runSingleAttempt(
 			const reservationKeyValid = typeof event.requestId === "string";
 			if (!reservationKeyValid || !matchesIntercomDetachRoute(event, {
 				childIntercomTarget: options.intercomSessionName,
-				runId: options.runId,
-				agent: agent.name,
-				childIndex: options.index ?? 0,
 			})) return;
 			if (event.phase === "probe") {
 				if (detached || !detachReservations.reserve(event)) return;
@@ -428,7 +425,7 @@ export async function runSingleAttempt(
 				const recovered: SingleResult = { ...result, detached: undefined, detachedReason: undefined };
 				const recoveredProgress = recovered.progress ? { ...recovered.progress } : progress;
 				options.onDetachedExit?.(finalizeSingleAttempt({
-					result: recovered, progress: recoveredProgress, exitCode: finalCode, interruptedByControl: false,
+					result: recovered, progress: recoveredProgress, exitCode: finalCode, interruptedByControl,
 					allControlEvents: controlRuntime.allControlEvents, options: { ...options, onUpdate: undefined }, shared, startTime,
 				}));
 				return;

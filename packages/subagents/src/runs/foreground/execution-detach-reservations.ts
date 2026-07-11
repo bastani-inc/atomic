@@ -16,8 +16,7 @@ function identity(event: IntercomDetachRoute): string | undefined {
 function sameRoute(left: IntercomDetachRoute, right: IntercomDetachRoute): boolean {
 	return left.requestId === right.requestId && left.messageId === right.messageId
 		&& left.senderId === right.senderId && left.runtimeGeneration === right.runtimeGeneration
-		&& left.childIntercomTarget === right.childIntercomTarget
-		&& left.runId === right.runId && left.agent === right.agent && left.childIndex === right.childIndex;
+		&& left.childIntercomTarget === right.childIntercomTarget;
 }
 
 export class IntercomDetachReservations {

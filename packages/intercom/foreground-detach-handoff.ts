@@ -20,6 +20,7 @@ export class ForegroundDetachHandoff {
   private generation = -1;
   private readonly delivered = new Set<string>();
   private readonly pending = new Map<string, Promise<ForegroundDeliveryDisposition>>();
+  private generationCancellation = new AbortController();
 
   constructor(
     private readonly pi: Pick<ExtensionAPI, "events">,
@@ -62,29 +63,35 @@ export class ForegroundDetachHandoff {
       senderId: input.from.id,
       runtimeGeneration: input.generation,
     };
-    const probed = await this.awaitAcknowledgement(route);
-    if (!probed) return "unclaimed";
-    if (!input.isCurrent() || this.generation !== input.generation) return "abandoned";
+    const signal = this.generationCancellation.signal;
+    const probed = await this.awaitAcknowledgement(route, signal);
+    if (probed === "cancelled" || !input.isCurrent() || this.generation !== input.generation) return "abandoned";
+    if (probed === "timed-out") return "unclaimed";
 
-    const committed = await this.awaitAcknowledgement({ ...route, phase: "commit" });
-    if (!committed || !input.isCurrent() || this.generation !== input.generation) return "abandoned";
+    const committed = await this.awaitAcknowledgement({ ...route, phase: "commit" }, signal);
+    if (committed !== "acknowledged" || !input.isCurrent() || this.generation !== input.generation) return "abandoned";
     input.surface();
     this.delivered.add(deliveryKey);
     return "delivered";
   }
 
-  private awaitAcknowledgement(route: DetachHandshake): Promise<boolean> {
+  private awaitAcknowledgement(
+    route: DetachHandshake,
+    signal: AbortSignal,
+  ): Promise<"acknowledged" | "timed-out" | "cancelled"> {
     return new Promise((resolve) => {
       let settled = false;
       let unsubscribe: (() => void) | undefined;
-      let timeout: ReturnType<typeof setTimeout>;
-      const finish = (accepted: boolean) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const finish = (disposition: "acknowledged" | "timed-out" | "cancelled") => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         unsubscribe?.();
-        resolve(accepted);
+        signal.removeEventListener("abort", cancel);
+        resolve(disposition);
       };
+      const cancel = () => finish("cancelled");
       unsubscribe = this.pi.events?.on(INTERCOM_DETACH_RESPONSE_EVENT, (payload) => {
         if (!payload || typeof payload !== "object") return;
         const response = payload as Partial<DetachHandshake> & { accepted?: unknown };
@@ -94,14 +101,22 @@ export class ForegroundDetachHandoff {
           && response.messageId === route.messageId
           && response.childIntercomTarget === route.childIntercomTarget
           && response.senderId === route.senderId
-          && response.runtimeGeneration === route.runtimeGeneration) finish(true);
+          && response.runtimeGeneration === route.runtimeGeneration) finish("acknowledged");
       });
-      timeout = setTimeout(() => finish(false), this.ackTimeoutMs);
+      signal.addEventListener("abort", cancel, { once: true });
+      timeout = setTimeout(() => finish("timed-out"), this.ackTimeoutMs);
+      if (signal.aborted) {
+        cancel();
+        return;
+      }
       this.pi.events?.emit(INTERCOM_DETACH_REQUEST_EVENT, route);
     });
   }
 
   private resetForGeneration(generation: number): void {
+    this.generationCancellation.abort();
+    this.generationCancellation = new AbortController();
+    this.pending.clear();
     this.delivered.clear();
     this.generation = generation;
   }

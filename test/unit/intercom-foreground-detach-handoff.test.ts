@@ -177,6 +177,84 @@ describe("broker foreground delivery handshake", () => {
     assert.equal(await first, "abandoned");
     assert.deepEqual(probes, [1, 2]);
   });
+  test("reset immediately abandons and cleans up an in-flight probe", async () => {
+    const emitter = new EventEmitter();
+    const events = {
+      emit(channel: string, payload: object) { emitter.emit(channel, payload); },
+      on(channel: string, handler: (payload: object) => void) { emitter.on(channel, handler); return () => emitter.off(channel, handler); },
+    };
+    const handoff = new ForegroundDetachHandoff({ events } as never, 5_000);
+    let surfaced = 0;
+    let unclaimed = 0;
+    let probe: object | undefined;
+    emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: { phase?: string }) => {
+      if (request.phase === "probe") probe = request;
+    });
+    const startedAt = Date.now();
+    const delivery = handleForegroundInboundDelivery({
+      handoff, from: from("a", "child-a"), message: message("reset-probe", true), generation: 1,
+      surface: () => surfaced++, isCurrent: () => true, onUnclaimed: () => unclaimed++,
+    });
+    await Bun.sleep(0);
+    assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 1);
+    handoff.reset();
+    await delivery;
+    assert.ok(Date.now() - startedAt < 1_000, "reset must not wait for the acknowledgement timeout");
+    assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 0);
+    assert.equal(surfaced, 0);
+    assert.equal(unclaimed, 0);
+    emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...probe, accepted: true });
+    assert.equal(surfaced, 0);
+  });
+
+  test("reset immediately abandons and cleans up an in-flight commit", async () => {
+    const emitter = new EventEmitter();
+    const events = {
+      emit(channel: string, payload: object) { emitter.emit(channel, payload); },
+      on(channel: string, handler: (payload: object) => void) { emitter.on(channel, handler); return () => emitter.off(channel, handler); },
+    };
+    const handoff = new ForegroundDetachHandoff({ events } as never, 5_000);
+    let surfaced = 0;
+    let unclaimed = 0;
+    let commit: object | undefined;
+    emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: { phase?: string }) => {
+      if (request.phase === "probe") emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...request, accepted: true });
+      else if (request.phase === "commit") commit = request;
+    });
+    const startedAt = Date.now();
+    const delivery = handleForegroundInboundDelivery({
+      handoff, from: from("a", "child-a"), message: message("reset-commit", true), generation: 1,
+      surface: () => surfaced++, isCurrent: () => true, onUnclaimed: () => unclaimed++,
+    });
+    await Bun.sleep(0);
+    assert.ok(commit, "commit wait must be active before reset");
+    assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 1);
+    handoff.reset();
+    await delivery;
+    assert.ok(Date.now() - startedAt < 1_000, "reset must clear the commit timeout");
+    assert.equal(emitter.listenerCount(INTERCOM_DETACH_RESPONSE_EVENT), 0);
+    assert.equal(surfaced, 0);
+    assert.equal(unclaimed, 0);
+    emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...commit, accepted: true });
+    assert.equal(surfaced, 0);
+  });
+  test("reset clears pending bookkeeping before an immediate retry", async () => {
+    const { emitter, handoff } = fixture();
+    let probes = 0;
+    emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: { phase?: string }) => {
+      if (request.phase === "probe") probes++;
+      if (probes > 1) emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...request, accepted: true });
+    });
+    const base = { from: from("a", "child-a"), message: message("retry", true), generation: 1, surface: () => {}, isCurrent: () => true };
+    const stale = handoff.deliver(base);
+    handoff.reset();
+    const retry = handoff.deliver(base);
+    assert.equal(await stale, "abandoned");
+    assert.equal(await retry, "delivered");
+    assert.equal(probes, 2);
+  });
+
+
   test("reset permits a new generation to deliver the same message identity", async () => {
     const { emitter, handoff } = fixture();
     emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: { phase?: string }) => {

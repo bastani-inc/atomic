@@ -244,7 +244,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!liveContext) {
       return;
     }
-	if (routeIncomingReply(replyWaiter, from, message)) return;
+    if (routeIncomingReply(replyWaiter, from, message)) return;
     const attachmentText = message.content.attachments?.length
       ? formatAttachments(message.content.attachments)
       : "";
