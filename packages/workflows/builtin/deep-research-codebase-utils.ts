@@ -59,7 +59,7 @@ export const PLANNER_MODEL_CONFIG = {
     "openrouter/openai/gpt-5.5:xhigh",
     "openrouter/anthropic/claude-opus-4-8:high",
     "openrouter/x-ai/grok-4.5",
-    "openrouter/z-ai/glm-5.2:xhigh"
+    "openrouter/z-ai/glm-5.2:xhigh",
   ],
   excludedTools: ["ask_user_question"],
 } as const;
@@ -69,23 +69,23 @@ export const PLANNER_MODEL_CONFIG = {
 // and glm-5.2:high (36%/$2.84) back it up; unbenchmarked minis/haiku/flash
 // are excluded.
 export const EXPLORER_MODEL_CONFIG = {
-  model: "openai-codex/gpt-5.6-sol:low",
+  model: "openai-codex/gpt-5.6-terra:high",
   fallbackModels: [
-    "github-copilot/gpt-5.6-sol:low",
-    "openai/gpt-5.6-sol:low",
+    "github-copilot/gpt-5.6-terra:high",
+    "openai/gpt-5.6-terra:high",
     "openai-codex/gpt-5.5:low",
     "github-copilot/gpt-5.5:low",
     "openai/gpt-5.5:low",
     "github-copilot/claude-opus-4.8 (1m):low",
     "anthropic/claude-opus-4-8:low",
-    "cursor/gpt-5.6-sol:low",
+    "cursor/gpt-5.6-terra:high",
     "cursor/gpt-5.5:low",
     "cursor/claude-opus-4-8-thinking:low",
     "cursor/grok-4.5",
     "zai/glm-5.2:high",
     "zai-coding-cn/glm-5.2:high",
     "cursor/glm-5.2",
-    "openrouter/openai/gpt-5.6-sol:low",
+    "openrouter/openai/gpt-5.6-terra:high",
     "openrouter/openai/gpt-5.5:low",
     "openrouter/anthropic/claude-opus-4-8:low",
     "openrouter/x-ai/grok-4.5",
@@ -113,7 +113,10 @@ export function taggedPrompt(sections: readonly PromptSection[]): string {
     .join("\n\n");
 }
 
-export function positiveInteger(value: number | undefined, fallback: number): number {
+export function positiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : fallback;
@@ -372,4 +375,3 @@ export function displayRelativePath(path: string, fromCwd: string): string {
   }
   return displayPath(path);
 }
-
