@@ -244,6 +244,17 @@ subagent({
 })
 ```
 
+Enable file-based progress tracking for foreground or async single-agent runs with `progress: true`. The child maintains a run-scoped `progress.md` under isolated subagent artifact storage without writing it into its effective `cwd`; `progress: false` disables an agent's `defaultProgress`. Omission inherits that default except for read-only tasks, and `artifacts: false` removes foreground progress storage after the child exits. This is distinct from `includeProgress: true`, which only returns detailed runtime telemetry in the final foreground result.
+
+```typescript
+subagent({
+  agent: "debugger",
+  task: "Implement the approved fix and validate it.",
+  progress: true,
+  async: true
+})
+```
+
 ### Forked context
 
 ```typescript

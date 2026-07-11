@@ -59,6 +59,8 @@ export interface RunSyncOptions {
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
+	/** Internal lifecycle hook fired when an intercom-detached child process closes. */
+	onDetachedExit?: () => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;
 	intercomSessionName?: string;

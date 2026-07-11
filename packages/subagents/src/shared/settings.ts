@@ -286,6 +286,12 @@ export function suppressProgressForReadOnlyTask(behavior: ResolvedStepBehavior, 
 	return behavior.progress && taskDisallowsFileUpdates(policyTask) ? { ...behavior, progress: false } : behavior;
 }
 
+/** Resolve single-agent progress, preserving read-only suppression only for inherited defaults. */
+export function resolveSingleProgress(agentConfig: AgentConfig, override: boolean | undefined, task: string | undefined): boolean {
+	const behavior = resolveStepBehavior(agentConfig, { progress: override });
+	return override !== undefined ? behavior.progress : suppressProgressForReadOnlyTask(behavior, task).progress;
+}
+
 // =============================================================================
 // Chain Instruction Injection
 // =============================================================================
@@ -302,7 +308,13 @@ export function buildReadInstruction(reads: string[] | false | undefined, cwd: s
  * These are appended to the task to tell the agent what to read/write.
  */
 export function writeInitialProgressFile(progressDir: string): void {
+	fs.mkdirSync(progressDir, { recursive: true });
 	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
+}
+
+/** Add the child-facing instruction for a single-agent progress file. */
+export function injectSingleProgressInstruction(task: string, progressDir: string): string {
+	return `${task}\n\n---\nCreate and maintain progress at: ${path.join(progressDir, "progress.md")}`;
 }
 
 export function buildChainInstructions(

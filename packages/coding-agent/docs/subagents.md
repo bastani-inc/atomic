@@ -134,6 +134,13 @@ When a subagent call, parallel task, chain step, or background run uses a `cwd`,
 
 Single-agent calls also accept `reads: string[] | false`. Atomic prepends those files as read context for foreground and background execution through the same path resolver, including `/run agent[reads=a.md+b.md]`. Relative entries resolve against the effective child `cwd` (including a relative top-level `cwd` resolved from the parent); absolute entries are unchanged. Invalid values fail before either child runtime starts.
 
+Single-agent calls accept `progress: boolean` in foreground, background, and revived/resumed mode. `progress: true` creates a run-scoped `progress.md` under isolated subagent artifact storage and instructs the child to maintain it without writing `progress.md` into the child `cwd`; `progress: false` disables an agent's `defaultProgress`. When `progress` is omitted, the agent's default is inherited, except that inherited progress is suppressed for read-only tasks (`progress: true` still explicitly opts in). Foreground runs remove this run-owned progress storage after the child exits when `artifacts: false`, including children temporarily detached for intercom coordination. This is separate from `includeProgress: true`, which only includes detailed runtime progress telemetry in the final tool result and does not create or maintain a file.
+
+```ts
+subagent({ agent: "worker", task: "Implement the approved fix.", progress: true })
+subagent({ agent: "worker", task: "Implement it in the background.", progress: true, async: true })
+```
+
 ## Nested and fanout boundaries
 
 Child-safety boundaries are enforced by the bundled subagent extension:

@@ -7,6 +7,7 @@ import { readStatus } from "../../shared/utils.ts";
 import { buildRevivedAsyncTask, resolveAsyncResumeTarget } from "../background/async-resume.ts";
 import { resolveSubagentRunId, type ResolvedSubagentRunId } from "../background/run-id-resolver.ts";
 import { toModelInfo } from "../../shared/model-info.ts";
+import { resolveSingleProgress } from "../../shared/settings.ts";
 import {
 	createNestedRoute,
 	readNestedControlResults,
@@ -419,6 +420,7 @@ export async function resumeAsyncRun(input: {
 		agent: target.agent,
 		task: buildRevivedAsyncTask(target, followUp),
 		agentConfig,
+		progress: resolveSingleProgress(agentConfig, input.params.progress, followUp),
 		ctx: {
 			pi: input.deps.pi,
 			cwd: input.requestCwd,
