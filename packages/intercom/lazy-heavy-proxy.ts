@@ -9,6 +9,8 @@ type CapturedCommand = Omit<RegisteredCommand, "name" | "sourceInfo">;
 type CapturedShortcut = Parameters<ExtensionAPI["registerShortcut"]>[1];
 type EventHandler = Parameters<ExtensionAPI["events"]["on"]>[1];
 type EventPayload = Parameters<EventHandler>[0];
+const LIVE_EVENT_SUBSCRIPTIONS = new Set(["pi-intercom:detach-response"]);
+
 export type ToolRenderResultArgs = Parameters<NonNullable<ToolDefinition["renderResult"]>>;
 export type ForwardedEventMap = {
   session_start: SessionStartEvent;
@@ -25,12 +27,19 @@ type LazyLifecycleEvent = keyof ForwardedEventMap;
 type ForwardedHandler<K extends LazyLifecycleEvent> = ExtensionHandler<ForwardedEventMap[K]>;
 type ForwardedHandlerMap = { [K in LazyLifecycleEvent]: ForwardedHandler<K>[] };
 type AnyForwardedHandler = { [K in LazyLifecycleEvent]: ForwardedHandler<K> }[LazyLifecycleEvent];
+export interface HeavyRuntimeReadiness {
+  enabled: boolean;
+  awaitAutomaticBrokerReady(): Promise<void>;
+  awaitForegroundBrokerReady(): Promise<void>;
+}
+
 export type CapturedHeavy = {
   tools: Map<string, ToolDefinition>;
   commands: Map<string, CapturedCommand>;
   handlers: ForwardedHandlerMap;
   shortcuts: Map<string, CapturedShortcut>;
   eventHandlers: Map<string, EventHandler[]>;
+  runtimeReadiness?: HeavyRuntimeReadiness;
 };
 
 export function createForwardedHandlerMap(): ForwardedHandlerMap {
@@ -87,6 +96,7 @@ export function createHeavyProxy(pi: ExtensionAPI, captured: CapturedHeavy): Ext
           get(eventTarget, eventProp, eventReceiver) {
             if (eventProp === "on") {
               return (event: string, handler: EventHandler) => {
+                if (LIVE_EVENT_SUBSCRIPTIONS.has(event)) return pi.events.on(event, handler);
                 addEventHandler(captured, event, handler);
                 return () => {
                   const handlers = captured.eventHandlers.get(event) ?? [];

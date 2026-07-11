@@ -102,6 +102,22 @@ export async function runSync(
 		}
 		if (options.artifactConfig?.includeJsonl !== false) jsonlPath = artifactPathsResult.jsonlPath;
 	}
+	const persistArtifacts = (value: SingleResult): void => {
+		if (!artifactPathsResult || options.artifactConfig?.enabled === false) return;
+		value.artifactPaths = artifactPathsResult;
+		if (options.artifactConfig?.includeOutput !== false) {
+			writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(value) ?? value.finalOutput ?? "");
+		}
+		if (options.artifactConfig?.includeMetadata !== false) {
+			writeMetadata(artifactPathsResult.metadataPath, {
+				runId: options.runId, agent: agentName, task, exitCode: value.exitCode,
+				usage: value.usage, model: value.model, fastMode: value.fastMode,
+				attemptedModels: value.attemptedModels, modelAttempts: value.modelAttempts,
+				durationMs: value.progressSummary?.durationMs, toolCount: value.progressSummary?.toolCount,
+				error: value.error, skills: value.skills, skillsWarning: value.skillsWarning, timestamp: Date.now(),
+			});
+		}
+	};
 
 	let lastResult: SingleResult | undefined;
 	const modelsToTry = candidates.length > 0 ? candidates : (rawCandidates.length === 0 ? [undefined] : []);
@@ -109,11 +125,29 @@ export async function runSync(
 		const candidate = modelsToTry[i];
 		if (candidate) attemptedModels.push(candidate);
 		const outputSnapshot = captureSingleOutputSnapshot(options.outputPath);
-		let attemptOptions = options;
+		const detachedExit = options.onDetachedExit;
+		let attemptOptions: RunSyncOptions = {
+			...options,
+			onDetachedExit: (recovered) => {
+				recovered.attemptedModels = attemptedModels.length > 0 ? [...attemptedModels] : undefined;
+				const recoveredModel = applyThinkingSuffix(candidate, agent.thinking) ?? recovered.model ?? agent.model ?? "default";
+				const completedAttempt: ModelAttempt = {
+					model: recoveredModel,
+					reasoningLevel: resolveEffectiveThinking(recoveredModel, agent.thinking),
+					success: recovered.exitCode === 0 && !recovered.error,
+					exitCode: recovered.exitCode,
+					error: recovered.error,
+					usage: { ...recovered.usage },
+				};
+				recovered.modelAttempts = [...modelAttempts.slice(0, -1), completedAttempt];
+				persistArtifacts(recovered);
+				detachedExit?.(recovered);
+			},
+		};
 		if (i < modelsToTry.length - 1 && options.onUpdate) {
 			const forwardUpdate = options.onUpdate;
 			attemptOptions = {
-				...options,
+				...attemptOptions,
 				onUpdate: (update) => {
 					if (shouldSuppressIntermediateRetryableFailureUpdate(update)) return;
 					forwardUpdate(update);
@@ -149,6 +183,7 @@ export async function runSync(
 		};
 		modelAttempts.push(attempt);
 		if (attemptSucceeded) break;
+		if (result.detached) break;
 		const retrySignal = modelFailureSignalByResult.get(result) ?? result.error;
 		if (isRetryableModelFailure(retrySignal) && i < modelsToTry.length - 1) {
 			pendingAttemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));
@@ -182,30 +217,8 @@ export async function runSync(
 		if (result.progress.recentOutput.length > 50) result.progress.recentOutput.splice(50);
 	}
 
-	if (artifactPathsResult && options.artifactConfig?.enabled !== false) {
-		result.artifactPaths = artifactPathsResult;
-		if (options.artifactConfig?.includeOutput !== false) {
-			writeArtifact(artifactPathsResult.outputPath, artifactOutputByResult.get(result) ?? result.finalOutput ?? "");
-		}
-		if (options.artifactConfig?.includeMetadata !== false) {
-			writeMetadata(artifactPathsResult.metadataPath, {
-				runId: options.runId,
-				agent: agentName,
-				task,
-				exitCode: result.exitCode,
-				usage: result.usage,
-				model: result.model,
-				fastMode: result.fastMode,
-				attemptedModels: result.attemptedModels,
-				modelAttempts: result.modelAttempts,
-				durationMs: result.progressSummary?.durationMs,
-				toolCount: result.progressSummary?.toolCount,
-				error: result.error,
-				skills: result.skills,
-				skillsWarning: result.skillsWarning,
-				timestamp: Date.now(),
-			});
-		}
+	if (artifactPathsResult && options.artifactConfig?.enabled !== false && !result.detached) {
+		persistArtifacts(result);
 
 		if (options.maxOutput) {
 			const config = { ...DEFAULT_MAX_OUTPUT, ...options.maxOutput };

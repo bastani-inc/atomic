@@ -2,7 +2,8 @@ import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getProjectConfigDirs } from "@bastani/atomic";
+import { fileURLToPath } from "node:url";
+import { APP_NAME, getProjectConfigDirs, getEnvValue } from "@bastani/atomic";
 import type { AgentConfig } from "../agents/agents.ts";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
@@ -12,9 +13,14 @@ const PI_INTERCOM_PACKAGE_NAME = "pi-intercom";
 function defaultAgentDir(): string {
 	return getAgentDir();
 }
+const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
 
 function defaultIntercomExtensionDir(agentDir = defaultAgentDir()): string {
 	return path.join(agentDir, "extensions", PI_INTERCOM_PACKAGE_NAME);
+}
+
+function bundledIntercomExtensionDir(): string {
+	return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "intercom");
 }
 
 function defaultIntercomConfigPath(agentDir = defaultAgentDir()): string {
@@ -72,6 +78,8 @@ interface ResolveIntercomBridgeInput {
 }
 
 export function resolveIntercomSessionTarget(sessionName: string | undefined, sessionId: string): string {
+	const connectedIntercomSessionId = getEnvValue(INTERCOM_SESSION_ID_ENV)?.trim();
+	if (connectedIntercomSessionId) return connectedIntercomSessionId;
 	const trimmedName = sessionName?.trim();
 	if (trimmedName) return trimmedName;
 	const normalizedSessionId = sessionId.startsWith("session-") ? sessionId.slice("session-".length) : sessionId;
@@ -231,7 +239,10 @@ function configuredPiIntercomPackageDir(input: ResolveIntercomBridgeInput, agent
 }
 
 function resolveIntercomExtensionDir(input: ResolveIntercomBridgeInput, agentDir: string): string {
-	const legacyDir = path.resolve(input.extensionDir ?? defaultIntercomExtensionDir(agentDir));
+	if (input.extensionDir) return path.resolve(input.extensionDir);
+	const bundledDir = bundledIntercomExtensionDir();
+	if (packageHasPiExtension(bundledDir)) return bundledDir;
+	const legacyDir = path.resolve(defaultIntercomExtensionDir(agentDir));
 	if (fs.existsSync(legacyDir)) return legacyDir;
 	return configuredPiIntercomPackageDir(input, agentDir) ?? legacyDir;
 }

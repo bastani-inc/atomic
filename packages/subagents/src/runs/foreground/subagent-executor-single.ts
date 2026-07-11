@@ -28,7 +28,7 @@ import {
 	type SubagentToolResult,
 } from "../../shared/types.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun } from "./subagent-executor-status.ts";
+import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 
 function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string): string {
 	const error = result.error || "Failed";
@@ -185,6 +185,10 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 			intercomSessionName: childIntercomTarget,
 			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
 			nestedRoute: foregroundControl?.nestedRoute,
+			onDetachedExit: (result) => {
+				cleanupTransientProgress(progressDir, artifactConfig.enabled);
+				if (result) replaceForegroundRunChild(deps.state, runId, 0, result);
+			},
 			index: 0,
 			modelOverride,
 			availableModels,
@@ -192,7 +196,6 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 			preferredModelProvider: currentProvider,
 			currentModel: currentModelFullId(ctx.model),
 			skills: effectiveSkills,
-			onDetachedExit: () => cleanupTransientProgress(progressDir, artifactConfig.enabled),
 		});
 	} catch (error) {
 		cleanupTransientProgress(progressDir, artifactConfig.enabled);

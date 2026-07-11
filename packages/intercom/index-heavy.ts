@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
+import { APP_NAME, type ExtensionAPI, type ExtensionContext } from "@bastani/atomic";
 import { appendFileSync } from "node:fs";
 import { IntercomClient } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
@@ -11,25 +11,23 @@ import { registerIntercomTool } from "./intercom-tool.js";
 import { registerIntercomOverlay } from "./overlay.js";
 import { registerIntercomLifecycle } from "./lifecycle.js";
 import { registerSubagentRelay } from "./subagent-relay.js";
-import {
-  INBOUND_FLUSH_DELAY_MS,
-  INBOUND_IDLE_RETRY_MS,
-  type InboundMessageEntry,
-  buildPresenceIdentity,
-  formatAttachments,
-  readChildOrchestratorMetadata,
-  toError,
-} from "./intercom-utils.js";
-
+import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
+import { routeIncomingReply } from "./reply-routing.js";
+import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
-
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
   appendFileSync(process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE, "intercom\n");
 }
 
+const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
 export default function piIntercomExtension(pi: ExtensionAPI) {
+  const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
+  const restoreIntercomSessionIdEnv = (): void => {
+    if (inheritedIntercomSessionId === undefined) delete process.env[INTERCOM_SESSION_ID_ENV];
+    else process.env[INTERCOM_SESSION_ID_ENV] = inheritedIntercomSessionId;
+  };
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   let runtimeContext: ExtensionContext | null = null;
@@ -48,6 +46,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
+  const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages: InboundMessageEntry[] = [];
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   let replyWaiter: {
@@ -97,24 +96,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     replyWaiter?.reject(error);
   }
   function clearReconnectTimer(): void {
-    if (!reconnectTimer) {
-      return;
-    }
-    clearTimeout(reconnectTimer);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
   function clearStartupConnectTimer(): void {
-    if (!startupConnectTimer) {
-      return;
-    }
-    clearTimeout(startupConnectTimer);
+    if (startupConnectTimer) clearTimeout(startupConnectTimer);
     startupConnectTimer = null;
   }
   function clearInboundFlushTimer(): void {
-    if (!inboundFlushTimer) {
-      return;
-    }
-    clearTimeout(inboundFlushTimer);
+    if (inboundFlushTimer) clearTimeout(inboundFlushTimer);
     inboundFlushTimer = null;
   }
   function getLiveContext(ctx: ExtensionContext | null = runtimeContext, generation = runtimeGeneration): ExtensionContext | null {
@@ -157,7 +147,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!liveContext || !currentSessionId || sessionStartedAt === null) {
       throw new Error("Intercom runtime not initialized");
     }
-
     const identity = buildPresenceIdentity(pi, currentSessionId);
     return {
       name: identity.name,
@@ -198,7 +187,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
-    if (delivery !== "followUp") {
+    if (delivery === "trigger") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
@@ -210,9 +199,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         display: true,
         details: entry,
       },
-      delivery === "trigger"
-        ? { triggerTurn: true }
-        : { deliverAs: "followUp" }
+      delivery === "trigger" ? { triggerTurn: true } : { deliverAs: "followUp" },
     );
   }
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
@@ -234,7 +221,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!ctx) {
       return;
     }
-
     let isIdle: boolean;
     try {
       isIdle = ctx.isIdle();
@@ -252,26 +238,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       sendIncomingMessage(entry, index === 0 ? "trigger" : "followUp");
     });
   }
-  function queueIdleMessage(entry: InboundMessageEntry): void {
-    pendingIdleMessages.push(entry);
-    scheduleInboundFlush();
-  }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
       return;
     }
-    if (replyWaiter) {
-      const senderTarget = from.name || from.id;
-      const fromMatches = senderTarget.toLowerCase() === replyWaiter.from.toLowerCase()
-        || from.id === replyWaiter.from;
-      const replyMatches = message.replyTo === replyWaiter.replyTo;
-      if (fromMatches && replyMatches) {
-        replyWaiter.resolve(message);
-        return;
-      }
-    }
+    if (routeIncomingReply(replyWaiter, from, message)) return;
     const attachmentText = message.content.attachments?.length
       ? formatAttachments(message.content.attachments)
       : "";
@@ -304,7 +277,20 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
           return;
         }
-        queueIdleMessage(entry);
+        await handleForegroundInboundDelivery({
+          handoff: foregroundDetachHandoff,
+          from,
+          message,
+          generation: messageGeneration,
+          surface: () => sendIncomingMessage(entry, "trigger", messageGeneration),
+          isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+          onUnclaimed: () => {
+            // No exact foreground owner acknowledged the target. Preserve the
+            // established background/cross-session behavior by waiting for idle.
+            pendingIdleMessages.push(entry);
+            scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+          },
+        });
         return;
       }
       if (getLiveContext(liveContext, messageGeneration)) {
@@ -326,6 +312,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       }
       rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
       client = null;
+      if (process.env[INTERCOM_SESSION_ID_ENV] === nextClient.sessionId) restoreIntercomSessionIdEnv();
       if (!shuttingDown && !disposed) {
         clearReconnectTimer();
         scheduleReconnect();
@@ -382,6 +369,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
+        if (nextClient.sessionId) process.env[INTERCOM_SESSION_ID_ENV] = nextClient.sessionId;
         reconnectAttempt = 0;
         return nextClient;
       } catch (error) {
@@ -427,7 +415,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     resolveSessionTarget,
   });
 
-
   registerIntercomLifecycle(pi, {
     config,
     client: () => client,
@@ -435,7 +422,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     setShuttingDown: (value) => { shuttingDown = value; },
     setDisposed: (value) => { disposed = value; },
     setRuntimeStarted: (value) => { runtimeStarted = value; },
-    incrementRuntimeGeneration: () => { runtimeGeneration += 1; return runtimeGeneration; },
+    incrementRuntimeGeneration: () => { runtimeGeneration += 1; foregroundDetachHandoff.reset(); return runtimeGeneration; },
     resetReconnectAttempt: () => { reconnectAttempt = 0; },
     clearReconnectTimer,
     clearStartupConnectTimer,
@@ -456,6 +443,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     scheduleInboundFlush,
     syncPresenceStatus,
     syncPresenceIdentity,
+    restoreIntercomSessionIdEnv,
     currentStatus,
   });
 
@@ -492,4 +480,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     ensureConnected,
     syncPresenceIdentity,
   });
+  return { enabled: config.enabled,
+    async awaitAutomaticBrokerReady(): Promise<void> {
+      if (config.enabled) await ensureConnected("startup");
+    },
+    async awaitForegroundBrokerReady(): Promise<void> {
+      if (config.enabled) await ensureConnected("tool");
+    },
+  };
 }

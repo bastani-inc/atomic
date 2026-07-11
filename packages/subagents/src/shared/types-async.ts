@@ -8,6 +8,7 @@ import type {
 	ActivityState,
 	ChainOutputMap,
 	ModelAttempt,
+	SingleResult,
 	SubagentResultStatus,
 	SubagentRunMode,
 	TokenUsage,
@@ -216,6 +217,7 @@ export interface ForegroundResumeChild {
 	index: number;
 	sessionFile?: string;
 	status: SubagentResultStatus;
+	result?: SingleResult;
 }
 
 export interface ForegroundResumeRun {

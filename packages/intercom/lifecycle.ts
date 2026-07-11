@@ -33,11 +33,44 @@ interface LifecycleDeps {
   syncPresenceStatus(): void;
   syncPresenceIdentity(sessionId: string): void;
   currentStatus(): string;
+  restoreIntercomSessionIdEnv?(): void;
 }
 
 export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps): void {
-  pi.on("session_start", (_event, ctx) => {
+  let hasActiveSession = false;
+
+  async function cleanupRuntime(reason: string): Promise<void> {
+    deps.setRuntimeStarted(false);
+    deps.setShuttingDown(true);
+    deps.setDisposed(true);
+    deps.incrementRuntimeGeneration();
+    deps.clearStartupConnectTimer();
+    deps.clearReconnectTimer();
+    deps.rejectReplyWaiter(new Error(reason));
+    deps.replyTracker.reset();
+    deps.pendingIdleMessages.length = 0;
+    deps.clearInboundFlushTimer();
+    deps.setAgentRunning(false);
+    deps.activeTools.clear();
+    const activeClient = deps.client();
+    deps.setClient(null);
+    if (activeClient) {
+      try {
+        await activeClient.disconnect();
+      } catch (error) {
+        console.error(`Intercom failed to disconnect during ${reason.toLowerCase()}; continuing cleanup:`, error);
+      }
+    }
+    deps.restoreIntercomSessionIdEnv?.();
+    deps.setRuntimeContext(null);
+    deps.setCurrentSessionId(null);
+    deps.setSessionStartedAt(null);
+  }
+
+  pi.on("session_start", async (_event, ctx) => {
     if (!deps.config.enabled) return;
+    if (hasActiveSession) await cleanupRuntime("Session replaced");
+    hasActiveSession = true;
     deps.setShuttingDown(false);
     deps.setDisposed(false);
     deps.setRuntimeStarted(true);
@@ -63,25 +96,9 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
   });
 
   pi.on("session_shutdown", async () => {
-    deps.setShuttingDown(true);
-    deps.setDisposed(true);
-    deps.incrementRuntimeGeneration();
-    deps.clearStartupConnectTimer();
-    deps.clearReconnectTimer();
-    deps.rejectReplyWaiter(new Error("Session shutting down"));
-    deps.replyTracker.reset();
-    deps.pendingIdleMessages.length = 0;
-    deps.clearInboundFlushTimer();
-    deps.setAgentRunning(false);
-    deps.activeTools.clear();
-    const activeClient = deps.client();
-    if (activeClient) {
-      await activeClient.disconnect();
-      deps.setClient(null);
-    }
-    deps.setRuntimeContext(null);
-    deps.setCurrentSessionId(null);
-    deps.setSessionStartedAt(null);
+    if (!hasActiveSession) return;
+    hasActiveSession = false;
+    await cleanupRuntime("Session shutting down");
   });
 
   pi.on("turn_end", () => {

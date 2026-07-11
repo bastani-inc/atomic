@@ -246,7 +246,7 @@ test("foreground detached child retains artifacts-disabled progress storage unti
 	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-progress-detached-"));
 	try {
 		let progressPath = "";
-		let reportDetachedExit: (() => void) | undefined;
+		let reportDetachedExit: ((result: SingleResult) => void) | undefined;
 		const executor = makeExecutor(cwd, {
 			runSync: async (_cwd, _agents, _agent, task, options) => {
 				progressPath = extractProgressPath(task);
@@ -261,7 +261,7 @@ test("foreground detached child retains artifacts-disabled progress storage unti
 
 		assert.equal(existsSync(progressPath), true, "detached child may still write progress");
 		assert.ok(reportDetachedExit);
-		reportDetachedExit();
+		reportDetachedExit(makeResult("implement"));
 		assert.equal(existsSync(progressPath), false, "progress storage is transient after detached child exit");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });

@@ -42,7 +42,7 @@ import {
 	findDuplicateParallelOutputPath,
 	resolveParallelTaskCwd,
 } from "./subagent-executor-worktree.ts";
-import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun } from "./subagent-executor-status.ts";
+import { createForegroundControlNotifier, maybeBuildForegroundIntercomReceipt, rememberForegroundRun, replaceForegroundRunChild } from "./subagent-executor-status.ts";
 
 export async function runParallelPath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
 	const {
@@ -160,6 +160,7 @@ export async function runParallelPath(data: ExecutionContextData, deps: Resolved
 		}
 
 		const results = await runForegroundParallelTasks({
+			onDetachedExit: (index, result) => replaceForegroundRunChild(deps.state, runId, index, result),
 			tasks,
 			taskTexts,
 			agents,

@@ -35,6 +35,16 @@ The human slash commands remain registered and continue to use their separate pa
 
 Subagents now run and return their results directly. Atomic does not infer acceptance gates from prompt wording, inject `acceptance-report` instructions into child prompts, parse or strip `acceptance-report` blocks, or reject completed child runs because changed-file, test, or review evidence is missing. Put any evidence or validation requirements directly in the task text you give the parent or child agent.
 
+## Foreground supervisor coordination
+
+When a foreground child sends `intercom.ask`, `intercom.send`, or `contact_supervisor` coordination, Atomic first probes for the exact foreground owner. Only an exact live child reserves the request; Atomic then sends a generation-scoped detach commit and waits for that child to acknowledge it before placing the message in the parent's model-visible steering queue. Unmatched and background-child messages retain the existing queued-until-idle behavior. Blocking `need_decision` and `interview_request` calls remain actionable through Intercom's pending/reply tracker, and the exact threaded reply resumes the retained child without delayed duplicate delivery.
+
+Only the matching foreground child releases the parent `subagent` tool. It stays alive under the normal watchdog, cancellation, drain, and stdio cleanup lifecycle; its eventual completion replaces the detached placeholder. Fire-and-forget `intercom.send` and `progress_update` also release foreground supervision promptly, but do not create a reply waiter.
+
+Interactive parent sessions lazily register with Intercom when needed; a foreground launch awaits the parent's broker/inbound-handler readiness before the child process can coordinate. Bridged foreground and background children register before agent work begins. Disabled, unavailable, noninteractive, unused-parent, and management-only `list`/`get`/`create`/`update`/`delete`/`status`/`interrupt`/`doctor` paths do not force heavy runtime loading or broker startup. `resume` remains launch-capable and retains the readiness gate. Optional Intercom import, broker, or connection failures are diagnosed without aborting launch, and later calls can retry. Cancellation or session replacement invalidates the handshake generation, so stale acknowledgements cannot surface or detach a child.
+
+Atomic's implementation adapts the prompt foreground release and later-result recovery contracts proven in `nicobailon/pi-subagents` commits `1b55c8c`, `589e51e`, `68fb528`, and `9dfe3df`; it retains Atomic's broker and raw-TypeScript architecture rather than copying upstream's filesystem transport.
+
 ## Migration from acceptance gates
 
 If you have older subagent calls, saved chains, or custom agents that used the removed gate fields:
