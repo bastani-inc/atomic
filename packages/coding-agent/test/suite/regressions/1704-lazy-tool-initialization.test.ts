@@ -346,7 +346,7 @@ console.log(JSON.stringify({ originalFailure, attempts: state.startAttempts, bef
 `, false);
 		expect(result).toEqual({
 			originalFailure: true, attempts: 3, beforeRelease: 1, executions: 3,
-			order: ["session:1", "turn", "model", "agent", "tool", "execute", "session:2", "session:3", "turn", "model", "agent", "tool", "execute", "execute"],
+			order: ["session:1", "turn", "model", "agent", "tool", "execute", "session:2", "session:3", "execute", "execute"],
 		});
 	});
 

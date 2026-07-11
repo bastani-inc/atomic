@@ -63,11 +63,20 @@ ${scriptBody}
 	}
 }
 
+function intercomFixtureEnv(eager: boolean): NodeJS.ProcessEnv {
+	const env = { ...process.env };
+	delete env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
+	delete env.PI_SUBAGENT_ORCHESTRATOR_TARGET;
+	if (eager) env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET = "parent";
+	return env;
+}
+
 export function runIntercomFixture<T>(heavySource: string, scriptBody: string, eager = false): T {
 	const tempDir = createRepositoryFixtureDir("intercom-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
 		writeFileSync(join(tempDir, "index.ts"), readFileSync(resolve(repoRoot, "packages/intercom/index.ts"), "utf-8"));
+		writeFileSync(join(tempDir, "config.ts"), readFileSync(resolve(repoRoot, "packages/intercom/config.ts"), "utf-8"));
 		writeFileSync(join(tempDir, "lifecycle-lease.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lifecycle-lease.ts"), "utf-8"));
 		writeFileSync(join(tempDir, "lazy-tool-execution.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lazy-tool-execution.ts"), "utf-8"));
 		writeFileSync(join(tempDir, "lazy-subagent-ack.ts"), readFileSync(resolve(repoRoot, "packages/intercom/lazy-subagent-ack.ts"), "utf-8"));
@@ -77,7 +86,6 @@ export function runIntercomFixture<T>(heavySource: string, scriptBody: string, e
 		const extensionUrl = pathToFileURL(join(tempDir, "index.ts")).href;
 		const script = `
 ${waitForGateSource}
-if (${JSON.stringify(eager)}) process.env.TEST_SUBAGENT_ORCHESTRATOR_TARGET = "parent";
 const errors = [];
 console.error = (...parts) => errors.push(parts.map(String).join(" "));
 const { default: intercom } = await import(${JSON.stringify(extensionUrl)});
@@ -95,7 +103,7 @@ const execute = (id, callCtx = ctx) => tool("intercom").execute(id, { action: "s
 ${scriptBody}
 `;
 		return parseFixtureResult<T>(spawnSync("bun", ["--eval", script], {
-			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs,
+			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs, env: intercomFixtureEnv(eager),
 		}));
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });
