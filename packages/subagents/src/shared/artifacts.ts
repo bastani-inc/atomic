@@ -53,7 +53,7 @@ function cleanupOldArtifactEntry(entryPath: string, cutoff: number): void {
 			}
 			return;
 		}
-		if (stat.mtimeMs < cutoff) fs.rmSync(entryPath, { force: true });
+		if (stat.mtimeMs < cutoff) fs.unlinkSync(entryPath);
 	} catch {
 		// Artifact cleanup is best-effort housekeeping. Skip entries that disappear
 		// or become unreadable while scanning so one bad entry does not block the rest.
