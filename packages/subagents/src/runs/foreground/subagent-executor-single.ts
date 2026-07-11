@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
@@ -40,6 +41,15 @@ function formatFailedSingleRunOutput(result: SingleResult, displayOutput: string
 		lines.push("", `Output artifact: ${result.artifactPaths.outputPath}`);
 	}
 	return lines.join("\n");
+}
+
+function cleanupTransientProgress(progressDir: string | undefined, artifactsEnabled: boolean): void {
+	if (!progressDir || artifactsEnabled) return;
+	try {
+		fs.rmSync(progressDir, { recursive: true, force: true });
+	} catch {
+		// Scratch cleanup must never replace the child run's result or original error.
+	}
 }
 
 export async function runSinglePath(data: ExecutionContextData, deps: ResolvedExecutorDeps): Promise<SubagentToolResult> {
@@ -99,8 +109,10 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
 	}
-	if (progress) {
-		const progressDir = path.join(artifactsDir, "progress", runId);
+	// Single-agent progress is isolated by run so the injected contract cannot
+	// overwrite a project's own progress.md or collide with another child.
+	const progressDir = progress ? path.join(artifactsDir, "progress", runId) : undefined;
+	if (progressDir) {
 		writeInitialProgressFile(progressDir);
 		task = injectSingleProgressInstruction(task, progressDir);
 	}
@@ -148,37 +160,46 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		}
 		: undefined;
 
-	const r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
-		cwd: effectiveCwd,
-		signal,
-		interruptSignal: interruptController.signal,
-		allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
-		intercomEvents: deps.pi.events,
-		runId,
-		sessionDir: sessionDirForIndex(0),
-		sessionFile: sessionFileForIndex(0),
-		share: shareEnabled,
-		artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
-		artifactConfig,
-		maxOutput: params.maxOutput,
-		outputPath,
-		outputMode: effectiveOutputMode,
-		maxSubagentDepth,
-		workflowStageSubagentGuard,
-		onUpdate: forwardSingleUpdate,
-		controlConfig,
-		onControlEvent,
-		intercomSessionName: childIntercomTarget,
-		orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
-		nestedRoute: foregroundControl?.nestedRoute,
-		index: 0,
-		modelOverride,
-		availableModels,
-		knownModelProviders,
-		preferredModelProvider: currentProvider,
-		currentModel: currentModelFullId(ctx.model),
-		skills: effectiveSkills,
-	});
+	let r: SingleResult;
+	try {
+		r = await deps.runtime.runSync(ctx.cwd, agents, params.agent!, task, {
+			cwd: effectiveCwd,
+			signal,
+			interruptSignal: interruptController.signal,
+			allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
+			intercomEvents: deps.pi.events,
+			runId,
+			sessionDir: sessionDirForIndex(0),
+			sessionFile: sessionFileForIndex(0),
+			share: shareEnabled,
+			artifactsDir: artifactConfig.enabled ? artifactsDir : undefined,
+			artifactConfig,
+			maxOutput: params.maxOutput,
+			outputPath,
+			outputMode: effectiveOutputMode,
+			maxSubagentDepth,
+			workflowStageSubagentGuard,
+			onUpdate: forwardSingleUpdate,
+			controlConfig,
+			onControlEvent,
+			intercomSessionName: childIntercomTarget,
+			orchestratorIntercomTarget: data.intercomBridge.active ? data.intercomBridge.orchestratorTarget : undefined,
+			nestedRoute: foregroundControl?.nestedRoute,
+			index: 0,
+			modelOverride,
+			availableModels,
+			knownModelProviders,
+			preferredModelProvider: currentProvider,
+			currentModel: currentModelFullId(ctx.model),
+			skills: effectiveSkills,
+			onDetachedExit: () => cleanupTransientProgress(progressDir, artifactConfig.enabled),
+		});
+	} catch (error) {
+		cleanupTransientProgress(progressDir, artifactConfig.enabled);
+		throw error;
+	}
+	// Detached children still own this storage until their process closes.
+	if (!r.detached) cleanupTransientProgress(progressDir, artifactConfig.enabled);
 	if (foregroundControl?.currentIndex === 0) {
 		foregroundControl.interrupt = undefined;
 		foregroundControl.currentActivityState = r.progress?.activityState;

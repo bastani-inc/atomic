@@ -788,7 +788,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
 | `reads` | `string[] \| false` | - | Single-agent files to read before execution, or `false` to disable. Relative paths resolve against the effective child `cwd`; absolute paths pass through. |
-| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`. |
+| `progress` | boolean | agent default | Enable or disable single-agent run-scoped `progress.md` tracking under isolated artifact storage. Omission inherits the agent default except for read-only tasks. This does not write `progress.md` into the child `cwd` and is independent of `includeProgress`; with `artifacts: false`, foreground storage is removed after the child exits. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, and `model`. |

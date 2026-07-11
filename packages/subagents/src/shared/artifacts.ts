@@ -41,6 +41,25 @@ export function appendJsonl(filePath: string, line: string): void {
 	if (!appendToActiveEventWriter(filePath, line)) fs.appendFileSync(filePath, `${line}\n`);
 }
 
+function cleanupOldArtifactEntry(entryPath: string, cutoff: number): void {
+	try {
+		const stat = fs.lstatSync(entryPath);
+		if (stat.isDirectory()) {
+			for (const child of fs.readdirSync(entryPath)) {
+				cleanupOldArtifactEntry(path.join(entryPath, child), cutoff);
+			}
+			if (fs.readdirSync(entryPath).length === 0 && stat.mtimeMs < cutoff) {
+				fs.rmSync(entryPath, { recursive: true, force: true });
+			}
+			return;
+		}
+		if (stat.mtimeMs < cutoff) fs.rmSync(entryPath, { force: true });
+	} catch {
+		// Artifact cleanup is best-effort housekeeping. Skip entries that disappear
+		// or become unreadable while scanning so one bad entry does not block the rest.
+	}
+}
+
 export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 	if (!fs.existsSync(dir)) return;
 
@@ -57,16 +76,7 @@ export function cleanupOldArtifacts(dir: string, maxAgeDays: number): void {
 
 	for (const file of fs.readdirSync(dir)) {
 		if (file === CLEANUP_MARKER_FILE) continue;
-		const filePath = path.join(dir, file);
-		try {
-			const stat = fs.statSync(filePath);
-			if (stat.mtimeMs < cutoff) {
-				fs.unlinkSync(filePath);
-			}
-		} catch {
-			// Artifact cleanup is best-effort housekeeping. Skip files that disappear
-			// or become unreadable while scanning so one bad entry does not block the rest.
-		}
+		cleanupOldArtifactEntry(path.join(dir, file), cutoff);
 	}
 
 	fs.writeFileSync(markerPath, String(now));

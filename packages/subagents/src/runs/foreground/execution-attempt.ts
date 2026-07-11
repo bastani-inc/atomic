@@ -406,6 +406,11 @@ export async function runSingleAttempt(
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
 			if (detached) {
+				try {
+					options.onDetachedExit?.();
+				} catch {
+					// Post-detach housekeeping must not affect the already-returned result.
+				}
 				finish(-2);
 				return;
 			}
