@@ -1,15 +1,21 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { createBranchSummaryMessage, createCustomMessage, normalizeMessageContent } from "./messages.ts";
+import {
+	createBranchSummaryMessage,
+	createCustomMessage,
+	messageStartsLlmUserTurn,
+	normalizeMessageContent,
+	userLikeContentIsLlmVisible,
+} from "./messages.ts";
 import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
 import { contentArrayHasAssistantThinkingBlock } from "./thinking-blocks.ts";
 import { reconcilePersistedToolDependencyFilters } from "./session-manager-tool-dependencies.ts";
+import { analyzeAssistantToolUseTurns, type AssistantTurnEntry } from "./compaction/context-assistant-turns.js";
 import type {
 	ContextCompactionEntry,
 	ContextDeletionFilters,
 	FileEntry,
 	SessionContext,
 	SessionEntry,
-	SessionMessageEntry,
 	SessionTreeNode,
 } from "./session-manager-types.ts";
 
@@ -26,8 +32,8 @@ export function getLatestCompactionBoundaryEntry(entries: SessionEntry[]): Conte
 /**
  * Build raw deletion filters from persisted context_compaction entries.
  *
- * These raw filters do not apply replay-safety repair for latest assistant
- * thinking/redacted_thinking blocks or their paired tool results. Production
+ * These raw filters do not apply replay-safety repair for assistant
+ * thinking/redacted_thinking turns or their paired tool results. Production
  * context rebuild paths should prefer `buildEffectiveContextDeletionFilters`
  * or `buildContextDeletionFilteredPath(path)` unless they intentionally need
  * the un-repaired historical deletion plan for diagnostics.
@@ -52,126 +58,149 @@ export function buildContextDeletionFilters(path: SessionEntry[]): ContextDeleti
 	return { deletedEntryIds, deletedContentBlocks };
 }
 
-function getToolCallContentBlockId(block: unknown): string | undefined {
-	if (!block || typeof block !== "object") return undefined;
-	const candidate = block as { type?: unknown; id?: unknown };
-	return candidate.type === "toolCall" && typeof candidate.id === "string" ? candidate.id : undefined;
+function restoreEntry(filters: ContextDeletionFilters, entryId: string): void {
+	filters.deletedEntryIds.delete(entryId);
+	filters.deletedContentBlocks.delete(entryId);
 }
 
-function getToolResultCallId(message: AgentMessage): string | undefined {
-	if (message.role !== "toolResult") return undefined;
-	const toolCallId = (message as { toolCallId?: unknown }).toolCallId;
-	return typeof toolCallId === "string" ? toolCallId : undefined;
-}
-
-function collectToolCallContentBlockIds(content: readonly unknown[]): Set<string> {
-	const toolCallIds = new Set<string>();
-	for (const block of content) {
-		const toolCallId = getToolCallContentBlockId(block);
-		if (toolCallId) toolCallIds.add(toolCallId);
-	}
-	return toolCallIds;
-}
-
-function addDeletionTarget(filters: ContextDeletionFilters, target: ContextCompactionEntry["deletedTargets"][number]): void {
+function addDeletionTarget(
+	filters: ContextDeletionFilters,
+	target: ContextCompactionEntry["deletedTargets"][number],
+): void {
 	if (target.kind === "entry") {
 		filters.deletedEntryIds.add(target.entryId);
+		filters.deletedContentBlocks.delete(target.entryId);
 		return;
 	}
+	if (filters.deletedEntryIds.has(target.entryId)) return;
 	const existing = filters.deletedContentBlocks.get(target.entryId) ?? new Set<number>();
 	existing.add(target.blockIndex);
 	filters.deletedContentBlocks.set(target.entryId, existing);
 }
 
-function buildToolResultEntryIdsByCallId(path: SessionEntry[]): Map<string, Set<string>> {
-	const toolResultEntryIdsByCallId = new Map<string, Set<string>>();
-	for (const entry of path) {
-		if (entry.type !== "message") continue;
-		const toolCallId = getToolResultCallId(entry.message);
-		if (!toolCallId) continue;
-		const existing = toolResultEntryIdsByCallId.get(toolCallId) ?? new Set<string>();
-		existing.add(entry.id);
-		toolResultEntryIdsByCallId.set(toolCallId, existing);
+function sessionBoundaryIsVisible(entry: SessionEntry, filters: ContextDeletionFilters): boolean {
+	if (filters.deletedEntryIds.has(entry.id)) return false;
+	const deletedBlocks = filters.deletedContentBlocks.get(entry.id);
+	if (entry.type === "custom_message") {
+		return entry.excludeFromContext !== true && userLikeContentIsLlmVisible(entry.content, deletedBlocks);
 	}
-	return toolResultEntryIdsByCallId;
+	if (entry.type === "branch_summary") return typeof entry.summary === "string" && entry.summary.length > 0;
+	if (entry.type !== "message") return false;
+	return messageStartsLlmUserTurn(entry.message, deletedBlocks);
 }
 
-function findRetainedThinkingAssistants(
+function sessionEntryAsTurnEntry(
+	entry: SessionEntry,
+	filters: ContextDeletionFilters,
+): AssistantTurnEntry | undefined {
+	if (entry.type === "custom_message") {
+		if (entry.excludeFromContext === true) return undefined;
+		return {
+			entryId: entry.id,
+			role: "custom",
+			hasSignedThinking: false,
+			startsNewTurn: sessionBoundaryIsVisible(entry, filters),
+		};
+	}
+	if (entry.type === "branch_summary") {
+		return {
+			entryId: entry.id,
+			role: "branchSummary",
+			hasSignedThinking: false,
+			startsNewTurn: sessionBoundaryIsVisible(entry, filters),
+		};
+	}
+	if (entry.type !== "message") return undefined;
+	const message = entry.message;
+	if (message.role === "compactionSummary") return undefined;
+	if (
+		(message.role === "bashExecution" && message.excludeFromContext === true) ||
+		(message.role === "custom" && (message as { excludeFromContext?: boolean }).excludeFromContext === true)
+	) {
+		return undefined;
+	}
+	return {
+		entryId: entry.id,
+		role: message.role,
+		hasSignedThinking: message.role === "assistant" && contentArrayHasAssistantThinkingBlock(message.content),
+		startsNewTurn: sessionBoundaryIsVisible(entry, filters),
+	};
+}
+
+function analyzeSessionAssistantTurns(path: SessionEntry[], filters: ContextDeletionFilters) {
+	return analyzeAssistantToolUseTurns(path.flatMap((entry) => sessionEntryAsTurnEntry(entry, filters) ?? []));
+}
+
+function repairSignedThinkingTurnFilters(path: SessionEntry[], filters: ContextDeletionFilters): ContextDeletionFilters {
+	const turns = analyzeSessionAssistantTurns(path, filters);
+
+	// A retained signed assistant is byte-exact/all-or-nothing at message level.
+	// Whole-entry deletion alone counts toward a safe historical omission.
+	for (const turn of turns) {
+		for (const entryId of turn.signedThinkingEntryIds) {
+			if (!filters.deletedEntryIds.has(entryId)) filters.deletedContentBlocks.delete(entryId);
+		}
+	}
+
+	for (const turn of turns) {
+		const deletedSignedIds = turn.signedThinkingEntryIds.filter((entryId) => filters.deletedEntryIds.has(entryId));
+		const unsafe = turn.active
+			? deletedSignedIds.length > 0
+			: deletedSignedIds.length > 0 && deletedSignedIds.length < turn.signedThinkingEntryIds.length;
+		if (!unsafe) continue;
+		for (const entryId of turn.signedThinkingEntryIds) restoreEntry(filters, entryId);
+	}
+	return filters;
+}
+
+function signedTurnReplayPolicy(
 	path: SessionEntry[],
-	deletedEntryIds: ReadonlySet<string>,
-): SessionMessageEntry[] {
-	return path.filter((entry): entry is SessionMessageEntry => {
-		if (entry.type !== "message") return false;
-		if (deletedEntryIds.has(entry.id)) return false;
-		if (entry.message.role !== "assistant") return false;
-		return contentArrayHasAssistantThinkingBlock(entry.message.content);
-	});
+	finalIntent: ContextDeletionFilters,
+): { restoredEntryIds: Set<string>; retainedEntryIds: Set<string> } {
+	const restoredEntryIds = new Set<string>();
+	const retainedEntryIds = new Set<string>();
+	for (const turn of analyzeSessionAssistantTurns(path, finalIntent)) {
+		const deleted = turn.signedThinkingEntryIds.filter((entryId) => finalIntent.deletedEntryIds.has(entryId));
+		const restoreTurn = turn.active
+			? deleted.length > 0
+			: deleted.length > 0 && deleted.length < turn.signedThinkingEntryIds.length;
+		for (const entryId of turn.signedThinkingEntryIds) {
+			if (restoreTurn) restoredEntryIds.add(entryId);
+			if (restoreTurn || !finalIntent.deletedEntryIds.has(entryId)) retainedEntryIds.add(entryId);
+		}
+	}
+	return { restoredEntryIds, retainedEntryIds };
 }
 
 export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
 	const derivedPath = normalizeDerivedSessionEntries(path);
-	const filters = buildContextDeletionFilters(derivedPath);
-	if (!derivedPath.some((entry) => entry.type === "context_compaction")) return filters;
+	const finalIntent = buildContextDeletionFilters(derivedPath);
+	if (!derivedPath.some((entry) => entry.type === "context_compaction")) return finalIntent;
 
-	const rawDeletedEntryIds = new Set<string>();
-	for (const compaction of derivedPath) {
-		if (compaction.type !== "context_compaction") continue;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "entry") rawDeletedEntryIds.add(target.entryId);
-		}
-	}
-	const retainedThinkingAssistants = findRetainedThinkingAssistants(derivedPath, rawDeletedEntryIds);
-	const retainedThinkingAssistantIds = new Set(retainedThinkingAssistants.map((entry) => entry.id));
-	const retainedThinkingAssistantById = new Map(retainedThinkingAssistants.map((entry) => [entry.id, entry]));
-	const toolResultEntryIdsByCallId = buildToolResultEntryIdsByCallId(derivedPath);
-	const effectiveFilters: ContextDeletionFilters = {
+	// Decide turn-level restoration from the cumulative durable intent so safe
+	// complete historical omissions may span multiple compaction entries. Then
+	// replay each entry chronologically: reconciliation at each boundary restores
+	// an unsafe paired whole-result deletion without erasing a later independent
+	// content-block deletion on that result.
+	const { restoredEntryIds, retainedEntryIds } = signedTurnReplayPolicy(derivedPath, finalIntent);
+	const effective: ContextDeletionFilters = {
 		deletedEntryIds: new Set<string>(),
 		deletedContentBlocks: new Map<string, Set<number>>(),
 	};
-	const allRestoredToolResultEntryIds = new Set<string>();
-
-	for (const compaction of derivedPath) {
-		if (compaction.type !== "context_compaction") continue;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind !== "content_block") continue;
-			const retainedThinkingAssistant = retainedThinkingAssistantById.get(target.entryId);
-			if (!retainedThinkingAssistant) continue;
-			const content = (retainedThinkingAssistant.message as { content: readonly unknown[] }).content;
-			for (const toolCallId of collectToolCallContentBlockIds(content)) {
-				for (const entryId of toolResultEntryIdsByCallId.get(toolCallId) ?? []) {
-					allRestoredToolResultEntryIds.add(entryId);
-				}
-			}
+	for (const entry of derivedPath) {
+		if (entry.type !== "context_compaction") continue;
+		for (const target of entry.deletedTargets) {
+			if (target.kind === "entry" && restoredEntryIds.has(target.entryId)) continue;
+			if (target.kind === "content_block" && retainedEntryIds.has(target.entryId)) continue;
+			addDeletionTarget(effective, target);
 		}
+		reconcilePersistedToolDependencyFilters(derivedPath, effective);
 	}
 
-	for (const compaction of derivedPath) {
-		if (compaction.type !== "context_compaction") continue;
-		let restoresRetainedThinkingAssistant = false;
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
-				restoresRetainedThinkingAssistant = true;
-				break;
-			}
-		}
-
-		for (const target of compaction.deletedTargets) {
-			if (target.kind === "content_block" && retainedThinkingAssistantIds.has(target.entryId)) {
-				continue;
-			}
-			// When a stale persisted plan tried to partially filter a retained
-			// thinking-bearing assistant, treat the same compaction entry as one
-			// unsafe unit and restore its paired tool results. Later compaction
-			// entries may still trim those restored multi-block results normally,
-			// but whole-entry deletion of those paired results remains unsafe in any
-			// later compaction because the assistant tool call is retained.
-			if (restoresRetainedThinkingAssistant && allRestoredToolResultEntryIds.has(target.entryId)) continue;
-			if (target.kind === "entry" && allRestoredToolResultEntryIds.has(target.entryId)) continue;
-			addDeletionTarget(effectiveFilters, target);
-		}
-	}
-
-	return reconcilePersistedToolDependencyFilters(derivedPath, effectiveFilters);
+	// Defensive final repair handles malformed dependency graphs and keeps this
+	// reconstruction path authoritative even if reconciliation behavior evolves.
+	repairSignedThinkingTurnFilters(derivedPath, effective);
+	return reconcilePersistedToolDependencyFilters(derivedPath, effective);
 }
 
 function filterContentArray<T>(content: T[], deletedBlocks: ReadonlySet<number>): T[] {
@@ -332,7 +361,7 @@ export function buildSessionContext(
 				entry.timestamp,
 				entry.excludeFromContext,
 			);
-		} else if (entry.type === "branch_summary" && entry.summary) {
+		} else if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
 			message = createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 		}
 

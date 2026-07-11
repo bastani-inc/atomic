@@ -38,7 +38,7 @@ import {
 } from "./context-compaction-helpers.js";
 
 describe("context compaction", () => {
-		it("rejects entry deletion when deleting newer assistants would make an older thinking assistant latest retained", () => {
+		it("rejects deleting signed entries anywhere in the active assistant turn", () => {
 			resetIds();
 			const task = entry(user("Task must remain available"));
 			const olderThinkingAssistant = entry({
@@ -63,9 +63,79 @@ describe("context compaction", () => {
 					},
 					preparation.transcript,
 				),
-			).toThrow(/latest assistant message retained after other deletions.*thinking\/redacted_thinking/);
+			).toThrow(/active assistant tool-use turn.*thinking\/redacted_thinking/);
 		});
 
+
+		it("rejects deleting a boundary and only one signed entry after the replay turns merge", () => {
+			resetIds();
+			const first = entry({
+				...assistantText(""),
+				content: [{ type: "thinking", thinking: "first", thinkingSignature: "sig-first" }],
+			} as unknown as AssistantMessage);
+			const boundary = entry(user("separating task"));
+			const second = entry({
+				...assistantText(""),
+				content: [{ type: "thinking", thinking: "second", thinkingSignature: "sig-second" }],
+			} as unknown as AssistantMessage);
+			const current = entry(user("current task"));
+			const preparation = prepareContextCompaction(
+				[entry(user("first task")), first, boundary, second, current],
+				DEFAULT_COMPACTION_SETTINGS,
+				{ preserve_recent: 0 },
+			)!;
+			preparation.transcript.entries.find((candidate) => candidate.entryId === boundary.id)!.protected = false;
+
+			expect(() =>
+				validateContextDeletionRequest(
+					{ deletions: [{ kind: "entry", entryId: boundary.id }, { kind: "entry", entryId: first.id }] },
+					preparation.transcript,
+				),
+			).toThrow(/completed assistant tool-use turn.*retain all or omit all/);
+			expect(
+				validateContextDeletionRequest(
+					{
+						deletions: [
+							{ kind: "entry", entryId: boundary.id },
+							{ kind: "entry", entryId: first.id },
+							{ kind: "entry", entryId: second.id },
+						],
+					},
+					preparation.transcript,
+				).deletedTargets,
+			).toEqual([
+				{ kind: "entry", entryId: boundary.id },
+				{ kind: "entry", entryId: first.id },
+				{ kind: "entry", entryId: second.id },
+			]);
+		});
+
+		it("rejects deleting a trailing boundary with the signed entry it makes active", () => {
+			resetIds();
+			const signed = entry({
+				...assistantText(""),
+				content: [{ type: "thinking", thinking: "active after merge", thinkingSignature: "sig-active-merge" }],
+			} as unknown as AssistantMessage);
+			const trailingBoundary = entry(user("temporary current task"));
+			const preparation = prepareContextCompaction(
+				[entry(user("original task")), signed, trailingBoundary],
+				DEFAULT_COMPACTION_SETTINGS,
+				{ preserve_recent: 0 },
+			)!;
+			preparation.transcript.entries.find((candidate) => candidate.entryId === trailingBoundary.id)!.protected = false;
+
+			expect(() =>
+				validateContextDeletionRequest(
+					{
+						deletions: [
+							{ kind: "entry", entryId: trailingBoundary.id },
+							{ kind: "entry", entryId: signed.id },
+						],
+					},
+					preparation.transcript,
+				),
+			).toThrow(/active assistant tool-use turn/);
+		});
 		it("context_grep_delete skips unsafe latest-retained thinking assistant content blocks without counting them as removals", async () => {
 			resetIds();
 			const task = entry(user("Task must remain available"));

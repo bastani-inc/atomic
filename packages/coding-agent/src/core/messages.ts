@@ -73,6 +73,82 @@ export function normalizeMessageContent<T extends AgentMessage>(message: T): T {
 	}
 }
 
+export function userLikeContentBlockIsLlmVisible(block: unknown): boolean {
+	if (!block || typeof block !== "object") return false;
+	const candidate = block as { type?: unknown; text?: unknown };
+	if (candidate.type === "image") return true;
+	if (candidate.type === "text") return typeof candidate.text === "string" && candidate.text.trim().length > 0;
+	// Future provider-supported blocks must fail visible; only malformed/untyped blocks fail closed.
+	return typeof candidate.type === "string" && candidate.type.trim().length > 0;
+}
+
+/** Whether user/custom content survives provider conversion as a visible input. */
+export function userLikeContentIsLlmVisible(
+	content: unknown,
+	deletedBlockIndexes: ReadonlySet<number> = new Set<number>(),
+): boolean {
+	if (typeof content === "string") return content.trim().length > 0;
+	if (!Array.isArray(content)) return false;
+	return content.some((block, index) => !deletedBlockIndexes.has(index) && userLikeContentBlockIsLlmVisible(block));
+}
+
+/** Whether an Atomic message emits an LLM-visible user-like turn boundary. */
+export function messageStartsLlmUserTurn(
+	message: AgentMessage,
+	deletedBlockIndexes: ReadonlySet<number> = new Set<number>(),
+): boolean {
+	switch (message.role) {
+		case "user":
+			return userLikeContentIsLlmVisible(message.content, deletedBlockIndexes);
+		case "custom":
+			return (
+				(message as CustomMessage & { excludeFromContext?: boolean }).excludeFromContext !== true &&
+				userLikeContentIsLlmVisible(message.content, deletedBlockIndexes)
+			);
+		case "branchSummary":
+			// Empty summaries are omitted by session reconstruction. Whitespace is
+			// visible because the branch-summary wrapper itself is non-whitespace.
+			return typeof message.summary === "string" && message.summary.length > 0;
+		case "bashExecution":
+			return message.excludeFromContext !== true;
+		default:
+			return false;
+	}
+}
+
+/** Whether an Atomic message survives conversion into provider-visible context. */
+export function messageIsLlmVisible(
+	message: AgentMessage,
+	deletedBlockIndexes: ReadonlySet<number> = new Set<number>(),
+): boolean {
+	if (message.role === "assistant" || message.role === "toolResult") return true;
+	return messageStartsLlmUserTurn(message, deletedBlockIndexes);
+}
+
+/** Filter invalid user-like blocks only in transient provider-bound content. */
+function filterUserLikeContentBlocks(content: unknown[]): unknown[] {
+	return content.filter(userLikeContentBlockIsLlmVisible);
+}
+
+/** Normalize raw blocks only in the transient LLM-compatible message returned by convertToLlm. */
+function normalizeRawRedactedThinking(message: AgentMessage): AgentMessage {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+	let changed = false;
+	const content = message.content.map((block) => {
+		if (!block || typeof block !== "object") return block;
+		const candidate = block as { type?: unknown; data?: unknown };
+		if (candidate.type !== "redacted_thinking" || typeof candidate.data !== "string") return block;
+		changed = true;
+		return {
+			type: "thinking" as const,
+			thinking: "",
+			thinkingSignature: candidate.data,
+			redacted: true,
+		};
+	});
+	return changed ? ({ ...message, content } as AgentMessage) : message;
+}
+
 /**
  * Convert a BashExecutionMessage to user message text for LLM context.
  */
@@ -177,45 +253,43 @@ export function repairOrphanToolResults(messages: Message[]): Message[] {
  */
 export function convertToLlm(messages: AgentMessage[]): Message[] {
 	const converted = messages
-		.map((m): Message | undefined => {
+		.map((rawMessage): Message | undefined => {
+			const m = normalizeRawRedactedThinking(normalizeMessageContent(rawMessage));
 			switch (m.role) {
 				case "bashExecution":
-					// Skip messages excluded from context (!! prefix)
-					if (m.excludeFromContext) {
-						return undefined;
-					}
+					if (!messageStartsLlmUserTurn(m)) return undefined;
 					return {
 						role: "user",
 						content: [{ type: "text", text: bashExecutionToText(m) }],
 						timestamp: m.timestamp,
 					};
 				case "custom": {
-					if ((m as CustomMessage & { excludeFromContext?: boolean }).excludeFromContext === true) return undefined;
-					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-					return {
-						role: "user",
-						content,
-						timestamp: m.timestamp,
-					};
+					if (!messageStartsLlmUserTurn(m)) return undefined;
+					const content = typeof m.content === "string"
+						? [{ type: "text" as const, text: m.content }]
+						: filterUserLikeContentBlocks(m.content) as Message["content"];
+					return { role: "user", content, timestamp: m.timestamp } as Message;
 				}
 				case "branchSummary":
+					if (!messageStartsLlmUserTurn(m)) return undefined;
 					return {
 						role: "user",
 						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
 						timestamp: m.timestamp,
 					};
-				case "user":
+				case "user": {
+					if (!messageStartsLlmUserTurn(m)) return undefined;
+					if (!Array.isArray(m.content)) return m;
+					return { ...m, content: filterUserLikeContentBlocks(m.content) } as Message;
+				}
 				case "assistant":
 				case "toolResult":
 					return m;
 				case "compactionSummary":
-					// Legacy summary-compaction message type retained in the upstream AgentMessage
-					// union. Summary compaction was removed; these archival entries are inert and are
-					// never injected into active LLM context.
+					// Legacy generated summaries remain archival and never enter active LLM context.
 					return undefined;
 				default: {
-					// Exhaustiveness guard: adding a new AgentMessage role must fail the build here
-					// instead of silently mapping to undefined and dropping the message from context.
+					// Exhaustiveness guard: new AgentMessage roles must define provider conversion explicitly.
 					const _exhaustiveCheck: never = m;
 					void _exhaustiveCheck;
 					return undefined;

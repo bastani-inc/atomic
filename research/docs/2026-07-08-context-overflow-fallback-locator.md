@@ -89,8 +89,8 @@ Node modules: no live `node_modules/@earendil-works/pi-ai` source was present in
   - Lines 461-465: budget tool implementation entry.
 
 - `packages/coding-agent/src/core/compaction/context-compaction-eviction.ts`
-  - Lines 8-10: max eviction pass constant.
-  - Lines 189-218: eviction pass cap terminal error.
+  - Finite deterministic candidate phases: non-boundary sweeps, repaired boundary attempts, signed-turn sweeps, skipped-boundary retries, and terminal exhaustion.
+  - Alternate boundary planning is extracted to `context-compaction-eviction-alternates.ts`, where deduplicated search retains at most 16 states per boundary.
 
 - `packages/coding-agent/src/core/compaction/context-compaction-types.ts`
   - Lines 5-8: prompt version and parameters.

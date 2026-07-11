@@ -3,11 +3,7 @@ import type { Context, StreamOptions } from "@earendil-works/pi-ai/compat";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import { buildContextCompactionPrompt, CONTEXT_COMPACTION_TARGET_REDUCTION_PERCENT, contextCompact, createContextDeletionTool, DEFAULT_COMPACTION_SETTINGS, type CompactableTranscript } from "../src/core/compaction/index.ts";
 export function userMessage(text: string): AgentMessage {
-	return {
-		role: "user",
-		content: [{ type: "text", text }],
-		timestamp: Date.now(),
-	};
+	return { role: "user", content: [{ type: "text", text }], timestamp: Date.now() };
 }
 export function assistantMessage(text: string): AgentMessage {
 	return {
@@ -44,23 +40,19 @@ export function recentAssistantEntries(prefix: string, count = 2): CompactableTr
 		};
 	});
 }
+function protectedUserEntry(entryId: string): CompactableTranscript["entries"][number] {
+	const text = "Keep the user's task protected.";
+	return {
+		entryId, entryType: "message", role: "user", text, tokenEstimate: 8, protected: true,
+		contentBlocks: [], message: userMessage(text), toolCallIds: [],
+	};
+}
 export function createTranscript(): CompactableTranscript {
-	const task = userMessage("Keep the user's task protected.");
 	const oldOne = assistantMessage("Old search output that can be deleted.");
 	const oldTwo = assistantMessage("Old file read that can be deleted.");
 	const recentEntries = recentAssistantEntries("entry-recent");
 	const entries: CompactableTranscript["entries"] = [
-			{
-				entryId: "entry-user",
-				entryType: "message",
-				role: "user",
-				text: "Keep the user's task protected.",
-				tokenEstimate: 8,
-				protected: true,
-				contentBlocks: [],
-				message: task,
-				toolCallIds: [],
-			},
+		protectedUserEntry("entry-user"),
 			{
 				entryId: "entry-old-1",
 				entryType: "message",
@@ -376,113 +368,6 @@ export function createProtectedToolBlockTranscript(): CompactableTranscript {
 			toolCallIds: [],
 			toolResultFor: callId,
 		},
-		...recentEntries,
-	];
-	return {
-		entries,
-		protectedEntryIds: ["entry-user", ...recentEntries.map((entry) => entry.entryId)],
-		tokensBefore: entries.reduce((total, entry) => total + entry.tokenEstimate, 0),
-		settings: DEFAULT_COMPACTION_SETTINGS,
-	};
-}
-export function createAssistantThinkingBlockTranscript(): CompactableTranscript {
-	const task = userMessage("Keep the user's task protected.");
-	const thinkingMessage = {
-		...assistantMessage(""),
-		content: [{ type: "thinking", thinking: "single thinking sentinel", thinkingSignature: "sig-thinking" }],
-	} as AgentMessage;
-	const recentEntries = recentAssistantEntries("entry-thinking-recent");
-	const entries: CompactableTranscript["entries"] = [
-			{
-				entryId: "entry-user",
-				entryType: "message",
-				role: "user",
-				text: "Keep the user's task protected.",
-				tokenEstimate: 8,
-				protected: true,
-				contentBlocks: [],
-				message: task,
-				toolCallIds: [],
-			},
-			{
-				entryId: "entry-thinking",
-				entryType: "message",
-				role: "assistant",
-				text: "single thinking sentinel",
-				tokenEstimate: 6,
-				protected: false,
-				contentBlocks: [
-					{
-						entryId: "entry-thinking",
-						blockIndex: 0,
-						type: "thinking",
-						text: "single thinking sentinel",
-						tokenEstimate: 6,
-						protected: false,
-					},
-				],
-				message: thinkingMessage,
-				toolCallIds: [],
-			},
-		...recentEntries,
-	];
-	return {
-		entries,
-		protectedEntryIds: ["entry-user", ...recentEntries.map((entry) => entry.entryId)],
-		tokensBefore: entries.reduce((total, entry) => total + entry.tokenEstimate, 0),
-		settings: DEFAULT_COMPACTION_SETTINGS,
-	};
-}
-export function createAssistantThinkingSiblingTranscript(): CompactableTranscript {
-	const task = userMessage("Keep the user's task protected.");
-	const thinkingMessage = {
-		...assistantMessage(""),
-		content: [
-			{ type: "text", text: "visible sibling sentinel" },
-			{ type: "thinking", thinking: "paired thinking sentinel", thinkingSignature: "sig-thinking" },
-		],
-	} as AgentMessage;
-	const recentEntries = recentAssistantEntries("entry-thinking-sibling-recent");
-	const entries: CompactableTranscript["entries"] = [
-			{
-				entryId: "entry-user",
-				entryType: "message",
-				role: "user",
-				text: "Keep the user's task protected.",
-				tokenEstimate: 8,
-				protected: true,
-				contentBlocks: [],
-				message: task,
-				toolCallIds: [],
-			},
-			{
-				entryId: "entry-thinking-sibling",
-				entryType: "message",
-				role: "assistant",
-				text: "visible sibling sentinel\npaired thinking sentinel",
-				tokenEstimate: 10,
-				protected: false,
-				contentBlocks: [
-					{
-						entryId: "entry-thinking-sibling",
-						blockIndex: 0,
-						type: "text",
-						text: "visible sibling sentinel",
-						tokenEstimate: 4,
-						protected: false,
-					},
-					{
-						entryId: "entry-thinking-sibling",
-						blockIndex: 1,
-						type: "thinking",
-						text: "paired thinking sentinel",
-						tokenEstimate: 6,
-						protected: false,
-					},
-				],
-				message: thinkingMessage,
-				toolCallIds: [],
-			},
 		...recentEntries,
 	];
 	return {

@@ -167,7 +167,8 @@ describe("context compaction", () => {
 				return !sentinels.some((sentinel) => serialized.includes(sentinel));
 			});
 			expect(transcript.tokensBefore).toBe(estimateContextTokens(eligibleContextMessages).tokens);
-			expect(transcript.tokensBefore).toBeLessThan(estimateContextTokens(rawContextMessages).tokens);
+			// Provider-invisible messages do not inflate either transcript or direct heuristic totals.
+			expect(transcript.tokensBefore).toBe(estimateContextTokens(rawContextMessages).tokens);
 	
 			const validated = validateContextDeletionRequest(
 				{ deletions: [{ kind: "entry", entryId: oldEligible.id }] },

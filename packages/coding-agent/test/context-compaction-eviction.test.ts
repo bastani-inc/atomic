@@ -8,10 +8,7 @@ import {
 	relaxTranscriptForCriticalEviction,
 } from "../src/core/compaction/context-compaction-critical.ts";
 import { validateContextDeletionRequest } from "../src/core/compaction/index.ts";
-import {
-	CONTEXT_COMPACTION_MAX_EVICTION_PASSES,
-	runDeterministicContextEviction,
-} from "../src/core/compaction/context-compaction-eviction.ts";
+import { runDeterministicContextEviction } from "../src/core/compaction/context-compaction-eviction.ts";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.ts";
 import { canDeleteTarget, deletionRequestFromTargets } from "../src/core/compaction/context-deletion-targets.ts";
 
@@ -112,7 +109,12 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		const original = transcript([
 			entry("old-user", "user", 5, true),
 			entry("old-custom", "custom", 5, true),
-			entry("old-summary", "branchSummary", 5, true),
+			entry("old-summary", "branchSummary", 5, true, {
+				role: "branchSummary",
+				summary: "old branch task",
+				fromId: "old-branch",
+				timestamp: Date.now(),
+			}),
 			entry("assistant-error", "assistant", 5, true, assistantError),
 			entry("tool-error", "toolResult", 5, true, toolError),
 			entry("bash-failed", "bashExecution", 5, true, bashFailed),
@@ -206,21 +208,22 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		expectProtectedIdsDisjointFromDeleted(result);
 	});
 
-	it("can evict an older thinking assistant when a newer non-thinking assistant remains", () => {
+	it("can evict a completed older thinking turn when a current turn remains", () => {
 		const input = transcript(
 			[
 				entry("task", "user", 20, true),
 				entry("older-thinking", "assistant", 60, false, thinkingAssistantMessage("older thinking")),
-				...recentTail("newer-assistant", CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT, 2),
+				entry("current-task", "user", 1, true),
+				...recentTail("newer-assistant", CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT - 1, 2),
 			],
 			0,
 		);
 		const result = runDeterministicContextEviction(input, 30);
-		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: "older-thinking" }]);
+		expect(result.deletedTargets).toContainEqual({ kind: "entry", entryId: "older-thinking" });
 		expect(result.stats.tokensAfter).toBeLessThanOrEqual(30);
 	});
 
-	it("drops an older thinking deletion when it blocks a newer fitting deletion plan", () => {
+	it("treats a signed turn before a trailing user input as historical and evictable", () => {
 		const input = transcript(
 			[
 				entry("older-thinking", "assistant", 10, false, thinkingAssistantMessage("older thinking")),
@@ -235,29 +238,30 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		);
 		const result = runDeterministicContextEviction(input, 30);
 		expect(result.deletedTargets).toEqual([
+			{ kind: "entry", entryId: "older-thinking" },
 			{ kind: "entry", entryId: "newer-a" },
 			{ kind: "entry", entryId: "newer-b" },
 		]);
-		expect(result.deletedTargets.some((target) => target.entryId === "older-thinking")).toBe(false);
 		expect(result.stats.tokensAfter).toBeLessThanOrEqual(30);
 	});
 
-	it("retains the newest planned thinking assistant when that enables an older thinking plus newer assistant deletion", () => {
+	it("evicts every signed entry in a completed multi-assistant turn as one group", () => {
 		const input = transcript(
 			[
 				entry("thinking-large", "assistant", 40, false, thinkingAssistantMessage("large older thinking")),
 				entry("thinking-small-newest", "assistant", 5, false, thinkingAssistantMessage("small newest thinking")),
 				entry("latest-non-thinking", "assistant", 35),
-				...recentUserTail("retain-thinking-tail"),
+				...recentUserTail("retain-thinking-tail", CONTEXT_CRITICAL_OVERFLOW_RECENT_ENTRY_COUNT - 1),
+				entry("current-assistant", "assistant", 1, true),
 			],
 			0,
 		);
 		const result = runDeterministicContextEviction(input, 10);
 		expect(result.deletedTargets).toEqual([
 			{ kind: "entry", entryId: "thinking-large" },
+			{ kind: "entry", entryId: "thinking-small-newest" },
 			{ kind: "entry", entryId: "latest-non-thinking" },
 		]);
-		expect(result.deletedTargets.some((target) => target.entryId === "thinking-small-newest")).toBe(false);
 		expect(result.stats.tokensAfter).toBeLessThanOrEqual(10);
 	});
 
@@ -295,6 +299,50 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		expect(result.stats.tokensAfter).toBeLessThanOrEqual(15);
 	});
 
+	it("rolls back earlier signed/task deletions when a later boundary is the only fitting safe plan", () => {
+		const oldTask = entry("old-task", "user", 5, true);
+		const signedAssistant = entry(
+			"signed-active-after-boundary-delete",
+			"assistant",
+			5,
+			false,
+			thinkingAssistantMessage("signed reasoning"),
+		);
+		const largeBoundary = entry("large-boundary", "user", 100, true);
+		const input = transcript([oldTask, signedAssistant, largeBoundary, ...recentTail("protected-tail", 5, 1)], 0);
+
+		const result = runDeterministicContextEviction(input, 15);
+
+		expect(result.deletedTargets).toEqual([{ kind: "entry", entryId: largeBoundary.entryId }]);
+		expect(result.stats.tokensAfter).toBeLessThanOrEqual(15);
+	});
+
+	it("rolls back a greedy prefix when filler plus a later boundary is the safe fitting plan", () => {
+		const oldTask = entry("prefix-old-task", "user", 5, true);
+		const signedAssistant = entry(
+			"prefix-signed-assistant",
+			"assistant",
+			5,
+			false,
+			thinkingAssistantMessage("prefix signed reasoning"),
+		);
+		const oldFiller = entry("prefix-old-filler", "assistant", 100);
+		const largeBoundary = entry("prefix-large-boundary", "user", 100, true);
+		const input = transcript(
+			[oldTask, signedAssistant, oldFiller, largeBoundary, ...recentTail("prefix-protected-tail", 5, 1)],
+			0,
+		);
+
+		const result = runDeterministicContextEviction(input, 15);
+
+		expect(result.deletedTargets).toEqual([
+			{ kind: "entry", entryId: oldFiller.entryId },
+			{ kind: "entry", entryId: largeBoundary.entryId },
+		]);
+		expect(result.deletedTargets.some((target) => target.entryId === oldTask.entryId)).toBe(false);
+		expect(result.deletedTargets.some((target) => target.entryId === signedAssistant.entryId)).toBe(false);
+		expect(result.stats.tokensAfter).toBe(15);
+	});
 	it("matches a bounded brute-force oracle for deterministic eviction success and exhaustion", () => {
 		const callId = "oracle-call";
 		const toolCall = {
@@ -354,6 +402,19 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 				input: transcript([entry("only-task-o", "user", 30, true), entry("tiny-old-o", "assistant", 5), ...recentTail("oracle-tail-d", 5, 1)], 0),
 				budget: 1,
 			},
+			{
+				input: transcript(
+					[
+						entry("prefix-task-o", "user", 5, true),
+						entry("prefix-signed-o", "assistant", 5, false, thinkingAssistantMessage("prefix oracle")),
+						entry("prefix-filler-o", "assistant", 100),
+						entry("prefix-boundary-o", "user", 100, true),
+						...recentTail("prefix-tail-o", 5, 1),
+					],
+					0,
+				),
+				budget: 15,
+			},
 		];
 		for (const { input, budget } of cases) {
 			expectEvictionMatchesOracle(input, budget);
@@ -392,9 +453,8 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		expect(() => runDeterministicContextEviction(input, 20)).toThrow(/nothing more was safely deletable/);
 	});
 
-	it("uses a 50 pass cap and is deterministic for repeated inputs", () => {
+	it("is deterministic for repeated inputs", () => {
 		const input = transcript([entry("task", "user", 10, true), entry("old-1", "assistant", 5), entry("old-2", "assistant", 5), ...recentTail()]);
-		expect(CONTEXT_COMPACTION_MAX_EVICTION_PASSES).toBe(50);
 		expect(runDeterministicContextEviction(input, 35).deletedTargets).toEqual(runDeterministicContextEviction(input, 35).deletedTargets);
 	});
 });

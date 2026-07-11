@@ -8,8 +8,6 @@ import {
 	createContentBlockTranscript,
 	createProtectedContentBlockTranscript,
 	createProtectedToolBlockTranscript,
-	createAssistantThinkingBlockTranscript,
-	createAssistantThinkingSiblingTranscript,
 	buildContextCompactionPrompt,
 	CONTEXT_COMPACTION_TARGET_REDUCTION_PERCENT,
 	contextCompact,

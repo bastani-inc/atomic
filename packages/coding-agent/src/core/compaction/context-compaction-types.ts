@@ -28,6 +28,8 @@ export interface CompactableContentBlock {
 	text: string;
 	tokenEstimate: number;
 	protected: boolean;
+	/** Visibility computed from the raw durable block before transcript display normalization. */
+	llmVisible?: boolean;
 	toolCallId?: string;
 }
 

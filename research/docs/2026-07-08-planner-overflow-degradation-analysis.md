@@ -44,14 +44,15 @@ The current compaction runner degrades overflow-path planner failures to determi
 - The runner can then try the critical planner and finally deterministic eviction (`context-compaction-runner.ts:344-372`).
 
 ### Deterministic Eviction Behavior
-- `runDeterministicContextEviction()` first relaxes the transcript for critical overflow (`context-compaction-eviction.ts:172`).
-- It protects the latest assistant entry if that entry contains thinking content (`context-compaction-eviction.ts:173-174`).
-- It builds candidates from relaxed entries excluding that protected latest thinking assistant, keeping only entries accepted by `canDeleteTarget()` (`context-compaction-eviction.ts:175-178`).
-- It iterates candidates in transcript order, adding whole-entry deletion targets and validating after each addition (`context-compaction-eviction.ts:190-199`).
-- If a direct deletion plan is invalid, it tries deterministic exchange plans for thinking/task-bearing constraints (`context-compaction-eviction.ts:202-209`).
-- It stops once validated deletions fit the token budget (`context-compaction-eviction.ts:191`, `context-compaction-eviction.ts:194`).
-- It has a hard 50-pass cap (`context-compaction-eviction.ts:8`, `context-compaction-eviction.ts:190`, `context-compaction-eviction.ts:217-221`).
-- Terminal failure messages include achieved stats and “nothing more was safely deletable” (`context-compaction-eviction.ts:10-20`).
+The original fallback was a flat oldest-first candidate loop with a fixed pass cap and a special case for the latest thinking assistant. That description is historical. The current fallback is turn-aware and finite by construction:
+
+- `runDeterministicContextEviction()` first applies critical-overflow relaxation, then `initialEvictionGroups()` analyzes logical assistant tool-use turns. Signed-thinking assistant entries in each completed historical turn become an all-or-none eviction group; signed entries in the active final turn are excluded. Other eligible entries are singleton groups, and provider-visible user-like turn boundaries are marked separately (`packages/coding-agent/src/core/compaction/context-compaction-eviction.ts`).
+- Phase 1 uses `adoptSmallestFittingPrefix()` to batch the smallest fitting prefix of non-boundary groups when possible, otherwise it sweeps those groups in transcript order. The prefix search and sweep each traverse a finite group list (`context-compaction-eviction.ts`).
+- Phase 2 tries `repairedFittingBoundaryPrefix()`, then individual boundary groups in deterministic token-descending order with transcript order as the tie-breaker. `repairSignedTurnTargets()` reconciles tool dependencies and restores any active or partial signed turn before validation (`context-compaction-eviction.ts`; `packages/coding-agent/src/core/compaction/context-compaction-eviction-alternates.ts`).
+- Phase 3 sweeps signed groups that became historical after boundary deletion. Phase 4 retries skipped boundaries first by shared restoration component, then retries only boundaries outside those components individually (`currentHistoricalSignedGroups()` and `skippedBoundaryRestorationGroups()` in `context-compaction-eviction-alternates.ts`; the ordered phase loops remain in `context-compaction-eviction.ts`).
+- Phase 5 calls `alternateBoundaryPlan()`. For each boundary it explores both retaining the current plan and adopting a repaired plan, deduplicates by exact target signature, sorts deterministically by `tokensAfter` and signature, and retains at most 16 states per boundary (eight from each end when pruning). It then gives every retained state one finite newly-historical-signed-group sweep (`context-compaction-eviction-alternates.ts`).
+- Every accepted candidate goes through `validateContextDeletionRequest()` via `validateTargets()`, so token accounting and replay/task/tool integrity use the production validator. Returned targets are sorted by transcript position and block index, and a plan succeeds only with at least one deletion and `stats.tokensAfter <= tokenBudget`.
+- If all ordered candidate arrays and bounded alternate states are exhausted, the terminal error reports the best achieved stats, budget, and “nothing more was safely deletable” (`terminalDeterministicEvictionError()` in `context-compaction-eviction.ts`).
 
 ### Critical Relaxation Rules
 - Critical overflow widens `preserve_recent` to at least 5 (`context-compaction-critical.ts:6-12`).
@@ -76,17 +77,17 @@ The current compaction runner degrades overflow-path planner failures to determi
 
 #### Deterministic fallback and exhaustion
 - `packages/coding-agent/test/context-compaction-deletion-tool-06.suite.ts:286-312` covers fallback to deterministic tier-4 eviction and terminal exhaustion reporting.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:149-164` verifies deterministic eviction deletes oldest deletable entries first and stops when budget fits.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:166-178` verifies tool-call/tool-result reconciliation during deterministic eviction.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:180-187` verifies terminal exhaustion includes achieved stats.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:395-399` verifies the 50-pass cap and repeat-input determinism.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:151-166` verifies deterministic eviction deletes oldest deletable entries first and stops when budget fits.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:168-180` verifies tool-call/tool-result reconciliation during deterministic eviction.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:182-189` verifies terminal exhaustion includes achieved stats.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:456-459` verifies repeated-input determinism, while `context-compaction-eviction-alternates.ts` bounds alternate boundary exploration to 16 retained states per boundary.
 
 #### Critical overflow constraints
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:107-147` covers relaxation of stale protected task-bearing entries while preserving assistant/tool/bash errors and last-5 recent entries.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:189-200` verifies entries inside the critical last-5 floor and configured `preserve_recent` entries are not evicted.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:209-262` covers thinking-assistant deletion rules during deterministic eviction.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:264-296` covers task-bearing exchange behavior.
-- `packages/coding-agent/test/context-compaction-eviction.test.ts:298-360` compares deterministic eviction with a bounded brute-force oracle.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:105-149` covers relaxation of stale protected task-bearing entries while preserving assistant/tool/bash errors and last-5 recent entries.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:191-202` verifies entries inside the critical last-5 floor and configured `preserve_recent` entries are not evicted.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:211-266` covers thinking-assistant deletion rules during deterministic eviction.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:268-300` covers task-bearing exchange behavior.
+- `packages/coding-agent/test/context-compaction-eviction.test.ts:346-422` compares deterministic eviction with a bounded brute-force oracle.
 
 #### Session-level overflow/no-auth path
 - `packages/coding-agent/test/agent-session-overflow-eviction.test.ts:95-105` verifies overflow auto-compaction with missing auth commits deterministic eviction.

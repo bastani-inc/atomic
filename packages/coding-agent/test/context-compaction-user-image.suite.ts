@@ -14,6 +14,7 @@ import {
 	validateContextDeletionRequest,
 } from "./context-compaction-helpers.js";
 import { ESTIMATED_IMAGE_TOKENS } from "../src/core/compaction/index.ts";
+import { convertToLlm } from "../src/core/messages.ts";
 
 const IMAGE_DATA = "aGVsbG8=";
 
@@ -58,6 +59,9 @@ describe("issue #1500 stale user image-only deletion", () => {
 		const rebuilt = buildSessionContext([...entries, contextEntry(validated.deletedTargets)]);
 		expect(rebuilt.messages).not.toContainEqual(staleImage.message);
 		expect(rebuilt.messages).toContainEqual(task.message);
+		const providerMessages = convertToLlm(rebuilt.messages);
+		expect(providerMessages.some((message) => message.role === "user")).toBe(true);
+		expect(JSON.stringify(providerMessages)).toContain("Current task text must remain");
 	});
 
 	it("canonicalizes multi-image-only user grep matches to one entry deletion", async () => {

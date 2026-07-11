@@ -273,15 +273,15 @@ describe("buildSessionContext", () => {
 			expect((ctxBranch.messages[3] as any).summary).toContain("Tried wrong approach");
 			expect((ctxBranch.messages[4] as any).content).toBe("better approach");
 		});
-		it("applies old whole-entry deletion filters for non-latest thinking-bearing assistants", () => {
+		it("repairs active-turn whole-entry deletion filters for signed thinking-bearing assistants", () => {
 			const assistantContent = [
 				{ type: "text", text: "visible text before thinking" },
-				{ type: "thinking", thinking: "old thinking may be evicted", thinkingSignature: "sig-thinking" },
+				{ type: "thinking", thinking: "active thinking must remain exact", thinkingSignature: "sig-thinking" },
 				{ type: "redacted_thinking", data: "opaque-redacted-payload" },
 				{ type: "text", text: "visible text after thinking" },
 			];
 			const task = msg("1", null, "user", "keep task-bearing transcript intact");
-			const oldAssistant = messageEntry("2", "1", {
+			const signedAssistant = messageEntry("2", "1", {
 				role: "assistant",
 				content: assistantContent,
 				api: "anthropic-messages",
@@ -299,12 +299,14 @@ describe("buildSessionContext", () => {
 				timestamp: 1,
 			} as unknown as AssistantMessage);
 			const latestAssistant = msg("3", "2", "assistant", "latest assistant remains");
-			const compactionEntry = contextCompaction("4", "3", [{ kind: "entry", entryId: oldAssistant.id }]);
+			const compactionEntry = contextCompaction("4", "3", [{ kind: "entry", entryId: signedAssistant.id }]);
 
-			const ctx = buildSessionContext([task, oldAssistant, latestAssistant, compactionEntry]);
+			const ctx = buildSessionContext([task, signedAssistant, latestAssistant, compactionEntry]);
 
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
-			expect((ctx.messages[1] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+			expect((ctx.messages[1] as AssistantMessage).content).toEqual(assistantContent);
+			expect(JSON.stringify((ctx.messages[1] as AssistantMessage).content)).toContain("sig-thinking");
+			expect((ctx.messages[2] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
 		});
 		it("restores old thinking content-block deletion filters when a newer assistant exists", () => {
 			const oldAssistantContent = [

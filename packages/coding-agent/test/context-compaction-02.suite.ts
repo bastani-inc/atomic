@@ -132,6 +132,7 @@ describe("context compaction", () => {
 				task,
 				assistantWithThinkingAndCall,
 				result,
+				entry(user("Current task starts a new turn")),
 				entry(assistantText("old filler 1")),
 				entry(assistantText("old filler 2")),
 				entry(assistantText("old filler 3")),
@@ -205,6 +206,7 @@ describe("context compaction", () => {
 			const entries: SessionEntry[] = [
 				task,
 				sensitiveAssistant,
+				entry(user("Current task starts a new turn")),
 				safeAssistant,
 				entry(assistantText("recent 1")),
 				entry(assistantText("recent 2")),
@@ -266,7 +268,7 @@ describe("context compaction", () => {
 			).toThrow(/retained assistant messages containing thinking\/redacted_thinking content blocks are all-or-nothing/);
 			expect(() =>
 				validateContextDeletionRequest({ deletions: [{ kind: "entry", entryId: latestAssistant.id }] }, preparation.transcript),
-			).toThrow(/latest assistant message.*thinking\/redacted_thinking/);
+			).toThrow(/active assistant tool-use turn.*thinking\/redacted_thinking/);
 		});
 
 		it("rejects content-block deletion from older retained thinking assistants", () => {

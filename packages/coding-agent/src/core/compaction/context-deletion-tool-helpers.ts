@@ -6,16 +6,19 @@ import {
 	CONTEXT_GREP_DELETE_MAX_REGEX_SCAN_CHARS,
 } from "./context-deletion-tool-definitions.ts";
 import { formatErrorMessage } from "./context-compaction-metrics.ts";
-import { validateContextDeletionRequest } from "./context-deletion-application.ts";
+import { reconcileToolDependencies, validateContextDeletionRequest } from "./context-deletion-application.ts";
 import {
 	deletionRequestFromTargets,
-	findLatestAssistantThinkingDeletionViolation,
 	getDeletedContentBlocks,
 	getDeletedEntryIds,
-	isProtectedContextDeletionErrorMessage,
 	mergeContextDeletionTargets,
 	targetKey,
 } from "./context-deletion-targets.ts";
+import {
+	analyzeCompactableAssistantTurns,
+	isTranscriptEntryEffectivelyDeleted,
+	transcriptEntryStartsNewTurn,
+} from "./context-assistant-turns.js";
 
 export function escapeRegExpLiteral(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -113,6 +116,40 @@ export function pushProtectedGrepSkip(skipped: ContextGrepDeletionSkipped[], mat
 	});
 }
 
+function assistantTurnsForTargets(
+	transcript: CompactableTranscript,
+	targets: readonly ContextDeletionTarget[],
+) {
+	const reconciled = reconcileToolDependencies(transcript, targets);
+	return { reconciled, ...analyzeCompactableAssistantTurns(transcript, reconciled) };
+}
+
+function candidateRemovesBoundary(
+	transcript: CompactableTranscript,
+	currentTargets: readonly ContextDeletionTarget[],
+	candidate: ContextDeletionTarget,
+): boolean {
+	const entry = transcript.entries.find((item) => item.entryId === candidate.entryId);
+	if (!entry) return false;
+	const beforeEntries = getDeletedEntryIds(currentTargets);
+	const beforeBlocks = getDeletedContentBlocks(currentTargets);
+	const before =
+		!isTranscriptEntryEffectivelyDeleted(entry, beforeEntries, beforeBlocks) &&
+		transcriptEntryStartsNewTurn(entry, beforeBlocks.get(entry.entryId));
+	if (!before) return false;
+	try {
+		const after = assistantTurnsForTargets(transcript, mergeContextDeletionTargets(currentTargets, [candidate]));
+		return isTranscriptEntryEffectivelyDeleted(entry, after.deletedEntryIds, after.deletedContentBlocks) ||
+			!transcriptEntryStartsNewTurn(entry, after.deletedContentBlocks.get(entry.entryId));
+	} catch {
+		return true;
+	}
+}
+
+interface SemanticCandidate {
+	index: number;
+	affectedTurns: Set<number>;
+}
 export function filterProtectedGrepCandidates(
 	candidates: readonly ContextDeletionTarget[],
 	matches: readonly ContextGrepDeletionMatch[],
@@ -120,53 +157,102 @@ export function filterProtectedGrepCandidates(
 	transcript: CompactableTranscript,
 	skipped: ContextGrepDeletionSkipped[],
 ): { candidates: ContextDeletionTarget[]; matches: ContextGrepDeletionMatch[] } {
-	const eligibleCandidates: ContextDeletionTarget[] = [];
-	const eligibleMatches: ContextGrepDeletionMatch[] = [];
+	const rejected = new Set<number>();
+	const accepted = new Set<number>();
+	let acceptedTargets = [...currentTargets];
+	const base = assistantTurnsForTargets(transcript, currentTargets);
+	const signedTurnByEntryId = new Map<string, number>();
+	base.turns.forEach((turn, turnIndex) => {
+		for (const entryId of turn.signedThinkingEntryIds) signedTurnByEntryId.set(entryId, turnIndex);
+	});
+	const boundaries: number[] = [];
+	const ordinary: number[] = [];
+	const semantic: SemanticCandidate[] = [];
+
 	for (let index = 0; index < candidates.length; index++) {
-		const candidate = candidates[index];
-		const match = matches[index];
-		if (!candidate || !match) continue;
+		const candidate = candidates[index]!;
+		if (candidateRemovesBoundary(transcript, currentTargets, candidate)) {
+			boundaries.push(index);
+			continue;
+		}
 		try {
-			const mergedTargets = mergeContextDeletionTargets(currentTargets, [candidate]);
-			validateContextDeletionRequest(deletionRequestFromTargets(mergedTargets), transcript);
-			eligibleCandidates.push(candidate);
-			eligibleMatches.push(match);
-		} catch (error) {
-			const message = formatErrorMessage(error);
-			if (isProtectedContextDeletionErrorMessage(message)) {
-				pushProtectedGrepSkip(skipped, match);
-				continue;
+			const single = assistantTurnsForTargets(
+				transcript,
+				mergeContextDeletionTargets(currentTargets, [candidate]),
+			);
+			const affectedTurns = new Set<number>();
+			for (const entryId of single.deletedEntryIds) {
+				if (base.deletedEntryIds.has(entryId)) continue;
+				const turnIndex = signedTurnByEntryId.get(entryId);
+				if (turnIndex !== undefined) affectedTurns.add(turnIndex);
 			}
-			eligibleCandidates.push(candidate);
-			eligibleMatches.push(match);
+			if (affectedTurns.size === 0) ordinary.push(index);
+			else semantic.push({ index, affectedTurns });
+		} catch {
+			rejected.add(index);
 		}
 	}
 
-	// Some latest-assistant thinking violations only become visible after a grep batch also
-	// deletes newer assistant entries. Classify the newly-unsafe grep candidates as
-	// protected/skipped before maxMatches, expectedMatchCount, stats, or removals are computed.
-	let changed = true;
-	while (changed) {
-		changed = false;
-		const mergedTargets = mergeContextDeletionTargets(currentTargets, eligibleCandidates);
-		const violation = findLatestAssistantThinkingDeletionViolation(transcript, mergedTargets);
-		if (!violation) continue;
-		const violationKey = targetKey(violation);
-		let violationIndex = eligibleCandidates.findIndex((candidate) => targetKey(candidate) === violationKey);
-		if (violationIndex < 0) {
-			violationIndex = eligibleCandidates.findIndex((_candidate, candidateIndex) => {
-				const remainingCandidates = eligibleCandidates.filter((_candidateToKeep, index) => index !== candidateIndex);
-				const remainingTargets = mergeContextDeletionTargets(currentTargets, remainingCandidates);
-				const remainingViolation = findLatestAssistantThinkingDeletionViolation(transcript, remainingTargets);
-				return !remainingViolation || targetKey(remainingViolation) !== violationKey;
-			});
+	const components: SemanticCandidate[][] = [];
+	for (const item of semantic) {
+		const overlapping = components.filter((component) =>
+			component.some((member) => [...member.affectedTurns].some((turn) => item.affectedTurns.has(turn))),
+		);
+		if (overlapping.length === 0) {
+			components.push([item]);
+			continue;
 		}
-		if (violationIndex < 0) continue;
-		const [skippedMatch] = eligibleMatches.splice(violationIndex, 1);
-		eligibleCandidates.splice(violationIndex, 1);
-		if (skippedMatch) pushProtectedGrepSkip(skipped, skippedMatch);
-		changed = true;
+		const merged = [item, ...overlapping.flat()];
+		for (const component of overlapping) components.splice(components.indexOf(component), 1);
+		components.push(merged.sort((left, right) => left.index - right.index));
 	}
 
-	return { candidates: eligibleCandidates, matches: eligibleMatches };
+	for (const component of components.sort((left, right) => left[0]!.index - right[0]!.index)) {
+		const indexes = component.map((item) => item.index);
+		const proposed = mergeContextDeletionTargets(acceptedTargets, indexes.map((index) => candidates[index]!));
+		let complete = true;
+		try {
+			const effect = assistantTurnsForTargets(transcript, proposed);
+			const affectedTurns = new Set(component.flatMap((item) => [...item.affectedTurns]));
+			for (const turnIndex of affectedTurns) {
+				const turn = base.turns[turnIndex]!;
+				if (turn.active || !turn.signedThinkingEntryIds.every((entryId) => effect.deletedEntryIds.has(entryId))) {
+					complete = false;
+					break;
+				}
+			}
+			if (complete) validateContextDeletionRequest(deletionRequestFromTargets(proposed), transcript);
+		} catch {
+			complete = false;
+		}
+		if (!complete) {
+			for (const index of indexes) rejected.add(index);
+			continue;
+		}
+		acceptedTargets = proposed;
+		for (const index of indexes) accepted.add(index);
+	}
+
+	const acceptIndividually = (indexes: readonly number[]): void => {
+		for (const index of indexes) {
+			const proposed = mergeContextDeletionTargets(acceptedTargets, [candidates[index]!]);
+			try {
+				validateContextDeletionRequest(deletionRequestFromTargets(proposed), transcript);
+				acceptedTargets = proposed;
+				accepted.add(index);
+			} catch {
+				rejected.add(index);
+			}
+		}
+	};
+	acceptIndividually(ordinary);
+	acceptIndividually(boundaries);
+
+	for (let index = 0; index < matches.length; index++) {
+		if (rejected.has(index)) pushProtectedGrepSkip(skipped, matches[index]!);
+	}
+	return {
+		candidates: candidates.filter((_candidate, index) => accepted.has(index)),
+		matches: matches.filter((_match, index) => accepted.has(index)),
+	};
 }
