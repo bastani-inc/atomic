@@ -108,18 +108,6 @@ Steps:
 13. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
 14. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
 
-### Code Review (`code-review.yml`)
-
-Runs Claude-powered automated code review when pull requests are opened or synchronized.
-
-### PR Description (`pr-description.yml`)
-
-Generates or updates pull request descriptions when pull requests are opened or synchronized, except for Dependabot-authored pull requests.
-
-### Claude Interactive (`claude.yml`)
-
-Responds to `@claude` mentions in issue comments, pull request review comments, submitted pull request reviews, and newly opened or assigned issues.
-
 ---
 
 ## Release Pipeline
@@ -285,9 +273,6 @@ The meaningful pre-publish checks are:
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests (including the installed-package Node-runtime extension smoke on Linux and Windows), build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
 | `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate deterministic shrinkwrap/docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
-| `code-review.yml`    | PR opened/synchronized                        | Claude-powered code review                                                                                                                                                                                    |
-| `pr-description.yml` | PR opened/synchronized                        | Claude-powered PR description generation, skipped for Dependabot                                                                                                                                              |
-| `claude.yml`         | Issue/PR comments, issues, PR reviews         | Interactive Claude assistant gated on `@claude` mentions                                                                                                                                                      |
 
 ---
 
