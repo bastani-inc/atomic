@@ -1,6 +1,7 @@
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
+import { injectSingleProgressInstruction, resolveSingleProgress, writeInitialProgressFile } from "../../shared/settings.ts";
 import { recordRun } from "../shared/run-history.ts";
 import { getSingleResultOutput, compactForegroundDetails } from "../../shared/utils.ts";
 import { updateForegroundNestedProjection } from "../shared/nested-events.ts";
@@ -86,6 +87,7 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const currentMaxSubagentDepth = depthPolicy.maxSubagentDepth;
 	const workflowStageSubagentGuard = depthPolicy.workflowStageSubagentGuard;
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
+	const progress = resolveSingleProgress(agentConfig, params.progress, task);
 
 	if (params.context === "fork") {
 		task = wrapForkTask(task);
@@ -95,6 +97,10 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 	const validationError = validateFileOnlyOutputMode(effectiveOutputMode, outputPath, `Single run (${params.agent})`);
 	if (validationError) {
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
+	}
+	if (progress) {
+		writeInitialProgressFile(effectiveCwd);
+		task = injectSingleProgressInstruction(task, effectiveCwd);
 	}
 	task = injectSingleOutputInstruction(task, outputPath);
 

@@ -11,7 +11,7 @@ import {
 	resolveTopLevelParallelMaxTasks,
 	wrapForkTask,
 } from "../../shared/types.ts";
-import { type ChainStep } from "../../shared/settings.ts";
+import { resolveSingleProgress, type ChainStep } from "../../shared/settings.ts";
 import { normalizeSingleOutputOverride } from "../shared/single-output.ts";
 import type { ExecutionContextData, ResolvedExecutorDeps } from "./subagent-executor-types.ts";
 import { collectChainSessionFiles, wrapChainTasksForFork } from "./subagent-executor-input.ts";
@@ -178,6 +178,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 		const skills = normalizedSkills === false ? [] : normalizedSkills;
 		const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, a.maxSubagentDepth);
 		const modelOverride = resolveModelCandidate((params.model as string | undefined) ?? a.model, availableModels, currentProvider);
+		const progress = resolveSingleProgress(a, params.progress, params.task);
 		return deps.runtime.executeAsyncSingle(id, {
 			agent: params.agent!,
 			task: params.context === "fork" ? wrapForkTask(params.task ?? "") : (params.task ?? ""),
@@ -195,6 +196,7 @@ export function runAsyncPath(data: ExecutionContextData, deps: ResolvedExecutorD
 			skills,
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
+			progress,
 			modelOverride,
 			maxSubagentDepth,
 			workflowStageSubagentGuard,

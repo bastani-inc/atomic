@@ -235,6 +235,7 @@ export const SubagentParams = Type.Object({
 	})),
 	outputMode: Type.Optional(OutputModeOverride),
 	reads: Type.Optional(RootReadsOverride),
+	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for a single agent in its effective cwd. This controls the child-maintained file; includeProgress separately controls whether detailed runtime telemetry is returned." })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
 }, { additionalProperties: false });

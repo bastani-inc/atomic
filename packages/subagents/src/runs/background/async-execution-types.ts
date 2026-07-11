@@ -61,6 +61,7 @@ export interface AsyncSingleParams {
 	skills?: string[];
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
+	progress?: boolean;
 	modelOverride?: string;
 	availableModels?: AvailableModelInfo[];
 	knownModelProviders?: string[];
@@ -72,6 +73,8 @@ export interface AsyncSingleParams {
 	controlIntercomTarget?: string;
 	childIntercomTarget?: (agent: string, index: number) => string | undefined;
 	nestedRoute?: NestedRouteInfo;
+	/** Internal launch seam used by focused runtime tests. */
+	spawnRunner?: (config: object, suffix: string, cwd: string) => AsyncSpawnResult;
 }
 
 export interface AsyncExecutionResult {
