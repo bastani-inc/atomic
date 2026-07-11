@@ -315,7 +315,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 EXECUTION (use exactly ONE mode):
 • Execution calls always start non-interactively.
 • Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
-• SINGLE: { agent, task?, progress? } - one task; progress:true maintains progress.md in the effective child cwd (separate from includeProgress, which only returns runtime telemetry); omit task for self-contained agents
+• SINGLE: { agent, task?, progress? } - one task; progress:true maintains a run-scoped progress.md under isolated artifact storage without writing it into the child cwd (separate from includeProgress, which only returns runtime telemetry); omit task for self-contained agents
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })

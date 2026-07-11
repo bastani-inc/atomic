@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { currentModelFullId, resolveModelCandidate } from "../shared/model-fallback.ts";
 import { collectKnownModelProviders, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { normalizeSkillInput } from "../../agents/skills.ts";
@@ -99,8 +100,9 @@ export async function runSinglePath(data: ExecutionContextData, deps: ResolvedEx
 		return { content: [{ type: "text", text: validationError }], isError: true, details: { mode: "single", results: [] } };
 	}
 	if (progress) {
-		writeInitialProgressFile(effectiveCwd);
-		task = injectSingleProgressInstruction(task, effectiveCwd);
+		const progressDir = path.join(artifactsDir, "progress", runId);
+		writeInitialProgressFile(progressDir);
+		task = injectSingleProgressInstruction(task, progressDir);
 	}
 	task = injectSingleOutputInstruction(task, outputPath);
 

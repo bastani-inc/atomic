@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Value } from "typebox/value";
@@ -39,7 +39,7 @@ function makeContext(cwd: string): ExtensionContext {
 		ui: {},
 		model: undefined,
 		modelRegistry: { getAvailable: () => [] },
-		sessionManager: { getSessionFile: () => undefined, getSessionId: () => "parent", getLeafId: () => null },
+		sessionManager: { getSessionFile: () => join(cwd, "parent-session.jsonl"), getSessionId: () => "parent", getLeafId: () => null },
 		isIdle: () => true,
 		isProjectTrusted: () => true,
 		abort: () => {},
@@ -93,17 +93,22 @@ test("root progress true is schema-valid and independent from includeProgress", 
 			},
 		});
 		const context = makeContext(cwd);
+		const cwdProgressPath = join(cwd, "progress.md");
+		writeFileSync(cwdProgressPath, "project sentinel");
 		const invocation = { agent: "worker", task: "review only; do not edit files", progress: true };
 		assert.equal(Value.Check(SubagentParams, invocation), true);
-		await executor.execute("explicit", invocation, new AbortController().signal, undefined, context);
-		assert.match(captured[0] ?? "", new RegExp(`Create and maintain progress at: ${join(cwd, "progress.md")}`));
-		assert.equal(existsSync(join(cwd, "progress.md")), true);
+		const result = await executor.execute("explicit", invocation, new AbortController().signal, undefined, context);
+		const runId = result.details?.runId;
+		assert.ok(runId);
+		const progressPath = join(cwd, "subagent-artifacts", "progress", runId, "progress.md");
+		assert.ok((captured[0] ?? "").includes(`Create and maintain progress at: ${progressPath}`));
+		assert.equal(existsSync(progressPath), true);
+		assert.equal(readFileSync(cwdProgressPath, "utf8"), "project sentinel");
 
-		rmSync(join(cwd, "progress.md"));
 		await executor.execute("telemetry", {
 			agent: "worker", task: "inspect behavior", includeProgress: true,
 		}, new AbortController().signal, undefined, context);
-		assert.equal(existsSync(join(cwd, "progress.md")), false, "includeProgress must not enable file tracking");
+		assert.equal(readFileSync(cwdProgressPath, "utf8"), "project sentinel", "includeProgress must not enable file tracking");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
@@ -126,11 +131,14 @@ test("single progress false overrides default and omission inherits it", async (
 		assert.doesNotMatch(tasks[0] ?? "", /Create and maintain progress/);
 		assert.equal(existsSync(join(cwd, "progress.md")), false);
 
-		await executor.execute("inherited", {
+		const result = await executor.execute("inherited", {
 			agent: "worker", task: "implement two",
 		}, new AbortController().signal, undefined, context);
-		assert.match(tasks[1] ?? "", /Create and maintain progress/);
-		assert.match(readFileSync(join(cwd, "progress.md"), "utf8"), /# Progress/);
+		const runId = result.details?.runId;
+		assert.ok(runId);
+		const progressPath = join(cwd, "subagent-artifacts", "progress", runId, "progress.md");
+		assert.ok((tasks[1] ?? "").includes(`Create and maintain progress at: ${progressPath}`));
+		assert.match(readFileSync(progressPath, "utf8"), /# Progress/);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

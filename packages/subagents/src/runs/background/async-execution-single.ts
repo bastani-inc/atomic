@@ -85,8 +85,11 @@ export function executeAsyncSingle(
 	if (validationError) return formatAsyncStartError("single", validationError);
 	let taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
 	if (params.progress) {
-		writeInitialProgressFile(runnerCwd);
-		taskWithOutputInstruction = injectSingleProgressInstruction(taskWithOutputInstruction, runnerCwd);
+		const progressDir = artifactsDir
+			? path.join(artifactsDir, "progress", id)
+			: path.join(asyncDir, "progress");
+		writeInitialProgressFile(progressDir);
+		taskWithOutputInstruction = injectSingleProgressInstruction(taskWithOutputInstruction, progressDir);
 	}
 	const model = applyThinkingSuffix(
 		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),

@@ -308,6 +308,7 @@ export function buildReadInstruction(reads: string[] | false | undefined, cwd: s
  * These are appended to the task to tell the agent what to read/write.
  */
 export function writeInitialProgressFile(progressDir: string): void {
+	fs.mkdirSync(progressDir, { recursive: true });
 	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
 }
 
