@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
 import { INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT } from "../../packages/subagents/src/shared/types.js";
-import { agentConfig, successEvent, withFakeCli } from "./subagents-attempt-watchdog-helpers.js";
+import { agentConfig, successEvent, withFakeCliEvent } from "./subagents-attempt-watchdog-helpers.js";
 
 function eventBus(emitter: EventEmitter) {
   return {
@@ -23,7 +23,7 @@ const bridgedAgent = () => ({ ...agentConfig(), systemPrompt: "Intercom orchestr
 describe("foreground intercom detach routing", () => {
 
   test("reports the eventual result exactly once and finalizes artifacts after detach", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("resumed result"))}), 100);`, async (dir) => {
+    await withFakeCliEvent(successEvent("resumed result"), 100, async (dir) => {
       const emitter = new EventEmitter();
       const recovered: Array<{ exitCode: number; finalOutput?: string; artifactPaths?: { outputPath: string; metadataPath: string }; modelAttempts?: Array<{ exitCode: number }> }> = [];
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -51,7 +51,7 @@ describe("foreground intercom detach routing", () => {
     });
   });
   test("a broker-routed handoff detaches the exact child even before tool-start observation", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("eventual result"))}), 100);`, async (dir) => {
+    await withFakeCliEvent(successEvent("eventual result"), 100, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const first = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -77,7 +77,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("lifecycle cancellation still terminates a detached child and cleans listeners once", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("too late"))}), 10_000);`, async (dir) => {
+    await withFakeCliEvent(successEvent("too late"), 10_000, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const controller = new AbortController();
@@ -99,7 +99,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("abort before detach terminates normally and leaves no detach listener", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("too late"))}), 10_000);`, async (dir) => {
+    await withFakeCliEvent(successEvent("too late"), 10_000, async (dir) => {
       const emitter = new EventEmitter();
       const controller = new AbortController();
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -116,7 +116,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("background-style execution ignores targeted detach requests", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("background result"))}), 80);`, async (dir) => {
+    await withFakeCliEvent(successEvent("background result"), 80, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -134,7 +134,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("duplicate targeted delivery detaches and recovers the child only once", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("once"))}), 90);`, async (dir) => {
+    await withFakeCliEvent(successEvent("once"), 90, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const recovered: Array<{ finalOutput?: string }> = [];
@@ -157,7 +157,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("rejects commit without a matching probe and rejects generation reuse", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("normal"))}), 100);`, async (dir) => {
+    await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -174,7 +174,7 @@ describe("foreground intercom detach routing", () => {
     });
   });
   test("legacy unscoped delivery still requires observed intercom tool start", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("normal"))}), 100);`, async (dir) => {
+    await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -189,7 +189,7 @@ describe("foreground intercom detach routing", () => {
   });
 
   test("rejects partial fallback routes and accepts a complete exact tuple", async () => {
-    await withFakeCli(`setTimeout(() => console.log(${JSON.stringify(successEvent("normal"))}), 120);`, async (dir) => {
+    await withFakeCliEvent(successEvent("normal"), 120, async (dir) => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
@@ -201,6 +201,18 @@ describe("foreground intercom detach routing", () => {
       await handoff(bus, { requestId: "complete", runId: "tuple-run", agent: "fake-worker", childIndex: 3 });
       const result = await pending;
       assert.equal(result.detached, true);
+    });
+  });
+
+  test("treats hostile-looking event content as inert fixture data", async () => {
+    const hostileText = `"); throw new Error("executed as code"); //`;
+    await withFakeCliEvent(successEvent(hostileText), 0, async (dir) => {
+      const result = await runSync(dir, [bridgedAgent()], "fake-worker", "A", {
+        cwd: dir,
+        runId: "hostile-data",
+      });
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.finalOutput, hostileText);
     });
   });
 });

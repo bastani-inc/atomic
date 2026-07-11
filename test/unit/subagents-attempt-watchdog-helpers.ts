@@ -38,6 +38,34 @@ export function agentConfig(): AgentConfig {
   };
 }
 
+interface FakeCliEventFixture {
+  delayMs: number;
+  event: string;
+}
+
+const delayedEventScript = `
+import { readFileSync } from "node:fs";
+
+const fixture = JSON.parse(
+  readFileSync(new URL("./fake-cli-event.json", import.meta.url), "utf8"),
+);
+setTimeout(() => console.log(fixture.event), fixture.delayMs);
+`;
+
+/** Runs a static fake CLI script whose delayed output is supplied separately
+ * as fixture data, so arbitrary event text cannot become executable code. */
+export async function withFakeCliEvent<T>(
+  event: string,
+  delayMs: number,
+  fn: (dir: string) => Promise<T>,
+): Promise<T> {
+  return withFakeCli(delayedEventScript, async (dir) => {
+    const fixture = { delayMs, event } satisfies FakeCliEventFixture;
+    writeFileSync(join(dir, "fake-cli-event.json"), JSON.stringify(fixture));
+    return fn(dir);
+  });
+}
+
 /** Runs `fn` with process.argv[1] pointed at a fake pi CLI script and short
  * watchdog timeouts (idle 250ms, wall 2000ms, kill grace 20ms); restores the
  * previous argv/env afterwards. */
