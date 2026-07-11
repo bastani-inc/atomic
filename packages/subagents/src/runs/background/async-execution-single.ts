@@ -87,7 +87,7 @@ export function executeAsyncSingle(
 	// Keep each child's progress contract outside its cwd and isolated by run;
 	// artifacts-disabled async runs use their already run-owned async directory.
 	if (params.progress) {
-		const progressDir = artifactsDir
+		const progressDir = artifactConfig.enabled && artifactsDir
 			? path.join(artifactsDir, "progress", id)
 			: path.join(asyncDir, "progress");
 		writeInitialProgressFile(progressDir);

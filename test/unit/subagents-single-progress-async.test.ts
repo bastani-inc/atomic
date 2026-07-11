@@ -37,6 +37,7 @@ function makeAgent(): AgentConfig {
 test("executeAsyncSingle initializes progress in isolated async storage", () => {
 	const parentCwd = mkdtempSync(join(tmpdir(), "atomic-subagent-async-parent-"));
 	const childCwd = join(parentCwd, "child");
+	const artifactsDir = join(parentCwd, "disabled-artifacts");
 	mkdirSync(childCwd);
 	const cwdProgressPath = join(childCwd, "progress.md");
 	writeFileSync(cwdProgressPath, "project sentinel");
@@ -53,6 +54,7 @@ test("executeAsyncSingle initializes progress in isolated async storage", () => 
 				currentSessionId: "parent",
 			},
 			cwd: "child",
+			artifactsDir,
 			artifactConfig,
 			shareEnabled: false,
 			progress: true,
@@ -68,6 +70,7 @@ test("executeAsyncSingle initializes progress in isolated async storage", () => 
 		assert.equal(existsSync(join(parentCwd, "progress.md")), false, "parent cwd must not receive progress");
 		assert.equal(readFileSync(cwdProgressPath, "utf8"), "project sentinel");
 		assert.equal(existsSync(progressPath), true);
+		assert.equal(existsSync(join(artifactsDir, "progress", runId, "progress.md")), false);
 		assert.match(readFileSync(progressPath, "utf8"), /# Progress/);
 		assert.equal(captured?.steps[0]?.cwd, childCwd);
 		assert.ok((captured?.steps[0]?.task ?? "").includes(`Create and maintain progress at: ${progressPath}`));
