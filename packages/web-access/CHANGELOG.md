@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Retry failed lazy initialization and initial or later-generation lifecycle replays before a subsequent `web_search` or `fetch_content` executes, while concurrent cold/retry callers share one attempt ([#1704](https://github.com/bastani-inc/atomic/issues/1704)).
+- Fixed native Bun loading of the heavy web-access graph by resolving pi-ai compatibility helpers from the installed `@earendil-works/pi-ai/compat` package, so `web_search`, `code_search`, `fetch_content`, and `get_search_content` initialize through their lazy wrappers ([#1728](https://github.com/bastani-inc/atomic/issues/1728)).
 - Made lazy lifecycle replay generation-safe and session-leased: replay is committed only after successful dispatch, lifecycle changes during replay advance to the latest snapshot, shutdown does not report completion until retired replay/initializer cleanup settles, calls spanning teardown reject, and replacement wrappers cannot be mutated by late old cleanup.
 - Recheck each invocation's abort signal after shared lazy initialization and provider/curator execution, preserving the exact host abort reason without cancelling initialization for other callers while keeping explicit curator user cancellation result-shaped.
 - Classify non-empty all-failed search/fetch batches as host-visible tool errors with provider/fetch stage diagnostics while retaining per-item payloads and keeping partial successes successful.
