@@ -77,7 +77,9 @@ export function userLikeContentBlockIsLlmVisible(block: unknown): boolean {
 	if (!block || typeof block !== "object") return false;
 	const candidate = block as { type?: unknown; text?: unknown };
 	if (candidate.type === "image") return true;
-	return candidate.type === "text" && typeof candidate.text === "string" && candidate.text.trim().length > 0;
+	if (candidate.type === "text") return typeof candidate.text === "string" && candidate.text.trim().length > 0;
+	// Future provider-supported blocks must fail visible; only malformed/untyped blocks fail closed.
+	return typeof candidate.type === "string" && candidate.type.trim().length > 0;
 }
 
 /** Whether user/custom content survives provider conversion as a visible input. */
@@ -106,7 +108,7 @@ export function messageStartsLlmUserTurn(
 		case "branchSummary":
 			// Empty summaries are omitted by session reconstruction. Whitespace is
 			// visible because the branch-summary wrapper itself is non-whitespace.
-			return message.summary.length > 0;
+			return typeof message.summary === "string" && message.summary.length > 0;
 		case "bashExecution":
 			return message.excludeFromContext !== true;
 		default:
@@ -114,6 +116,21 @@ export function messageStartsLlmUserTurn(
 	}
 }
 
+/** Whether an Atomic message survives conversion into provider-visible context. */
+export function messageIsLlmVisible(
+	message: AgentMessage,
+	deletedBlockIndexes: ReadonlySet<number> = new Set<number>(),
+): boolean {
+	if (message.role === "assistant" || message.role === "toolResult") return true;
+	return messageStartsLlmUserTurn(message, deletedBlockIndexes);
+}
+
+/** Filter invalid user-like blocks only in transient provider-bound content. */
+function filterUserLikeContentBlocks(content: unknown[]): unknown[] {
+	return content.filter(userLikeContentBlockIsLlmVisible);
+}
+
+/** Normalize raw blocks only in the transient LLM-compatible message returned by convertToLlm. */
 function normalizeRawRedactedThinking(message: AgentMessage): AgentMessage {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
 	let changed = false;
@@ -248,8 +265,10 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 					};
 				case "custom": {
 					if (!messageStartsLlmUserTurn(m)) return undefined;
-					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
-					return { role: "user", content, timestamp: m.timestamp };
+					const content = typeof m.content === "string"
+						? [{ type: "text" as const, text: m.content }]
+						: filterUserLikeContentBlocks(m.content) as Message["content"];
+					return { role: "user", content, timestamp: m.timestamp } as Message;
 				}
 				case "branchSummary":
 					if (!messageStartsLlmUserTurn(m)) return undefined;
@@ -258,14 +277,19 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						content: [{ type: "text" as const, text: BRANCH_SUMMARY_PREFIX + m.summary + BRANCH_SUMMARY_SUFFIX }],
 						timestamp: m.timestamp,
 					};
-				case "user":
-					return messageStartsLlmUserTurn(m) ? m : undefined;
+				case "user": {
+					if (!messageStartsLlmUserTurn(m)) return undefined;
+					if (!Array.isArray(m.content)) return m;
+					return { ...m, content: filterUserLikeContentBlocks(m.content) } as Message;
+				}
 				case "assistant":
 				case "toolResult":
 					return m;
 				case "compactionSummary":
+					// Legacy generated summaries remain archival and never enter active LLM context.
 					return undefined;
 				default: {
+					// Exhaustiveness guard: new AgentMessage roles must define provider conversion explicitly.
 					const _exhaustiveCheck: never = m;
 					void _exhaustiveCheck;
 					return undefined;

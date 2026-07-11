@@ -186,8 +186,8 @@ function getAnthropicAssistantContent(message: unknown): AnthropicContentBlock[]
  * Anthropic requires thinking/redacted_thinking blocks from replayed assistant
  * messages to remain byte-for-byte identical to the original response. The
  * upstream pi-ai Anthropic converter can sanitize thinking text and drop signed
- * empty thinking. Atomic normalizes raw redacted_thinking blocks to the pi-native
- * representation on the request-only clone before this hook, then this guard
+ * empty thinking. convertToLlm normalizes raw redacted_thinking blocks in its
+ * transient, non-mutating LLM-compatible messages before this hook, then this guard
  * restores exact same-model payloads while leaving non-Anthropic and cross-model
  * payloads unchanged.
  */

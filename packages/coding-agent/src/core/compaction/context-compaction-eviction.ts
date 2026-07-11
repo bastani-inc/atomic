@@ -1,26 +1,20 @@
-import type { ContextDeletionTarget } from "../session-manager.ts";
-import type { CompactableTranscript, ValidatedContextDeletionResult } from "./context-compaction-types.ts";
-import { reconcileToolDependencies, validateContextDeletionRequest } from "./context-deletion-application.ts";
+import type { ContextDeletionTarget } from "../session-manager.js";
+import { relaxTranscriptForCriticalEviction } from "./context-compaction-critical.js";
 import {
-	canDeleteTarget,
-	deletionRequestFromTargets,
-	getDeletedContentBlocks,
-	getDeletedEntryIds,
-	isTranscriptEntryEffectivelyDeleted,
-	transcriptEntryStartsNewTurn,
-} from "./context-deletion-targets.ts";
-import { relaxTranscriptForCriticalEviction } from "./context-compaction-critical.ts";
-import { assistantEntryHasThinkingContentBlock } from "./context-transcript-analysis.ts";
-import { analyzeAssistantToolUseTurns } from "./context-assistant-turns.js";
-
-export const CONTEXT_COMPACTION_MAX_EVICTION_PASSES = 50;
-
-interface EvictionGroup {
-	entryIds: string[];
-	order: number;
-	tokens: number;
-	boundary: boolean;
-}
+	alternateBoundaryPlan,
+	assistantTurnsForTargets,
+	currentHistoricalSignedGroups,
+	type EvictionGroup,
+	hasFitBudget,
+	repairSignedTurnTargets,
+	skippedBoundaryRestorationGroups,
+	targetsWithGroup,
+	tryGroup,
+	validateTargets,
+} from "./context-compaction-eviction-alternates.js";
+import type { CompactableTranscript, ValidatedContextDeletionResult } from "./context-compaction-types.js";
+import { transcriptEntryStartsNewTurn } from "./context-assistant-turns.js";
+import { canDeleteTarget, getDeletedEntryIds } from "./context-deletion-targets.js";
 
 function terminalDeterministicEvictionError(
 	reason: string,
@@ -33,96 +27,6 @@ function terminalDeterministicEvictionError(
 	return new Error(
 		`Context deterministic overflow eviction failed: ${reason}; ${statsText}; budget=${tokenBudget}; nothing more was safely deletable`,
 	);
-}
-
-function hasFitBudget(result: ValidatedContextDeletionResult | undefined, tokenBudget: number): result is ValidatedContextDeletionResult {
-	return result !== undefined && result.deletedTargets.length > 0 && result.stats.tokensAfter <= tokenBudget;
-}
-
-function assistantTurnsForTargets(
-	transcript: CompactableTranscript,
-	targets: readonly ContextDeletionTarget[],
-) {
-	const deletedEntryIds = getDeletedEntryIds(targets);
-	const deletedContentBlocks = getDeletedContentBlocks(targets);
-	return analyzeAssistantToolUseTurns(
-		transcript.entries.map((entry) => ({
-			entryId: entry.entryId,
-			role: entry.role,
-			hasSignedThinking: assistantEntryHasThinkingContentBlock(entry),
-			startsNewTurn:
-				!isTranscriptEntryEffectivelyDeleted(entry, deletedEntryIds, deletedContentBlocks) &&
-				transcriptEntryStartsNewTurn(entry, deletedContentBlocks.get(entry.entryId)),
-		})),
-	);
-}
-
-function repairSignedTurnTargets(
-	transcript: CompactableTranscript,
-	targets: readonly ContextDeletionTarget[],
-): ContextDeletionTarget[] {
-	const reconciled = reconcileToolDependencies(transcript, targets);
-	const deletedEntryIds = getDeletedEntryIds(reconciled);
-	const restoredSignedIds = new Set<string>();
-	for (const turn of assistantTurnsForTargets(transcript, reconciled)) {
-		const deleted = turn.signedThinkingEntryIds.filter((entryId) => deletedEntryIds.has(entryId));
-		if (deleted.length === 0) continue;
-		if (!turn.active && deleted.length === turn.signedThinkingEntryIds.length) continue;
-		for (const entryId of turn.signedThinkingEntryIds) restoredSignedIds.add(entryId);
-	}
-	if (restoredSignedIds.size === 0) return reconciled;
-
-	const restoredCallIds = new Set<string>();
-	for (const entry of transcript.entries) {
-		if (!restoredSignedIds.has(entry.entryId)) continue;
-		for (const callId of entry.toolCallIds) restoredCallIds.add(callId);
-	}
-	const restoredResultIds = new Set(
-		transcript.entries
-			.filter((entry) => entry.toolResultFor && restoredCallIds.has(entry.toolResultFor))
-			.map((entry) => entry.entryId),
-	);
-	return reconcileToolDependencies(
-		transcript,
-		reconciled.filter((target) => !restoredSignedIds.has(target.entryId) && !restoredResultIds.has(target.entryId)),
-	);
-}
-
-function targetsWithGroup(
-	planned: readonly ContextDeletionTarget[],
-	entryIds: readonly string[],
-): ContextDeletionTarget[] {
-	const deleted = getDeletedEntryIds(planned);
-	return [
-		...planned,
-		...entryIds
-			.filter((entryId) => !deleted.has(entryId))
-			.map((entryId): ContextDeletionTarget => ({ kind: "entry", entryId })),
-	];
-}
-
-function validateTargets(
-	transcript: CompactableTranscript,
-	targets: readonly ContextDeletionTarget[],
-): ValidatedContextDeletionResult | undefined {
-	try {
-		const result = validateContextDeletionRequest(deletionRequestFromTargets(targets), transcript);
-		const order = new Map(transcript.entries.map((entry, index) => [entry.entryId, index]));
-		return {
-			...result,
-			deletedTargets: [...result.deletedTargets].sort((left, right) => {
-				const entryDelta =
-					(order.get(left.entryId) ?? Number.MAX_SAFE_INTEGER) -
-					(order.get(right.entryId) ?? Number.MAX_SAFE_INTEGER);
-				if (entryDelta !== 0) return entryDelta;
-				const leftBlock = left.kind === "content_block" ? left.blockIndex : -1;
-				const rightBlock = right.kind === "content_block" ? right.blockIndex : -1;
-				return leftBlock - rightBlock;
-			}),
-		};
-	} catch {
-		return undefined;
-	}
 }
 
 function initialEvictionGroups(transcript: CompactableTranscript): EvictionGroup[] {
@@ -220,156 +124,15 @@ function adoptSmallestFittingPrefix(
 	return best;
 }
 
-function tryGroup(
-	transcript: CompactableTranscript,
-	planned: readonly ContextDeletionTarget[],
-	group: EvictionGroup,
-	repairBoundary: boolean,
-): ValidatedContextDeletionResult | undefined {
-	const directTargets = targetsWithGroup(planned, group.entryIds);
-	const direct = validateTargets(transcript, directTargets);
-	if (direct) return direct;
-	if (!repairBoundary) return undefined;
-	const repaired = repairSignedTurnTargets(transcript, directTargets);
-	const result = validateTargets(transcript, repaired);
-	if (!result) return undefined;
-	const deleted = getDeletedEntryIds(result.deletedTargets);
-	return group.entryIds.every((entryId) => deleted.has(entryId)) ? result : undefined;
-}
-
-function currentHistoricalSignedGroups(
-	transcript: CompactableTranscript,
-	planned: readonly ContextDeletionTarget[],
-): EvictionGroup[] {
-	const deleted = getDeletedEntryIds(planned);
-	const order = new Map(transcript.entries.map((entry, index) => [entry.entryId, index]));
-	const tokens = new Map(transcript.entries.map((entry) => [entry.entryId, entry.tokenEstimate]));
-	return assistantTurnsForTargets(transcript, planned)
-		.filter((turn) => !turn.active)
-		.map((turn) => turn.signedThinkingEntryIds.filter((entryId) => !deleted.has(entryId)))
-		.filter((entryIds) => entryIds.length > 0)
-		.filter((entryIds) => entryIds.every((entryId) => canDeleteTarget(transcript, { kind: "entry", entryId })))
-		.map((entryIds) => ({
-			entryIds,
-			order: order.get(entryIds[0]!) ?? Number.MAX_SAFE_INTEGER,
-			tokens: entryIds.reduce((sum, entryId) => sum + (tokens.get(entryId) ?? 0), 0),
-			boundary: false,
-		}));
-}
-
-function targetIdentity(target: ContextDeletionTarget): string {
-	return target.kind === "entry"
-		? `entry:${target.entryId}`
-		: `content_block:${target.entryId}:${target.blockIndex}`;
-}
-
-function boundaryRestorationSignature(
-	transcript: CompactableTranscript,
-	planned: readonly ContextDeletionTarget[],
-	group: EvictionGroup,
-): string | undefined {
-	try {
-		const repaired = repairSignedTurnTargets(transcript, targetsWithGroup(planned, group.entryIds));
-		const retainedKeys = new Set(repaired.map(targetIdentity));
-		const restoredKeys = planned
-			.map(targetIdentity)
-			.filter((key) => !retainedKeys.has(key))
-			.sort();
-		return restoredKeys.length > 0 ? restoredKeys.join("|") : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-function skippedBoundaryRestorationGroups(
-	transcript: CompactableTranscript,
-	planned: readonly ContextDeletionTarget[],
-	skipped: readonly EvictionGroup[],
-): EvictionGroup[][] {
-	const bySignature = new Map<string, EvictionGroup[]>();
-	for (const group of skipped) {
-		const signature = boundaryRestorationSignature(transcript, planned, group);
-		if (!signature) continue;
-		const matches = bySignature.get(signature) ?? [];
-		matches.push(group);
-		bySignature.set(signature, matches);
-	}
-	return [...bySignature.values()].filter((groups) => groups.length > 1);
-}
-
-interface AlternateBoundaryState {
-	targets: ContextDeletionTarget[];
-	tokensAfter: number;
-	signature: string;
-}
-
-function deletionPlanSignature(targets: readonly ContextDeletionTarget[]): string {
-	return targets.map(targetIdentity).sort().join("|");
-}
-
-function retainBoundedAlternateStates(states: readonly AlternateBoundaryState[]): AlternateBoundaryState[] {
-	const deduplicated = [...new Map(states.map((state) => [state.signature, state])).values()].sort(
-		(left, right) => left.tokensAfter - right.tokensAfter || left.signature.localeCompare(right.signature),
-	);
-	// Keep the fallback linear in boundary count while retaining both near-fit
-	// plans and less-committed plans that can preserve different turn topology.
-	const limit = 16;
-	if (deduplicated.length <= limit) return deduplicated;
-
-	const retained: AlternateBoundaryState[] = [];
-	for (let index = 0; index < limit / 2; index++) {
-		retained.push(deduplicated[index]!, deduplicated[deduplicated.length - 1 - index]!);
-	}
-	return retained.sort(
-		(left, right) => left.tokensAfter - right.tokensAfter || left.signature.localeCompare(right.signature),
-	);
-}
-
-function alternateBoundaryPlan(
-	transcript: CompactableTranscript,
-	initialTargets: readonly ContextDeletionTarget[],
-	initialResult: ValidatedContextDeletionResult | undefined,
-	groups: readonly EvictionGroup[],
-	tokenBudget: number,
-): ValidatedContextDeletionResult | undefined {
-	let states: AlternateBoundaryState[] = [{
-		targets: [...initialTargets],
-		tokensAfter: initialResult?.stats.tokensAfter ?? transcript.tokensBefore,
-		signature: deletionPlanSignature(initialTargets),
-	}];
-
-	for (const group of groups) {
-		const expanded = [...states];
-		let fitting: ValidatedContextDeletionResult | undefined;
-		for (const state of states) {
-			const result = tryGroup(transcript, state.targets, group, true);
-			if (!result) continue;
-			if (result.deletedTargets.length > 0 && result.stats.tokensAfter <= tokenBudget) {
-				if (!fitting || result.stats.tokensAfter > fitting.stats.tokensAfter) fitting = result;
-				continue;
-			}
-			expanded.push({
-				targets: [...result.deletedTargets],
-				tokensAfter: result.stats.tokensAfter,
-				signature: deletionPlanSignature(result.deletedTargets),
-			});
-		}
-		if (fitting) return fitting;
-		states = retainBoundedAlternateStates(expanded);
-	}
-
-	for (const state of states) {
-		let targets = state.targets;
-		for (const group of currentHistoricalSignedGroups(transcript, targets)) {
-			const result = tryGroup(transcript, targets, group, false);
-			if (!result) continue;
-			targets = [...result.deletedTargets];
-			if (hasFitBudget(result, tokenBudget)) return result;
-		}
-	}
-	return undefined;
-}
-
+/**
+ * Finite deterministic eviction phases:
+ * 1. Batch or sweep non-boundary groups in transcript order.
+ * 2. Try repaired boundary prefixes, then individual boundaries by token value.
+ * 3. Sweep newly historical signed groups exposed by those deletions.
+ * 4. Retry skipped boundaries by shared restoration component, then individually.
+ * 5. Search bounded alternate boundary states (at most 16 per boundary) and their signed groups.
+ * 6. Fail with the best validated stats after every finite candidate set is exhausted.
+ */
 export function runDeterministicContextEviction(
 	transcript: CompactableTranscript,
 	tokenBudget: number,

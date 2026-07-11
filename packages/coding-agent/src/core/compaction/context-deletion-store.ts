@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ContextDeletionTarget } from "../session-manager.ts";
 import type { CompactableTranscript } from "./context-compaction-types.ts";
-import { assistantEntryHasThinkingContentBlock } from "./context-transcript-analysis.ts";
+import { assistantEntryHasThinkingContentBlock } from "./context-assistant-turns.js";
 
 export interface EntryTextRow {
 	entry_id: string;

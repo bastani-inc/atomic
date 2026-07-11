@@ -5,7 +5,7 @@ import type {
 	ContextDeletionRequest,
 	ValidatedContextDeletionResult,
 } from "./context-compaction-types.ts";
-import { assistantEntryHasThinkingContentBlock } from "./context-transcript-analysis.ts";
+import { assistantEntryHasThinkingContentBlock } from "./context-assistant-turns.js";
 import {
 	addToolCallDeletion,
 	assertIdOnlyDeletionTarget,
@@ -189,14 +189,17 @@ export function computeContextCompactionStats(
 		objectsDeleted += 1 + entry.contentBlocks.length;
 	}
 
-	for (const target of targets) {
-		if (target.kind !== "content_block" || deletedEntryIds.has(target.entryId)) continue;
-		const entry = entryById.get(target.entryId);
+	const deletedContentBlocks = getDeletedContentBlocks(targets);
+	for (const [entryId, blockIndexes] of deletedContentBlocks) {
+		if (deletedEntryIds.has(entryId)) continue;
+		const entry = entryById.get(entryId);
 		if (!entry) continue;
-		const block = entry.contentBlocks.find((item) => item.blockIndex === target.blockIndex);
-		if (!block) continue;
-		deletedTokens += block.tokenEstimate;
-		objectsDeleted += 1;
+		const deletedBlocks = entry.contentBlocks.filter((block) => blockIndexes.has(block.blockIndex));
+		objectsDeleted += deletedBlocks.length;
+		deletedTokens +=
+			isTaskBearingEntry(entry) && !isTaskBearingEntry(entry, blockIndexes)
+				? entry.tokenEstimate
+				: deletedBlocks.reduce((total, block) => total + block.tokenEstimate, 0);
 	}
 
 	const objectsBefore = transcript.entries.length + transcript.entries.reduce((total, entry) => total + entry.contentBlocks.length, 0);
@@ -214,11 +217,11 @@ export function computeContextCompactionStats(
 }
 
 /**
- * An entry "bears task context" when it carries the user's intent for the session: a real `user`
- * message, an extension-injected `custom` message, or a branch summary (`branchSummary` role /
- * `branch_summary` entry type) that recaps an earlier branch's task.
+ * A provider-visible task entry carries session intent through a real `user` message,
+ * extension-injected `custom` message, or branch summary. Proposed block deletions count,
+ * so an entry with only omitted whitespace remaining cannot satisfy the task floor.
  *
- * Verbatim compaction must always leave at least one task-bearing entry in context.
+ * Verbatim compaction must always leave at least one provider-visible task entry in context.
  */
 export function validateContextDeletionRequest(
 	request: ContextDeletionRequest,
@@ -315,7 +318,9 @@ export function validateContextDeletionRequest(
 	if (remainingEntries.length === 0) {
 		throw new Error("Deletion request would remove all context entries");
 	}
-	const hasTaskBearingContext = remainingEntries.some(isTaskBearingEntry);
+	const hasTaskBearingContext = remainingEntries.some((entry) =>
+		isTaskBearingEntry(entry, deletedContentBlocks.get(entry.entryId)),
+	);
 	if (!hasTaskBearingContext) {
 		throw new Error("Deletion request would leave no user task in context");
 	}

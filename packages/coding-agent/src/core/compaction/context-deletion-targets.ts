@@ -1,5 +1,4 @@
 import type { ContextDeletionTarget } from "../session-manager.ts";
-import { messageStartsLlmUserTurn, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 import type {
 	CompactableContentBlock,
 	CompactableTranscript,
@@ -7,60 +6,23 @@ import type {
 	ContextDeletionRequest,
 } from "./context-compaction-types.ts";
 import { getTranscriptCompactionParameters } from "./context-compaction-strategy.ts";
-import { assistantEntryHasThinkingContentBlock } from "./context-transcript-analysis.ts";
-import { analyzeAssistantToolUseTurns } from "./context-assistant-turns.js";
+import {
+	analyzeCompactableAssistantTurns,
+	assistantEntryHasThinkingContentBlock,
+	compactableContentBlockIsLlmVisible,
+	transcriptEntryStartsNewTurn,
+} from "./context-assistant-turns.js";
 
 interface AssistantTurnDeletionViolation {
 	entryId: string;
 	active: boolean;
 }
 
-export function transcriptEntryStartsNewTurn(
-	entry: CompactableTranscriptEntry,
-	deletedContentBlocks: ReadonlySet<number> = new Set<number>(),
-): boolean {
-	if (entry.role === "user" || entry.role === "custom") {
-		const content = (entry.message as { content?: unknown }).content;
-		if (typeof content === "string" || entry.contentBlocks.length === 0) {
-			return messageStartsLlmUserTurn(entry.message, deletedContentBlocks);
-		}
-		return entry.contentBlocks.some(
-			(block) => !deletedContentBlocks.has(block.blockIndex) && userLikeContentBlockIsLlmVisible(block),
-		);
-	}
-	return messageStartsLlmUserTurn(entry.message, deletedContentBlocks);
-}
-
-export function isTranscriptEntryEffectivelyDeleted(
-	entry: CompactableTranscriptEntry,
-	deletedEntryIds: ReadonlySet<string>,
-	deletedContentBlocks: ReadonlyMap<string, ReadonlySet<number>>,
-): boolean {
-	if (deletedEntryIds.has(entry.entryId)) return true;
-	const deletedBlocks = deletedContentBlocks.get(entry.entryId);
-	return (
-		entry.contentBlocks.length > 0 &&
-		deletedBlocks !== undefined &&
-		entry.contentBlocks.every((block) => deletedBlocks.has(block.blockIndex))
-	);
-}
-
 function findAssistantTurnDeletionViolation(
 	transcript: CompactableTranscript,
 	targets: readonly ContextDeletionTarget[],
 ): AssistantTurnDeletionViolation | undefined {
-	const deletedEntryIds = getDeletedEntryIds(targets);
-	const deletedContentBlocks = getDeletedContentBlocks(targets);
-	const turns = analyzeAssistantToolUseTurns(
-		transcript.entries.map((entry) => ({
-			entryId: entry.entryId,
-			role: entry.role,
-			hasSignedThinking: assistantEntryHasThinkingContentBlock(entry),
-			startsNewTurn:
-				!isTranscriptEntryEffectivelyDeleted(entry, deletedEntryIds, deletedContentBlocks) &&
-				transcriptEntryStartsNewTurn(entry, deletedContentBlocks.get(entry.entryId)),
-		})),
-	);
+	const { deletedEntryIds, turns } = analyzeCompactableAssistantTurns(transcript, targets);
 	for (const turn of turns) {
 		if (turn.signedThinkingEntryIds.length === 0) continue;
 		const deleted = turn.signedThinkingEntryIds.filter((entryId) => deletedEntryIds.has(entryId));
@@ -363,13 +325,17 @@ export function addToolCallDeletion(
 	return canonicalizeEntryTargets(transcript, targets, entry) || changed;
 }
 
-export function isTaskBearingEntry(entry: CompactableTranscriptEntry): boolean {
-	return (
+/** Whether a task-bearing entry remains provider-visible after proposed block deletions. */
+export function isTaskBearingEntry(
+	entry: CompactableTranscriptEntry,
+	deletedContentBlocks: ReadonlySet<number> = new Set<number>(),
+): boolean {
+	const taskRole =
 		entry.role === "user" ||
 		entry.role === "custom" ||
 		entry.role === "branchSummary" ||
-		entry.entryType === "branch_summary"
-	);
+		entry.entryType === "branch_summary";
+	return taskRole && transcriptEntryStartsNewTurn(entry, deletedContentBlocks);
 }
 
 export function isRecentTarget(transcript: CompactableTranscript, target: ContextDeletionTarget): boolean {
@@ -379,8 +345,11 @@ export function isRecentTarget(transcript: CompactableTranscript, target: Contex
 
 export function isStaleUserImageOnlyEntry(transcript: CompactableTranscript, entry: CompactableTranscriptEntry): boolean {
 	if (entry.role !== "user" || isRecentContextEntry(entry, transcript)) return false;
-	if (entry.contentBlocks.length === 0 || !entry.contentBlocks.every((block) => block.type === "image")) return false;
-	return transcript.entries.some((candidate) => candidate.entryId !== entry.entryId && isTaskBearingEntry(candidate));
+	const visibleBlocks = entry.contentBlocks.filter((block) => compactableContentBlockIsLlmVisible(entry, block));
+	if (visibleBlocks.length === 0 || !visibleBlocks.every((block) => block.type === "image")) return false;
+	return transcript.entries.some(
+		(candidate) => candidate.entryId !== entry.entryId && isTaskBearingEntry(candidate),
+	);
 }
 
 export function canDeleteStaleUserImageContentBlock(
@@ -392,7 +361,12 @@ export function canDeleteStaleUserImageContentBlock(
 	if (!entry || entry.role !== "user" || isRecentTarget(transcript, target)) return false;
 	const block = entry.contentBlocks.find((candidate) => candidate.blockIndex === target.blockIndex);
 	if (!block || block.type !== "image") return false;
-	return entry.contentBlocks.some((candidate) => candidate.blockIndex !== target.blockIndex && candidate.type !== "image");
+	return entry.contentBlocks.some(
+		(candidate) =>
+			candidate.blockIndex !== target.blockIndex &&
+			candidate.type !== "image" &&
+			compactableContentBlockIsLlmVisible(entry, candidate),
+	);
 }
 
 export function canDeleteTarget(transcript: CompactableTranscript, target: ContextDeletionTarget): boolean {

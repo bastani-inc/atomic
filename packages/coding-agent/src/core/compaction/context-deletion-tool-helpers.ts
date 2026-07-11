@@ -11,13 +11,14 @@ import {
 	deletionRequestFromTargets,
 	getDeletedContentBlocks,
 	getDeletedEntryIds,
-	isTranscriptEntryEffectivelyDeleted,
 	mergeContextDeletionTargets,
 	targetKey,
-	transcriptEntryStartsNewTurn,
 } from "./context-deletion-targets.ts";
-import { analyzeAssistantToolUseTurns } from "./context-assistant-turns.js";
-import { assistantEntryHasThinkingContentBlock } from "./context-transcript-analysis.ts";
+import {
+	analyzeCompactableAssistantTurns,
+	isTranscriptEntryEffectivelyDeleted,
+	transcriptEntryStartsNewTurn,
+} from "./context-assistant-turns.js";
 
 export function escapeRegExpLiteral(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -120,22 +121,7 @@ function assistantTurnsForTargets(
 	targets: readonly ContextDeletionTarget[],
 ) {
 	const reconciled = reconcileToolDependencies(transcript, targets);
-	const deletedEntryIds = getDeletedEntryIds(reconciled);
-	const deletedContentBlocks = getDeletedContentBlocks(reconciled);
-	return {
-		reconciled,
-		deletedEntryIds,
-		turns: analyzeAssistantToolUseTurns(
-			transcript.entries.map((entry) => ({
-				entryId: entry.entryId,
-				role: entry.role,
-				hasSignedThinking: assistantEntryHasThinkingContentBlock(entry),
-				startsNewTurn:
-					!isTranscriptEntryEffectivelyDeleted(entry, deletedEntryIds, deletedContentBlocks) &&
-					transcriptEntryStartsNewTurn(entry, deletedContentBlocks.get(entry.entryId)),
-			})),
-		),
-	};
+	return { reconciled, ...analyzeCompactableAssistantTurns(transcript, reconciled) };
 }
 
 function candidateRemovesBoundary(
@@ -153,9 +139,8 @@ function candidateRemovesBoundary(
 	if (!before) return false;
 	try {
 		const after = assistantTurnsForTargets(transcript, mergeContextDeletionTargets(currentTargets, [candidate]));
-		const afterBlocks = getDeletedContentBlocks(after.reconciled);
-		return isTranscriptEntryEffectivelyDeleted(entry, after.deletedEntryIds, afterBlocks) ||
-			!transcriptEntryStartsNewTurn(entry, afterBlocks.get(entry.entryId));
+		return isTranscriptEntryEffectivelyDeleted(entry, after.deletedEntryIds, after.deletedContentBlocks) ||
+			!transcriptEntryStartsNewTurn(entry, after.deletedContentBlocks.get(entry.entryId));
 	} catch {
 		return true;
 	}

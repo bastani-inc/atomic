@@ -1,18 +1,14 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
-import { createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
+import { createBranchSummaryMessage, createCustomMessage, messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.ts";
-import {
-	isAssistantThinkingBlockType,
-	messageHasAssistantThinkingContentBlock,
-} from "../thinking-blocks.ts";
 import {
 	buildContextDeletionFilteredPath,
 	buildEffectiveContextDeletionFilters,
 	type SessionEntry,
 } from "../session-manager.ts";
 import type { CompactionSettings } from "./compaction.ts";
-import { ESTIMATED_IMAGE_TOKENS, estimateTokens } from "./compaction.ts";
+import { estimateContentBlockTokens, estimateTokens } from "./compaction.ts";
 import {
 	CONTEXT_COMPACTION_AUTO_QUERY,
 	type CompactableContentBlock,
@@ -39,21 +35,14 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 			entry.excludeFromContext,
 		);
 	}
-	if (entry.type === "branch_summary") {
+	if (entry.type === "branch_summary" && typeof entry.summary === "string") {
 		return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 	}
 	return undefined;
 }
 
 export function isExcludedFromLlmContext(message: AgentMessage): boolean {
-	switch (message.role) {
-		case "bashExecution":
-			return Boolean(message.excludeFromContext);
-		case "custom":
-			return (message as { excludeFromContext?: boolean }).excludeFromContext === true;
-		default:
-			return false;
-	}
+	return !messageIsLlmVisible(message);
 }
 
 function getContextEligibleMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
@@ -62,9 +51,19 @@ function getContextEligibleMessageFromEntry(entry: SessionEntry): AgentMessage |
 	return message;
 }
 
+function safelySerialize(value: unknown): string {
+	try {
+		const serialized = JSON.stringify(value);
+		if (typeof serialized === "string") return serialized;
+	} catch {
+		// Preserve a finite diagnostic projection for cyclic future payloads.
+	}
+	return "[unserializable content]";
+}
+
 function textFromUnknownContent(content: unknown): string {
 	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return JSON.stringify(content);
+	if (!Array.isArray(content)) return safelySerialize(content);
 	return content.map((block) => textFromContentBlock(block)).join("\n");
 }
 
@@ -76,30 +75,11 @@ function textFromContentBlock(block: unknown): string {
 	if (record.type === "toolCall") {
 		const name = typeof record.name === "string" ? record.name : "tool";
 		const id = typeof record.id === "string" ? record.id : "unknown";
-		const args = "arguments" in record ? JSON.stringify(record.arguments) : "";
+		const args = "arguments" in record ? safelySerialize(record.arguments) : "";
 		return `toolCall ${id} ${name} ${args}`.trim();
 	}
 	if (record.type === "image") return "[image]";
-	return JSON.stringify(record);
-}
-
-export function assistantEntryHasThinkingContentBlock(entry: CompactableTranscriptEntry): boolean {
-	return (
-		entry.role === "assistant" &&
-		(entry.contentBlocks.some((block) => isAssistantThinkingBlockType(block.type)) ||
-			messageHasAssistantThinkingContentBlock(entry.message))
-	);
-}
-
-function estimateTextTokens(text: string): number {
-	return Math.max(1, Math.ceil(text.length / 4));
-}
-
-function estimateContentBlockTokens(block: unknown, text: string): number {
-	if (block && typeof block === "object" && (block as { type?: unknown }).type === "image") {
-		return ESTIMATED_IMAGE_TOKENS;
-	}
-	return estimateTextTokens(text);
+	return safelySerialize(record);
 }
 
 function getToolCallIdFromBlock(block: unknown): string | undefined {
@@ -133,13 +113,18 @@ function contentBlocksForEntry(
 					? ((block as { type: string }).type)
 					: "unknown";
 			const text = textFromContentBlock(block);
+			const llmVisible =
+				message.role === "user" || message.role === "custom"
+					? userLikeContentBlockIsLlmVisible(block)
+					: true;
 			return {
 				entryId,
 				blockIndex,
 				type,
 				text,
-				tokenEstimate: estimateContentBlockTokens(block, text),
+				tokenEstimate: estimateContentBlockTokens(block, llmVisible),
 				protected: protectedEntry,
+				llmVisible,
 				toolCallId: getToolCallIdFromBlock(block),
 			};
 		})

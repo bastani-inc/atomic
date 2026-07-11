@@ -95,6 +95,6 @@ Atomic’s editable code detects provider context overflow through upstream `@ea
 - In the outer ladder, the standard planner result is accepted if it meets strict/feasible budget; otherwise it is recorded as an attempt and overflow mode proceeds to critical compaction (`context-compaction-runner.ts:314-327`).
 - Critical compaction relaxes eligible protected stale entries, appends critical prompt guidance, and runs the planner again with `acceptanceTokenBudget = ladder.criticalEvictionTokenBudget` (`context-compaction-runner.ts:329-347`).
 - If critical planning does not return a feasible result, the ladder falls back to `runDeterministicContextEviction()` (`context-compaction-runner.ts:354-359`).
-- Deterministic eviction is capped at 50 passes (`context-compaction-eviction.ts:8`, `context-compaction-eviction.ts:190-221`) and returns only when a validated deletion result has at least one deletion and `stats.tokensAfter <= tokenBudget` (`context-compaction-eviction.ts:24-26`, `context-compaction-eviction.ts:190-195`).
+- Deterministic eviction traverses finite candidate phases and a deduplicated alternate-boundary search that retains at most 16 states per boundary. It returns only when a validated deletion result has at least one deletion and `stats.tokensAfter <= tokenBudget`; otherwise the finite phase/state search terminates with exhaustion.
 - Terminal deterministic eviction errors include achieved `tokensAfter`, reduction percent, deletion target count, budget, and “nothing more was safely deletable” text (`context-compaction-eviction.ts:10-20`).
 ```

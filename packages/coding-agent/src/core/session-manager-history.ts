@@ -84,7 +84,7 @@ function sessionBoundaryIsVisible(entry: SessionEntry, filters: ContextDeletionF
 	if (entry.type === "custom_message") {
 		return entry.excludeFromContext !== true && userLikeContentIsLlmVisible(entry.content, deletedBlocks);
 	}
-	if (entry.type === "branch_summary") return entry.summary.length > 0;
+	if (entry.type === "branch_summary") return typeof entry.summary === "string" && entry.summary.length > 0;
 	if (entry.type !== "message") return false;
 	return messageStartsLlmUserTurn(entry.message, deletedBlocks);
 }
@@ -361,7 +361,7 @@ export function buildSessionContext(
 				entry.timestamp,
 				entry.excludeFromContext,
 			);
-		} else if (entry.type === "branch_summary" && entry.summary) {
+		} else if (entry.type === "branch_summary" && typeof entry.summary === "string" && entry.summary.length > 0) {
 			message = createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
 		}
 

@@ -9,7 +9,8 @@ Atomic's compaction design and terminology are informed by Morph's Context Compa
 - [`packages/coding-agent/src/core/compaction/context-compaction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction.ts) - Public barrel for Verbatim Compaction types, helpers, tools, and runner exports
 - [`packages/coding-agent/src/core/compaction/context-compaction-runner.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-runner.ts) - Planner loop, strict target gate, auto-compaction fallback ladder, and planner nudge cap
 - [`packages/coding-agent/src/core/compaction/context-compaction-critical.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-critical.ts) - Internal overflow-only critical-pass protected-entry eligibility and prompt guidance
-- [`packages/coding-agent/src/core/compaction/context-compaction-eviction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-eviction.ts) - Internal overflow-only deterministic LRU eviction fallback
+- [`packages/coding-agent/src/core/compaction/context-compaction-eviction.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-eviction.ts) - Internal overflow-only deterministic LRU eviction runner
+- [`packages/coding-agent/src/core/compaction/context-compaction-eviction-alternates.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/context-compaction-eviction-alternates.ts) - Bounded alternate-boundary planning and shared eviction-plan validation
 - [`packages/coding-agent/src/core/compaction/branch-summarization.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/branch-summarization.ts) - Branch summarization
 - [`packages/coding-agent/src/core/compaction/utils.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/compaction/utils.ts) - Shared utilities (file tracking, serialization)
 - [`packages/coding-agent/src/core/session-manager.ts`](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/src/core/session-manager.ts) - Entry types (`ContextCompactionEntry`, `BranchSummaryEntry`) and active-context rebuild logic
@@ -62,9 +63,9 @@ Verbatim Compaction never asks a model to rewrite the conversation for the main 
 - **Whole entries** such as an old assistant message or obsolete tool result.
 - **Individual content blocks** inside a multi-block message, such as one stale tool call block while keeping other blocks.
 
-Replay-sensitive assistant messages are protected as logical tool-use turns. Each provider-visible user-like input starts a turn: user/custom content with non-whitespace text or an image, context-eligible bash executions, and non-empty branch summaries. Empty or whitespace-only user/custom content and empty branch summaries are omitted from provider replay and therefore do not split turns; a whitespace-only branch summary remains visible because Atomic wraps it in explanatory text. Assistant messages and intervening tool results remain in that turn until the next visible user-like input. The current final logical turn is active (including a turn whose final assistant message is tool-call-only), so none of its `thinking` or `redacted_thinking`-bearing assistant entries may be deleted. A trailing visible input with no assistant response makes the preceding assistant turn historical. In a completed historical turn, Atomic may retain every signed-thinking-bearing assistant entry or omit all of them, but never retain a proper subset. Every retained thinking-bearing message also remains byte-for-byte intact: individual sibling blocks cannot be deleted. This preserves the signed Anthropic/GitHub Copilot replay sequence rather than merely preserving each remaining message in isolation.
+Replay-sensitive assistant messages are protected as logical tool-use turns. Each provider-visible user-like input starts a turn: user/custom content with non-whitespace text or an image, context-eligible bash executions, and non-empty branch summaries. Empty or whitespace-only user/custom content and empty branch summaries are omitted from provider replay and therefore do not split turns; a whitespace-only branch summary remains visible because Atomic wraps it in explanatory text. Unknown blocks with a non-empty string `type` fail visible for forward compatibility, while malformed or untyped blocks remain invisible. Assistant messages and intervening tool results remain in that turn until the next visible user-like input. The current final logical turn is active (including a turn whose final assistant message is tool-call-only), so none of its `thinking` or `redacted_thinking`-bearing assistant entries may be deleted. A trailing visible input with no assistant response makes the preceding assistant turn historical. In a completed historical turn, Atomic may retain every signed-thinking-bearing assistant entry or omit all of them, but never retain a proper subset. Every retained thinking-bearing message also remains byte-for-byte intact: individual sibling blocks cannot be deleted. This preserves the signed Anthropic/GitHub Copilot replay sequence rather than merely preserving each remaining message in isolation.
 
-Tool-call/tool-result pairs are also treated as replay dependencies. Fresh plans are reconciled before the turn invariant is checked, so paired deletions cannot indirectly create a partial signed sequence. During active-context reconstruction, unsafe persisted plans are repaired in memory by restoring the affected signed entries and re-running tool reconciliation, which also restores their paired results. The append-only JSONL is not rewritten, while safe complete historical signed-sequence omissions remain effective. As a final provider-safety guard, orphaned `toolResult` messages are dropped before LLM serialization if their matching assistant `toolCall` is no longer the immediately preceding tool-use group.
+Tool-call/tool-result pairs are also treated as replay dependencies. Fresh plans are reconciled before the turn invariant is checked, so paired deletions cannot indirectly create a partial signed sequence. During active-context reconstruction, unsafe persisted plans are repaired in memory by restoring the affected signed entries and re-running tool reconciliation, which also restores their paired results. The append-only JSONL is not rewritten, while safe complete historical signed-sequence omissions remain effective. As a final provider-safety guard, orphaned `toolResult` messages are dropped before LLM serialization if their matching assistant `toolCall` is no longer the immediately preceding tool-use group. Raw `redacted_thinking` blocks are normalized in the transient, non-mutating LLM-compatible messages returned by `convertToLlm`; durable session messages remain byte-exact.
 
 Atomic records those targets in an append-only `context_compaction` entry. When the active branch is rebuilt, Atomic filters the targeted objects out and reuses every retained entry/content block unchanged. There is no generated summary, no paraphrasing, and no replacement message inserted.
 
@@ -119,13 +120,13 @@ OpenAI Responses providers can also report context pressure as a request-budget 
 Image content blocks (screenshots, pasted images, image-bearing tool results) are expensive: providers fold image tokens into their reported prompt/input usage, so image-heavy conversations reach the compaction threshold sooner. Atomic accounts for this in two complementary ways:
 
 - **Token accounting includes images.** When provider usage is available (after a normal assistant response), the actual image token cost is already captured in the reported input/prompt tokens. For heuristic estimates of trailing messages without usage (for example, on an error fallback), each image content block contributes a single shared conservative estimate of `1200` tokens. This same estimate is used by the transcript planner, so the threshold check and the planner agree on how costly images are.
-- **Irrelevant images can be deleted.** The deletion planner can remove stale, superseded, or unrelated image content blocks from older entries using `context_delete` with `kind: "content_block"` or `context_grep_delete` matching the `[image]` placeholder. This includes old user-pasted image attachments when the user text block remains in place, plus old image-only user entries when another task-bearing entry remains. `context_grep_delete` canonicalizes multi-image-only user matches into one safe entry deletion so a batch of `[image]` matches does not fail because every individual block would be removed. When images dominate the context, the `context_compaction_budget` tool reports the remaining image token share (`imageTokenPercent`) and the planner is instructed to prefer deleting stale image blocks before removing useful recent text. The budget tool recomputes image statistics from the current deletion-target set on every call, so after deleting image blocks the reported `remainingImageTokens`/`imageBlockCount`/`imageTokenPercent` immediately reflect the reduced live working set rather than the original pre-deletion totals. `imageTokenPercent` is computed against the **remaining** (post-deletion) context total, not the original pre-deletion total, so deleting non-image text correctly raises the reported image share while deleting image blocks correctly lowers it.
+- **Irrelevant images can be deleted.** The deletion planner can remove stale, superseded, or unrelated image content blocks from older entries using `context_delete` with `kind: "content_block"` or `context_grep_delete` matching the `[image]` placeholder. This includes old user-pasted image attachments when provider-visible non-image content remains in the same entry, plus old image-only user entries when another provider-visible task-bearing entry remains. `context_grep_delete` canonicalizes multi-image-only user matches into one safe entry deletion so a batch of `[image]` matches does not fail because every individual block would be removed. When images dominate the context, the `context_compaction_budget` tool reports the remaining image token share (`imageTokenPercent`) and the planner is instructed to prefer deleting stale image blocks before removing useful recent text. The budget tool recomputes image statistics from the current deletion-target set on every call, so after deleting image blocks the reported `remainingImageTokens`/`imageBlockCount`/`imageTokenPercent` immediately reflect the reduced live working set rather than the original pre-deletion totals. `imageTokenPercent` is computed against the **remaining** (post-deletion) context total, not the original pre-deletion total, so deleting non-image text correctly raises the reported image share while deleting image blocks correctly lowers it.
 
 Task-relevant images are preserved automatically:
 
-- **User text and task context remain protected.** Stale, non-recent user `image` content blocks may be deleted only when non-image user content remains in the same entry. Old image-only user entries may be deleted only when another task-bearing entry remains, so compaction can remove irrelevant pasted screenshots without erasing the last statement of the task.
-- **Recent entries** (the last `preserve_recent`, default `2`) are protected, keeping current user-pasted images and the most recent image-bearing results the agent is still acting on.
-- **Custom/branch-summary messages** are protected as task-bearing context.
+- **User text and task context remain protected.** Stale, non-recent user `image` content blocks may be deleted only when provider-visible non-image user content remains in the same entry. Old image-only user entries may be deleted only when another provider-visible task-bearing entry remains, so compaction can remove irrelevant pasted screenshots without erasing the last statement of the task.
+- **Recent entries** (the last `preserve_recent` provider-visible transcript entries, default `2`) are protected, keeping current user-pasted images and the most recent image-bearing results the agent is still acting on.
+- **Provider-visible custom/branch-summary messages** are protected as task-bearing context.
 
 Because Verbatim Compaction is deletion-only, compaction never generates summaries, paraphrases, or replacement content. Deleted image blocks are simply omitted from the rebuilt active context; surviving content stays byte-for-byte identical. No image payload data is ever reintroduced, and image payloads never appear in the compaction prompt (images are surfaced as the `[image]` placeholder with their token estimate).
 
@@ -393,78 +394,82 @@ Candidate cumulative deletion request
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 0: request shape                                                │
-│   object with deletions[], id-only keys, valid kind, known entryId     │
+│ Gate 0: request and target shape                                    │
+│   request object with deletions[]; each target is an id-only object │
+│   with a valid kind and known, non-empty entryId                    │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 1: recent-context guard                                         │
-│   effective recent window entries are rejected with correction text   │
-│   (critical/deterministic overflow uses max(preserve_recent, 5))      │
+│ Gate 1: recent-context guard                                        │
+│   requested targets in the effective recent window are rejected     │
+│   (critical/deterministic overflow uses max(preserve_recent, 5))    │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 2: thinking-bearing message block guard                         │
-│   retained assistant messages with thinking/redacted_thinking        │
-│   cannot be partially content-block-deleted                          │
+│ Gate 2: protected target guard                                      │
+│   requested disallowed entries/blocks are rejected                  │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 3: protected target guard                                       │
-│   disallowed entries/blocks are rejected with correction text         │
+│ Gate 3: content-block details                                       │
+│   valid integer blockIndex, block exists, not the only block        │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 4: content-block details                                        │
-│   valid integer blockIndex, block exists, not the only block          │
+│ Gate 4: duplicate targets                                           │
+│   duplicate entry/block targets are rejected                        │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 5: duplicate targets                                            │
-│   duplicate entry/block targets are rejected                          │
+│ Gate 5: tool-call/tool-result reconciliation                        │
+│   repair paired call/result deletion dependencies when safe         │
+│   and reject repair across protected or effective recent boundaries │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 6: tool-call/tool-result reconciliation                         │
-│   repairs paired call/result deletion dependencies when safe          │
-│   throws explicit recent-context errors when repair crosses the       │
-│   effective recent boundary (max(preserve_recent, 5) in overflow      │
-│   critical/deterministic tiers)                                       │
+│ Gate 6: post-reconciliation recent-context guard                    │
+│   reject any recent target introduced by dependency reconciliation  │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 7: post-reconcile replay guards                                 │
-│   no recent targets; active signed-thinking turn fully retained;     │
-│   historical turns retain all or omit all signed assistant entries  │
+│ Gate 7: post-reconciliation thinking-bearing assistant block guard  │
+│   a retained assistant containing thinking/redacted_thinking cannot │
+│   have any individual content block deleted                         │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 8: structural integrity                                         │
-│   no entry/content-block overlap, no all-block deletion by blocks,    │
-│   no orphaned tool result, no dangling tool call                      │
+│ Gate 8: post-reconciliation signed-turn integrity guard             │
+│   retain every signed-thinking assistant in the active turn; in a   │
+│   historical turn retain all signed assistants or omit all of them  │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 10: context survival                                            │
-│   at least one entry remains, and at least one task-bearing entry     │
-│   remains (user, custom, branchSummary, or branch_summary)            │
+│ Gate 9: structural integrity                                        │
+│   no entry/block overlap, all-block deletion by blocks, or orphaned │
+│   tool result/dangling tool call                                    │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Gate 11: stats                                                       │
-│   compute objectsBefore, objectsDeleted, tokensBefore, tokensAfter,   │
-│   percentReduction                                                   │
+│ Gate 10: context survival                                           │
+│   at least one entry and one provider-visible task entry remain     │
+│   (user, custom, branchSummary, or branch_summary)                  │
+└─────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│ Gate 11: stats                                                      │
+│   compute objectsBefore, objectsDeleted, tokensBefore, tokensAfter, │
+│   and percentReduction                                              │
 └─────────────────────────────────────────────────────────────────────┘
         │
         ▼
@@ -558,9 +563,9 @@ ValidatedContextDeletionResult
 | Threshold auto-compaction finds no preparable compactable transcript | Nothing persisted | Silent no-op is preserved because threshold compaction is only opportunistic |
 | Overflow auto-compaction finds no preparable compactable transcript | Nothing persisted | Terminal overflow-recovery error states that nothing more was safely deletable instead of silently no-oping |
 | Overflow auto-compaction has validated deletions whose projected `tokensAfter` is at or below the model's effective input budget | Validated deletion targets are persisted | Tier 1 target-met results, Tier 2 feasible results, and provider-overflow salvage are committed only when they fit the effective input budget; target-met-but-over-budget results escalate instead of being persisted |
-| Overflow planner misses the strict target or meets the strict target while still exceeding the effective input budget | No persistence until a later tier succeeds | Tier 3 reruns the planner with internal `<critical-overflow-mode>` guidance, overflow-only protected-entry eligibility, and an effective recent guard of `max(preserve_recent, 5)` across all entries |
-| Critical overflow pass cannot produce a fitting validated result, or planner auth is unavailable during overflow | No model-generated plan is persisted | Tier 4 runs deterministic code-level LRU eviction with no model call or auth requirement while enforcing the same `max(preserve_recent, 5)` recent floor across all entries |
-| Deterministic overflow eviction cannot fit the effective input budget, has no safe candidate left, or reaches its 50-pass cap | Nothing persisted from the failed attempt | Terminal overflow-recovery error includes achieved stats (`tokensAfter`, percent reduction, deletion-target count), the budget, and that nothing more was safely deletable |
+| Overflow planner misses the strict target or meets the strict target while still exceeding the effective input budget | No persistence until a later tier succeeds | Tier 3 reruns the planner with internal `<critical-overflow-mode>` guidance, overflow-only protected-entry eligibility, and an effective recent guard of `max(preserve_recent, 5)` across provider-visible transcript entries |
+| Critical overflow pass cannot produce a fitting validated result, or planner auth is unavailable during overflow | No model-generated plan is persisted | Tier 4 runs deterministic code-level LRU eviction with no model call or auth requirement while enforcing the same `max(preserve_recent, 5)` recent floor across provider-visible transcript entries |
+| Deterministic overflow eviction exhausts its finite candidate phases without fitting the effective input budget | Nothing persisted from the failed attempt | Terminal overflow-recovery error includes achieved stats (`tokensAfter`, percent reduction, deletion-target count), the budget, and that nothing more was safely deletable |
 | Planner run reaches its 50 real provider-turn cap | No additional provider calls are made for that planner run | The runner evaluates the validated deletions recorded so far against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
 | Planner nudge loop reaches its 50 follow-up cap | No extra follow-ups are queued for that planner run | The runner evaluates the best validated state against the current tier's acceptance rule, then either escalates or fails terminally with achieved stats |
 | Provider non-overflow error | Nothing persisted unless an overflow-only later tier succeeds | Error propagates for manual/threshold; overflow recovery can continue to lower tiers unless the request was aborted |
@@ -571,13 +576,15 @@ ValidatedContextDeletionResult
 
 
 1. **Collect active branch context.** Atomic walks the current session branch and applies any earlier `context_compaction` logical deletions.
-2. **Build a compactable transcript.** Each compactable entry includes a stable `entryId`, role, token estimate, full text, content-block indexes, tool-call IDs, and tool-result links.
-3. **Mark validation guards.** Atomic marks user instructions, custom messages, branch/summary messages, the configured `preserve_recent` context-eligible entries, unresolved assistant/tool errors, and failed bash executions as protected in the standard transcript. If a standard planner targets one, the deletion tool returns an explicit correction error.
+2. **Build a compactable transcript.** Each provider-visible compactable entry includes a stable `entryId`, role, token estimate, full text, content-block indexes, tool-call IDs, and tool-result links; omitted user/custom inputs and empty branch summaries contribute no transcript tokens or recent-window slots.
+3. **Mark validation guards.** Atomic marks provider-visible user instructions, custom messages, branch/summary messages, the configured `preserve_recent` context-eligible entries, unresolved assistant/tool errors, and failed bash executions as protected in the standard transcript. If a standard planner targets one, the deletion tool returns an explicit correction error.
 4. **Write a temporary transcript file.** The compaction assistant receives a compact manifest plus the path to a JSONL transcript file. It should inspect with tools instead of loading the whole transcript into prompt context.
 5. **Run the standard deletion planner.** The user's currently selected model runs Atomic's fixed Verbatim Compaction prompt using the session's current model thinking level. It can search/read transcript slices and then call deletion tools. The prompt substitutes the effective compaction parameters: `compression_ratio` (fraction to keep, default `0.5`), `preserve_recent` (default `2`), and `query` (explicit or auto-detected). The target reduction is `1 - compression_ratio` and is treated as a strict completion requirement for the standard planner pass.
-6. **Validate fail-closed.** Atomic validates every cumulative deletion plan locally. Unknown IDs, protected targets, duplicate/overlapping targets, empty-context plans, missing task-bearing context, and tool-call/tool-result orphaning are rejected.
-7. **Apply the auto-compaction fallback ladder when needed.** Manual compaction stops at the strict standard planner result. Threshold auto-compaction can accept a below-target result only when it has at least one validated deletion and projected `tokensAfter` is at or below `effectiveInputBudget - reserveTokens`; it never escalates to protected-entry eviction. Overflow auto-compaction commits any planner result (strict-target or below-target feasible) only when projected `tokensAfter` fits the effective input budget, then can rerun the planner in an internal critical overflow pass, and finally can use deterministic code-level LRU eviction until the effective input budget fits or no safe deletion remains. The overflow-only critical planner and deterministic eviction tiers enforce an effective recent guard of `max(preserve_recent, 5)` over all entries.
+6. **Validate fail-closed.** Atomic validates every cumulative deletion plan locally. Unknown IDs, protected targets, duplicate/overlapping targets, empty-context plans, missing provider-visible task-bearing context, and tool-call/tool-result orphaning are rejected.
+7. **Apply the auto-compaction fallback ladder when needed.** Manual compaction stops at the strict standard planner result. Threshold auto-compaction can accept a below-target result only when it has at least one validated deletion and projected `tokensAfter` is at or below `effectiveInputBudget - reserveTokens`; it never escalates to protected-entry eviction. Overflow auto-compaction commits any planner result (strict-target or below-target feasible) only when projected `tokensAfter` fits the effective input budget, then can rerun the planner in an internal critical overflow pass, and finally can use deterministic code-level LRU eviction until the effective input budget fits or no safe deletion remains. The overflow-only critical planner and deterministic eviction tiers enforce an effective recent guard of `max(preserve_recent, 5)` over provider-visible transcript entries.
 8. **Save and rebuild.** Atomic writes a backup snapshot for persisted sessions, appends a `context_compaction` entry with validated targets and stats, then rebuilds the active LLM context from the filtered branch.
+
+Deterministic eviction is finite by construction rather than by an arbitrary pass counter. It (1) batches or sweeps non-boundary groups, (2) tries repaired boundary prefixes and individual boundaries, (3) sweeps newly historical signed groups, (4) retries skipped boundaries by shared restoration component and then individually, and (5) explores alternate boundary plans. Each loop traverses a finite candidate array; the alternate phase deduplicates plans and retains at most 16 states per boundary before either finding a fitting validated plan or reporting terminal exhaustion.
 
 ### Transcript-Bound Tools
 
@@ -601,7 +608,7 @@ Tool calls are cumulative during one planner run. The assistant can apply severa
 
 Validation preserves tool-call/tool-result consistency. If deleting a tool call would leave a tool result behind, Atomic either deletes the paired result too or rejects the plan when that would violate a validation guard. If deleting a tool result would leave a visible dangling tool call, Atomic either deletes the paired call too or rejects the plan.
 
-Atomic also refuses plans that would delete all context or leave no task-bearing context. These checks are local; the model cannot bypass them. Provider context-overflow recovery uses the same validation rules as manual and threshold compaction. During the overflow-only critical planner pass and deterministic eviction fallback, Atomic internally enforces an effective recent guard of `max(preserve_recent, 5)` across all entries, restoring the pre-#1399 last-5 floor even for otherwise-unprotected assistant/tool entries. Within that floor, deletion is rejected through the same recent-target validation used elsewhere. Outside that floor, Atomic relaxes deletion eligibility only for stale protected task-bearing entries (`user`, `custom`, branch summary) that are not carrying assistant/tool/bash errors; deterministic eviction proposes signed-thinking entries as complete historical turn groups and excludes signed entries in the active turn. Every resulting plan still passes fail-closed validation, including the turn-level signed sequence invariant, task-bearing floor, and tool-call/result pairing.
+Atomic also refuses plans that would delete all context or leave no provider-visible task-bearing context. These checks are local; the model cannot bypass them. Provider context-overflow recovery uses the same validation rules as manual and threshold compaction. During the overflow-only critical planner pass and deterministic eviction fallback, Atomic internally enforces an effective recent guard of `max(preserve_recent, 5)` across provider-visible transcript entries, restoring the pre-#1399 last-5 floor even for otherwise-unprotected assistant/tool entries. Within that floor, deletion is rejected through the same recent-target validation used elsewhere. Outside that floor, Atomic relaxes deletion eligibility only for stale protected provider-visible task-bearing entries (`user`, `custom`, branch summary) that are not carrying assistant/tool/bash errors; deterministic eviction proposes signed-thinking entries as complete historical turn groups and excludes signed entries in the active turn. Every resulting plan still passes fail-closed validation, including the turn-level signed sequence invariant, task-bearing floor, and tool-call/result pairing.
 
 ### ContextCompactionEntry Structure
 

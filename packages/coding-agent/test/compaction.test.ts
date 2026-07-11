@@ -265,6 +265,36 @@ describe("shouldCompact", () => {
 });
 
 describe("estimateContextTokens", () => {
+	it("keeps malformed and future user-like token estimates finite and visibility-aligned", () => {
+		const cyclicBlock: Record<string, unknown> = { type: "audio", data: "cyclic-future-payload" };
+		cyclicBlock.self = cyclicBlock;
+		const invalidText = {
+			role: "user",
+			content: [{ type: "text", text: 42 }],
+			timestamp: 1,
+		} as unknown as AgentMessage;
+		const malformed = { role: "user", content: [{ data: "untyped" }], timestamp: 2 } as unknown as AgentMessage;
+		const future = {
+			role: "custom",
+			customType: "future",
+			content: [{ type: "audio", data: "future-provider-payload" }],
+			display: true,
+			timestamp: 3,
+		} as unknown as AgentMessage;
+		const cyclic = { role: "user", content: [cyclicBlock], timestamp: 4 } as unknown as AgentMessage;
+
+		expect(estimateTokens(invalidText)).toBe(0);
+		expect(estimateTokens(malformed)).toBe(0);
+		expect(estimateTokens(future)).toBeGreaterThan(0);
+		expect(estimateTokens(cyclic)).toBeGreaterThan(0);
+		for (const message of [invalidText, malformed, future, cyclic]) {
+			expect(Number.isFinite(estimateTokens(message))).toBe(true);
+		}
+		const total = estimateContextTokens([invalidText, malformed, future, cyclic]);
+		expect(Number.isFinite(total.tokens)).toBe(true);
+		expect(total.tokens).toBe(estimateTokens(future) + estimateTokens(cyclic));
+	});
+
 	it("should return the last non-aborted assistant usage tokens", () => {
 		const messages: AgentMessage[] = [
 			createUserMessage("hello"),

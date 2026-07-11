@@ -8,10 +8,7 @@ import {
 	relaxTranscriptForCriticalEviction,
 } from "../src/core/compaction/context-compaction-critical.ts";
 import { validateContextDeletionRequest } from "../src/core/compaction/index.ts";
-import {
-	CONTEXT_COMPACTION_MAX_EVICTION_PASSES,
-	runDeterministicContextEviction,
-} from "../src/core/compaction/context-compaction-eviction.ts";
+import { runDeterministicContextEviction } from "../src/core/compaction/context-compaction-eviction.ts";
 import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.ts";
 import { canDeleteTarget, deletionRequestFromTargets } from "../src/core/compaction/context-deletion-targets.ts";
 
@@ -112,7 +109,12 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		const original = transcript([
 			entry("old-user", "user", 5, true),
 			entry("old-custom", "custom", 5, true),
-			entry("old-summary", "branchSummary", 5, true),
+			entry("old-summary", "branchSummary", 5, true, {
+				role: "branchSummary",
+				summary: "old branch task",
+				fromId: "old-branch",
+				timestamp: Date.now(),
+			}),
 			entry("assistant-error", "assistant", 5, true, assistantError),
 			entry("tool-error", "toolResult", 5, true, toolError),
 			entry("bash-failed", "bashExecution", 5, true, bashFailed),
@@ -451,9 +453,8 @@ describe("critical overflow transcript relaxation and deterministic eviction", (
 		expect(() => runDeterministicContextEviction(input, 20)).toThrow(/nothing more was safely deletable/);
 	});
 
-	it("uses a 50 pass cap and is deterministic for repeated inputs", () => {
+	it("is deterministic for repeated inputs", () => {
 		const input = transcript([entry("task", "user", 10, true), entry("old-1", "assistant", 5), entry("old-2", "assistant", 5), ...recentTail()]);
-		expect(CONTEXT_COMPACTION_MAX_EVICTION_PASSES).toBe(50);
 		expect(runDeterministicContextEviction(input, 35).deletedTargets).toEqual(runDeterministicContextEviction(input, 35).deletedTargets);
 	});
 });

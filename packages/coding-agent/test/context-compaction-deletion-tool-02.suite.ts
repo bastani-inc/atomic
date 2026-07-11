@@ -8,8 +8,6 @@ import {
 	createContentBlockTranscript,
 	createProtectedContentBlockTranscript,
 	createProtectedToolBlockTranscript,
-	createAssistantThinkingBlockTranscript,
-	createAssistantThinkingSiblingTranscript,
 	buildContextCompactionPrompt,
 	CONTEXT_COMPACTION_TARGET_REDUCTION_PERCENT,
 	contextCompact,
@@ -22,6 +20,7 @@ import {
 	Context,
 	StreamOptions,
 } from "./context-compaction-deletion-tool-helpers.js";
+import { createAssistantThinkingBlockTranscript, createAssistantThinkingSiblingTranscript } from "./context-compaction-deletion-tool-thinking-helpers.js";
 
 describe("context compaction deletion tools", () => {
 	const cleanups: Array<() => void> = [];
