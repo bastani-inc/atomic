@@ -71,7 +71,7 @@ export class McpServerManager {
     name: string,
     definition: ServerDefinition
   ): Promise<ServerConnection> {
-    const client = this.createClient(name);
+    const client = this.createClient(name, definition.timeoutMs);
     
     let transport: Transport;
     
@@ -148,10 +148,17 @@ export class McpServerManager {
     }
   }
   
-  private createClient(serverName: string): Client {
+  private createClient(serverName: string, timeoutMs?: number): Client {
+    const clientOptions: ConstructorParameters<typeof Client>[1] = {};
+    if (this.samplingConfig) {
+      clientOptions.capabilities = { sampling: {} };
+    }
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      clientOptions.requestTimeout = timeoutMs;
+    }
     const client = new Client(
       { name: `pi-mcp-${serverName}`, version: "1.0.0" },
-      this.samplingConfig ? { capabilities: { sampling: {} } } : undefined,
+      Object.keys(clientOptions).length > 0 ? clientOptions : undefined,
     );
     if (this.samplingConfig) {
       registerSamplingHandler(client, { ...this.samplingConfig, serverName });

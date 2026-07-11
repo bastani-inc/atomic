@@ -309,6 +309,13 @@ export interface ServerEntry {
   excludeTools?: string[];
   // Debug
   debug?: boolean;  // Show server stderr (default: false)
+  /**
+   * Request timeout in milliseconds for remote MCP server calls.
+   * If not set, the MCP SDK default is used.
+   * Applies to remote HTTP/SSE servers. For stdio servers, the
+   * SDK's default timeout applies.
+   */
+  timeoutMs?: number;
 }
 
 // Settings
