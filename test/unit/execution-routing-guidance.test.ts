@@ -79,6 +79,24 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("teaches compositional imports and nested builtin workflows", () => {
+    for (const phrase of [
+      "Workflow definitions are normal TypeScript modules",
+      "@bastani/workflows/builtin",
+      "ctx.workflow(childDefinition, { inputs, stageName })",
+      "Imported children may nest more workflows",
+      "maxDepth",
+      "expanded parent graph",
+      "Pass definitions, not registry-name strings or paths",
+      "deepResearchCodebase",
+      "conditionally nest `goal` or `ralph`",
+      "wrap `openClaudeDesign`",
+      "consuming only declared outputs",
+    ]) {
+      expect(modelVisibleRouting).toContain(phrase);
+    }
+  });
+
   test("teaches documented starter patterns and concrete dynamic examples", () => {
     for (const phrase of [
       "Classify-and-act",
@@ -170,6 +188,10 @@ describe("workflow-first execution routing", () => {
       "dynamic fan-out",
       "adversarial verification",
       "bounded loop",
+      "@bastani/workflows/builtin",
+      "ctx.workflow(...)",
+      "Nested children",
+      "maxDepth",
     ]) {
       expect(documentation).toContain(phrase);
     }

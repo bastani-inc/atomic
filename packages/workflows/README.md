@@ -5,7 +5,7 @@
   An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
-Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk answers or edits where tracking clearly costs more than it adds. Workflow-first is not builtin-only: Atomic can run named builtin/project/user/package workflows, direct task/tasks/chain shapes, or author and reload a custom TypeScript `workflow({...})` inline. Custom graphs can compose documented starter patterns for runtime classification, dynamic fan-out and synthesis, adversarial verification, generate/filter or tournament selection, and bounded loop-until-done convergence.
+Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective; reserve direct chat for tiny deterministic low-risk work. Workflow-first is not builtin-only or monolithic: Atomic can author custom TypeScript `workflow({...})` definitions inline, import reusable project/package workflows or builtins from `@bastani/workflows/builtin`, and nest them with `ctx.workflow(...)`. Imported children may nest further workflows within `maxDepth`, so compose proven research, implementation, design, verification, and approval graphs rather than copying them. Custom parents can also use runtime classification, dynamic fan-out and synthesis, adversarial verification, candidate tournaments, HIL gates, and bounded convergence.
 
 <p align="center">
   <a href="#authoring-api">Authoring API</a>
