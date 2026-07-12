@@ -1,7 +1,9 @@
 // @ts-nocheck
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { Value } from "typebox/value";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
+import { reviewDecisionSchema } from "../../packages/workflows/builtin/goal-schemas.js";
 import { reviewerAModelConfig } from "../../packages/workflows/builtin/ralph-models.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
@@ -35,6 +37,26 @@ test("Goal reviewers use clean context and Ralph reviewer-a's exact model config
             reviewerAModelConfig.excludedTools,
             name,
         );
-        assert.equal(options.schema, reviewerAModelConfig.schema, name);
+        assert.equal(options.schema, reviewDecisionSchema, name);
+        assert.notEqual(options.schema, reviewerAModelConfig.schema, name);
     }
+});
+
+test("Goal reviewer schema accepts the decision fields consumed by its gate", () => {
+    assert.equal(Value.Check(reviewDecisionSchema, {
+        findings: [],
+        overall_correctness: "patch is correct",
+        overall_explanation: "all requirements proven",
+        overall_confidence_score: 0.9,
+        goal_oracle_satisfied: true,
+        requirements_traceability: [{
+            requirement: "complete objective",
+            status: "proven",
+            evidence: "focused checks passed",
+        }],
+        receipt_assessment: "receipt corroborated",
+        verification_remaining: "none",
+        stop_review_loop: true,
+        reviewer_error: null,
+    }), true);
 });

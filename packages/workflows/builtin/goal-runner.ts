@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
+import { reviewDecisionSchema } from "./goal-schemas.js";
 import { reviewerAModelConfig } from "./ralph-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
@@ -144,7 +145,12 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       excludedTools: ["ask_user_question"],
     };
 
-    const reviewerModelConfig = reviewerAModelConfig;
+    // Match Ralph reviewer-a's model chain verbatim while preserving Goal's
+    // richer structured decision contract consumed by the Goal review gate.
+    const reviewerModelConfig = {
+      ...reviewerAModelConfig,
+      schema: reviewDecisionSchema,
+    };
 
     let latestReviews: ReviewRecord[] = [];
     let latestReviewArtifactPaths: string[] = [];
