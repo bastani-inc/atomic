@@ -13,6 +13,11 @@ from harbor.agents.installed.base import (
 )
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from skill_prerequisites import (
+    agent_install_command,
+    root_install_command,
+    runtime_environment_command,
+)
 
 
 class Atomic(BaseInstalledAgent):
@@ -39,7 +44,7 @@ class Atomic(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return ". ~/.nvm/nvm.sh; atomic --version"
+        return f"{runtime_environment_command()}; . ~/.nvm/nvm.sh; atomic --version"
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -49,26 +54,13 @@ class Atomic(BaseInstalledAgent):
     async def install(self, environment: BaseEnvironment) -> None:
         await self.exec_as_root(
             environment,
-            command=(
-                "apt-get update && "
-                "apt-get install -y --no-install-recommends curl fd-find git ripgrep && "
-                "ln -sf /usr/bin/fdfind /usr/local/bin/fd"
-            ),
+            command=root_install_command(harbor=True),
             env={"DEBIAN_FRONTEND": "noninteractive"},
         )
         version_spec = f"@{self._version}" if self._version else "@latest"
         await self.exec_as_agent(
             environment,
-            command=(
-                "set -euo pipefail; "
-                "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash && "
-                'export NVM_DIR="$HOME/.nvm" && '
-                '\\. "$NVM_DIR/nvm.sh" || true && '
-                "command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } && "
-                "nvm install 22 && npm -v && "
-                f"npm install -g @bastani/atomic{version_spec} && "
-                "atomic --version"
-            ),
+            command=agent_install_command(version_spec),
         )
 
     def _build_register_skills_command(self) -> str | None:
@@ -286,6 +278,7 @@ class Atomic(BaseInstalledAgent):
                 f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
                 f"{self._agent_state_setup_command()}"
                 f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
+                f"{runtime_environment_command()} && "
                 f". ~/.nvm/nvm.sh && "
                 f"atomic --print --mode json --session-dir {session_dir} "
                 f"{model_args}"

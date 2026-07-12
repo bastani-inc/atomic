@@ -32,6 +32,12 @@ from pier.models.trajectories import (
 )
 from pier.models.trial.paths import EnvironmentPaths
 from pier.utils.trajectory_utils import format_trajectory_json
+from skill_prerequisites import (
+    agent_install_command,
+    root_install_command,
+    runtime_environment_command,
+    verification_command,
+)
 
 
 class Atomic(BaseInstalledAgent):
@@ -127,39 +133,13 @@ class Atomic(BaseInstalledAgent):
         return "atomic"
 
     def get_version_command(self) -> str | None:
-        return "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; atomic --version"
+        return f"{runtime_environment_command()}; if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; atomic --version"
 
     def parse_version(self, stdout: str) -> str:
         return stdout.strip().splitlines()[-1].strip()
 
     def install_spec(self) -> AgentInstallSpec:
         version_spec = f"@{self._version}" if self._version else "@latest"
-        root_run = (
-            "if command -v apk &>/dev/null; then"
-            "  apk add --no-cache bash curl fd git nodejs npm ripgrep;"
-            " elif command -v apt-get &>/dev/null; then"
-            "  apt-get update && apt-get install -y --no-install-recommends curl fd-find git ripgrep &&"
-            "  ln -sf /usr/bin/fdfind /usr/local/bin/fd &&"
-            "  rm -rf /var/lib/apt/lists/*;"
-            " elif command -v yum &>/dev/null; then"
-            "  yum install -y curl git;"
-            " else"
-            "  echo 'Warning: No known package manager found, assuming curl is available' >&2;"
-            " fi"
-        )
-        agent_run = (
-            "set -euo pipefail; "
-            "if command -v apk &>/dev/null; then"
-            f"  npm install -g @bastani/atomic{version_spec};"
-            " else"
-            "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash &&"
-            "  export NVM_DIR=\"$HOME/.nvm\" &&"
-            "  \\. \"$NVM_DIR/nvm.sh\" || true &&"
-            "  command -v nvm &>/dev/null || { echo 'Error: NVM failed to load' >&2; exit 1; } &&"
-            "  nvm install 22 && nvm alias default 22 && npm -v &&"
-            f"  npm install -g @bastani/atomic{version_spec};"
-            " fi && atomic --version"
-        )
         return AgentInstallSpec(
             agent_name=self.name(),
             version=self._version,
@@ -167,11 +147,11 @@ class Atomic(BaseInstalledAgent):
                 InstallStep(
                     user="root",
                     env={"DEBIAN_FRONTEND": "noninteractive"},
-                    run=root_run,
+                    run=root_install_command(),
                 ),
-                InstallStep(user="agent", run=agent_run),
+                InstallStep(user="agent", run=agent_install_command(version_spec)),
             ],
-            verification_command=self.get_version_command(),
+            verification_command=self.get_version_command() + "; " + verification_command(),
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
@@ -385,6 +365,7 @@ class Atomic(BaseInstalledAgent):
             f"{self._agent_state_setup_command()}"
             f"{self._session_sync_trap_command(session_dir, log_session_dir)}"
             f"{copilot_config_command}"
+            f"{runtime_environment_command()} && "
             "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi && "
             f"atomic --print --mode json --session-dir {session_dir} "
             f"--provider {shlex.quote(provider)} --model {shlex.quote(model)} "
