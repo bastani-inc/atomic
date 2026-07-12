@@ -638,11 +638,12 @@ Ask these questions in order and stop at the first shape that satisfies every re
 1. **Is the outcome provable?** If success can be stated as evidence (tests green, artifact exists, behavior demonstrated, reviewer approves), the task is workflow-shaped. If no proof is possible or needed, inline is probably fine.
 2. **Is there structure?** Multiple subtasks, dependencies, handoffs, or parallel slices push past inline. A single focused evidence-gathering pass does not.
 3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires an engine that owns the stop condition — a workflow, never an improvised inline retry loop or a stretched subagent chain.
-4. **Does an installed graph already fit?** If a named workflow's objective and inputs cover essentially the whole task, run it. Do not force-fit: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph.
-5. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the starter patterns.
-6. **Is a sub-problem already solved by a proven graph?** Nest it with `ctx.workflow(...)` instead of re-authoring its prompts and gates. Composition beats duplication whenever a child's input/output contract can be mapped cleanly.
-7. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough — and cheaper than a workflow.
-8. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review — answer or edit inline and stop.
+4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become separate per-item runs; dependent items share one composed graph.
+5. **Does an installed graph already fit?** If a named workflow's objective and inputs cover essentially the whole task, run it. Do not force-fit: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph.
+6. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the starter patterns.
+7. **Is a sub-problem already solved by a proven graph?** Nest it with `ctx.workflow(...)` instead of re-authoring its prompts and gates. Composition beats duplication whenever a child's input/output contract can be mapped cleanly.
+8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough — and cheaper than a workflow.
+9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review — answer or edit inline and stop.
 
 ### Scoring rubric
 
@@ -666,6 +667,34 @@ Interpretation:
 
 Two common misuses the rubric exists to prevent: stretching parent-controlled subagent calls into an ad hoc implement→review→retry pipeline (that is adversarial verification without an engine — use a workflow and let its stages delegate specialists), and unbounded inline reconnaissance (after roughly ten exploratory calls with no artifact, write findings to a context file and hand off through `reads`; sunk research transfers, it is not a reason to stay inline).
 
+### Task queues and software factories
+
+Some requests are not one task but a queue of them: "address all open issues", "fix every Linear ticket assigned to me", "burn down the TODO backlog", "upgrade every service to the new SDK". These fire-and-forget factory requests get their own decision step, because the biggest mistake is jumping straight to one monolithic workflow that grinds through the queue serially in a single ever-growing context.
+
+**Triage the queue before choosing the shape.** The first action is always a cheap enumeration-and-dependency pass, not implementation: list the items (issue tracker query, ticket API, grep for TODOs), then classify how they relate:
+
+- **Independent items** — different subsystems, no shared files, no ordering constraints, each individually verifiable.
+- **Dependent items** — one blocks another, they touch the same files/modules, they share a migration or API change, or their acceptance criteria reference each other.
+- **Clustered** — the queue splits into groups: dependencies inside a group, independence between groups.
+
+**Independent items → many small runs, not one big one.** Spawn one workflow run per item (typically `goal` with the item's text as the objective and acceptance criteria, `create_pr=true` for per-item PRs), each in its own `git_worktree_dir`, running in the background. One run per item buys what a monolith cannot:
+
+- **Isolation:** a hard item that stalls or fails does not poison the remaining ones; each run resumes, retries, or gets killed independently.
+- **Clean contexts:** every item starts with full attention on its own objective instead of inheriting twenty finished tickets of transcript.
+- **Independent evidence:** per-item reviewer gates, receipts, and PRs that a human can merge or reject one at a time.
+- **Real parallelism:** runs proceed concurrently, bounded by however many you choose to have in flight at once (worktrees prevent filesystem collisions).
+
+Do not spawn unbounded: dispatch in waves (for example 3–5 concurrent runs), wait for lifecycle notices, then dispatch the next wave — and report the dispatch plan (item → run id → worktree) so the queue is auditable.
+
+**Dependent items → one graph that encodes the ordering.** When items block each other or share a change surface, isolation stops being a feature — separate runs would fight over the same files or implement against stale assumptions. Encode the dependency structure explicitly instead:
+
+- **A composed parent workflow** that nests a proven child (for example `ctx.workflow(goal, ...)` per item) in dependency order, passing each item's outputs/artifacts to its dependents — the preferred form, because each item still gets its own bounded loop and reviewer gate while the parent owns sequencing.
+- **A single monolithic workflow** only when the items are so entangled they are really one task with subtasks (one migration touching every call site is one task, not a queue).
+
+**Clustered queues → both.** Compose within a cluster, fan out across clusters: each cluster becomes one run (a composed parent or a single `goal` objective covering the cluster), and independent clusters are dispatched as parallel background runs in waves.
+
+The self-prompt for factory requests, condensed: **enumerate → classify dependencies → fan out runs where independent, compose graphs where dependent → dispatch in bounded waves → report the plan.** When dependency classification is uncertain, prefer smaller independent runs and let per-item reviewer gates catch collisions — a rejected PR is cheaper than a monolith that carried a bad assumption through the whole queue.
+
 ### Prompting the choice
 
 Humans can steer the shape directly. The strongest levers, in rough order of effect:
@@ -675,6 +704,7 @@ Humans can steer the shape directly. The strongest levers, in rough order of eff
 - **State the loop.** "Iterate until tests pass", "review and fix until approved" — loop wording is a hard workflow signal and defines the stop condition.
 - **State the evidence.** Asking for a PR, a QA video, test output, or reviewer sign-off tells the agent which gates the graph needs.
 - **State the boundary.** "Work in a separate worktree", "don't create the PR yet", or "stop after implementation" separates the implementation loop from explicitly authorized final actions.
+- **State the queue policy.** For factory requests, say how to split and gate the queue: "one workflow and PR per issue", "these three tickets depend on each other — do them in order in one run", "triage first and show me the dependency plan before dispatching", or "no more than three runs at a time". Absent a policy, the agent triages dependencies itself and defaults to independent per-item runs with per-item evidence.
 
 Absent these levers, the agent applies the self-prompt and rubric above — so a prompt that mentions none of them is delegating the shape decision, not avoiding it.
 
