@@ -321,6 +321,7 @@ class Atomic(BaseInstalledAgent):
             "sync_atomic_sessions() { "
             f"mkdir -p {log_session_dir}; "
             f"cp -a {session_dir}/. {log_session_dir}/ 2>/dev/null || true; "
+            f"chmod -R a+rwX {log_session_dir} 2>/dev/null || true; "
             "}; "
             "sync_atomic_sessions_loop() { "
             "while true; do sync_atomic_sessions; sleep 5; done; "

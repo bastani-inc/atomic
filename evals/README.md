@@ -22,12 +22,14 @@ Deep SWE tasks set `[agent] timeout_sec = 5400.0` (1.5 hours) in each `task.toml
 Use this before a long run to validate provider credentials, the sandbox install, and log capture. It runs a single deterministic task serially with Pier's debug logging enabled (`--debug` is Pier's only log-verbosity flag; `--n-concurrent 1` keeps the console output readable, and `--job-name` pins a predictable output directory). `--no-delete` persists the trial containers after completion so you can inspect the sandbox state post-mortem (remove them manually with `docker rm` when done):
 
 ```bash
+export COPILOT_GITHUB_TOKEN="..."  # or ANTHROPIC_API_KEY / OPENAI_API_KEY / ANTHROPIC_OAUTH_TOKEN / OPENROUTER_API_KEY="..."
+
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.5 \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
+  --model MODEL_NAME \
+  --agent-kwarg thinking=THINKING_LEVEL \
+  --agent-kwarg version=VERSION \
   --agent-timeout-multiplier 16 \
   --job-name atomic-smoke \
   --n-tasks 1 \
@@ -44,23 +46,29 @@ Inspect the results under `jobs/atomic-smoke/`: each trial directory contains th
 
 Run every Deep SWE task (omit `--n-tasks` to run all tasks in the path):
 
-```bash
-uv run pier run \
-  -p deep-swe/tasks \
-  --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.5 \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
-  --agent-timeout-multiplier 16 \
-  --job-name atomic-deep-swe \
-  --n-concurrent 4 \
-  --sample-seed 0 \
-  --force-build
-```
-
 Add `--n-attempts <k>` for pass@k-style repeats. Sizing `--n-concurrent`: each trial's containers are capped at 2 CPUs / 8 GB but typically peak at 2–4 GB, so give the Docker VM at least **4 GB of memory and 2 CPUs per concurrent trial** (e.g. `--n-concurrent 4` wants a ≥ 16 GB / 8-CPU Docker VM); Pier does not schedule against host capacity, and overcommitting memory surfaces as confusing mid-run OOM kills. A single Copilot token also tends to rate-limit beyond ~4–6 concurrent agents. Interrupted jobs resume where they left off: re-run the same command with the same `--job-name` (the config must match), or use `uv run pier job resume -p jobs/atomic-deep-swe`.
 
 ## Providers
+
+### Default (Used for official Atomic Deep SWE run)
+
+Note: The OpenRouter provider can first try making requests to the OpenAI and Anthropic APIs directly and otherwise falls back to OpenRouter.
+
+```bash
+export OPENROUTER_API_KEY="..."  # fallback for rate limits, relies on OpenAI Codex and Claude Code subscriptions
+
+uv run pier run \
+  -p deep-swe/tasks \
+  --agent-import-path atomic_pier:Atomic \
+  --model openai-codex/gpt-5.6-sol \
+  --agent-kwarg thinking=xhigh \
+  --agent-kwarg version=0.9.5 \
+  --agent-timeout-multiplier 16 \
+  --job-name atomic-deep-swe \
+  --sample-seed 0 \
+  --n-concurrent 4 \
+  --force-build
+```
 
 ### GitHub Copilot
 
@@ -72,12 +80,12 @@ export COPILOT_GITHUB_TOKEN="..."
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.5 \
+  --model github-copilot/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
   --agent-timeout-multiplier 16 \
-  --n-tasks 1 \
+  --job-name atomic-deep-swe \
   --sample-seed 0 \
+  --n-concurrent 4 \
   --force-build
 ```
 
@@ -95,16 +103,18 @@ For GitHub Copilot in `allow_internet = false` tasks, the Pier adapter routes AP
 If you see `421 Misdirected Request`, force the target explicitly:
 
 ```bash
+export COPILOT_GITHUB_TOKEN="..."
+
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model github-copilot/gpt-5.5 \
+  --model github-copilot/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
-  --agent-env COPILOT_API_TARGET=api.githubcopilot.com \
   --agent-timeout-multiplier 16 \
-  --n-tasks 1 \
+  --agent-env COPILOT_API_TARGET=api.githubcopilot.com \
+  --job-name atomic-deep-swe \
   --sample-seed 0 \
+  --n-concurrent 4 \
   --force-build
 ```
 
@@ -121,12 +131,12 @@ export OPENROUTER_API_KEY="..."  # optional fallback
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model anthropic/claude-opus-4-8 \
-  --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
+  --model anthropic/claude-fable-5 \
+  --agent-kwarg thinking=high \
   --agent-timeout-multiplier 16 \
-  --n-tasks 1 \
+  --job-name atomic-deep-swe \
   --sample-seed 0 \
+  --n-concurrent 4 \
   --force-build
 ```
 
@@ -142,12 +152,12 @@ export OPENROUTER_API_KEY="..."  # optional fallback
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model openai-codex/gpt-5.5 \
+  --model openai-codex/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
   --agent-timeout-multiplier 16 \
-  --n-tasks 1 \
+  --job-name atomic-deep-swe \
   --sample-seed 0 \
+  --n-concurrent 4 \
   --force-build
 ```
 
@@ -163,12 +173,12 @@ export OPENROUTER_API_KEY="..."
 uv run pier run \
   -p deep-swe/tasks \
   --agent-import-path atomic_pier:Atomic \
-  --model openrouter/openai/gpt-5.5 \
+  --model openrouter/openai/gpt-5.6-sol \
   --agent-kwarg thinking=xhigh \
-  --agent-kwarg version=next \
   --agent-timeout-multiplier 16 \
-  --n-tasks 1 \
+  --job-name atomic-deep-swe \
   --sample-seed 0 \
+  --n-concurrent 4 \
   --force-build
 ```
 
@@ -183,7 +193,7 @@ The adapter is self-contained; it does not require patching Pier or Harbor. It f
 1. Install Atomic and required local search tools (`rg` and `fd`) during setup.
 2. Run the Atomic CLI in JSON mode.
 3. Keep Atomic's mutable agent state under the sandbox user's `~/.atomic/agent` directory by setting Atomic's existing agent-dir environment override, passing `--session-dir ~/.atomic/agent/atomic-sessions`, and exporting `ATOMIC_TODO_PATH=$HOME/.atomic/agent/todos` inside the sandbox so the default todo tool cannot create `.atomic/todos` in the benchmark repository.
-4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and continuously mirror session transcripts to `/logs/agent/atomic-sessions/` during the run, with a final exit-trap sync to preserve transcripts on normal exits and SIGTERM-based timeouts.
+4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and continuously mirror session transcripts to `/logs/agent/atomic-sessions/` during the run, with a final exit-trap sync to preserve transcripts on normal exits and SIGTERM-based timeouts. Mirrored transcript permissions are normalized after every copy so job artifacts remain readable and removable by the host user even when the sandbox agent runs as root.
 5. Collect usage and trajectory data from the main chat plus workflow-stage and nested child transcripts, de-duplicating copied parent context and reporting the combined agent-step count (`n_agent_steps` in Pier and Harbor context metadata).
 
 Like the built-in Pier agents, it does not auto-commit work. Deep SWE tasks rely on the agent following the task instruction to commit.
