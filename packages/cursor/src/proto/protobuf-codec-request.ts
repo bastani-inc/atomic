@@ -89,7 +89,11 @@ export function buildCursorRequest(
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
 	});
-	const modelDetails = create(ModelDetailsSchema, { modelId, displayModelId: modelId, displayName: modelId });
+	const modelDetails = create(ModelDetailsSchema, {
+		modelId: routing?.modelId ?? modelId,
+		displayModelId: modelId,
+		displayName: modelId,
+	});
 	const requestedModel = routing?.modelId ? create(RequestedModelSchema, {
 		modelId: routing.modelId,
 		maxMode: routing.maxMode ?? false,

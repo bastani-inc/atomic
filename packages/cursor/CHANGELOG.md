@@ -14,6 +14,7 @@
 ### Fixed
 
 - Fixed successful live discovery being discarded on cache-write failure, stale caches never refreshing, refresh failures remaining invisible, and `--list-models` racing authenticated discovery; cache persistence failures now remain diagnostic without discarding live registration ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Fixed account-specific catalog freshness leaking across credential changes, superseded refreshes overwriting newer account snapshots, future-dated cache timestamps suppressing discovery, legacy run requests receiving generated preset IDs instead of discovered backend IDs, and distinct parameter values collapsing onto one generated route ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
 
 ## [0.9.8] - 2026-07-12
 

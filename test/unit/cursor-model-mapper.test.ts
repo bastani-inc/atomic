@@ -116,10 +116,24 @@ describe("Cursor model metadata mapping", () => {
 			availableModel({ id: "gpt-5.5", serverModelName: "backend-gpt", variants: [variant([parameter("reasoning", "high"), parameter("fast", "false")])] }),
 		]));
 		assert.deepEqual(model?.compat?.cursorRouting?.["gpt-5.5-high"], {
-			modelId: "gpt-5.5",
+			modelId: "backend-gpt",
 			maxMode: false,
 			parameters: [parameter("reasoning", "high"), parameter("fast", "false")],
 		});
+	});
+
+	test("keeps distinct parameter values on distinct collision-free routes", () => {
+		const models = mapCursorCatalogToProviderModels(liveCatalog([
+			availableModel({ id: "parameterized", variants: [
+				variant([parameter("temperature", "a+b")]),
+				variant([parameter("temperature", "a-b")]),
+			] }),
+		]));
+		const routes = models.flatMap((model) => Object.entries(model.compat?.cursorRouting ?? {}))
+			.filter(([, routing]) => routing.parameters?.some(({ id }) => id === "temperature"));
+		assert.equal(routes.length, 2);
+		assert.notEqual(routes[0]?.[0], routes[1]?.[0]);
+		assert.deepEqual(routes.map(([, routing]) => routing.parameters?.[0]?.value).sort(), ["a+b", "a-b"]);
 	});
 
 	test("preserves supplied output limits and does not combine normal and Max contexts", () => {
@@ -181,7 +195,7 @@ describe("Cursor model metadata mapping", () => {
 		const [model] = mapCursorCatalogToProviderModels(liveCatalog([
 			availableModel({ id: "future-reasoning", variants: [variant([parameter("reasoning", "adaptive-v2")])] }),
 		]));
-		assert.equal(model?.id, "future-reasoning-reasoning-adaptive-v2");
+		assert.equal(model?.id, "future-reasoning-reasoning-adaptive_2dv2");
 		assert.equal(model?.reasoning, true);
 		assert.deepEqual(model?.thinkingLevelMap, { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null });
 		assert.deepEqual(model?.compat?.cursorRouting?.[model.id]?.parameters, [parameter("reasoning", "adaptive-v2")]);

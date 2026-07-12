@@ -149,6 +149,8 @@ describe("Cursor AvailableModels discovery", () => {
 		assert.equal(decoded.message.case, "runRequest");
 		if (decoded.message.case !== "runRequest") throw new Error("expected run request");
 		const requested = decoded.message.value.requestedModel;
+		assert.equal(decoded.message.value.modelDetails?.modelId, "backend-gpt-5.5");
+		assert.equal(decoded.message.value.modelDetails?.displayModelId, "gpt-5.5-high-fast");
 		assert.equal(requested?.modelId, "backend-gpt-5.5");
 		assert.equal(requested?.maxMode, true);
 		assert.deepEqual(requested?.parameters.map(({ id, value }) => ({ id, value })), [{ id: "reasoning", value: "high" }, { id: "fast", value: "true" }]);

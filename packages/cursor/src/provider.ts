@@ -1,4 +1,4 @@
-import { randomUUID as nodeRandomUUID } from "node:crypto";
+import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import type {
 	Api,
 	AssistantMessageEventStream,
@@ -95,6 +95,16 @@ function defaultCursorUuid(): string {
 	return nodeRandomUUID();
 }
 
+function cursorCredentialFingerprint(accessToken: string): string {
+	return createHash("sha256").update(accessToken).digest("hex");
+}
+
+function isCatalogFresh(fetchedAt: number | undefined, now: number, ttlMs: number): boolean {
+	if (fetchedAt === undefined) return false;
+	const age = now - fetchedAt;
+	return age >= 0 && age < ttlMs;
+}
+
 export function registerCursorProvider(pi: CursorProviderHost, options: CursorProviderRegistrationOptions = {}): CursorProviderRuntime {
 	const transport = options.transport ?? new Http2CursorAgentTransport();
 	const uuid = options.uuid ?? defaultCursorUuid;
@@ -112,9 +122,10 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	const catalogDiscoveryTasks = new Set<Promise<boolean>>();
 	const catalogDiscoveryAbortControllers = new Set<AbortController>();
 	let lastCatalogFetchedAt: number | undefined;
+	let lastCatalogCredentialFingerprint: string | undefined;
+	let catalogRefreshGeneration = 0;
 	let catalogRefreshStatus: CursorCatalogRefreshStatus = { state: "idle" };
-	const catalogDiscoveryInFlightTokens = new Map<string, Promise<boolean>>();
-	let firstUseRediscoveryTask: Promise<boolean> | undefined;
+	const catalogDiscoveryInFlightTokens = new Map<string, { readonly generation: number; readonly task: Promise<boolean> }>();
 	let disposed = false;
 	let disposePromise: Promise<void> | undefined;
 
@@ -146,7 +157,9 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 				name: CURSOR_LOGIN_NAME,
 				async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 					const credentials = await authService.login(callbacks);
-					await registerLiveCatalogBestEffort(credentials.access, uuid(), callbacks.signal);
+					const fingerprint = cursorCredentialFingerprint(credentials.access);
+					const generation = ++catalogRefreshGeneration;
+					await registerLiveCatalogBestEffort(credentials.access, uuid(), callbacks.signal, generation, fingerprint);
 					return credentials;
 				},
 				async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -165,10 +178,12 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		});
 	};
 
-	const registerLiveCatalog = (catalog: CursorModelCatalog): boolean => {
+	const registerLiveCatalog = (catalog: CursorModelCatalog, generation: number, credentialFingerprint: string): boolean => {
 		if (disposed) return false;
+		if (generation !== catalogRefreshGeneration) return true;
 		registerCatalog(mapCursorCatalogToProviderModels(catalog));
 		lastCatalogFetchedAt = catalog.fetchedAt;
+		lastCatalogCredentialFingerprint = credentialFingerprint;
 		const persistenceError = saveLiveCatalog(catalog);
 		catalogRefreshStatus = {
 			state: "fresh",
@@ -179,16 +194,29 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		return true;
 	};
 
-	const discoverAndRegisterLiveCatalog = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<boolean> => {
+	const discoverAndRegisterLiveCatalog = async (
+		accessToken: string,
+		requestId: string,
+		signal: AbortSignal | undefined,
+		generation: number,
+		credentialFingerprint: string,
+	): Promise<boolean> => {
 		const liveCatalog = await discoveryService.discover(accessToken, requestId, signal);
-		return registerLiveCatalog(liveCatalog);
+		return registerLiveCatalog(liveCatalog, generation, credentialFingerprint);
 	};
 
-	const registerLiveCatalogBestEffort = async (accessToken: string, requestId: string, signal: AbortSignal | undefined): Promise<boolean> => {
-		catalogRefreshStatus = { state: "refreshing", fetchedAt: lastCatalogFetchedAt };
+	const registerLiveCatalogBestEffort = async (
+		accessToken: string,
+		requestId: string,
+		signal: AbortSignal | undefined,
+		generation: number,
+		credentialFingerprint: string,
+	): Promise<boolean> => {
+		if (generation === catalogRefreshGeneration) catalogRefreshStatus = { state: "refreshing", fetchedAt: lastCatalogFetchedAt };
 		try {
-			return await discoverAndRegisterLiveCatalog(accessToken, requestId, signal);
+			return await discoverAndRegisterLiveCatalog(accessToken, requestId, signal, generation, credentialFingerprint);
 		} catch (cause) {
+			if (generation !== catalogRefreshGeneration) return true;
 			const error = cause instanceof Error ? cause : new Error("Cursor model catalog refresh failed.");
 			catalogRefreshStatus = { state: "failed", fetchedAt: lastCatalogFetchedAt, error: error.message };
 			options.onCatalogRefreshError?.(error);
@@ -198,28 +226,30 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 
 	const scheduleTrackedCatalogDiscovery = (accessToken: string, force = false): Promise<boolean> | undefined => {
 		if (disposed || accessToken.trim().length === 0) return undefined;
-		if (!force && lastCatalogFetchedAt !== undefined && now() - lastCatalogFetchedAt < catalogCacheTtlMs) return undefined;
+		const credentialFingerprint = cursorCredentialFingerprint(accessToken);
+		if (!force && credentialFingerprint === lastCatalogCredentialFingerprint && isCatalogFresh(lastCatalogFetchedAt, now(), catalogCacheTtlMs)) return undefined;
 		const existing = catalogDiscoveryInFlightTokens.get(accessToken);
-		if (existing) return existing;
+		if (existing?.generation === catalogRefreshGeneration) return existing.task;
 		let requestId: string;
 		try {
 			requestId = uuid();
 		} catch {
 			return undefined;
 		}
+		const generation = ++catalogRefreshGeneration;
 		const controller = new AbortController();
 		catalogDiscoveryAbortControllers.add(controller);
-		const task = registerLiveCatalogBestEffort(accessToken, requestId, controller.signal);
-		catalogDiscoveryInFlightTokens.set(accessToken, task);
+		const task = registerLiveCatalogBestEffort(accessToken, requestId, controller.signal, generation, credentialFingerprint);
+		catalogDiscoveryInFlightTokens.set(accessToken, { generation, task });
 		catalogDiscoveryTasks.add(task);
 		task.then(
 			() => {
-				catalogDiscoveryInFlightTokens.delete(accessToken);
+				if (catalogDiscoveryInFlightTokens.get(accessToken)?.task === task) catalogDiscoveryInFlightTokens.delete(accessToken);
 				catalogDiscoveryTasks.delete(task);
 				catalogDiscoveryAbortControllers.delete(controller);
 			},
 			() => {
-				catalogDiscoveryInFlightTokens.delete(accessToken);
+				if (catalogDiscoveryInFlightTokens.get(accessToken)?.task === task) catalogDiscoveryInFlightTokens.delete(accessToken);
 				catalogDiscoveryTasks.delete(task);
 				catalogDiscoveryAbortControllers.delete(controller);
 			},
@@ -228,14 +258,8 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	};
 
 	const scheduleFirstUseRediscovery = (accessToken: string | undefined): void => {
-		if (!accessToken || firstUseRediscoveryTask || disposed) return;
-		const task = scheduleTrackedCatalogDiscovery(accessToken);
-		if (!task) return;
-		firstUseRediscoveryTask = task;
-		task.then(
-			() => { if (firstUseRediscoveryTask === task) firstUseRediscoveryTask = undefined; },
-			() => { if (firstUseRediscoveryTask === task) firstUseRediscoveryTask = undefined; },
-		);
+		if (!accessToken || disposed) return;
+		scheduleTrackedCatalogDiscovery(accessToken);
 	};
 
 	const discoverCatalogFromStoredCredentials = async (_event?: unknown, context?: CursorProviderContext): Promise<void> => {
@@ -279,7 +303,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	const startupCatalog = loadCachedLiveCatalog() ?? createEstimatedCursorCatalog();
 	if (startupCatalog.source === "live") {
 		lastCatalogFetchedAt = startupCatalog.fetchedAt;
-		catalogRefreshStatus = { state: now() - startupCatalog.fetchedAt < catalogCacheTtlMs ? "fresh" : "idle", fetchedAt: startupCatalog.fetchedAt };
+		catalogRefreshStatus = { state: isCatalogFresh(startupCatalog.fetchedAt, now(), catalogCacheTtlMs) ? "fresh" : "idle", fetchedAt: startupCatalog.fetchedAt };
 	}
 	registerCatalog(mapCursorCatalogToProviderModels(startupCatalog));
 

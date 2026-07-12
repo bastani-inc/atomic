@@ -237,7 +237,7 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 		metadataProvenance: model.metadataProvenance,
 		isDefaultVariant: model.isDefaultVariant,
 		routing: {
-			modelId: model.requestedModelId ?? model.id,
+			modelId: cursorBackendModelId(model),
 			...(model.requestedMaxMode !== undefined ? { maxMode: model.requestedMaxMode } : {}),
 			...(model.parameters ? { parameters: model.parameters } : {}),
 		},
@@ -366,14 +366,14 @@ function expandModelLevelMaxModes(model: CursorUsableModel): CursorUsableModel[]
 		id: `${model.id}-max-mode`,
 		contextWindow: model.maxModeContextWindow ?? model.contextWindow,
 		maxModeContextWindow: undefined,
-		requestedModelId: model.id,
+		requestedModelId: cursorBackendModelId(model),
 		requestedMaxMode: true,
 	};
 	if (model.supportsNonMaxMode === false) return [maxRow];
 	return [{
 		...model,
 		maxModeContextWindow: undefined,
-		requestedModelId: model.id,
+		requestedModelId: cursorBackendModelId(model),
 		requestedMaxMode: false,
 	}, maxRow];
 }
@@ -401,11 +401,15 @@ function parameterizedVariantRow(model: CursorUsableModel, variant: CursorParame
 		supportsReasoning: Boolean(effortParameter || thinking),
 		supportsThinking: thinking,
 		effort,
-		requestedModelId: model.id,
+		requestedModelId: cursorBackendModelId(model),
 		isDefaultVariant: variant.isMaxMode ? variant.isDefaultMaxConfig === true : variant.isDefaultNonMaxConfig === true,
 		requestedMaxMode: variant.isMaxMode,
 		parameters,
 	}];
+}
+
+function cursorBackendModelId(model: CursorUsableModel): string {
+	return model.requestedModelId ?? model.serverModelName ?? model.id;
 }
 
 function cursorEffortFromValue(value: string): CursorEffort | undefined {
@@ -414,8 +418,16 @@ function cursorEffortFromValue(value: string): CursorEffort | undefined {
 }
 
 function parameterIdPart(parameter: CursorModelParameter): string {
-	const encode = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "") || "empty";
-	return `-${encode(parameter.id)}-${encode(parameter.value)}`;
+	return `-${encodeParameterComponent(parameter.id)}-${encodeParameterComponent(parameter.value)}`;
+}
+
+function encodeParameterComponent(value: string): string {
+	let encoded = "";
+	for (const byte of new TextEncoder().encode(value)) {
+		const isAsciiAlphaNumeric = (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122);
+		encoded += isAsciiAlphaNumeric ? String.fromCharCode(byte) : `_${byte.toString(16).padStart(2, "0")}`;
+	}
+	return encoded;
 }
 function selectLimitVariant(group: CursorVariantGroup): CursorVariant | undefined {
 	return group.variants.find((variant) => variant.isDefaultVariant)

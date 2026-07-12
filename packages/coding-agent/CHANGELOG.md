@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Documented richer, provenance-aware Cursor model discovery and conservative metadata degradation, including exact reasoning/preset semantics and account/plan/region/client-version caveats ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Fixed
+
+- Made `--list-models` await stale authenticated Cursor catalog refresh and report refresh diagnostics instead of racing background discovery ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Fixed Cursor account changes reusing another credential's catalog TTL, out-of-order refreshes replacing the newest account snapshot, future cache timestamps suppressing refresh, and exact discovered parameter presets collapsing or sending a generated ID through Cursor's still-authoritative legacy model field ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed
