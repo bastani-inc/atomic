@@ -12,14 +12,14 @@ import { SessionSelectorComponent } from "../src/modes/interactive/components/se
 import { InteractiveModeBase } from "../src/modes/interactive/interactive-mode-base.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 
-const fsReadTracking = vi.hoisted(() => ({ paths: [] as string[] }));
+const fullTranscriptReadTracking = vi.hoisted(() => ({ paths: [] as string[] }));
 
 vi.mock("fs/promises", async () => {
 	const original = await vi.importActual<typeof import("fs/promises")>("fs/promises");
 	return {
 		...original,
 		readFile: (...args: Parameters<typeof original.readFile>) => {
-			fsReadTracking.paths.push(String(args[0]));
+			fullTranscriptReadTracking.paths.push(String(args[0]));
 			return original.readFile(...args);
 		},
 	};
@@ -87,10 +87,11 @@ describe("internal workflow sessions across resume surfaces", () => {
 		settingsManager = SettingsManager.inMemory();
 		selectSessionImplementation = async () => null;
 		setKeybindings(new KeybindingsManager());
-		fsReadTracking.paths.length = 0;
+		fullTranscriptReadTracking.paths.length = 0;
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -116,7 +117,7 @@ describe("internal workflow sessions across resume surfaces", () => {
 		});
 	});
 
-	it("keeps many workflow transcripts out of listings without fully reading them", async () => {
+	it("keeps many workflow transcripts out of listings without full transcript parsing", async () => {
 		const now = Date.now();
 		const userPath = writeSession(dir, "user-visible", cwd, { mtime: now - 100_000 });
 		const workflowPaths: string[] = [];
@@ -133,14 +134,14 @@ describe("internal workflow sessions across resume surfaces", () => {
 
 		expect((await SessionManager.list(cwd, dir)).map((session) => session.id)).toEqual(["user-visible"]);
 		expect((await SessionManager.listAll(dir)).map((session) => session.id)).toEqual(["user-visible"]);
-		const defaultTranscriptReads = fsReadTracking.paths.filter((path) => path.endsWith(".jsonl"));
+		const defaultTranscriptReads = fullTranscriptReadTracking.paths.filter((path) => path.endsWith(".jsonl"));
 		expect(defaultTranscriptReads).toEqual([userPath, userPath]);
 		expect(defaultTranscriptReads).not.toEqual(expect.arrayContaining(workflowPaths));
 		expect(SessionManager.continueRecent(cwd, dir).getSessionFile()).toBe(userPath);
 
-		fsReadTracking.paths.length = 0;
+		fullTranscriptReadTracking.paths.length = 0;
 		const all = await SessionManager.listAll(dir, undefined, { includeInternal: true });
-		expect(fsReadTracking.paths.filter((path) => path.endsWith(".jsonl"))).toHaveLength(65);
+		expect(fullTranscriptReadTracking.paths.filter((path) => path.endsWith(".jsonl"))).toHaveLength(65);
 		expect(all).toHaveLength(65);
 		const stage = all.find((session) => session.id === "workflow-63");
 		expect(stage).toMatchObject({
@@ -179,11 +180,40 @@ describe("internal workflow sessions across resume surfaces", () => {
 		expect((await all()).map((session) => session.id)).toEqual(["user-interactive"]);
 	});
 
+	it("the interactive /resume surface uses the default listAll overload for default storage", async () => {
+		let selector: SessionSelectorComponent | undefined;
+		const listAll = vi.spyOn(SessionManager, "listAll").mockResolvedValue([]);
+		const mode = {
+			sessionManager: {
+				getCwd: () => cwd,
+				getSessionDir: () => dir,
+				getSessionFile: () => undefined,
+				usesDefaultSessionDir: () => true,
+			},
+			keybindings: new KeybindingsManager(),
+			ui: { requestRender: () => {} },
+			handleResumeSession: async () => {},
+			shutdown: async () => {},
+			showSelector: (build: SelectorBuilder) => {
+				selector = build(() => {}).component;
+			},
+		};
+		await import("../src/modes/interactive/interactive-session-routing.ts");
+		InteractiveModeBase.prototype.showSessionSelector.call(mode as InteractiveModeBase);
+
+		const all = Reflect.get(selector!, "allSessionsLoader") as SessionsLoader;
+		const onProgress: SessionListProgress = () => {};
+		await all(onProgress);
+		expect(listAll).toHaveBeenCalledWith(onProgress);
+	});
+
 	it.each(["-r", "--resume"])("%s passes default-filtered loaders to the startup resume picker", async (flag) => {
 		const now = Date.now();
 		const userPath = writeSession(dir, "user-picker", cwd, { mtime: now - 1_000 });
 		writeSession(dir, "workflow-picker", cwd, { internal: true, mtime: now });
+		let pickerCalled = false;
 		selectSessionImplementation = async (current, all) => {
+			pickerCalled = true;
 			expect((await current()).map((session) => session.id)).toEqual(["user-picker"]);
 			expect((await all()).map((session) => session.id)).toEqual(["user-picker"]);
 			return userPath;
@@ -191,7 +221,29 @@ describe("internal workflow sessions across resume surfaces", () => {
 		const { createSessionManager } = await import("../src/main-session.ts");
 
 		const session = await createSessionManager(parseArgs([flag]), cwd, dir, settingsManager);
+		expect(pickerCalled).toBe(true);
 		expect(session.getSessionFile()).toBe(userPath);
+	});
+
+	it("opens an internal workflow session when its path is explicitly requested", async () => {
+		const workflowPath = writeSession(dir, "workflow-explicit", cwd, {
+			internal: true,
+			stageId: "stage-explicit",
+			mtime: Date.now(),
+		});
+		const { createSessionManager } = await import("../src/main-session.ts");
+
+		const session = await createSessionManager(
+			parseArgs(["--session", workflowPath]),
+			cwd,
+			dir,
+			settingsManager,
+		);
+		expect(session.getSessionFile()).toBe(workflowPath);
+		expect(session.getHeader()).toMatchObject({
+			internal: true,
+			workflow: { runId: "run-many", stageId: "stage-explicit", stageName: "stage-workflow-explicit" },
+		});
 	});
 
 	it.each(["-c", "--continue"])("%s continues the regular session instead of a newer workflow stage", async (flag) => {

@@ -414,6 +414,7 @@ for (const stage of stages.filter((session) => session.internal)) {
 ### Instance Methods - Session Management
 
 - `newSession(options?)` - Start a new session. Options include `parentSession`, `internal`, and workflow run/stage linkage.
+- `markSessionInternal(workflow?)` - Mark the current session as internal and optionally persist its workflow run/stage linkage.
 - `setSessionFile(path)` - Switch to a different session file
 - `createBranchedSession(leafId)` - Extract branch to new session file
 
