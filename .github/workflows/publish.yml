@@ -1,9 +1,9 @@
 name: Publish
+run-name: Publish ${{ inputs.tag }}
 
 on:
-    push:
-        tags:
-            - "[0-9]*.[0-9]*.[0-9]*"
+    # Manual dispatch is deliberate: GitHub loads this workflow from the protected
+    # default branch, so a forged tag cannot remove its own integrity gate.
     workflow_dispatch:
         inputs:
             tag:
@@ -26,14 +26,51 @@ env:
     PACKAGE_NAME: "@bastani/atomic"
 
 jobs:
+    release-integrity:
+        name: Verify release integrity
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        outputs:
+            sha: ${{ steps.release.outputs.sha }}
+            tag: ${{ steps.release.outputs.tag }}
+        steps:
+            # Keep the protected workflow revision checked out so the tag cannot
+            # replace the verifier that validates it.
+            - uses: useblacksmith/checkout@v1
+              with:
+                  ref: ${{ github.event.repository.default_branch }}
+                  fetch-depth: 0
+                  persist-credentials: false
+            - uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+            - name: Resolve and verify immutable release commit
+              id: release
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ github.event.inputs.tag }}
+                  WORKFLOW_REF_NAME: ${{ github.ref_name }}
+                  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+              run: |
+                  set -euo pipefail
+                  [[ "$WORKFLOW_REF_NAME" == "$DEFAULT_BRANCH" ]] || { echo "Publish must run from protected default branch $DEFAULT_BRANCH, not $WORKFLOW_REF_NAME" >&2; exit 1; }
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+                  [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Unexpected tag format: $RELEASE_TAG" >&2; exit 1; }
+                  release_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
+                  [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve tag $RELEASE_TAG to one commit" >&2; exit 1; }
+                  git fetch --no-tags origin "$release_sha" main:refs/remotes/origin/main
+                  bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit "$release_sha"
+                  echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+                  echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
     linux-binary-smoke:
+        needs: release-integrity
         name: Smoke test Linux binary
         runs-on: blacksmith-4vcpu-ubuntu-2404
 
         steps:
             - uses: useblacksmith/checkout@v1
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ needs.release-integrity.outputs.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -108,12 +145,13 @@ jobs:
 
     windows-binary-smoke:
         name: Smoke test Windows binary
+        needs: release-integrity
         runs-on: blacksmith-4vcpu-windows-2025
 
         steps:
             - uses: useblacksmith/checkout@v1
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ needs.release-integrity.outputs.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -195,6 +233,7 @@ jobs:
 
     atomic-native-artifacts:
         name: Atomic native ${{ matrix.platform }}
+        needs: release-integrity
         runs-on: ${{ matrix.runner }}
         strategy:
             fail-fast: false
@@ -210,7 +249,7 @@ jobs:
         steps:
             - uses: actions/checkout@v7.0.0
               with:
-                  ref: ${{ github.event.inputs.tag || github.ref_name }}
+                  ref: ${{ needs.release-integrity.outputs.sha }}
                   persist-credentials: false
 
             - uses: oven-sh/setup-bun@v2
@@ -278,36 +317,20 @@ jobs:
             - linux-binary-smoke
             - windows-binary-smoke
             - atomic-native-artifacts
+            - release-integrity
         outputs:
             version: ${{ steps.package.outputs.version }}
             npm_tag: ${{ steps.package.outputs.npm_tag }}
-            release_tag: ${{ steps.checkout_ref.outputs.ref }}
+            release_tag: ${{ needs.release-integrity.outputs.tag }}
 
         steps:
-            - name: Resolve checkout ref
-              id: checkout_ref
-              shell: bash
-              env:
-                  DISPATCH_TAG: ${{ github.event.inputs.tag || '' }}
-              run: |
-                  set -euo pipefail
-                  if [ -n "$DISPATCH_TAG" ]; then
-                    ref="$DISPATCH_TAG"
-                  else
-                    ref="${GITHUB_REF#refs/tags/}"
-                  fi
-                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
-                  if [[ ! "$ref" =~ ^$release_version_re$ ]]; then
-                    echo "Unexpected tag format: $ref (expected MAJOR.MINOR.PATCH or MAJOR.MINOR.PATCH-alpha.REVISION, e.g. 0.8.0 or 0.8.0-alpha.1)" >&2
-                    exit 1
-                  fi
-                  echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
             - uses: actions/checkout@v7.0.0
               with:
-                  ref: ${{ steps.checkout_ref.outputs.ref }}
+                  ref: ${{ needs.release-integrity.outputs.sha }}
                   fetch-depth: 0
                   persist-credentials: false
+
 
             - uses: oven-sh/setup-bun@v2
               with:
@@ -317,14 +340,23 @@ jobs:
               with:
                   node-version: 24
 
+
             - name: Install dependencies
               run: bun install --frozen-lockfile
 
-            - name: Typecheck
-              run: bun run typecheck
+            - name: Docs link validation
+              working-directory: ${{ env.PACKAGE_DIR }}
+              run: bun run docs:check
 
-            - name: Test
-              run: bun run test:all
+            - name: Mintlify docs validation
+              working-directory: ${{ env.PACKAGE_DIR }}/docs
+              run: |
+                  bunx --bun mintlify@latest validate
+                  bunx --bun mintlify@latest broken-links
+
+            # Full type/test suites already gate the integrated parent on PR/main.
+            # The trusted integrity job proves every downstream job uses the same
+            # immutable deterministic release commit.
 
             - name: Verify committed npm shrinkwrap
               run: bun run check:shrinkwrap
@@ -341,21 +373,12 @@ jobs:
                   bun run --cwd packages/natives create-npm-dirs
                   bun run --cwd packages/natives artifacts
 
-            - name: Docs link validation
-              working-directory: ${{ env.PACKAGE_DIR }}
-              run: bun run docs:check
-
-            - name: Mintlify docs validation
-              working-directory: ${{ env.PACKAGE_DIR }}/docs
-              run: |
-                  bunx --bun mintlify@latest validate
-                  bunx --bun mintlify@latest broken-links
 
             - name: Validate single publish target and package metadata
               id: package
               shell: bash
               env:
-                  RELEASE_TAG: ${{ steps.checkout_ref.outputs.ref }}
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
               run: |
                   set -euo pipefail
 
@@ -442,7 +465,7 @@ jobs:
                   echo "Publishing $name@$version from $PACKAGE_DIR with npm tag '$npm_tag'."
 
             - name: Build @bastani/atomic package and binaries
-              run: ./scripts/build-binaries.sh
+              run: ./scripts/build-binaries.sh --skip-install
 
             - name: Verify built package metadata
               working-directory: ${{ env.PACKAGE_DIR }}
@@ -647,11 +670,24 @@ jobs:
                   )
                   sha256sum "${release_assets[@]}" > SHA256SUMS
 
+            - name: Reconfirm release tag is immutable
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+                  VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
+              run: |
+                  set -euo pipefail
+                  current_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
+                  [[ "$current_sha" == "$VERIFIED_SHA" ]] || {
+                    echo "Release tag $RELEASE_TAG moved from verified $VERIFIED_SHA to ${current_sha:-missing}; refusing release creation." >&2
+                    exit 1
+                  }
+
             - name: Create GitHub Release with binaries
               uses: softprops/action-gh-release@v3
               with:
-                  tag_name: ${{ steps.checkout_ref.outputs.ref }}
-                  name: ${{ steps.checkout_ref.outputs.ref }}
+                  tag_name: ${{ needs.release-integrity.outputs.tag }}
+                  name: ${{ needs.release-integrity.outputs.tag }}
                   body_path: ${{ steps.release_notes.outputs.notes_file }}
                   draft: false
                   prerelease: ${{ steps.release_type.outputs.prerelease == 'true' }}

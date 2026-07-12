@@ -20,6 +20,7 @@
     "test": "bun run test:unit",
     "test:unit": "bun test test/unit",
     "test:integration": "bun test test/integration",
+    "test:ci-contracts": "bun test test/ci",
     "test:all": "bun run test:unit && bun run test:integration",
     "typecheck": "tsc --noEmit",
     "check:file-length": "bun scripts/check-file-length.ts",

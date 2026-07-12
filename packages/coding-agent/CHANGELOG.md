@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Accelerated PR/main CI by running platform-independent validation once on Linux while retaining installed-package Node integration and release-archive smoke coverage on Linux and Windows, and by reusing caller-installed dependencies and package builds during binary assembly. Test suites now have one bounded, observable flake-recovery attempt with preserved logs, environment/resource diagnostics, CI annotations, and no retries for deterministic workflow/release/package/publish gates. Release publication no longer reruns the full PR suite: a protected-default-branch integrity gate proves the release commit is generated from a parent already integrated into `main`, contains exactly the expected version and shrinkwrap material, and pins that immutable SHA across release jobs before preserving all release-specific metadata, docs, native, binary, package, and npm provenance checks.
+
 ## [0.9.7-alpha.1] - 2026-07-12
 
 ### Added

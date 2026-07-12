@@ -245,7 +245,7 @@ export default workflow({
 
     const pushTag = await ctx.task("cut-release-tag", {
       prompt: [
-        `Cut the release tag off ${baseRef}. This is the sole publish trigger stage. ${baseRef} is never bumped.`,
+        `Cut the release tag off ${baseRef}, then dispatch the protected default-branch publish workflow. ${baseRef} is never bumped.`,
         "",
         baseInstructions,
         "",
@@ -254,12 +254,13 @@ export default workflow({
         "",
         "Required actions:",
         `1. Verify you are on clean local \`${baseRef}\` at commit \`${mainReady.mainOid}\`.`,
-        `2. Run \`bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes\`. This stamps the real version onto a throwaway off-${baseRef} "Release ${release.version}" commit (parent = the current ${baseRef} commit), tags it, and pushes ONLY the tag.`,
-        `3. Do not push ${baseRef}. Do not force-push or overwrite an existing tag. Do not run scripts/bump-version.ts.`,
-        "4. You may start monitoring the publish workflow, but the workflow body will verify the tag and publish run deterministically after this stage.",
+        `2. Run \`bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes\`. This stamps and pushes only the off-${baseRef} release tag.`,
+        `3. Run \`gh workflow run publish.yml --ref main -f tag=${release.version}\` so GitHub uses the protected workflow definition, not tag-controlled YAML.`,
+        `4. Do not push ${baseRef}, force-push a tag, run scripts/bump-version.ts directly, or dispatch with --ref set to the tag.`,
+        "5. Start monitoring the dispatched publish workflow; its first job verifies and pins the immutable release SHA.",
         "",
         "Final response format:",
-        `- Include the pushed tag, the off-${baseRef} release commit SHA and its parent (which must equal the ${baseRef} commit above), local/remote tag SHA evidence, GitHub Actions run URL/status if available, commands run, and any observed blockers.`,
+        `- Include the pushed tag, release commit SHA/parent, local/remote tag evidence, the workflow_dispatch run URL/status, commands run, and blockers.`,
       ].join("\n"),
     });
 
@@ -279,7 +280,7 @@ export default workflow({
       return blockedOutput(
         release,
         "verify-publish-workflow-succeeded",
-        "GitHub Actions Publish run for the release tag has matching headSha, status completed, and conclusion success",
+        "GitHub Actions protected Publish dispatch for the release tag completes successfully after its integrity job verifies and pins the release SHA",
         [publishVerification.summary, "", "Cut-release stage output:", excerpt(pushTag.text, 2_000)].join("\n"),
         publishVerification.pending === true ? "blocked" : "failed",
       );

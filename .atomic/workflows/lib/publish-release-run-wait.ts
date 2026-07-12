@@ -41,7 +41,7 @@ type RunIdentity =
 
 type JsonObject = { readonly [key: string]: JsonValue };
 
-const runJsonFields = "databaseId,status,conclusion,url,headBranch,event,workflowName,createdAt,headSha";
+const runJsonFields = "databaseId,status,conclusion,url,headBranch,event,workflowName,displayTitle,createdAt,headSha";
 function isJsonObject(value: JsonValue): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -65,25 +65,24 @@ function verifyRunIdentityJson(
   value: JsonValue,
   expectedRunId: number,
   expectedHeadBranch: string,
-  expectedHeadSha: string,
+  _expectedHeadSha: string,
 ): RunIdentity {
   if (!isJsonObject(value)) return { ok: false, summary: "GitHub Actions run response was not a JSON object." };
 
   const runId = positiveIntegerField(value, "databaseId");
-  const headBranch = stringField(value, "headBranch");
   const event = stringField(value, "event");
   const status = stringField(value, "status");
   const conclusion = nullableStringField(value, "conclusion");
   const runUrl = stringField(value, "url");
   const headSha = stringField(value, "headSha");
+  const displayTitle = stringField(value, "displayTitle");
   const failures: string[] = [];
 
   if (runId === undefined) failures.push("databaseId was missing or invalid");
   if (runId !== undefined && runId !== expectedRunId) failures.push(`databaseId was ${runId}, expected ${expectedRunId}`);
-  if (headBranch !== expectedHeadBranch) failures.push(`headBranch was ${headBranch ?? "missing"}, expected ${expectedHeadBranch}`);
-  if (event !== "push") failures.push(`event was ${event ?? "missing"}, expected push`);
+  if (displayTitle !== `Publish ${expectedHeadBranch}`) failures.push(`displayTitle was ${displayTitle ?? "missing"}, expected Publish ${expectedHeadBranch}`);
+  if (event !== "workflow_dispatch") failures.push(`event was ${event ?? "missing"}, expected workflow_dispatch`);
   if (status === undefined) failures.push("status was missing");
-  if (headSha !== expectedHeadSha) failures.push(`headSha was ${headSha ?? "missing"}, expected ${expectedHeadSha}`);
 
   if (failures.length > 0 || runId === undefined || status === undefined) {
     return {
@@ -105,7 +104,7 @@ function buildRunListCommand(workflowFile: string): readonly string[] {
     "--workflow",
     workflowFile,
     "--event",
-    "push",
+    "workflow_dispatch",
     "--json",
     runJsonFields,
     "--limit",

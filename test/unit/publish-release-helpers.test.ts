@@ -276,17 +276,18 @@ describe("publish-release GitHub Actions publish verification", () => {
   const successfulRun: JsonValue = {
     databaseId: 987654321,
     workflowName: "Publish",
-    headBranch: "1.2.3",
-    event: "push",
+    headBranch: "main",
+    event: "workflow_dispatch",
+    displayTitle: "Publish 1.2.3",
     status: "completed",
     conclusion: "success",
     headSha: "abc123",
     url: "https://github.com/earendil-works/pi-mono/actions/runs/987654321",
   };
 
-  test("selects the newest push run for the release tag from gh run list JSON", () => {
+  test("selects the newest protected dispatch for the release tag", () => {
     const result = selectPublishWorkflowRunJson([
-      { ...successfulRun, databaseId: 111, headBranch: "1.2.4" },
+      { ...successfulRun, databaseId: 111, displayTitle: "Publish 1.2.4" },
       { ...successfulRun, status: "in_progress", conclusion: null },
     ], "1.2.3");
 
@@ -295,8 +296,8 @@ describe("publish-release GitHub Actions publish verification", () => {
       summary: [
         "GitHub Actions publish run is selected.",
         "databaseId: 987654321",
-        "headBranch: 1.2.3",
-        "event: push",
+        "headBranch: main",
+        "event: workflow_dispatch",
         "status: in_progress",
         "headSha: abc123",
         "url: https://github.com/earendil-works/pi-mono/actions/runs/987654321",
@@ -309,16 +310,16 @@ describe("publish-release GitHub Actions publish verification", () => {
     });
   });
 
-  test("rejects run lists without a matching tag-triggered publish run", () => {
+  test("rejects run lists without a matching release dispatch title", () => {
     const result = selectPublishWorkflowRunJson([
-      { ...successfulRun, headBranch: "1.2.4" },
-      { ...successfulRun, event: "workflow_dispatch" },
+      { ...successfulRun, displayTitle: "Publish 1.2.4" },
+      { ...successfulRun, event: "push" },
     ], "1.2.3");
 
     assert.equal(result.ok, false);
     assert.match(result.summary, /expected headBranch: 1\.2\.3/u);
-    assert.match(result.summary, /headBranch=1\.2\.4 event=push/u);
-    assert.match(result.summary, /headBranch=1\.2\.3 event=workflow_dispatch/u);
+    assert.match(result.summary, /displayTitle=Publish 1\.2\.4 event=workflow_dispatch/u);
+    assert.match(result.summary, /displayTitle=Publish 1\.2\.3 event=push/u);
   });
 
   test("accepts only completed successful publish runs for the release tag", () => {
@@ -328,8 +329,8 @@ describe("publish-release GitHub Actions publish verification", () => {
         "GitHub Actions publish run is verified as successful.",
         "databaseId: 987654321",
         "workflowName: Publish",
-        "headBranch: 1.2.3",
-        "event: push",
+        "headBranch: main",
+        "event: workflow_dispatch",
         "status: completed",
         "conclusion: success",
         "headSha: abc123",
@@ -345,12 +346,12 @@ describe("publish-release GitHub Actions publish verification", () => {
 
   test("rejects unsuccessful or mismatched publish run JSON", () => {
     const result = verifyPublishWorkflowRunJson(
-      { ...successfulRun, headBranch: "1.2.4", status: "completed", conclusion: "failure" },
+      { ...successfulRun, displayTitle: "Publish 1.2.4", status: "completed", conclusion: "failure" },
       "1.2.3",
     );
 
     assert.equal(result.ok, false);
-    assert.match(result.summary, /headBranch was 1\.2\.4, expected 1\.2\.3/u);
+    assert.match(result.summary, /displayTitle was Publish 1\.2\.4, expected Publish 1\.2\.3/u);
     assert.match(result.summary, /conclusion was failure, expected success/u);
   });
 

@@ -183,10 +183,12 @@ async function main(): Promise<void> {
   if (push) {
     console.log(`Pushing tag ${version}...`);
     await $`git -C ${ROOT} push origin ${version}`;
-    console.log("Done. CI publish.yml will build and publish from the tag.");
+    console.log("Tag pushed. Dispatch the protected default-branch publish workflow:");
+    console.log(`  gh workflow run publish.yml --ref main -f tag=${version}`);
   } else {
-    console.log("Next: push the tag to trigger the publish pipeline:");
+    console.log("Next: push the tag, then dispatch the protected publish workflow:");
     console.log(`  git push origin ${version}`);
+    console.log(`  gh workflow run publish.yml --ref main -f tag=${version}`);
   }
 }
 

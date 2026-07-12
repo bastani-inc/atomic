@@ -121,21 +121,20 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized **only** on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) triggers CI, which publishes to npm with OIDC provenance (stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`) and creates the GitHub Release with cross-compiled binaries attached. Because `main` carries no version, you can cut a stable release and an ahead-of-stable prerelease line from the same trunk without branch gymnastics.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Publishing is intentionally dispatch-only so GitHub loads the trusted workflow from protected `main`: after pushing the tag, run `gh workflow run publish.yml --ref main -f tag=<version>`. The integrity job accepts only a deterministic release commit whose parent is already integrated into `main`, then publishes with npm OIDC provenance and creates the GitHub Release.
 
-Cut a release with `scripts/cut-release.ts`, which stamps the version onto the off-`main` tag commit and (with `--push`) pushes only the tag:
+Cut and dispatch a release with:
 
 ```sh
-bun run scripts/cut-release.ts 0.8.31            # stable -> @latest
-bun run scripts/cut-release.ts 0.9.0-alpha.1     # prerelease -> @next
 bun run scripts/cut-release.ts 0.8.31 --base main --push
+gh workflow run publish.yml --ref main -f tag=0.8.31
 ```
 
-`main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree (the tag keeps the commit alive).
+`main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree. Pushing the tag alone does **not** publish it.
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. That workflow opens a CHANGELOG-only release-notes PR to `main`, then stamps and tags the release off-`main` via `cut-release.ts` — it never bumps the version on `main`. It also accepts an optional `base_ref` input (default `main`) to release from a maintenance/integration branch instead of `main`, and an optional `from_ref` input to cut an **ephemeral** release from any commit/tag/branch: the workflow auto-creates `release/<version>` (or `prerelease/<version>`) from that ref, gates on that branch's CI, cuts and publishes the tag, then deletes the branch (the changelog lives on the tag only; `main` is untouched).
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. It opens a CHANGELOG-only PR to `main`, stamps and pushes the deterministic off-`main` release tag, dispatches the protected `publish.yml` definition with `--ref main`, and monitors that run. The release-integrity gate requires the tag commit's parent to be integrated into `main`; do not use the legacy `base_ref` maintenance-branch or `from_ref` ephemeral-release inputs, because non-`main` parents are rejected before publishing.
 
 ## Docs
 

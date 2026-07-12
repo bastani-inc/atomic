@@ -10,36 +10,24 @@ This document describes the GitHub Actions workflows for the Atomic monorepo and
 
 ```text
 Pull request / push
-  ├─ bun install --frozen-lockfile
-  ├─ bun run typecheck
-  ├─ bun run check:file-length
-  ├─ cd packages/coding-agent && bun run docs:check
-  ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
-  ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
-  ├─ cd packages/coding-agent && bun run build
-  ├─ bun run test:unit
-  ├─ bun run test:integration
-  │  └─ includes an installed-layout smoke that runs the built @bastani/atomic
-  │     package under the Node runtime and fails on extension-load diagnostics
-  └─ scripts/build-binaries.sh --platform <native-x64>
-     └─ extract archive, verify bundled paths, run --version and --no-session smoke tests
+  ├─ Linux: install, typecheck, file-length/docs checks, unit tests, native build, and coding-agent tests
+  ├─ Linux + Windows: build @bastani/atomic and run the installed-package Node integration smoke
+  └─ Linux + Windows: scripts/build-binaries.sh --skip-install --skip-package-build --platform <native-x64>
+     └─ reuse the caller's install/build, extract the archive, verify bundled paths,
+        and run --version plus --no-session smoke tests
 
-<version> tag pushed
+Protected-branch `workflow_dispatch` with a `<version>` tag
   ├─ smoke test Linux x64 release archive in a dedicated job
   ├─ smoke test Windows x64 release archive in a dedicated job
   ├─ build native NAPI artifacts for Linux, Windows, and macOS
   └─ publish after smoke and native-artifact jobs pass
      ├─ resolve and validate the release tag
-     ├─ bun install --frozen-lockfile
-     ├─ bun run typecheck && bun run test:all
-     ├─ verify committed npm-shrinkwrap.json is deterministic and current
-     ├─ download native NAPI artifacts
-     ├─ prepare generated native optional packages
-     ├─ cd packages/coding-agent && bun run docs:check
-     ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
-     ├─ cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
-     ├─ validate package metadata, synced versions, and private bundled packages
-     ├─ scripts/build-binaries.sh (regular build + cross-compile 6 targets)
+     ├─ prove the release commit has one parent integrated into main
+     ├─ deterministically regenerate the version/shrinkwrap tree and require an exact tree match
+     ├─ bun install --frozen-lockfile and verify committed npm-shrinkwrap.json
+     ├─ download native NAPI artifacts and prepare native optional packages
+     ├─ validate release-specific package metadata and synchronized versions
+     ├─ scripts/build-binaries.sh --skip-install (regular build + cross-compile 6 targets)
      ├─ validate dist/builtin contains all bundled extensions
      ├─ extract release notes from packages/coding-agent/CHANGELOG.md
      ├─ check whether the npm versions already exist
@@ -78,13 +66,29 @@ Bundled builtin packages copied into `packages/coding-agent/dist/builtin/` durin
 
 These companion packages remain in the workspace for source organization and tests, but are marked `private: true` and must not be published independently. `@bastani/atomic-natives` is the exception because `@bastani/atomic` depends on it at runtime.
 
+
+## CI performance and caching
+
+Recent Actions measurements (2026-07-12) showed the Linux test leg completing in about 3m34s while Windows took about 6m02s on a main push and 7m58s on a PR. The platform-independent Windows work removed here is typecheck (15s), file-length/docs links (about 2s), and Mintlify (61s), for about **1m18s** of sampled critical-path savings. Platform-sensitive unit, integration, native-package, coding-agent, and archive smoke coverage remains on Windows. Binary assembly also reuses the install and package build already completed in each job, avoiding another frozen install and package build.
+
+Release tags no longer repeat typecheck and the complete test suites. Instead, a protected-default-branch dispatch first runs `scripts/verify-release-integrity.ts`, which requires a single-parent `Release <version>` commit whose parent is contained by `origin/main`, recreates the release tree with the same stamper and shrinkwrap generator as `scripts/cut-release.ts`, and compares Git tree IDs. It then passes the verified SHA—not the mutable tag name—to every smoke, native, and publish checkout. Extra, missing, or modified files fail, and the publish job re-resolves the remote tag immediately before GitHub Release creation to reject a force-move. Release docs/Mintlify, shrinkwrap, version/metadata, native, binary/archive, npm tarball, registry, provenance, and GitHub Release checks remain.
+
+Blacksmith's [Actions cache](https://docs.blacksmith.sh/blacksmith-caching/dependencies-actions) automatically redirects official GitHub and popular third-party cache actions to its colocated backend, but it does not implicitly add a Bun dependency cache or Cargo compilation cache. We intentionally do not cache `node_modules`, Bun's global cache, or Cargo outputs here: measured Linux installs were already 0–1s and Blacksmith notes Rust `sccache` is not redirected to its backend. Cache keys and restore safety would add complexity without a demonstrated bottleneck. [Sticky Disks](https://docs.blacksmith.sh/blacksmith-caching/dependencies-sticky-disks) and [Git checkout caching](https://docs.blacksmith.sh/blacksmith-caching/git-checkout-caching) are optional dashboard/runner features rather than workflow YAML changes; checkout caching is still beta. Dedicated Blacksmith test/smoke jobs use `useblacksmith/checkout@v1`; the mixed native-artifact matrix retains one uniform `actions/checkout` step because it also includes GitHub-hosted Intel macOS.
+
+Blacksmith [Test Analytics](https://docs.blacksmith.sh/blacksmith-observability/test-analytics) requires uploaded JUnit XML. Bun's current test commands do not produce a repository-standard JUnit artifact, so CI does not add a lossy conversion solely for analytics. The Blacksmith dashboard/run history should continue to be used to validate these savings and identify a future test shard only when suite timings justify it. Runner sizes remain at 4 vCPU for test/smoke work; the measured work is mostly serial, so a larger runner is not assumed to improve it.
+
+### Bounded flaky-test recovery
+
+Only the unit, integration, and coding-agent test-suite steps use `scripts/run-flaky-test-suite.ts`. The green path runs the command once with no artifact writes. After a genuine suite failure, the runner preserves attempt 1, emits an OS/Bun/CPU/memory/load summary, and reruns that same smallest safe suite **once**. If attempt 2 passes, the job succeeds with a visible `Detected flake` warning and step-summary entry; if it fails, the step fails with both logs. `.ci-diagnostics/` is uploaded for 14 days on both Linux and Windows whenever files exist.
+
+This is not a blanket command retry. Typecheck, docs, file-length/lint, builds, native/package/archive checks, shrinkwrap, metadata, provenance, and publishing never use the wrapper. Workflow structure and release-verifier fixtures run first in the separate `test:ci-contracts` step with no retry wrapper; the retry runner's own unit contract is also a no-retry file. Bun does not currently expose a stable cross-platform failed-file manifest suitable for safely reconstructing arbitrary test commands, so the fallback reruns the named suite rather than guessing file paths. The policy adds no second-run cost when CI is green; a recovered flake costs one suite duration and remains observable instead of hiding the instability.
 ---
 
 ## Pull Request Workflows
 
 ### Tests (`test.yml`)
 
-Runs on pushes to `main` and PRs targeting `main`.
+Runs on pushes to `main`, `release/**`, and `prerelease/**`, plus PRs targeting `main`.
 
 Matrix:
 
@@ -97,16 +101,10 @@ Steps:
 2. Set up Bun.
 3. Set up Node 24 (required by the installed-package Node smoke below; the published `atomic` bin runs under `#!/usr/bin/env node` for npm/bun installs).
 4. Install dependencies with `bun install --frozen-lockfile`.
-5. Run `bun run typecheck`.
-6. Run `bun run check:file-length` to enforce the 500-line maximum for tracked TS/JS/Rust source-like files after applying only the documented generated/vendored exclusions.
-7. Validate hosted-docs routes and internal links with `cd packages/coding-agent && bun run docs:check`.
-8. Validate Mintlify MDX/page syntax with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`.
-9. Check Mintlify broken links with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`.
-10. Build `@bastani/atomic` with `cd packages/coding-agent && bun run build`.
-11. Run `bun run test:unit`.
-12. Run `bun run test:integration` with `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1`. This includes `test/integration/installed-package-node-extensions.test.ts`, which assembles an installed-like layout (built `dist/` copied next to linked `node_modules` siblings, outside the monorepo `packages/` tree) and runs `dist/cli.js --no-session` under **Node** — the runtime npm/bun installs actually use — failing on any `Failed to load extension` diagnostic. This guards the extension loader's installed-package alias fallback, which the compiled-binary smoke (virtualModules path) and Bun-run test suites (lenient exports-map resolution) cannot exercise; it runs on both the Linux and Windows matrix legs. The env flag makes the smoke hard-required here, where the build step precedes it and guarantees `dist/` exists; without the flag (e.g. `publish.yml` runs `test:all` before building) the test skips gracefully with a warning.
-13. Build the native release binary with `scripts/build-binaries.sh --platform <native-x64>`.
-14. Extract the generated release archive, verify required bundled `builtin/*` and selected `node_modules/*` paths are present, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit in CI.
+5. On Linux, run typecheck, file-length, and docs/Mintlify checks. Unit, native-package, and coding-agent suites continue on both Linux and Windows.
+6. Build `@bastani/atomic` and run `bun run test:integration` with `ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE=1` on both platforms. The installed-like layout runs `dist/cli.js --no-session` under **Node**, failing on extension-load diagnostics and preserving the cross-platform npm-install behavior.
+7. Build the native release binary with `scripts/build-binaries.sh --skip-install --skip-package-build --platform <native-x64>` so the matrix does not repeat its install or package build.
+8. Extract the generated archive, verify required bundled paths, run `atomic --version`, and run `atomic --no-session` far enough to catch extension-load diagnostics while allowing the expected no-models exit.
 
 ---
 
@@ -114,10 +112,7 @@ Steps:
 
 ### Trigger
 
-The publish pipeline (`publish.yml`) runs when:
-
-- a `<version>` tag is pushed (no leading `v`, for example `0.8.0` or `0.8.0-alpha.1`)
-- `workflow_dispatch` is run with an explicit tag input such as `0.8.0`
+The publish pipeline (`publish.yml`) runs only through `workflow_dispatch` from the protected default-branch workflow, with an explicit tag input such as `0.8.0`. It intentionally does not execute a workflow definition loaded from the tag: otherwise a forged tag could remove its own integrity gate.
 
 ### Tag Naming
 
@@ -144,7 +139,7 @@ The release shrinkwrap is prepared before the tag is published. Internal Atomic 
 ### Publish Flow
 
 ```text
-git push origin 0.8.0
+gh workflow run publish.yml --ref main -f tag=0.8.0
        │
        ├─ Smoke Linux binary
        │    · build linux-x64
@@ -156,25 +151,18 @@ git push origin 0.8.0
        │    · extract archive
        │    · run --version and --no-session
        │
-       └─ after both smoke jobs pass
+       └─ after the trusted integrity job pins one verified release SHA and both smoke jobs pass
           ▼
 Publish @bastani/atomic
-  · resolve and validate the tag name
-  · checkout the tag
+  · checkout the immutable SHA exported by release-integrity
   · run on a GitHub-hosted Ubuntu runner (required for npm provenance)
   · setup Bun and Node (Node 24 for npm provenance publish)
   · bun install --frozen-lockfile
-  · bun run typecheck && bun run test:all
   · verify the committed npm-shrinkwrap.json matches local deterministic generation
   · download native NAPI artifacts from the matrix jobs
-  · prepare generated native optional packages with `bun run --cwd packages/natives create-npm-dirs` and `bun run --cwd packages/natives artifacts`
-  · cd packages/coding-agent && bun run docs:check
-  · cd packages/coding-agent/docs && bunx --bun mintlify@latest validate
-  · cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links
-  · validate tag matches packages/coding-agent/package.json
-  · validate every package manifest has a synced version
-  · validate bundled packages remain private, with `@bastani/atomic-natives` as the publishable native-package exception
-  · scripts/build-binaries.sh
+  · prepare generated native optional packages
+  · validate tag/package versions, metadata, and private bundled packages
+  · scripts/build-binaries.sh --skip-install
       - bun run build (regular dist/)
       - bun build --compile --target=bun-<platform> for all 6 targets
       - assemble per-platform asset trees
@@ -192,7 +180,7 @@ Publish @bastani/atomic
        ▼
 Create GitHub Release with softprops/action-gh-release@v3
   · body: extracted CHANGELOG section
-  · files: 6 binary archives
+  · files: 6 binary archives plus SHA256SUMS
 ```
 
 ### Why npm Publish Before GitHub Release?
@@ -225,6 +213,7 @@ Binaries attached to every release:
 - `atomic-linux-arm64.tar.gz`
 - `atomic-windows-x64.zip`
 - `atomic-windows-arm64.zip`
+- `SHA256SUMS`
 
 ---
 
@@ -253,17 +242,13 @@ Those extensions are bundled into `@bastani/atomic` by `packages/coding-agent/sc
 
 Verdaccio is intentionally not used.
 
-The meaningful pre-publish checks are:
+The meaningful pre-publish checks are split between required PR/main validation and release-specific gates. The release job proves its parent is integrated and its tree is exactly the deterministic release transform, then checks:
 
-- TypeScript typechecking
-- unit and integration tests
-- docs route/internal-link validation with `cd packages/coding-agent && bun run docs:check`
-- Mintlify MDX/page syntax validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest validate`
-- Mintlify broken-link validation with `cd packages/coding-agent/docs && bunx --bun mintlify@latest broken-links`
 - deterministic `npm-shrinkwrap.json` validation for `@bastani/atomic`
-- `@bastani/atomic` build output validation
-- builtin extension/resource validation under `dist/builtin/`
-- `bun pm pack --dry-run` from `packages/coding-agent`
+- synchronized tag/package versions and publish metadata
+- `@bastani/atomic` build output and builtin extension/resources
+- all native packages and six release archives
+- `bun pm pack --dry-run` and npm OIDC provenance
 
 ---
 
@@ -272,7 +257,7 @@ The meaningful pre-publish checks are:
 | File                 | Trigger                                       | Purpose                                                                                                                                                                                                       |
 | -------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test.yml`           | Push to `main`, PR to `main`                  | Install, typecheck, enforce the tracked TS/JS/Rust file-length gate, validate docs links plus Mintlify MDX/page syntax and broken links, build `@bastani/atomic`, unit/integration tests (including the installed-package Node-runtime extension smoke on Linux and Windows), build native Linux/Windows binaries, verify archive contents, and run `atomic --version` / `atomic --no-session` archive smoke tests |
-| `publish.yml`        | `<version>` tag push, manual dispatch with tag input | Smoke test Linux/Windows binaries in parallel on Blacksmith runners, build native NAPI artifacts on Blacksmith Linux/Windows/ARM/macOS runners plus GitHub `macos-26-intel` for Darwin x64, validate deterministic shrinkwrap/docs links plus Mintlify MDX/page syntax and broken links before publish metadata checks, build binaries on a GitHub-hosted runner for npm provenance, publish `@bastani/atomic-natives` and `@bastani/atomic`, create GitHub Release with binaries |
+| `publish.yml`        | Protected `workflow_dispatch` with tag input | Verify deterministic tag ancestry/content and pin its SHA, smoke Linux/Windows binaries, build all native NAPI artifacts, validate release docs/package/shrinkwrap/binary contracts, publish both public packages with npm OIDC provenance, and create the GitHub Release |
 
 ---
 
@@ -280,7 +265,7 @@ The meaningful pre-publish checks are:
 
 1. Move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` to `## [0.8.0] - <YYYY-MM-DD>` and land it on `main` like any normal change. The publish workflow uses this section as the GitHub Release body. **Do not bump any `package.json` version — `main` is versionless.**
 
-2. Run local validation (optional; CI repeats it from the tagged commit):
+2. Run local validation (optional; required PR/main CI already covers it on the integrated parent):
 
     ```sh
     bun run typecheck
@@ -313,7 +298,7 @@ The meaningful pre-publish checks are:
 
     On Windows, substitute `--platform windows-x64`, extract `atomic-windows-x64.zip`, and run `atomic.exe --version` plus the equivalent `atomic.exe --no-session` smoke. (A `main` build reports the `0.0.0` placeholder for `--version`; a release build from the tag reports the real version.)
 
-3. From a clean `main`, cut and push the release tag. This stamps the version onto an off-`main` `Release 0.8.0` commit, regenerates the deterministic `@bastani/atomic` shrinkwrap from local metadata, tags it, and pushes only the tag (the publish trigger):
+3. From a clean `main`, cut and push the release tag. This stamps the version onto an off-`main` `Release 0.8.0` commit, regenerates the deterministic `@bastani/atomic` shrinkwrap from local metadata, tags it, and pushes only the tag. Pushing alone does not publish; step 4 performs the protected dispatch.
 
     ```sh
     bun run scripts/cut-release.ts 0.8.0 --base main --push
@@ -321,6 +306,6 @@ The meaningful pre-publish checks are:
 
     Omit `--push` to inspect the tag locally first (`git show 0.8.0`, `git log --oneline -1 0.8.0`), then `git push origin 0.8.0`. `main` is never advanced.
 
-4. Confirm `publish.yml` checks out the tag, runs docs link validation plus Mintlify syntax and broken-link checks, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` to npm with OIDC provenance, and creates the GitHub Release with binaries attached.
+4. Dispatch the protected `publish.yml` workflow with the pushed tag (`gh workflow run publish.yml --ref main -f tag=0.8.0`). Confirm it pins one verified commit SHA across every job, runs docs/Mintlify and all release-specific gates, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` with npm OIDC provenance, and creates the GitHub Release.
 
 For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow. Its final publish gate polls the matching `publish.yml` run until GitHub reports a terminal conclusion, so a long-running `in_progress` publish run is not treated as a release failure.

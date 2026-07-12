@@ -359,10 +359,11 @@ export function selectPublishWorkflowRunJson(
     const conclusion = nullableStringField(candidate, "conclusion");
     const runUrl = stringField(candidate, "url");
     const headSha = stringField(candidate, "headSha");
+    const displayTitle = stringField(candidate, "displayTitle");
 
-    if (headBranch !== expectedHeadBranch || event !== "push") {
+    if (displayTitle !== `Publish ${expectedHeadBranch}` || event !== "workflow_dispatch") {
       mismatches.push(
-        `run[${index}] headBranch=${headBranch ?? "missing"} event=${event ?? "missing"}`,
+        `run[${index}] displayTitle=${displayTitle ?? "missing"} event=${event ?? "missing"}`,
       );
       continue;
     }
@@ -415,7 +416,7 @@ export function selectPublishWorkflowRunJson(
 export function verifyPublishWorkflowRunJson(
   value: JsonValue,
   expectedHeadBranch: string,
-  expectedHeadSha?: string,
+  _expectedHeadSha?: string,
 ): PublishWorkflowRunVerification {
   if (!isJsonObject(value)) {
     return { ok: false, summary: "GitHub Actions run response was not a JSON object." };
@@ -429,18 +430,19 @@ export function verifyPublishWorkflowRunJson(
   const runUrl = stringField(value, "url");
   const workflowName = stringField(value, "workflowName");
   const headSha = stringField(value, "headSha");
+  const displayTitle = stringField(value, "displayTitle");
   const failures: string[] = [];
 
   if (runId === undefined) failures.push("databaseId was missing or invalid");
-  if (headBranch !== expectedHeadBranch) {
-    failures.push(`headBranch was ${headBranch ?? "missing"}, expected ${expectedHeadBranch}`);
+  if (displayTitle !== `Publish ${expectedHeadBranch}`) {
+    failures.push(`displayTitle was ${displayTitle ?? "missing"}, expected Publish ${expectedHeadBranch}`);
   }
-  if (event !== "push") failures.push(`event was ${event ?? "missing"}, expected push`);
+  if (event !== "workflow_dispatch") failures.push(`event was ${event ?? "missing"}, expected workflow_dispatch`);
   if (status !== "completed") failures.push(`status was ${status ?? "missing"}, expected completed`);
   if (conclusion !== "success") failures.push(`conclusion was ${conclusion ?? "missing"}, expected success`);
-  if (expectedHeadSha !== undefined && headSha !== expectedHeadSha) {
-    failures.push(`headSha was ${headSha ?? "missing"}, expected ${expectedHeadSha}`);
-  }
+  // workflow_dispatch runs execute the protected default-branch workflow; its
+  // headSha is therefore the workflow revision, while the integrity job pins
+  // and verifies the release SHA supplied as input.
 
   if (failures.length > 0 || runId === undefined || status === undefined || conclusion === undefined) {
     return {

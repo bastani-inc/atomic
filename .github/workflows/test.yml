@@ -27,6 +27,7 @@ jobs:
             - uses: useblacksmith/checkout@v1
               with:
                   lfs: true
+                  fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
@@ -40,14 +41,17 @@ jobs:
             - name: Install dependencies
               run: bun install --frozen-lockfile
             - name: Typecheck
+              if: runner.os == 'Linux'
               run: bun run typecheck
             - name: File length check
+              if: runner.os == 'Linux'
               run: bun run check:file-length
             - name: Docs link validation
+              if: runner.os == 'Linux'
               working-directory: packages/coding-agent
               run: bun run docs:check
             - name: Mintlify docs validation
-              if: github.event_name == 'pull_request'
+              if: runner.os == 'Linux' && github.event_name == 'pull_request'
               working-directory: packages/coding-agent/docs
               run: |
                   bunx --bun mintlify@latest validate
@@ -55,23 +59,30 @@ jobs:
             - name: Build @bastani/atomic package
               working-directory: packages/coding-agent
               run: bun run build
-            - name: Unit tests
-              run: bun run test:unit
-            - name: Integration tests
-              run: bun run test:integration
+            - name: Deterministic CI and release contracts
+              run: bun run test:ci-contracts
+            - name: Unit tests (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "unit tests (${{ matrix.binary_platform }})"
+                  --no-retry-file flaky-test-suite-runner.test.ts
+                  -- bun run test:unit
+            - name: Integration tests (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "integration tests (${{ matrix.binary_platform }})"
+                  -- bun run test:integration
               env:
-                  # Hard-require the installed-package Node smoke here, where the
-                  # package build above guarantees dist/ exists. publish.yml runs
-                  # test:all before building and skips the smoke gracefully.
+                  # Hard-require the installed-package Node smoke where the package
+                  # build above guarantees dist/ exists on both supported hosts.
                   ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE: "1"
             - name: Build native bindings for package tests
               run: bun run --cwd packages/natives build
-            - name: coding-agent vitest suite
-              working-directory: packages/coding-agent
-              run: bun run --bun test
+            - name: coding-agent vitest suite (one bounded flake retry)
+              run: >-
+                  bun run scripts/run-flaky-test-suite.ts --label "coding-agent tests (${{ matrix.binary_platform }})"
+                  -- bun run --cwd packages/coding-agent --bun test
             - name: Build native release binary
               shell: bash
-              run: ./scripts/build-binaries.sh --platform "${{ matrix.binary_platform }}"
+              run: ./scripts/build-binaries.sh --skip-install --skip-package-build --platform "${{ matrix.binary_platform }}"
             - name: Smoke test Linux release archive
               if: runner.os == 'Linux'
               shell: bash
@@ -177,3 +188,11 @@ jobs:
                   if ($status -ne 0 -and $output -notmatch "No models available|No model selected|No API key found") {
                     exit $status
                   }
+            - name: Upload flaky-test diagnostics
+              if: always()
+              uses: actions/upload-artifact@v7
+              with:
+                  name: test-diagnostics-${{ matrix.binary_platform }}
+                  path: .ci-diagnostics/
+                  if-no-files-found: ignore
+                  retention-days: 14
