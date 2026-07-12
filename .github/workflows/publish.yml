@@ -10,14 +10,14 @@ on:
                 description: "Tag to publish (e.g., 0.8.0 or 0.8.0-alpha.1)"
                 required: true
                 type: string
-            windows_runner:
-                description: "Windows smoke runner (use github-hosted only if Blacksmith is blocked)"
+            runner_provider:
+                description: "Runner provider for Blacksmith-backed jobs"
                 required: true
                 default: blacksmith
                 type: choice
                 options:
                     - blacksmith
-                    - github-hosted
+                    - github
 
 permissions:
     contents: write
@@ -36,10 +36,10 @@ env:
 jobs:
     linux-binary-smoke:
         name: Smoke test Linux binary
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ${{ inputs.runner_provider == 'github' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}
 
         steps:
-            - uses: useblacksmith/checkout@v1
+            - uses: actions/checkout@v7.0.0
               with:
                   ref: ${{ github.event.inputs.tag || github.ref_name }}
                   persist-credentials: false
@@ -116,7 +116,7 @@ jobs:
 
     windows-binary-smoke:
         name: Smoke test Windows binary
-        runs-on: ${{ inputs.windows_runner == 'github-hosted' && 'windows-2025' || 'blacksmith-4vcpu-windows-2025' }}
+        runs-on: ${{ inputs.runner_provider == 'github' && 'windows-2025' || 'blacksmith-4vcpu-windows-2025' }}
 
         steps:
             - uses: actions/checkout@v7.0.0
@@ -208,12 +208,12 @@ jobs:
             fail-fast: false
             matrix:
                 include:
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: linux-x64, target: "" }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404-arm, platform: linux-arm64, target: "" }
+                    - { runner: "${{ inputs.runner_provider == 'github' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}", platform: linux-x64, target: "" }
+                    - { runner: "${{ inputs.runner_provider == 'github' && 'ubuntu-24.04-arm' || 'blacksmith-4vcpu-ubuntu-2404-arm' }}", platform: linux-arm64, target: "" }
                     - { runner: macos-26-intel, platform: darwin-x64, target: "" }
-                    - { runner: blacksmith-6vcpu-macos-26, platform: darwin-arm64, target: "" }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-x64, target: x86_64-pc-windows-msvc }
-                    - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-arm64, target: aarch64-pc-windows-msvc }
+                    - { runner: "${{ inputs.runner_provider == 'github' && 'macos-26' || 'blacksmith-6vcpu-macos-26' }}", platform: darwin-arm64, target: "" }
+                    - { runner: "${{ inputs.runner_provider == 'github' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}", platform: windows-x64, target: x86_64-pc-windows-msvc }
+                    - { runner: "${{ inputs.runner_provider == 'github' && 'ubuntu-24.04' || 'blacksmith-4vcpu-ubuntu-2404' }}", platform: windows-arm64, target: aarch64-pc-windows-msvc }
 
         steps:
             - uses: actions/checkout@v7.0.0

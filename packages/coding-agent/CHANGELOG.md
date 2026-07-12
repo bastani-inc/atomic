@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a manual `publish.yml` Windows-runner fallback: tag pushes and ordinary dispatches keep Blacksmith by default, while operators can select GitHub's hosted Windows image when Blacksmith capacity is blocked without changing the requested release tag.
+- Added a provider-wide manual `publish.yml` runner fallback: tag pushes and ordinary dispatches retain architecture-aware Blacksmith defaults, while operators can switch every Blacksmith-backed smoke and native-artifact job to verified GitHub-hosted Linux x64, Linux arm64, Windows x64, and Darwin arm64 runners without changing the release tag; the already-required GitHub-hosted Darwin x64 and provenance publish jobs remain unchanged.
 
 ## [0.9.7-alpha.1] - 2026-07-12
 
