@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added shared Pier/Harbor eval sandbox provisioning for every external runtime declared by Atomic's default shipped skills: current Playwright CLI with a preinstalled, launch-verified Chromium browser; current LiteParse and uv with managed Python/search dependencies; tmux; LibreOffice; ImageMagick; and Python/PyYAML. The exhaustive inventory explicitly excludes project-local developer skills, preserves Pier's apk/apt/yum and Harbor's Debian installation paths, and fails setup early when a required CLI is unusable.
+- Added shared Pier/Harbor eval sandbox provisioning for every external runtime declared by Atomic's default shipped skills: current Playwright CLI with Chromium, Chromium headless shell, and Linux dependencies installed through the official `playwright-cli install-browser` flow during setup (with explicit distro-Chromium fallback configuration on unsupported Alpine/musl and RHEL-compatible systems); current LiteParse and uv with managed Python/search dependencies; tmux; LibreOffice; ImageMagick; and Python/PyYAML. The exhaustive inventory explicitly excludes project-local developer skills, preserves Pier's apk/apt/yum and Harbor's Debian installation paths, and fails setup early when a required CLI or offline browser smoke check is unusable.
 
 ### Changed
 

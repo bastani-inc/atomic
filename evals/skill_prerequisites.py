@@ -66,8 +66,8 @@ PREREQUISITES = (
     SkillPrerequisite(
         "playwright-cli",
         "@playwright/cli",
-        "npm install -g @playwright/cli; playwright install chromium",
-        "playwright-cli --version; offline browser launch",
+        "npm install -g @playwright/cli; playwright-cli install-browser chromium",
+        "playwright-cli --version; installed-browser listing; offline browser launch",
     ),
     SkillPrerequisite(
         "tmux", "tmux-compatible CLI", "install distro tmux package", "tmux -V"
@@ -98,10 +98,12 @@ def root_install_command(*, harbor: bool = False) -> str:
     apt = (
         "apt-get update && apt-get install -y --no-install-recommends "
         "bash ca-certificates curl fd-find git imagemagick libreoffice python3 python3-yaml ripgrep tmux "
-        "libasound2 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdbus-1-3 "
-        "libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 "
-        "libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 "
-        "libxkbcommon0 libxrandr2 xvfb fonts-liberation && "
+        "fonts-freefont-ttf fonts-ipafont-gothic fonts-liberation fonts-noto-color-emoji "
+        "fonts-tlwg-loma-otf fonts-unifont fonts-wqy-zenhei libasound2 "
+        "libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libcups2 "
+        "libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 libgbm1 libglib2.0-0 "
+        "libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 "
+        "libxdamage1 libxext6 libxfixes3 libxi6 libxkbcommon0 libxrandr2 xvfb && "
         "ln -sf /usr/bin/fdfind /usr/local/bin/fd && rm -rf /var/lib/apt/lists/*"
     )
     if harbor:
@@ -157,16 +159,19 @@ def agent_install_command(version_spec: str) -> str:
         "nvm install node; nvm alias default node; fi"
     )
     browser_setup = (
+        'env_tmp="$HOME/.atomic-eval-env.tmp"; '
+        "printf '%s\\n' 'export PLAYWRIGHT_MCP_BROWSER=chromium' "
+        "'export PLAYWRIGHT_MCP_HEADLESS=true' "
+        "'export PLAYWRIGHT_MCP_SANDBOX=false' > \"$env_tmp\"; "
         "if command -v apk >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
-        "browser_path=$(command -v chromium || command -v chromium-browser) && "
-        'env_tmp="$HOME/.atomic-eval-env.tmp" && '
+        "browser_path=$(command -v chromium || command -v chromium-browser); "
         "printf '%s\\n' \"export PLAYWRIGHT_MCP_EXECUTABLE_PATH='$browser_path'\" "
-        "'export PLAYWRIGHT_MCP_BROWSER=chromium' 'export PLAYWRIGHT_MCP_HEADLESS=true' "
-        "'export PLAYWRIGHT_MCP_SANDBOX=false' > \"$env_tmp\" && "
-        'mv -f "$env_tmp" "$HOME/.atomic-eval-env" && '
-        f"{runtime_environment_command()}; else "
-        'PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright" '
-        'node "$(npm root -g)/@playwright/cli/node_modules/playwright/cli.js" install chromium; fi'
+        '>> "$env_tmp"; '
+        "else playwright-cli install-browser chromium --with-deps --dry-run; "
+        "playwright-cli install-browser chromium; "
+        "playwright-cli install-browser --list; fi; "
+        'mv -f "$env_tmp" "$HOME/.atomic-eval-env"; '
+        f"{runtime_environment_command()}"
     )
     return (
         "set -euo pipefail; "
@@ -192,6 +197,9 @@ def verification_command() -> str:
         "python -c 'import aiofiles, bm25s'; "
         "python3 -c 'import yaml'; libreoffice --version; "
         "(magick -version || convert -version); playwright-cli --version; "
+        "if [ -n \"${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}\" ]; then "
+        "test -x \"$PLAYWRIGHT_MCP_EXECUTABLE_PATH\"; "
+        "else playwright-cli install-browser --list; fi; "
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm_config_offline=true "
         "PLAYWRIGHT_MCP_BROWSER=chromium playwright-cli open about:blank; "
         "playwright-cli snapshot >/dev/null; playwright-cli close"
