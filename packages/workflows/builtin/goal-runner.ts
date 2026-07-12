@@ -1,7 +1,6 @@
 import { join } from "node:path";
 import type { WorkflowParallelOptions, WorkflowTaskOptions, WorkflowTaskResult, WorkflowTaskStep } from "../src/shared/types.js";
 import { reviewDecisionSchema } from "./goal-schemas.js";
-import { reviewerAModelConfig } from "./ralph-models.js";
 import {
   DEFAULT_BLOCKER_THRESHOLD,
   DEFAULT_MAX_TURNS,
@@ -145,10 +144,36 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
       excludedTools: ["ask_user_question"],
     };
 
-    // Match Ralph reviewer-a's model chain verbatim while preserving Goal's
-    // richer structured decision contract consumed by the Goal review gate.
+    // Keep this model list identical to Ralph reviewer-a while preserving an
+    // independent Goal configuration and Goal's richer decision schema.
     const reviewerModelConfig = {
-      ...reviewerAModelConfig,
+      model: "anthropic/claude-fable-5:high",
+      fallbackModels: [
+        "openai-codex/gpt-5.6-sol:xhigh",
+        "github-copilot/gpt-5.6-sol:xhigh",
+        "openai/gpt-5.6-sol:xhigh",
+        "openai-codex/gpt-5.5:xhigh",
+        "github-copilot/gpt-5.5:xhigh",
+        "openai/gpt-5.5:xhigh",
+        "github-copilot/claude-opus-4.8 (1m):high",
+        "anthropic/claude-opus-4-8:high",
+        "cursor/claude-fable-5:high",
+        "cursor/gpt-5.6-sol:xhigh",
+        "cursor/gpt-5.5:high",
+        "cursor/claude-opus-4-8-thinking:high",
+        "cursor/grok-4.5",
+        "zai/glm-5.2:xhigh",
+        "zai-coding-cn/glm-5.2:xhigh",
+        "cursor/glm-5.2",
+        "openrouter/anthropic/claude-fable-5:high",
+        "openrouter/openai/gpt-5.6-sol:xhigh",
+        "openrouter/sakana/fugu-ultra:high",
+        "openrouter/openai/gpt-5.5:xhigh",
+        "openrouter/anthropic/claude-opus-4-8:high",
+        "openrouter/x-ai/grok-4.5",
+        "openrouter/z-ai/glm-5.2:xhigh"
+      ],
+      excludedTools: ["ask_user_question"],
       schema: reviewDecisionSchema,
     };
 
