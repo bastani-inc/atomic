@@ -188,26 +188,20 @@ The Pier network allowlist automatically includes `openrouter.ai` when the model
 
 ## Pre-provisioned shipped-skill prerequisites
 
-Pier and Harbor install Atomic's default shipped skills with their runtime prerequisites during the sandbox setup phase, while network access is available. `skill_prerequisites.py` is the shared inventory and command source consumed explicitly by both adapters. Versions are pinned where practical: `@playwright/cli@0.1.17`, `@llamaindex/liteparse@2.5.1`, and `uv 0.11.28`; Atomic itself still follows `--agent-kwarg version` and defaults to `@latest`.
+Pier and Harbor install Atomic's default shipped skills with their runtime prerequisites during the sandbox setup phase, while network access is available. `skill_prerequisites.py` is the shared inventory and command source consumed explicitly by both adapters. Prerequisite installers select their current versions without explicit pins; Atomic itself still follows `--agent-kwarg version` and defaults to `@latest`.
 
 | Shipped skill | Provisioned prerequisite | Install command/source | Early verification |
 | --- | --- | --- | --- |
-| `effective-liteparse` | Node 22; `lit`; LibreOffice; ImageMagick; `uv`; uv-managed Python 3.13 with cached `bm25s`/`aiofiles` | NVM or distro Node; `npm install -g @llamaindex/liteparse@2.5.1`; distro packages; pinned Astral installer; `uv python install 3.13` and a dependency-prefetch run | `node --version`, `lit --version`, `libreoffice --version`, `magick -version` or `convert -version`, `uv --version`, Python lookup and imports |
-| `playwright-cli` | `@playwright/cli` and Chromium plus Linux runtime libraries | `npm install -g @playwright/cli@0.1.17`; managed Chromium on Debian, distro Chromium on Alpine/yum. System-browser settings are written idempotently to `~/.atomic-eval-env`, which both adapters explicitly source because eval commands use non-login shells. | Version check followed by an actual headless `about:blank` open, snapshot, and close using the preinstalled browser |
-| `tmux` | tmux-compatible CLI | Distro `tmux` package (`apk`, `apt-get`, or `yum` in Pier; Debian `apt-get` in Harbor). Alpine also receives edge `libc++`, needed by LiteParse's published musl native module while retaining stable Alpine's Node 22. Yum-family images enable EPEL and CRB/PowerTools before installing Chromium, ImageMagick, ripgrep, and LibreOffice component packages. | `tmux -V` |
-| `impeccable` | Node.js for bundled `.mjs` scripts | Node 22 as above | `node --version` |
+| `effective-liteparse` | Node.js; `lit`; LibreOffice; ImageMagick; `uv`; uv-managed Python with cached `bm25s`/`aiofiles` | Current NVM Node.js or distro Node.js; `npm install -g @llamaindex/liteparse`; distro packages; Astral's current-version installer; `uv python install` and a dependency-prefetch run | `node --version`, `lit --version`, `libreoffice --version`, `magick -version` or `convert -version`, `uv --version`, managed-Python lookup and imports |
+| `playwright-cli` | `@playwright/cli` and Chromium plus Linux runtime libraries | `npm install -g @playwright/cli`; managed Chromium on Debian, distro Chromium on Alpine/yum. System-browser settings are written idempotently to `~/.atomic-eval-env`, which both adapters explicitly source because eval commands use non-login shells. | Version check followed by an actual headless `about:blank` open, snapshot, and close using the preinstalled browser |
+| `tmux` | tmux-compatible CLI | Distro `tmux` package (`apk`, `apt-get`, or `yum` in Pier; Debian `apt-get` in Harbor). Alpine also receives edge `libc++`, needed by LiteParse's published musl native module. Yum-family images enable EPEL and CRB/PowerTools before installing Chromium, ImageMagick, ripgrep, and LibreOffice component packages. | `tmux -V` |
+| `impeccable` | Node.js for bundled `.mjs` scripts | Node.js as above | `node --version` |
 | `skill-creator` | Python 3 and PyYAML for bundled validation/packaging scripts | Distro `python3` and PyYAML package | `python3 -c "import yaml"` |
 | `create-spec`, `intercom`, `prompt-engineer`, `research-codebase`, `subagent`, `tdd` | No independently installed external runtime | Harness tools, bundled extensions, or target-project tooling | Not applicable |
 
 The inventory excludes repository-local `.agents` developer helpers such as Crabbox, prek, and GitHub commit/PR skills. Conditional examples are not promoted to universal dependencies: for example, Claude Code is needed only for `skill-creator`'s optional description-optimization path, a browser tool is conditional for Impeccable live mode, and `gh`/`curl` are conditional research paths. Conversely, Office/image support and the effective-liteparse ranked-search helper are provisioned because they are declared capabilities of the shipped skill.
 
 The setup commands are noninteractive, repeatable, fail on unsupported package managers or unusable tools, and preload Chromium and the uv/Python artifacts so skill use does not depend on downloading them after restricted-network task execution begins. This increases eval image size and setup time, especially from LibreOffice and Chromium, in exchange for deterministic availability.
-
-Run the focused regression suite from the repository root:
-
-```bash
-uv run python -m unittest discover -s evals -p 'test_*.py' -v
-```
 
 ## Adapter behavior
 

@@ -1,14 +1,9 @@
 """Shared sandbox provisioning for the runtime prerequisites of shipped Atomic skills."""
 
 from __future__ import annotations
+
 import re
-
 from dataclasses import dataclass
-
-PLAYWRIGHT_CLI_VERSION = "0.1.17"
-LITEPARSE_VERSION = "2.5.1"
-UV_VERSION = "0.11.28"
-PYTHON_VERSION = "3.13"
 
 
 @dataclass(frozen=True)
@@ -38,13 +33,13 @@ PREREQUISITES = (
     SkillPrerequisite(
         "effective-liteparse",
         "Node.js 18+",
-        "NVM Node 22 or distro nodejs",
+        "current NVM Node.js or distro nodejs",
         "node --version",
     ),
     SkillPrerequisite(
         "effective-liteparse",
-        f"@llamaindex/liteparse@{LITEPARSE_VERSION}",
-        f"npm install -g @llamaindex/liteparse@{LITEPARSE_VERSION}",
+        "@llamaindex/liteparse",
+        "npm install -g @llamaindex/liteparse",
         "lit --version",
     ),
     SkillPrerequisite(
@@ -63,22 +58,22 @@ PREREQUISITES = (
     ),
     SkillPrerequisite(
         "effective-liteparse",
-        f"uv {UV_VERSION} and Python {PYTHON_VERSION}",
-        f"install uv {UV_VERSION}; uv python install {PYTHON_VERSION}",
-        "uv --version; uv python find 3.13",
+        "uv and uv-managed Python",
+        "install uv; uv python install",
+        "uv --version; uv python find --managed-python",
         "bundled ranked-search helper",
     ),
     SkillPrerequisite(
         "playwright-cli",
-        f"@playwright/cli@{PLAYWRIGHT_CLI_VERSION}",
-        f"npm install -g @playwright/cli@{PLAYWRIGHT_CLI_VERSION}; playwright install chromium",
+        "@playwright/cli",
+        "npm install -g @playwright/cli; playwright install chromium",
         "playwright-cli --version; offline browser launch",
     ),
     SkillPrerequisite(
         "tmux", "tmux-compatible CLI", "install distro tmux package", "tmux -V"
     ),
     SkillPrerequisite(
-        "impeccable", "Node.js", "NVM Node 22 or distro nodejs", "node --version"
+        "impeccable", "Node.js", "current NVM Node.js or distro nodejs", "node --version"
     ),
     SkillPrerequisite(
         "skill-creator",
@@ -146,17 +141,20 @@ def runtime_environment_command() -> str:
 
 
 def agent_install_command(version_spec: str) -> str:
-    """Install Atomic plus pinned skill CLIs, browsers, and uv as the sandbox user."""
+    """Install Atomic plus skill CLIs, browsers, and uv as the sandbox user."""
     _validate_version_spec(version_spec)
     node_setup = (
         "if command -v apk >/dev/null 2>&1; then "
-        "node -e 'if (process.versions.node.split(`.`)[0] !== `22`) process.exit(1)' || "
-        "{ echo 'Error: Alpine nodejs must be Node 22' >&2; exit 1; }; "
+        "node -e 'if (+process.versions.node.split(`.`)[0] < 18) process.exit(1)' || "
+        "{ echo 'Error: Alpine nodejs must be Node.js 18 or newer' >&2; exit 1; }; "
         'npm config set prefix "$HOME/.local"; export PATH="$HOME/.local/bin:$PATH"; '
-        "else curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash; "
-        'export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"; '
+        'else export NVM_DIR="$HOME/.nvm"; '
+        'if [ -d "$NVM_DIR/.git" ]; then git -C "$NVM_DIR" fetch --depth=1 origin master && '
+        'git -C "$NVM_DIR" reset --hard origin/master; else rm -rf "$NVM_DIR" && '
+        'git clone --depth=1 https://github.com/nvm-sh/nvm.git "$NVM_DIR"; fi; '
+        '. "$NVM_DIR/nvm.sh"; '
         "command -v nvm >/dev/null 2>&1 || { echo 'Error: NVM failed to load' >&2; exit 1; }; "
-        "nvm install 22; nvm alias default 22; fi"
+        "nvm install node; nvm alias default node; fi"
     )
     browser_setup = (
         "if command -v apk >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
@@ -175,12 +173,11 @@ def agent_install_command(version_spec: str) -> str:
         f"{node_setup}; "
         'export PATH="$HOME/.local/bin:$PATH"; '
         f"npm install -g @bastani/atomic{version_spec} "
-        f"@playwright/cli@{PLAYWRIGHT_CLI_VERSION} "
-        f"@llamaindex/liteparse@{LITEPARSE_VERSION}; "
-        f"curl -fsSL https://astral.sh/uv/{UV_VERSION}/install.sh | "
+        "@playwright/cli @llamaindex/liteparse; "
+        "curl -fsSL https://astral.sh/uv/install.sh | "
         'env UV_INSTALL_DIR="$HOME/.local/bin" sh; '
-        f"uv python install {PYTHON_VERSION}; "
-        "uv run --python 3.13 --with 'bm25s>=0.3.9,<1' --with 'aiofiles>=25.1.0,<26' "
+        "uv python install; "
+        "uv run --managed-python --with bm25s --with aiofiles "
         "python -c 'import aiofiles, bm25s'; "
         f"{browser_setup}; " + verification_command()
     )
@@ -190,9 +187,9 @@ def verification_command() -> str:
     """Fail fast unless every provisioned prerequisite is functional, including offline Chromium."""
     return (
         "atomic --version; node --version; npm --version; tmux -V; lit --version; "
-        "uv --version; uv python find 3.13 >/dev/null; "
-        "UV_OFFLINE=1 uv run --python 3.13 --with 'bm25s>=0.3.9,<1' "
-        "--with 'aiofiles>=25.1.0,<26' python -c 'import aiofiles, bm25s'; "
+        "uv --version; uv python find --managed-python >/dev/null; "
+        "UV_OFFLINE=1 uv run --managed-python --with bm25s --with aiofiles "
+        "python -c 'import aiofiles, bm25s'; "
         "python3 -c 'import yaml'; libreoffice --version; "
         "(magick -version || convert -version); playwright-cli --version; "
         "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm_config_offline=true "
