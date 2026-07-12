@@ -73,6 +73,19 @@ function durableWorkflowSession(entry: ResumableWorkflowEntry): WorkflowResumeSe
   };
 }
 
+function compareResumeItemsByRecency(
+  left: WorkflowResumeSelectorItem,
+  right: WorkflowResumeSelectorItem,
+): number {
+  const recencyDifference = right.session.modified.getTime() - left.session.modified.getTime();
+  if (recencyDifference !== 0) return recencyDifference;
+  if (left.session.id < right.session.id) return -1;
+  if (left.session.id > right.session.id) return 1;
+  if (left.session.path < right.session.path) return -1;
+  if (left.session.path > right.session.path) return 1;
+  return 0;
+}
+
 export function workflowResumeSelectorItems(
   liveRuns: readonly RunSnapshot[],
   durableEntries: readonly ResumableWorkflowEntry[],
@@ -83,7 +96,7 @@ export function workflowResumeSelectorItems(
     ...durableEntries
       .filter((entry) => !liveIds.has(entry.workflowId))
       .map(durableWorkflowSession),
-  ];
+  ].sort(compareResumeItemsByRecency);
 }
 
 export function openWorkflowResumeSelector(

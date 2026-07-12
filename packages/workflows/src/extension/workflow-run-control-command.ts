@@ -307,27 +307,25 @@ export async function handleRunControlCommand(
         const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
-        let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        if (liveRuns.length === 0) {
-          // Durable entries: a `running` durable handle may be a crashed process
-          // (cross-session crash recovery), so it stays selectable UNLESS it
-          // matches an actively-executing live run in this session.
-          const activeLiveIds = new Set(
-            topLevelWorkflowRuns(store.runs())
-              .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
-              .map((run) => run.id),
-          );
-          await ensureWorkflowResourcesVisible();
-          const runtime = deps.runtimeForContext(ctx);
-          try {
-            const prepared = await runtime.prepareDurableResumable(undefined);
-            durableEntries = filterSelectorDurableEntries(runtime, prepared)
-              .filter((entry) => !activeLiveIds.has(entry.workflowId));
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            fail(`Failed to list resumable workflows: ${message}`);
-            return true;
-          }
+        // Durable entries: a `running` durable handle may be a crashed process
+        // (cross-session crash recovery), so it stays selectable UNLESS it
+        // matches an actively-executing live run in this session.
+        const activeLiveIds = new Set(
+          topLevelWorkflowRuns(store.runs())
+            .filter((run) => run.endedAt === undefined && run.status === "running" && run.exitReason !== "quit")
+            .map((run) => run.id),
+        );
+        let durableEntries: readonly ResumableWorkflowEntry[];
+        await ensureWorkflowResourcesVisible();
+        const runtime = deps.runtimeForContext(ctx);
+        try {
+          const prepared = await runtime.prepareDurableResumable(undefined);
+          durableEntries = filterSelectorDurableEntries(runtime, prepared)
+            .filter((entry) => !activeLiveIds.has(entry.workflowId));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          fail(`Failed to list resumable workflows: ${message}`);
+          return true;
         }
         const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries);
         if (picked.kind === "durable") return await handleDurableResume(picked.workflowId, ctx, reporter, deps);

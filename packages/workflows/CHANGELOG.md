@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Restored workflow-first model routing for non-trivial, structured, and verifiable work while retaining the newer ability to author task-specific TypeScript workflows inline. Prompt guidance now explicitly combines the documented classify/branch, fan-out/synthesis, adversarial verification, generate/filter, tournament, and bounded loop patterns instead of forcing every workflow-fit task into an installed workflow, direct shape, or builtin.
 - Restored Ralph's builtin implementation-stage prompts to require subagent-led investigation, editing, and validation, reversing the selective direct-implementation wording introduced with intent-first routing.
 
+### Fixed
+
+- Fixed `/workflow resume` to deduplicate live and durable choices with live-row precedence, then globally sort the combined selector by latest run/stage or durable-update activity, newest first, with deterministic workflow-id tie-breaking independent of source enumeration order ([#1714](https://github.com/bastani-inc/atomic/issues/1714)).
+
 ## [0.9.5] - 2026-07-11
 
 ### Breaking Changes

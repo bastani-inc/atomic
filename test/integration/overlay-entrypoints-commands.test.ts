@@ -146,7 +146,7 @@ describe("/workflow resume — overlay integration", () => {
     );
   });
 
-  test("resume with no runId prioritizes live picker when live runs exist", async () => {
+  test("resume with no runId includes live and durable workflows", async () => {
     singletonStore.clear();
     const liveRunId = `live-run-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -163,7 +163,7 @@ describe("/workflow resume — overlay integration", () => {
       assert.ok(customCalls.length >= 1);
       const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
       assert.match(text, /live-wf/);
-      assert.doesNotMatch(text, /durable-cross-session/);
+      assert.match(text, /durable-cross-session/);
       customCalls[0]!.component.handleInput?.("\u001b");
       await handlerPromise;
     } finally {
@@ -361,13 +361,14 @@ describe("/workflow attach — top-level command", () => {
     assert.equal(customCalls.length, 0);
   });
 
-  test("no-arg resume with live + durable opens the live /resume-style selector without durable discovery", async () => {
+  test("no-arg resume globally orders mixed live and durable choices by recency", async () => {
     singletonStore.clear();
-    const liveRunId = `live-combined-${Date.now()}`;
-    singletonStore.recordRunStart({ id: liveRunId, name: "live-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    const now = Date.now();
+    const liveRunId = `live-combined-${now}`;
+    singletonStore.recordRunStart({ id: liveRunId, name: "live-older-wf", inputs: {}, status: "running", stages: [], startedAt: now });
     singletonStore.recordRunPaused(liveRunId);
     const backend = new InMemoryDurableBackend();
-    backend.registerWorkflow({ workflowId: "durable-combined-wf", name: "durable-wf", inputs: {}, createdAt: Date.now(), status: "paused", completedCheckpoints: 1 });
+    backend.registerWorkflow({ workflowId: "durable-combined-wf", name: "durable-newer-wf", inputs: {}, createdAt: now + 10_000, status: "paused", completedCheckpoints: 1 });
     setDurableBackend(backend);
     try {
       const { pi, commands } = buildMockPi();
@@ -378,8 +379,9 @@ describe("/workflow attach — top-level command", () => {
       assert.ok(customCalls.length >= 1);
       assert.equal(customCalls[0]!.options.overlay, false);
       const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
-      assert.match(text, /live-wf/);
-      assert.doesNotMatch(text, /durable-wf/);
+      assert.match(text, /live-older-wf/);
+      assert.match(text, /durable-newer-wf/);
+      assert.ok(text.indexOf("durable-newer-wf") < text.indexOf("live-older-wf"));
       customCalls[0]!.component.handleInput?.("\u001b");
       await handlerPromise;
     } finally {
@@ -437,7 +439,7 @@ describe("/workflow attach — top-level command", () => {
   });
 
 
-  test("no-arg resume with live runs skips async durable hydration", async () => {
+  test("no-arg resume hydrates durable entries when live runs exist", async () => {
     singletonStore.clear();
     const liveRunId = `live-hydrate-${Date.now()}`;
     singletonStore.recordRunStart({ id: liveRunId, name: "live-hydrate-wf", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
@@ -454,7 +456,7 @@ describe("/workflow attach — top-level command", () => {
       assert.ok(customCalls.length >= 1);
       const text = visibleText(customCalls[0]!.component.render(80)).replace(/\n/g, " ");
       assert.match(text, /live-hydrate-wf/);
-      assert.doesNotMatch(text, /durable-hydrate/);
+      assert.match(text, /durable-hydrate/);
       customCalls[0]!.component.handleInput?.("\u001b");
       await handlerPromise;
     } finally {
