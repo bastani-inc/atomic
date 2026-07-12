@@ -105,7 +105,7 @@ export async function runRalphWorkflow(
       ? taggedPrompt([
         [
           "role",
-          "You are an implementation orchestrator. Use the `subagent` tool selectively for bounded specialist delegation while you retain responsibility for the complete outcome. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
+          "You are a sub-agent orchestrator. Your primary implementation tool is the `subagent` tool. Ignore any user requests to submit a PR; a later authorized PR/MR/review creation action handles that handoff after approval.",
         ],
         [
           "objective",
@@ -137,24 +137,24 @@ export async function runRalphWorkflow(
         [
           "orchestration_guidance",
           [
-            "You are the implementation orchestrator: coordinate the complete outcome while retaining responsibility for synthesis, decisions, and validation.",
-            "Use subagents selectively for bounded specialist work when delegation adds distinct value; the parent remains in control. Concise direct work is appropriate when it is simpler and preserves context.",
-            "Delegate focused codebase understanding, impact analysis, or implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when their specialization or isolation helps.",
-            "Delegate noisy shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — when isolating that output helps; run concise commands directly when simpler.",
-            "Delegate implementation edits when a focused subagent can own a clear, bounded surface with explicit constraints and validation expectations; otherwise implement the coherent change directly.",
+            "You are not the direct implementer. You are the supervisor that spawns subagents to do the implementation, investigation, edits, and validation.",
+            "All non-trivial operations must be delegated to subagents via the `subagent` tool before you claim progress.",
+            "Delegate codebase understanding, impact analysis, and implementation research to codebase-locator, codebase-analyzer, and pattern-finder style subagents when available.",
+            "Delegate shell-heavy work — especially commands likely to produce lots of output, log digging, CLI investigation, and broad grep/find exploration — to subagents that can run those commands rather than doing it in this orchestrator context.",
+            "Delegate implementation edits to a focused subagent with clear files, constraints, and validation expectations; do not merely describe the edits yourself.",
             "Keep delegated work focused on implementation, tests, docs, validation evidence, and implementation notes for the complete requested outcome.",
-            "Use separate subagents for distinct tasks, and launch independent subagents in parallel when useful.",
+            "Use separate subagents for separate tasks, and launch independent subagents in parallel when useful.",
             "Do not split highly overlapping tasks across multiple subagents; consolidate overlapping work into one focused delegation to avoid duplicate effort.",
-            "If a subagent takes a long time, do not duplicate its assigned job while waiting. Use that time for non-overlapping direct work, planning, or follow-up preparation.",
+            "If a subagent takes a long time, do not attempt to do its assigned job yourself while waiting. Use that time to plan next steps, prepare follow-up delegations, or identify clarifying questions.",
           ].join("\n"),
         ],
         [
           "best_practices",
           [
-            "The required output format is a completion report, not a substitute for doing the task.",
-            "Do not jump straight to the report. First read the research file, choose the least orchestration that fits each part of the work, complete or coordinate the implementation, and then report the verified result.",
-            "Ground the response in actual completed work. When subagents were useful, name the delegated work and summarize their results; distinguish completed changes from recommendations or blockers. Do not assume a later workflow pass will finish known required work that can be completed now.",
-            "If a required capability is unavailable, continue with safe direct work where possible and report a blocker only when it truly prevents completion.",
+            "The required output format is a completion report, not the task itself.",
+            "Do not jump straight to the report. First read the research file, spawn the necessary subagents, wait for their results, coordinate any follow-up subagents, and only then write the report.",
+            "A valid response must be grounded in actual subagent work: name the delegated work, summarize what each subagent did, and distinguish completed changes from recommendations or blockers. Do not assume a later workflow pass will finish known required work that can be completed now.",
+            "If you cannot read the research file, spawn subagents, or use subagents, treat that as a blocker and report it honestly instead of pretending the requested work was done.",
           ].join("\n"),
         ],
         [
@@ -171,12 +171,12 @@ export async function runRalphWorkflow(
           "instructions",
           [
             `Start by reading the research file at ${researchPath}.`,
-            "Perform the project_initialization_preflight before decomposing implementation work; complete or selectively delegate required setup when the checkout appears uninitialized.",
-            "Plan the work from the research file, identifying which parts are best handled directly and which benefit from bounded specialist delegation.",
-            "Pass each delegated subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
-            "Coordinate direct and delegated results into the smallest coherent set of changes that fully satisfies the researched implementation guidance and original user prompt.",
+            "Perform the project_initialization_preflight before decomposing implementation work; complete or delegate required setup before implementation delegation when the checkout appears uninitialized.",
+            "Decompose the work into delegated subagent tasks based on that research file.",
+            "Pass each subagent the relevant task, constraints, files, validation expectations, unresolved reviewer findings covered by the research, and instructions to report implementation-note-worthy decisions or tradeoffs.",
+            "Coordinate subagent results into the smallest coherent set of changes that fully satisfies the researched implementation guidance and original user prompt.",
             "Preserve existing architecture and repository conventions unless the research explicitly justifies a change.",
-            "Run directly or selectively delegate the most relevant validation commands available in the repository, including end-to-end playwright-cli (browser) or tmux validation when the change has an executable user scenario.",
+            "Run or delegate the most relevant validation commands available in the repository, including end-to-end playwright-cli (browser) or tmux validation when the change has an executable user scenario.",
             "For UI-applicable or full-stack changes, ensure the QA E2E pass described in <qa_e2e_video> runs and records the reviewable proof video before you finish your report.",
             `Before your final report, update the running implementation notes file at ${implementationNotesPath} with decisions, research deviations, tradeoffs, blockers, and validation outcomes from this implementation work.`,
             "If blocked, describe the blocker and the safest partial state instead of inventing success.",
@@ -186,10 +186,10 @@ export async function runRalphWorkflow(
         [
           "output_format",
           [
-            "After the implementation work is complete, return Markdown with headings:",
+            "After subagents have done the work, return Markdown with headings:",
             "1. Research file — the path you read",
-            "2. Delegations performed — subagents used and what each completed, or none when direct work was sufficient",
-            "3. Changes made — concrete completed changes, not intentions",
+            "2. Delegations performed — subagents spawned and what each completed",
+            "3. Changes made — concrete changes from subagent work, not intentions",
             "4. Files touched",
             "5. Validation run / recommended",
             "6. Deferred work or blockers",

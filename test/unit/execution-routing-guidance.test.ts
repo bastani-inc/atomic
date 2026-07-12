@@ -131,6 +131,33 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("restores Ralph's builtin subagent-orchestrator prompts", async () => {
+    const ralphPrompts = (await Promise.all([
+      "packages/workflows/builtin/ralph-core.ts",
+      "packages/workflows/builtin/ralph-runner.ts",
+    ].map(readRepositoryFile))).join("\n");
+
+    for (const phrase of [
+      "You are a sub-agent orchestrator",
+      "You are not the direct implementer",
+      "All non-trivial operations must be delegated to subagents",
+      "spawn the necessary subagents",
+      "A valid response must be grounded in actual subagent work",
+      "After subagents have done the work",
+      "subagents spawned and what each completed",
+    ]) {
+      expect(ralphPrompts).toContain(phrase);
+    }
+
+    for (const revertedPhrase of [
+      "Use subagents selectively for bounded specialist work",
+      "Concise direct work is appropriate",
+      "or none when direct work was sufficient",
+    ]) {
+      expect(ralphPrompts).not.toContain(revertedPhrase);
+    }
+  });
+
   test("synchronizes workflow-first docs with custom workflow authoring", async () => {
     const documentation = (await Promise.all(workflowDocumentationPaths.map(readRepositoryFile))).join("\n");
 

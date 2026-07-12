@@ -434,10 +434,10 @@ export function renderForkedOrchestratorPrompt(args: {
     [
       "output_format",
       [
-        "After the implementation work is complete, return Markdown with headings:",
+        "After subagents have done the work, return Markdown with headings:",
         "1. Research file — the path you read",
-        "2. Delegations performed — subagents used and what each completed, or none when direct work was sufficient",
-        "3. Changes made — concrete completed changes, not intentions",
+        "2. Delegations performed — subagents spawned and what each completed",
+        "3. Changes made — concrete changes from subagent work, not intentions",
         "4. Files touched",
         "5. Validation run / recommended",
         "6. Deferred work or blockers",
