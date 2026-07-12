@@ -373,6 +373,7 @@ class Atomic(BaseInstalledAgent):
         total_cache_read_tokens = 0
         total_cache_write_tokens = 0
         total_cost = 0.0
+        total_agent_steps = 0
         seen_message_ids: set[str] = set()
         seen_message_fingerprints: set[str] = set()
 
@@ -380,12 +381,9 @@ class Atomic(BaseInstalledAgent):
             message: object,
             entry_id: object = None,
         ) -> None:
-            nonlocal total_input_tokens, total_output_tokens
+            nonlocal total_input_tokens, total_output_tokens, total_agent_steps
             nonlocal total_cache_read_tokens, total_cache_write_tokens, total_cost
             if not isinstance(message, dict) or message.get("role") != "assistant":
-                return
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
                 return
             fingerprint = self._assistant_message_fingerprint(message)
             if isinstance(entry_id, str):
@@ -397,6 +395,10 @@ class Atomic(BaseInstalledAgent):
                 seen_message_ids.add(entry_id)
             if fingerprint:
                 seen_message_fingerprints.add(fingerprint)
+            total_agent_steps += 1
+            usage = message.get("usage")
+            if not isinstance(usage, dict):
+                return
             total_input_tokens += self._token_count(usage.get("input"))
             total_output_tokens += self._token_count(usage.get("output"))
             total_cache_read_tokens += self._token_count(usage.get("cacheRead"))
@@ -472,3 +474,7 @@ class Atomic(BaseInstalledAgent):
         context.n_output_tokens = total_output_tokens
         context.n_cache_tokens = total_cache_tokens
         context.cost_usd = total_cost if total_cost > 0 else None
+        context.metadata = {
+            **(context.metadata or {}),
+            "n_agent_steps": total_agent_steps,
+        }

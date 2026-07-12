@@ -829,7 +829,11 @@ class Atomic(BaseInstalledAgent):
         )
         context.peak_context_tokens = peak
         context.summarization_count = summarization_count or None
-        context.n_agent_steps = sum(1 for step in all_steps if step.source == "agent")
+        context.n_agent_steps = sum(
+            1
+            for step in all_steps
+            if step.source == "agent" and step.is_copied_context is not True
+        )
 
         trajectory_path = self.logs_dir / "trajectory.json"
         try:
