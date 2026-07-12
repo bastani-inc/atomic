@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-07-11
+
+### Added
+
+- Added model-capability-aware `max` reasoning suffix support to subagent model/fallback parsing and child CLI forwarding ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Added root single-agent `progress` calls so `progress: true` maintains a run-scoped `progress.md` under isolated artifact storage for foreground, background, and revived runs without overwriting a child-working-directory file; inherited defaults are suppressed for read-only tasks, and artifacts-disabled foreground storage is removed after the child exits.
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with upstream Pi `^0.80.5` runtime packages as part of the consolidated dependency refresh.
+- Aligned the subagents extension peer dependencies with upstream Pi `^0.80.6` runtime packages while preserving Atomic child-session and orchestration behavior ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Made subagent routing selective and complementary with workflows: bounded single/chain/parallel delegation remains parent-controlled, async is chosen only when useful, conceptual debugging may stay inline, and the debugger is reserved for actual failures needing reproduction and root-cause work.
+- Increased the top-level parallel subagent task limit from 8 to 50, including repeated tasks expanded through `count`; `parallel.maxTasks` can still configure a lower limit while concurrency remains independently configurable.
+- Improved subagent extension startup by deferring old-run cleanup scans, result watcher startup, and existing-result priming to macrotasks while preserving immediate `subagent` tool and slash-command registration.
+- Changed the Claude Fable 5 reasoning level from `xhigh` to `high` in the builtin `debugger` agent, covering the `anthropic/claude-fable-5` primary and its OpenRouter mirror in the fallback chain.
+- Changed the Claude Opus 4.8 reasoning level from `xhigh` to `high` in the builtin `debugger` agent's fallback chain (`github-copilot/claude-opus-4.8 (1m)`, `anthropic/claude-opus-4-8`, and the OpenRouter mirror); Opus 4.8 entries at other levels in other agents are unchanged.
+- Refreshed the builtin debugger agent's July 2026 frontier model roster: it now leads with Claude Fable 5 `:xhigh`, keeps GPT-5.5 `:xhigh`, Opus 4.8 long-context `:xhigh`, and GLM-5.2 fallbacks, and retains only the valid OpenRouter Fugu Ultra mirror rather than unsupported direct Sakana model IDs.
+
+### Fixed
+
+- Fixed Bun source-checkout subagent launches to reuse the current TypeScript Atomic CLI entrypoint instead of falling back to an unrelated `atomic` executable on `PATH`, while preserving JavaScript, compiled-runtime, and cross-platform spawn behavior.
+- Fixed direct async subagent completions disappearing after an in-process workflow stage loaded or shut down the extension. Runtime cleanup, watchers, event subscriptions, completion notification handlers and dedupe state, slash live snapshots, visible-control deduplication, fanout-child nested-control listeners/timers, and async widget animation state are now owned per `ExtensionAPI`, so concurrent parent/stage sessions cannot tear down, suppress, clear, or replace one another's parent-owned state even when they share a forwarded host UI and session identity. Native result watching also coalesces directory activity into a short rescan, so macOS/Bun atomic writes are consumed even when `fs.watch` reports only a hidden temporary rename rather than the final JSON filename. Same-API reloads remain deduplicated, partial registration failures clean up acquired resources, stale shutdown callbacks cannot stop a newer registration, and duplicate watcher activity still consumes a parent result file with exactly one `subagent-notify`.
+- Fixed async event persistence so cumulative `message_update.message` and `assistantMessageEvent.partial` snapshots are not archived per delta. Compact incremental deltas plus raw child stdout/stderr share one buffered byte budget and truncation marker, while finalized messages and later lifecycle/control/terminal records remain available; asynchronous stream-open failures are non-fatal, concurrent closes await the same drain, and writer reacquisition uses a bounded identity/fingerprint cache to hydrate append-only suffixes while detecting same-inode rewrites, truncation/regrowth, replacement, and externally appended markers without rescanning unchanged journals.
+- Added root single-agent `reads` contract support with local validation, shared foreground/background instruction behavior, and relative-path resolution against the effective child working directory.
+- Fixed stale-run repair to stage the exact public result beside its destination, commit terminal status, and atomically consume the hidden stage when publishing; interrupted renames resume without leaving a replayable stage beside a delivered result. The result watcher defers modern `asyncDir` results until status is terminal, canonicalizes equivalent aliases by `runId`, quarantines aliases whose user-visible payload or target conflicts with that canonical identity, revalidates session ownership after delivery waits, and commits only after idempotent Intercom confirmation plus synchronous local compatibility acceptance. Nonterminal status checks use capped exponential rechecks without losing eventual late-terminal recovery; delivery retries preserve successful phases across watcher replacements and, after a finite no-progress budget, retain the result under a collision-resistant name in `.undelivered` instead of retrying forever, overwriting prior evidence, or deleting the payload.
+- Clarified async launch acknowledgements and TUI rendering as `launched` with `completion pending`, while keeping the completed launch tool call distinct from the detached child's running state.
+- Fixed foreground blocking Intercom asks and supervisor decisions to detach only the exact delivered child, tolerate broker/tool-start ordering, remain resumable, recover the child's eventual result without treating the detached placeholder as success or starting model fallback, and expose the retained detached-to-terminal result through public status lookup with consistent prefix disambiguation ([#1727](https://github.com/bastani-inc/atomic/issues/1727)).
+- Automatically register enabled foreground and background child sessions with Intercom before agent work begins, while management-only list/status/interrupt actions remain broker-free and issue #1727 targeted detach/resume behavior is preserved.
+- Fixed background async result watching on Windows to use Atomic's safe watcher path strategy and fall back to polling when native `fs.watch` would receive an unsafe or non-canonical watcher path.
+- Fixed async/background subagent status visibility while the fullscreen workflow graph is active by publishing the live async summary through the shared status surface in addition to the below-editor widget.
+- Fixed foreground and background subagent startup diagnostics so missing or invalid child `cwd` values are reported as working-directory problems before spawn, while runtime spawn failures include the attempted command and cwd instead of ambiguous `ENOENT` output.
+- Updated async/background subagent status widgets so running job, parallel child-agent, chain-step, and nested child rows reuse the same foreground pulsing-dot glyph treatment instead of braille spinner glyphs, while preserving counts, metadata, live-detail hints, and output paths.
+
+### Removed
+
+- Removed the unreachable subagent launch preview/editor TUI and its internal execution plumbing; supported launches now dispatch directly without waiting for terminal input.
+
 ## [0.9.5-alpha.10] - 2026-07-11
 
 ### Added

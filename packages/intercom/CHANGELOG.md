@@ -4,6 +4,29 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-07-11
+
+### Added
+
+- Added preferred `atomic` package manifest metadata alongside the legacy `pi` manifest metadata so Atomic package discovery uses Atomic-branded metadata without breaking pi-compatible installs.
+
+### Changed
+
+- Aligned the intercom extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no intercom source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Updated intercom documentation to describe Atomic's `~/.atomic/agent/intercom/` primary config/runtime path and legacy `~/.pi/agent/intercom/` fallback.
+- Updated the registered intercom tool description and prompt snippet to use Atomic/Pi-neutral local agent session wording instead of hard-coding Pi-branded session names in model-visible text.
+
+### Fixed
+
+- Made lazy Intercom lifecycle replay generation-safe, session-leased, and serialized with live lifecycle forwarding, so matching end events and newer model selections cannot be overtaken by a blocked stale replay. Shutdown waits for retired replay/initializer cleanup before replacement, calls spanning teardown reject, and failed or invalidated attempts cannot leak stale resources.
+- Recover from rejected lazy and delegated-child background initialization and later-generation session replay; later callers retry before executing, and concurrent retries share one initialization or replay attempt while normal sessions remain lazy.
+- Made acknowledged subagent result delivery idempotent end to end: lazy initialization failure and retired relay generations emit definitive negative acknowledgements, stable completion request IDs become broker message IDs, concurrent identical client sends coalesce onto one attempt, and a bounded TTL cache confirms identical successful retries without forwarding twice. Canonical target/payload/options signatures reject conflicting ID reuse even after success and across sender sessions, while transport attempt IDs and timestamps remain retry-insensitive. Brokers reject malformed present attempt IDs instead of unsafely downgrading them, and clients accept attempt-less legacy responses only for an ID's original active generation so a delayed legacy acknowledgement cannot settle a timeout/disconnect replacement.
+- Fixed foreground `intercom.ask`, `intercom.send`, and supervisor coordination to use an exact-owner probe/reservation plus an acknowledged, generation-scoped detach commit before model-visible steering delivery. This breaks parent/child ask deadlocks, promptly releases supervision for fire-and-forget progress/send, preserves threaded decision replies, leaves unmatched/background messages queued until idle, and prevents orphaned, stale, or duplicate delivery after cancellation or replacement. Interactive parents now await lazy Intercom broker/inbound-handler initialization before a foreground child launches ([#1727](https://github.com/bastani-inc/atomic/issues/1727)).
+- Register bridged foreground/background children with Intercom before agent work begins and gate interactive foreground launches on lazy parent broker readiness, while preserving single-flight heavy loading, replacement/shutdown cleanup, and no startup work for unused parents, disabled sessions, or definition/control-only subagent actions. Optional import/broker/connection failures diagnose and degrade without aborting parent or child launch, while later calls retain retry behavior. Adapted from `nicobailon/pi-intercom` commits `3cb5b9c`, `02a6897`, and `9f23b97` while retaining Atomic's lazy proxy and issue #1727 detach protocol.
+- Fixed Atomic intercom broker runtime paths to derive from the active Atomic agent directory, so `ATOMIC_CODING_AGENT_DIR` moves the broker socket, PID, spawn lock, and Windows launcher together while the legacy `PI_CODING_AGENT_DIR` alias remains supported.
+- Fixed raw TypeScript intercom imports to use the bundled `@earendil-works/pi-tui` package name, matching Atomic's runtime dependency while preserving the public intercom API.
+- Hardened default intercom broker startup so the pi-compatible `npx --no-install tsx` sentinel launches through the current runtime (`process.execPath`): Node-based installs use a resolved `tsx` CLI with a bundled `jiti` fallback, Bun source-checkout runs use the current Bun executable directly, and standalone Atomic Bun binaries re-enter the split launcher through a narrow internal broker handoff instead of treating the Atomic executable as a generic Bun interpreter; explicit custom `brokerCommand`/`brokerArgs` configs remain pass-through overrides.
+
 ## [0.9.5-alpha.10] - 2026-07-11
 
 ### Changed

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-07-11
+
+### Changed
+
+- Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.6` as part of the consolidated Pi sync; no MCP source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Improved startup responsiveness by keeping first-run/default lazy MCP metadata bootstrap out of `initializeMcp()`'s synchronous path. Cached direct tools and the MCP proxy still register immediately, explicit `eager`/`keep-alive` servers still connect during initialization, missing configured or `MCP_DIRECT_TOOLS`-selected direct-tool metadata is warmed in the background, and explicit proxy `search`, `describe`, and server-list requests hydrate cold-cache lazy server metadata on demand instead of broadening startup warmup. Warmed direct tools are registered live in the current session after metadata refresh rather than requiring restart. Cold-cache `describe` first narrows hydration to prefix-matched or explicitly requested servers, treats hyphen/underscore prefixes as aliases, and does not fan out to unrelated lazy servers after a prefix-directed miss; cold-cache proxy `search` intentionally hydrates all matching lazy servers so unscoped searches can see every configured tool.
+
+### Fixed
+
+- Replaced one-shot detached MCP startup with generation-safe, retryable single-flight initialization shared by background startup, proxy/direct tools, and readiness-critical commands. Initialization fast paths now validate the active context and exact session lease, commands retain the state they initialized across lazy module imports, and stale or unpublished state cannot execute or publish after shutdown, restart, or context disposal. Replacement startup normally waits for retired initialization plus state/OAuth cleanup, but bounded observed teardown prevents non-abortable SDK work from permanently poisoning later sessions while fencing late completion.
+- Made readiness, lazy-connection, manager-close, and UI-start waits caller-local across direct tools and proxy connect/call/search/describe/list paths. Pre-aborted calls start no producer; one aborted waiter rejects promptly with its exact reason; late shared failures stay observed; late UI runtimes are closed; and proxy modes plus metadata hydration revalidate session ownership after waits and before metadata mutation or SDK side effects.
+- Completed MCP Apps cancellation lifecycles for direct and proxy UI calls by emitting exactly one terminal `tool-cancelled` before session teardown, preserving the exact host abort reason over SDK wrappers, isolating notification failures, keeping success `tool-result` mutually exclusive, forwarding real cancellation events from reused runtimes, and observing asynchronous browser AppBridge send failures.
+- Aligned MCP tool result expansion hints with the CLI-wide `Ctrl+o` keybinding copy.
+- Fixed MCP background direct-tool warmup cancellation so stale in-flight connects are discarded before metadata/cache mutation, direct-tool refresh callbacks are guarded to the active session, completed warmups clear their active handle safely, and env-selected direct tool servers hydrate without forcing every lazy server eager.
+
 ## [0.9.5-alpha.10] - 2026-07-11
 
 ### Changed
