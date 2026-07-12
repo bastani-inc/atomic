@@ -86,6 +86,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Restored Ralph's builtin implementation-stage prompts to require subagent-led investigation, editing, and validation, reversing the selective direct-implementation wording introduced with intent-first routing.
 - Expanded model-facing workflow guidance to treat composition as a first-class design option: custom parents can import reusable project/package workflows or bundled builtin definitions, invoke them through `ctx.workflow(...)`, and nest further child workflows within `maxDepth` while preserving expanded graph visibility, HIL, durability, controls, and declared output contracts.
 
+### Fixed
+
+- Fixed durable mid-stage workflow resume to refresh pause-adjusted active-stage duration at repeated session checkpoints, preserve it through file and DBOS hydration, and continue accumulating it after a process-boundary resume without changing replay identity or re-running completed side effects ([#1713](https://github.com/bastani-inc/atomic/issues/1713)).
+
 ## [0.9.5] - 2026-07-11
 
 ### Breaking Changes

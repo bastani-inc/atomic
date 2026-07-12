@@ -187,6 +187,25 @@ describe("FileDurableBackend", () => {
     assert.equal(backend2.getWorkflow(WORKFLOW_ID)!.name, "file-workflow");
   });
 
+  test("preserves latest active-stage timing across a file process boundary", () => {
+    const replayKey = "stage:analyze:1";
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: WORKFLOW_ID, checkpointId: "stage-session:1", name: "analyze", replayKey,
+      sessionFile: "/tmp/analyze.jsonl", startedAt: 1000, durationMs: 400, completedAt: 1400,
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: WORKFLOW_ID, checkpointId: "stage-session:2", name: "analyze", replayKey,
+      sessionFile: "/tmp/analyze.jsonl", startedAt: 1000, durationMs: 750, completedAt: 1750,
+    });
+
+    const fresh = new FileDurableBackend(join(tmpDir, "state.json"));
+    assert.deepEqual(fresh.getStageSession(WORKFLOW_ID, replayKey), {
+      sessionFile: "/tmp/analyze.jsonl",
+      startedAt: 1000,
+      durationMs: 750,
+    });
+  });
+
   test("lists resumable workflows from a new backend instance", () => {
     backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     backend.setWorkflowStatus(WORKFLOW_ID, "paused");

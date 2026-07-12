@@ -86,7 +86,12 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return this.inner.getStageOutput(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 
-  getStageSession(_workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+  getStageSession(_workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined {
     return this.inner.getStageSession(this.scope.rootWorkflowId, this.scopeKey(replayKey));
   }
 

@@ -20,6 +20,7 @@ export function stripWorkflowOnlyOptions(
     forkFromSessionFile,
     resumeFromSessionFile,
     durableReplayKey: _durableReplayKey,
+    durableAccumulatedDurationMs: _durableAccumulatedDurationMs,
     sessionDir,
     gitWorktreeDir: _gitWorktreeDir,
     baseBranch: _baseBranch,

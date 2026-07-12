@@ -191,6 +191,8 @@ export interface StageOptions<TSchemaDef extends TSchema | undefined = TSchema |
   resumeFromSessionFile?: string;
   /** Internal durable replay key used to map a live LM session to durable resume state. */
   durableReplayKey?: string;
+  /** Internal durable timing baseline accumulated before a process-boundary resume. */
+  durableAccumulatedDurationMs?: number;
 }
 
 // ---------------------------------------------------------------------------

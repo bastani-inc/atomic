@@ -94,8 +94,13 @@ export interface DurableWorkflowBackend {
   /** Look up a cached stage output by replay key. */
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined;
 
-  /** Look up resumable stage session metadata by replay key, when available. */
-  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined;
+  /** Look up the latest resumable stage session and accumulated active timing. */
+  getStageSession(workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined;
 
   /** List all checkpoints for a workflow (in completion order). */
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[];
@@ -246,10 +251,20 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     return checkpoint !== undefined && "output" in checkpoint ? checkpoint.output : undefined;
   }
 
-  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+  getStageSession(workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined {
     const checkpoint = this.workflows.get(workflowId)?.stageSessionByReplayKey.get(replayKey);
     if (checkpoint?.sessionId === undefined && checkpoint?.sessionFile === undefined) return undefined;
-    return { ...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}), ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}) };
+    return {
+      ...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
+      ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
+      ...(checkpoint.startedAt !== undefined ? { startedAt: checkpoint.startedAt } : {}),
+      ...(checkpoint.durationMs !== undefined ? { durationMs: checkpoint.durationMs } : {}),
+    };
   }
 
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
