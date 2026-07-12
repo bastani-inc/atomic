@@ -12,7 +12,7 @@
 
 ### Fixed
 
-- Fixed retryable-failure classification across main-chat retry/fallback, workflow stage fallback, and subagent fallback to treat provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit_reached`/`insufficient_quota`-style codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of dead-ending the turn, stage, or run. Nested cause/diagnostic and session-shaped error payloads classify the same way; cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
+- Fixed retryable-failure classification across main-chat retry/fallback, workflow stage fallback, and subagent fallback to treat provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit_reached`/`insufficient_quota`-style codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of dead-ending the turn, stage, or run. Provider messages that flatten the token into free text (for example `usage_limit_reached` or `usage-limit`, matched with space/underscore/hyphen/joined separators) classify the same as the structured codes across all three paths. Nested cause/diagnostic and session-shaped error payloads classify the same way; cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
 
 ## [0.9.6] - 2026-07-12
 

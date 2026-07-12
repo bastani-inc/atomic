@@ -19,7 +19,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed workflow stage model fallback to classify provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit`/`usage_limit_reached`/`usage_limit_exceeded`/`insufficient_quota` codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of failing the stage. Nested cause/diagnostic and session-shaped errors classify the same way, while cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
+- Fixed workflow stage model fallback to classify provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit`/`usage_limit_reached`/`usage_limit_exceeded`/`insufficient_quota` codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of failing the stage. The message matcher tolerates the same space/underscore/hyphen/joined separators as the code path, so provider errors that flatten the token into free text (for example `usage_limit_reached` or `usage-limit`) also advance the chain. Nested cause/diagnostic and session-shaped errors classify the same way, while cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
 
 ## [0.9.6] - 2026-07-12
 

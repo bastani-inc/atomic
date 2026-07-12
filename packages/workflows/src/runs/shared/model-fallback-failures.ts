@@ -3,7 +3,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
   /too\s*many\s*requests/i,
   /\b429\b/,
   /quota/i,
-  /usage\s*limit/i, // usage-limit exhaustion is a quota condition; next candidate may have headroom
+  /usage[\s_-]*limit/i, // usage-limit exhaustion is a quota condition (accept space/underscore/hyphen/joined forms); next candidate may have headroom
   /billing/i,
   /credit/i,
   /auth(?:entication|orization)?/i,
@@ -314,7 +314,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
   const nameKind = kindFromCode(name);
   if (nameKind !== undefined) return nameKind;
   if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
-  if (/rate\s*limit|too\s*many\s*requests|\b429\b|quota|usage\s*limit|billing|credit/i.test(message)) return "rate_limit";
+  if (/rate\s*limit|too\s*many\s*requests|\b429\b|quota|usage[\s_-]*limit|billing|credit/i.test(message)) return "rate_limit";
   if (/auth|unauthori[sz]ed|\b40[13]\b|api\s*key|token\s*expired|forbidden|invalid\s*key/i.test(message)) return "auth_on_candidate_provider";
   if (/model.*(?:unavailable|disabled|not\s*found|unknown)|(?:unavailable|disabled|not\s*found|unknown).*model/i.test(message)) return "model_unavailable";
   if (/network|fetch|socket|connection\s*refused|timeout|timed\s*out/i.test(message)) return "network_timeout";

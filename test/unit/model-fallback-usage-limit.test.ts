@@ -57,6 +57,32 @@ describe("provider usage-limit exhaustion is a retryable quota/rate-limit failur
     }
   });
 
+  test("usage-limit tokens in free-text messages classify as rate_limit across separator forms", () => {
+    // Providers often flatten the machine token into the message string rather
+    // than a structured code field; the message matcher must tolerate the same
+    // space/underscore/hyphen/joined separators the code path already accepts.
+    for (const message of [
+      "usage_limit_reached: please retry later",
+      "provider usage-limit exceeded",
+      "USAGE_LIMIT_EXCEEDED",
+      "usagelimit reached",
+    ]) {
+      const failure = new Error(message);
+      assert.equal(workflowsNormalize(failure).kind, "rate_limit", message);
+      assert.equal(subagentsNormalize(failure).kind, "rate_limit", message);
+      assert.equal(workflowsIsRetryable(failure), true, message);
+      assert.equal(subagentsIsRetryable(failure), true, message);
+    }
+  });
+
+  test("an unrelated 'limit' message is not mistaken for a usage-limit quota failure", () => {
+    const failure = new Error("array index limit reached");
+    assert.equal(workflowsNormalize(failure).kind, "unknown");
+    assert.equal(subagentsNormalize(failure).kind, "unknown");
+    assert.equal(workflowsIsRetryable(failure), false);
+    assert.equal(subagentsIsRetryable(failure), false);
+  });
+
   test("cancellation nested under a usage-limit wrapper stays non-retryable", () => {
     const failure = {
       errorMessage: USAGE_LIMIT_MESSAGE,
@@ -117,6 +143,20 @@ describe("main-chat retry classifies usage-limit exhaustion as retryable", () =>
       _isRetryableError.call(session as never, errorMessage({ errorMessage: "quota exceeded for this billing period" })),
       true,
     );
+  });
+
+  test("usage-limit tokens with non-space separators are retryable in main chat too (three-path parity)", () => {
+    for (const message of [
+      "usage_limit_reached: please retry later",
+      "provider usage-limit exceeded",
+      "USAGE_LIMIT_EXCEEDED",
+    ]) {
+      assert.equal(
+        _isRetryableError.call(session as never, errorMessage({ errorMessage: message })),
+        true,
+        message,
+      );
+    }
   });
 
   test("aborted turns and non-error stops are not retryable", () => {
