@@ -839,6 +839,8 @@ The workflow tool action surface is:
 - messaging and run control: `send`, `pause`, `interrupt`, `kill`, `resume`
 - rediscovery: `reload`
 
+From interactive chat, model-launched workflows run in the background so the parent chat stays available. Named workflow launches already detach automatically; direct `task`, `tasks`, and `chain` launches must pass top-level `async: true`. This rule applies only to launches, not inspection or control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `kill`). A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
+
 Run a named workflow with inputs:
 
 ```ts

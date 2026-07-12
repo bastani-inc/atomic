@@ -128,6 +128,20 @@ describe("workflow-first execution routing", () => {
     }
   });
 
+  test("requires interactive workflow launches to run in the background", () => {
+    for (const phrase of [
+      "In interactive chat, launch every workflow in the background",
+      "Named workflow launches are already detached",
+      "direct `task`, `tasks`, and `chain` launches must set top-level `async: true`",
+      "This applies only to launches, not inspection or control calls",
+      "`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `kill`",
+      "only when the user explicitly requests it or it is technically required",
+      "tell the user before launching it",
+    ]) {
+      expect(combinedGuidance).toContain(phrase);
+    }
+  });
+
   test("keeps subagents complementary without universal delegation", () => {
     for (const phrase of [
       "focused specialist work inside workflows",
