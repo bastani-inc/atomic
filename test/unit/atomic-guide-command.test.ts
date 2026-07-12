@@ -39,17 +39,29 @@ describe("/atomic guide command", () => {
     assert.match(getAtomicGuideMessage(normalizeAtomicGuideMode("what's new"), cwd), /^# What's new/);
   });
 
-  test("explains goal versus ralph across onboarding sections", () => {
+  test("explains intent-first goal versus ralph routing across onboarding sections", () => {
     const cwd = "/repo";
     const overview = getAtomicGuideMessage(normalizeAtomicGuideMode("overview"), cwd);
     const example = getAtomicGuideMessage(normalizeAtomicGuideMode("example"), cwd);
     const workflows = getAtomicGuideMessage(normalizeAtomicGuideMode("workflows"), cwd);
+    const onboarding = `${overview}\n${example}\n${workflows}`;
 
-    assert.match(overview, /`goal` \| small-to-medium scoped changes/);
-    assert.match(overview, /`ralph` \| larger migrations, new features, broad refactors, and multi-package changes where you want Atomic to research first, delegate, review, and iterate/);
-    assert.match(example, /For small-to-medium scoped changes where you can identify the work surface, exact outcome, and validation, use `goal`/);
-    assert.match(workflows, /\| `goal` \| small-to-medium scoped changes with a clear outcome and named validation/);
-    assert.match(workflows, /\| `ralph` \| larger migrations, new features, broad refactors, and multi-package research-first implementation work/);
+    assert.match(overview, /`goal` \| autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion/);
+    assert.match(overview, /`ralph` \| autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review/);
+    assert.match(example, /Keep interactive or conversation-led implementation inline\. Use bounded subagents when specialist delegation helps/);
+    assert.match(example, /clearly delegates an autonomous job whose long-running\/background nature or durable execution needs justify it/);
+    assert.match(workflows, /\| `goal` \| autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion/);
+    assert.match(workflows, /\| `ralph` \| autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review/);
+
+    for (const stalePolicy of [
+      "small-to-medium scoped changes when you can name the work surface",
+      "larger migrations, new features, broad refactors, and multi-package changes",
+      "loop wording like review/fix/test until passing is workflow-shaped",
+      "reserve direct debugger/subagent calls for narrow diagnosis or truly tiny deterministic fixes",
+      "for bounded scoped work with explicit validation",
+    ]) {
+      assert.doesNotMatch(onboarding, new RegExp(stalePolicy));
+    }
   });
 
   test("treats adversarial punctuation arguments as unknown help requests", () => {

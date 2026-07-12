@@ -11,6 +11,7 @@
 
 - Aligned the subagents extension peer dependencies with upstream Pi `^0.80.5` runtime packages as part of the consolidated dependency refresh.
 - Aligned the subagents extension peer dependencies with upstream Pi `^0.80.6` runtime packages while preserving Atomic child-session and orchestration behavior ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
+- Made subagent routing selective and complementary with workflows: bounded single/chain/parallel delegation remains parent-controlled, async is chosen only when useful, conceptual debugging may stay inline, and the debugger is reserved for actual failures needing reproduction and root-cause work.
 - Increased the top-level parallel subagent task limit from 8 to 50, including repeated tasks expanded through `count`; `parallel.maxTasks` can still configure a lower limit while concurrency remains independently configurable.
 
 ### Removed

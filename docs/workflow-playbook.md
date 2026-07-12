@@ -29,7 +29,7 @@ In practice, that means:
 7. Require evidence before accepting the result.
 8. Ask for a summary, handoff, or next-step plan.
 
-A good workflow prompt does not just say what to try. It says what success looks like. When the work is non-trivial, asks to implement/build/debug/fix/migrate/add a feature, touches a scoped set of files, or already has loop language such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green`, route it to a workflow so the stop condition, evidence, and review/fix cycle are tracked instead of left implicit in chat.
+A good workflow prompt does not just say what to try. It says what success looks like. Route work to a workflow when the user clearly delegates a well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Keep interactive exploration inline, and use bounded single/chain/parallel subagents when the parent should remain in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow.
 
 ---
 

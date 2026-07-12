@@ -5,7 +5,7 @@ description: "Run focused Atomic child agents"
 
 # Subagents
 
-Atomic bundles `@bastani/subagents`, an extension for running focused child agents with their own context. Use it when a task benefits from isolation, parallel investigation, background execution, or a specialist pass for locating code, analyzing behavior, researching references, debugging, or simplifying code.
+Atomic bundles `@bastani/subagents`, an extension for bounded specialist delegation with separate context while the parent remains in control. Use a single agent, chain, or parallel fan-out when isolation or a specialist pass materially helps with locating code, analyzing behavior, researching references, reproducing actual failures, or simplifying code. Keep interactive, exploratory, conceptual, and conversation-led work inline when direct user steering is more useful.
 
 You do not need to install anything separately when you use `@bastani/atomic`.
 
@@ -25,7 +25,7 @@ Run a parallel review composition: one pass for current behavior, one for failur
 Research the upstream library behavior online, then compare it with our local implementation.
 ```
 
-Atomic decides whether to call the bundled `subagent` tool, which specialist fits each part, and whether the work should run as a single child, parallel group, chain, foreground run, or background run.
+Atomic decides whether delegation adds value, which specialist fits each bounded part, and whether the work should run as a single child, parallel group, chain, foreground run, or selective background run. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow; clearly delegated long-running autonomous work that needs durable stages, checkpoints, resumability, HIL, gates, retries, or loops is usually better served by a workflow.
 
 ## Subagent execution is non-interactive
 
@@ -94,7 +94,7 @@ Useful prompt templates include `/parallel-review`, `/review-loop`, `/parallel-r
 
 ## Background work and control
 
-Foreground subagents stream progress in the conversation. Background subagents keep working after control returns to you and report completion later.
+Foreground subagents stream progress in the conversation and are the right default when the parent needs the result before proceeding. Use background subagents selectively for genuinely long-running or independently useful bounded delegation; they keep working after control returns and report completion later.
 
 Natural-language examples:
 

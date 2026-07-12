@@ -5,7 +5,7 @@
   An open-source Atomic workflow extension: install it, author workflows in TypeScript, run them from chat.
 </p>
 
-Use workflows by default for non-trivial tasks, structured requests, and objectives with verifiable done criteria, including implementation, build, debugging, bug-fix, migration, new-feature, scoped multi-file, and validation-heavy docs/code work. Prompt language such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, or `run checks and fix until green` is a strong signal to map the work to a workflow with an explicit stop condition rather than a direct chat turn.
+Use the least orchestration that fits the user's intent: keep interactive/exploratory work inline, use bounded single/chain/parallel subagents while the parent remains in control, and use workflows for clearly delegated, well-defined autonomous jobs that are likely long-running/background-oriented or materially need durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. Named workflows can be builtin, project, user, or package supplied; direct task/tasks/chain modes cover one-off tracked shapes, while richer control flow can be authored as a custom TypeScript `workflow({...})`, reloaded, and run.
 
 <p align="center">
   <a href="#authoring-api">Authoring API</a>
@@ -557,7 +557,7 @@ Prompt answer replay is live-memory only. `StageSnapshot.promptAnswerState` repo
 ```json
 {
   "name": "workflow",
-  "description": "Run named workflows or direct one-off task/tasks/chain workflows; discover with list/get/inputs, inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+  "description": "Run named builtin, project, user, or package workflows, or direct one-off task/tasks/chain workflows; discover with list/get/inputs, inspect status/stages/stage details, send prompt answers or steering, pause/resume/interrupt/kill runs, and reload workflow resources. For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
   "parameters": {
     "workflow": "string (optional) — workflow ID or normalized name",
     "inputs": "object (optional) — key/value map of workflow inputs",

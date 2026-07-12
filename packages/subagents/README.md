@@ -6,6 +6,8 @@
 
 `@bastani/subagents` lets Atomic delegate work to focused child agents. It is Atomic's bundled adaptation of upstream `pi-subagents`; use it for code review, scouting, implementation, parallel audits, saved workflows, background jobs, and anything else that benefits from a second or third set of model eyes.
 
+Use subagents selectively for bounded specialist delegation while the parent remains in control: one focused agent, a sequential chain, or parallel independent tasks. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. For a clearly delegated, well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, checkpoints, resumability, HIL, gates, retries, or bounded loops, use an appropriate workflow instead. Choose async subagents only when background execution is genuinely useful; foreground is appropriate when the parent needs the result before proceeding.
+
 https://github.com/user-attachments/assets/702554ec-faaf-4635-80aa-fb5d6e292fd1
 
 ## Installation

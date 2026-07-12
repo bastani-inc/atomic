@@ -2,28 +2,27 @@
 name: subagent
 description: |
   Delegate work to builtin or custom subagents with single-agent, chain,
-  parallel, async, forked-context, and intercom-coordinated workflows. Use
-  for parallel codebase discovery, debug-and-fix, refinement, and multi-step
-  tasks where a single parent agent stays in control while specialist
-  subagents contribute locate, analyze, pattern-find, research, debug, or
-  simplify passes.
+  parallel, selective async, forked-context, and intercom-coordinated runs.
+  Use for bounded specialist delegation where a single parent agent stays in
+  control while subagents contribute locate, analyze, pattern-find, research,
+  debug, or simplify passes.
 ---
 
 # Subagent
 
 This skill is for the main parent orchestrator only. Do not inject or follow it inside spawned child subagents. The parent session owns delegation, orchestration, review fanout, and final writer launches; child subagents should receive concrete role-specific tasks and should not run their own subagent workflows.
 
-Use this skill when the parent orchestrator needs to launch a specialized subagent, compose multiple specialists into a workflow, or create/edit agents and chains on demand.
+Use this skill when bounded specialist delegation adds value and the parent should remain in control. Keep interactive, exploratory, conceptual, and conversation-led work inline. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow; use a durable workflow for clearly delegated long-running autonomous jobs that materially need its lifecycle features.
 
 ## When to Use
 
 - **Parallel codebase discovery**: combine `codebase-locator`, `codebase-analyzer`, and `codebase-pattern-finder` to map where code lives, how it works, and what existing conventions look like — concurrently, with fresh context per child.
 - **Local research mining**: pair `codebase-research-locator` with `codebase-research-analyzer` to surface prior decisions in `research/` and `specs/` and extract what still applies.
 - **External research**: use `codebase-online-researcher` for authoritative web sources, with persisted findings in `research/web/`.
-- **Debug and fix**: use `debugger` to reproduce, diagnose, and patch failing behavior with `tdd` and `browser` support.
+- **Debug and fix**: use `debugger` for actual failures that need reproduction, root-cause diagnosis, and a validated patch; conceptual or exploratory debugging can stay inline.
 - **Refinement**: use `code-simplifier` to clean up recently changed code without altering behavior.
 - **Adversarial review**: compose read-only specialists (`codebase-analyzer`, `codebase-pattern-finder`, `debugger` in inspect-only mode, `codebase-online-researcher`) into a parallel review pass — there is no generic `reviewer` agent.
-- **Long-running work**: launch async/background runs and inspect them later.
+- **Long-running bounded delegation**: selectively launch async/background runs when the result is independently useful; otherwise use foreground execution.
 - **Subagent control**: watch needs-attention signals and soft-interrupt only when a delegated run is genuinely blocked.
 - **Agent authoring**: create, update, or override agents and chains for a project.
 
@@ -60,7 +59,7 @@ Use this when the user wants adversarial review of a diff, plan, issue, file, or
 
 ### Review-loop technique
 
-Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one async writer (`debugger` for correctness-shaped work, `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one async writer applies them. The parent can express the sequence up front as an async/background chain when the workflow is known, or continue with explicit follow-up subagent runs after each async completion. For an initial chain, pass `async: true` so the main chat is unblocked; programmatic runs are non-interactive, so resolve any questions with the user before launching. Treat an async writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
+Use this when the user wants implementation or current diff review to continue until reviewers stop finding fixes worth doing now. Keep the loop in the parent session: one writer (`debugger` for correctness-shaped work, `code-simplifier` for refinement-shaped work), fresh-context specialist reviewers inspect the actual repo and diff, the parent synthesizes accepted fixes, and one writer applies them. Choose foreground or async for each bounded run based on whether the parent needs its result next or has independent useful work. The parent can express the sequence up front as a background chain when that is genuinely useful, or continue with explicit follow-up subagent runs after each completion. Programmatic runs are non-interactive, so resolve only material unanswered questions before launching. Treat a writer handoff as an intermediate state, not final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Stop when reviewers find no blockers or fixes worth doing now, remaining feedback is optional or deferred, an unapproved product/scope/architecture decision appears, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap. Do not loop for optional polish, and do not let children launch subagents or decide the loop outcome.
 
 ### Parallel research technique
 
@@ -108,7 +107,7 @@ subagent({
 
 ### Gather-context-and-clarify technique
 
-Use this at the start of non-trivial work. Launch `codebase-locator` and `codebase-analyzer` for local context, `codebase-pattern-finder` when conventions matter, `codebase-research-locator` + `codebase-research-analyzer` when prior docs likely apply, and `codebase-online-researcher` only when external docs would materially improve understanding. Ask children for concise findings plus remaining clarification questions. Then synthesize what is known and use `interview` to ask the unresolved questions needed for shared understanding before planning or implementing.
+Use this when unresolved requirements and genuinely missing repository context justify a discovery pass. Launch `codebase-locator` and `codebase-analyzer` for local context, `codebase-pattern-finder` when conventions matter, `codebase-research-locator` + `codebase-research-analyzer` when prior docs likely apply, and `codebase-online-researcher` only when external docs would materially improve understanding. Ask children for concise findings plus remaining clarification questions. Then synthesize what is known and use `interview` to ask the unresolved questions needed for shared understanding before planning or implementing.
 
 ### Parallel cleanup technique
 
@@ -311,7 +310,7 @@ Chain steps can use templated variables such as `{task}`, `{previous}`, `{chain_
 
 ### Async/background
 
-Prefer async mode for every subagent launch. Set `async: true` no matter the task unless there is a specific reason to opt into a foreground/blocking run. This applies to locator/analyzer/pattern-finder/research/online-researcher passes, debugger or code-simplifier writer runs, chains, and parallel groups. Keep the write path single-threaded even when the run is async.
+Choose async/background mode selectively when delegated work is genuinely long-running or independently useful while the parent proceeds. Use foreground execution when the parent needs the result before the next step. This applies consistently to read-only specialists, writers, chains, and parallel groups; keep the write path single-threaded in either mode.
 
 Async does not mean parallel writes. Do not edit the same active worktree while an async `debugger` or `code-simplifier` is changing it. Parent-side overlap should be reading, validation prep, synthesis, command planning, or review of unaffected context unless the writer is isolated in a separate worktree.
 
@@ -558,9 +557,9 @@ If a prompt-template extension is installed, additional user prompt templates ca
 
 ## Best Practices
 
-### Prefer async orchestration
+### Choose foreground or async intentionally
 
-Launch every subagent asynchronously by default. Use `async: true` for locator, analyzer, pattern-finder, research, online-researcher, debugger, code-simplifier, chains, and parallel groups unless you intentionally need a foreground/blocking run. The parent should keep moving: inspect code while locators run, prepare validation while a debugger implements, do a local diff pass while reviewer specialists analyze, and synthesize or verify while a fix writer applies accepted feedback. Async is the default orchestration posture; foreground runs are the explicit opt-out.
+Use foreground runs when the result gates the parent's next action. Use `async: true` when a bounded delegated job is genuinely long-running or the parent has independent useful work to do. Do not launch background work merely because async is available, and do not duplicate a delegated job while waiting.
 
 ### Keep writes single-threaded by default
 
@@ -613,7 +612,7 @@ subagent({
 
 ### Clarify → Discover → Implement → Review (self-orchestrated workflow)
 
-When you are the orchestrating agent for a new feature or non-trivial change, factor in the packaged prompt workflows without literally invoking slash commands. Use the same patterns through tools and subagents.
+When the user requests one of these bounded orchestration shapes, factor in the packaged prompt recipes without literally invoking slash commands. Use the same patterns through tools and subagents.
 
 Keep builtin agent defaults unless the user explicitly asks for a different model, thinking level, skills, output behavior, context mode, or other override. Do not add overrides just because you are orchestrating; the defaults encode the intended role behavior.
 
@@ -630,26 +629,26 @@ When the user approves launching a subagent to carry out a workflow, treat that 
 For feature work, use this sequence as scaffolding for parent-agent behavior:
 
 ```text
-clarify → validation contract → parallel discovery → async writer (debugger or code-simplifier) → parallel async fresh-context specialist reviewers → async fix writer → follow-up review when warranted → parent review
+clarify when needed → validation contract → optional bounded discovery → one writer when delegated → fresh-context specialist review when warranted → one fix writer if needed → parent review
 ```
 
 The validation contract defines completion before code is written: expected behavior, checks, commands or user flows to exercise, and evidence the writer should return. Keep it lightweight for small tasks, but make it explicit enough that reviewers and validators are checking the intended outcome rather than the writer’s own assumptions. Subagent runs do not carry a structured `acceptance` field, infer acceptance policies, inject acceptance-report prompts, or run acceptance gates; put any evidence requirements directly in the task text. Do not set removed acceptance config fields on `subagent()` calls, chain steps, parallel task items, or agent frontmatter; move those requirements into the assigned task text instead.
 
-The first writer implements the approved change. The parent continues with independent inspection or validation prep while it runs, not parallel edits to the same worktree. When the async writer completes, treat its handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Parallel specialist reviewers inspect the resulting diff from fresh context. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as an initial async chain when the workflow is already clear, or as follow-up subagent runs after each async completion. Initial chains should pass `async: true` so the main chat is unblocked; ask the user any needed questions before the non-interactive tool launch. Do not stop after parallel review unless the user explicitly asked for review-only output or the review surfaced a decision that needs approval first.
+The first writer implements the approved change. When it runs in the background, the parent may continue independent inspection or validation prep, but not parallel edits to the same worktree. Treat the writer handoff as the transition into review, not as final completion, unless the user explicitly asked for writer-only work, review-only output, or to stop after implementation. Specialist reviewers inspect the resulting diff from fresh context when warranted. The final fix writer applies synthesized review fixes, then the parent looks over the final diff before completing. The parent may launch these steps as a background chain when useful or as foreground/follow-up runs. Ask only needed questions before a non-interactive launch.
 
-For complex work, risky changes, broad refactors, or many changed lines, increase review and validation fanout rather than trusting one reviewer. Use distinct angles such as correctness/regressions (`codebase-analyzer`), failure-mode hunt (`debugger` inspect-only), pattern fit (`codebase-pattern-finder`), prior-decision conformance (`codebase-research-*`), and external-spec conformance (`codebase-online-researcher`). When reviewers find non-trivial issues or the fix writer touches many lines, run another focused review round before final validation.
+For complex or risky changes, increase review and validation fanout when user intent or correctness risk materially warrants it rather than automatically trusting one reviewer. Use distinct angles such as correctness/regressions (`codebase-analyzer`), failure-mode hunt (`debugger` inspect-only), pattern fit (`codebase-pattern-finder`), prior-decision conformance (`codebase-research-*`), and external-spec conformance (`codebase-online-researcher`). When reviewers find non-trivial issues or the fix writer touches many lines, consider another focused review round before final validation.
 
 For very large work, split into serial milestones instead of launching a swarm of writers. Each milestone gets one writer, a validation contract, fresh-context review, a fix pass, and parent approval before the next milestone starts. Use parallel subagents inside a milestone for read-only context, research, and review only.
 
 Keep orchestration authority in the parent session. Child subagents should not launch more subagents, read this skill, or run their own orchestration loops unless the parent intentionally selected an explicit fanout agent whose resolved builtin `tools` includes `subagent` for that assigned fanout. Spawned non-fanout subagents do not receive the `subagent` skill, parent-only status/control/slash messages, prior parent `subagent` tool-call/tool-result artifacts, or the `subagent` extension tool. Child context filtering also strips old hidden orchestration-instruction messages when they appear in inherited history. Every child also receives a boundary instruction that says the parent owns orchestration, the child must not propose or run subagents unless explicitly authorized for fanout, and writer children must call real edit/write tools instead of printing pseudo tool calls. Pass children concrete role-specific work instead.
 
-1. Clarify first. This is mandatory. Gather code context with `codebase-locator`, `codebase-analyzer`, `codebase-pattern-finder`, and prior research specialists; add `codebase-online-researcher` only when external evidence matters; then ask the user clarifying questions with `interview` until scope, completion criteria, constraints, and non-goals are clear.
+1. Clarify only when needed. Use existing context first; gather missing code or research context selectively, then ask only unresolved questions that materially affect scope, completion criteria, constraints, or non-goals.
 2. Define the validation contract. State completion expectations before implementation: expected behavior, checks to run, user flows to exercise, and evidence required in the writer handoff. For UI, CLI, integration, or workflow changes, include at least one validator angle that uses the product the way a user would rather than only reading code.
 3. Plan when useful. For complex work, write a plan doc yourself and get approval before implementation. For simple work, confirm shared understanding and explicitly note why planning is skipped.
-4. Implement with one writer. After approval, launch `debugger` (for correctness-shaped work) or `code-simplifier` (for refinement-shaped work) asynchronously with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. While it runs, prepare validation or inspect adjacent code instead of editing the same worktree.
+4. Implement with one writer. After approval, launch `debugger` (for correctness-shaped work) or `code-simplifier` (for refinement-shaped work) in the foreground or selectively in the background with a proper meta prompt that includes clarified requirements, relevant context, plan path or summary, the validation contract, and output expectations. While it runs, prepare validation or inspect adjacent code instead of editing the same worktree.
 5. Require a useful writer handoff. Ask the writer to report changed files, what was implemented, what was left undone, commands run with exit codes, validation evidence, surprises or new risks, decisions made inside approved scope, and decisions needing parent approval.
-6. Review after implementation. After the writer completes, launch parallel async fresh-context specialist reviewers — `codebase-analyzer` for correctness/regressions, `debugger` (inspect-only) for failure-mode hunts, and `codebase-pattern-finder` for consistency. Add `codebase-online-researcher` for external-spec angles and `codebase-research-*` for prior-decision angles when the work calls for it. Use `output: false` unless review artifacts are explicitly needed.
-7. Synthesize, then run the fix writer. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch an async writer (`debugger` or `code-simplifier`) to apply fixes worth doing now when the workflow is implementation-authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
+6. Review after implementation. After the writer completes, launch bounded fresh-context specialist reviewers when risk or user intent warrants it — `codebase-analyzer` for correctness/regressions, `debugger` (inspect-only) for failure-mode hunts, and `codebase-pattern-finder` for consistency. Add `codebase-online-researcher` for external-spec angles and `codebase-research-*` for prior-decision angles when the work calls for it. Use `output: false` unless review artifacts are explicitly needed.
+7. Synthesize, then run the fix writer when needed. Separate blockers, fixes worth doing now, optional improvements, and feedback to ignore/defer, then launch one foreground or background writer (`debugger` or `code-simplifier`) to apply accepted fixes when implementation is authorized. If reviewers found scope/product/architecture choices that were not approved, ask the user first instead of applying them.
 8. Review again when warranted. If the fix writer made substantial changes or addressed non-trivial findings, run another focused parallel review round before final validation.
 9. Validate and complete. After the fix writer and any follow-up review return, inspect the final diff yourself, run or confirm focused validation, update docs/changelog when relevant, and summarize what changed and why.
 
@@ -690,9 +689,9 @@ subagent({
 
 ### Review loop
 
-Do not treat review as the final step for implementation work. Run specialist reviewers, synthesize their findings against user scope and the validation contract, then launch one writer for accepted fixes when implementation is authorized.
+When implementation review is part of the requested shape, do not treat the first review as the final step: synthesize findings against user scope and the validation contract, then launch one writer for accepted fixes when implementation is authorized.
 
-When an async writer completes, treat the writer handoff as an intermediate state. The next parent action is review fanout, then synthesis, then a fix writer if reviewers found fixes worth doing now. This can be planned as an initial async chain when the whole workflow is known, or continued as follow-up subagent runs when the parent only launched the first writer initially.
+When a writer completes, treat its handoff as an intermediate state when review is part of the requested shape. The next parent action is bounded review, then synthesis, then a fix writer if reviewers found fixes worth doing now. This can be planned as a background chain when useful or continued as foreground/follow-up subagent runs.
 
 For explicit review-loop requests, repeat writer → fresh-specialist-reviewers → synthesized-fix-writer cycles until reviewers find no blockers or fixes worth doing now, remaining feedback is optional or intentionally deferred, an unapproved product/scope/architecture decision needs the user, or the max review-round cap is reached. Default to 3 review rounds unless the user sets a different cap.
 
