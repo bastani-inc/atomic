@@ -103,12 +103,25 @@ const FULLSCREEN_OVERLAY_OPTIONS: PiOverlayOptions = {
 
 const MOUSE_SCROLL_TRACKING_ON = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const MOUSE_SCROLL_TRACKING_OFF = "\x1b[?1006l\x1b[?1002l\x1b[?1000l";
+const TERMINAL_AUTOWRAP_ON = "\x1b[?7h";
+const TERMINAL_AUTOWRAP_OFF = "\x1b[?7l";
 const MAIN_CHAT_INPUT_STATUS_KEY = `${WORKFLOW_STATUS_KEY}:main-chat-input`;
 const MAIN_CHAT_INPUT_STATUS = "Main chat needs input — exit graph to answer.";
 
-function setMouseScrollTracking(enabled: boolean): void {
-  if (!process.stdout.isTTY) return;
-  process.stdout.write(enabled ? MOUSE_SCROLL_TRACKING_ON : MOUSE_SCROLL_TRACKING_OFF);
+export interface OverlayTerminalOutput {
+  platform: NodeJS.Platform;
+  isTTY: boolean | undefined;
+  write(data: string): void;
+}
+
+function setMouseScrollTracking(enabled: boolean, output: OverlayTerminalOutput): void {
+  if (!output.isTTY) return;
+  output.write(enabled ? MOUSE_SCROLL_TRACKING_ON : MOUSE_SCROLL_TRACKING_OFF);
+}
+
+function setTerminalAutowrap(enabled: boolean, output: OverlayTerminalOutput): void {
+  if (output.platform !== "win32" || !output.isTTY) return;
+  output.write(enabled ? TERMINAL_AUTOWRAP_ON : TERMINAL_AUTOWRAP_OFF);
 }
 
 export interface BuildGraphOverlayAdapterOpts {
@@ -126,6 +139,8 @@ export interface BuildGraphOverlayAdapterOpts {
   onQuitRun?: (runId: string) => void;
   /** Optional clock injection for deterministic attach-pane transition tests. */
   now?: () => number;
+  /** Terminal output seam used to test raw overlay control sequences. */
+  terminalOutput?: OverlayTerminalOutput;
 }
 
 export function buildGraphOverlayAdapter(
@@ -135,6 +150,16 @@ export function buildGraphOverlayAdapter(
 ): GraphOverlayPort {
   const registry = buildOpts.stageControlRegistry ?? defaultStageControlRegistry;
   const stageUiBroker = buildOpts.stageUiBroker;
+  const terminalOutput = buildOpts.terminalOutput ?? {
+    platform: process.platform,
+    isTTY: process.stdout.isTTY,
+    write: (data: string): void => {
+      process.stdout.write(data);
+    },
+  };
+  const updateMouseScrollTracking = (enabled: boolean): void => {
+    setMouseScrollTracking(enabled, terminalOutput);
+  };
   const quitRun = buildOpts.onQuitRun ?? ((id: string): void => {
     defaultQuitRun(id, { store, stageControlRegistry: registry });
   });
@@ -149,6 +174,13 @@ export function buildGraphOverlayAdapter(
   let observedUi: OverlayUISurface | undefined;
   let unsubscribeHostCustomUi: (() => void) | null = null;
   let hostInlineCustomUiActive = false;
+  let overlayVisible = false;
+
+  function updateTerminalAutowrap(visible: boolean): void {
+    if (overlayVisible === visible) return;
+    overlayVisible = visible;
+    setTerminalAutowrap(!visible, terminalOutput);
+  }
 
   function readHostCustomUiActive(ui: OverlayUISurface | undefined = observedUi): boolean {
     const state = ui?.getHostCustomUiState?.();
@@ -188,8 +220,9 @@ export function buildGraphOverlayAdapter(
   }
 
   function close(): void {
-    setMouseScrollTracking(false);
+    updateMouseScrollTracking(false);
     currentHandle?.hide();
+    updateTerminalAutowrap(false);
     finishMounted?.();
     observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
     observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
@@ -218,11 +251,12 @@ export function buildGraphOverlayAdapter(
    * running and can be re-attached.
    */
   function hideMounted(): void {
-    setMouseScrollTracking(false);
+    updateMouseScrollTracking(false);
     observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
     if (currentHandle) {
       currentView?.setVisible(false);
       currentHandle.setHidden(true);
+      updateTerminalAutowrap(false);
       currentHandle.unfocus();
       return;
     }
@@ -230,6 +264,7 @@ export function buildGraphOverlayAdapter(
       finishMounted();
       return;
     }
+    updateTerminalAutowrap(false);
   }
 
   function refocusVisibleOverlayForAwaitingInput(snapshot: StoreSnapshot): void {
@@ -258,7 +293,8 @@ export function buildGraphOverlayAdapter(
       },
       invalidate: () => tui.requestRender?.(),
       dispose: () => {
-        setMouseScrollTracking(false);
+        updateTerminalAutowrap(false);
+        updateMouseScrollTracking(false);
         unsubscribe();
         view.dispose();
       },
@@ -277,14 +313,16 @@ export function buildGraphOverlayAdapter(
     if (mounted && currentHandle?.isHidden()) {
       currentView?.retarget(runId, stageId);
       currentView?.setVisible(true);
-      setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       currentHandle.setHidden(false);
       currentHandle.focus();
       return;
     }
     if (mounted) {
       currentView?.retarget(runId, stageId);
-      setMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       // Restore keyboard focus to the visible overlay after retargeting.
       // pi-tui dispatches key events only to the focused component, so a
       // mounted-but-visible overlay that is retargeted (e.g. to a stage-scoped
@@ -309,7 +347,7 @@ export function buildGraphOverlayAdapter(
       const finish = (): void => {
         if (settled) return;
         settled = true;
-        setMouseScrollTracking(false);
+        updateMouseScrollTracking(false);
         observedUi?.setStatus?.(WORKFLOW_STATUS_KEY, undefined);
         observedUi?.setStatus?.(MAIN_CHAT_INPUT_STATUS_KEY, undefined);
         currentView?.dispose();
@@ -318,7 +356,11 @@ export function buildGraphOverlayAdapter(
         finishMounted = null;
         mounted = false;
         clearHostCustomUiObservation();
-        done(undefined);
+        try {
+          done(undefined);
+        } finally {
+          updateTerminalAutowrap(false);
+        }
       };
       const view = new WorkflowAttachPane({
         store,
@@ -369,7 +411,7 @@ export function buildGraphOverlayAdapter(
           if (currentHandle?.isFocused() === true) return;
           currentHandle?.focus();
         },
-        setMouseScrollTracking,
+        setMouseScrollTracking: updateMouseScrollTracking,
         now: buildOpts.now,
       } as ConstructorParameters<typeof WorkflowAttachPane>[0] & {
         piTui?: PiCustomOverlayFactoryTui;
@@ -379,7 +421,8 @@ export function buildGraphOverlayAdapter(
       currentView = view;
       finishMounted = finish;
       mounted = true;
-      setMouseScrollTracking(view.wantsMouseScrollTracking());
+      updateTerminalAutowrap(true);
+      updateMouseScrollTracking(view.wantsMouseScrollTracking());
       updateMainChatInputHint(readHostCustomUiActive(ui));
       return makeComponent(view, tui);
     };
@@ -403,11 +446,13 @@ export function buildGraphOverlayAdapter(
     if (mounted && currentHandle) {
       const nowHidden = !currentHandle.isHidden();
       currentView?.setVisible(!nowHidden);
-      setMouseScrollTracking(
+      if (!nowHidden) updateTerminalAutowrap(true);
+      updateMouseScrollTracking(
         nowHidden ? false : currentView?.wantsMouseScrollTracking() ?? true,
       );
       currentHandle.setHidden(nowHidden);
-      if (!nowHidden) currentHandle.focus();
+      if (nowHidden) updateTerminalAutowrap(false);
+      else currentHandle.focus();
       return;
     }
     if (mounted) {
