@@ -4,6 +4,16 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-07-12
+
+### Fixed
+
+- Made blocking reply waits race-safe under concurrent tool calls. Waiter admission is now an atomic synchronous check-and-reserve shared by `intercom` `ask` and `contact_supervisor`: when several blocking requests race (parallel tool calls in one turn, same-tool or cross-tool), exactly one wins the reservation and every other call returns a normal structured "Already waiting for a reply" tool error. Previously the loser received an already-rejected promise that could sit unhandled while the winner's question was still being sent, crashing the whole agent process with an unhandled `Error: Already waiting for a reply` rejection.
+- Scoped blocking-ask cleanup to the owning call: cancellation, send failures, and delivery errors now settle only that call's own reply waiter instead of rejecting whichever waiter happened to be pending, so a losing or failing concurrent request can no longer tear down another call's in-flight ask. The reply-wait timeout also rejects only its own waiter, threaded replies still resolve the exact winning request, and session shutdown/replacement and broker disconnects continue to reject the currently pending waiter.
+- Made the pending reply-wait promise unhandled-rejection-proof: rejections that fire between the owner's awaits (for example a delivery failure racing dispatch) are pre-handled, so blocking coordination can never terminate the process.
+- Initialized the lazy Intercom runtime from the most recent turn/tool/model lifecycle context when a subagent result or control relay arrives in a session that never emitted `session_start` to extensions (for example non-interactive in-process child sessions). Such sessions now deliver self-addressed subagent result announcements locally instead of failing every relay.
+- Stopped recording misleading `intercom_result_error`/`intercom_control_error` "Intercom shutting down" entries when a relay fires while the runtime is uninitialized and the target is not the local session. The relay now acknowledges the message as undelivered (callers fall back to inline results) without attempting a broker connection that can only fail.
+
 ## [0.9.7-alpha.1] - 2026-07-12
 
 ### Fixed

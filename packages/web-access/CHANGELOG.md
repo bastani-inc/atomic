@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.7 release for the web-access extension; no functional web-access changes were made after 0.9.6.
+
 ## [0.9.7-alpha.1] - 2026-07-12
 
 ### Changed
