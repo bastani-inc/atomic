@@ -4,16 +4,16 @@ import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/wo
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
-function stage(id: string, startedAt: number, endedAt?: number): StageSnapshot {
-  const common = {
+function stage(id: string, startedAt: number, endedAt: number): StageSnapshot {
+  return {
     id,
     name: id,
+    status: "completed",
     parentIds: [],
     startedAt,
+    endedAt,
     toolEvents: [],
   };
-  if (endedAt === undefined) return { ...common, status: "running" };
-  return { ...common, status: "completed", endedAt };
 }
 
 function liveRun(id: string, startedAt: number, stages: StageSnapshot[] = []): RunSnapshot {
