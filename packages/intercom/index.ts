@@ -1,8 +1,7 @@
-import { APP_NAME, getEnvValue, type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type ToolDefinition, type ToolExecutionStartEvent } from "@bastani/atomic";
+import { APP_NAME, getEnvValue, type ExtensionAPI, type ExtensionContext, type SessionStartEvent, type ToolDefinition } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { renderIntercomToolResult } from "./result-renderers.js";
-import { loadConfig } from "./config.js";
 import { executeHeavyTool, runHeavyCommand, type HeavyHandle } from "./lazy-tool-execution.js";
 import { assertCurrentLifecycleLease, createLifecycleLease, retainSettledLifecycleCleanup, retireLifecycleLease, SerializedLifecycleForwarder, type LifecycleLease } from "./lifecycle-lease.js";
 import { rejectLazyResultRelay } from "./lazy-subagent-ack.js";
@@ -13,7 +12,6 @@ import {
 	dispatchHandlers,
 	type CapturedHeavy,
 	type ForwardedEventMap,
-	type HeavyRuntimeReadiness,
 	type ToolRenderResultArgs,
 } from "./lazy-heavy-proxy.js";
 
@@ -34,21 +32,8 @@ type ActiveLifecycleState = {
 	modelSelect: LifecycleSnapshot<"model_select"> | null;
 };
 interface LightweightIntercomOptions {
-	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | HeavyRuntimeReadiness | Promise<void | HeavyRuntimeReadiness> }>;
-	isEnabled?: () => boolean;
+	importHeavy?: () => Promise<{ default: (pi: ExtensionAPI) => void | Promise<void> }>;
 }
-
-const MANAGEMENT_ONLY_SUBAGENT_ACTIONS = new Set(["list", "get", "create", "update", "delete", "status", "interrupt", "doctor"]);
-
-function isInteractiveForegroundSubagentStart(event: ToolExecutionStartEvent, ctx: ExtensionContext): boolean {
-	if (!ctx.hasUI || event.toolName !== "subagent") return false;
-	if (!event.args || typeof event.args !== "object" || Array.isArray(event.args)) return true;
-	const args = event.args as { action?: unknown; async?: unknown };
-	const action = typeof args.action === "string" ? args.action.trim() : "";
-	if (action && MANAGEMENT_ONLY_SUBAGENT_ACTIONS.has(action)) return false;
-	return args.async !== true;
-}
-
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
@@ -74,8 +59,6 @@ function renderHeavyToolResult(loadedHeavy: CapturedHeavy | null, name: string, 
 	return renderIntercomToolResult(name, args);
 }
 export default function intercom(pi: ExtensionAPI, options: LightweightIntercomOptions = {}) {
-	const enabled = options.isEnabled?.() ?? loadConfig().enabled;
-	const delegatedSession = hasSubagentIntercomEnv();
 	const delegatedSessionName = readSubagentEnv("INTERCOM_SESSION_NAME");
 	let heavyAttempt: HeavyAttempt | null = null;
 	let loadedHeavy: IntercomHeavyHandle | null = null;
@@ -187,8 +170,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			try {
 				const mod = await (options.importHeavy?.() ?? import("./index-heavy.js"));
 				assertLease(lease);
-				const runtimeReadiness = await mod.default(createHeavyProxy(pi, captured));
-				if (runtimeReadiness) captured.runtimeReadiness = runtimeReadiness;
+				await mod.default(createHeavyProxy(pi, captured));
 				assertLease(lease);
 				if (!sessionSnapshot && ctx) {
 					sessionSnapshot = { event: createSyntheticSessionStartEvent(), ctx, generation: ++lifecycleGeneration, lease };
@@ -214,23 +196,6 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		);
 		return promise;
 	}
-	async function registerAutomatically(ctx: ExtensionContext, phase: string, foreground = false): Promise<boolean> {
-		try {
-			const handle = await loadHeavy(ctx);
-			const readiness = handle.heavy.runtimeReadiness;
-			if (!readiness) throw new Error("Intercom heavy runtime did not expose broker readiness");
-			if (readiness.enabled) {
-				if (foreground) await readiness.awaitForegroundBrokerReady();
-				else await readiness.awaitAutomaticBrokerReady();
-			}
-			handle.assertCurrent();
-			return readiness.enabled;
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			console.error(`Intercom ${phase} failed; session will continue and a later call may retry: ${message}`, error);
-			return false;
-		}
-	}
 	pi.on("session_start", async (event, ctx) => {
 		if (delegatedSessionName && typeof pi.setSessionName === "function") pi.setSessionName(delegatedSessionName);
 		if (activeLease.retired) activeLease = createLifecycleLease<ShutdownSnapshot>(nextLeaseId++, activeLease.cleanupBarrier);
@@ -244,12 +209,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 		}
 		const generation = ++lifecycleGeneration;
 		sessionSnapshot = { event, ctx, generation, lease };
-		if (loadedHeavy) {
-			await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
-			return;
-		}
-		if (!enabled || (!ctx.hasUI && !delegatedSession)) return;
-		if (delegatedSession) await registerAutomatically(ctx, "bridged child automatic registration");
+		if (loadedHeavy) await ensureSessionStartReplayed(loadedHeavy.heavy, lease);
 	});
 	pi.on("session_shutdown", async (event, ctx) => {
 		const lease = activeLease;
@@ -307,28 +267,7 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 	});
 	pi.on("tool_execution_start", async (event, ctx) => {
 		if (activeLease.retired) return;
-		const lease = activeLease;
-		const toolSnapshot: LifecycleSnapshot<"tool_execution_start"> = { event, ctx };
-		activeLifecycle.activeTools.set(event.toolCallId, toolSnapshot);
-		if (isInteractiveForegroundSubagentStart(event, ctx) && enabled) {
-			const session = sessionSnapshot;
-			const warmHeavy = loadedHeavy?.heavy ?? null;
-			const warmReplayComplete = warmHeavy !== null
-				&& session?.lease === lease
-				&& replayedGeneration === session.generation;
-			// Successful readiness gates launch; optional Intercom failures degrade
-			// without preventing the subagent tool itself from executing.
-			await registerAutomatically(ctx, "foreground parent warmup", true);
-			if (warmReplayComplete
-				&& activeLease === lease
-				&& !lease.retired
-				&& sessionSnapshot === session
-				&& activeLifecycle.activeTools.get(event.toolCallId) === toolSnapshot
-				&& loadedHeavy?.heavy === warmHeavy) {
-				await lifecycleForward.enqueue(() => dispatchHandlers(warmHeavy, "tool_execution_start", event, ctx));
-			}
-			return; // Cold initialization replay owns this active tool's delivery.
-		}
+		activeLifecycle.activeTools.set(event.toolCallId, { event, ctx });
 		const heavy = loadedHeavy?.heavy;
 		if (heavy) await lifecycleForward.enqueue(() => dispatchHandlers(heavy, "tool_execution_start", event, ctx));
 	});
@@ -367,8 +306,8 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			});
 		});
 	}
-	// Bridged children are registered synchronously by the primary session-start
-	// handler, before their first agent turn can send or receive intercom messages.
+	// Heavy Intercom state stays unloaded until the model or user invokes an
+	// Intercom tool, command, shortcut, or relay that needs it.
 	pi.registerTool({
 		name: "intercom",
 		label: "Intercom",

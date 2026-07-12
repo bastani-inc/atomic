@@ -480,12 +480,4 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     ensureConnected,
     syncPresenceIdentity,
   });
-  return { enabled: config.enabled,
-    async awaitAutomaticBrokerReady(): Promise<void> {
-      if (config.enabled) await ensureConnected("startup");
-    },
-    async awaitForegroundBrokerReady(): Promise<void> {
-      if (config.enabled) await ensureConnected("tool");
-    },
-  };
 }

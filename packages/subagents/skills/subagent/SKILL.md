@@ -423,7 +423,7 @@ subagent({
 
 ## Subagent + Intercom Coordination
 
-Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the intercom bridge can automatically give child agents a private coordination channel back to the parent session.
+Atomic subagents work without intercom. When Atomic's bundled intercom companion or upstream `pi-intercom` is installed and enabled, the bridge can give eligible child agents a private coordination tool back to the parent session without connecting either session automatically. If a child may need live coordination, invoke `intercom({ action: "status" })` in the parent before launching it; the child connects when it first invokes `contact_supervisor` or `intercom`.
 
 The builtin specialists in this skill do not declare the `intercom` tool, so they finish their pass and return without coordinating. They cannot pause to ask the parent for a decision mid-run; if you need that, write a custom agent that lists `intercom` (or that the runtime bridge can inject `contact_supervisor` into).
 

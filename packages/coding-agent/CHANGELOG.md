@@ -6,6 +6,7 @@
 
 - Restored workflow-first Atomic guidance for non-trivial work with verifiable objectives and synchronized help/docs around rich inline TypeScript workflow authoring, including dynamic branching, fan-out, verification, candidate-selection, human-gate, child-workflow, and bounded-loop patterns.
 - Documented compositional workflow authoring in model prompts and onboarding/help surfaces, including importing bundled workflows from `@bastani/workflows/builtin`, nesting definitions with `ctx.workflow(...)`, and building deeper reusable workflow graphs within `maxDepth`.
+- Restored tool-driven bundled Intercom startup so foreground subagent launches and bridged child session startup no longer connect either session automatically; the model or user must invoke Intercom when coordination is needed.
 
 ## [0.9.5] - 2026-07-11
 

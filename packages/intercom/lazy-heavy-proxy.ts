@@ -27,11 +27,6 @@ type LazyLifecycleEvent = keyof ForwardedEventMap;
 type ForwardedHandler<K extends LazyLifecycleEvent> = ExtensionHandler<ForwardedEventMap[K]>;
 type ForwardedHandlerMap = { [K in LazyLifecycleEvent]: ForwardedHandler<K>[] };
 type AnyForwardedHandler = { [K in LazyLifecycleEvent]: ForwardedHandler<K> }[LazyLifecycleEvent];
-export interface HeavyRuntimeReadiness {
-  enabled: boolean;
-  awaitAutomaticBrokerReady(): Promise<void>;
-  awaitForegroundBrokerReady(): Promise<void>;
-}
 
 export type CapturedHeavy = {
   tools: Map<string, ToolDefinition>;
@@ -39,7 +34,6 @@ export type CapturedHeavy = {
   handlers: ForwardedHandlerMap;
   shortcuts: Map<string, CapturedShortcut>;
   eventHandlers: Map<string, EventHandler[]>;
-  runtimeReadiness?: HeavyRuntimeReadiness;
 };
 
 export function createForwardedHandlerMap(): ForwardedHandlerMap {

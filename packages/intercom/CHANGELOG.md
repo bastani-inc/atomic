@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Changed
+
+- Restored fully tool-driven Intercom connections: parent and bridged child sessions no longer import or connect to the broker merely because a subagent starts. The runtime now connects only when the model or user invokes an Intercom tool, command, shortcut, or relay.
+
 ## [0.9.5] - 2026-07-11
 
 ### Added

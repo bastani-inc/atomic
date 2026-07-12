@@ -24,7 +24,7 @@ Intercom also integrates with delegated subagents: child agents get a child-only
 
 ## In One Minute
 
-Interactive parents lazily connect to the tiny local broker when an Intercom tool is used or immediately before a foreground child launches; the launch waits for inbound handlers and broker readiness so child coordination is available from its first turn. Delegated foreground and background children with supervisor bridge metadata register before agent work begins. The lightweight extension avoids importing the heavy runtime for unused parent sessions, disabled sessions, and noninteractive management-only work, and concurrent tool callers share one import and connection attempt. Definition/control-only subagent actions (`list`, `get`, `create`, `update`, `delete`, `status`, `interrupt`, and `doctor`) do not warm Intercom; `resume` may relaunch or contact a child and therefore retains readiness gating. If optional Intercom import, broker startup, or connection fails, the parent or child session continues with a diagnostic and later calls may retry. Lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+Intercom connections are tool-driven. Parent and delegated child sessions keep the lightweight wrapper unloaded until the model or user invokes an Intercom tool, `/intercom`, or the `ALT+M` overlay. A bridged child receives its deterministic Intercom identity and `contact_supervisor` tool at startup, but invoking that tool establishes its broker connection; merely launching a foreground or background child does not connect either session. Concurrent first-use callers share one import and connection attempt, and lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 
@@ -34,7 +34,7 @@ Atomic bundles `@bastani/intercom` as a first-party extension; no separate insta
 pi install npm:pi-intercom
 ```
 
-Then restart Atomic or Pi. The extension registers the bundled `intercom` skill at startup. Interactive parents connect lazily on Intercom use or foreground-child launch, while bridged children connect before agent work begins; disabled sessions and noninteractive management-only operations do not load the heavy runtime or start the broker.
+Then restart Atomic or Pi. The extension registers the bundled `intercom` skill and lightweight tools at startup, but it does not connect the session until the model or user invokes Intercom.
 
 **Recommended:** Add this snippet to your project's `AGENTS.md` to help agents understand when to coordinate across sessions:
 
@@ -53,7 +53,7 @@ Coordinate with other local Atomic/pi sessions on related codebases. Use `/skill
 A session becomes intercom-connected when all of these are true:
 - the intercom extension is installed/bundled and loaded in that session
 - `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (Atomic) or the legacy `~/.pi/agent/intercom/config.json` fallback
-- the session has started or reloaded after the extension was installed
+- the model or user has invoked an Intercom tool, `/intercom`, or the `ALT+M` overlay in that session
 - the local broker is running or can be auto-started
 
 The session list only shows intercom-connected sessions, not every open Pi process on the machine.
