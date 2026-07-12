@@ -118,7 +118,7 @@ Install and set up Atomic by following https://docs.bastani.ai/llms.txt.
 
 Atomic is the **runtime**. **Loops** are repeatable agent systems you can build on it. **Workflows** make durable loops executable through stages, tools, prompts, checks, artifacts, gates, and approvals. Describe a loop in natural language or define it as a workflow in TypeScript when a clearly delegated autonomous job materially benefits from those capabilities.
 
-Use Atomic for implementation, debugging, migration, refactoring, release prep, QA, docs, and other work with real done criteria. Keep interactive work inline and use bounded subagents when the parent should remain in control. Phrases such as "do X until Y", "repeat until", or "run checks and fix until green" do not by themselves require a workflow; choose one when the job is long-running/background-oriented or needs durable checkpoints, gates, retries, or bounded loops.
+Use Atomic for implementation, debugging, migration, refactoring, release prep, QA, docs, and other work with real done criteria. Keep interactive work inline and use bounded subagents when the parent should remain in control. Loop or stop-condition phrasing such as "do X until Y", "repeat until", "iterate until", "review/fix until passing", "run checks and fix until green", or "keep going until done" is a key workflow signal when the user delegates execution: choose a workflow so the stop condition, retries, evidence, and convergence are tracked.
 
 Atomic can power:
 
@@ -159,7 +159,7 @@ Run ralph to implement specs/2026-03-rate-limit.md, run the focused rate-limit t
 
 Add `create_pr=true` to either `ralph` or `goal` only when you want that workflow's final pull-request stage and report after the review gate approves; prompt text alone does not opt in.
 
-**Need a durable, reviewer-gated one-off run? Use goal.** Give it the task, expected outcome, and validation. Goal fits clearly delegated autonomous changes when its ledger and gates add material value; multiple files, tests, validation, or loop wording alone do not require it. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final pull-request stage with `create_pr=true` after approval.
+**Need a durable, reviewer-gated one-off run? Use goal.** Give it the task, expected outcome, and validation. Goal fits clearly delegated autonomous changes when its ledger and gates add material value. Multiple files, tests, or validation alone do not require it, but loop or stop-condition wording is a key workflow signal when the user delegates execution. It keeps the run bounded, captures receipts in a goal ledger, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final pull-request stage with `create_pr=true` after approval.
 
 ```text
 Use goal to update the CLI docs for --json, include one example, run the docs build, and finish when the build passes.

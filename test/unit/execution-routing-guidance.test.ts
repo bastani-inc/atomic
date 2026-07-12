@@ -40,6 +40,21 @@ describe("intent-first execution routing", () => {
     }
   });
 
+  test("treats loop and stop-condition phrasing as a key workflow signal", () => {
+    for (const phrase of [
+      "loop or stop-condition phrasing as a key workflow signal",
+      "do X until Y",
+      "repeat until",
+      "iterate until",
+      "review/fix until passing",
+      "run checks and fix until green",
+      "keep going until done",
+      "prefer a workflow so the stop condition, retries, evidence, and convergence are tracked",
+    ]) {
+      expect(modelVisibleRouting).toContain(phrase);
+    }
+  });
+
   test("describes every supported workflow source and one-off/custom shapes accurately", () => {
     for (const phrase of [
       "builtin, project, user, or package",
@@ -121,6 +136,10 @@ describe("intent-first execution routing", () => {
       "Task size alone",
       "builtin, project, user, or package",
       "custom TypeScript",
+      "key workflow signal",
+      "keep going until done",
+      "always author a custom TypeScript",
+      "inline with normal coding tools",
     ]) {
       expect(synchronizedRouting).toContain(phrase);
     }
@@ -134,10 +153,8 @@ describe("intent-first execution routing", () => {
       "Heavier prompt-engineering → research → orchestrate → review workflow for larger migrations",
       "small-to-medium scoped changes when you can name the work surface",
       "larger migrations, new features, broad refactors, and multi-package changes",
-      "loop wording like review/fix/test until passing is workflow-shaped",
       "reserve direct debugger/subagent calls for narrow diagnosis or truly tiny deterministic fixes",
       "for bounded scoped work with explicit validation",
-      "If your prompt says \"do X until Y\"",
       "task has non-trivial scope",
       "A typical planned flow is `/skill:research-codebase` → `/skill:create-spec` → `/workflow ralph`",
       "Implement a small-to-medium scope change",

@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Changed
 
 - Aligned the workflows extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
-- Replaced workflow-default routing with intent-first least orchestration: interactive exploration stays inline, bounded specialist delegation uses subagents, and workflows are reserved for clearly delegated autonomous jobs that benefit from long-running/background execution or durable stages, artifacts, resumability, HIL, gates, retries, or loops. Guidance now documents builtin/project/user/package workflows, direct one-off shapes, and custom TypeScript workflow authoring.
+- Replaced workflow-default routing with intent-first least orchestration: interactive exploration stays inline, bounded specialist delegation uses subagents, and workflows are reserved for clearly delegated autonomous jobs that benefit from long-running/background execution or durable stages, artifacts, resumability, HIL, gates, retries, or loops. Explicit loop and stop-condition requests remain key workflow signals when the user delegates execution, so convergence and evidence are tracked. Guidance now documents builtin/project/user/package workflows, direct one-off shapes, and the option to author a custom TypeScript workflow inline whenever that shape best achieves a workflow-fit task.
 
 - Changed the builtin `ralph` workflow review fan-out from three reviewers to two (`reviewer-a` and `reviewer-b`), removing `reviewer-c` and its GLM-led model chain while keeping unanimous approval across the remaining reviewers.
 

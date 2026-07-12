@@ -84,6 +84,10 @@ On a fresh install with no prior Atomic startup state, Atomic shows a one-time f
 
 Once Atomic starts, use the least orchestration that fits your intent. Keep interactive or exploratory work in chat; use single, chain, or parallel subagents for bounded specialist delegation; and use workflows for clearly delegated, well-defined autonomous jobs that are likely long-running/background-oriented or materially need durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow.
 
+Loop or stop-condition phrasing is a key workflow signal. Requests such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, or `keep going until done` should generally use a workflow when the user is delegating execution, so the stop condition, retries, evidence, and convergence are tracked.
+
+When workflow execution fits, Atomic may always author a custom TypeScript `workflow({...})` inline with normal coding tools if that shape best achieves the task; it is not limited to installed workflows or direct modes.
+
 Atomic turns repeatable engineering loops into executable stages with inspectable evidence instead of relying on a markdown checklist the model may or may not follow.
 
 For an interactive tour any time, run `/atomic` inside the TUI; `/atomic overview`, `/atomic workflows`, and `/atomic example` walk through the same flow in more depth.
@@ -117,7 +121,7 @@ Atomic picks the workflow, fills in inputs from the request, and confirms before
 
 For a clearly delegated broad autonomous implementation job that benefits from a research/review loop, `ralph` is one available builtin. Give it a spec file, GitHub issue, or crisp ticket description; it refines the prompt, researches as needed, delegates implementation, reviews, records a QA proof video for UI/full-stack changes when practical, and iterates. Add `create_pr=true` only when you want the final PR handoff after the review gate approves.
 
-For an autonomous one-off job that materially benefits from a durable goal ledger, bounded worker turns, and reviewer gates, use `goal` with a concrete task description that names the work surface, desired outcome, and validation. An ordinary small-to-medium change does not require it merely because it has tests, validation, multiple files, or loop wording. Goal captures receipts, stops as `complete`, `blocked`, or `needs_human`, and can optionally run only the final PR handoff with `create_pr=true` after approval.
+For an autonomous one-off job that materially benefits from a durable goal ledger, bounded worker turns, and reviewer gates, use `goal` with a concrete task description that names the work surface, desired outcome, and validation. An ordinary small-to-medium change does not require it merely because it has tests, validation, or multiple files, but loop or stop-condition wording is a key workflow signal when the user delegates execution. Goal captures receipts, stops as `complete`, `blocked`, or `needs_human`, and can optionally run only the final PR handoff with `create_pr=true` after approval.
 
 ### Monitor and steer a run
 

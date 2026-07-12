@@ -8,7 +8,7 @@ export const ATOMIC_GUIDE_COMMAND_DESCRIPTION =
 
 const OVERVIEW = `# Atomic overview
 
-Atomic supports a least-orchestration hierarchy: keep interactive, exploratory, conceptual, and conversation-led work inline; use bounded single, chain, or parallel subagents while the parent remains in control; and use workflows when the user clearly delegates a well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. Named workflows can be builtin, project, user, or package supplied; direct task/tasks/chain modes cover one-off tracked shapes, and richer control flow can be authored with normal coding tools as a custom TypeScript \`workflow({...})\`, reloaded, and run. Start Atomic in a project with \`atomic\`, then talk to it normally. Use \`@file\` to attach files, \`!command\` to run shell output through the model, and \`!!command\` to run shell output without adding it to context.
+Atomic supports a least-orchestration hierarchy: keep interactive, exploratory, conceptual, and conversation-led work inline; use bounded single, chain, or parallel subagents while the parent remains in control; and use workflows when the user clearly delegates a well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. Loop or stop-condition phrasing such as \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, \`run checks and fix until green\`, or \`keep going until done\` is a key workflow signal when the user delegates execution, because it defines control flow and a completion condition that should be tracked. When workflow execution fits, Atomic may always author a custom TypeScript \`workflow({...})\` inline with normal coding tools if that shape best achieves the task; it is not limited to installed workflows or direct modes. Named workflows can be builtin, project, user, or package supplied; direct task/tasks/chain modes cover one-off tracked shapes. Start Atomic in a project with \`atomic\`, then talk to it normally. Use \`@file\` to attach files, \`!command\` to run shell output through the model, and \`!!command\` to run shell output without adding it to context.
 
 ## Core session commands
 
@@ -28,7 +28,7 @@ Atomic supports a least-orchestration hierarchy: keep interactive, exploratory, 
 |---|---|
 | On-call / broken behavior | Reproduce and diagnose inline or with a debugger subagent, using bounded specialists when useful; choose \`goal\` only when a clearly delegated repair materially needs a durable ledger, bounded worker turns, or reviewer-gated completion |
 | Research → spec → implementation | Use \`/skill:research-codebase\`, \`/skill:create-spec\`, and bounded subagents while the parent remains in control; choose a workflow only for a clearly delegated autonomous job with durable execution needs |
-| Testing / regression hardening | Keep focused test/fix work inline or bounded; use \`goal\` only for an autonomous durable run that materially needs checkpoints, retries, bounded loops, and an explicit stop condition. Tests or loop wording alone do not require a workflow |
+| Testing / regression hardening | Keep focused test/fix work inline or bounded. Loop or stop-condition wording is a key workflow signal when the user delegates execution; use \`goal\` when the run should track retries, evidence, convergence, and an explicit stop condition |
 | Large repo discovery | Run \`/parallel codebase-locator "map the area" -> codebase-analyzer "trace the current flow" -> codebase-pattern-finder "find patterns" --bg\`, or \`/workflow deep-research-codebase\` for whole-repo synthesis |
 | UI / product polish | Run \`/skill:impeccable\` for interface critique and refinement, or \`/workflow open-claude-design\` for generation + refinement loops |
 
@@ -109,7 +109,7 @@ When the job needs a durable goal ledger, bounded worker turns, and reviewer-gat
 
 \`/workflow goal objective="Implement specs/<date>-<topic>.md, run focused tests, and finish when the documented behavior is validated"\`
 
-If that durable job is loop-shaped — for example \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, or \`run checks and fix until green\` — make the stop condition explicit in the Goal objective:
+Loop or stop-condition phrasing is a key workflow signal. When the user delegates a loop such as \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, \`run checks and fix until green\`, or \`keep going until done\`, make the stop condition explicit in the Goal objective:
 
 \`/workflow goal objective="Fix the flaky checkout test, adjust the smallest necessary code, and finish when the focused test passes three times"\`
 
@@ -142,9 +142,9 @@ const WORKFLOWS = `# Workflows primer
 
 A workflow is a TypeScript-defined pipeline exported from \`workflow({...})\`. It can run tasks, chains, parallel fan-out, human-in-the-loop prompts, background status, and model fallback chains.
 
-Use workflows for clearly delegated, well-defined autonomous jobs that are likely long-running/background-oriented or materially need durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Keep interactive exploration inline and use bounded subagents when the parent should remain in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow.
+Use workflows for clearly delegated, well-defined autonomous jobs that are likely long-running/background-oriented or materially need durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Keep interactive exploration inline and use bounded subagents when the parent should remain in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow, but loop or stop-condition phrasing such as \`do X until Y\`, \`repeat until\`, \`iterate until\`, \`review/fix until passing\`, \`run checks and fix until green\`, or \`keep going until done\` is a key workflow signal when the user delegates execution.
 
-Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add one. Describe the workflow you want in plain chat — goal, inputs, stages, which steps are parallel or sequential, handoff/output shape, and any model or thinking-level preferences — and Atomic will use the workflow docs to scaffold a reusable definition under \`.atomic/workflows/\` and reload it for you. Hand-edit the TypeScript afterward when you want precise control.
+Named workflows may be builtin, project, user, or package supplied, and direct task/tasks/chain modes cover one-off tracked shapes. When workflow execution fits, Atomic may always author a custom TypeScript \`workflow({...})\` inline with normal coding tools if that shape best achieves the task; it is not limited to installed workflows or direct modes. Atomic writes the definition, reloads it, and runs it.
 
 ## Built-in workflows
 

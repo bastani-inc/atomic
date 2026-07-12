@@ -29,7 +29,7 @@ In practice, that means:
 7. Require evidence before accepting the result.
 8. Ask for a summary, handoff, or next-step plan.
 
-A good workflow prompt does not just say what to try. It says what success looks like. Route work to a workflow when the user clearly delegates a well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Keep interactive exploration inline, and use bounded single/chain/parallel subagents when the parent should remain in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow.
+A good workflow prompt does not just say what to try. It says what success looks like. Route work to a workflow when the user clearly delegates a well-defined autonomous job that is likely long-running/background-oriented or materially needs durable stages, artifacts/checkpoints, resumability, HIL, gates, retries, or bounded loops. Keep interactive exploration inline, and use bounded single/chain/parallel subagents when the parent should remain in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow. Loop or stop-condition phrasing such as `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, or `keep going until done` is a key workflow signal when the user delegates execution, because it already defines control flow and a completion condition that should be tracked.
 
 ---
 
