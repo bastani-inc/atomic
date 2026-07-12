@@ -102,7 +102,13 @@ export function registerWorkflowLifecycleHandlers(
       if (reason === "startup" || reason === "resume") {
         const getEntries = sessionManager.getEntries;
         if (typeof getEntries === "function") {
-          const resumable = findResumableWorkflowNotices(getEntries.call(sessionManager));
+          let authoritativeCatalog: Awaited<ReturnType<typeof runtimeState.runtimeProxy.prepareDurableResumable>> = [];
+          try {
+            authoritativeCatalog = await runtimeState.runtimeProxy.prepareDurableResumable();
+          } catch {
+            // A resume-catalog failure must not prevent the host session from starting.
+          }
+          const resumable = findResumableWorkflowNotices(getEntries.call(sessionManager), authoritativeCatalog);
           if (resumable.length > 0) {
             const commands = resumable
               .map((workflow) => `\`${workflow.name}\` (${workflow.workflowId.slice(0, 8)}): /workflow resume ${workflow.workflowId}`)

@@ -13,8 +13,12 @@ function recordOrUndefined(value: unknown): Record<string, WorkflowSerializableV
     : undefined;
 }
 
-/** Return the latest resumable durable workflow references cached in a session. */
-export function findResumableWorkflowNotices(entries: readonly unknown[]): ResumableWorkflowNotice[] {
+/** Return authoritative resumable workflow references cached in a session. */
+export function findResumableWorkflowNotices(
+  entries: readonly unknown[],
+  authoritativeCatalog: readonly { readonly workflowId: string }[],
+): ResumableWorkflowNotice[] {
+  const authoritativeIds = new Set(authoritativeCatalog.map((entry) => entry.workflowId));
   const latestByWorkflow = new Map<string, Record<string, WorkflowSerializableValue>>();
   for (const value of entries) {
     const entry = recordOrUndefined(value);
@@ -33,7 +37,12 @@ export function findResumableWorkflowNotices(entries: readonly unknown[]): Resum
     const workflowId = payload["workflowId"];
     const name = payload["name"];
     const status = payload["status"];
-    if (typeof workflowId !== "string" || typeof name !== "string" || typeof status !== "string") continue;
+    if (
+      typeof workflowId !== "string" ||
+      typeof name !== "string" ||
+      typeof status !== "string" ||
+      !authoritativeIds.has(workflowId)
+    ) continue;
     const resumable = payload["resumable"];
     const rootWorkflowId = payload["rootWorkflowId"];
     const candidate = {

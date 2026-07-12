@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed startup and restored-session workflow notices to use the durable resume catalog's status/progress rules: failed and blocked root workflows are advertised unless explicitly marked `resumable: false`, running and paused workflows require durable progress, nested child workflows are excluded, and legacy direct or payload-wrapped checkpoint entries are parsed correctly.
+- Fixed startup and restored-session workflow notices to use the authoritative durable resume catalog's status/progress rules: failed and blocked root workflows are advertised unless explicitly marked `resumable: false`, running and paused workflows require durable progress, nested child workflows and stale cache-only entries are excluded, and legacy direct or payload-wrapped checkpoint entries are parsed correctly.
 
 ## [0.9.5] - 2026-07-11
 

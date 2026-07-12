@@ -32,7 +32,7 @@ describe("findResumableWorkflowNotices", () => {
       };
       const entries = [{ type: "custom", customType: "workflow.durable.checkpoint", data }];
 
-      assert.equal(findResumableWorkflowNotices(entries).length, scenario.expected ? 1 : 0);
+      assert.equal(findResumableWorkflowNotices(entries, [data]).length, scenario.expected ? 1 : 0);
     });
   }
 
@@ -42,7 +42,7 @@ describe("findResumableWorkflowNotices", () => {
       { type: "custom", customType: "workflow.durable.checkpoint", data: { workflowId: "run-1", name: "ralph", status: "completed" } },
     ];
 
-    assert.deepEqual(findResumableWorkflowNotices(entries), []);
+    assert.deepEqual(findResumableWorkflowNotices(entries, [{ workflowId: "run-1" }]), []);
   });
 
   test("accepts legacy direct workflow entries", () => {
@@ -53,7 +53,7 @@ describe("findResumableWorkflowNotices", () => {
       status: "blocked",
     }];
 
-    assert.deepEqual(findResumableWorkflowNotices(entries), [{ workflowId: "run-legacy", name: "research" }]);
+    assert.deepEqual(findResumableWorkflowNotices(entries, [{ workflowId: "run-legacy" }]), [{ workflowId: "run-legacy", name: "research" }]);
   });
 
   test("accepts legacy payload-wrapped workflow entries", () => {
@@ -62,7 +62,17 @@ describe("findResumableWorkflowNotices", () => {
       payload: { workflowId: "run-wrapped", name: "research", status: "blocked" },
     }];
 
-    assert.deepEqual(findResumableWorkflowNotices(entries), [{ workflowId: "run-wrapped", name: "research" }]);
+    assert.deepEqual(findResumableWorkflowNotices(entries, [{ workflowId: "run-wrapped" }]), [{ workflowId: "run-wrapped", name: "research" }]);
+  });
+
+  test("excludes cached workflows missing from the authoritative catalog", () => {
+    const entries = [{
+      type: "custom",
+      customType: "workflow.durable.checkpoint",
+      data: { workflowId: "stale", name: "stale-workflow", status: "failed" },
+    }];
+
+    assert.deepEqual(findResumableWorkflowNotices(entries, []), []);
   });
 
   test("excludes nested child workflows", () => {
@@ -72,6 +82,6 @@ describe("findResumableWorkflowNotices", () => {
       data: { workflowId: "child", rootWorkflowId: "root", name: "child-workflow", status: "failed" },
     }];
 
-    assert.deepEqual(findResumableWorkflowNotices(entries), []);
+    assert.deepEqual(findResumableWorkflowNotices(entries, [{ workflowId: "child" }]), []);
   });
 });
