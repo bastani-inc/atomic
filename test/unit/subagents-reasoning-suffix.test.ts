@@ -44,11 +44,12 @@ describe("subagent suffix-first reasoning helpers", () => {
   });
 
   test("forwards max thinking to the child Atomic CLI model argument", () => {
+    const model = "openai/gpt-5.6-sol";
     const result = buildPiArgs({
       baseArgs: [],
       task: "reason deeply",
       sessionEnabled: false,
-      model: "openai/gpt-5.5",
+      model,
       thinking: "max",
       inheritProjectContext: true,
       inheritSkills: true,
@@ -56,7 +57,7 @@ describe("subagent suffix-first reasoning helpers", () => {
 
     const modelIndex = result.args.indexOf("--model");
     assert.notEqual(modelIndex, -1);
-    assert.equal(result.args[modelIndex + 1], "openai/gpt-5.5:max");
+    assert.equal(result.args[modelIndex + 1], `${model}:max`);
   });
 
 

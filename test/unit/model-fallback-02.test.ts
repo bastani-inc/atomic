@@ -28,8 +28,9 @@ const models: readonly WorkflowModelInfo[] = [
 ];
 
 test("workflow model suffix parsing accepts max thinking", () => {
-    assert.deepEqual(splitReasoningSuffix("openai/gpt-5.5:max"), {
-        baseModel: "openai/gpt-5.5",
+    const baseModel = "openai/gpt-5.6-sol";
+    assert.deepEqual(splitReasoningSuffix(`${baseModel}:max`), {
+        baseModel,
         level: "max",
     });
 });
