@@ -54,7 +54,7 @@ describe("pinned upstream skill trees", () => {
     const result = resolveSkills(["playwright-cli", "liteparse", "effective-liteparse"], root);
     assert.deepEqual(result.resolved.map((skill) => skill.name).sort(), ["liteparse", "playwright-cli"]);
     assert.deepEqual(result.missing, ["effective-liteparse"]);
-    assert.match(readFileSync(join(subagentSkills, "liteparse/SKILL.md"), "utf8"), /^---\nname: liteparse\n/m);
+    assert.match(readFileSync(join(subagentSkills, "liteparse/SKILL.md"), "utf8"), /^---\r?\nname: liteparse\r?$/m);
     assert.equal(existsSync(join(subagentSkills, "effective-liteparse")), false);
   });
 
@@ -104,6 +104,27 @@ describe("pinned upstream skill trees", () => {
     assertRegularTree(join(subagentSkills, "playwright-cli"));
     assertRegularTree(join(subagentSkills, "liteparse"));
     assertRegularTree(join(workflowSkills, "impeccable"));
+  });
+
+  test("keeps synced HTML filtering robust against nested sanitization and permissive closing tags", async () => {
+    const svelteModulePath = join(workflowSkills, "impeccable/scripts/live/svelte-component.mjs");
+    const svelteModule = await import(svelteModulePath) as {
+      parseSvelteComponentFile(content: string): { markup: string };
+      svelteMarkupHasVisibleContent(markup: string): boolean;
+    };
+    assert.equal(
+      svelteModule.svelteMarkupHasVisibleContent("<scri<script>x</script>pt>hidden</script>"),
+      false,
+    );
+    assert.equal(svelteModule.svelteMarkupHasVisibleContent("<!<!--- hidden --->>"), false);
+    assert.equal(
+      svelteModule.parseSvelteComponentFile("<script>const x = 1;</script \t\n data-x>\n<main>visible</main>").markup,
+      "<main>visible</main>",
+    );
+
+    const pageModulePath = join(workflowSkills, "impeccable/scripts/detector/shared/page.mjs");
+    const pageModule = await import(pageModulePath) as { isFullPage(content: string): boolean };
+    assert.equal(pageModule.isFullPage("<!<!--- hidden --->><section>partial</section>"), false);
   });
 
   test("does not execute shell substitutions from Impeccable project paths", async () => {

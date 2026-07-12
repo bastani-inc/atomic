@@ -5105,7 +5105,7 @@
   }
 
   function scopeCssToSveltePreview(css, sessionId) {
-    const prefix = '[data-impeccable-variants="' + String(sessionId).replace(/"/g, '\\"') + '"] ';
+    const prefix = '[data-impeccable-variants="' + String(sessionId).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"] ';
     return scopeCssBlock(String(css || ''), prefix).trim();
   }
 
@@ -5637,7 +5637,7 @@
     let out = String(prop || '').trim().replace(/^["']|["']$/g, '');
     if (!out) return '';
     if (out.startsWith('--')) return out;
-    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/^-ms-/, '-ms-');
+    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase());
   }
 
   function buildSvelteExpressionTextMap(sourceOriginal, liveOriginal) {

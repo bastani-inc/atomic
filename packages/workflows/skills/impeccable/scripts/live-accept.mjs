@@ -521,6 +521,26 @@ function hasVariantWrapperAttr(line, id) {
  *   - Same-line `<style>…</style>` blocks
  *   - Multi-line `<style>\n…\n</style>` blocks
  */
+function removeCompleteStyleElements(value) {
+  let out = value;
+  while (true) {
+    const lower = out.toLowerCase();
+    const start = lower.indexOf('<style');
+    if (start === -1) break;
+    const openEnd = lower.indexOf('>', start + 6);
+    if (openEnd === -1) break;
+    if (lower.slice(start, openEnd).trimEnd().endsWith('/')) {
+      out = out.slice(0, start) + out.slice(openEnd + 1);
+      continue;
+    }
+    const closeStart = lower.indexOf('</style', openEnd + 1);
+    const closeEnd = closeStart === -1 ? -1 : lower.indexOf('>', closeStart + 7);
+    if (closeStart === -1 || closeEnd === -1) break;
+    out = out.slice(0, start) + out.slice(closeEnd + 1);
+  }
+  return out;
+}
+
 function stripStyleAndJoin(lines, block) {
   const out = [];
   let inStyle = false;
@@ -530,13 +550,11 @@ function stripStyleAndJoin(lines, block) {
     if (!inStyle) {
       // Strip any complete <style> elements on this line (self-closed or
       // same-line-closed), including their body content.
-      line = line
-        .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/g, '')
-        .replace(/<style\b[^>]*\/\s*>/g, '');
+      line = removeCompleteStyleElements(line);
 
       // If a <style> opener remains (multi-line body starts here), strip from
       // the opener to end-of-line and flip into skip mode.
-      const openerIdx = line.search(/<style\b/);
+      const openerIdx = line.toLowerCase().indexOf('<style');
       if (openerIdx !== -1) {
         line = line.slice(0, openerIdx);
         inStyle = true;
@@ -544,10 +562,12 @@ function stripStyleAndJoin(lines, block) {
       out.push(line);
     } else {
       // In multi-line style body; drop everything until we see </style>.
-      const closeIdx = line.search(/<\/style\s*>/);
+      const closeIdx = line.toLowerCase().indexOf('</style');
       if (closeIdx !== -1) {
+        const closeEnd = line.indexOf('>', closeIdx + 7);
+        if (closeEnd === -1) continue;
         inStyle = false;
-        out.push(line.slice(closeIdx).replace(/<\/style\s*>/, ''));
+        out.push(line.slice(closeEnd + 1));
       }
       // else: skip line entirely
     }

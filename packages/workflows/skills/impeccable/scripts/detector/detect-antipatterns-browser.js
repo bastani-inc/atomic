@@ -1284,14 +1284,30 @@ function checkHtmlPatterns(html) {
     }
   }
 
+  function stripHtmlBlocks(content, tagNames) {
+    let out = String(content);
+    for (const tagName of tagNames) {
+      const opener = '<' + tagName;
+      const closer = '</' + tagName;
+      while (true) {
+        const lower = out.toLowerCase();
+        const start = lower.indexOf(opener);
+        if (start === -1) break;
+        const openEnd = lower.indexOf('>', start + opener.length);
+        const closeStart = openEnd === -1 ? -1 : lower.indexOf(closer, openEnd + 1);
+        const closeEnd = closeStart === -1 ? -1 : lower.indexOf('>', closeStart + closer.length);
+        if (openEnd === -1 || closeStart === -1 || closeEnd === -1) break;
+        out = out.slice(0, start) + ' ' + out.slice(closeEnd + 1);
+      }
+    }
+    return out;
+  }
+
   // --- Provider tells (gated): "X theater" framing copy (GPT) ---
   // Lives here (regex-on-HTML) rather than in the text-content analyzers so it
   // runs in the bundled browser path too, not just the CLI/static path.
   {
-    const bodyText = html
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<[^>]+>/g, ' ');
+    const bodyText = stripHtmlBlocks(html, ['script', 'style']).replace(/<[^>]+>/g, ' ');
     const tm = /\b(\w+)\s+theater\b/i.exec(bodyText);
     if (tm) findings.push({ id: 'theater-slop-phrase', snippet: `"${tm[0].trim()}"` });
   }
