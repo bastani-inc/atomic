@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the built-in `goal` and `ralph` reviewer model defaults for GPT-5.6 Sol from the `:max` reasoning suffix to `:xhigh` across every provider form (`openai-codex`, `github-copilot`, `openai`, `cursor`, and `openrouter/openai`), including Ralph's `reviewer-b` primary model (`openai-codex/gpt-5.6-sol:xhigh`).
+
 ## [0.9.6] - 2026-07-12
 
 ### Changed

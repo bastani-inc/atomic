@@ -48,7 +48,7 @@ describe("subagent suffix-first reasoning helpers", () => {
       baseArgs: [],
       task: "reason deeply",
       sessionEnabled: false,
-      model: "openai/gpt-5.6-sol",
+      model: "openai/gpt-5.5",
       thinking: "max",
       inheritProjectContext: true,
       inheritSkills: true,
@@ -56,7 +56,7 @@ describe("subagent suffix-first reasoning helpers", () => {
 
     const modelIndex = result.args.indexOf("--model");
     assert.notEqual(modelIndex, -1);
-    assert.equal(result.args[modelIndex + 1], "openai/gpt-5.6-sol:max");
+    assert.equal(result.args[modelIndex + 1], "openai/gpt-5.5:max");
   });
 
 
