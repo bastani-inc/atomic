@@ -228,4 +228,35 @@ describe("concurrent blocking intercom requests", () => {
 		current.replyToPending();
 		assert.match((await winner).content[0]?.text ?? "", /Approved/);
 	});
+
+	test("aborting a blocking ask mid-send frees the slot for a second ask, and the first call's late cleanup never disturbs the new reservation", async () => {
+		// The send stays in flight long enough for the abort to fire while the
+		// first ask still owns the slot. The abort must free the slot, a second
+		// ask must be able to reserve it, and when the first ask's delayed send
+		// finally resolves its trailing cleanup must not tear down the second
+		// reservation.
+		const current = fixture({ send: { delayMs: 40 } });
+		const controller = new AbortController();
+
+		const first = current.ask(controller.signal);
+		await Bun.sleep(5);
+		assert.ok(current.slot.has(), "the first ask reserves the slot before it is aborted");
+		controller.abort();
+		await Bun.sleep(0);
+		assert.equal(current.slot.has(), false, "aborting mid-send releases the reservation");
+
+		const second = current.ask();
+		await Bun.sleep(5);
+		assert.ok(current.slot.has(), "a second ask reserves the freed slot");
+
+		const firstResult = await first;
+		assert.equal(firstResult.isError, true);
+		assert.match(firstResult.content[0]?.text ?? "", /Cancelled/);
+		assert.ok(current.slot.has(), "the aborted ask's trailing cleanup must not tear down the second reservation");
+
+		current.replyToPending();
+		const secondResult = await second;
+		assert.equal(secondResult.isError, false);
+		assert.match(secondResult.content[0]?.text ?? "", /Approved/);
+	});
 });
