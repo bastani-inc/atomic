@@ -387,12 +387,12 @@ export async function main(args: string[], options?: MainOptions) {
 		printHelp(extensionFlags);
 		process.exit(0);
 	}
-
 	if (parsed.listModels !== undefined) {
 		const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
 		if (shouldRestoreStdoutForMetadata) {
 			restoreStdout();
 		}
+		reportDiagnostics(runtime.diagnostics);
 		await listModels(modelRegistry, searchPattern);
 		process.exit(0);
 	}

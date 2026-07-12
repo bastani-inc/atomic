@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { CursorModelCatalog, CursorUsableModel } from "./model-mapper.js";
+import type { CursorModelCatalog, CursorParameterizedVariant, CursorUsableModel } from "./model-mapper.js";
 
-export const CURSOR_CATALOG_CACHE_VERSION = 1;
+export const CURSOR_CATALOG_CACHE_VERSION = 2;
 export const CURSOR_CATALOG_CACHE_FILENAME = "cursor-model-catalog.json";
 
 export interface CursorCatalogCacheRecord {
@@ -13,31 +13,16 @@ export interface CursorCatalogCacheRecord {
 	readonly models: readonly CursorUsableModel[];
 }
 
-export interface CursorCatalogCache {
-	load(): CursorModelCatalog | null;
-	save(catalog: CursorModelCatalog): void;
-}
+export interface CursorCatalogCache { load(): CursorModelCatalog | null; save(catalog: CursorModelCatalog): void }
 
 export class FileCursorCatalogCache implements CursorCatalogCache {
 	readonly #path: string;
-
-	constructor(path = getDefaultCursorCatalogCachePath()) {
-		this.#path = path;
-	}
-
-	get path(): string {
-		return this.#path;
-	}
-
+	constructor(path = getDefaultCursorCatalogCachePath()) { this.#path = path }
+	get path(): string { return this.#path }
 	load(): CursorModelCatalog | null {
 		if (!existsSync(this.#path)) return null;
-		try {
-			return parseCursorCatalogCacheRecord(JSON.parse(readFileSync(this.#path, "utf8")));
-		} catch {
-			return null;
-		}
+		try { return parseCursorCatalogCacheRecord(JSON.parse(readFileSync(this.#path, "utf8"))) } catch { return null }
 	}
-
 	save(catalog: CursorModelCatalog): void {
 		const record = toCursorCatalogCacheRecord(catalog);
 		if (!record) return;
@@ -47,109 +32,90 @@ export class FileCursorCatalogCache implements CursorCatalogCache {
 			writeFileSync(tmpPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 			renameSync(tmpPath, this.#path);
 		} catch (error) {
-			try {
-				rmSync(tmpPath, { force: true });
-			} catch {
-				// Ignore cleanup errors; preserve the original write/rename failure.
-			}
+			try { rmSync(tmpPath, { force: true }) } catch { /* preserve original error */ }
 			throw error;
 		}
 	}
 }
 
-export function getDefaultCursorCatalogCachePath(): string {
-	return join(getDefaultAtomicAgentDir(), CURSOR_CATALOG_CACHE_FILENAME);
-}
+export function getDefaultCursorCatalogCachePath(): string { return join(getDefaultAtomicAgentDir(), CURSOR_CATALOG_CACHE_FILENAME) }
 
 export function parseCursorCatalogCacheRecord(value: unknown): CursorModelCatalog | null {
-	if (!isRecord(value)) return null;
-	if (value.version !== CURSOR_CATALOG_CACHE_VERSION) return null;
-	if (typeof value.fetchedAt !== "number" || !Number.isFinite(value.fetchedAt) || value.fetchedAt < 0) return null;
-	if (!Array.isArray(value.models)) return null;
-	const models = value.models.map(parseCachedCursorModel).filter((model): model is CursorUsableModel => model !== null);
-	if (models.length === 0) return null;
-	return { source: "live", fetchedAt: value.fetchedAt, models };
+	if (!isRecord(value) || (value.version !== 1 && value.version !== CURSOR_CATALOG_CACHE_VERSION)) return null;
+	if (typeof value.fetchedAt !== "number" || !Number.isFinite(value.fetchedAt) || value.fetchedAt < 0 || !Array.isArray(value.models)) return null;
+	const legacy = value.version === 1;
+	const models = value.models
+		.map(parseCachedCursorModel)
+		.filter((model): model is CursorUsableModel => model !== null)
+		.map((model) => legacy && model.metadataProvenance === undefined ? { ...model, metadataProvenance: "legacy-cache" as const } : model);
+	return models.length > 0 ? { source: "live", fetchedAt: value.fetchedAt, models } : null;
 }
 
 export function toCursorCatalogCacheRecord(catalog: CursorModelCatalog): CursorCatalogCacheRecord | null {
-	if (catalog.source !== "live") return null;
-	if (typeof catalog.fetchedAt !== "number" || !Number.isFinite(catalog.fetchedAt) || catalog.fetchedAt < 0) return null;
+	if (catalog.source !== "live" || !Number.isFinite(catalog.fetchedAt) || catalog.fetchedAt < 0) return null;
 	const models = catalog.models.map(parseCachedCursorModel).filter((model): model is CursorUsableModel => model !== null);
-	if (models.length === 0) return null;
-	return { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, models };
+	return models.length > 0 ? { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, models } : null;
 }
 
 function parseCachedCursorModel(value: unknown): CursorUsableModel | null {
 	if (!isRecord(value)) return null;
-	const id = readRequiredString(value, "id");
+	const id = requiredString(value.id);
 	if (!id) return null;
-	const name = readOptionalString(value, "name");
-	const displayName = readOptionalString(value, "displayName");
-	const contextWindow = readOptionalPositiveNumber(value, "contextWindow");
-	const maxTokens = readOptionalPositiveNumber(value, "maxTokens");
-	const supportsReasoning = readOptionalBoolean(value, "supportsReasoning");
-	const supportsThinking = readOptionalBoolean(value, "supportsThinking");
-	if (
-		name === false ||
-		displayName === false ||
-		contextWindow === false ||
-		maxTokens === false ||
-		supportsReasoning === false ||
-		supportsThinking === false
-	) {
-		return null;
+	const model: Record<string, unknown> = { id };
+	for (const key of ["name", "displayName", "serverModelName", "requestedModelId"] as const) {
+		if (value[key] !== undefined) { const field = optionalString(value[key]); if (field === null) return null; model[key] = field }
 	}
-	return {
-		id,
-		...(name !== undefined ? { name } : {}),
-		...(displayName !== undefined ? { displayName } : {}),
-		...(contextWindow !== undefined ? { contextWindow } : {}),
-		...(maxTokens !== undefined ? { maxTokens } : {}),
-		...(supportsReasoning !== undefined ? { supportsReasoning } : {}),
-		...(supportsThinking !== undefined ? { supportsThinking } : {}),
-	};
+	for (const key of ["contextWindow", "maxModeContextWindow", "maxTokens"] as const) {
+		if (value[key] !== undefined) { const field = positiveNumber(value[key]); if (field === null) return null; model[key] = field }
+	}
+	for (const key of ["supportsReasoning", "supportsThinking", "supportsImages", "supportsMaxMode", "supportsNonMaxMode", "requestedMaxMode", "isDefaultVariant"] as const) {
+		if (value[key] !== undefined) { if (typeof value[key] !== "boolean") return null; model[key] = value[key] }
+	}
+	if (value.metadataProvenance !== undefined) {
+		if (!isOneOf(value.metadataProvenance, ["available-models-reverse-engineered", "get-usable-models", "legacy-cache", "static-fallback"])) return null;
+		model.metadataProvenance = value.metadataProvenance;
+	}
+	if (value.effort !== undefined) {
+		if (!isOneOf(value.effort, ["none", "minimal", "low", "medium", "high", "xhigh", "extra-high", "max", "default"])) return null;
+		model.effort = value.effort;
+	}
+	if (value.parameters !== undefined) { const parameters = parseParameters(value.parameters); if (!parameters) return null; model.parameters = parameters }
+	if (value.variants !== undefined) { const variants = parseVariants(value.variants); if (!variants) return null; model.variants = variants }
+	return model as unknown as CursorUsableModel;
+}
+
+function parseParameters(value: unknown): readonly { readonly id: string; readonly value: string }[] | null {
+	if (!Array.isArray(value)) return null;
+	const parsed = value.map((entry) => isRecord(entry) && requiredString(entry.id) && requiredString(entry.value) ? { id: entry.id as string, value: entry.value as string } : null);
+	return parsed.every((entry) => entry !== null) ? parsed : null;
+}
+
+function parseVariants(value: unknown): readonly CursorParameterizedVariant[] | null {
+	if (!Array.isArray(value)) return null;
+	const parsed = value.map((entry): CursorParameterizedVariant | null => {
+		if (!isRecord(entry) || typeof entry.isMaxMode !== "boolean") return null;
+		const parameters = parseParameters(entry.parameters);
+		if (!parameters) return null;
+		const variant: Record<string, unknown> = { parameters, isMaxMode: entry.isMaxMode };
+		for (const key of ["displayName", "displayNameOutsidePicker", "variantStringRepresentation"] as const) {
+			if (entry[key] !== undefined) { const field = optionalString(entry[key]); if (field === null) return null; variant[key] = field }
+		}
+		for (const key of ["isDefaultMaxConfig", "isDefaultNonMaxConfig"] as const) {
+			if (entry[key] !== undefined) { if (typeof entry[key] !== "boolean") return null; variant[key] = entry[key] }
+		}
+		return variant as unknown as CursorParameterizedVariant;
+	});
+	return parsed.every((entry) => entry !== null) ? parsed : null;
 }
 
 function getDefaultAtomicAgentDir(): string {
 	const configured = readEnv("ATOMIC_CODING_AGENT_DIR") ?? readEnv("PI_CODING_AGENT_DIR");
-	if (configured) return expandTilde(configured);
-	return join(homedir(), ".atomic", "agent");
+	return configured ? expandTilde(configured) : join(homedir(), ".atomic", "agent");
 }
-
-function readEnv(name: string): string | undefined {
-	const value = process.env[name]?.trim();
-	return value ? value : undefined;
-}
-
-function expandTilde(path: string): string {
-	if (path === "~") return homedir();
-	if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
-	return resolve(path);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readRequiredString(value: Record<string, unknown>, key: string): string | undefined {
-	const field = value[key];
-	return typeof field === "string" && field.length > 0 ? field : undefined;
-}
-
-function readOptionalString(value: Record<string, unknown>, key: string): string | undefined | false {
-	const field = value[key];
-	if (field === undefined) return undefined;
-	return typeof field === "string" ? field : false;
-}
-
-function readOptionalPositiveNumber(value: Record<string, unknown>, key: string): number | undefined | false {
-	const field = value[key];
-	if (field === undefined) return undefined;
-	return typeof field === "number" && Number.isFinite(field) && field > 0 ? field : false;
-}
-
-function readOptionalBoolean(value: Record<string, unknown>, key: string): boolean | undefined | false {
-	const field = value[key];
-	if (field === undefined) return undefined;
-	return typeof field === "boolean" ? field : false;
-}
+function readEnv(name: string): string | undefined { const value = process.env[name]?.trim(); return value || undefined }
+function expandTilde(path: string): string { return path === "~" ? homedir() : path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(path) }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) }
+function requiredString(value: unknown): string | undefined { return typeof value === "string" && value.length > 0 ? value : undefined }
+function optionalString(value: unknown): string | null { return typeof value === "string" ? value : null }
+function positiveNumber(value: unknown): number | null { return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null }
+function isOneOf(value: unknown, allowed: readonly string[]): value is string { return typeof value === "string" && allowed.includes(value) }

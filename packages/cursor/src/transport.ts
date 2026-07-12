@@ -1,4 +1,6 @@
 export { CursorProtobufProtocolCodec } from "./proto/protobuf-codec.js";
+export { decodeAvailableModelsResponse, encodeAvailableModelsRequest } from "./proto/cursor-available-models-codec.js";
+export type { CursorAvailableModel, CursorModelParameter, CursorParameterizedVariant } from "./proto/cursor-available-models-codec.js";
 export { CursorTransportError, sanitizeCursorTransportError } from "./transport-errors.js";
 export type { CursorTransportErrorCode } from "./transport-errors.js";
 export { CursorConnectFrameDecoder, decodeCursorConnectFrames, encodeCursorConnectFrame } from "./transport-frame.js";

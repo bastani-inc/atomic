@@ -400,6 +400,11 @@
     "reasoning": false
   },
   {
+    "id": "gpt-5.5",
+    "name": "GPT-5.5",
+    "reasoning": false
+  },
+  {
     "id": "grok-4.3",
     "name": "Grok 4.3",
     "reasoning": false

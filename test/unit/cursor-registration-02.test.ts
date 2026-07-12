@@ -157,7 +157,7 @@ describe("Cursor provider registration", () => {
 		assert.deepEqual(cache.saved.map((catalog) => catalog.fetchedAt), [42, 42]);
 		await runtime.dispose();
 	});
-	test("login keeps live-only models out of memory when catalog cache persistence fails", async () => {
+	test("login registers live-only models even when catalog cache persistence fails", async () => {
 		const { host, registrations } = makeHost();
 		const fakeAuth = {
 			async login(): Promise<OAuthCredentials> {
@@ -169,17 +169,25 @@ describe("Cursor provider registration", () => {
 				return { source: "live", fetchedAt: 43, models: [{ id: "composer-2.5", displayName: "Composer 2.5" }] };
 			},
 		} as unknown as CursorModelDiscoveryService;
+		const refreshErrors: Error[] = [];
 		const runtime = registerCursorProvider(host, {
 			transport: new CursorMockTransport(),
 			authService: fakeAuth,
 			discoveryService: fakeDiscovery,
 			catalogCache: new ThrowingCursorCatalogCache(),
 			uuid: () => "login-cache-failure",
+			onCatalogRefreshError: (error) => refreshErrors.push(error),
 		});
 
 		assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
-		assert.equal(registrations.length, 1);
-		assert.equal(registrations[0]?.config.models.some((model) => model.id === "composer-2.5"), false);
+		assert.equal(registrations.length, 2);
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "composer-2.5"), true);
+		assert.deepEqual(runtime.getCatalogRefreshStatus(), {
+			state: "fresh",
+			fetchedAt: 43,
+			error: "Cursor model catalog cache persistence failed: cursor catalog cache write failed",
+		});
+		assert.deepEqual(refreshErrors.map((error) => error.message), ["Cursor model catalog cache persistence failed: cursor catalog cache write failed"]);
 		await runtime.dispose();
 	});
 	test("refresh returns rotated credentials when best-effort catalog discovery rejects", async () => {
@@ -210,6 +218,30 @@ describe("Cursor provider registration", () => {
 		assert.equal(cache.saved.length, 0);
 		await runtime.dispose();
 	});
+	test("surfaces cache persistence warnings during background refresh", async () => {
+		const notifications: string[] = [];
+		const discovery = {
+			async discover(): Promise<CursorModelCatalog> {
+				return { source: "live", fetchedAt: 44, models: [{ id: "live-after-warning" }] };
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const { host, lifecycleHandlers, registrations } = makeHost();
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(), discoveryService: discovery,
+			catalogCache: new ThrowingCursorCatalogCache(), uuid: () => "cache-warning",
+		});
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		await handler({}, {
+			mode: "tui",
+			ui: { notify: (message: string) => notifications.push(message) },
+			modelRegistry: { getApiKeyForProvider: async () => "token" },
+		});
+		await nextTick();
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "live-after-warning"), true);
+		assert.match(notifications[0] ?? "", /cache persistence failed/u);
+		await runtime.dispose();
+	});
 	test("first authenticated stream schedules one tracked rediscovery task and writes the live cache", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
@@ -225,10 +257,12 @@ describe("Cursor provider registration", () => {
 			},
 		} as unknown as CursorModelDiscoveryService;
 		let uuidCounter = 0;
+		let catalogNow = 99;
 		const runtime = registerCursorProvider(host, {
 			transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
 			discoveryService: fakeDiscovery,
 			catalogCache: cache,
+			now: () => catalogNow,
 			uuid: () => `request-${++uuidCounter}`,
 		});
 		const config = registrations[0]!.config;
@@ -241,6 +275,10 @@ describe("Cursor provider registration", () => {
 		assert.equal(discoveryRequests.length, 1);
 		assert.deepEqual(discoveryRequests.map((request) => request.accessToken), ["access-secret"]);
 		assert.equal(cache.saved.length, 1);
+		catalogNow += 30 * 60 * 1000 + 1;
+		await collectEvents(registrations.at(-1)!.config.streamSimple(streamModelFromConfig(registrations.at(-1)!.config), streamContext(), { apiKey: "access-secret-3" }));
+		await nextTick();
+		assert.equal(discoveryRequests.length, 2, "first-use discovery becomes eligible again after TTL");
 		assert.equal(registrations.at(-1)?.config.models.find((registeredModel) => registeredModel.id === "composer-2")?.name, "Rediscovered Composer");
 		await runtime.dispose();
 	});
@@ -271,7 +309,7 @@ describe("Cursor provider registration", () => {
 		await collectEvents(registrations.at(-1)!.config.streamSimple(streamModelFromConfig(registrations.at(-1)!.config), streamContext(), { apiKey: "access-secret" }));
 		await nextTick();
 		assert.equal(attempts, 2);
-		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.reasoning, true);
+		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.reasoning, false);
 		await runtime.dispose();
 	});
 	test("dispose aborts pending first-use rediscovery and does not hang when discovery ignores abort", async () => {
@@ -326,6 +364,50 @@ describe("Cursor provider registration", () => {
 			assert.ok(registrations[0]!.config.models.some((model) => /estimated/u.test(model.name)));
 			await runtime.dispose();
 		}
+	});
+	test("TTL skips fresh startup discovery and --list-models timing awaits stale refresh", async () => {
+		let now = 1_050;
+		let resolveDiscovery: ((catalog: CursorModelCatalog) => void) | undefined;
+		const discovery = {
+			discover(): Promise<CursorModelCatalog> {
+				return new Promise((resolve) => { resolveDiscovery = resolve; });
+			},
+		} as unknown as CursorModelDiscoveryService;
+		const cache = new MemoryCursorCatalogCache({ source: "live", fetchedAt: 1_000, models: [{ id: "cached", displayName: "Cached" }] });
+		const { host, lifecycleHandlers, registrations } = makeHost();
+		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), discoveryService: discovery, catalogCache: cache, catalogCacheTtlMs: 100, now: () => now, uuid: () => "ttl" });
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		await handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => "token" } });
+		assert.equal(resolveDiscovery, undefined, "fresh cache should not refresh");
+		now = 1_101;
+		let settled = false;
+		const pending = Promise.resolve(handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => "token" } })).then(() => { settled = true; });
+		await nextTick();
+		assert.equal(settled, false, "list timing must await stale discovery");
+		resolveDiscovery?.({ source: "live", fetchedAt: now, models: [{ id: "fresh", displayName: "Fresh" }] });
+		await pending;
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "fresh"), true);
+		await runtime.dispose();
+	});
+
+	test("surfaces refresh failures while retaining cached models", async () => {
+		const surfaced: string[] = [];
+		const discovery = { async discover(): Promise<CursorModelCatalog> { throw new Error("refresh unavailable"); } } as unknown as CursorModelDiscoveryService;
+		const notifications: string[] = [];
+		const cache = new MemoryCursorCatalogCache({ source: "live", fetchedAt: 1, models: [{ id: "cached", displayName: "Cached" }] });
+		const { host, lifecycleHandlers, registrations } = makeHost();
+		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), discoveryService: discovery, catalogCache: cache, catalogCacheTtlMs: 1, now: () => 10, onCatalogRefreshError: (error) => surfaced.push(error.message), uuid: () => "failed" });
+		const handler = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(handler);
+		await assert.rejects(() => handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => "token" } }), /refresh unavailable/u);
+		await handler({}, { mode: "tui", ui: { notify: (message: string) => notifications.push(message) }, modelRegistry: { getApiKeyForProvider: async () => "token" } });
+		await nextTick();
+		assert.match(notifications[0] ?? "", /refresh unavailable/u);
+		assert.deepEqual(surfaced, ["refresh unavailable", "refresh unavailable"]);
+		assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "failed", fetchedAt: 1, error: "refresh unavailable" });
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "cached"), true);
+		await runtime.dispose();
 	});
 	test("host wiring includes bundled package copy and default model resolution", () => {
 		const builtins = readFileSync("packages/coding-agent/src/core/builtin-packages.ts", "utf8");

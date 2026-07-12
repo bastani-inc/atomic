@@ -98,6 +98,7 @@ export class CursorStreamAdapter {
 			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
 			activeConversationKey = conversationIdentity.activeKey;
 			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning);
+			const cursorRouting = (model.compat as { cursorRouting?: Readonly<Record<string, { modelId: string; maxMode?: boolean; parameters?: readonly { id: string; value: string }[] }>> } | undefined)?.cursorRouting?.[resolvedModelId];
 			const trailingToolResults = getTrailingToolResults(context);
 			if (trailingToolResults.length > 0) {
 				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, { signal: options.signal, timeoutMs: effectiveTimeoutMs });
@@ -108,6 +109,9 @@ export class CursorStreamAdapter {
 					conversationId: conversationIdentity.wireConversationId,
 					model,
 					resolvedModelId,
+					requestedModelId: cursorRouting?.modelId,
+					requestedMaxMode: cursorRouting?.maxMode,
+					modelParameters: cursorRouting?.parameters,
 					thinkingLevel: options.reasoning,
 					context,
 					signal: options.signal,

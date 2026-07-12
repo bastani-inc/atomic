@@ -412,7 +412,7 @@ describe("Cursor provider registration", () => {
 			cache.save(liveCatalog);
 
 			const raw = readFileSync(cachePath, "utf8");
-			assert.match(raw, /"version"\s*:\s*1/u);
+			assert.match(raw, /"version"\s*:\s*2/u);
 			assert.match(raw, /"fetchedAt"\s*:\s*77/u);
 			assert.doesNotMatch(raw, /access-secret|refresh-secret|"source"|"note"/u);
 			assert.equal(readdirSync(dir).some((entry) => entry.endsWith(".tmp")), false);
@@ -434,7 +434,7 @@ describe("Cursor provider registration", () => {
 			assert.deepEqual(cache.load(), {
 				source: "live",
 				fetchedAt: 88,
-				models: [{ id: "still-valid", displayName: "Still Valid" }],
+				models: [{ id: "still-valid", displayName: "Still Valid", metadataProvenance: "legacy-cache" }],
 			});
 
 			const sanitizedRecord = toCursorCatalogCacheRecord({

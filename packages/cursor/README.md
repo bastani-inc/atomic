@@ -1,24 +1,26 @@
 # @bastani/cursor
 
-First-party Atomic provider for Cursor subscription models.
+First-party experimental Atomic provider for Cursor subscription models.
 
-## Status
+## Discovery and metadata
 
-This package registers `cursor` via Atomic's bundled extension provider API. `/login` shows **Cursor (Experimental)** and stores credentials through Atomic OAuth storage (`~/.atomic/agent/auth.json`). The login URL and PKCE polling behavior intentionally match the MIT-licensed [`ndraiman/pi-cursor-provider`](https://github.com/ndraiman/pi-cursor-provider) reference: `callbacks.onAuth({ url: loginUrl })`, no extra login warning/instruction copy, and polling `api2.cursor.sh/auth/poll` until Cursor returns tokens.
+Atomic uses Cursor's browser PKCE OAuth flow and private CLI-compatible HTTP/2 protocol. Authenticated model discovery prefers `POST /aiserver.v1.AiService/AvailableModels`, whose parameter, capability, and normal/Max context fields are reverse-engineered and may vary by account, plan, region, server, and client version. If that endpoint is unavailable, malformed, or empty, Atomic falls back to generated `POST /agent.v1.AgentService/GetUsableModels` decoding.
 
-The runtime protocol is also aligned to `ndraiman/pi-cursor-provider` at commit `82fc4e73f9ae820d87b34ac36713b18989910a36`: Atomic vendors the reference `cursor-models-raw.json` and generated `proto/agent_pb.ts`, and builds Cursor request/control messages through `@bufbuild/protobuf` descriptors instead of hand-maintained protobuf bytes. HTTP/2 itself is handled by the generated `@bastani/atomic-natives` Rust/N-API package rather than a separate local proxy.
+Cursor's public Cloud Agents List Models endpoint and `Cursor.models.list()` SDK are authoritative for IDs, parameters, and presets accepted by those public surfaces, but they do not prove private CLI/IDE parity and do not document exact context/output limits. Atomic therefore treats every private live catalog as an account snapshot.
 
-The unavoidable Atomic-specific integration difference is the provider surface: Atomic exposes a native `cursor-agent` `streamSimple` provider instead of the reference package's localhost OpenAI-compatible proxy. The Cursor auth/model/protocol bytes should otherwise stay reference-derived.
+AvailableModels metadata preserves complete parameter combinations and keeps base, fast, thinking, reasoning effort, Max/long-context, and Max-only modes distinct. Only exact reasoning values carried by discovered parameter variants are exposed as Atomic levels; family names and fallback-ID suffixes do not create capabilities, explicitly unsupported levels fail instead of redirecting, and an ambiguous standalone `-max` model name is not treated as effort. Generated `RequestedModel` fields carry the selected preset's model ID, parameters, and Max state without recombining presets.
+
+Exact limits are used only when attached together to the corresponding discovered model/mode; Atomic does not independently maximize context and output fields across variants. Missing values use positive operational budgets required by Atomic's model interface and carry explicit conservative-fallback provenance—the exact Cursor limit remains unknown. Missing image metadata degrades to text-only.
+
+The credential-free cache at `~/.atomic/agent/cursor-model-catalog.json` has a 30-minute TTL. Stale discovery is awaited for `atomic --list-models`; discovery failures are surfaced while retaining the previous catalog. Successful live registration does not depend on a successful cache write, and persistence failures remain available through refresh diagnostics. The bundled compatibility snapshot includes a conservative GPT-5.5 base ID but does not infer capabilities or parameter combinations from its names.
 
 ## Limitations
 
-- Image input is supported only for known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (IDs beginning `claude-`, `composer-`, `gemini-`, `gpt-`, or `kimi-`), plus `grok-4.3`; text-only Cursor models still reject images.
-- User images and mixed text/image MCP tool results are serialized for image-capable Cursor models. Image payloads must be non-empty standard base64; MIME-style line wrapping whitespace is accepted and stripped before serialization.
-- Cursor's private API may change without notice.
-- HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
-- Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.
-- Cursor's private `GetUsableModels` response omits context-window and output-token limits. Atomic preserves positive limits when present and otherwise resolves them from Atomic's bundled `@earendil-works/pi-ai` model catalog by matching the Cursor model ID's family/version, falling back to a conservative 200k context / 64k output estimate for Cursor-only models without a pi-ai match. Cursor IDs or labels that explicitly say `1M` keep a 1,000,000-token context floor even when the nearest reference match advertises a smaller base window. Limit resolution never adds or removes models from the list.
+- Cursor's private API may change without notice, and use may conflict with Cursor terms or account policies.
+- HTTP/2 requires bundled `@bastani/atomic-natives` for the current platform.
+- Credentials are OAuth-only. Do not pass Cursor tokens through arguments, environment variables, logs, or proxy processes.
+- Images and mixed text/image MCP results are sent only when current model metadata advertises image input. Image data must be non-empty standard base64; MIME whitespace is accepted and removed.
 
 ## Attribution
 
-Cursor auth, model fallback, and generated protobuf behavior are derived from the MIT-licensed `ndraiman/pi-cursor-provider` project.
+Auth and generated agent protobuf behavior derive from MIT-licensed `ndraiman/pi-cursor-provider`. The reverse-engineered AvailableModels field interpretation follows the pinned `sfiorini/pi-stef` protocol notes referenced by issue #1702; it is evidence, not a stable Cursor contract.

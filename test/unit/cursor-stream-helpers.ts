@@ -8,7 +8,7 @@ export function model(): Model<Api> {
 		provider: "cursor",
 		baseUrl: "https://api2.cursor.sh",
 		reasoning: true,
-		thinkingLevelMap: { high: "high", xhigh: "max" },
+		thinkingLevelMap: { high: "composer-2-high", xhigh: "composer-2-max" },
 		input: ["text"],
 		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,

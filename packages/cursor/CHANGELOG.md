@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added richer `AiService/AvailableModels`-first discovery with generated `GetUsableModels` fallback, complete parameter-preset routing, normal/Max context metadata, explicit metadata provenance, a 30-minute cache TTL, surfaced refresh status/errors, and stale-refresh timing for `--list-models` ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Changed
+
+- Refreshed the Cursor CLI client identity and static compatibility snapshot with a conservative GPT-5.5 base entry, while avoiding invented parameter combinations or universal limits ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Preserved distinct fast, thinking, exact parameter-backed reasoning-effort, Max/long-context, and Max-only semantics; unsupported reasoning requests now fail instead of redirecting, fallback ID suffixes do not invent levels, and missing metadata degrades conservatively ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Fixed
+
+- Fixed successful live discovery being discarded on cache-write failure, stale caches never refreshing, refresh failures remaining invisible, and `--list-models` racing authenticated discovery; cache persistence failures now remain diagnostic without discarding live registration ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

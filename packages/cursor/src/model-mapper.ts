@@ -1,19 +1,43 @@
 import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai/compat";
 import { CURSOR_API, CURSOR_API_BASE_URL } from "./config.js";
 import rawFallbackModels from "./cursor-models-raw.json" with { type: "json" };
-import { positiveIntOrUndefined, resolveCursorModelReferenceLimits, type CursorModelReferenceCandidate } from "./model-reference.js";
+import { positiveIntOrUndefined } from "./model-reference.js";
 
 export type CursorCatalogSource = "live" | "estimated";
-export type CursorEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max" | "default";
+export type CursorEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "extra-high" | "max" | "default";
+export type CursorMetadataProvenance = "available-models-reverse-engineered" | "get-usable-models" | "legacy-cache" | "static-fallback";
+
+export interface CursorModelParameter { readonly id: string; readonly value: string }
+export interface CursorParameterizedVariant {
+	readonly parameters: readonly CursorModelParameter[];
+	readonly isMaxMode: boolean;
+	readonly isDefaultMaxConfig?: boolean;
+	readonly isDefaultNonMaxConfig?: boolean;
+	readonly displayName?: string;
+	readonly displayNameOutsidePicker?: string;
+	readonly variantStringRepresentation?: string;
+}
 
 export interface CursorUsableModel {
 	readonly id: string;
 	readonly name?: string;
 	readonly displayName?: string;
 	readonly contextWindow?: number;
+	readonly maxModeContextWindow?: number;
 	readonly maxTokens?: number;
 	readonly supportsReasoning?: boolean;
 	readonly supportsThinking?: boolean;
+	readonly supportsImages?: boolean;
+	readonly supportsMaxMode?: boolean;
+	readonly supportsNonMaxMode?: boolean;
+	readonly serverModelName?: string;
+	readonly variants?: readonly CursorParameterizedVariant[];
+	readonly metadataProvenance?: CursorMetadataProvenance;
+	readonly effort?: CursorEffort;
+	readonly requestedModelId?: string;
+	readonly requestedMaxMode?: boolean;
+	readonly isDefaultVariant?: boolean;
+	readonly parameters?: readonly CursorModelParameter[];
 }
 
 export interface CursorModelCatalog {
@@ -25,6 +49,12 @@ export interface CursorModelCatalog {
 
 export type CursorModelInput = ["text"] | ["text", "image"];
 
+export interface CursorModelRouting {
+	readonly modelId: string;
+	readonly maxMode?: boolean;
+	readonly parameters?: readonly CursorModelParameter[];
+}
+
 export interface CursorProviderModelDefinition {
 	readonly id: string;
 	readonly name: string;
@@ -35,7 +65,13 @@ export interface CursorProviderModelDefinition {
 	readonly input: CursorModelInput;
 	readonly cost: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
 	readonly contextWindow: number;
+	readonly contextWindowOptions?: readonly number[];
 	readonly maxTokens: number;
+	readonly metadataProvenance: { readonly catalog: CursorCatalogSource; readonly capabilities: string; readonly contextWindow: string; readonly maxTokens: string };
+	readonly compat?: {
+		readonly cursorRouting?: Readonly<Record<string, CursorModelRouting>>;
+		readonly cursorMetadataProvenance?: CursorProviderModelDefinition["metadataProvenance"];
+	};
 }
 
 interface CursorVariant {
@@ -46,9 +82,14 @@ interface CursorVariant {
 	readonly fast: boolean;
 	readonly thinking: boolean;
 	readonly contextWindow?: number;
+	readonly maxModeContextWindow?: number;
 	readonly maxTokens?: number;
 	readonly supportsReasoning?: boolean;
 	readonly supportsThinking?: boolean;
+	readonly isDefaultVariant?: boolean;
+	readonly supportsImages?: boolean;
+	readonly metadataProvenance?: CursorMetadataProvenance;
+	readonly routing: CursorModelRouting;
 }
 
 interface CursorVariantGroup {
@@ -58,19 +99,8 @@ interface CursorVariantGroup {
 	readonly variants: readonly CursorVariant[];
 }
 
-const CURSOR_FALLBACK_RAW_MODELS = rawFallbackModels satisfies readonly CursorUsableModel[];
-const PARSEABLE_EFFORTS: readonly Exclude<CursorEffort, "default">[] = ["none", "low", "medium", "high", "xhigh", "max"];
-const EFFORT_ORDER: readonly CursorEffort[] = ["none", "low", "default", "medium", "high", "xhigh", "max"];
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
-const THINKING_LEVEL_EFFORT_PREFERENCES: Record<ThinkingLevel, readonly CursorEffort[]> = {
-	minimal: ["none", "low", "default"],
-	low: ["low", "none", "default"],
-	medium: ["medium", "default", "low"],
-	high: ["high", "medium", "default"],
-	xhigh: ["max", "xhigh"],
-	max: ["max"],
-};
-
+const CURSOR_FALLBACK_RAW_MODELS = rawFallbackModels satisfies readonly { readonly id: string; readonly name?: string }[];
+const PARSEABLE_EFFORTS: readonly Exclude<CursorEffort, "default">[] = ["none", "minimal", "low", "medium", "high", "xhigh", "extra-high", "max"];
 const ESTIMATED_CONTEXT_WINDOW = 200_000;
 const ESTIMATED_MAX_TOKENS = 64_000;
 
@@ -78,62 +108,65 @@ export function createEstimatedCursorCatalog(now = Date.now()): CursorModelCatal
 	return {
 		source: "estimated",
 		fetchedAt: now,
-		note: "static fallback; Cursor private API metadata and limits are estimated; token costs are reported as zero for subscription usage",
+		note: "static compatibility fallback; IDs are a bundled snapshot, capabilities are conservative, and 200k/64k are operational budgets rather than asserted Cursor limits",
 		models: CURSOR_FALLBACK_RAW_MODELS.map((model) => ({
 			...model,
-			supportsReasoning: supportsReasoningModelId(model.id),
-			...(model.id.endsWith("-thinking") || model.id.includes("-thinking-") ? { supportsThinking: true } : {}),
+			metadataProvenance: "static-fallback" as const,
 		})),
 	};
 }
 
 export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): CursorProviderModelDefinition[] {
-	const groups = groupCursorModels(catalog.models);
-	const familyReferenceVariants = cursorReferenceVariantsByBaseId(groups);
+	const expandedModels = expandParameterizedModels(catalog.models);
+	const groupedModels = catalog.source === "estimated" ? annotateCompatibilityEffortSets(expandedModels) : expandedModels;
+	const groups = groupCursorModels(groupedModels);
 	return groups.map((group) => {
 		const effortVariants = collectEffortVariants(group.variants, group.primaryId);
-		const supportsEffort = group.variants.some((variant) => Boolean(variant.effort)) || effortVariants.size >= 2;
-		const supportsReasoning = supportsReasoningModelId(group.primaryId);
-		const name = catalog.source === "estimated" ? `${group.displayName} (estimated)` : group.displayName;
-		// Cursor's private API omits token limits, so when neither a live nor a
-		// static explicit limit is present, derive the window/output from the
-		// bundled pi-ai model catalog before falling back to a conservative
-		// estimate. This never changes which models are registered. One-million
-		// labels are tracked across fast/thinking sibling groups for the same
-		// family so Cursor's mode suffixes do not hide the advertised long window.
-		const referenceLimits = resolveCursorModelReferenceLimits(cursorModelReferenceCandidates(group, familyReferenceVariants.get(group.baseId) ?? []));
+		const supportsReasoning = catalog.source === "live" && (effortVariants.size > 0 || group.variants.some((variant) => variant.supportsReasoning === true || variant.supportsThinking === true || variant.thinking));
+		const limitVariant = selectLimitVariant(group);
+		const explicitContext = positiveIntOrUndefined(limitVariant?.contextWindow);
+		const explicitMaxContext = positiveIntOrUndefined(limitVariant?.maxModeContextWindow);
+		const explicitOutput = positiveIntOrUndefined(limitVariant?.maxTokens);
+		const contextWindow = positiveIntLimit(explicitContext, ESTIMATED_CONTEXT_WINDOW);
+		const maxTokens = positiveIntLimit(explicitOutput, ESTIMATED_MAX_TOKENS);
+		const thinkingLevelMap = supportsReasoning && effortVariants.size > 0
+			? buildCursorThinkingLevelMap(group, effortVariants)
+			: supportsReasoning ? unsupportedCursorThinkingLevelMap() : undefined;
+		const capabilities = capabilityProvenance(group.variants, catalog.source);
+		const contextProvenance = limitFieldProvenance(limitVariant, explicitContext, "context");
+		const outputProvenance = limitFieldProvenance(limitVariant, explicitOutput, "output");
 		return {
 			id: group.primaryId,
-			name,
+			name: catalog.source === "estimated" ? `${group.displayName} (estimated fallback)` : group.displayName,
 			api: CURSOR_API,
 			baseUrl: CURSOR_API_BASE_URL,
 			reasoning: supportsReasoning,
-			thinkingLevelMap: supportsEffort ? buildCursorThinkingLevelMap(group, effortVariants) : undefined,
-			input: cursorModelInput(group.primaryId),
+			thinkingLevelMap,
+			input: group.variants.some((variant) => variant.supportsImages === true) ? ["text", "image"] : ["text"],
 			cost: subscriptionCost(),
-			contextWindow: positiveIntLimit(chooseLargestNumber(group.variants.map((variant) => variant.contextWindow)) ?? referenceLimits.contextWindow, ESTIMATED_CONTEXT_WINDOW),
-			maxTokens: positiveIntLimit(chooseLargestNumber(group.variants.map((variant) => variant.maxTokens)) ?? referenceLimits.maxTokens, ESTIMATED_MAX_TOKENS),
+			contextWindow,
+			...(explicitMaxContext && explicitMaxContext !== contextWindow ? { contextWindowOptions: [contextWindow, explicitMaxContext] } : {}),
+			maxTokens,
+			metadataProvenance: {
+				catalog: catalog.source,
+				capabilities,
+				contextWindow: contextProvenance,
+				maxTokens: outputProvenance,
+			},
+			compat: {
+				cursorRouting: buildRoutingMap(group, thinkingLevelMap),
+				cursorMetadataProvenance: {
+					catalog: catalog.source,
+					capabilities,
+					contextWindow: contextProvenance,
+					maxTokens: outputProvenance,
+				},
+			},
 		};
 	});
 }
 
-function cursorModelReferenceCandidates(group: CursorVariantGroup, familyVariants: readonly CursorVariant[]): CursorModelReferenceCandidate[] {
-	return [
-		{ id: group.primaryId, displayName: group.displayName },
-		...group.variants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
-		...familyVariants.map((variant) => ({ id: variant.id, displayName: variant.displayName })),
-	];
-}
 
-function cursorReferenceVariantsByBaseId(groups: readonly CursorVariantGroup[]): ReadonlyMap<string, readonly CursorVariant[]> {
-	const variantsByBaseId = new Map<string, CursorVariant[]>();
-	for (const group of groups) {
-		const variants = variantsByBaseId.get(group.baseId) ?? [];
-		variants.push(...group.variants);
-		variantsByBaseId.set(group.baseId, variants);
-	}
-	return variantsByBaseId;
-}
 
 function positiveIntLimit(value: number | undefined, fallback: number): number {
 	// Provider registration rejects non-positive/non-integer windows and would
@@ -148,37 +181,13 @@ export function resolveCursorModelVariant(
 	thinkingLevel: ThinkingLevel | undefined,
 ): string {
 	if (!thinkingLevelMap) return baseModelId;
-	// With no explicit thinking level, fall back to the `off` default variant.
-	// Effort-only Cursor models have no real base id (Cursor lists only
-	// `gpt-5.5-medium`, never a bare `gpt-5.5`), so sending the synthesized base
-	// id makes Cursor reject the run with `not_found`; the `off` entry carries a
-	// concrete variant id to send instead.
-	const mapped = thinkingLevel ? thinkingLevelMap[thinkingLevel] : thinkingLevelMap.off;
-	if (mapped === null) {
-		const fallbackLevel = nearestSupportedThinkingLevel(thinkingLevelMap, thinkingLevel);
-		return fallbackLevel ? resolveCursorModelVariant(baseModelId, thinkingLevelMap, fallbackLevel) : baseModelId;
+	if (!thinkingLevel) {
+		const off = thinkingLevelMap.off;
+		return typeof off === "string" && off !== "default" ? off : baseModelId;
 	}
-	if (mapped === undefined || mapped === "default") return baseModelId;
-	if (isCursorEffort(mapped)) return replaceEffortBeforeCursorSuffix(baseModelId, mapped);
-	return mapped;
-}
-
-function nearestSupportedThinkingLevel(
-	thinkingLevelMap: ThinkingLevelMap,
-	thinkingLevel: ThinkingLevel | undefined,
-): ThinkingLevel | undefined {
-	if (!thinkingLevel) return undefined;
-	const requestedIndex = THINKING_LEVELS.indexOf(thinkingLevel);
-	if (requestedIndex === -1) return undefined;
-	for (let index = requestedIndex - 1; index >= 0; index--) {
-		const level = THINKING_LEVELS[index];
-		if (level && thinkingLevelMap[level] !== null && thinkingLevelMap[level] !== undefined) return level;
-	}
-	for (let index = requestedIndex + 1; index < THINKING_LEVELS.length; index++) {
-		const level = THINKING_LEVELS[index];
-		if (level && thinkingLevelMap[level] !== null && thinkingLevelMap[level] !== undefined) return level;
-	}
-	return undefined;
+	const mapped = thinkingLevelMap[thinkingLevel];
+	if (typeof mapped === "string" && mapped !== "default") return mapped;
+	throw new Error(`Cursor model ${baseModelId} does not support the requested ${thinkingLevel} reasoning level.`);
 }
 
 export function insertEffortBeforeCursorSuffix(modelId: string, effort: CursorEffort): string {
@@ -197,11 +206,6 @@ export function insertEffortBeforeCursorSuffix(modelId: string, effort: CursorEf
 	return `${base}-${effort}${thinking ? "-thinking" : ""}${fast ? "-fast" : ""}`;
 }
 
-function replaceEffortBeforeCursorSuffix(modelId: string, effort: CursorEffort): string {
-	if (effort === "default") return modelId;
-	const variant = parseCursorVariant({ id: modelId });
-	return `${variant.baseId}-${effort}${variant.thinking ? "-thinking" : ""}${variant.fast ? "-fast" : ""}`;
-}
 
 export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 	let base = model.id;
@@ -215,10 +219,8 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 		thinking = true;
 		base = base.slice(0, -"-thinking".length);
 	}
-	const effort = PARSEABLE_EFFORTS.find((candidate) => base.endsWith(`-${candidate}`));
-	if (effort) {
-		base = base.slice(0, -effort.length - 1);
-	}
+	const effort = model.effort;
+	if (effort) base = base.slice(0, -effort.length - 1);
 	return {
 		id: model.id,
 		baseId: base,
@@ -227,9 +229,18 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 		fast,
 		thinking,
 		contextWindow: model.contextWindow,
+		maxModeContextWindow: model.maxModeContextWindow,
 		maxTokens: model.maxTokens,
 		supportsReasoning: model.supportsReasoning,
 		supportsThinking: model.supportsThinking,
+		supportsImages: model.supportsImages,
+		metadataProvenance: model.metadataProvenance,
+		isDefaultVariant: model.isDefaultVariant,
+		routing: {
+			modelId: model.requestedModelId ?? model.id,
+			...(model.requestedMaxMode !== undefined ? { maxMode: model.requestedMaxMode } : {}),
+			...(model.parameters ? { parameters: model.parameters } : {}),
+		},
 	};
 }
 
@@ -260,74 +271,166 @@ function cursorVariantGroupKey(variant: CursorVariant): string {
 	return `${variant.baseId}|fast=${variant.fast ? "1" : "0"}|thinking=${variant.thinking ? "1" : "0"}`;
 }
 
-function collectEffortVariants(variants: readonly CursorVariant[], primaryId: string): ReadonlyMap<CursorEffort, string> {
+function collectEffortVariants(variants: readonly CursorVariant[], _primaryId: string): ReadonlyMap<CursorEffort, string> {
 	const byEffort = new Map<CursorEffort, string>();
-	for (const variant of variants) {
-		const effort = variant.effort ?? (variant.id === primaryId || variant.supportsReasoning || variant.supportsThinking || variant.thinking ? "default" : undefined);
-		if (effort && !byEffort.has(effort)) byEffort.set(effort, variant.id);
-	}
+	for (const variant of variants) if (variant.effort && !byEffort.has(variant.effort)) byEffort.set(variant.effort, variant.id);
 	return byEffort;
 }
 
 function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: ReadonlyMap<CursorEffort, string>): ThinkingLevelMap {
-	const map = buildThinkingLevelMap(effortVariants, group.primaryId);
-	// When the group has no real base id (every Cursor variant carries an effort
-	// suffix), the synthesized primary id is not a sendable Cursor model. Record
-	// an `off` default so a no-thinking request maps to a concrete variant instead
-	// of the base id, which Cursor would reject with `not_found`. Prefer the
-	// minimal/least-effort variant because `off` means minimum reasoning.
-	const hasRealBaseId = group.variants.some((variant) => variant.id === group.primaryId);
-	if (!hasRealBaseId) {
-		const defaultVariant = map.minimal ?? map.low ?? map.medium ?? map.high ?? map.xhigh ?? map.max ?? null;
-		if (defaultVariant) map.off = defaultVariant;
-	}
+	const map: ThinkingLevelMap = {
+		off: null,
+		minimal: effortVariants.get("minimal") ?? null,
+		low: effortVariants.get("low") ?? null,
+		medium: effortVariants.get("medium") ?? null,
+		high: effortVariants.get("high") ?? null,
+		xhigh: effortVariants.get("xhigh") ?? effortVariants.get("extra-high") ?? null,
+		max: effortVariants.get("max") ?? null,
+	};
+	const concreteDefault = group.variants.find((variant) => variant.isDefaultVariant);
+	if (concreteDefault) map.off = concreteDefault.id;
 	return map;
 }
 
-function buildThinkingLevelMap(effortVariants: ReadonlyMap<CursorEffort, string>, primaryId: string): ThinkingLevelMap {
-	return {
-		minimal: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.minimal, primaryId),
-		low: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.low, primaryId),
-		medium: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.medium, primaryId),
-		high: chooseEffortVariant(effortVariants, THINKING_LEVEL_EFFORT_PREFERENCES.high, primaryId),
-		// `xhigh` can use Cursor's strongest advertised xhigh/max variant, while
-		// `max` is distinct and must not be synthesized from an xhigh-only group.
-		xhigh: chooseCursorXhighVariant(effortVariants),
-		max: effortVariants.get("max") ?? null,
+function unsupportedCursorThinkingLevelMap(): ThinkingLevelMap {
+	return { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null };
+}
+
+function buildRoutingMap(group: CursorVariantGroup, thinkingLevelMap: ThinkingLevelMap | undefined): Readonly<Record<string, CursorModelRouting>> {
+	const routing: Record<string, CursorModelRouting> = {};
+	for (const variant of group.variants) routing[variant.id] = variant.routing;
+	const off = thinkingLevelMap?.off;
+	if (typeof off === "string" && routing[off]) routing[group.primaryId] = routing[off];
+	else routing[group.primaryId] ??= { modelId: group.primaryId };
+	return routing;
+}
+
+function capabilityProvenance(variants: readonly CursorVariant[], source: CursorCatalogSource): string {
+	if (variants.some((variant) => variant.metadataProvenance === "available-models-reverse-engineered")) return "Cursor AvailableModels (reverse-engineered, account snapshot)";
+	if (variants.some((variant) => variant.metadataProvenance === "legacy-cache")) return "legacy cached live snapshot; original capability provenance unavailable";
+	return source === "live" ? "Cursor GetUsableModels account snapshot" : "bundled static compatibility snapshot";
+}
+
+function limitFieldProvenance(variant: CursorVariant | undefined, value: number | undefined, field: "context" | "output"): string {
+	if (value === undefined) return "conservative operational fallback; exact limit unknown";
+	if (variant?.metadataProvenance === "available-models-reverse-engineered") {
+		return field === "context" ? "Cursor AvailableModels model/mode field" : "Cursor AvailableModels model/mode output field";
+	}
+	if (variant?.metadataProvenance === "get-usable-models") return "Cursor GetUsableModels account snapshot field";
+	if (variant?.metadataProvenance === "legacy-cache") return "legacy cached live snapshot field; original provenance unavailable";
+	if (variant?.metadataProvenance === "static-fallback") return "bundled static compatibility value; exact Cursor limit not asserted";
+	return "live catalog field; endpoint provenance unavailable";
+}
+
+function annotateCompatibilityEffortSets(models: readonly CursorUsableModel[]): CursorUsableModel[] {
+	const candidates = models.map((model) => ({ model, parsed: compatibilityEffortCandidate(model.id) }));
+	const effortsByGroup = new Map<string, Set<CursorEffort>>();
+	for (const { parsed } of candidates) {
+		if (!parsed) continue;
+		const efforts = effortsByGroup.get(parsed.group) ?? new Set<CursorEffort>();
+		efforts.add(parsed.effort);
+		effortsByGroup.set(parsed.group, efforts);
+	}
+	return candidates.map(({ model, parsed }) => parsed && (effortsByGroup.get(parsed.group)?.size ?? 0) >= 2
+		? { ...model, effort: parsed.effort }
+		: model);
+}
+
+function compatibilityEffortCandidate(id: string): { readonly group: string; readonly effort: CursorEffort } | undefined {
+	let base = id;
+	let mode = "";
+	for (const suffix of ["-fast", "-thinking"] as const) {
+		if (!base.endsWith(suffix)) continue;
+		base = base.slice(0, -suffix.length);
+		mode = `${suffix}${mode}`;
+	}
+	const effort = PARSEABLE_EFFORTS.find((candidate) => base.endsWith(`-${candidate}`));
+	if (!effort) return undefined;
+	return { group: `${base.slice(0, -effort.length - 1)}${mode}`, effort };
+}
+
+function expandParameterizedModels(models: readonly CursorUsableModel[]): CursorUsableModel[] {
+	return models.flatMap((model) => {
+		if (!model.variants || model.variants.length === 0) {
+			if (model.supportsMaxMode === true) return expandModelLevelMaxModes(model);
+			return [model];
+		}
+		const rows = model.variants.flatMap((variant) => parameterizedVariantRow(model, variant));
+		return rows.length > 0 ? rows : [{ ...model, supportsReasoning: false }];
+	});
+}
+
+function expandModelLevelMaxModes(model: CursorUsableModel): CursorUsableModel[] {
+	const maxRow: CursorUsableModel = {
+		...model,
+		id: `${model.id}-max-mode`,
+		contextWindow: model.maxModeContextWindow ?? model.contextWindow,
+		maxModeContextWindow: undefined,
+		requestedModelId: model.id,
+		requestedMaxMode: true,
 	};
+	if (model.supportsNonMaxMode === false) return [maxRow];
+	return [{
+		...model,
+		maxModeContextWindow: undefined,
+		requestedModelId: model.id,
+		requestedMaxMode: false,
+	}, maxRow];
 }
 
-function chooseCursorXhighVariant(effortVariants: ReadonlyMap<CursorEffort, string>): string | null {
-	return effortVariants.get("max") ?? effortVariants.get("xhigh") ?? null;
+function parameterizedVariantRow(model: CursorUsableModel, variant: CursorParameterizedVariant): CursorUsableModel[] {
+	const parameters = variant.parameters.filter((parameter) => parameter.id.length > 0 && parameter.value.length > 0);
+	const effortParameter = parameters.find((parameter) => parameter.id === "reasoning" || parameter.id === "effort");
+	const effort = effortParameter ? cursorEffortFromValue(effortParameter.value) : undefined;
+	// Unknown reasoning vocabularies remain part of a separately routed preset,
+	// but are not mapped onto any Atomic reasoning level.
+	const fast = parameters.some((parameter) => parameter.id === "fast" && parameter.value === "true");
+	const thinking = parameters.some((parameter) => parameter.id === "thinking" && parameter.value === "true");
+	const semanticParameters = parameters.filter((parameter) => {
+		if (parameter.id === "fast" || parameter.id === "thinking") return false;
+		return parameter !== effortParameter || effort === undefined;
+	});
+	const semanticBase = `${model.id}${semanticParameters.map(parameterIdPart).join("")}${variant.isMaxMode ? "-max-mode" : ""}`;
+	const id = `${semanticBase}${effort ? `-${effort}` : ""}${thinking ? "-thinking" : ""}${fast ? "-fast" : ""}`;
+	return [{
+		...model,
+		id,
+		displayName: variant.displayNameOutsidePicker ?? variant.displayName ?? model.displayName,
+		contextWindow: variant.isMaxMode ? model.maxModeContextWindow ?? model.contextWindow : model.contextWindow,
+		maxModeContextWindow: undefined,
+		supportsReasoning: Boolean(effortParameter || thinking),
+		supportsThinking: thinking,
+		effort,
+		requestedModelId: model.id,
+		isDefaultVariant: variant.isMaxMode ? variant.isDefaultMaxConfig === true : variant.isDefaultNonMaxConfig === true,
+		requestedMaxMode: variant.isMaxMode,
+		parameters,
+	}];
 }
 
-function chooseEffortVariant(effortVariants: ReadonlyMap<CursorEffort, string>, preferences: readonly CursorEffort[], _primaryId: string): string | null {
-	for (const effort of preferences) {
-		const variantId = effortVariants.get(effort);
-		if (variantId) return variantId;
-	}
-	for (const effort of EFFORT_ORDER) {
-		const variantId = effortVariants.get(effort);
-		if (variantId) return variantId;
-	}
-	return null;
+function cursorEffortFromValue(value: string): CursorEffort | undefined {
+	if (value === "extra-high") return "extra-high";
+	return (PARSEABLE_EFFORTS as readonly string[]).includes(value) ? value as CursorEffort : undefined;
 }
 
-function isCursorEffort(value: string): value is CursorEffort {
-	return value === "default" || (PARSEABLE_EFFORTS as readonly string[]).includes(value);
+function parameterIdPart(parameter: CursorModelParameter): string {
+	const encode = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "") || "empty";
+	return `-${encode(parameter.id)}-${encode(parameter.value)}`;
+}
+function selectLimitVariant(group: CursorVariantGroup): CursorVariant | undefined {
+	return group.variants.find((variant) => variant.isDefaultVariant)
+		?? group.variants.find((variant) => variant.id === group.primaryId)
+		?? group.variants[0];
 }
 
-function chooseLargestNumber(values: readonly (number | undefined)[]): number | undefined {
-	// Cursor's private API omits token limits; treat any non-positive value as
-	// bogus so a stray 0/negative never becomes an invalid context window.
-	const positiveValues = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-	return positiveValues.length > 0 ? Math.max(...positiveValues) : undefined;
-}
 
 function choosePrimaryId(variants: readonly CursorVariant[], baseId: string): string {
 	if (variants.some((variant) => variant.effort)) {
-		const representative = variants[0];
-		return `${baseId}${representative?.thinking ? "-thinking" : ""}${representative?.fast ? "-fast" : ""}`;
+		const explicitDefault = variants.find((variant) => variant.isDefaultVariant);
+		if (explicitDefault) {
+			return `${baseId}${explicitDefault.thinking ? "-thinking" : ""}${explicitDefault.fast ? "-fast" : ""}`;
+		}
+		return variants[0]?.id ?? baseId;
 	}
 	return variants.find((variant) => variant.id === baseId)?.id ?? variants[0]?.id ?? baseId;
 }
@@ -340,21 +443,6 @@ function chooseDisplayName(variants: readonly CursorVariant[], baseId: string, p
 		?? titleCaseModelId(baseId);
 }
 
-function cursorModelInput(id: string): CursorModelInput {
-	return supportsImageInputModelId(id) ? ["text", "image"] : ["text"];
-}
-
-function supportsImageInputModelId(id: string): boolean {
-	const variant = parseCursorVariant({ id });
-	return variant.baseId === "grok-4.3" || /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
-}
-
-function supportsReasoningModelId(id: string): boolean {
-	const variant = parseCursorVariant({ id });
-	if (variant.effort || variant.thinking) return true;
-	if (variant.baseId === "default") return true;
-	return /^(claude|composer|gemini|gpt|kimi)(-|$)/iu.test(variant.baseId);
-}
 
 function titleCaseModelId(id: string): string {
 	return id

@@ -1,5 +1,6 @@
 import type { Context, Model, Api, ThinkingLevel } from "@earendil-works/pi-ai/compat";
 import type { CursorUsableModel } from "./model-mapper.js";
+import type { CursorAvailableModel } from "./proto/cursor-available-models-codec.js";
 
 export interface CursorTransportLifecycleSnapshot {
 	readonly openStreams: number;
@@ -13,6 +14,9 @@ export interface CursorRunRequest {
 	readonly conversationId?: string;
 	readonly model: Model<Api>;
 	readonly resolvedModelId: string;
+	readonly requestedModelId?: string;
+	readonly requestedMaxMode?: boolean;
+	readonly modelParameters?: readonly { readonly id: string; readonly value: string }[];
 	readonly thinkingLevel?: ThinkingLevel;
 	readonly context: Context;
 	readonly signal?: AbortSignal;
@@ -120,6 +124,9 @@ export interface CursorHttp2Client {
 }
 
 export interface CursorProtocolCodec {
+	/** Optional for injected legacy codecs; production prefers this richer RPC. */
+	encodeAvailableModelsRequest?(): Uint8Array;
+	decodeAvailableModelsResponse?(data: Uint8Array): readonly CursorAvailableModel[];
 	encodeGetUsableModelsRequest(): Uint8Array;
 	decodeGetUsableModelsResponse(data: Uint8Array): readonly CursorUsableModel[];
 	encodeRunRequest(request: CursorRunRequest): Uint8Array;
