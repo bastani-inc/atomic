@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.6-alpha.1] - 2026-07-11
+
 ### Changed
 
 - Restored workflow-first model routing for non-trivial, structured, and verifiable work while retaining the newer ability to author task-specific TypeScript workflows inline. Prompt guidance now explicitly combines the documented classify/branch, fan-out/synthesis, adversarial verification, generate/filter, tournament, and bounded loop patterns instead of forcing every workflow-fit task into an installed workflow, direct shape, or builtin.

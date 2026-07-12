@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.6-alpha.1] - 2026-07-11
+
 ### Changed
 
 - Restored workflow-first Atomic guidance for non-trivial work with verifiable objectives and synchronized help/docs around rich inline TypeScript workflow authoring, including dynamic branching, fan-out, verification, candidate-selection, human-gate, child-workflow, and bounded-loop patterns.
