@@ -37,7 +37,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let reconnectTimer: NodeJS.Timeout | null = null;
   let reconnectPromise: Promise<IntercomClient> | null = null;
   let reconnectPromiseGeneration: number | null = null;
-  let startupConnectTimer: NodeJS.Timeout | null = null;
   let reconnectAttempt = 0;
   let shuttingDown = false;
   let disposed = true;
@@ -98,10 +97,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   function clearReconnectTimer(): void {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = null;
-  }
-  function clearStartupConnectTimer(): void {
-    if (startupConnectTimer) clearTimeout(startupConnectTimer);
-    startupConnectTimer = null;
   }
   function clearInboundFlushTimer(): void {
     if (inboundFlushTimer) clearTimeout(inboundFlushTimer);
@@ -425,17 +420,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     incrementRuntimeGeneration: () => { runtimeGeneration += 1; foregroundDetachHandoff.reset(); return runtimeGeneration; },
     resetReconnectAttempt: () => { reconnectAttempt = 0; },
     clearReconnectTimer,
-    clearStartupConnectTimer,
     setRuntimeContext: (value) => { runtimeContext = value; },
     setCurrentSessionId: (value) => { currentSessionId = value; },
     setCurrentModel: (value) => { currentModel = value; },
     setSessionStartedAt: (value) => { sessionStartedAt = value; },
     setAgentRunning: (value) => { agentRunning = value; },
     activeTools,
-    setStartupConnectTimer: (value) => { startupConnectTimer = value; },
     getLiveContext,
-    ensureConnected,
-    scheduleReconnect,
     rejectReplyWaiter,
     replyTracker,
     pendingIdleMessages,

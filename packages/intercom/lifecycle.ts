@@ -14,17 +14,13 @@ interface LifecycleDeps {
   incrementRuntimeGeneration(): number;
   resetReconnectAttempt(): void;
   clearReconnectTimer(): void;
-  clearStartupConnectTimer(): void;
   setRuntimeContext(ctx: ExtensionContext | null): void;
   setCurrentSessionId(id: string | null): void;
   setCurrentModel(model: string): void;
   setSessionStartedAt(value: number | null): void;
   setAgentRunning(value: boolean): void;
   activeTools: Map<string, string>;
-  setStartupConnectTimer(timer: NodeJS.Timeout | null): void;
   getLiveContext(ctx?: ExtensionContext | null, generation?: number): ExtensionContext | null;
-  ensureConnected(reason: "startup"): Promise<IntercomClient>;
-  scheduleReconnect(): void;
   rejectReplyWaiter(error: Error): void;
   replyTracker: ReplyTracker;
   pendingIdleMessages: InboundMessageEntry[];
@@ -44,7 +40,6 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setShuttingDown(true);
     deps.setDisposed(true);
     deps.incrementRuntimeGeneration();
-    deps.clearStartupConnectTimer();
     deps.clearReconnectTimer();
     deps.rejectReplyWaiter(new Error(reason));
     deps.replyTracker.reset();
@@ -74,25 +69,15 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setShuttingDown(false);
     deps.setDisposed(false);
     deps.setRuntimeStarted(true);
-    const startupGeneration = deps.incrementRuntimeGeneration();
+    deps.incrementRuntimeGeneration();
     deps.resetReconnectAttempt();
     deps.clearReconnectTimer();
-    deps.clearStartupConnectTimer();
     deps.setRuntimeContext(ctx);
     deps.setCurrentSessionId(ctx.sessionManager.getSessionId());
     deps.setCurrentModel(ctx.model?.id ?? "unknown");
     deps.setSessionStartedAt(Date.now());
     deps.setAgentRunning(false);
     deps.activeTools.clear();
-    deps.setStartupConnectTimer(setTimeout(() => {
-      deps.setStartupConnectTimer(null);
-      if (!deps.getLiveContext(ctx, startupGeneration)) return;
-      void deps.ensureConnected("startup").catch(() => {
-        if (!deps.getLiveContext(ctx, startupGeneration)) return;
-        deps.setClient(null);
-        deps.scheduleReconnect();
-      });
-    }, 0));
   });
 
   pi.on("session_shutdown", async () => {
