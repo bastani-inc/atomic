@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the native transport package; no native transport changes were made after 0.9.6.
+
 ## [0.9.6] - 2026-07-12
 
 ### Changed

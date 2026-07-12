@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.7-alpha.1] - 2026-07-12
+
 ### Added
 
 - Added a shared convergence contract to the bundled `goal` and `ralph` workflows: implementation starts from an observable acceptance/contract matrix derived from the literal objective/acceptance criteria (with explicit state/transition/invariant modeling for stateful work), reviewers independently derive adversarial checks from the literal contract before relying on worker receipts or worker-authored tests, reproduced findings require durable regression evidence before they count as resolved, and each review round persists a deduplicated cross-reviewer `consolidated_findings` batch that the next worker turn repairs together instead of one finding per turn. Literal-contract scope controls are preserved throughout, so nothing beyond the user's requirements is forced.

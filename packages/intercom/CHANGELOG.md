@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.7-alpha.1] - 2026-07-12
+
 ### Fixed
 
 - Made blocking reply waits race-safe under concurrent tool calls. Waiter admission is now an atomic synchronous check-and-reserve shared by `intercom` `ask` and `contact_supervisor`: when several blocking requests race (parallel tool calls in one turn, same-tool or cross-tool), exactly one wins the reservation and every other call returns a normal structured "Already waiting for a reply" tool error. Previously the loser received an already-rejected promise that could sit unhandled while the winner's question was still being sent, crashing the whole agent process with an unhandled `Error: Already waiting for a reply` rejection.

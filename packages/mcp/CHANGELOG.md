@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7-alpha.1] - 2026-07-12
+
+### Changed
+
+- Published a synchronized Atomic 0.9.7-alpha.1 prerelease for the MCP extension; no functional MCP changes were made after 0.9.6.
+
 ## [0.9.6] - 2026-07-12
 
 ### Changed

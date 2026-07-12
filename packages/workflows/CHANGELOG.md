@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.7-alpha.1] - 2026-07-12
+
 ### Added
 
 - Added a shared convergence contract for the builtin `goal` and `ralph` workflows (`builtin/shared-prompts.ts` + deterministic gates in `builtin/review-convergence.ts`): workers/orchestrators must derive an observable acceptance/contract matrix from the literal objective/acceptance criteria before implementing (one row per clause mapped to the concrete check that proves it) and must model states, transitions, and invariants explicitly for stateful work; reviewers must independently derive adversarial checks (boundary/edge/negative and state/transition/invariant probes) from the literal contract before relying on the worker receipt, implementation notes, or worker-authored tests; reproduced findings require durable regression evidence (a persisted test or exact re-runnable check) before they count as resolved; and the evidence-closure policy is stated to both roles so approval semantics are visible in-prompt. All contracts inherit the literal-contract scope controls, so no behavior beyond the objective/acceptance criteria is required.
