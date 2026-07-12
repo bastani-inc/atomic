@@ -113,7 +113,7 @@ export function createTrackedStageCaller(input: {
     if (trackStageLifecycle) {
       const now = Date.now();
       runtime.stageSnapshot.status = "running";
-      runtime.stageSnapshot.startedAt = rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
+      runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
       const hasNoExplicitModelConfig = input.options?.model === undefined && input.options?.fallbackModels === undefined;
       const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
       if (callOptions.eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate({

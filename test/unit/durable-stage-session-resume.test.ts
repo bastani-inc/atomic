@@ -242,7 +242,7 @@ describe("durable stage session resume", () => {
     assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), { sessionFile: "/tmp/first.jsonl", startedAt: 1000, durationMs: 1000 });
   });
 
-  test("file process-boundary completion preserves total duration and replay identity", async () => {
+  test("file process-boundary completion preserves duration across concurrent tracked calls and replay", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atomic-stage-duration-"));
     try {
       const runId = "wf-stage-duration-resume";
@@ -260,6 +260,8 @@ describe("durable stage session resume", () => {
 
       let clock = 5000;
       let liveStageCalls = 0;
+      let releaseCalls: () => void = () => {};
+      const bothCallsStarted = new Promise<void>((resolve) => { releaseCalls = resolve; });
       spyOn(Date, "now").mockImplementation(() => clock);
       let lifecycleDurationMs: number | undefined;
       const store = createStore();
@@ -268,7 +270,14 @@ describe("durable stage session resume", () => {
         description: "",
         inputs: {},
         outputs: { result: Type.String() },
-        run: async (ctx) => ({ result: await ctx.stage("analyze").complete("done") }),
+        run: async (ctx) => {
+          const stage = ctx.stage("analyze");
+          await Promise.allSettled([
+            stage.complete("first"),
+            stage.complete("second"),
+          ]);
+          return { result: "done" };
+        },
       });
       const resumedBackend = new FileDurableBackend(stateFile);
       const first = await run(def, {}, {
@@ -277,7 +286,13 @@ describe("durable stage session resume", () => {
         durableBackend: resumedBackend,
         adapters: { complete: { complete: async (text) => {
           liveStageCalls += 1;
-          clock = 5300;
+          if (liveStageCalls === 1) {
+            clock = 5100;
+            await bothCallsStarted;
+          } else {
+            clock = 5300;
+            releaseCalls();
+          }
           return text;
         } } },
         onStageEnd: (_stageRunId, snapshot) => { lifecycleDurationMs = snapshot.durationMs; },
@@ -288,7 +303,7 @@ describe("durable stage session resume", () => {
         checkpoint.kind === "stage" && checkpoint.replayKey === replayKey && checkpoint.output !== undefined,
       );
       assert.equal(first.status, "completed");
-      assert.equal(liveStageCalls, 1);
+      assert.equal(liveStageCalls, 2);
       assert.equal(storedStage?.durationMs, 1000);
       assert.equal(lifecycleDurationMs, 1000);
       assert.equal(durableStage?.kind === "stage" ? durableStage.durationMs : undefined, 1000);
@@ -303,7 +318,7 @@ describe("durable stage session resume", () => {
         } } },
       });
       assert.equal(replay.status, "completed");
-      assert.equal(liveStageCalls, 1);
+      assert.equal(liveStageCalls, 2);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
