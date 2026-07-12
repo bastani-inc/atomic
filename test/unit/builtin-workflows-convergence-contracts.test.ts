@@ -53,7 +53,7 @@ const WORKER_CONTRACT_PATTERNS = [
     /<regression_evidence>/,
     /durable regression evidence/i,
     /<evidence_closure>/,
-    /Approval is evidence closure, not reviewer agreement alone/i,
+    /stop_review_loop boolean is the single authoritative convergence signal/i,
 ] as const;
 
 const REVIEWER_CONTRACT_PATTERNS = [
@@ -62,7 +62,7 @@ const REVIEWER_CONTRACT_PATTERNS = [
     /never substitute for them/i,
     /<regression_evidence>/,
     /<evidence_closure>/,
-    /required_by_objective stays blocking at any priority \(P3 included\)/i,
+    /required_by_objective finding at any priority \(P3 included/i,
 ] as const;
 
 describe("goal convergence contracts", () => {

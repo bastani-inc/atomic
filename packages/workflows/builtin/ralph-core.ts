@@ -233,9 +233,7 @@ export function ralphReviewConvergence(args: {
   readonly diagnostics: readonly string[];
   readonly allowFinalActionRemaining: boolean;
 }): ReviewConvergenceSummary {
-  const approved = reviewDecisionApproved(args.decision, {
-    allowFinalActionRemaining: args.allowFinalActionRemaining,
-  });
+  const approved = reviewDecisionApproved(args.decision);
   const hasFinalActionRemaining = args.allowFinalActionRemaining &&
     finalActionRemaining(args.decision.requirements_traceability);
   return summarizeReviewConvergence({

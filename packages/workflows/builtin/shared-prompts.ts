@@ -85,8 +85,9 @@ export const FINDINGS_CONSOLIDATION_CONTRACT = [
 ].join("\n");
 
 export const EVIDENCE_CLOSURE_POLICY = [
-  "Evidence closure:",
-  "- Approval is evidence closure, not reviewer agreement alone: the loop completes only when the review gate approves and no objective-relevant blocking finding from any reviewer remains unresolved.",
-  "- Severity/priority labels alone never dismiss an objective-relevant finding: a finding classified required_by_objective stays blocking at any priority (P3 included) until evidence shows it is fixed or it is reclassified against the literal contract.",
-  "- The loop is bounded: when the turn budget ends before closure, the run stops with the unresolved findings and remaining work recorded for a human instead of relabeling them away.",
+  "Convergence flag (stop_review_loop):",
+  "- The reviewer's stop_review_loop boolean is the single authoritative convergence signal. The harness gates approval on that flag deterministically and does not recompute approval from findings arrays, priorities, or requirements_traceability statuses — derive the flag carefully because it is trusted as-is.",
+  "- Derive stop_review_loop=false while any objective-relevant blocking work remains: any P0/P1/P2 finding, any required_by_objective finding at any priority (P3 included — severity labels alone never dismiss objective-relevant findings), or any unproven implementation/validation requirement.",
+  "- Derive stop_review_loop=true when independent verification proves the implementation and validation requirements and everything left is non-blocking: consistent_with_objective P3 nice-to-haves, beyond_objective/contradicts_objective observations, an explicitly authorized post-approval final action such as PR/MR/review creation, or the multi-reviewer quorum process itself. Never hold the flag at false for those items — quorum is counted by the harness across reviewers and is not an implementation gap any single reviewer can prove.",
+  "- The loop is bounded: when the turn budget ends before convergence, the run stops with the unresolved findings and remaining work recorded for a human instead of relabeling them away.",
 ].join("\n");

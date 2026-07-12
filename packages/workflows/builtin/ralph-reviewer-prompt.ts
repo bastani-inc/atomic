@@ -153,14 +153,20 @@ export function renderRalphReviewerPrompt(args: {
       [
         "Before the final structured decision, ensure the payload satisfies the review decision schema exactly.",
         "Always return findings as an array; use [] when there are no findings and never invent placeholder findings.",
-        "Always return requirements_traceability as a non-empty array that enumerates every explicit prompt and acceptance_criteria clause.",
-        "When approving, every non-final-action requirements_traceability entry must be proven, overall_correctness must be patch is correct, stop_review_loop must be true, and reviewer_error must be null or omitted.",
-        "When create_pr is enabled and only PR/MR/review creation remains, record that as a final action rather than a blocker; approval should hand off to PR/MR/review creation instead of requesting more implementation work.",
+        "Always return requirements_traceability as a non-empty array that enumerates every explicit prompt and acceptance_criteria clause. Traceability and findings are audit evidence for humans and later stages; the harness gates approval on your stop_review_loop boolean alone, so derive that flag from them carefully.",
+        "When setting stop_review_loop=true, every implementation/validation requirements_traceability entry must be proven, overall_correctness must be patch is correct, and reviewer_error must be null or omitted.",
+        "Clauses that only the workflow process can satisfy — reviewer quorum/approval-count clauses, and (when create_pr is enabled) the post-approval PR/MR/review creation final action — are never implementation gaps: record them as final-action/process items and do not let them hold stop_review_loop at false.",
       ].join("\n"),
     ],
     [
       "decision_rules",
-      ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned findings (P0/P1/P2, plus required_by_objective findings at any priority including P3), requirements_traceability is non-empty and every non-final-action entry is proven, and no objective-relevant implementation or validation remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven non-final-action requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
+      [
+        "stop_review_loop is the single authoritative convergence flag: the harness approves this review exactly when stop_review_loop=true and reviewer_error is null/omitted, without recomputing approval from findings or traceability.",
+        "Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned findings (P0/P1/P2, plus required_by_objective findings at any priority including P3), and no objective-relevant implementation or validation remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract.",
+        "Do not hold stop_review_loop at false for consistent_with_objective P3 nice-to-haves, beyond_objective/contradicts_objective observations, the reviewer-quorum process itself, or an authorized post-approval final action such as PR/MR/review creation.",
+        "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.",
+        "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved.",
+      ].join("\n"),
     ],
   ]);
 }

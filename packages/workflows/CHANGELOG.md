@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed builtin `goal` and `ralph` reviewer approval to be deterministic on the reviewer's self-reported `stop_review_loop` boolean: a reviewer approves exactly when it returns `stop_review_loop=true` with no `reviewer_error`, parse failures still count as non-approval, and Goal's reducer completes on quorum of those booleans without recomputing approval from findings arrays, priorities, or `requirements_traceability` statuses. Recomputing approval from those arrays could deadlock runs whose acceptance criteria referenced the review process itself (for example "three reviewers approve" or "an unmerged PR is created"): no individual reviewer can prove such clauses, so traceability never became fully `proven` even when every reviewer explicitly approved, and the loop burned worker/review turns until `needs_human`. Reviewer prompts now state that the boolean is the single authoritative convergence signal, spell out how to derive it (blocking P0/P1/P2 findings and `required_by_objective` findings at any priority mean `false`; in-scope P3 nice-to-haves, `beyond_objective`/`contradicts_objective` observations, the reviewer-quorum process itself, and the authorized post-approval PR/MR/review final action must never hold it at `false`), and keep findings/traceability as required audit evidence. `findingBlocksClosure`/`isBlockingFinding` still classify findings for prompts and consolidated repair batches.
+
 ## [0.9.7] - 2026-07-12
 
 ### Added

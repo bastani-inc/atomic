@@ -94,96 +94,63 @@ const OPTIONS = {
   nextActionOnComplete: "finish",
 } as const;
 
-describe("goal reducer evidence closure", () => {
-  test("quorum with no blocking findings completes", () => {
+describe("goal reducer boolean convergence", () => {
+  test("quorum of reviewer stop_review_loop booleans completes", () => {
     const outcome = reduceGoalDecision(
       ledger(),
       [review("a", "complete"), review("b", "complete"), review("c", "continue")],
       OPTIONS,
     );
     assert.equal(outcome.status, "complete");
-    assert.match(outcome.decision.reason, /evidence closure/);
+    assert.match(outcome.decision.reason, /Reviewer quorum met: 2\/2/);
+    assert.match(outcome.decision.reason, /stop_review_loop=true/);
   });
 
-  test("a dissenting reviewer's objective-relevant blocking finding vetoes quorum completion", () => {
+  test("a dissenting reviewer's findings do not veto quorum — the boolean is authoritative", () => {
     const outcome = reduceGoalDecision(
       ledger(),
       [
         review("a", "complete"),
         review("b", "complete"),
         review("c", "continue", [reviewFinding()]),
-      ],
-      OPTIONS,
-    );
-    assert.equal(outcome.status, "active");
-    assert.equal(outcome.decision.decision, "continue");
-    assert.match(
-      outcome.decision.reason,
-      /Reviewer quorum met \(2\/2\) without evidence closure: 1 unresolved objective-relevant blocking finding/,
-    );
-    assert.match(outcome.decision.reason, /Unproven contract clause/);
-    assert.match(outcome.decision.reason, /Severity labels alone cannot dismiss/);
-  });
-
-  test("required_by_objective P3 findings still veto — severity labels alone never dismiss them", () => {
-    const outcome = reduceGoalDecision(
-      ledger(),
-      [
-        review("a", "complete"),
-        review("b", "complete"),
-        review("c", "continue", [reviewFinding({ priority: 3 })]),
-      ],
-      OPTIONS,
-    );
-    assert.equal(outcome.status, "active");
-    assert.equal(outcome.decision.decision, "continue");
-  });
-
-  test("beyond_objective and consistent_with_objective P3 findings do not veto quorum", () => {
-    const outcome = reduceGoalDecision(
-      ledger(),
-      [
-        review("a", "complete"),
-        review("b", "complete"),
-        review("c", "continue", [
-          reviewFinding({ objective_alignment: "beyond_objective", priority: 0 }),
-          reviewFinding({
-            title: "[P3] Optional cleanup",
-            objective_alignment: "consistent_with_objective",
-            priority: 3,
-          }),
-        ]),
       ],
       OPTIONS,
     );
     assert.equal(outcome.status, "complete");
+    assert.equal(outcome.decision.decision, "complete");
   });
 
-  test("the veto stays bounded: at max_turns it stops inspectably as needs_human", () => {
+  test("without quorum the run continues with the remaining work recorded", () => {
     const outcome = reduceGoalDecision(
       ledger(),
       [
         review("a", "complete"),
-        review("b", "complete"),
-        review("c", "continue", [reviewFinding()]),
+        review("b", "continue", [reviewFinding()]),
+        review("c", "continue"),
+      ],
+      OPTIONS,
+    );
+    assert.equal(outcome.status, "active");
+    assert.equal(outcome.decision.decision, "continue");
+    assert.match(outcome.decision.reason, /Reviewer quorum not met/);
+    assert.match(outcome.decision.reason, /Unproven contract clause/);
+  });
+
+  test("the loop stays bounded: at max_turns without quorum it stops inspectably as needs_human", () => {
+    const outcome = reduceGoalDecision(
+      ledger(),
+      [
+        review("a", "complete"),
+        review("b", "continue", [reviewFinding()]),
+        review("c", "continue"),
       ],
       { ...OPTIONS, turn: 5 },
     );
     assert.equal(outcome.status, "needs_human");
     assert.match(
       outcome.decision.reason,
-      /Worker attempt budget reached without evidence closure/,
+      /Worker attempt budget reached without reviewer quorum/,
     );
     assert.match(outcome.decision.reason, /Unproven contract clause/);
-  });
-
-  test("without quorum the reason still reports remaining work, not closure", () => {
-    const outcome = reduceGoalDecision(
-      ledger(),
-      [review("a", "complete"), review("b", "continue"), review("c", "continue")],
-      OPTIONS,
-    );
-    assert.equal(outcome.status, "active");
-    assert.match(outcome.decision.reason, /Reviewer quorum not met/);
   });
 });

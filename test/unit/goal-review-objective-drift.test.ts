@@ -36,57 +36,64 @@ function decision(overrides: Partial<ReviewDecision> = {}): ReviewDecision {
   };
 }
 
-describe("goal review objective-drift gates", () => {
-  test("rejects approval when traceability is empty or not proven", () => {
-    assert.equal(reviewApproved(decision({ requirements_traceability: [] })), false);
-    for (const status of ["contradicted", "missing", "unverified"] as const) {
-      assert.equal(
-        reviewApproved(decision({
+describe("goal review boolean convergence gate", () => {
+  test("stop_review_loop=true with no reviewer_error approves", () => {
+    assert.equal(reviewApproved(decision()), true);
+  });
+
+  test("stop_review_loop=false never approves, regardless of other evidence", () => {
+    assert.equal(reviewApproved(decision({ stop_review_loop: false })), false);
+  });
+
+  test("a reviewer_error never approves, even when stop_review_loop is true", () => {
+    assert.equal(
+      reviewApproved(
+        decision({
+          reviewer_error: {
+            kind: "tool_failure",
+            message: "could not run validation",
+            attempted_recovery: "retried once",
+          },
+        }),
+      ),
+      false,
+    );
+  });
+
+  test("the boolean is authoritative: findings and traceability do not override it", () => {
+    // The deadlock this gate fixes: acceptance criteria referencing the review
+    // process itself (quorum, PR creation) can never be `proven` by a single
+    // reviewer. The reviewer signals convergence through the boolean instead.
+    assert.equal(
+      reviewApproved(
+        decision({
           requirements_traceability: [
-            { requirement: "literal clause", status, evidence: "gap" },
+            { requirement: "implementation clause", status: "proven", evidence: "verified" },
+            {
+              requirement: "Three independent reviewers approve",
+              status: "unverified",
+              evidence: "process gate resolved by the harness quorum",
+            },
+            {
+              requirement: "One unmerged PR to main is created",
+              status: "missing",
+              evidence: "post-approval final action",
+            },
           ],
-        })),
-        false,
-      );
-    }
-  });
-
-  test("beyond_objective and contradicts_objective findings are non-blocking", () => {
-    assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "beyond_objective", priority: 0 })] })),
+        }),
+      ),
       true,
     );
+    // Conversely, a reviewer holding the flag at false blocks even when its
+    // own arrays look clean — the prompt owns deriving the flag correctly.
     assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "contradicts_objective", priority: 0 })] })),
+      reviewApproved(decision({ stop_review_loop: false, findings: [] })),
+      false,
+    );
+    // Findings arrays are audit evidence, not a second gate.
+    assert.equal(
+      reviewApproved(decision({ findings: [finding({ priority: 0 })] })),
       true,
     );
-  });
-
-  test("required_by_objective findings block at any priority — severity labels alone never dismiss them", () => {
-    assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "required_by_objective", priority: 3 })] })),
-      false,
-    );
-    assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "required_by_objective", priority: null })] })),
-      false,
-    );
-  });
-
-  test("consistent_with_objective P3 nice-to-haves do not block approval", () => {
-    assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "consistent_with_objective", priority: 3 })] })),
-      true,
-    );
-    assert.equal(
-      reviewApproved(decision({ findings: [finding({ objective_alignment: "consistent_with_objective", priority: 2 })] })),
-      false,
-    );
-  });
-
-  test("missing objective_alignment blocks even for P3 findings", () => {
-    const unclassified = { ...finding({ priority: 3 }) } as Record<string, unknown>;
-    delete unclassified.objective_alignment;
-    assert.equal(reviewApproved(decision({ findings: [unclassified as ReviewFinding] })), false);
   });
 });

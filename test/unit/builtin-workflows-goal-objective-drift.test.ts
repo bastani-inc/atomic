@@ -88,12 +88,12 @@ describe("goal objective-drift workflow behavior", () => {
     assert.equal(result["approved"], true);
   });
 
-  test("required_by_objective P3 findings veto quorum completion — severity labels never dismiss objective-relevant findings", async () => {
+  test("a dissenting reviewer's findings do not veto boolean quorum — the reducer completes on stop_review_loop quorum", async () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const requiredP3 = finding(
       "[P3] Required contract clause still unproven",
-      "The objective requires this behavior; a P3 label must not dismiss it.",
+      "One dissenting reviewer files this finding; the two approving booleans still complete the run.",
       3,
       "required_by_objective",
     );
@@ -112,13 +112,44 @@ describe("goal objective-drift workflow behavior", () => {
 
     const result = await d.run(ctx);
 
+    assert.equal(result["status"], "complete");
+    assert.equal(result["approved"], true);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
+    assert.match(
+      ledger.decisions[0].reason,
+      /Reviewer quorum met: 2\/2 reviewers independently reported stop_review_loop=true/,
+    );
+  });
+
+  test("without boolean quorum the bounded run stops as needs_human", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const gap = finding(
+      "[P1] Required behavior still missing",
+      "Two reviewers report unfinished objective-relevant work.",
+      1,
+    );
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests", max_turns: 1 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-")) return reviewJson("complete");
+          if (name.startsWith("evidence-reviewer-") || name.startsWith("risk-reviewer-")) {
+            return reviewJson("continue", [gap]);
+          }
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
     assert.equal(result["status"], "needs_human");
     assert.equal(result["approved"], false);
     const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
     assert.match(
       ledger.decisions[0].reason,
-      /without evidence closure: 1 unresolved objective-relevant blocking finding/,
+      /Worker attempt budget reached without reviewer quorum/,
     );
-    assert.match(ledger.decisions[0].reason, /Severity labels alone cannot dismiss/);
   });
 });
