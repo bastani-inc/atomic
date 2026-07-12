@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a shared convergence contract to the bundled `goal` and `ralph` workflows: implementation starts from an observable acceptance/contract matrix derived from the literal objective/acceptance criteria (with explicit state/transition/invariant modeling for stateful work), reviewers independently derive adversarial checks from the literal contract before relying on worker receipts or worker-authored tests, reproduced findings require durable regression evidence before they count as resolved, and each review round persists a deduplicated cross-reviewer `consolidated_findings` batch that the next worker turn repairs together instead of one finding per turn. Literal-contract scope controls are preserved throughout, so nothing beyond the user's requirements is forced.
+
+### Changed
+
+- Changed bundled `goal` completion to evidence closure rather than reviewer agreement alone: reviewer quorum can only complete the run when no objective-relevant blocking finding from any reviewer in the current round remains unresolved, unresolved findings are recorded in the inspectable reducer decision reason, and the bounded loop still stops at `max_turns` as `needs_human`. Severity labels alone no longer dismiss objective-relevant findings in Goal or Ralph: `required_by_objective` findings block at any priority (P3 included), while `consistent_with_objective` P3 nice-to-haves stay non-blocking.
+
+### Fixed
+
+- Fixed retryable-failure classification across main-chat retry/fallback, workflow stage fallback, and subagent fallback to treat provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit_reached`/`insufficient_quota`-style codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of dead-ending the turn, stage, or run. Nested cause/diagnostic and session-shaped error payloads classify the same way; cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
+
 ## [0.9.6] - 2026-07-12
 
 ### Changed

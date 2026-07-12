@@ -6,9 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added a shared convergence contract for the builtin `goal` and `ralph` workflows (`builtin/shared-prompts.ts` + deterministic gates in `builtin/review-convergence.ts`): workers/orchestrators must derive an observable acceptance/contract matrix from the literal objective/acceptance criteria before implementing (one row per clause mapped to the concrete check that proves it) and must model states, transitions, and invariants explicitly for stateful work; reviewers must independently derive adversarial checks (boundary/edge/negative and state/transition/invariant probes) from the literal contract before relying on the worker receipt, implementation notes, or worker-authored tests; reproduced findings require durable regression evidence (a persisted test or exact re-runnable check) before they count as resolved; and the evidence-closure policy is stated to both roles so approval semantics are visible in-prompt. All contracts inherit the literal-contract scope controls, so no behavior beyond the objective/acceptance criteria is required.
+- Added deduplicated cross-reviewer `consolidated_findings` batches to the Goal and Ralph `review-round-latest.json` artifacts (`consolidateFindingsBatch` in `builtin/review-convergence.ts`), with blocking entries sorted first and reviewer attribution merged per finding. Goal's next worker turn reads the round artifact first and is instructed to plan and repair the whole batch — grouped by root cause, with regression evidence — instead of fixing one finding per turn; Ralph's research/orchestrator stages receive the same batch through the round artifact.
+
 ### Changed
 
 - Changed the built-in `goal` and `ralph` reviewer model defaults for GPT-5.6 Sol from the `:max` reasoning suffix to `:xhigh` across every provider form (`openai-codex`, `github-copilot`, `openai`, `cursor`, and `openrouter/openai`), including Ralph's `reviewer-b` primary model (`openai-codex/gpt-5.6-sol:xhigh`).
+- Changed builtin `goal` completion to evidence closure rather than reviewer agreement alone: the deterministic reducer now completes only when reviewer quorum is met AND no objective-relevant blocking finding from any reviewer in the current round remains unresolved. A quorum-met round with unresolved findings continues with an inspectable decision reason listing the findings, and the bounded loop still stops at `max_turns` as `needs_human` (with the closure gap recorded) so vetoes cannot drift indefinitely.
+- Changed the shared Goal/Ralph review gate so severity labels alone can no longer dismiss objective-relevant findings: `required_by_objective` findings now block at any priority (P3 included) via the shared `findingBlocksClosure` predicate, while `consistent_with_objective` P3 nice-to-haves remain non-blocking (preserving the dummy-finding anti-spin behavior) and `beyond_objective`/`contradicts_objective` findings remain non-blocking scope controls. Goal's `reviewApproved` and Ralph's `isBlockingFinding`/`reviewDecisionApproved` now share this single deterministic predicate.
+
+### Fixed
+
+- Fixed workflow stage model fallback to classify provider usage-limit exhaustion (for example `Codex error: The usage limit has been reached`, plus `usage_limit`/`usage_limit_reached`/`usage_limit_exceeded`/`insufficient_quota` codes) as a retryable quota/rate-limit failure, so configured `fallbackModels` advance to the next candidate provider/model instead of failing the stage. Nested cause/diagnostic and session-shaped errors classify the same way, while cancellations, safety refusals, task/tool failures, and unrelated errors remain non-retryable.
 
 ## [0.9.6] - 2026-07-12
 
