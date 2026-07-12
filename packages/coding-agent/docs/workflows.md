@@ -37,6 +37,7 @@ Loop or stop-condition phrasing is an especially strong workflow signal: `do X u
 - [Built-in Workflows](#built-in-workflows)
 - [When to Use Workflows](#when-to-use-workflows)
 - [Workflow Starter Patterns](#workflow-starter-patterns)
+- [Choosing an Execution Shape](#choosing-an-execution-shape)
 - [Atomic vs Claude Code Dynamic Workflows](#atomic-vs-claude-code-dynamic-workflows)
 - [Workflow Locations](#workflow-locations)
 - [Workflow Configuration](#workflow-configuration)
@@ -614,6 +615,68 @@ Best practices:
 - Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
 
 Record the selected pattern in your spec or workflow README, then adapt the diagram to the actual stage graph. If the final design does not resemble any starter pattern, explain why in the workflow's design notes.
+
+## Choosing an Execution Shape
+
+"Use a workflow" is not one decision — it is a ladder of execution shapes with different costs and guarantees. This section is written as agent-facing guidance: it is the self-prompt an orchestrating agent should run before the first tool call on a new request, and it doubles as documentation for humans who want to steer that choice explicitly.
+
+The shapes, cheapest first:
+
+| Shape | What it is | Guarantees you gain | Cost you pay |
+|---|---|---|---|
+| **Inline** | Answer or edit directly in the current session. | Lowest latency, zero ceremony. | No tracking, no gates, no isolation, easy to drift. |
+| **Inline + subagents** | Bounded specialist delegation (locate/analyze/research/debug passes, noisy command investigation, parallel read-only fanouts) while the parent keeps control and synthesizes. | Context isolation for noisy or parallel evidence-gathering. | No completion gate, no durable stages; the parent is the only reviewer. |
+| **Direct one-off shapes** | `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` without saving a definition. | Stage tracking, artifacts, model fallbacks, monitoring, resume. | Linear/parallel control flow only; no custom branching or loops. |
+| **Named workflows** | Installed builtin, project, user, or package workflows (`goal`, `ralph`, `deep-research-codebase`, `open-claude-design`, ...). | A proven graph: bounded loops, reviewer gates, ledgers, evidence contracts, tuned model chains. | The task must actually match the graph's objective and inputs. |
+| **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the starter patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
+| **Composed/nested workflows** | A custom parent that imports proven definitions and calls `ctx.workflow(child)`. | Reuse of hardened children (research, review loops) inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
+
+### The self-prompt
+
+Ask these questions in order and stop at the first shape that satisfies every remaining requirement. Decide before the first tool call and state the decision; reconnaissance already counts as inline execution.
+
+1. **Is the outcome provable?** If success can be stated as evidence (tests green, artifact exists, behavior demonstrated, reviewer approves), the task is workflow-shaped. If no proof is possible or needed, inline is probably fine.
+2. **Is there structure?** Multiple subtasks, dependencies, handoffs, or parallel slices push past inline. A single focused evidence-gathering pass does not.
+3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires an engine that owns the stop condition — a workflow, never an improvised inline retry loop or a stretched subagent chain.
+4. **Does an installed graph already fit?** If a named workflow's objective and inputs cover essentially the whole task, run it. Do not force-fit: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph.
+5. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the starter patterns.
+6. **Is a sub-problem already solved by a proven graph?** Nest it with `ctx.workflow(...)` instead of re-authoring its prompts and gates. Composition beats duplication whenever a child's input/output contract can be mapped cleanly.
+7. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough — and cheaper than a workflow.
+8. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review — answer or edit inline and stop.
+
+### Scoring rubric
+
+When the ladder is ambiguous, score the task on six dimensions (0–2 each):
+
+| Dimension | 0 | 1 | 2 |
+|---|---|---|---|
+| **Structure** | one action | a few sequential steps | many steps, dependencies, or parallel slices |
+| **Verifiability** | no objective check | spot-checkable | provable by tests, builds, artifacts, or review evidence |
+| **Iteration** | one pass suffices | may need one repair round | unknown-length loop until evidence passes |
+| **Risk** | trivial, reversible | scoped multi-file change | regressions, migrations, releases, or user-visible behavior |
+| **Duration** | seconds to minutes | tens of minutes | long-running, background, or resumable across sessions |
+| **Isolation** | one context is fine | one noisy investigation to quarantine | many slices needing clean contexts or adversarial independence |
+
+Interpretation:
+
+- **0–3 total:** inline. Adding stages costs more than it buys.
+- **4–6 total, Iteration ≤ 1, no gate:** inline subagents (parent-controlled) or a direct one-off `task`/`tasks`/`chain` when tracking and artifacts help.
+- **7+ total, or Iteration = 2, or Verifiability = 2 with a review/approval gate:** a real workflow. Prefer a named workflow when one fits the whole task; otherwise author a custom graph, nesting proven children where sub-problems overlap.
+- **Any single hard signal overrides the arithmetic:** an explicit loop/stop condition, an approval or evidence gate, or a request for durable/background execution puts the task in workflow territory regardless of total score.
+
+Two common misuses the rubric exists to prevent: stretching parent-controlled subagent calls into an ad hoc implement→review→retry pipeline (that is adversarial verification without an engine — use a workflow and let its stages delegate specialists), and unbounded inline reconnaissance (after roughly ten exploratory calls with no artifact, write findings to a context file and hand off through `reads`; sunk research transfers, it is not a reason to stay inline).
+
+### Prompting the choice
+
+Humans can steer the shape directly. The strongest levers, in rough order of effect:
+
+- **Name the shape or workflow.** "Do this inline", "use subagents to investigate", "run the goal workflow", or "write a custom workflow for this" is honored over the agent's own scoring.
+- **State acceptance criteria.** Verbatim acceptance criteria make the objective provable, which both selects workflow execution and pins the immutable contract that `goal`/`ralph` reviewers enforce.
+- **State the loop.** "Iterate until tests pass", "review and fix until approved" — loop wording is a hard workflow signal and defines the stop condition.
+- **State the evidence.** Asking for a PR, a QA video, test output, or reviewer sign-off tells the agent which gates the graph needs.
+- **State the boundary.** "Work in a separate worktree", "don't create the PR yet", or "stop after implementation" separates the implementation loop from explicitly authorized final actions.
+
+Absent these levers, the agent applies the self-prompt and rubric above — so a prompt that mentions none of them is delegating the shape decision, not avoiding it.
 
 ## Atomic vs Claude Code Dynamic Workflows
 
@@ -1982,6 +2045,17 @@ Stage prompts should be local contracts, not miniature descriptions of the entir
 Avoid unrelated workflow internals such as reducer algorithms, future PR stages, sibling reviewer names, loop implementation details, or project-specific nicknames unless they are explicitly part of the current stage contract. If a term such as a gate name, ledger field, or workflow nickname is necessary, define it in the prompt before using it.
 
 Choose context mode deliberately. Use `context: "fork"` or `forkFromSessionFile` for coherent long-running implementation stages that need continuity from their own earlier work. Use `context: "fresh"` for unbiased reviewer, evaluator, and gate stages so they inspect the current files and explicit artifacts rather than inheriting the implementer's assumptions. When continuity is needed across fresh stages, pass it explicitly through files, declared outputs, and `reads`.
+
+### Context-Mode-Aware Prompt Text
+
+Context mode is an execution property configured with `context`/`forkFromSessionFile`; it is not something the model can act on, so keep it out of prompt text:
+
+- **Never describe the stage's own context mode.** Sentences like "you are running in a fresh context window", "your context is clean/non-forked", or "this is a forked session" add tokens without changing behavior. State the concrete action, inputs, and success criteria instead.
+- **Fresh stages must not reference invisible context.** A fresh stage has no "previous conversation", cannot see sibling stages, and does not know the surrounding graph, so instructions like "compare against previous workflow reasoning" or "this runs in parallel with the locator pass" are noise at best and confusing at worst. Phrase the same intent stage-locally ("compare the working tree against the baseline branch"; "do your own scan; do not assume any other stage's output is available") and pass any state the stage genuinely needs through files, declared outputs, and `reads`.
+- **Forked continuation prompts send only the delta.** A forked stage already carries the role, contracts, guidance, and output format from its own earlier prompts, so repeating them re-spends the tokens and invites drift between the two copies. Send what changed since the fork point — new artifacts, updated state, the next action — plus a one-line pointer back ("the contracts and report format established earlier in this thread still apply unchanged") instead of re-injecting the full text.
+- **Keep one canonical copy of shared contracts.** When fresh and forked variants of a stage share guidance, render the full contract only in the prompt that first establishes it and reference it from continuations. If a continuation genuinely needs a contract restated (for example, after a schema change), that is a new contract version, not a repeat.
+
+The builtin `goal` and `ralph` workflows follow this pattern: their first worker/orchestrator prompts carry the full contracts, while forked continuation turns send only the per-turn state (new receipts, the latest review artifacts, the rewritten research file) with a pointer back to the established guidance.
 
 ### Context Fundamentals
 
