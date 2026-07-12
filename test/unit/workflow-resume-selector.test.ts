@@ -5,15 +5,15 @@ import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durabl
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
 function stage(id: string, startedAt: number, endedAt?: number): StageSnapshot {
-  return {
+  const common = {
     id,
     name: id,
-    status: endedAt === undefined ? "running" : "completed",
     parentIds: [],
     startedAt,
-    ...(endedAt === undefined ? {} : { endedAt }),
     toolEvents: [],
   };
+  if (endedAt === undefined) return { ...common, status: "running" };
+  return { ...common, status: "completed", endedAt };
 }
 
 function liveRun(id: string, startedAt: number, stages: StageSnapshot[] = []): RunSnapshot {
