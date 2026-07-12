@@ -63,15 +63,7 @@ ${scriptBody}
 	}
 }
 
-function intercomFixtureEnv(eager: boolean): NodeJS.ProcessEnv {
-	const env = { ...process.env };
-	delete env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
-	delete env.PI_SUBAGENT_ORCHESTRATOR_TARGET;
-	if (eager) env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET = "parent";
-	return env;
-}
-
-export function runIntercomFixture<T>(heavySource: string, scriptBody: string, eager = false): T {
+export function runIntercomFixture<T>(heavySource: string, scriptBody: string): T {
 	const tempDir = createRepositoryFixtureDir("intercom-lazy-hardening");
 	try {
 		writeFileSync(join(tempDir, "package.json"), JSON.stringify({ type: "module" }));
@@ -103,7 +95,7 @@ const execute = (id, callCtx = ctx) => tool("intercom").execute(id, { action: "s
 ${scriptBody}
 `;
 		return parseFixtureResult<T>(spawnSync("bun", ["--eval", script], {
-			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs, env: intercomFixtureEnv(eager),
+			cwd: repoRoot, encoding: "utf-8", timeout: subprocessTimeoutMs,
 		}));
 	} finally {
 		rmSync(tempDir, { recursive: true, force: true });

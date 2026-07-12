@@ -298,7 +298,7 @@ let originalFailure = false;
 try { await execute("first"); } catch (error) { originalFailure = String(error).includes("intercom replay failed once"); }
 const retried = await execute("retry");
 console.log(JSON.stringify({ ...retried.details, originalFailure }));
-`, false);
+`);
 		expect(result).toEqual({ replays: 2, cleanups: 1, originalFailure: true });
 	});
 
@@ -343,7 +343,7 @@ globalThis.releaseRetry();
 await Promise.all([first, second]);
 const state = globalThis.replayState();
 console.log(JSON.stringify({ originalFailure, attempts: state.startAttempts, beforeRelease, executions: state.executions, order: state.order }));
-`, false);
+`);
 		expect(result).toEqual({
 			originalFailure: true, attempts: 3, beforeRelease: 1, executions: 3,
 			order: ["session:1", "turn", "model", "agent", "tool", "execute", "session:2", "session:3", "execute", "execute"],
@@ -359,28 +359,30 @@ await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 let rejected = false;
 try { await execute("late"); } catch (error) { rejected = String(error).includes("no active session"); }
 console.log(JSON.stringify({ rejected, initialized: globalThis.intercomInitialized === true }));
-`, false);
+`);
 		expect(result).toEqual({ rejected: true, initialized: false });
 	});
 
-	it("retries failed eager Intercom initialization once for concurrent callers", () => {
-		const result = runIntercomFixture<{ attempts: number; same: number; errors: string[] }>(`
+	it("retries failed lazy Intercom initialization once for concurrent callers", () => {
+		const result = runIntercomFixture<{ attempts: number; same: number; firstRejected: boolean; errors: string[] }>(`
 let attempts = 0;
 export default async function init(pi) {
  attempts += 1;
- if (attempts === 1) throw new Error("eager broker unavailable");
+ if (attempts === 1) throw new Error("lazy broker unavailable");
  await new Promise((resolve) => setTimeout(resolve, 20));
  pi.registerTool({ name: "intercom", execute: async () => ({ content: [], details: { attempts } }) });
  pi.on("session_start", async () => {});
 }
 `, `
 await emit("session_start", { type: "session_start", reason: "new" });
-await waitForGate("Intercom eager failure diagnostic", () => errors.length > 0);
+let firstRejected = false;
+try { await execute("initial"); } catch (error) { firstRejected = String(error).includes("lazy broker unavailable"); }
 const [a, b] = await Promise.all([execute("a"), execute("b")]);
-console.log(JSON.stringify({ attempts: a.details.attempts, same: b.details.attempts, errors }));
-`, true);
+console.log(JSON.stringify({ attempts: a.details.attempts, same: b.details.attempts, firstRejected, errors }));
+`);
 		expect(result.attempts).toBe(2);
 		expect(result.same).toBe(2);
-		expect(result.errors).toEqual(expect.arrayContaining([expect.stringContaining("eager broker unavailable")]));
+		expect(result.firstRejected).toBe(true);
+		expect(result.errors).toEqual(expect.arrayContaining([expect.stringContaining("lazy broker unavailable")]));
 	});
 });
