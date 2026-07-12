@@ -1,14 +1,14 @@
 ---
-name: effective-liteparse
+name: liteparse
 description: Use this skill whenever a task involves a document file (PDF, DOCX, PPTX, XLSX, or image) and you need to read it or pull text, tables, or specific values out of it — to answer a question about its contents, look up a figure, or extract data. Provides fast, local, model-free extraction via the `lit` CLI with disciplined, low-cost search patterns.
 compatibility: Requires Node 18+ and `@llamaindex/liteparse` (`npm i -g @llamaindex/liteparse`, verify `lit --version`). LibreOffice for Office files; ImageMagick for images. The bundled search.py helper needs `uv`.
 license: MIT
 metadata:
   author: LlamaIndex
-  version: "1.0.0"
+  version: "1.0.1"
 ---
 
-# Effective LiteParse
+# LiteParse
 
 Extract text from documents locally with the `lit` CLI — a fast, model-free parser. This skill is
 about using it **cheaply**: each `lit parse` re-runs full extraction, and every line you dump into
@@ -68,7 +68,7 @@ one turn at a time. Run the bundled BM25 ranker ONCE to surface the most relevan
 single command:
 
 ```bash
-./.claude/skills/effective-liteparse/scripts/search.py /tmp/doc.txt -q "materiality assessment priority topics" -k 8 -e 5
+scripts/search.py /tmp/doc.txt -q "materiality assessment priority topics" -k 8 -e 5
 ```
 
 `-k` = number of matches, `-e` = lines of context around each (so the window comes back inline — no

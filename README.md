@@ -245,18 +245,18 @@ Run `/workflow list` to see installed workflows and `/workflow inputs <name>` fo
 
 Skills are reusable expert instructions and process modules. They auto-invoke when Atomic detects a relevant trigger, or you can call them directly with `/skill:<name>`.
 
-| Skill                 | Purpose                                                                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `research-codebase`   | Dispatch parallel sub-agents to analyze a focused area and write a dated research doc under `research/`                                                               |
-| `create-spec`         | Produce a technical execution spec under `specs/`, grounded in research documents and engineer feedback                                                               |
-| `subagent`            | Delegate work to bundled or custom sub-agents with chains, parallel groups, async runs, and forked context                                                            |
-| `intercom`            | Coordinate session-to-session: send messages, delegate tasks, and handle `contact_supervisor` escalations from child sub-agents on the same machine                   |
-| `prompt-engineer`     | Sharpen prompts, research questions, and workflow inputs using prompt-engineering best practices                                                                      |
-| `tdd`                 | Red-green-refactor loop with a built-in testing-anti-patterns guide                                                                                                   |
-| `tmux`                | Control tmux-compatible terminal sessions for interactive CLIs: capture panes, send keys, paste text, and verify terminal app behavior                                |
-| `playwright-cli`      | Automate browser interactions, run end-to-end UI checks, record reviewable videos, and work with Playwright tests                                                     |
-| `effective-liteparse` | Fast, local, model-free extraction of text, tables, and values from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI                                          |
-| `impeccable`          | Design, redesign, audit, or polish frontend interfaces (Anthropic's frontend-design skill, vendored from [pbakaus/impeccable](https://github.com/pbakaus/impeccable)) |
+| Skill               | Purpose                                                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `research-codebase` | Dispatch parallel sub-agents to analyze a focused area and write a dated research doc under `research/`                                                               |
+| `create-spec`       | Produce a technical execution spec under `specs/`, grounded in research documents and engineer feedback                                                               |
+| `subagent`          | Delegate work to bundled or custom sub-agents with chains, parallel groups, async runs, and forked context                                                            |
+| `intercom`          | Coordinate session-to-session: send messages, delegate tasks, and handle `contact_supervisor` escalations from child sub-agents on the same machine                   |
+| `prompt-engineer`   | Sharpen prompts, research questions, and workflow inputs using prompt-engineering best practices                                                                      |
+| `tdd`               | Red-green-refactor loop with a built-in testing-anti-patterns guide                                                                                                   |
+| `tmux`              | Control tmux-compatible terminal sessions for interactive CLIs: capture panes, send keys, paste text, and verify terminal app behavior                                |
+| `playwright-cli`    | Automate browser interactions, run end-to-end UI checks, record reviewable videos, and work with Playwright tests                                                     |
+| `liteparse`         | Fast, local, model-free extraction of text, tables, and values from PDF, DOCX, PPTX, XLSX, and image files via the `lit` CLI                                          |
+| `impeccable`        | Design, redesign, audit, or polish frontend interfaces (vendored from [pbakaus/impeccable](https://github.com/pbakaus/impeccable))                                    |
 
 ### 3. Specialized sub-agents
 

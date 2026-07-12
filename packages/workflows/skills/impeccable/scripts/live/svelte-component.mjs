@@ -97,9 +97,9 @@ export function substitutePropsWithExprs(markup, contract) {
 
 export function parseSvelteComponentFile(content) {
   const text = String(content || '');
-  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/i);
+  const scriptMatch = text.match(/^([\s\S]*?)<script\b[^>]*>[\s\S]*?<\/script>/i);
   const withoutScript = scriptMatch ? text.slice(scriptMatch[0].length) : text;
-  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/i);
+  const styleMatch = withoutScript.match(/<style\b[^>]*>[\s\S]*?<\/style\s*>/i);
   const styleBlock = styleMatch ? styleMatch[0] : '';
   const markup = styleMatch
     ? withoutScript.slice(0, styleMatch.index).trim()
@@ -107,7 +107,7 @@ export function parseSvelteComponentFile(content) {
   const cssLines = styleBlock
     ? styleBlock
       .replace(/^<style\b[^>]*>/i, '')
-      .replace(/<\/style\b[^>]*>$/i, '')
+      .replace(/<\/style\s*>$/i, '')
       .split('\n')
       .map((line) => line.trimEnd())
     : [];
@@ -290,7 +290,7 @@ function appendCssToSvelteStyle(lines, cssLines) {
 
 function findLastStyleCloseLine(lines) {
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (/<\/style\b[^>]*>/.test(lines[i])) return i;
+    if (/<\/style\s*>/.test(lines[i])) return i;
   }
   return -1;
 }
@@ -632,16 +632,10 @@ function inlineSvelteComponentInsertAccept({
 }
 
 function svelteMarkupHasVisibleContent(markup) {
-  let stripped = String(markup || '');
-  let previous;
-  do {
-    previous = stripped;
-    stripped = stripped
-      .replace(/<script[\s\S]*?<\/script\b[^>]*>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style\b[^>]*>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, '');
-  } while (stripped !== previous);
-  const text = stripped
+  const text = String(markup || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();

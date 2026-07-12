@@ -151,7 +151,7 @@ Skills are reusable expert instructions. Trigger one with `/skill:<name>` follow
 | `tdd` | Test-first feature or bug work. | `/skill:tdd` |
 | `impeccable` | Critique or refine web/native frontend and product UI; includes detector hooks. | `/skill:impeccable` |
 | `playwright-cli` | Drive a real browser for end-to-end UI checks, screenshots, and reviewable proof videos. | `/skill:playwright-cli` |
-| `effective-liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:effective-liteparse` |
+| `liteparse` | Pull text, tables, or values out of PDF, DOCX, PPTX, XLSX, and image files locally. | `/skill:liteparse` |
 
 Use `/skill:research-codebase` for a focused area and `/workflow deep-research-codebase` when a clearly delegated repo-wide research job benefits from durable stages and artifacts. Keep conversation-led planning and implementation inline, or use bounded subagents while the parent remains in control. When an autonomous implementation job needs durable execution, use `/workflow goal` for a goal ledger, bounded worker turns, and reviewer-gated completion, or `/workflow ralph` for a research-first pipeline with delegated implementation and iterative review. Task size alone does not select either workflow. Add `create_pr=true` only when you want the workflow's final pull-request stage after approval.
 

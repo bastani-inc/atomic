@@ -1,0 +1,12 @@
+[
+  "SKILL.md",
+  "references/element-attributes.md",
+  "references/playwright-tests.md",
+  "references/request-mocking.md",
+  "references/running-code.md",
+  "references/session-management.md",
+  "references/storage-state.md",
+  "references/test-generation.md",
+  "references/tracing.md",
+  "references/video-recording.md"
+]

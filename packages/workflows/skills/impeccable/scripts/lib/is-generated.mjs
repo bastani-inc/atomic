@@ -46,7 +46,7 @@ function isGitIgnored(absPath, cwd) {
       stdio: 'ignore',
     });
     return true; // exit 0 = ignored
-  } catch {
+  } catch (err) {
     // Exit code 1 = not ignored. Exit code 128 = not a git repo or other error.
     // In both cases, treat as "not known to be ignored."
     return false;

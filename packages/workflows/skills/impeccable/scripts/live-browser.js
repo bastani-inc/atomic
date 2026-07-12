@@ -57,6 +57,7 @@
   const Z = { highlight: 100001, bar: 100005, picker: 100007, toast: 100010 };
   const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'; // ease-out-quint
   const PREFIX = 'impeccable-live';
+  const IMPECCABLE_COMMAND = (window.__IMPECCABLE_COMMAND_PREFIX__ || '/') + 'impeccable';
   const PICK_CURSOR_STYLE_ID = PREFIX + '-pick-cursor-style';
   const MANUAL_APPLY_STATE_TTL_MS = 15 * 60 * 1000;
   const sessionState = window.__IMPECCABLE_LIVE_SESSION__?.createLiveBrowserSessionState({
@@ -5076,7 +5077,7 @@
   }
 
   function extractSvelteComponentStyle(source) {
-    const match = String(source || '').match(/<style\b[^>]*>([\s\S]*?)<\/style\b[^>]*>/i);
+    const match = String(source || '').match(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/i);
     return match ? match[1].trim() : '';
   }
 
@@ -5104,8 +5105,7 @@
   }
 
   function scopeCssToSveltePreview(css, sessionId) {
-    const escapedSessionId = String(sessionId).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const prefix = '[data-impeccable-variants="' + escapedSessionId + '"] ';
+    const prefix = '[data-impeccable-variants="' + String(sessionId).replace(/"/g, '\\"') + '"] ';
     return scopeCssBlock(String(css || ''), prefix).trim();
   }
 
@@ -5606,7 +5606,7 @@
     if (!/\.[cm]?[jt]sx$/i.test(String(filePath || ''))) return block;
     return String(block)
       .replace(
-        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style\b[^>]*>/g,
+        /<style\b([^>]*)>\s*\{\s*`([\s\S]*?)`\s*\}\s*<\/style>/g,
         (_match, attrs, css) => '<style' + attrs + '>' + css + '</style>',
       )
       .replace(/\bclassName\s*=\s*\{\s*`([^`]*?)`\s*\}/g, (_match, value) => {
@@ -5637,7 +5637,7 @@
     let out = String(prop || '').trim().replace(/^["']|["']$/g, '');
     if (!out) return '';
     if (out.startsWith('--')) return out;
-    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/^ms-/, '-ms-');
+    return out.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/^-ms-/, '-ms-');
   }
 
   function buildSvelteExpressionTextMap(sourceOriginal, liveOriginal) {
@@ -6146,7 +6146,7 @@
       switch (msg.type) {
         case 'connected':
           hasProjectContext = !!msg.hasProjectContext;
-          if (!hasProjectContext) showToast('No PRODUCT.md found. Variants will be brand-agnostic. Run /impeccable init to generate one.', 7000);
+          if (!hasProjectContext) showToast(`No PRODUCT.md found. Variants will be brand-agnostic. Run ${IMPECCABLE_COMMAND} init to generate one.`, 7000);
           console.log('[impeccable] Live mode connected.');
           syncAgentPollingUi(!!msg.agentPolling);
           startAgentStatusPoll();
@@ -10539,7 +10539,7 @@ void main() {
     if (designState.present === false) {
       const empty = document.createElement('div');
       empty.className = 'empty';
-      empty.innerHTML = `<strong>No DESIGN.md yet</strong>Create one by running <code>/impeccable document</code> in your terminal, then re-open this panel.`;
+      empty.innerHTML = `<strong>No DESIGN.md yet</strong>Create one by running <code>${IMPECCABLE_COMMAND} document</code> in your terminal, then re-open this panel.`;
       body.appendChild(empty);
       return;
     }
@@ -10569,7 +10569,7 @@ void main() {
     box.className = 'stale';
     box.innerHTML = `
       <span class="stale-dot"></span>
-      <span class="stale-text"><strong>DESIGN.md is newer than .impeccable/design.json.</strong> Run <code>/impeccable document</code> to refresh the sidecar.</span>
+      <span class="stale-text"><strong>DESIGN.md is newer than .impeccable/design.json.</strong> Run <code>${IMPECCABLE_COMMAND} document</code> to refresh the sidecar.</span>
     `;
     return box;
   }
@@ -10577,7 +10577,7 @@ void main() {
   function renderParsedMdCta() {
     const box = document.createElement('div');
     box.className = 'parsed-md-cta';
-    box.innerHTML = `<strong>Basic view</strong>This panel reads the tokens in your <code>DESIGN.md</code> frontmatter. Running <code>/impeccable document</code> also generates a <code>.impeccable/design.json</code> sidecar with your project's actual component snippets (button, input, nav) and tonal ramps, rendered live below the tokens.`;
+    box.innerHTML = `<strong>Basic view</strong>This panel reads the tokens in your <code>DESIGN.md</code> frontmatter. Running <code>${IMPECCABLE_COMMAND} document</code> also generates a <code>.impeccable/design.json</code> sidecar with your project's actual component snippets (button, input, nav) and tonal ramps, rendered live below the tokens.`;
     return box;
   }
 

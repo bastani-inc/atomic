@@ -20,8 +20,8 @@ const isSafeElement = (line) => /<(?:blockquote|nav[\s>]|pre[\s>]|code[\s>]|a\s|
  *  content-text analyzers don't false-positive on code or CSS. */
 function stripHtmlToText(html) {
   return html
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi, ' ')
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
     .replace(/<!--[\s\S]*?-->/g, ' ')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ');
@@ -352,7 +352,7 @@ function extractStyleBlocks(content, ext) {
   ext = ext.toLowerCase();
   if (ext !== '.vue' && ext !== '.svelte') return [];
   const blocks = [];
-  const re = /<style[^>]*>([\s\S]*?)<\/style\b[^>]*>/gi;
+  const re = /<style[^>]*>([\s\S]*?)<\/style>/gi;
   let m;
   while ((m = re.exec(content)) !== null) {
     const before = content.substring(0, m.index);
