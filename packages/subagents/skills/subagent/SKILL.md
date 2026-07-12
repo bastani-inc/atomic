@@ -745,7 +745,9 @@ subagent({ action: "doctor" })
 **Intercom "Already waiting for a reply"**
 
 ```typescript
-// Resolve the current outbound ask before starting another one.
+// Only one blocking intercom request (ask or contact_supervisor) can wait per
+// session. Concurrent attempts lose the reservation with this normal tool
+// error; resolve or await the current outbound ask, then retry or use send.
 ```
 
 **Parallel output-path conflict**

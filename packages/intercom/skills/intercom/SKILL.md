@@ -305,6 +305,11 @@ If neither `cmux` nor `tmux` is available, skip this path and use normal `interc
 - **10-minute timeout**: If no reply comes within 10 minutes, the ask fails
 - **One at a time**: Cannot have multiple pending asks from the same session
 - **Cannot self-target**: A session cannot ask itself
+- **Concurrency-safe**: If several blocking requests (multiple `ask` calls, or
+  `ask` plus `contact_supervisor`) race in the same session — for example from
+  parallel tool calls — exactly one wins the reservation. Every other call gets
+  a normal `"Already waiting for a reply"` tool error and can retry or fall
+  back to `send`; the losing calls never disturb the winning ask.
 
 ```typescript
 // Check if already waiting before asking
@@ -381,11 +386,13 @@ Use `/name` so others can target you easily:
 
 **"Already waiting for a reply"**
 ```typescript
-// You can only have one pending ask at a time
+// You can only have one pending ask at a time. Concurrent blocking requests
+// (parallel asks, or ask + contact_supervisor) return this error safely; the
+// winning request keeps waiting for its reply.
 // Option 1: Use send instead
 intercom({ action: "send", to: "planner", message: "..." });
 
-// Option 2: Wait for current ask to complete first
+// Option 2: Wait for the current ask to complete, then retry
 ```
 
 **"Cannot message the current session"**
