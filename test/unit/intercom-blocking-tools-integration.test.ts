@@ -7,6 +7,7 @@ import { registerIntercomTool } from "../../packages/intercom/intercom-tool.js";
 import { registerContactSupervisorTool } from "../../packages/intercom/contact-supervisor-tool.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "../../packages/intercom/foreground-detach-handoff.js";
 import { ReplyTracker } from "../../packages/intercom/reply-tracker.js";
+import { ReplyWaiterSlot } from "../../packages/intercom/reply-waiter.js";
 import type { Message, SessionInfo } from "../../packages/intercom/types.js";
 import { routeIncomingReply } from "../../packages/intercom/reply-routing.js";
 import { runSync } from "../../packages/subagents/src/runs/foreground/execution.js";
@@ -18,7 +19,7 @@ function fixture(kind: "intercom" | "supervisor") {
   let tool: Tool | undefined;
   const sent: Array<{ to: string; message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string } }> = [];
   const waiterCalls: Array<{ from: string; replyTo: string }> = [];
-  let waiter: { from: string; replyTo: string; resolve: (message: Message) => void } | undefined;
+  const slot = new ReplyWaiterSlot();
   const client = {
     sessionId: "child-id",
     async listSessions() { return []; },
@@ -35,12 +36,11 @@ function fixture(kind: "intercom" | "supervisor") {
     ensureConnected: async () => client,
     syncPresenceIdentity() {},
     resolveSessionTarget: async (_client: object, target: string) => target === "parent" ? "parent-id" : target,
-    waitForReply(from: string, replyTo: string) {
+    beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) {
       waiterCalls.push({ from, replyTo });
-      return new Promise<Message>((resolve) => { waiter = { from, replyTo, resolve }; });
+      return slot.begin(from, replyTo, signal);
     },
-    hasReplyWaiter: () => Boolean(waiter),
-    rejectReplyWaiter() { waiter = undefined; },
+    hasReplyWaiter: () => slot.has(),
   };
   if (kind === "intercom") {
     registerIntercomTool(pi as never, { ...common, confirmSend: false, replyTracker: new ReplyTracker() } as never);
@@ -53,12 +53,11 @@ function fixture(kind: "intercom" | "supervisor") {
   return {
     sent,
     waiterCalls,
-    get waiter() { return waiter; },
+    get waiter() { return slot.current() ?? undefined; },
     get tool() { assert.ok(tool); return tool; },
     reply(text: string) {
-      assert.ok(waiter);
-      const current = waiter;
-      waiter = undefined;
+      const current = slot.current();
+      assert.ok(current);
       current.resolve({ id: "reply", timestamp: 2, replyTo: current.replyTo, content: { text } });
     },
   };
@@ -148,7 +147,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
       });
 
       let registered: Tool | undefined;
-      let waiter: { replyTo: string; resolve: (message: Message) => void } | undefined;
+      const slot = new ReplyWaiterSlot();
       const surfaced: Message[] = [];
       const handoff = new ForegroundDetachHandoff(piForHandoff as never, 1000);
       const from: SessionInfo = { id: "child-id", name: childTarget, cwd: dir, model: "test", pid: 1, startedAt: 1, lastActivity: 1, status: "thinking" };
@@ -169,9 +168,8 @@ for (const kind of ["intercom", "supervisor"] as const) {
         ensureConnected: async () => client,
         syncPresenceIdentity() {},
         resolveSessionTarget: async () => "parent-id",
-        waitForReply(_from: string, replyTo: string) { return new Promise<Message>((resolve) => { waiter = { replyTo, resolve }; }); },
-        hasReplyWaiter: () => Boolean(waiter),
-        rejectReplyWaiter() { waiter = undefined; },
+        beginReplyWait(from: string, replyTo: string, signal?: AbortSignal) { return slot.begin(from, replyTo, signal); },
+        hasReplyWaiter: () => slot.has(),
       };
       const toolPi = { registerTool(value: Tool) { registered = value; }, appendEntry() {} };
       if (kind === "intercom") registerIntercomTool(toolPi as never, { ...common, confirmSend: false, replyTracker: new ReplyTracker() } as never);
@@ -185,9 +183,9 @@ for (const kind of ["intercom", "supervisor"] as const) {
       assert.equal(detached.detached, true);
       assert.equal(surfaced.length, 1);
       assert.deepEqual(order.slice(0, 3), ["probe", "commit", "surface"]);
-      assert.equal(waiter?.replyTo, surfaced[0]?.id);
+      assert.equal(slot.current()?.replyTo, surfaced[0]?.id);
 		order.push("reply");
-		const routed = routeIncomingReply(waiter ? { ...waiter, from: "parent-id" } : undefined, {
+		const routed = routeIncomingReply(slot.current(), {
 			id: "parent-id", name: "parent", cwd: dir, model: "test", pid: 2,
 			startedAt: 1, lastActivity: 1, status: "waiting",
 		}, { id: "parent-reply", timestamp: Date.now(), replyTo: surfaced[0]?.id, content: { text: "Approved" } });

@@ -13,11 +13,13 @@ interface RelayHarnessOptions {
 	local?: boolean;
 	localMatches?: boolean[];
 	localFailures?: number;
+	runtimeStarted?: boolean;
 }
 
 function createRelayHarness(options: RelayHarnessOptions) {
   const listeners = new Map<string, Array<(payload: unknown) => void>>();
-  const deliveries: Array<{ requestId?: string; delivered?: boolean }> = [];
+  const deliveries: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
+  const errorEntries: Array<{ type: string; error?: string }> = [];
   let ensureConnectedCalls = 0;
   let sendCalls = 0;
   let localDeliveries = 0;
@@ -32,7 +34,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
 		},
 	} as never;
   const pi = {
-    appendEntry() {},
+    appendEntry(type: string, data: { error?: string }) { errorEntries.push({ type, error: data.error }); },
     events: {
       on(event: string, handler: (payload: unknown) => void) {
         const handlers = listeners.get(event) ?? [];
@@ -55,7 +57,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
 
   registerSubagentRelay(pi as never, {
     runtimeGeneration: () => 1,
-    runtimeStarted: () => true,
+    runtimeStarted: () => options.runtimeStarted ?? true,
     runtimeContext: () => context,
     getLiveContext: () => options.liveChecks[liveCheckIndex++] ? context : null,
     currentSessionTargetMatches: () => options.localMatches?.[localMatchIndex++] ?? options.local ?? false,
@@ -72,6 +74,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
 
   return {
     deliveries,
+    errorEntries,
     emitResult(overrides: { to?: string; message?: string; requestId?: string } = {}) {
       pi.events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, {
         to: overrides.to ?? "target",
@@ -189,5 +192,25 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 		await settleRelay();
 		assert.equal(harness.counts().ensureConnectedCalls, 2);
 		assert.deepEqual(harness.deliveries.map((entry) => entry.delivered), [false, true]);
+	});
+
+	test("delivers locally when the runtime never started but the target matches this session", async () => {
+		const harness = createRelayHarness({ liveChecks: [false, false], runtimeStarted: false, local: true });
+		harness.emitResult();
+		await settleRelay();
+		assert.equal(harness.counts().localDeliveries, 1);
+		assert.deepEqual(harness.deliveries, [{ requestId: "request-1", delivered: true }]);
+		assert.deepEqual(harness.errorEntries, []);
+	});
+
+	test("acknowledges quietly when the runtime never started and the target is remote", async () => {
+		const harness = createRelayHarness({ liveChecks: [false, false], runtimeStarted: false, local: false });
+		harness.emitResult();
+		await settleRelay();
+		assert.deepEqual(harness.deliveries, [
+			{ requestId: "request-1", delivered: false, error: "Intercom runtime not initialized" },
+		]);
+		assert.equal(harness.counts().ensureConnectedCalls, 0, "an uninitialized runtime never attempts a broker connection");
+		assert.deepEqual(harness.errorEntries, [], "no misleading connection-error entries are recorded");
 	});
 });

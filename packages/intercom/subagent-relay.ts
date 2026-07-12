@@ -105,13 +105,23 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
 
     const relayGeneration = deps.runtimeGeneration();
     void (async () => {
-      const relayStillLive = () => !deps.runtimeStarted() || Boolean(getLiveContext(deps.runtimeContext(), relayGeneration));
+      const runtimeLive = () => Boolean(getLiveContext(deps.runtimeContext(), relayGeneration));
+      const relayStillLive = () => !deps.runtimeStarted() || runtimeLive();
       if (!relayStillLive()) {
         acknowledgeResult(options, parsed.requestId, false);
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
         deliverLocal(parsed, options);
+        return;
+      }
+      if (!deps.runtimeStarted()) {
+        // The runtime never initialized for this session (no session_start
+        // reached the extension and no lifecycle context was available), so a
+        // broker connection attempt can only fail. Acknowledge the message as
+        // undelivered without recording a misleading connection error entry;
+        // callers treat an undelivered ack as their inline-result fallback.
+        acknowledgeResult(options, parsed.requestId, false, new Error("Intercom runtime not initialized"));
         return;
       }
 

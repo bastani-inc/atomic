@@ -294,9 +294,21 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			handle.assertCurrent();
 		},
 	});
+	function latestLifecycleContext(): ExtensionContext | undefined {
+		// Sessions that never emit `session_start` to extensions (for example
+		// non-interactive in-process child sessions) still emit turn/tool/model
+		// lifecycle events. Fall back to the most recent lifecycle context so a
+		// relay-triggered heavy load can replay a synthetic `session_start` and
+		// initialize the runtime instead of relaying against a disposed one.
+		return sessionSnapshot?.ctx
+			?? activeLifecycle.turnStart?.ctx
+			?? activeLifecycle.agentStart?.ctx
+			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
+			?? activeLifecycle.modelSelect?.ctx;
+	}
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
 		pi.events.on(eventName, (payload) => {
-			void loadHeavy().then(async (handle) => {
+			void loadHeavy(latestLifecycleContext()).then(async (handle) => {
 				handle.assertCurrent();
 				await dispatchEventHandlers(handle.heavy, eventName, payload);
 				handle.assertCurrent();

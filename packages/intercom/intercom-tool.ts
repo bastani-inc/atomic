@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { Type } from "typebox";
 import { Text } from "@earendil-works/pi-tui";
 import type { IntercomClient } from "./broker/client.ts";
-import type { Message } from "./types.ts";
+import type { ReplyWait, ReplyWaitAdmission } from "./reply-waiter.ts";
 import { renderIntercomResult } from "./result-renderers.js";
 import {
   formatAttachments,
@@ -19,14 +19,19 @@ interface IntercomToolDeps {
   syncPresenceIdentity(sessionId: string): void;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   confirmSend: boolean;
-  waitForReply(from: string, replyTo: string, signal?: AbortSignal): Promise<Message>;
+  /**
+   * Atomically reserve the single reply-waiter slot. Returns a structured
+   * refusal when another blocking ask already holds it, so concurrent calls
+   * never observe a rejected promise.
+   */
+  beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
   replyTracker: ReplyTracker;
+  /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
   hasReplyWaiter(): boolean;
-  rejectReplyWaiter(error: Error): void;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, resolveSessionTarget, waitForReply, replyTracker, hasReplyWaiter, rejectReplyWaiter } = deps;
+  const { ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait, replyTracker, hasReplyWaiter } = deps;
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
@@ -206,7 +211,7 @@ Usage:
               details: { error: true },
             };
           }
-          let replyPromise: Promise<Message> | null = null;
+          let wait: ReplyWait | null = null;
 
           try {
             const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
@@ -225,7 +230,15 @@ Usage:
               };
             }
             const questionId = randomUUID();
-            replyPromise = waitForReply(sendTo, questionId, _signal);
+            const admission = beginReplyWait(sendTo, questionId, _signal);
+            if (!admission.ok) {
+              return {
+                content: [{ type: "text", text: admission.reason === "busy" ? "Already waiting for a reply" : "Cancelled" }],
+                isError: true,
+                details: { error: true },
+              };
+            }
+            wait = admission.wait;
             const sendResult = await connectedClient.send(sendTo, {
               messageId: questionId,
               text: message,
@@ -236,14 +249,7 @@ Usage:
 
             if (!sendResult.delivered) {
               const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
-              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered: ${errorText}`));
-              if (replyPromise) {
-                try {
-                  await replyPromise;
-                } catch {
-                  // The waiter was already rejected above. Keep the delivery failure as the only error here.
-                }
-              }
+              wait.cancel(new Error(`Message to "${to}" was not delivered: ${errorText}`));
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
@@ -256,7 +262,7 @@ Usage:
               messageId: sendResult.id,
               timestamp: Date.now(),
             });
-            const replyMessage = await replyPromise;
+            const replyMessage = await wait.promise;
             const replyText = replyMessage.content.text;
             const replyAttachments = replyMessage.content.attachments?.length
               ? formatAttachments(replyMessage.content.attachments)
@@ -273,14 +279,9 @@ Usage:
               details: {},
             };
           } catch (error) {
-            rejectReplyWaiter(toError(error));
-            if (replyPromise) {
-              try {
-                await replyPromise;
-              } catch {
-                // The waiter is cleanup-only on this path. The real failure is the one from the outer catch.
-              }
-            }
+            // Settle only this call's own waiter; a concurrent call's
+            // reservation must never be torn down from this failure path.
+            wait?.cancel(toError(error));
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
               isError: true,
