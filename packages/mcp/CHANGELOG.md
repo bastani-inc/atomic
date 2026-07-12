@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Changed
 
 - Aligned the MCP extension peer dependencies with upstream `pi-ai`/`pi-tui` `^0.80.6` as part of the consolidated Pi sync; no MCP source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).

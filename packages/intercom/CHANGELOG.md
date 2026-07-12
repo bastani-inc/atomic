@@ -4,6 +4,8 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Changed
 
 - Aligned the intercom extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no intercom source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).

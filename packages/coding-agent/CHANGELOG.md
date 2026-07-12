@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Added
 
 - Added model-capability-aware `max` thinking support across the CLI, settings, SDK/RPC/extension surfaces, Cursor model mapping, workflow stages, and bundled subagents; models still expose only the levels in their own capability maps ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).

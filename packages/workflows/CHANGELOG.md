@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Added
 
 - Added model-capability-aware `max` reasoning suffix support throughout workflow stage schemas, fallback candidates, authoring contracts, and TUI status labels ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).

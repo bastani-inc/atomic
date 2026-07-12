@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Changed
 
 - Aligned the web-access extension peer dependency with upstream `pi-tui` `^0.80.6` as part of the consolidated Pi sync; no web-access source behavior changed ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).

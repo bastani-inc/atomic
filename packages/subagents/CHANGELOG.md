@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.5-alpha.10] - 2026-07-11
+
 ### Added
 
 - Added model-capability-aware `max` reasoning suffix support to subagent model/fallback parsing and child CLI forwarding ([#1703](https://github.com/bastani-inc/atomic/issues/1703)).
