@@ -50,6 +50,18 @@ export {
   formatResumableWorkflowList,
 } from "./resume-catalog.js";
 export {
+  completedWorkflowSnapshot,
+  listCompletedFromBackend,
+  listOpenableCompletedWorkflows,
+  resolveCompletedWorkflow,
+  type CompletedWorkflowResolution,
+} from "./completed-catalog.js";
+export {
+  openCompletedDurableWorkflow,
+  type OpenCompletedDurableDeps,
+  type OpenCompletedDurableResult,
+} from "./completed-inspection.js";
+export {
   createToolPrimitive,
   createCheckpointIdGenerator,
   type WorkflowToolPrimitive,

@@ -111,6 +111,8 @@ export interface DurableWorkflowBackend {
    * resumable after failure). Used by the `/workflow resume` selector.
    */
   listResumableWorkflows(): readonly ResumableWorkflowEntry[];
+  /** List successful completed root workflows with durable checkpoint progress. */
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
 
   /** Export a session-cache entry for the given workflow (for JSONL persistence). */
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined;
@@ -274,6 +276,12 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       .map((rec) => toResumableEntry(rec.handle));
   }
 
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
+    return [...this.workflows.values()]
+      .filter((rec) => isRootWorkflow(rec.handle) && isCompletedHandle(rec.handle))
+      .map((rec) => toResumableEntry(rec.handle));
+  }
+
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined {
     const rec = this.workflows.get(workflowId);
     if (!rec) return undefined;
@@ -331,6 +339,10 @@ function isResumableHandle(handle: DurableWorkflowHandle): boolean {
   // double-resume is prevented by the command layer, which hides durable
   // entries that match an active live run.
   return (handle.status === "running" || handle.status === "paused") && hasResumeProgress(handle);
+}
+
+function isCompletedHandle(handle: DurableWorkflowHandle): boolean {
+  return handle.status === "completed" && hasResumeProgress(handle);
 }
 
 function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry {

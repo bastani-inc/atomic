@@ -217,13 +217,14 @@ export function persistDurableCacheEntry(
  * Format the resumable workflow list for display in the selector.
  */
 export function formatResumableWorkflowList(entries: readonly ResumableWorkflowEntry[]): string {
-  if (entries.length === 0) return "No resumable workflows found.";
-  const lines = entries.map((e, i) => {
-    const id = e.workflowId.slice(0, 8);
-    const status = e.status.padEnd(8);
-    const checkpoints = `${e.completedCheckpoints} checkpoint${e.completedCheckpoints === 1 ? "" : "s"}`;
-    const label = e.label ? ` "${e.label}"` : "";
-    return `  ${i + 1}. ${id}  ${status}  ${e.name}${label}  (${checkpoints})`;
+  if (entries.length === 0) return "No resumable or completed workflows found.";
+  const hasCompleted = entries.some((entry) => entry.status === "completed");
+  const lines = entries.map((entry, index) => {
+    const id = entry.workflowId.slice(0, 8);
+    const status = entry.status === "completed" ? "✓ completed" : entry.status.padEnd(8);
+    const checkpoints = `${entry.completedCheckpoints} checkpoint${entry.completedCheckpoints === 1 ? "" : "s"}`;
+    const label = entry.label ? ` "${entry.label}"` : "";
+    return `  ${index + 1}. ${id}  ${status}  ${entry.name}${label}  (${checkpoints})`;
   });
-  return `Resumable workflows:\n${lines.join("\n")}`;
+  return `${hasCompleted ? "Workflow resume targets" : "Resumable workflows"}:\n${lines.join("\n")}`;
 }

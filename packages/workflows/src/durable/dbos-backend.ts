@@ -256,6 +256,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] { return this.mem.listResumableWorkflows(); }
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[] { return this.mem.listCompletedWorkflows(); }
   toCacheEntry(workflowId: string) { return this.mem.toCacheEntry(workflowId); }
   reset(): void { this.mem.reset(); this.hydrated.clear(); this.writeQueue = Promise.resolve(); this.writeErrors = []; }
   async flush(): Promise<void> {

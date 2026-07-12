@@ -10,6 +10,7 @@ import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 export type WorkflowResumeSelectorResult =
   | { kind: "live"; runId: string }
   | { kind: "durable"; workflowId: string }
+  | { kind: "completed"; workflowId: string }
   | { kind: "close" };
 
 export interface WorkflowResumeSelectorUiSurface {
@@ -54,21 +55,25 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
   };
 }
 
-function durableWorkflowSession(entry: ResumableWorkflowEntry): WorkflowResumeSelectorItem {
+function durableWorkflowSession(
+  entry: ResumableWorkflowEntry,
+  kind: "durable" | "completed",
+): WorkflowResumeSelectorItem {
   const checkpointText = `${entry.completedCheckpoints} checkpoints`;
   const promptText = `${entry.pendingPrompts} prompts`;
-  const firstMessage = `${entry.name}  ${entry.status}  ${checkpointText}  ${promptText}`;
+  const statusText = kind === "completed" ? "✓ completed" : entry.status;
   return {
-    result: { kind: "durable", workflowId: entry.workflowId },
+    result: { kind, workflowId: entry.workflowId },
     session: {
-      path: `workflow-durable:${entry.workflowId}`,
+      path: `workflow-${kind}:${entry.workflowId}`,
       id: entry.workflowId,
-      cwd: "Durable workflow runs",
+      cwd: kind === "completed" ? "Completed workflow runs" : "Durable workflow runs",
       created: new Date(entry.createdAt),
       modified: new Date(entry.updatedAt),
       messageCount: entry.completedCheckpoints,
-      firstMessage,
-      allMessagesText: `${entry.workflowId} ${entry.name} ${entry.status} ${checkpointText} ${promptText}`,
+      firstMessage: `${entry.name}  ${statusText}  ${checkpointText}  ${promptText}`,
+      allMessagesText: `${entry.workflowId} ${entry.name} ${statusText} ${checkpointText} ${promptText}`,
+      ...(kind === "completed" ? { messageColor: "success" as const } : {}),
     },
   };
 }
@@ -76,13 +81,18 @@ function durableWorkflowSession(entry: ResumableWorkflowEntry): WorkflowResumeSe
 export function workflowResumeSelectorItems(
   liveRuns: readonly RunSnapshot[],
   durableEntries: readonly ResumableWorkflowEntry[],
+  completedEntries: readonly ResumableWorkflowEntry[] = [],
 ): WorkflowResumeSelectorItem[] {
   const liveIds = new Set(liveRuns.map((run) => run.id));
+  const durableIds = new Set(durableEntries.map((entry) => entry.workflowId));
   return [
     ...liveRuns.map(liveRunSession),
     ...durableEntries
       .filter((entry) => !liveIds.has(entry.workflowId))
-      .map(durableWorkflowSession),
+      .map((entry) => durableWorkflowSession(entry, "durable")),
+    ...completedEntries
+      .filter((entry) => !liveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
+      .map((entry) => durableWorkflowSession(entry, "completed")),
   ];
 }
 
@@ -90,11 +100,12 @@ export function openWorkflowResumeSelector(
   ui: WorkflowResumeSelectorUiSurface,
   liveRuns: readonly RunSnapshot[],
   durableEntries: readonly ResumableWorkflowEntry[],
+  completedEntries: readonly ResumableWorkflowEntry[] = [],
 ): Promise<WorkflowResumeSelectorResult> {
   const custom = ui.custom;
   if (typeof custom !== "function") return Promise.resolve({ kind: "close" });
 
-  const items = workflowResumeSelectorItems(liveRuns, durableEntries);
+  const items = workflowResumeSelectorItems(liveRuns, durableEntries, completedEntries);
 
   const resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
   const sessions = items.map((item) => item.session);

@@ -210,6 +210,8 @@ export interface SessionInfo {
 	messageCount: number;
 	firstMessage: string;
 	allMessagesText: string;
+	/** Optional semantic color for synthetic selector rows. */
+	messageColor?: "success" | "warning" | "accent";
 }
 
 export interface ContextDeletionFilters {

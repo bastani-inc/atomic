@@ -295,6 +295,7 @@ describe("resumeDurableWorkflow", () => {
       getWorkflow = this.mem.getWorkflow.bind(this.mem);
       setWorkflowStatus = this.mem.setWorkflowStatus.bind(this.mem);
       listResumableWorkflows = this.mem.listResumableWorkflows.bind(this.mem);
+      listCompletedWorkflows = this.mem.listCompletedWorkflows.bind(this.mem);
       toCacheEntry = this.mem.toCacheEntry.bind(this.mem) as (workflowId: string) => DurableCheckpointEntry | undefined;
       reset = this.mem.reset.bind(this.mem);
       async hydrateResumableWorkflows(): Promise<void> {
