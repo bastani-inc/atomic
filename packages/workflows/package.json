@@ -1,6 +1,6 @@
 {
   "name": "@bastani/workflows",
-  "version": "0.0.0",
+  "version": "0.9.7-alpha.1",
   "private": true,
   "description": "Atomic extension for multi-stage workflow authoring and execution.",
   "contributors": [
