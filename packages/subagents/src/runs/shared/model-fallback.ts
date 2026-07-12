@@ -67,6 +67,7 @@ const RETRYABLE_MODEL_FAILURE_PATTERNS: readonly RegExp[] = [
 	/too many requests/i,
 	/\b429\b/,
 	/quota/i,
+	/usage\s*limit/i, // usage-limit exhaustion is a quota condition; next candidate may have headroom
 	/billing/i,
 	/credit/i,
 	/auth(?:entication)?/i,
@@ -275,7 +276,7 @@ function refusalKindFromCode(code: string | number | undefined): ModelFallbackFa
 const CODE_KINDS_BY_KIND: ReadonlyArray<readonly [ModelFallbackFailureKind, ReadonlySet<string>]> = [
 	["auth_on_candidate_provider", new Set(["auth", "auth_required", "authentication_required", "unauthorized", "forbidden", "invalid_api_key", "missing_api_key", "invalid_key"])],
 	["network_timeout", new Set(["etimedout", "econnreset", "econnrefused", "enotfound", "eai_again", "fetch_failed", "network_error", "timeout", "timeout_error", "und_err_connect_timeout"])],
-	["rate_limit", new Set(["rate_limit", "rate_limit_exceeded", "too_many_requests", "quota_exceeded"])],
+	["rate_limit", new Set(["rate_limit", "rate_limit_exceeded", "too_many_requests", "quota_exceeded", "insufficient_quota", "usage_limit", "usage_limit_reached", "usage_limit_exceeded"])],
 	["cancelled", new Set(["aborterror", "aborted", "cancelled", "canceled"])],
 	["model_unavailable", new Set(["model_not_found", "model_unavailable", "model_disabled", "unknown_model"])],
 	["provider_unavailable", new Set(["provider_error", "api_error", "service_unavailable", "temporarily_unavailable", "overloaded"])],
@@ -326,7 +327,7 @@ function fallbackKindFromMessage(message: string, name: string | undefined): Mod
 	const nameKind = kindFromCode(name);
 	if (nameKind !== undefined) return nameKind;
 	if (!RETRYABLE_MODEL_FAILURE_PATTERNS.some((pattern) => pattern.test(message))) return undefined;
-	if (/rate\s*limit|too many requests|\b429\b|quota|billing|credit/i.test(message)) return "rate_limit";
+	if (/rate\s*limit|too many requests|\b429\b|quota|usage\s*limit|billing|credit/i.test(message)) return "rate_limit";
 	if (/auth|unauthori[sz]ed|\b40[13]\b|api key|token expired|forbidden|invalid key/i.test(message)) return "auth_on_candidate_provider";
 	if (/model.*(?:unavailable|disabled|not found|unknown)|(?:unavailable|disabled|not found|unknown).*model/i.test(message)) return "model_unavailable";
 	if (/network|fetch failed|socket|connection refused|timeout|timed? out/i.test(message)) return "network_timeout";
