@@ -237,26 +237,29 @@ describe("ralph", () => {
                 ?.forkFromSessionFile,
             "/tmp/ralph-research-prompt-refinement-1.jsonl",
         );
-        assert.equal(
-            (
-                ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? ""
-            ).startsWith(
-                "/skill:prompt-engineer Transform the following user request",
-            ),
-            true,
+        const forkedRefinementPrompt =
+            ctx.calls.prompts["research-prompt-refinement-2"]?.[0] ?? "";
+        // Forked continuations inherit the skill, request, and contracts from
+        // the forked session history and must not repeat them.
+        assert.doesNotMatch(forkedRefinementPrompt, /\/skill:prompt-engineer/);
+        assert.match(
+            forkedRefinementPrompt,
+            /Transform the same user request into an updated research question/,
         );
+        assert.doesNotMatch(forkedRefinementPrompt, /<literal_contract>/);
 
         assert.equal(ctx.calls.taskOptions["research-2"]?.[0]?.context, "fork");
         assert.equal(
             ctx.calls.taskOptions["research-2"]?.[0]?.forkFromSessionFile,
             "/tmp/ralph-research-1.jsonl",
         );
-        assert.equal(
-            (ctx.calls.prompts["research-2"]?.[0] ?? "").startsWith(
-                "/skill:research-codebase ",
-            ),
-            true,
+        const forkedResearchPrompt = ctx.calls.prompts["research-2"]?.[0] ?? "";
+        assert.doesNotMatch(forkedResearchPrompt, /\/skill:research-codebase/);
+        assert.match(
+            forkedResearchPrompt,
+            /Research this updated question against the current repository state/,
         );
+        assert.doesNotMatch(forkedResearchPrompt, /<literal_contract>/);
 
         assert.equal(
             ctx.calls.taskOptions["orchestrator-2"]?.[0]?.context,
@@ -272,12 +275,18 @@ describe("ralph", () => {
             forkedOrchestratorPrompt,
             /Continue implementing from the latest research findings/i,
         );
+        // The forked orchestrator inherits contracts, E2E guidance, and the
+        // report format from its forked history and must not repeat them.
         assert.match(
+            forkedOrchestratorPrompt,
+            /previously established guidance still applies unchanged/i,
+        );
+        assert.doesNotMatch(
             forkedOrchestratorPrompt,
             /Verify correctness end-to-end whenever practical/,
         );
-        assert.match(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
-        assert.match(forkedOrchestratorPrompt, /skill: "tmux"/);
+        assert.doesNotMatch(forkedOrchestratorPrompt, /skill: "playwright-cli"/);
+        assert.doesNotMatch(forkedOrchestratorPrompt, /<acceptance_matrix>/);
         assert.doesNotMatch(
             ctx.calls.prompts["orchestrator-2"]?.[0] ?? "",
             /project_initialization_preflight/,

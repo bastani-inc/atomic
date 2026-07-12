@@ -13,6 +13,11 @@ import {
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
 import {
+  renderForkedOrchestratorPrompt,
+  renderForkedResearchPrompt,
+  renderForkedResearchPromptRefinementPrompt,
+} from "./ralph-forked-prompts.js";
+import {
   REVIEWER_COUNT,
   artifactSafeName,
   compactReviewReport,
@@ -20,7 +25,6 @@ import {
   createQaEvidenceVideoPath,
   defaultResearchPath,
   forkContinuationOptions,
-  renderForkedOrchestratorPrompt,
   renderResearchPromptRefinementPrompt,
   renderQaE2eVideoGuidance,
   renderResearchPrompt,
@@ -69,12 +73,14 @@ export async function runRalphWorkflow(
     iterationsCompleted = iteration;
     const researchPromptRefinementForkOptions = forkContinuationOptions(previousResearchPromptRefinementSessionFile);
     const researchPromptRefinement = await ctx.task(`research-prompt-refinement-${iteration}`, {
-      prompt: renderResearchPromptRefinementPrompt({
-        request: workflowPrompt,
-        acceptanceCriteria,
-        workflowCwdContext,
-        latestReviewReportPath,
-      }),
+      prompt: researchPromptRefinementForkOptions.forkFromSessionFile === undefined
+        ? renderResearchPromptRefinementPrompt({
+            request: workflowPrompt,
+            acceptanceCriteria,
+            workflowCwdContext,
+            latestReviewReportPath,
+          })
+        : renderForkedResearchPromptRefinementPrompt({ latestReviewReportPath }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       ...promptEngineerModelConfig,
       ...researchPromptRefinementForkOptions,
@@ -83,14 +89,20 @@ export async function runRalphWorkflow(
     finalPlan = researchPromptRefinement.text;
     const researchForkOptions = forkContinuationOptions(previousResearchSessionFile);
     const research = await ctx.task(`research-${iteration}`, {
-      prompt: renderResearchPrompt({
-        transformedResearchQuestion: researchPromptRefinement.text,
-        prompt: workflowPrompt,
-        acceptanceCriteria,
-        workflowCwdContext,
-        latestReviewReportPath,
-        researchPath: workflowResearchPath,
-      }),
+      prompt: researchForkOptions.forkFromSessionFile === undefined
+        ? renderResearchPrompt({
+            transformedResearchQuestion: researchPromptRefinement.text,
+            prompt: workflowPrompt,
+            acceptanceCriteria,
+            workflowCwdContext,
+            latestReviewReportPath,
+            researchPath: workflowResearchPath,
+          })
+        : renderForkedResearchPrompt({
+            transformedResearchQuestion: researchPromptRefinement.text,
+            latestReviewReportPath,
+            researchPath: workflowResearchPath,
+          }),
       reads: latestReviewReportPath === undefined ? [] : [latestReviewReportPath],
       output: workflowResearchPath,
       outputMode: "file-only",
@@ -205,12 +217,8 @@ export async function runRalphWorkflow(
         ],
       ])
       : renderForkedOrchestratorPrompt({
-          prompt: workflowPrompt,
-          acceptanceCriteria,
-          workflowCwdContext,
           researchPath,
           implementationNotesPath,
-          qaVideoPath,
         });
     const orchestrator = await ctx.task(`orchestrator-${iteration}`, {
       prompt: orchestratorPrompt,

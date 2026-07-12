@@ -90,8 +90,18 @@ describe("goal convergence contracts", () => {
         const forkedWorkerPrompt = ctx.calls.prompts["work-turn-2"]?.[0] ?? "";
         for (const pattern of WORKER_CONTRACT_PATTERNS) {
             assert.match(freshWorkerPrompt, pattern, `fresh worker: ${pattern}`);
-            assert.match(forkedWorkerPrompt, pattern, `forked worker: ${pattern}`);
+            // Forked continuations inherit the contracts from the forked
+            // session history and must not repeat them.
+            assert.doesNotMatch(
+                forkedWorkerPrompt,
+                pattern,
+                `forked worker repeats: ${pattern}`,
+            );
         }
+        assert.match(
+            forkedWorkerPrompt,
+            /previously established guidance still applies unchanged/i,
+        );
         assert.match(
             forkedWorkerPrompt,
             /consolidated_findings batch is listed, read it first/i,

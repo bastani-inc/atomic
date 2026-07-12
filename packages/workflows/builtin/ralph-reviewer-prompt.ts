@@ -40,7 +40,7 @@ export function renderRalphReviewerPrompt(args: {
       "comparison_baseline",
       [
         `The baseline branch for comparison is \`${args.comparisonBaseBranch}\`.`,
-        "Compare the current working tree against this baseline branch, not against previous workflow reasoning or expected loop progress.",
+        "Compare the current working tree against this baseline branch.",
         `Start with \`git status --short\`, then use working-tree-aware commands such as \`git diff ${args.comparisonBaseBranch}\` and \`git diff --cached ${args.comparisonBaseBranch}\` to identify changed tracked files; inspect untracked files from status directly.`,
       ].join("\n"),
     ],
@@ -126,7 +126,7 @@ export function renderRalphReviewerPrompt(args: {
       "review_stage_contract",
       [
         "The structured review decision is only valid after you inspect the actual repository state and compare it against the stated baseline branch.",
-        "Do not approve based solely on workflow stage summaries or prior agent reasoning.",
+        "Do not approve based solely on summaries in the provided context artifacts.",
         "The tool call is the final verdict after review work, not a shortcut around review work.",
       ].join("\n"),
     ],

@@ -209,7 +209,6 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         : renderForkedGoalWorkerPrompt(
             ledger,
             ledgerPath,
-            blockerThreshold,
             latestReviewArtifactPaths,
           );
 
