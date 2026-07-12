@@ -4,11 +4,11 @@
 
 Workflows are how Atomic runs executable engineering loops: reusable multi-stage automation with tracked stages, parallel branches, artifacts, human input, live status, checkpoints, and resumable background execution.
 
-Use the least orchestration that reliably fits the user's intent. Keep interactive, exploratory, conceptual, and conversation-led work in direct chat so the user can steer it. Use a single subagent or bounded subagent chain/parallel fan-out for specialist delegation while the parent remains in control. Multiple steps, files, tests, validation, or parallelism alone do not require a workflow.
+Default to a workflow for non-trivial work and for requests with inherent structure plus a verifiable objective. That includes implementation, build, debugging, bug fixes, migrations, features, scoped multi-file edits, and docs/code changes where validation matters, as well as work with dependencies, handoffs, review gates, uncertainty, measurable done criteria, or evidence requirements. Direct chat remains appropriate for tiny, deterministic, low-risk answers or edits where tracking clearly adds more overhead than value.
 
-Use a workflow when the user clearly delegates a well-defined autonomous job that is likely long-running or background-oriented, or when it materially needs durable stages, artifacts/checkpoints, resumability, human input, gates, retries, or bounded loops. When workflow execution fits, Atomic may always author a custom TypeScript `workflow({...})` inline with normal coding tools if that shape best achieves the task; it is not limited to installed workflows or direct modes. Named workflows may come from Atomic builtins, the project, the user, or an installed package. Direct `task`, `tasks`, and `chain` modes provide one-off tracked shapes; richer branches, loops, gates, child workflows, or HIL can use the custom definition, which Atomic reloads and runs.
+Workflow-first does not mean builtin-only. Use named builtin, project, user, or package workflows when they fit; use direct `task`, `tasks`, and `chain` modes for simple one-off tracked shapes; and author a custom TypeScript `workflow({...})` inline with normal coding tools whenever the task needs richer branching, dynamic fan-out, artifacts, structured outputs, child workflows, human input, gates, retries, or loops. Atomic can write the definition, reload workflow resources, and run it for the current task.
 
-Loop or stop-condition phrasing is a key workflow signal, especially `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, and `keep going until done`. When the user asks Atomic to execute such a loop, prefer a workflow so its stop condition, retries, evidence, and convergence are explicit and tracked. A conversation about how such a loop should work can remain inline until the user delegates execution.
+Loop or stop-condition phrasing is an especially strong workflow signal: `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, and `keep going until done` already define control flow and convergence criteria that should be tracked.
 
 **Key capabilities:**
 - **Tracked stages** - Name each step and inspect it in workflow status and graph views
@@ -421,19 +421,19 @@ Prompt answers are replayable only while the source run remains in the live in-m
 
 ## When to Use Workflows
 
-Choose the least orchestration that reliably fits the user's intent:
+Workflows are the default execution path when a request is non-trivial or combines inherent structure with a verifiable objective. Choose a workflow before direct chat when the prompt includes any of these signals:
 
-- **Inline:** interactive exploration, conceptual debugging, conversation-led design, and work the user is actively steering.
-- **Subagents:** bounded specialist delegation through a single agent, chain, or parallel fan-out while the parent stays in control.
-- **Workflows:** clearly delegated, well-defined autonomous jobs that are likely long-running/background-oriented or materially need durable stage tracking, artifacts/checkpoints, resumability, human-in-the-loop prompts, gates, retries, or bounded loops.
+- implementation, build, debugging/diagnosis, bug-fix, migration, new-feature, scoped multi-file, or validated docs/code work
+- multiple subtasks, dependencies, handoffs, uncertainty, or parallel/sequential stages
+- review, validation, QA, approval, evidence, or human-input gates
+- long-running or resumable background execution, saved artifacts, or important model fallback chains
+- reusable automation or a loop/stop condition such as `do X until Y`, `review/fix until passing`, or `run checks and fix until green`
 
-Multiple steps, dependencies, files, tests, validation, review, or parallelism alone do not require a workflow. A workflow becomes useful when its durable execution semantics add material value, not merely because ordinary engineering work has structure. Conversely, when the user clearly delegates a long-running autonomous job, run an appropriate workflow rather than stretching an inline turn or ad hoc subagent composition indefinitely.
+Use direct chat only for tiny, deterministic, low-risk answers or edits where stage tracking clearly costs more than it adds, typically a single-file/no-test/no-review change. Decide inline versus workflow before the first tool call; reconnaissance is already inline execution. Once workflow fit is clear, limit pre-workflow reconnaissance to the few reads needed to sharpen the objective and validation criteria, and put deeper research or behavior probing inside the run.
 
-Loop or stop-condition phrasing is a key workflow signal: `do X until Y`, `repeat until`, `iterate until`, `review/fix until passing`, `run checks and fix until green`, and `keep going until done` already describe control flow plus a completion condition. When the user delegates execution of that loop, prefer a workflow so convergence and evidence are tracked rather than managed as an ad hoc sequence of turns.
+Do not confuse workflow-first with force-fitting a builtin. Discover named builtin, project, user, and package workflows; use direct `task`, `tasks`, or `chain` calls for simple tracked shapes; or write a task-specific TypeScript `workflow({...})` inline with normal coding tools. Rich custom workflows can compose the starter patterns below: classify and branch at runtime, fan out and synthesize artifacts, run worker/verifier/reducer repair cycles, generate and filter or tournament-rank candidates, and loop until explicit evidence says the work is done. Write the definition, reload workflow resources, and run it; the workflow tool has no create action.
 
-Named workflows are not limited to builtins: discovery includes project, user, and package-supplied definitions. Direct `workflow({ task })`, `workflow({ tasks })`, and `workflow({ chain })` calls cover one-off tracked shapes. Once workflow fit is established, Atomic may always author a custom TypeScript `workflow({...})` inline with normal coding tools when that shape best achieves the user's task; it need not reuse an installed workflow or fit a direct mode. Write the definition, reload workflow resources, and run it. The workflow tool has no create action, and there is no need to force-fit `goal` or `ralph`.
-
-If inline exploration later reveals a genuine workflow need, preserve useful context in files/artifacts and pass their paths through `reads`; there is no fixed tool-call escalation threshold.
+If inline work drifts past roughly ten exploratory tool calls without an artifact, edit, or commit, or repeats a "verify one more thing" loop, save the findings to a context file and hand the task to the best-fit named or custom workflow through `reads`. Sunk research is transferable, not a reason to continue inline.
 
 | User goal | Use |
 |-----------|-----|

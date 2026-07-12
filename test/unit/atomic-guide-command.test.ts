@@ -39,28 +39,26 @@ describe("/atomic guide command", () => {
     assert.match(getAtomicGuideMessage(normalizeAtomicGuideMode("what's new"), cwd), /^# What's new/);
   });
 
-  test("explains intent-first goal versus ralph routing across onboarding sections", () => {
+  test("explains workflow-first routing and custom workflow authoring", () => {
     const cwd = "/repo";
     const overview = getAtomicGuideMessage(normalizeAtomicGuideMode("overview"), cwd);
     const example = getAtomicGuideMessage(normalizeAtomicGuideMode("example"), cwd);
     const workflows = getAtomicGuideMessage(normalizeAtomicGuideMode("workflows"), cwd);
     const onboarding = `${overview}\n${example}\n${workflows}`;
 
-    assert.match(overview, /`goal` \| autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion/);
-    assert.match(overview, /`ralph` \| autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review/);
-    assert.match(example, /Keep interactive or conversation-led implementation inline\. Use bounded subagents when specialist delegation helps/);
-    assert.match(example, /clearly delegates an autonomous job whose long-running\/background nature or durable execution needs justify it/);
-    assert.match(workflows, /\| `goal` \| autonomous work that benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion/);
-    assert.match(workflows, /\| `ralph` \| autonomous work that benefits from a durable research-first pipeline, delegated implementation, and iterative review/);
+    assert.match(overview, /Default to a workflow for implementation, build, debugging/);
+    assert.match(overview, /author a custom TypeScript `workflow\(\{\.\.\.\}\)` inline/);
+    assert.match(example, /Default to a workflow for non-trivial implementation and review/);
+    assert.match(example, /author a custom TypeScript workflow inline from the starter patterns/);
+    assert.match(workflows, /Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective/);
+    assert.match(workflows, /classify-and-act routing, dynamic fan-out and synthesis, adversarial verification/);
 
-    for (const stalePolicy of [
-      "small-to-medium scoped changes when you can name the work surface",
-      "larger migrations, new features, broad refactors, and multi-package changes",
-      "loop wording like review/fix/test until passing is workflow-shaped",
-      "reserve direct debugger/subagent calls for narrow diagnosis or truly tiny deterministic fixes",
-      "for bounded scoped work with explicit validation",
+    for (const regressionPolicy of [
+      "Multiple steps, files, tests, validation, or parallelism alone do not require a workflow",
+      "choose a workflow only when the user clearly delegates",
+      "there is no fixed tool-call escalation threshold",
     ]) {
-      assert.doesNotMatch(onboarding, new RegExp(stalePolicy));
+      assert.doesNotMatch(onboarding, new RegExp(regressionPolicy));
     }
   });
 

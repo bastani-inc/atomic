@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Aligned model-facing subagent guidance with workflow-first routing: subagents remain focused specialists inside workflow stages or bounded direct delegation, rather than becoming an ad hoc implementation/review/retry pipeline for workflow-fit work.
+
 ## [0.9.5] - 2026-07-11
 
 ### Added
