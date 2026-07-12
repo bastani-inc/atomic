@@ -1,5 +1,10 @@
 import type { BlockerObservation, GoalLedger, ReducerOutcome, ReviewRecord } from "./goal-types.js";
-import { summarizeReviewConvergence, type ReviewNextAction } from "./review-convergence.js";
+import {
+  closureGapSummary,
+  summarizeReviewConvergence,
+  unresolvedClosureFindings,
+  type ReviewNextAction,
+} from "./review-convergence.js";
 
 function reducerSummary(
   reviews: readonly ReviewRecord[],
@@ -89,8 +94,25 @@ export function reduceGoalDecision(
   const completeVotes = turnReviews.filter(
     (review) => review.decision === "complete",
   ).length;
+  const quorumMet = completeVotes >= options.reviewQuorum;
 
-  if (completeVotes >= options.reviewQuorum) {
+  // Evidence closure: reviewer agreement alone cannot complete the run. Any
+  // objective-relevant blocking finding from ANY reviewer in the current round
+  // vetoes completion until it is resolved with evidence or reclassified
+  // against the literal contract, even when quorum is met. The loop stays
+  // bounded by max_turns and stops inspectably below.
+  const unresolvedFindings = unresolvedClosureFindings(
+    turnReviews.map((review) => ({
+      reviewer: review.reviewer,
+      findings: review.findings,
+    })),
+  );
+  const closureVeto = quorumMet && unresolvedFindings.length > 0;
+  const closureVetoReason = closureVeto
+    ? `Reviewer quorum met (${completeVotes}/${options.reviewQuorum}) without evidence closure: ${closureGapSummary(unresolvedFindings)}. Severity labels alone cannot dismiss objective-relevant findings; resolve them with evidence or reclassify them against the literal contract.`
+    : undefined;
+
+  if (quorumMet && unresolvedFindings.length === 0) {
     const summary = reducerSummary(turnReviews, true, options.nextActionOnComplete);
     return {
       status: "complete",
@@ -98,7 +120,7 @@ export function reduceGoalDecision(
         ...summary,
         turn: options.turn,
         decision: "complete",
-        reason: `Reviewer quorum met: ${completeVotes}/${options.reviewQuorum} reviewers marked complete.`,
+        reason: `Reviewer quorum met with evidence closure: ${completeVotes}/${options.reviewQuorum} reviewers marked complete and no objective-relevant blocking findings remain.`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
       },
@@ -138,7 +160,9 @@ export function reduceGoalDecision(
         ...reducerSummary(turnReviews, false, "needs_human"),
         turn: options.turn,
         decision: "needs_human",
-        reason: `Worker attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
+        reason: closureVetoReason !== undefined
+          ? `Worker attempt budget reached without evidence closure. ${closureVetoReason}`
+          : `Worker attempt budget reached without reviewer quorum. Remaining work: ${collectRemainingWork(turnReviews)}`,
         complete_votes: completeVotes,
         review_quorum: options.reviewQuorum,
         ...(observation ? { blocker: observation.blocker } : {}),
@@ -153,7 +177,7 @@ export function reduceGoalDecision(
       ...reducerSummary(turnReviews, false, "implementation"),
       turn: options.turn,
       decision: "continue",
-      reason: `Reviewer quorum not met. Remaining work: ${collectRemainingWork(turnReviews)}`,
+      reason: closureVetoReason ?? `Reviewer quorum not met. Remaining work: ${collectRemainingWork(turnReviews)}`,
       complete_votes: completeVotes,
       review_quorum: options.reviewQuorum,
       ...(observation ? { blocker: observation.blocker } : {}),

@@ -50,3 +50,43 @@ export const LITERAL_OBJECTIVE_CONTRACT = [
 
 export const REVIEWER_SPEC_VS_OBJECTIVE_GUARD =
   "Do not use external spec/standard conformance alone to flag a wide trigger surface for an error condition the objective/acceptance criteria enumerate; the contract prefers loud errors over silent reinterpretation of ambiguous inputs, so classify such spec-vs-objective tension as beyond_objective rather than a blocking defect.";
+
+export const ACCEPTANCE_MATRIX_CONTRACT = [
+  "Acceptance/contract matrix:",
+  "- Before implementing, derive an observable acceptance matrix from the literal objective and acceptance criteria: one row per explicit clause, requirement, named artifact, command, gate, invariant, and deliverable, each mapped to the concrete observable check (command, test, executable scenario, artifact inspection, or state assertion) that would prove it in the current checkout.",
+  "- Record the matrix in the receipt/implementation notes on the first turn and keep it current as work proceeds; every later completion claim must map back to matrix rows with current evidence.",
+  "- The matrix inherits the literal contract's scope: do not add rows for behavior the objective/acceptance criteria do not require, and do not drop rows because they are inconvenient to prove.",
+  "",
+  "Stateful behavior modeling:",
+  "- When the work involves stateful behavior (lifecycles, sessions, caches, persisted data, protocols, retries, concurrency, or multi-step flows), model the state space explicitly before implementing: enumerate the states, the legal transitions between them, the invariants that must hold in every state, and how illegal transitions or unexpected inputs are handled.",
+  "- Tie matrix rows for stateful clauses to specific states, transitions, and invariants so their checks exercise transitions and invariant preservation, not just happy-path end states.",
+].join("\n");
+
+export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [
+  "Independent verification derivation:",
+  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes, and state/transition/invariant probes for stateful behavior.",
+  "- Execute or delegate the highest-value derived checks against the current repository state before mapping worker evidence to requirements.",
+  "- Worker-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing worker-authored tests is circular evidence for the clauses those tests were written from.",
+  "- Keep derived checks inside the literal contract's scope; do not manufacture requirements beyond the objective/acceptance criteria.",
+].join("\n");
+
+export const REGRESSION_EVIDENCE_CONTRACT = [
+  "Durable regression evidence:",
+  "- When a defect or reviewer finding has been reproduced (observed through a command, test, or executable scenario), its fix is complete only with durable regression evidence: a focused test or repeatable check persisted in the repository's test suite where project norms allow, otherwise an exact re-runnable command with its observed output recorded in the receipt/notes.",
+  "- Treat a reproduced finding whose fix lacks durable regression evidence as unresolved; a one-off manual re-check is not durable evidence.",
+  "- Match the regression check to the reproduction: it must demonstrably cover the failing scenario (fail before the fix or provably exercise it) and pass after the fix.",
+].join("\n");
+
+export const FINDINGS_CONSOLIDATION_CONTRACT = [
+  "Consolidated findings batch:",
+  "- Treat the latest review round as one consolidated batch of findings, not a queue to repair one item per turn.",
+  "- Read every blocking finding first, group findings that share a root cause, plan the batch, then repair the full batch in this turn together with the validation and durable regression evidence each fix needs.",
+  "- Only defer a finding out of the batch when it is genuinely blocked or it contradicts the literal contract; record the reason in the receipt.",
+].join("\n");
+
+export const EVIDENCE_CLOSURE_POLICY = [
+  "Evidence closure:",
+  "- Approval is evidence closure, not reviewer agreement alone: the loop completes only when the review gate approves and no objective-relevant blocking finding from any reviewer remains unresolved.",
+  "- Severity/priority labels alone never dismiss an objective-relevant finding: a finding classified required_by_objective stays blocking at any priority (P3 included) until evidence shows it is fixed or it is reclassified against the literal contract.",
+  "- The loop is bounded: when the turn budget ends before closure, the run stops with the unresolved findings and remaining work recorded for a human instead of relabeling them away.",
+].join("\n");

@@ -3,14 +3,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { WorkflowTaskResult } from "../src/shared/types.js";
-import { E2E_VERIFICATION_GUIDANCE, LITERAL_OBJECTIVE_CONTRACT } from "./shared-prompts.js";
-import type { ReviewDecision } from "./ralph-review-gate.js";
+import {
+  ACCEPTANCE_MATRIX_CONTRACT,
+  E2E_VERIFICATION_GUIDANCE,
+  FINDINGS_CONSOLIDATION_CONTRACT,
+  LITERAL_OBJECTIVE_CONTRACT,
+  REGRESSION_EVIDENCE_CONTRACT,
+} from "./shared-prompts.js";
+import type { ReviewDecision, ReviewFinding } from "./ralph-review-gate.js";
 import { reviewDecisionApproved } from "./ralph-review-gate.js";
 import {
   parseFailureDiagnostics,
   finalActionRemaining,
   reviewerFailureText,
   summarizeReviewConvergence,
+  type ConsolidatedFinding,
   type ParsedReviewDecision,
   type ReviewConvergenceSummary,
 } from "./review-convergence.js";
@@ -292,6 +299,7 @@ type ReviewArtifact = {
 
 type ReviewRoundArtifact = {
   readonly convergence_decision: ReviewConvergenceSummary;
+  readonly consolidated_findings?: readonly ConsolidatedFinding<ReviewFinding>[];
   readonly reviews: readonly {
     readonly reviewer: string;
     readonly artifact_path: string;
@@ -414,6 +422,9 @@ export function renderForkedOrchestratorPrompt(args: {
     ["objective", `Implement the full requested task: ${args.prompt}`],
     ["acceptance_criteria", args.acceptanceCriteria],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
+    ["findings_batch", FINDINGS_CONSOLIDATION_CONTRACT],
+    ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
     args.workflowCwdContext,
     [
       "research",

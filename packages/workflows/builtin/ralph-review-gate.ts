@@ -1,4 +1,7 @@
-import { traceabilityProvenExceptFinalAction } from "./review-convergence.js";
+import {
+  findingBlocksClosure,
+  traceabilityProvenExceptFinalAction,
+} from "./review-convergence.js";
 
 /**
  * Review-gate severity logic for the builtin `ralph` workflow.
@@ -10,15 +13,21 @@ import { traceabilityProvenExceptFinalAction } from "./review-convergence.js";
  * loop iterate forever in those cases despite unanimous "patch is correct"
  * verdicts.
  *
- * Approval is therefore severity-aware and deterministic. A single reviewer
+ * Approval is therefore alignment- and severity-aware, deterministic, and
+ * computed by the shared evidence-closure predicate
+ * (`findingBlocksClosure` in ./review-convergence.ts). A single reviewer
  * approves when it judged the patch correct, reported no `reviewer_error`, and
  * filed no *blocking* finding:
  *
- * - Blocking  = P0/P1/P2 (numeric priority 0, 1, or 2).
- * - Non-blocking = P3 (numeric priority 3) — a nice-to-have that should not keep
- *   the loop spinning.
- * - A finding whose priority cannot be determined (`null`/`undefined`) is treated
- *   as blocking, so genuine ambiguity never silently approves.
+ * - `required_by_objective` findings block at ANY priority (P3 included):
+ *   severity labels alone never dismiss objective-relevant findings.
+ * - `consistent_with_objective` findings block at P0/P1/P2 (numeric priority
+ *   0, 1, or 2); P3 is a non-blocking nice-to-have that should not keep the
+ *   loop spinning.
+ * - `beyond_objective` / `contradicts_objective` findings never block.
+ * - A finding whose priority cannot be determined (`null`/`undefined`) or
+ *   whose alignment is missing is treated as blocking, so genuine ambiguity
+ *   never silently approves.
  *
  * The decision is computed from the structured findings rather than the
  * reviewer's self-reported `stop_review_loop` boolean, so the gate does not
@@ -73,28 +82,22 @@ export type ReviewDecision = {
 };
 
 /**
- * Highest finding priority that still blocks approval. P0=0, P1=1, P2=2 block;
- * P3=3 does not.
+ * Highest finding priority that still blocks approval for
+ * `consistent_with_objective` findings. P0=0, P1=1, P2=2 block; P3=3 does not.
+ * `required_by_objective` findings block regardless of priority.
+ * Re-exported from the shared evidence-closure module.
  */
-export const MAX_BLOCKING_PRIORITY = 2;
+export { MAX_BLOCKING_PRIORITY } from "./review-convergence.js";
 
 /**
- * True when a finding must keep the review loop iterating. P0/P1/P2 block; P3 is
- * a non-blocking nice-to-have. A finding without a determinable priority
- * (`null`/`undefined`) is treated as blocking so ambiguity never silently
- * approves.
+ * True when a finding must keep the review loop iterating. Delegates to the
+ * shared evidence-closure predicate so Goal and Ralph gate findings
+ * identically: objective-required findings block at any priority, in-scope
+ * P3 nice-to-haves do not, and ambiguity (missing priority or alignment)
+ * always blocks.
  */
 export function isBlockingFinding(finding: ReviewFinding): boolean {
-  const alignment = finding.objective_alignment;
-  if (alignment === "beyond_objective" || alignment === "contradicts_objective") {
-    return false;
-  }
-  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
-    return true;
-  }
-  const priority = finding.priority;
-  if (priority === undefined || priority === null) return true;
-  return priority <= MAX_BLOCKING_PRIORITY;
+  return findingBlocksClosure(finding);
 }
 
 /**

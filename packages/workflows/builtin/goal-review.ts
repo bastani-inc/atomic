@@ -2,6 +2,7 @@ import type { WorkflowTaskResult } from "../src/shared/types.js";
 import type { ReviewDecision, ReviewRecord } from "./goal-types.js";
 import {
   finalActionRemaining,
+  findingBlocksClosure,
   parseFailureDiagnostics,
   summarizeReviewConvergence,
   traceabilityProvenExceptFinalAction,
@@ -28,18 +29,12 @@ export function parsedReviewDecisionFromResult(
   };
 }
 
-const NON_BLOCKING_ALIGNMENTS = new Set([
-  "beyond_objective",
-  "contradicts_objective",
-]);
-
 function findingBlocksApproval(finding: ReviewDecision["findings"][number]): boolean {
-  const alignment = finding.objective_alignment;
-  if (NON_BLOCKING_ALIGNMENTS.has(alignment)) return false;
-  if (alignment !== "required_by_objective" && alignment !== "consistent_with_objective") {
-    return true;
-  }
-  return finding.priority !== 3;
+  // Shared evidence-closure predicate: required_by_objective findings block at
+  // any priority (severity labels alone never dismiss objective-relevant
+  // findings); consistent_with_objective P3 nits stay non-blocking;
+  // beyond/contradicts_objective findings never block.
+  return findingBlocksClosure(finding);
 }
 
 function traceabilityApproves(

@@ -1,6 +1,9 @@
 import {
   E2E_VERIFICATION_GUIDANCE,
+  EVIDENCE_CLOSURE_POLICY,
   LITERAL_OBJECTIVE_CONTRACT,
+  REGRESSION_EVIDENCE_CONTRACT,
+  REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT,
   REVIEWER_SPEC_VS_OBJECTIVE_GUARD,
   renderE2eQaVideoReviewGuidance,
 } from "./shared-prompts.js";
@@ -29,6 +32,9 @@ export function renderRalphReviewerPrompt(args: {
     ["objective", `Review the current code delta for the task: ${args.workflowPrompt}`],
     ["acceptance_criteria", args.acceptanceCriteria],
     ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+    ["independent_verification", REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT],
+    ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
+    ["evidence_closure", EVIDENCE_CLOSURE_POLICY],
     args.workflowCwdContext,
     [
       "comparison_baseline",
@@ -98,7 +104,7 @@ export function renderRalphReviewerPrompt(args: {
       "comment_guidelines",
       [
         "Each finding title must start with a priority tag: [P0] drop-everything blocker, [P1] urgent next-cycle fix, [P2] normal fix, [P3] low-priority nice-to-have.",
-        "Also include numeric priority: 0 for P0, 1 for P1, 2 for P2, 3 for P3; use null only if priority genuinely cannot be determined. Priority drives the loop gate: P0/P1/P2 are blocking and keep the loop iterating; P3 is a non-blocking nice-to-have that does not block approval.",
+        "Also include numeric priority: 0 for P0, 1 for P1, 2 for P2, 3 for P3; use null only if priority genuinely cannot be determined. Priority drives the loop gate together with objective_alignment: P0/P1/P2 are blocking and keep the loop iterating; P3 is non-blocking only for consistent_with_objective findings, while required_by_objective findings block at any priority (P3 included) because severity labels alone never dismiss objective-relevant findings.",
         "Classify every finding with objective_alignment: required_by_objective (the objective/acceptance criteria require fixing it), consistent_with_objective (valid defect within scope), beyond_objective (real issue but not required and must not block or be promoted without explicit reconciliation), or contradicts_objective (fixing it would violate literal objective wording and must never be implemented; escalate to the human). Missing/unknown classification is blocking.",
         "The body must be one concise paragraph explaining why this is a bug and the exact scenario, environment, or inputs required for it to arise.",
         "Use a matter-of-fact, non-accusatory tone. Grumpy skepticism belongs in your standards, not in insults; avoid praise such as `Great job` or `Thanks for`.",
@@ -127,11 +133,12 @@ export function renderRalphReviewerPrompt(args: {
     [
       "action_items",
       [
-        "1. Identify the changed files or diff under review.",
-        "2. Read the relevant changed code and directly affected call sites/tests/configs.",
-        "3. Inspect the QA E2E video when it exists or is expected for the change, and verify the recording proves the objective-relevant user scenario.",
-        "4. Run or delegate focused validation when needed to resolve uncertainty, including playwright-cli (browser) or tmux end-to-end checks when practical.",
-        "5. If you cannot inspect the video evidence or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
+        "1. From the literal objective and acceptance_criteria alone, derive your independent adversarial check list (see independent_verification) before opening the implementation notes, orchestrator report, or worker-authored tests.",
+        "2. Identify the changed files or diff under review.",
+        "3. Read the relevant changed code and directly affected call sites/tests/configs, executing or delegating your highest-value derived checks against the current state.",
+        "4. Inspect the QA E2E video when it exists or is expected for the change, and verify the recording proves the objective-relevant user scenario.",
+        "5. Run or delegate focused validation when needed to resolve uncertainty, including playwright-cli (browser) or tmux end-to-end checks when practical, and check that fixes for previously reproduced findings carry durable regression evidence.",
+        "6. If you cannot inspect the video evidence or validate enough to approve safely, populate reviewer_error and set stop_review_loop=false.",
       ].join("\n"),
     ],
     [
@@ -153,7 +160,7 @@ export function renderRalphReviewerPrompt(args: {
     ],
     [
       "decision_rules",
-      ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned P0/P1/P2 findings, requirements_traceability is non-empty and every non-final-action entry is proven, and no objective-relevant implementation or validation remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven non-final-action requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
+      ["Set stop_review_loop=true only when the patch is correct, reviewer_error is null/omitted, there are no blocking objective-aligned findings (P0/P1/P2, plus required_by_objective findings at any priority including P3), requirements_traceability is non-empty and every non-final-action entry is proven, and no objective-relevant implementation or validation remains; beyond_objective and contradicts_objective findings are non-blocking and must not be folded into follow-up objectives without checking the literal contract. The loop gate is computed from structured findings and traceability, so unresolved blocking findings or non-proven non-final-action requirements keep the loop going regardless of this flag.", "Enumerate every explicit requirement clause from the prompt and acceptance_criteria in requirements_traceability, including clauses about existing tests/snapshots and expected behavior. Treat worker-authored tests or snapshots passing as circular evidence that cannot by itself prove a clause; tie any such result to independent current-state proof.", "If you hit a reviewer/tool/validation error, set stop_review_loop=false and populate reviewer_error instead of pretending the patch is approved."].join("\n"),
     ],
   ]);
 }

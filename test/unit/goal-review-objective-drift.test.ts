@@ -62,6 +62,28 @@ describe("goal review objective-drift gates", () => {
     );
   });
 
+  test("required_by_objective findings block at any priority — severity labels alone never dismiss them", () => {
+    assert.equal(
+      reviewApproved(decision({ findings: [finding({ objective_alignment: "required_by_objective", priority: 3 })] })),
+      false,
+    );
+    assert.equal(
+      reviewApproved(decision({ findings: [finding({ objective_alignment: "required_by_objective", priority: null })] })),
+      false,
+    );
+  });
+
+  test("consistent_with_objective P3 nice-to-haves do not block approval", () => {
+    assert.equal(
+      reviewApproved(decision({ findings: [finding({ objective_alignment: "consistent_with_objective", priority: 3 })] })),
+      true,
+    );
+    assert.equal(
+      reviewApproved(decision({ findings: [finding({ objective_alignment: "consistent_with_objective", priority: 2 })] })),
+      false,
+    );
+  });
+
   test("missing objective_alignment blocks even for P3 findings", () => {
     const unclassified = { ...finding({ priority: 3 }) } as Record<string, unknown>;
     delete unclassified.objective_alignment;

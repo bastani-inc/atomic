@@ -196,6 +196,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                     if (name.startsWith("risk-reviewer-")) {
                         return reviewJson("continue", {
                             gaps: ["risk review noted no blocker"],
+                            findings: [],
                         });
                     }
                     return undefined;
@@ -246,6 +247,7 @@ describe("goal", () => {    type ReviewJsonFinding = {
                     if (name.startsWith("risk-reviewer-")) {
                         return reviewJson("continue", {
                             gaps: ["risk reviewer noted no blocker"],
+                            findings: [],
                         });
                     }
                     return undefined;

@@ -6,12 +6,17 @@ import { join } from "node:path";
 import type { WorkflowDefinition } from "../../packages/workflows/src/types.js";
 import { makeMockCtx } from "./builtin-workflows-helpers.js";
 
-function finding(title: string, body: string, priority: number | null) {
+function finding(
+  title: string,
+  body: string,
+  priority: number | null,
+  objectiveAlignment = "required_by_objective",
+) {
   return {
     title,
     body,
     confidence_score: 0.9,
-    objective_alignment: "required_by_objective",
+    objective_alignment: objectiveAlignment,
     priority,
     code_location: {
       absolute_file_path: join(process.cwd(), "changed.ts"),
@@ -55,13 +60,14 @@ describe("goal objective-drift workflow behavior", () => {
     assert.equal(result["acceptance_criteria"], "Original task");
   });
 
-  test("allows approval when correct reviewers only include P3 nice-to-have findings", async () => {
+  test("allows approval when correct reviewers only include in-scope P3 nice-to-have findings", async () => {
     const mod = await import("../../packages/workflows/builtin/goal.js");
     const d = mod.default as unknown as WorkflowDefinition;
     const p3Finding = finding(
       "[P3] Consider a small cleanup",
       "This is a low-priority nice-to-have that should not block completion.",
       3,
+      "consistent_with_objective",
     );
     const ctx = makeMockCtx(
       { objective: "Refactor tests" },
@@ -80,5 +86,39 @@ describe("goal objective-drift workflow behavior", () => {
 
     assert.equal(result["status"], "complete");
     assert.equal(result["approved"], true);
+  });
+
+  test("required_by_objective P3 findings veto quorum completion — severity labels never dismiss objective-relevant findings", async () => {
+    const mod = await import("../../packages/workflows/builtin/goal.js");
+    const d = mod.default as unknown as WorkflowDefinition;
+    const requiredP3 = finding(
+      "[P3] Required contract clause still unproven",
+      "The objective requires this behavior; a P3 label must not dismiss it.",
+      3,
+      "required_by_objective",
+    );
+    const ctx = makeMockCtx(
+      { objective: "Refactor tests", max_turns: 1 },
+      {
+        task: (name) => {
+          if (name.startsWith("completion-reviewer-") || name.startsWith("evidence-reviewer-")) {
+            return reviewJson("complete");
+          }
+          if (name.startsWith("risk-reviewer-")) return reviewJson("continue", [requiredP3]);
+          return undefined;
+        },
+      },
+    );
+
+    const result = await d.run(ctx);
+
+    assert.equal(result["status"], "needs_human");
+    assert.equal(result["approved"], false);
+    const ledger = JSON.parse(readFileSync(result["ledger_path"] as string, "utf8"));
+    assert.match(
+      ledger.decisions[0].reason,
+      /without evidence closure: 1 unresolved objective-relevant blocking finding/,
+    );
+    assert.match(ledger.decisions[0].reason, /Severity labels alone cannot dismiss/);
   });
 });

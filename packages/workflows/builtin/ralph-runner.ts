@@ -4,8 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import {
+  ACCEPTANCE_MATRIX_CONTRACT,
   E2E_VERIFICATION_GUIDANCE,
+  FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
+  REGRESSION_EVIDENCE_CONTRACT,
   WORKER_PREFLIGHT_CONTRACT,
 } from "./shared-prompts.js";
 import { renderRalphReviewerPrompt } from "./ralph-reviewer-prompt.js";
@@ -31,7 +34,7 @@ import {
   type RalphWorkflowOptions,
   type RalphWorkflowResult,
 } from "./ralph-core.js";
-import { summarizeReviewConvergence } from "./review-convergence.js";
+import { consolidateFindingsBatch, summarizeReviewConvergence } from "./review-convergence.js";
 import {
   orchestratorModelConfig,
   promptEngineerModelConfig,
@@ -113,6 +116,9 @@ export async function runRalphWorkflow(
         ],
         ["acceptance_criteria", acceptanceCriteria],
         ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
+        ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
+        ["findings_batch", FINDINGS_CONSOLIDATION_CONTRACT],
+        ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
         workflowCwdContext,
         [
           "research",
@@ -305,7 +311,19 @@ export async function runRalphWorkflow(
     });
     latestReviewReportPath = await writeJsonArtifact(
       join(artifactDir, "review-round-latest.json"),
-      { convergence_decision: roundConvergenceDecision, reviews: reviewEntries },
+      {
+        convergence_decision: roundConvergenceDecision,
+        // Deduplicated cross-reviewer findings batch so the next research and
+        // orchestrator passes repair the round's findings together instead of
+        // one at a time.
+        consolidated_findings: consolidateFindingsBatch(
+          reviewEntries.map((review) => ({
+            reviewer: review.reviewer,
+            findings: review.decision.findings,
+          })),
+        ),
+        reviews: reviewEntries,
+      },
     );
     if (approved) break;
   }

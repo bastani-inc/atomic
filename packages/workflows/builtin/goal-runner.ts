@@ -341,11 +341,9 @@ export async function runGoalWorkflow(ctx: GoalRunnerContext, options: GoalWorkf
         );
         return record;
       }));
-      latestReviewArtifactPaths = latestReviews.map((review) => review.artifact_path);
-      latestReviewReportPath = await writeReviewRoundArtifact(
-        artifactDir,
-        latestReviews,
-      );
+      latestReviewReportPath = await writeReviewRoundArtifact(artifactDir, latestReviews);
+      // Consolidated round artifact leads so the next worker turn plans the full findings batch first.
+      latestReviewArtifactPaths = [latestReviewReportPath, ...latestReviews.map((review) => review.artifact_path)];
       ledger.reviews.push(...latestReviews);
       appendLifecycleEvent(
         ledger,

@@ -324,9 +324,8 @@ describe("goal", () => {    type ReviewJsonFinding = {
                         });
                     }
                     if (name.startsWith("risk-reviewer-")) {
-                        return reviewJson("continue", {
-                            gaps: ["risk reviewer wants one optional check"],
-                        });
+                        // Dissent without blocking findings: closure can complete.
+                        return reviewJson("continue", { gaps: ["risk reviewer wants one optional check"], findings: [] });
                     }
                     return undefined;
                 },
