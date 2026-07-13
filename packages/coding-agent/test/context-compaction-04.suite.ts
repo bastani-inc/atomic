@@ -83,6 +83,106 @@ describe("context compaction", () => {
 			]);
 		});
 
+		it("pairs repeated opaque tool-call ids by visible exchange during fresh validation", () => {
+			resetIds();
+			const repeatedCallId = "opaque-reused-call-id";
+			const signedCall = (marker: string) =>
+				entry({
+					...assistantText(""),
+					content: [
+						{ type: "thinking", thinking: `reasoning-${marker}`, thinkingSignature: `signature-${marker}` },
+						{ type: "toolCall", id: repeatedCallId, name: "read", arguments: { path: `${marker}.ts` } },
+					],
+					stopReason: "toolUse",
+				} as AssistantMessage);
+			const earlierCall = signedCall("earlier");
+			const earlierResult = entry(toolResult(repeatedCallId, "result-earlier"));
+			const laterCall = signedCall("later");
+			const laterResult = entry(toolResult(repeatedCallId, "result-later"));
+			const entries: SessionEntry[] = [
+				entry(user("earlier task")),
+				earlierCall,
+				earlierResult,
+				entry(user("later task")),
+				laterCall,
+				laterResult,
+				entry(user("current task")),
+				entry(assistantText("recent 1")),
+				entry(assistantText("recent 2")),
+				entry(assistantText("recent 3")),
+				entry(assistantText("recent 4")),
+				entry(assistantText("recent 5")),
+			];
+			const transcript = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!.transcript;
+
+			const fromEarlierResult = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: earlierResult.id }] },
+				transcript,
+			);
+			expect(fromEarlierResult.deletedTargets).toEqual([
+				{ kind: "entry", entryId: earlierResult.id },
+				{ kind: "entry", entryId: earlierCall.id },
+			]);
+
+			const fromEarlierCall = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: earlierCall.id }] },
+				transcript,
+			);
+			expect(fromEarlierCall.deletedTargets).toEqual([
+				{ kind: "entry", entryId: earlierCall.id },
+				{ kind: "entry", entryId: earlierResult.id },
+			]);
+			expect(fromEarlierCall.deletedTargets).not.toContainEqual({ kind: "entry", entryId: laterCall.id });
+			expect(fromEarlierCall.deletedTargets).not.toContainEqual({ kind: "entry", entryId: laterResult.id });
+		});
+
+		it("pairs sibling call occurrences independently when an opaque id repeats", () => {
+			resetIds();
+			const repeatedCallId = "opaque-sibling-id";
+			const calls = entry({
+				...assistantText(""),
+				content: [
+					{ type: "toolCall", id: repeatedCallId, name: "read", arguments: { path: "first.ts" } },
+					{ type: "toolCall", id: repeatedCallId, name: "read", arguments: { path: "second.ts" } },
+				],
+				stopReason: "toolUse",
+			});
+			const firstResult = entry(toolResult(repeatedCallId, "first result"));
+			const secondResult = entry(toolResult(repeatedCallId, "second result"));
+			const entries: SessionEntry[] = [
+				entry(user("sibling occurrence task")),
+				calls,
+				firstResult,
+				secondResult,
+				entry(user("current task")),
+				entry(assistantText("recent 1")),
+				entry(assistantText("recent 2")),
+				entry(assistantText("recent 3")),
+				entry(assistantText("recent 4")),
+				entry(assistantText("recent 5")),
+			];
+			const transcript = prepareContextCompaction(entries, DEFAULT_COMPACTION_SETTINGS)!.transcript;
+
+			const firstDeletion = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: firstResult.id }] },
+				transcript,
+			);
+			expect(firstDeletion.deletedTargets).toEqual([
+				{ kind: "entry", entryId: firstResult.id },
+				{ kind: "content_block", entryId: calls.id, blockIndex: 0 },
+			]);
+			expect(firstDeletion.deletedTargets).not.toContainEqual({ kind: "entry", entryId: secondResult.id });
+
+			const secondDeletion = validateContextDeletionRequest(
+				{ deletions: [{ kind: "entry", entryId: secondResult.id }] },
+				transcript,
+			);
+			expect(secondDeletion.deletedTargets).toEqual([
+				{ kind: "entry", entryId: secondResult.id },
+				{ kind: "content_block", entryId: calls.id, blockIndex: 1 },
+			]);
+			expect(secondDeletion.deletedTargets).not.toContainEqual({ kind: "entry", entryId: firstResult.id });
+		});
 		it("supports content-block logical deletion while retaining other blocks verbatim", () => {
 			resetIds();
 			const multi = entry({

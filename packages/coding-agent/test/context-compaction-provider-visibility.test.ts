@@ -13,6 +13,7 @@ import {
 	resetIds,
 	type SessionEntry,
 	user,
+	toolResult,
 	validateContextDeletionRequest,
 } from "./context-compaction-helpers.js";
 
@@ -103,6 +104,63 @@ describe("provider-visible signed-turn boundaries", () => {
 			expect(serialized).not.toContain("sig-persisted-second");
 			expect(JSON.stringify(branch)).toBe(durable);
 		}
+	});
+
+	it("keeps genuine call/result closure across provider-invisible user-like entries", () => {
+		for (const makeBoundary of invisibleBoundaries()) {
+			resetIds();
+			const callId = "reused-across-invisible-boundary";
+			const call = entry({
+				...signed("sig-call-across-invisible-boundary"),
+				content: [
+					{ type: "thinking", thinking: "exact call reasoning", thinkingSignature: "sig-call-across-invisible-boundary" },
+					{ type: "toolCall", id: callId, name: "read", arguments: { path: "paired.ts" } },
+				],
+				stopReason: "toolUse",
+			} as AssistantMessage);
+			const result = entry(toolResult(callId, "deleted paired result"));
+			const branch = relink([
+				entry(user("historical task")),
+				call,
+				makeBoundary(),
+				result,
+				contextEntry([{ kind: "entry", entryId: result.id }]),
+				entry(user("current task")),
+			]);
+
+			const rebuilt = JSON.stringify(convertToLlm(buildSessionContext(branch).messages));
+			expect(rebuilt).not.toContain("sig-call-across-invisible-boundary");
+			expect(rebuilt).not.toContain("paired.ts");
+			expect(rebuilt).not.toContain("deleted paired result");
+		}
+
+		resetIds();
+		const filteredCallId = "call-across-filtered-boundary";
+		const filteredCall = entry({
+			...signed("sig-call-across-filtered-boundary"),
+			content: [
+				{ type: "thinking", thinking: "filtered boundary reasoning", thinkingSignature: "sig-call-across-filtered-boundary" },
+				{ type: "toolCall", id: filteredCallId, name: "read", arguments: { path: "filtered.ts" } },
+			],
+			stopReason: "toolUse",
+		} as AssistantMessage);
+		const filteredBoundary = entry(custom([{ type: "text", text: "deleted boundary" }]));
+		const filteredResult = entry(toolResult(filteredCallId, "filtered-boundary result"));
+		const filteredBranch = relink([
+			entry(user("historical filtered-boundary task")),
+			filteredCall,
+			filteredBoundary,
+			filteredResult,
+			contextEntry([
+				{ kind: "content_block", entryId: filteredBoundary.id, blockIndex: 0 },
+				{ kind: "entry", entryId: filteredResult.id },
+			]),
+			entry(user("current filtered-boundary task")),
+		]);
+		const filteredRebuilt = JSON.stringify(convertToLlm(buildSessionContext(filteredBranch).messages));
+		expect(filteredRebuilt).not.toContain("sig-call-across-filtered-boundary");
+		expect(filteredRebuilt).not.toContain("filtered.ts");
+		expect(filteredRebuilt).not.toContain("filtered-boundary result");
 	});
 
 	it("treats filtering the only visible custom block as removing the boundary", () => {

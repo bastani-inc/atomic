@@ -155,4 +155,73 @@ describe("persisted context compaction reconstruction", () => {
 		expect(serializedProviderRequest).toContain("final legitimate task");
 		expect(serializedProviderRequest).toContain("request trigger");
 	});
+
+	it("keeps a later signed tool exchange when its opaque call id repeats a compacted exchange", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-compaction-repeated-id-"));
+		tempDirs.push(cwd);
+		const agentDir = join(cwd, "agent");
+		const manager = SessionManager.create(cwd, cwd);
+
+		manager.appendMessage(user("historical repeated-id task"));
+		const repeatedCallId = "opaque-reused-call-id";
+		const deletedCallEntryId = manager.appendMessage(signedToolCall(repeatedCallId, "earlier-deleted"));
+		const deletedResultEntryId = manager.appendMessage(toolResult(repeatedCallId, "earlier-deleted"));
+		const deletableBoundaryId = manager.appendMessage(bashBoundary("unrelated compacted boundary"));
+		manager.appendMessage(user("later retained task"));
+		manager.appendMessage(signedToolCall(repeatedCallId, "later-retained"));
+		manager.appendMessage(toolResult(repeatedCallId, "later-retained"));
+		manager.appendMessage(user("final request context"));
+
+		manager.appendContextCompaction(
+			[
+				{ kind: "entry", entryId: deletedCallEntryId },
+				{ kind: "entry", entryId: deletedResultEntryId },
+			],
+			[],
+			{ objectsBefore: 8, objectsAfter: 6, objectsDeleted: 2, tokensBefore: 100, tokensAfter: 75, percentReduction: 25 },
+		);
+		manager.appendContextCompaction(
+			[{ kind: "entry", entryId: deletableBoundaryId }],
+			[],
+			{ objectsBefore: 6, objectsAfter: 5, objectsDeleted: 1, tokensBefore: 75, tokensAfter: 65, percentReduction: 13 },
+		);
+
+		const sessionFile = manager.getSessionFile();
+		expect(sessionFile).toBeDefined();
+		const durableBeforeResume = readFileSync(sessionFile!, "utf8");
+		const resumed = SessionManager.open(sessionFile!);
+		const rebuilt = JSON.stringify(convertToLlm(resumed.buildSessionContext().messages));
+		expect(rebuilt).not.toContain("earlier-deleted");
+		expect(rebuilt).toContain("reasoning-later-retained");
+		expect(rebuilt).toContain("result-later-retained");
+		expect(readFileSync(sessionFile!, "utf8")).toBe(durableBeforeResume);
+
+		const settingsManager = SettingsManager.create(cwd, agentDir);
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const resourceLoader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+		await resourceLoader.reload();
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			settingsManager,
+			sessionManager: resumed,
+			authStorage,
+			resourceLoader,
+		});
+
+		let serializedProviderRequest = "";
+		session.agent.streamFn = async (_model, context) => {
+			serializedProviderRequest = JSON.stringify(context.messages);
+			throw new Error("provider request captured");
+		};
+		await session.prompt("repeated-id request trigger");
+		session.dispose();
+
+		expect(serializedProviderRequest).not.toContain("earlier-deleted");
+		expect(serializedProviderRequest).toContain("reasoning-later-retained");
+		expect(serializedProviderRequest).toContain("result-later-retained");
+		expect(serializedProviderRequest).toContain("repeated-id request trigger");
+	});
 });

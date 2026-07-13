@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { contentArrayHasAssistantThinkingBlock } from "./thinking-blocks.ts";
+import { messageStartsLlmUserTurn, userLikeContentIsLlmVisible } from "./messages.ts";
 import type { ContextDeletionFilters, SessionEntry, SessionMessageEntry } from "./session-manager-types.ts";
 
 interface ToolCallReference {
@@ -8,8 +9,9 @@ interface ToolCallReference {
 	hasThinkingContent: boolean;
 }
 
-interface ToolResultReference {
-	entry: SessionMessageEntry;
+interface ToolDependencyPair {
+	call: ToolCallReference;
+	result: SessionMessageEntry;
 }
 
 function getMessageContent(message: AgentMessage): readonly unknown[] | undefined {
@@ -28,13 +30,26 @@ function getToolResultCallId(message: AgentMessage): string | undefined {
 	return typeof toolCallId === "string" ? toolCallId : undefined;
 }
 
-function collectToolReferences(path: SessionEntry[]): {
-	callsById: Map<string, ToolCallReference[]>;
-	resultsByCallId: Map<string, ToolResultReference[]>;
-} {
-	const callsById = new Map<string, ToolCallReference[]>();
-	const resultsByCallId = new Map<string, ToolResultReference[]>();
+function entryStartsNewToolPairingTurn(entry: SessionEntry, filters: ContextDeletionFilters): boolean {
+	if (filters.deletedEntryIds.has(entry.id)) return false;
+	const deletedBlocks = filters.deletedContentBlocks.get(entry.id);
+	if (entry.type === "branch_summary") return typeof entry.summary === "string" && entry.summary.length > 0;
+	if (entry.type === "custom_message") {
+		return entry.excludeFromContext !== true && userLikeContentIsLlmVisible(entry.content, deletedBlocks);
+	}
+	return entry.type === "message" && messageStartsLlmUserTurn(entry.message, deletedBlocks);
+}
+
+/**
+ * Pair each result with the nearest preceding unmatched call occurrence in its
+ * structural user turn. Opaque call ids are correlation tokens, not globally
+ * unique identities: the same id may legitimately be reused in later turns.
+ */
+function collectToolDependencyPairs(path: SessionEntry[], filters: ContextDeletionFilters): ToolDependencyPair[] {
+	const pairs: ToolDependencyPair[] = [];
+	const pendingCalls = new Map<string, ToolCallReference[]>();
 	for (const entry of path) {
+		if (entryStartsNewToolPairingTurn(entry, filters)) pendingCalls.clear();
 		if (entry.type !== "message") continue;
 		if (entry.message.role === "assistant") {
 			const content = getMessageContent(entry.message);
@@ -43,19 +58,21 @@ function collectToolReferences(path: SessionEntry[]): {
 			for (const [blockIndex, block] of content.entries()) {
 				const callId = getToolCallContentBlockId(block);
 				if (!callId) continue;
-				const refs = callsById.get(callId) ?? [];
-				refs.push({ entry, blockIndex, hasThinkingContent });
-				callsById.set(callId, refs);
+				const pendingForId = pendingCalls.get(callId) ?? [];
+				pendingForId.push({ entry, blockIndex, hasThinkingContent });
+				pendingCalls.set(callId, pendingForId);
 			}
 			continue;
 		}
 		const resultCallId = getToolResultCallId(entry.message);
 		if (!resultCallId) continue;
-		const refs = resultsByCallId.get(resultCallId) ?? [];
-		refs.push({ entry });
-		resultsByCallId.set(resultCallId, refs);
+		const pendingForId = pendingCalls.get(resultCallId);
+		const call = pendingForId?.shift();
+		if (!call) continue;
+		if (pendingForId?.length === 0) pendingCalls.delete(resultCallId);
+		pairs.push({ call, result: entry });
 	}
-	return { callsById, resultsByCallId };
+	return pairs;
 }
 
 function isMessageEntryEffectivelyDeleted(entry: SessionMessageEntry, filters: ContextDeletionFilters): boolean {
@@ -71,8 +88,8 @@ function isToolCallDeleted(ref: ToolCallReference, filters: ContextDeletionFilte
 	return filters.deletedContentBlocks.get(ref.entry.id)?.has(ref.blockIndex) === true;
 }
 
-function isToolResultDeleted(ref: ToolResultReference, filters: ContextDeletionFilters): boolean {
-	return isMessageEntryEffectivelyDeleted(ref.entry, filters);
+function isToolResultDeleted(entry: SessionMessageEntry, filters: ContextDeletionFilters): boolean {
+	return isMessageEntryEffectivelyDeleted(entry, filters);
 }
 
 function addEntryDeletion(filters: ContextDeletionFilters, entryId: string): boolean {
@@ -102,8 +119,8 @@ export function reconcilePersistedToolDependencyFilters(
 	path: SessionEntry[],
 	filters: ContextDeletionFilters,
 ): ContextDeletionFilters {
-	const { callsById, resultsByCallId } = collectToolReferences(path);
-	if (callsById.size === 0 || resultsByCallId.size === 0) return filters;
+	const pairs = collectToolDependencyPairs(path, filters);
+	if (pairs.length === 0) return filters;
 
 	let changed = true;
 	let remainingPasses = Math.max(1, path.length * 2);
@@ -111,26 +128,15 @@ export function reconcilePersistedToolDependencyFilters(
 		changed = false;
 		remainingPasses -= 1;
 
-		for (const [callId, callRefs] of callsById) {
-			const resultRefs = resultsByCallId.get(callId) ?? [];
-			if (resultRefs.length === 0) continue;
-			const callDeleted = callRefs.every((ref) => isToolCallDeleted(ref, filters));
-			if (callDeleted) {
-				for (const resultRef of resultRefs) {
-					if (!isToolResultDeleted(resultRef, filters)) {
-						changed = addEntryDeletion(filters, resultRef.entry.id) || changed;
-					}
-				}
+		for (const pair of pairs) {
+			const callDeleted = isToolCallDeleted(pair.call, filters);
+			const resultDeleted = isToolResultDeleted(pair.result, filters);
+			if (callDeleted && !resultDeleted) {
+				changed = addEntryDeletion(filters, pair.result.id) || changed;
 				continue;
 			}
-
-			for (const resultRef of resultRefs) {
-				if (!isToolResultDeleted(resultRef, filters)) continue;
-				for (const callRef of callRefs) {
-					if (!isToolCallDeleted(callRef, filters)) {
-						changed = addToolCallDeletion(filters, callRef) || changed;
-					}
-				}
+			if (resultDeleted && !callDeleted) {
+				changed = addToolCallDeletion(filters, pair.call) || changed;
 			}
 		}
 	}

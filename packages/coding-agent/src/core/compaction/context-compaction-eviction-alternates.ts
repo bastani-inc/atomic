@@ -1,10 +1,15 @@
 import type { ContextDeletionTarget } from "../session-manager.js";
 import { analyzeCompactableAssistantTurns } from "./context-assistant-turns.js";
 import type { CompactableTranscript, ValidatedContextDeletionResult } from "./context-compaction-types.js";
-import { reconcileToolDependencies, validateContextDeletionRequest } from "./context-deletion-application.js";
+import {
+	collectCompactableToolDependencyPairs,
+	reconcileToolDependencies,
+	validateContextDeletionRequest,
+} from "./context-deletion-application.js";
 import {
 	canDeleteTarget,
 	deletionRequestFromTargets,
+	getDeletedContentBlocks,
 	getDeletedEntryIds,
 } from "./context-deletion-targets.js";
 
@@ -44,15 +49,11 @@ export function repairSignedTurnTargets(
 	}
 	if (restoredSignedIds.size === 0) return reconciled;
 
-	const restoredCallIds = new Set<string>();
-	for (const entry of transcript.entries) {
-		if (!restoredSignedIds.has(entry.entryId)) continue;
-		for (const callId of entry.toolCallIds) restoredCallIds.add(callId);
-	}
+	const deletedContentBlocks = getDeletedContentBlocks(reconciled);
 	const restoredResultIds = new Set(
-		transcript.entries
-			.filter((entry) => entry.toolResultFor && restoredCallIds.has(entry.toolResultFor))
-			.map((entry) => entry.entryId),
+		collectCompactableToolDependencyPairs(transcript, deletedEntryIds, deletedContentBlocks)
+			.filter((pair) => restoredSignedIds.has(pair.callEntry.entryId))
+			.map((pair) => pair.resultEntry.entryId),
 	);
 	return reconcileToolDependencies(
 		transcript,
