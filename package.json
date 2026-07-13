@@ -31,7 +31,7 @@
   "devDependencies": {
     "@j178/prek": "0.4.5",
     "@types/bun": "^1.3.14",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "@types/node": "24.12.4"
