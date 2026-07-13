@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import goal from "../../packages/workflows/builtin/goal.js";
@@ -89,6 +89,44 @@ describe("goal git_worktree_dir input", () => {
         /already exists but is not a Git worktree/,
       );
       assert.equal(existsSync(partialRoot), true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects the invoking checkout as a reusable worktree target", () => {
+    const { root, repo } = createGitRepo();
+    try {
+      assert.throws(
+        () => setupGitWorktree({ cwd: repo, gitWorktreeDir: repo, baseBranch: "main" }),
+        /gitWorktreeDir must not resolve to the invoking checkout/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects reusable worktrees nested inside the invoking checkout", () => {
+    const { root, repo } = createGitRepo();
+    try {
+      assert.throws(
+        () => setupGitWorktree({ cwd: repo, gitWorktreeDir: join(repo, ".atomic", "nested-wt"), baseBranch: "main" }),
+        /gitWorktreeDir must be outside the invoking checkout/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects missing worktrees whose symlinked parent resolves inside the invoking checkout", () => {
+    const { root, repo } = createGitRepo();
+    const alias = join(root, "repo-alias");
+    symlinkSync(repo, alias, process.platform === "win32" ? "junction" : "dir");
+    try {
+      assert.throws(
+        () => setupGitWorktree({ cwd: repo, gitWorktreeDir: join(alias, "nested-wt"), baseBranch: "main" }),
+        /gitWorktreeDir must be outside the invoking checkout/,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

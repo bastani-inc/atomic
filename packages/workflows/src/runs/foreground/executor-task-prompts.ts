@@ -69,7 +69,7 @@ export function resolveWorkflowPath(filePath: string, baseDir: string | undefine
 }
 
 export function taskBaseDir(options: Pick<WorkflowTaskExecutionOptions, "chainDir" | "cwd">): string | undefined {
-  if (typeof options.chainDir === "string" && options.chainDir.length > 0) {
+  if (typeof options.chainDir === "string" && options.chainDir.trim().length > 0) {
     return resolveWorkflowPath(options.chainDir, process.cwd());
   }
   if (typeof options.cwd === "string" && options.cwd.length > 0) {

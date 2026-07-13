@@ -19,7 +19,7 @@ import { stageControlRegistry as defaultStageControlRegistry } from "../runs/for
 import type { RunOpts, RunResult } from "../runs/foreground/executor-types.js";
 import { unknownErrorMessage, findWorkflowExitSignal, parentWorkflowExitAbortReason } from "../runs/foreground/executor-abort.js";
 import { resolveAndValidateInputs, resolveInputConcurrency, resolveInputRuntimeDefaults } from "../runs/foreground/executor-inputs.js";
-import { createGitWorktreeSetupCache, workflowCwdWithInputWorktree, workflowInvocationMetadata } from "../runs/foreground/executor-direct-helpers.js";
+import { createGitWorktreeSetupCacheOwner, workflowCwdWithInputWorktree, workflowInvocationMetadata } from "../runs/foreground/executor-direct-helpers.js";
 import { createStageScheduler } from "../runs/foreground/executor-scheduler.js";
 import { createRunFinalizers } from "../runs/foreground/executor-run-finalizers.js";
 import { buildPromptNodeUiAdapter } from "../runs/foreground/executor-prompt-nodes.js";
@@ -152,7 +152,8 @@ export async function run<
 
   const tracker = new GraphFrontierTracker();
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs), gitWorktreeSetupCache = createGitWorktreeSetupCache();
+  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs), gitWorktreeSetupCacheOwner = createGitWorktreeSetupCacheOwner(opts.gitWorktreeSetupCache);
+  const gitWorktreeSetupCache = gitWorktreeSetupCacheOwner.cache;
   const workflowInvocationCwd = opts.cwd ?? process.cwd();
   let workflowCwd: string | undefined;
   const resolveWorkflowCwd = (): string => {
@@ -484,17 +485,16 @@ export async function run<
     });
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: "failed", error: metadata.errorMessage }, opts.onRunEnd);
   } finally {
-    // Persist final durable status for cross-session resume discovery.
-    // Covers ctx.exit terminal states and failure/kill paths; normal
-    // completion is handled in the try block.
-    // cross-ref: issue #1498
-    await finalizeDurableTerminalStatus({
-      runId,
-      runSnapshot,
-      isRoot: opts.parentRun === undefined,
-      durableBackend,
-      persistence: opts.persistence,
-    });
-    opts.cancellation?.unregister(runId);
+    try {
+      await finalizeDurableTerminalStatus({
+        runId,
+        runSnapshot,
+        isRoot: opts.parentRun === undefined,
+        durableBackend,
+        persistence: opts.persistence,
+      });
+    } finally {
+      gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+    }
   }
 }
