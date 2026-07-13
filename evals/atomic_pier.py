@@ -32,7 +32,7 @@ from pier.models.trajectories import (
 )
 from pier.models.trial.paths import EnvironmentPaths
 from pier.utils.trajectory_utils import format_trajectory_json
-from skill_prerequisites import (
+from prerequisites import (
     agent_install_command,
     root_install_command,
     runtime_environment_command,
