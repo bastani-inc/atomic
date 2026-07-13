@@ -181,6 +181,8 @@ def agent_install_command(version_spec: str) -> str:
         "curl -fsSL https://astral.sh/uv/install.sh | "
         'env UV_INSTALL_DIR="$HOME/.local/bin" sh; '
         "uv python install; "
+        "python3 -c 'import yaml' 2>/dev/null || uv pip install "
+        "--python \"$(python3 -c 'import sys; print(sys.executable)')\" pyyaml; "
         "uv run --managed-python --with bm25s --with aiofiles "
         "python -c 'import aiofiles, bm25s'; "
         f"{browser_setup}; " + verification_command()
