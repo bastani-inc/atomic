@@ -78,6 +78,12 @@ describe("GraphView keyboard navigation", () => {
     assert.ok(view._graphScrollColOffset > 0);
     assert.equal(view._graphScrollOffset, verticalOffset);
     assert.notEqual(visibleText(view.render(48)), beforePan);
+
+    const legacyWheelLeft = `\x1b[M${String.fromCharCode(66 + 32)}**`;
+    assert.equal(view.handleInput(legacyWheelLeft), true);
+    assert.equal(view._graphScrollColOffset, 0);
+    assert.equal(view._graphScrollOffset, verticalOffset);
+    assert.equal(view._focusedIndex, 0);
     view.dispose();
   });
 
