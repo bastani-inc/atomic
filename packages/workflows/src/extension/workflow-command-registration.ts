@@ -26,6 +26,7 @@ import {
 import { emitTerminalRunDetailSurface, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { runtimeDispatchOptions } from "./runtime-usage.js";
 import {
   inFlightRunCount,
   reloadBlockedMessage,
@@ -75,6 +76,7 @@ async function workflowSlashHandler(
   deps: WorkflowSlashCommandDeps,
 ): Promise<void> {
   const policy = workflowPolicyFromContext(ctx);
+  const runtimeOptions = runtimeDispatchOptions(policy, ctx);
   const reporter = createWorkflowCommandReporter(ctx, policy, pi);
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
@@ -92,7 +94,7 @@ async function workflowSlashHandler(
     command: WorkflowCommandOutputDetails["command"] = "inputs",
   ): Promise<void> => {
     await ensureWorkflowResourcesVisible();
-    const result = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
+    const result = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, runtimeOptions);
     if (result.action !== "inputs" || !("inputs" in result)) return;
     const inputResult = result as Extract<WorkflowToolResult, { action: "inputs" }>;
     if (inputResult.error) {
@@ -177,7 +179,7 @@ async function workflowSlashHandler(
   );
   if (canOpenPicker) {
     await ensureWorkflowResourcesVisible();
-    const schemaResult = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, { policy });
+    const schemaResult = await deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: {}, action: "inputs" }, runtimeOptions);
     const schema = schemaResult.action === "inputs" && "inputs" in schemaResult
       ? (schemaResult as Extract<WorkflowToolResult, { action: "inputs" }>)
       : undefined;
@@ -201,7 +203,7 @@ async function workflowSlashHandler(
 
   await ensureWorkflowResourcesVisible();
   const result = await deps.runWithLifecycleSuppressedForPolicy(policy, () =>
-    deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, { policy }),
+    deps.runtimeForContext(ctx).dispatch({ workflow: workflowName, inputs: mergedInputs, action: "run" }, runtimeOptions),
   );
   if (result.action !== "run" || !("runId" in result)) return;
   const runResult = result as Extract<WorkflowToolResult, { action: "run"; runId: string }>;

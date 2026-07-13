@@ -4,6 +4,7 @@ import type { Message } from "@earendil-works/pi-ai/compat";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
 import { detectSubagentError, extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { getSubagentDepthEnv } from "../../shared/types.ts";
+import { usageCostTotal } from "../../shared/usage-rollup.ts";
 import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../shared/pi-spawn.ts";
 import {
 	assistantStopReason,
@@ -136,7 +137,7 @@ export function runPiStreaming(
 					usage.output += eventUsage.output ?? eventUsage.outputTokens ?? 0;
 					usage.cacheRead += eventUsage.cacheRead ?? 0;
 					usage.cacheWrite += eventUsage.cacheWrite ?? 0;
-					usage.cost += eventUsage.cost?.total ?? 0;
+					usage.cost += usageCostTotal(eventUsage.cost);
 				}
 				const stopReason = assistantStopReason(event.message);
 				if (event.message.errorMessage) {

@@ -4,6 +4,7 @@ import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { runtimeDispatchOptions } from "./runtime-usage.js";
 import { workflowGetResult } from "./workflow-tool-content.js";
 import {
   directModeCount,
@@ -32,7 +33,7 @@ export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
   getPersistence: () => WorkflowPersistencePort | undefined,
   reloadWorkflowResources: () => Promise<void> | void,
-  ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
+  ensureWorkflowResourcesLoaded?: () => Promise<void> | void,
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
   return async function executeWorkflowTool(
     args: WorkflowToolArgs,
@@ -50,10 +51,12 @@ export function makeExecuteWorkflowTool(
       };
     }
     const policy: WorkflowExecutionPolicy = workflowPolicyFromContext(ctx);
+    const runtimeOptions = runtimeDispatchOptions(policy, ctx);
     const getRuntime = (): ExtensionRuntime => typeof runtime === "function" ? runtime(ctx) : runtime;
+    const ensureWorkflowResources = ensureWorkflowResourcesLoaded ?? reloadWorkflowResources;
     const ensureWorkflowResourcesVisible = async (): Promise<void> => {
       try {
-        await ensureWorkflowResourcesLoaded();
+        await ensureWorkflowResources();
       } catch (error) {
         ctx.ui?.notify?.(formatWorkflowResourceLoadWarning(error), "warning");
       }
@@ -66,7 +69,7 @@ export function makeExecuteWorkflowTool(
       case "list":
       case "inputs": {
         await ensureWorkflowResourcesVisible();
-        return getRuntime().dispatch(args, { policy });
+        return getRuntime().dispatch(args, runtimeOptions);
       }
       case "run": {
         if (hasDirectExecutionMode(args)) {
@@ -75,11 +78,11 @@ export function makeExecuteWorkflowTool(
           if (normalModeCount !== 1) {
             throw new Error("Workflow extension: specify exactly one normal execution mode: workflow, task, tasks, or chain");
           }
-          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), { policy });
+          const details = await activeRuntime.runDirect(withForkParentSession(args, ctx), runtimeOptions);
           return workflowRunResultFromDetails(details);
         }
         await ensureWorkflowResourcesVisible();
-        return getRuntime().dispatch(args, { policy });
+        return getRuntime().dispatch(args, runtimeOptions);
       }
       case "status": {
         const target = args.runId;
@@ -108,7 +111,12 @@ export function makeExecuteWorkflowTool(
       case "interrupt":
         return workflowInterruptAction(args);
       case "resume":
-        return workflowResumeAction(args, { getRuntime, policy, ensureWorkflowResourcesLoaded });
+        return workflowResumeAction(args, {
+          getRuntime,
+          policy,
+          rootSessionId: runtimeOptions.rootSessionId,
+          ensureWorkflowResourcesLoaded: ensureWorkflowResources,
+        });
       default: {
         const _exhaustive: never = action;
         throw new Error(`Workflow extension: unknown action "${_exhaustive}"`);

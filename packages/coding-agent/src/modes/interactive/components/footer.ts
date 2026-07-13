@@ -35,34 +35,36 @@ function rightAlign(line: string, width: number): string {
   return `${" ".repeat(width - lineWidth)}${line}`;
 }
 
-function getUsageLine(
+export function getUsageLine(
   session: AgentSession,
   autoCompactEnabled: boolean,
   width: number,
 ): string {
   const state = session.state;
 
-  // Calculate cumulative usage from ALL session entries (not just post-compaction messages)
+  // Cumulative token counts and cost below are TRANSITIVE (this session plus
+  // every subagent and workflow-stage descendant); context-window % stays
+  // self-only. The loop derives the self-only latest cache-hit rate.
   let totalInput = 0;
   let totalOutput = 0;
   let totalCacheRead = 0;
   let totalCacheWrite = 0;
-  let totalCost = 0;
   let latestCacheHitRate: number | undefined;
 
   for (const entry of session.sessionManager.getEntries()) {
     if (entry.type === "message" && entry.message.role === "assistant") {
-      totalInput += entry.message.usage.input;
-      totalOutput += entry.message.usage.output;
-      totalCacheRead += entry.message.usage.cacheRead;
-      totalCacheWrite += entry.message.usage.cacheWrite;
-      totalCost += entry.message.usage.cost.total;
-
       const latestPromptTokens =
         entry.message.usage.input + entry.message.usage.cacheRead + entry.message.usage.cacheWrite;
       latestCacheHitRate = latestPromptTokens > 0 ? (entry.message.usage.cacheRead / latestPromptTokens) * 100 : undefined;
     }
   }
+
+  // Transitive totals: self + all subagent/workflow-stage descendants.
+  const transitiveUsage = session.getTransitiveUsage();
+  totalInput = transitiveUsage.total.input;
+  totalOutput = transitiveUsage.total.output;
+  totalCacheRead = transitiveUsage.total.cacheRead;
+  totalCacheWrite = transitiveUsage.total.cacheWrite;
 
   // Calculate context usage from session (handles compaction correctly).
   // After compaction, tokens are unknown until the next LLM response.
@@ -94,13 +96,16 @@ function getUsageLine(
     usageParts.push(`${theme.fg("dim", "CH")}${theme.fg("muted", `${latestCacheHitRate.toFixed(1)}%`)}`);
   }
 
-  // Show cost with "(sub)" indicator if using OAuth subscription
+  // Show transitive cost with "(sub)" indicator if using OAuth subscription.
+  const totalCost = transitiveUsage.total.cost.total;
   const usingSubscription = state.model
     ? session.modelRegistry.isUsingOAuth(state.model)
     : false;
-  if (totalCost || usingSubscription) {
+  const hasAnyTransitiveUsage = totalInput > 0 || totalOutput > 0 || totalCacheRead > 0 || totalCacheWrite > 0;
+  if (totalCost > 0 || usingSubscription || hasAnyTransitiveUsage || !transitiveUsage.complete) {
+    const prefix = transitiveUsage.complete ? "" : theme.fg("dim", "~");
     usageParts.push(
-      `${theme.fg("muted", `$${totalCost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
+      `${prefix}${theme.fg("muted", `$${totalCost.toFixed(3)}`)}${usingSubscription ? ` ${theme.fg("dim", "(sub)")}` : ""}`,
     );
   }
 

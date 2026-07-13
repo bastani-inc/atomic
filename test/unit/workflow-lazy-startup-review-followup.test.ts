@@ -140,6 +140,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     let ensureCalls = 0;
     let preparedTarget: string | undefined;
     let resumedTarget: string | undefined;
+    let resumedRootSessionId: string | undefined;
     const opened: string[] = [];
     const messages: string[] = [];
     const runtime = {
@@ -147,8 +148,9 @@ describe("workflow lazy-startup review follow-up fixes", () => {
         preparedTarget = target;
         return [{ workflowId: runId, name: "quit shadow workflow", status: "paused", completedCheckpoints: 1, pendingPrompts: 0, createdAt: Date.now(), updatedAt: Date.now() }];
       },
-      resumeDurableWorkflow: (target: string) => {
+      resumeDurableWorkflow: (target: string, options?: { rootSessionId?: string }) => {
         resumedTarget = target;
+        resumedRootSessionId = options?.rootSessionId;
         return { ok: true, runId: target, message: `Resumed durable ${target}` };
       },
       registry: { has: () => true },
@@ -161,11 +163,16 @@ describe("workflow lazy-startup review follow-up fixes", () => {
       ensureWorkflowResourcesLoaded: () => { ensureCalls += 1; },
     };
 
-    await handleRunControlCommand("resume", [runId], { hasUI: true, ui: { notify: () => undefined } }, { info: (message) => messages.push(message), error: (message) => messages.push(message) }, deps);
+    await handleRunControlCommand("resume", [runId], {
+      hasUI: true,
+      ui: { notify: () => undefined },
+      sessionManager: { getSessionId: () => "resume-launch-session" },
+    } as never, { info: (message) => messages.push(message), error: (message) => messages.push(message) }, deps);
 
     assert.equal(ensureCalls, 1);
     assert.equal(preparedTarget, runId);
     assert.equal(resumedTarget, runId);
+    assert.equal(resumedRootSessionId, "resume-launch-session");
     assert.deepEqual(opened, [runId]);
     assert.deepEqual(messages, [`Resumed durable ${runId}`]);
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");

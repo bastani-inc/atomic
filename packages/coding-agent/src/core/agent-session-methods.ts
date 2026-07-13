@@ -41,6 +41,7 @@ import type {
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
 import type { SendMessageOptions } from "./extensions/index.ts";
+import type { DescendantUsageReport, TransitiveUsage, TransitiveUsageAggregator } from "./transitive-usage.ts";
 
 export interface ContextCompactionApplyOptions {
 	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -120,6 +121,8 @@ export interface AgentSessionMethodSurface {
 	subscribe(listener: AgentSessionEventListener): () => void;
 	_disconnectFromAgent(): void;
 	_reconnectToAgent(): void;
+	_initializeTransitiveUsage(): void;
+	_disposeTransitiveUsage(): void;
 	dispose(): void;
 
 	getActiveToolNames(): string[];
@@ -241,6 +244,9 @@ export interface AgentSessionMethodSurface {
 
 	getSessionStats(): SessionStats;
 	getContextUsage(): ContextUsage | undefined;
+	getTransitiveUsage(): TransitiveUsage;
+	attributeDescendantUsage(report: DescendantUsageReport): void;
+	walkDescendantUsage(root?: import("./session-manager.ts").SessionInfo): Promise<TransitiveUsage>;
 	exportToHtml(outputPath?: string): Promise<string>;
 	exportToJsonl(outputPath?: string): string;
 	getLastAssistantText(): string | undefined;
@@ -319,6 +325,9 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "getUserMessagesForForking"
 	| "getSessionStats"
 	| "getContextUsage"
+	| "getTransitiveUsage"
+	| "attributeDescendantUsage"
+	| "walkDescendantUsage"
 	| "exportToHtml"
 	| "exportToJsonl"
 	| "getLastAssistantText"
@@ -389,5 +398,7 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_asyncJobManager: AsyncJobManager;
 	_asyncJobManagerSessionId: symbol;
+	_transitiveUsageAggregator: TransitiveUsageAggregator;
+	_unsubscribeDescendantUsage?: () => void;
 }
 

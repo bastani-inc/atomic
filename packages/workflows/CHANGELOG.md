@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed workflow stages to persist usage snapshots and emit stage rollups so Atomic's status-bar cost and token badges reflect full transitive workflow-stage spend, including internal stage sessions hidden from normal resume lists. Stages emit interim rollups while running, forward nested descendant updates, and restore persisted spend when continuation or durable-checkpoint replay skips provider work ([#1636](https://github.com/bastani-inc/atomic/issues/1636)). Based on and supersedes [#1725](https://github.com/bastani-inc/atomic/pull/1725) by [@gebner](https://github.com/gebner).
+
+### Fixed
+
+- Fixed live workflow-stage usage reporting for tool, slash-command, background, resumed, continuation-replay, and durable-checkpoint launches by retaining the launching root, subscribing before the first turn, forwarding nested usage changes, reconciling descendants before terminal persistence, sharing one asynchronous finalization barrier across concurrent replay calls, and restoring only stages inside the exact cached child-workflow scope ([#1636](https://github.com/bastani-inc/atomic/issues/1636)).
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

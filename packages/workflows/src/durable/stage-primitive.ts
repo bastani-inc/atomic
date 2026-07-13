@@ -1,6 +1,6 @@
 /** Durable `ctx.stage` / `ctx.task` replay and checkpoint helpers. */
 
-import type { StageContext, StageOptions, WorkflowChildResult, WorkflowOutputValues, WorkflowTaskOptions, WorkflowTaskResult } from "../shared/types.js";
+import type { StageContext, StageOptions, WorkflowChildResult, WorkflowOutputValues, WorkflowTaskOptions, WorkflowTaskResult, WorkflowUsageRollupPort } from "../shared/types.js";
 import type { StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -236,6 +236,8 @@ function checkpointMetadata(stage: StageSnapshot): Partial<DurableStageCheckpoin
     ...(stage.result !== undefined ? { result: stage.result } : {}),
     ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
     ...(stage.sessionFile !== undefined ? { sessionFile: stage.sessionFile } : {}),
+    ...(stage.usage !== undefined ? { usage: stage.usage } : {}),
+    ...(stage.usageComplete !== undefined ? { usageComplete: stage.usageComplete } : {}),
     ...(stage.model !== undefined ? { model: stage.model } : {}),
     ...(stage.fastMode !== undefined ? { fastMode: stage.fastMode } : {}),
     ...(stage.attemptedModels !== undefined ? { attemptedModels: [...stage.attemptedModels] } : {}),
@@ -292,6 +294,8 @@ function mergeCheckpointHydrationMetadata(
     ...(replayValueCheckpoint.fastMode === undefined ? metadataValue(checkpoints, "fastMode") : {}),
     ...(replayValueCheckpoint.attemptedModels === undefined ? metadataValue(checkpoints, "attemptedModels") : {}),
     ...(replayValueCheckpoint.modelAttempts === undefined ? metadataValue(checkpoints, "modelAttempts") : {}),
+    ...(replayValueCheckpoint.usage === undefined ? metadataValue(checkpoints, "usage") : {}),
+    ...(replayValueCheckpoint.usageComplete === undefined ? metadataValue(checkpoints, "usageComplete") : {}),
   };
 }
 
@@ -363,6 +367,8 @@ export function recordCachedStageIntoStore(
     ...(checkpoint?.fastMode !== undefined ? { fastMode: checkpoint.fastMode } : {}),
     ...(checkpoint?.attemptedModels !== undefined ? { attemptedModels: checkpoint.attemptedModels } : {}),
     ...(checkpoint?.modelAttempts !== undefined ? { modelAttempts: checkpoint.modelAttempts } : {}),
+    ...(checkpoint?.usage !== undefined ? { usage: checkpoint.usage } : {}),
+    ...(checkpoint?.usageComplete !== undefined ? { usageComplete: checkpoint.usageComplete } : {}),
   };
   store.recordStageStart(runId, snapshot);
   store.recordStageEnd(runId, snapshot);
@@ -383,6 +389,7 @@ export function recordCachedStageWithTracker(
   checkpoint: DurableCompletedStageCheckpoint,
   completedStageReplayKeys: Map<string, string>,
   stageFailFastScope?: ParallelFailFastScope,
+  usageRollup?: WorkflowUsageRollupPort,
 ): void {
   const stageId = cachedStageId(runId, replayKey);
   let parentIds = tracker.onSpawn(stageId, name);
@@ -392,6 +399,14 @@ export function recordCachedStageWithTracker(
     parentIds = [...scopeParentIds];
   }
   recordCachedStageIntoStore(store, runId, name, replayKey, checkpoint.output, completedStageReplayKeys, parentIds, checkpoint);
+  if (checkpoint.usage && checkpoint.sessionId) {
+    usageRollup?.emitStageRollup(stageId, checkpoint.usage, {
+      label: name,
+      sessionId: checkpoint.sessionId,
+      sessionFile: checkpoint.sessionFile,
+      settled: checkpoint.usageComplete !== false,
+    });
+  }
   tracker.onSettle(stageId);
 }
 function isWorkflowTaskResult(value: WorkflowSerializableValue): value is WorkflowTaskResult {

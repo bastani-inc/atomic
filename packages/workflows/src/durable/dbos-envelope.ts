@@ -59,6 +59,8 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
   readonly fastMode?: boolean;
   readonly attemptedModels?: WorkflowSerializableValue;
   readonly modelAttempts?: WorkflowSerializableValue;
+  readonly usage?: WorkflowSerializableValue;
+  readonly usageComplete?: boolean;
 }
 
 /**
@@ -98,6 +100,8 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
     ...(s.fastMode !== undefined ? { fastMode: s.fastMode } : {}),
     ...(s.attemptedModels !== undefined ? { attemptedModels: [...s.attemptedModels] } : {}),
     ...(s.modelAttempts !== undefined ? { modelAttempts: s.modelAttempts as WorkflowSerializableValue } : {}),
+    ...(s.usage !== undefined ? { usage: s.usage as unknown as WorkflowSerializableValue } : {}),
+    ...(s.usageComplete !== undefined ? { usageComplete: s.usageComplete } : {}),
   };
 }
 
@@ -168,7 +172,22 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     ...(typeof env.fastMode === "boolean" ? { fastMode: env.fastMode } : {}),
     ...(isStringArray(env.attemptedModels) ? { attemptedModels: env.attemptedModels } : {}),
     ...(Array.isArray(env.modelAttempts) ? { modelAttempts: env.modelAttempts as DurableStageCheckpoint["modelAttempts"] } : {}),
+    ...(isUsage(env.usage) ? { usage: env.usage } : {}),
+    ...(typeof env.usageComplete === "boolean" ? { usageComplete: env.usageComplete } : {}),
   } as DurableStageCheckpoint;
+}
+
+function isUsage(value: unknown): value is DurableStageCheckpoint["usage"] {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const usage = value as Record<string, unknown>;
+  const cost = usage["cost"];
+  return typeof usage["input"] === "number" &&
+    typeof usage["output"] === "number" &&
+    typeof usage["cacheRead"] === "number" &&
+    typeof usage["cacheWrite"] === "number" &&
+    typeof cost === "object" &&
+    cost !== null &&
+    typeof (cost as Record<string, unknown>)["total"] === "number";
 }
 
 

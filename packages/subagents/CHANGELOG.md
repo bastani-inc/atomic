@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed foreground, async, and live foreground-update subagent reports to send transitive usage rollups back to the parent session so Atomic's status-bar cost and token badges reflect delegated and nested spend exactly once while subagents are still running, not only after their final tool result ([#1636](https://github.com/bastani-inc/atomic/issues/1636)). Based on and supersedes [#1725](https://github.com/bastani-inc/atomic/pull/1725) by [@gebner](https://github.com/gebner).
+
+### Fixed
+
+- Fixed terminal subagent rollups to keep newer scalar usage as an incomplete floor when session files lag or contain malformed tails, deduplicate equivalent portable session-file aliases deterministically, omit untrusted file-derived fork ancestry while retaining direct scalar evidence, prevent Windows subtree double-counting, and retain the launching root across async session switches ([#1636](https://github.com/bastani-inc/atomic/issues/1636)).
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

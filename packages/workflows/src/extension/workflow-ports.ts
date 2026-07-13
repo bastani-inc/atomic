@@ -1,4 +1,4 @@
-import type { WorkflowMcpPort, WorkflowPersistencePort } from "../shared/types.js";
+import type { WorkflowMcpPort, WorkflowPersistencePort, WorkflowUsageRollupPort } from "../shared/types.js";
 import { clearMcpScope, setMcpScope, type PiEventBus, type PiMcpExtensionAPI } from "./mcp.js";
 import type { ExtensionAPI } from "./public-types.js";
 
@@ -36,6 +36,26 @@ export function makeMcpPort(pi: ExtensionAPI): WorkflowMcpPort | undefined {
     },
     clearScope(stageId: string) {
       clearMcpScope(piForMcp, stageId);
+    },
+  };
+}
+
+export function makeUsageRollupPort(pi: ExtensionAPI): WorkflowUsageRollupPort | undefined {
+  if (typeof pi.events?.emit !== "function") return undefined;
+  return {
+    emitStageRollup(_stageId, usage, meta): void {
+      const sessionManager = pi.sessionManager as ({ getSessionId?: () => string } | undefined);
+      const rootSessionId = meta.rootSessionId ?? pi.getSessionId?.() ?? sessionManager?.getSessionId?.();
+      if (!rootSessionId || !meta.sessionId) return;
+      pi.events!.emit!("usage:descendant-rollup", {
+        rootSessionId,
+        childRunId: meta.sessionId,
+        kind: "workflow-stage",
+        usage,
+        settled: meta.settled !== false,
+        label: meta.label,
+        sessionFile: meta.sessionFile,
+      });
     },
   };
 }

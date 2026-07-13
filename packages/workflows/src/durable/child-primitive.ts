@@ -5,12 +5,13 @@ import type {
   WorkflowOutputValues,
   WorkflowRunChildArgs,
   WorkflowSerializableValue,
+  WorkflowUsageRollupPort,
 } from "../shared/types.js";
 import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { DurableScope } from "./scoped-backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
-import { stageCheckpointWithOutput, type DurableCompletedStageCheckpoint } from "./stage-primitive.js";
+import { cachedStageId, stageCheckpointWithOutput, type DurableCompletedStageCheckpoint } from "./stage-primitive.js";
 
 export function createDurableChildWorkflowPrimitive(input: {
   readonly workflowId: string;
@@ -18,6 +19,7 @@ export function createDurableChildWorkflowPrimitive(input: {
   readonly backend: DurableWorkflowBackend;
   readonly nextReplayKey: (name: string) => string;
   readonly recordCachedStage: (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint) => void;
+  readonly usageRollup?: WorkflowUsageRollupPort;
   /**
    * Publish the durable scope computed for the next child invocation so the
    * child runner can consume it and route its internal side-effect checkpoints
@@ -48,6 +50,7 @@ export function createDurableChildWorkflowPrimitive(input: {
     const cached = stageCheckpointWithOutput(input.backend, input.workflowId, replayKey, isWorkflowChildResult);
     if (cached !== undefined && isWorkflowChildResult(cached.output)) {
       input.recordCachedStage(boundaryName, replayKey, cached);
+      emitCachedChildStageUsage(input, cached.replayKey);
       return cached.output as WorkflowChildResult<TChildOutputs>;
     }
     // Route this child's internal side-effect checkpoints under the root
@@ -69,6 +72,41 @@ export function createDurableChildWorkflowPrimitive(input: {
     });
     return result as WorkflowChildResult<TChildOutputs>;
   };
+}
+
+function emitCachedChildStageUsage(input: {
+  readonly workflowId: string;
+  readonly backend: DurableWorkflowBackend;
+  readonly usageRollup?: WorkflowUsageRollupPort;
+}, boundaryReplayKey: string): void {
+  if (!input.usageRollup) return;
+  const scopedReplayMarker = `${boundaryReplayKey}:`;
+  const stages = new Map<string, {
+    name: string;
+    usage: Parameters<WorkflowUsageRollupPort["emitStageRollup"]>[1];
+    sessionId: string;
+    sessionFile?: string;
+    usageComplete?: boolean;
+  }>();
+  for (const checkpoint of input.backend.listCheckpoints(input.workflowId)) {
+    if (checkpoint.kind !== "stage" || !checkpoint.replayKey.startsWith(scopedReplayMarker)) continue;
+    if (!checkpoint.usage || !checkpoint.sessionId) continue;
+    stages.set(checkpoint.replayKey, {
+      name: checkpoint.name,
+      usage: checkpoint.usage,
+      sessionId: checkpoint.sessionId,
+      ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
+      ...(checkpoint.usageComplete !== undefined ? { usageComplete: checkpoint.usageComplete } : {}),
+    });
+  }
+  for (const [replayKey, checkpoint] of stages) {
+    input.usageRollup.emitStageRollup(cachedStageId(input.workflowId, replayKey), checkpoint.usage, {
+      label: checkpoint.name,
+      sessionId: checkpoint.sessionId,
+      sessionFile: checkpoint.sessionFile,
+      settled: checkpoint.usageComplete !== false,
+    });
+  }
 }
 
 

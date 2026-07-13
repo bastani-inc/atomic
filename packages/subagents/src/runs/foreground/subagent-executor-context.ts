@@ -154,7 +154,12 @@ export function prepareExecutionContext(input: {
 		sessionFileForIndex(idx) ?? path.join(sessionDirForIndex(idx), "session.jsonl");
 
 	const onUpdateWithContext = onUpdate
-		? (r: SubagentToolResult) => onUpdate(withForkContext(r, effectiveParams.context))
+		? (r: SubagentToolResult) => {
+			const contextual = withForkContext(r, effectiveParams.context);
+			return onUpdate(contextual.details
+				? { ...contextual, details: { ...contextual.details, runId: contextual.details.runId ?? runId } }
+				: contextual);
+		}
 		: undefined;
 
 	const execData = {

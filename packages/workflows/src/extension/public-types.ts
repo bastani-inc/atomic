@@ -83,6 +83,9 @@ export interface PiCommandContext extends PiModelContext {
     notify: (message: string, type?: "info" | "warning" | "error") => void;
   } & PiUISurface;
   hasUI?: boolean;
+  sessionManager?: SessionManager & {
+    getSessionId?: () => string;
+  };
 }
 
 export interface PiFlagNamedOpts {
@@ -132,6 +135,7 @@ export interface PiExecuteContext extends PiModelContext {
   hasUI?: boolean;
   orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
   sessionManager?: SessionManager & {
+    getSessionId?: () => string;
     getSessionFile?: () => string | undefined;
   };
   [key: string]: unknown;
@@ -173,6 +177,7 @@ export interface ExtensionAPI {
   getWorkflowResources?: () => readonly WorkflowResourceInfo[];
   refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;
   getResourceLoaderInheritanceSnapshot?: () => DefaultResourceLoaderInheritanceSnapshot | undefined;
+  getSessionId?: () => string;
   registerShortcut?: (
     key: string,
     opts: {

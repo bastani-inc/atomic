@@ -3,6 +3,15 @@ title: "Changelog"
 description: "What's new in Atomic"
 ---
 
+<Update label="July 12, 2026">
+## Transitive session spend
+
+- **Delegated work appears in the footer.** The interactive status-bar dollar amount and token/cache badges (`↑`, `↓`, `R`, `W`) now include the current session plus subagents, nested subagents, and workflow-stage descendants.
+- **Live and replayed workflows update the launcher.** Background `/workflow` runs and subagent-heavy workflows such as `deep-research-codebase` stream unsettled usage rollups back to the launching chat while children run. Continuation and durable-checkpoint replays restore persisted stage spend without rerunning provider work, and async completions stay attributed to the session that launched them after session switches.
+- **Incomplete totals are explicit and monotonic.** The footer, `/context`, and `/cost` use a `~` lower-bound marker while descendant spend is unsettled, a complete transcript lags newer terminal scalar usage, or reconciliation encounters malformed lines. Settled totals cannot be reduced by delayed persisted walks or aliased interim reports, portable path aliases are counted once, and workflow stages reconcile descendants before persisting terminal usage. The context-window percentage still describes the active session; use `/cost` for the self/descendant/total breakdown and durable reconciliation.
+- **Contributor credit is preserved.** This corrected replacement is based on and supersedes [#1725](https://github.com/bastani-inc/atomic/pull/1725), originally implemented by [@gebner](https://github.com/gebner).
+
+</Update>
 <Update label="July 10, 2026">
 
 ## Pi 0.80.6 compatibility

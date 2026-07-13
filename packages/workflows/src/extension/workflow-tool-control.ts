@@ -31,6 +31,7 @@ export interface WorkflowControlActionDeps {
   reloadWorkflowResources: () => Promise<void> | void;
   getRuntime: () => ExtensionRuntime;
   policy: WorkflowExecutionPolicy;
+  rootSessionId?: string;
   ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 }
 
@@ -170,7 +171,7 @@ export function workflowInterruptAction(args: WorkflowToolArgs): WorkflowToolRes
 
 export async function workflowResumeAction(
   args: WorkflowToolArgs,
-  deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "ensureWorkflowResourcesLoaded">,
+  deps: Pick<WorkflowControlActionDeps, "getRuntime" | "policy" | "rootSessionId" | "ensureWorkflowResourcesLoaded">,
 ): Promise<WorkflowToolResult> {
   const target = resolveToolRunTarget(args, "No active run to resume.");
   if (target.kind === "all") return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
@@ -194,7 +195,10 @@ export async function workflowResumeAction(
     } catch (error) {
       warning = formatWorkflowResourceLoadWarning(error);
     }
-    const continuation = deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, { policy: deps.policy });
+    const continuation = deps.getRuntime().resumeFailedRun(stageRunId, stage.stageId, {
+      policy: deps.policy,
+      rootSessionId: deps.rootSessionId,
+    });
     const message = warning === undefined ? continuation.message : `${warning}\n\n${continuation.message}`;
     return {
       action: "resume",

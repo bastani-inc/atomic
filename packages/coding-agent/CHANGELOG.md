@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the interactive status-bar dollar figure **and** token/cache badges (`↑`, `↓`, `R`, `W`) to report full transitive session spend — the current session plus subagents, nested subagents, and workflow-stage descendants — updating live as descendants spend. Token badges going transitive keeps delegated spend visible on subscription/OAuth models where per-token cost is `$0.000`. The context-window percentage remains current-session only, `/cost` shows a reconciled self/descendant breakdown, and incomplete live/reconciled totals render with a `~` lower-bound prefix ([#1636](https://github.com/bastani-inc/atomic/issues/1636)). Based on and supersedes [#1725](https://github.com/bastani-inc/atomic/pull/1725) by [@gebner](https://github.com/gebner).
+
+### Fixed
+
+- Fixed live transitive spend reporting for background `/workflow` runs and subagent-heavy workflows such as `deep-research-codebase`: foreground subagent updates stream while children run, workflow stages forward nested updates, continuation and durable-checkpoint replays restore persisted stage spend to the launching footer, synthesized Copilot catalog models inherit known OpenAI-family pricing/tiers instead of zero-cost placeholders, and zero-priced token usage renders an explicit `$0.000` segment ([#1636](https://github.com/bastani-inc/atomic/issues/1636)).
+- Fixed transitive spend reconciliation to preserve monotonic settled usage across stale persisted walks and aliased live/durable reports, coalesce complete per-file walks before replacing live multi-file aggregates, keep valid scalar lower bounds when session files lag or are malformed, deduplicate portable path aliases deterministically, omit untrusted inherited fork usage while retaining direct scalar evidence, and retain launch-root attribution after session switches ([#1636](https://github.com/bastani-inc/atomic/issues/1636)).
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

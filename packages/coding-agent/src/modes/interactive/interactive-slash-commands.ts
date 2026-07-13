@@ -391,6 +391,61 @@ InteractiveModeBase.prototype.handleSessionCommand = function(this: InteractiveM
     this.ui.requestRender();
   };
 
+function formatCost(value: number): string {
+  return `$${value.toFixed(4)}`;
+}
+
+function formatUsageTokens(usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number }): string {
+  const total = usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  return total.toLocaleString();
+}
+
+InteractiveModeBase.prototype.handleContextCommand = function(this: InteractiveModeBase): void {
+    const contextUsage = this.session.getContextUsage();
+    const transitive = this.session.getTransitiveUsage();
+    const contextPercent = contextUsage?.percent === null || contextUsage?.percent === undefined
+      ? "?"
+      : `${contextUsage.percent.toFixed(1)}%`;
+    let info = `${theme.bold("Context")}
+
+`;
+    info += `${theme.fg("dim", "Current session:")} ${contextPercent}`;
+    if (contextUsage?.contextWindow !== undefined) info += ` of ${contextUsage.contextWindow.toLocaleString()} tokens`;
+    info += `
+${theme.fg("dim", "Transitive cost:")} ${transitive.complete ? "" : "~"}${formatCost(transitive.total.cost.total)} (self ${formatCost(transitive.self.cost.total)}, descendants ${formatCost(transitive.descendants.cost.total)})`;
+    this.chatContainer.addChild(new Spacer(1));
+    this.chatContainer.addChild(new Text(info, 1, 0));
+    this.ui.requestRender();
+  };
+
+InteractiveModeBase.prototype.handleCostCommand = async function(this: InteractiveModeBase): Promise<void> {
+    const transitive = await this.session.walkDescendantUsage();
+    let info = `${theme.bold("Session Cost")}
+
+`;
+    info += `${theme.fg("dim", "Self:")} ${formatCost(transitive.self.cost.total)} (${formatUsageTokens(transitive.self)} tokens)
+`;
+    info += `${theme.fg("dim", "Descendants:")} ${formatCost(transitive.descendants.cost.total)} (${formatUsageTokens(transitive.descendants)} tokens)
+`;
+    info += `${theme.fg("dim", "Total:")} ${transitive.complete ? "" : "~"}${formatCost(transitive.total.cost.total)} (${formatUsageTokens(transitive.total)} tokens)
+`;
+    info += `${theme.fg("dim", "Complete:")} ${transitive.complete ? "yes" : "no; total is a lower bound"}`;
+    if (transitive.breakdown.length > 0) {
+      info += `
+
+${theme.bold("Descendant breakdown")}
+`;
+      for (const entry of transitive.breakdown) {
+        const label = entry.label ?? entry.childRunId;
+        info += `- ${entry.kind} ${label}: ${entry.settled ? "" : "~"}${formatCost(entry.usage.cost.total)} (${formatUsageTokens(entry.usage)} tokens)
+`;
+      }
+    }
+    this.chatContainer.addChild(new Spacer(1));
+    this.chatContainer.addChild(new Text(info.trimEnd(), 1, 0));
+    this.ui.requestRender();
+  };
+
 InteractiveModeBase.prototype.handleChangelogCommand = function(this: InteractiveModeBase): void {
     const changelogPath = getChangelogPath();
     const allEntries = parseChangelog(changelogPath);

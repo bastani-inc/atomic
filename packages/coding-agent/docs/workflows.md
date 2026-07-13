@@ -21,6 +21,8 @@ Loop or stop-condition phrasing is an especially strong workflow signal: `do X u
 - **Model fallback chains** - Retry important stages on fallback models when providers fail
 - **Package distribution** - Ship workflows through Atomic packages, settings, or conventional directories
 
+Workflow stage sessions are counted in the parent session's transitive cost. Running stages stream lower-bound rollups, completed stages persist terminal usage, and continuation or durable-checkpoint replays restore that persisted spend to the launching session without rerunning provider work. This includes internal stage sessions hidden from normal resume lists, so the interactive footer reflects workflow spend while context-window percentage remains self-only.
+
 **Example use cases:**
 - Well-defined autonomous jobs that benefit materially from durable execution state
 - Long-running or background-oriented work with explicit completion criteria

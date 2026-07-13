@@ -91,6 +91,11 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.ui.requestRender();
         break;
 
+      case "descendant_usage_changed":
+        this.usageMeter.invalidate();
+        this.ui.requestRender();
+        break;
+
       case "message_start":
         if (event.message.role === "custom") {
           appendNewChildrenBeforeAttachedChild(

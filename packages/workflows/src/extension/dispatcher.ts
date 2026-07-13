@@ -24,6 +24,7 @@ import {
   type WorkflowMcpPort,
   type WorkflowRuntimeConfig,
   type WorkflowModelCatalogPort,
+  type WorkflowUsageRollupPort,
 } from "../shared/types.js";
 
 type WorkflowRunResult = Extract<WorkflowToolResult, { action: "run" }>;
@@ -58,6 +59,8 @@ export interface DispatcherOpts {
   persistence?: WorkflowPersistencePort;
   /** MCP scope-gating port forwarded to the executor. */
   mcp?: WorkflowMcpPort;
+  /** Usage rollup port forwarded to workflow stages for transitive cost reporting. */
+  usageRollup?: WorkflowUsageRollupPort;
   /**
    * Resolved runtime configuration. Forwarded to runDetached() so downstream
    * tasks (maxDepth, concurrency, statusFile) can consume it.
@@ -171,6 +174,7 @@ export async function dispatch(
         jobs: opts.jobs,
         persistence: opts.persistence,
         mcp: opts.mcp,
+        usageRollup: opts.usageRollup,
         config: opts.config,
         models: opts.models,
         executionMode: policy.mode,

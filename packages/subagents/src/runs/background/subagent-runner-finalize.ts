@@ -5,6 +5,7 @@ import { DEFAULT_MAX_OUTPUT, truncateOutput } from "../../shared/types.ts";
 import { createShareLink, exportSessionHtml, writeRunLog } from "./subagent-runner-output.ts";
 import { findLatestSessionFile } from "./subagent-runner-utils.ts";
 import { cleanupActivityTimer, writeStatusPayload } from "./subagent-runner-state.ts";
+import { usageRollupFromModelAttempts } from "../../shared/usage-rollup.ts";
 import type { RunnerExecutionState } from "./subagent-runner-types.ts";
 
 export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
@@ -85,6 +86,8 @@ export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
 		shareUrl,
 		shareError,
 	});
+	const transitiveRollup = usageRollupFromModelAttempts(results);
+	const transitiveUsage = transitiveRollup.usage;
 
 	try {
 		writeAtomicJson(state.resultPath, {
@@ -121,6 +124,9 @@ export async function finalizeRun(state: RunnerExecutionState): Promise<void> {
 			artifactsDir,
 			cwd,
 			asyncDir,
+			transitiveUsage,
+			transitiveUsageComplete: transitiveRollup.complete,
+			transitiveUsageSessionFiles: transitiveRollup.sessionFiles,
 			sessionId: config.sessionId,
 			sessionFile: effectiveSessionFile,
 			intercomTarget: config.controlIntercomTarget,

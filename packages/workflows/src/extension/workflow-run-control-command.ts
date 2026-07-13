@@ -14,6 +14,7 @@ import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
+import { runtimeDispatchOptions } from "./runtime-usage.js";
 import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import {
@@ -70,13 +71,14 @@ async function handleDurableResume(
   }
   const runtime = deps.runtimeForContext(ctx);
   const policy = workflowPolicyFromContext(ctx);
+  const runtimeOptions = runtimeDispatchOptions(policy, ctx);
   // Hydrate the durable backend from DBOS (if configured) before listing so a
   // fresh process discovers workflows persisted by a prior session.
   const prepared = await runtime.prepareDurableResumable(target);
   const durable = filterSelectorDurableEntries(runtime, prepared);
   if (target !== undefined) {
     // Attempt resume by id/prefix against the durable catalog.
-    const result = runtime.resumeDurableWorkflow(target, { policy });
+    const result = runtime.resumeDurableWorkflow(target, runtimeOptions);
     if (result.ok) {
       print(result.message);
       // Open/connect the overlay to the resumed run, analogous to live resume.
@@ -102,7 +104,7 @@ async function handleDurableResume(
   }
   const picked = await openWorkflowResumeSelector(ctx.ui, [], durable);
   if (picked.kind === "durable") {
-    const result = runtime.resumeDurableWorkflow(picked.workflowId, { policy });
+    const result = runtime.resumeDurableWorkflow(picked.workflowId, runtimeOptions);
     if (result.ok) {
       print(result.message);
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
@@ -124,6 +126,7 @@ export async function handleRunControlCommand(
   deps: WorkflowRunControlDeps,
 ): Promise<boolean> {
   const policy = workflowPolicyFromContext(ctx);
+  const runtimeOptions = runtimeDispatchOptions(policy, ctx);
   const print = (msg: string): void => reporter.info(msg);
   const fail = (msg: string): void => reporter.error(msg);
   const canOpenPicker = (ui: PiCommandContext["ui"] | undefined): boolean =>
@@ -342,7 +345,7 @@ export async function handleRunControlCommand(
           const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
           if (isResumableContinuation) {
             await ensureWorkflowResourcesVisible();
-            const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
+            const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, runtimeOptions);
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
             const result = resumeRun(resolved.runId, {});
@@ -416,7 +419,7 @@ export async function handleRunControlCommand(
     }
     if (isResumableContinuation) {
       await ensureWorkflowResourcesVisible();
-      const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, { policy });
+      const continuation = deps.runtimeForContext(ctx).resumeFailedRun(stageRunId, stageId, runtimeOptions);
       continuation.ok ? print(continuation.message) : fail(continuation.message);
       return true;
     }

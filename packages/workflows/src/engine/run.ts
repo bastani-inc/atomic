@@ -45,11 +45,9 @@ import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backe
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
-
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
 export function run<
@@ -222,6 +220,7 @@ export async function run<
     executionMode: opts.executionMode,
     defaultSessionDir: opts.defaultSessionDir,
     persistence: opts.persistence,
+    usageRollup: opts.usageRollup,
     onStageStart: opts.onStageStart,
     onStageEnd: durableOnStageEnd,
     onStageSession: durableOnStageSession,
@@ -243,6 +242,7 @@ export async function run<
     store: opts.store,
     persistence: opts.persistence,
     mcp: opts.mcp,
+    usageRollup: opts.usageRollup,
     cancellation: opts.cancellation,
     overlay: opts.overlay,
     config: opts.config,
@@ -340,17 +340,17 @@ export async function run<
   // Durable ctx.ui wrapper — caches completed user responses so a resumed workflow does not re-ask answered prompts.
   const durableUiDeps = { workflowId: runId, backend: durableBackend, nextCheckpointId: checkpointIdGenerator };
   const recordCachedStage = (name: string, replayKey: string, checkpoint: DurableCompletedStageCheckpoint): void =>
-    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys);
+    recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys, undefined, opts.usageRollup);
   const durableTask = createDurableTaskPrimitive({
     workflowId: runId, backend: durableBackend,
     nextReplayKey: (stageName) => stageReplayKeyGenerator(stageName), task: taskRunners.task,
     recordCachedTask: (name, replayKey, checkpoint, scope) =>
-      recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys, scope),
+      recordCachedStageWithTracker(activeStore, tracker, runId, name, replayKey, checkpoint, completedStageReplayKeys, scope, opts.usageRollup),
   });
   const durableWorkflow = createDurableChildWorkflowPrimitive({
     workflowId: runId, rootWorkflowId: opts.parentRun?.rootRunId ?? runId, backend: durableBackend,
     nextReplayKey: nextDurableChildReplayKey, setChildDurableScope: (scope) => { pendingChildDurableScope = scope; },
-    recordCachedStage, workflow,
+    recordCachedStage, workflow, usageRollup: opts.usageRollup,
   });
   const ctx: WorkflowRunContext<TInputs> = {
     inputs: resolvedInputs as TInputs,

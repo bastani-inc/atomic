@@ -29,6 +29,7 @@ describeModelRegistry((context) => {
 			["gpt-5.5", { contextWindow: 272_000, contextWindowOptions: [272_000, 1_050_000], maxInputTokens: 922_000, maxTokens: 128_000, supports: { reasoningEffort: true, reasoningEffortLevels: ["none", "low", "medium", "high", "xhigh"] } }],
 			["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
 			["gemini-3.1-pro-preview", { contextWindow: 200_000, contextWindowOptions: [200_000, 1_000_000], maxInputTokens: 936_000, maxTokens: 64_000 }],
+			["gpt-5.6-sol", { contextWindow: 272_000, maxInputTokens: 272_000, maxTokens: 128_000, displayName: "GPT-5.6 Sol", supportedEndpoints: ["/responses"], supports: { reasoningEffort: true, reasoningEffortLevels: ["low", "medium", "high"], toolCalls: true }, limits: { maxPromptTokens: 272_000, maxOutputTokens: 128_000, maxContextWindowTokens: 272_000 }, modelPickerEnabled: true, policyState: "enabled", type: "chat" }],
 			[
 				"claude-sonnet-5-test",
 				{
@@ -120,6 +121,14 @@ describeModelRegistry((context) => {
 			expect(maiCodeFlash.contextWindowOptions).toBeUndefined();
 			expect(maiCodeFlash.maxInputTokens).toBe(128_000);
 			expect(maiCodeFlash.maxTokens).toBe(128_000);
+
+			const gpt56Sol = registry.find("github-copilot", "gpt-5.6-sol");
+			if (!gpt56Sol) throw new Error("Missing dynamic github-copilot/gpt-5.6-sol model");
+			expect(gpt56Sol.cost.input).toBe(5);
+			expect(gpt56Sol.cost.output).toBe(30);
+			expect(gpt56Sol.cost.cacheRead).toBe(0.5);
+			expect(gpt56Sol.cost.cacheWrite).toBe(6.25);
+			expect(gpt56Sol.cost.tiers?.[0]?.cacheWrite).toBe(12.5);
 		});
 
 		test("overlays builtin github-copilot thinking levels from catalog effort arrays", () => {

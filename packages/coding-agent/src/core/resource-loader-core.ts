@@ -157,6 +157,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.touchInternalFieldsForSplit();
 	}
 
+	getEventBus(): EventBus {
+		return this.eventBus;
+	}
+
 	getExtensions(): LoadExtensionsResult {
 		return this.extensionsResult;
 	}
