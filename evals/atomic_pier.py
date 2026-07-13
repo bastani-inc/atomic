@@ -36,7 +36,6 @@ from skill_prerequisites import (
     agent_install_command,
     root_install_command,
     runtime_environment_command,
-    verification_command,
 )
 
 
@@ -151,7 +150,7 @@ class Atomic(BaseInstalledAgent):
                 ),
                 InstallStep(user="agent", run=agent_install_command(version_spec)),
             ],
-            verification_command=self.get_version_command() + "; " + verification_command(),
+            verification_command=self.get_version_command(),
         )
 
     def network_allowlist(self) -> NetworkAllowlist:
