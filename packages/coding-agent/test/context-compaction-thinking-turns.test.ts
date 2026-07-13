@@ -119,7 +119,7 @@ describe("turn-aware signed-thinking compaction", () => {
 		}
 	});
 
-	it("repairs historical signed-assistant text-block filters without changing exact blocks", () => {
+	it("promotes historical signed-assistant block filters to whole-message omissions", () => {
 		resetIds();
 		const historicalTask = entry(user("historical task"));
 		const signed = entry(
@@ -135,12 +135,12 @@ describe("turn-aware signed-thinking compaction", () => {
 		];
 
 		const rebuiltJson = JSON.stringify(buildSessionContext(branch).messages);
-		expect(rebuiltJson).toContain("exact historical thinking");
-		expect(rebuiltJson).toContain("sig-text-filter");
-		expect(rebuiltJson).toContain("exact visible text");
+		expect(rebuiltJson).not.toContain("exact historical thinking");
+		expect(rebuiltJson).not.toContain("sig-text-filter");
+		expect(rebuiltJson).not.toContain("exact visible text");
 	});
 
-	it("repairs historical signed tool-call block filters and restores the paired result", () => {
+	it("omits a signed assistant and paired result when its tool-call block is filtered", () => {
 		resetIds();
 		const callId = "call-filtered-signed";
 		const historicalTask = entry(user("historical task"));
@@ -159,12 +159,12 @@ describe("turn-aware signed-thinking compaction", () => {
 		];
 
 		const rebuiltJson = JSON.stringify(buildSessionContext(branch).messages);
-		expect(rebuiltJson).toContain("sig-tool-filter");
-		expect(rebuiltJson).toContain("exact.ts");
-		expect(rebuiltJson).toContain("exact paired result");
+		expect(rebuiltJson).not.toContain("sig-tool-filter");
+		expect(rebuiltJson).not.toContain("exact.ts");
+		expect(rebuiltJson).not.toContain("exact paired result");
 	});
 
-	it("does not mistake content-block filters on every signed entry for complete omission", () => {
+	it("promotes block filters across every signed entry to complete omission", () => {
 		resetIds();
 		const historicalTask = entry(user("historical task"));
 		const first = entry(thinkingAssistant("first exact", "sig-all-filtered-1", [{ type: "text", text: "first text" }]));
@@ -182,11 +182,11 @@ describe("turn-aware signed-thinking compaction", () => {
 
 		const rebuiltJson = JSON.stringify(buildSessionContext(branch).messages);
 		for (const exact of ["sig-all-filtered-1", "first text", "sig-all-filtered-2", "second text"]) {
-			expect(rebuiltJson).toContain(exact);
+			expect(rebuiltJson).not.toContain(exact);
 		}
 	});
 
-	it("repairs unsafe persisted subsets in memory with exact signatures and paired tool results", () => {
+	it("completes unsafe persisted signed subsets by omission without rewriting history", () => {
 		resetIds();
 		const callId = "call-historical-signed";
 		const historicalTask = entry(user("historical task"));
@@ -214,10 +214,10 @@ describe("turn-aware signed-thinking compaction", () => {
 
 		const rebuilt = buildSessionContext(branch);
 		const rebuiltJson = JSON.stringify(rebuilt.messages);
-		expect(rebuiltJson).toContain("byte-exact \\ud800 thinking");
-		expect(rebuiltJson).toContain("sig-byte-exact");
-		expect(rebuiltJson).toContain("opaque-redacted-exact");
-		expect(rebuiltJson).toContain("paired result must return");
+		expect(rebuiltJson).not.toContain("byte-exact \\ud800 thinking");
+		expect(rebuiltJson).not.toContain("sig-byte-exact");
+		expect(rebuiltJson).not.toContain("opaque-redacted-exact");
+		expect(rebuiltJson).not.toContain("paired result must return");
 		expect(JSON.stringify(branch)).toBe(durableBefore);
 		expect(persisted.deletedTargets).toEqual([
 			{ kind: "entry", entryId: first.id },
@@ -275,7 +275,7 @@ describe("turn-aware signed-thinking compaction", () => {
 	});
 
 
-	it("repairs a persisted partial signed sequence after deleting its separating boundary", () => {
+	it("completes a persisted partial signed omission after deleting its separating boundary", () => {
 		resetIds();
 		const first = entry(thinkingAssistant("merged first exact", "sig-merged-first"));
 		const boundary = entry(user("deleted separating task"));
@@ -288,8 +288,8 @@ describe("turn-aware signed-thinking compaction", () => {
 		const durableBefore = JSON.stringify(branch);
 
 		const rebuiltJson = JSON.stringify(buildSessionContext(branch).messages);
-		expect(rebuiltJson).toContain("sig-merged-first");
-		expect(rebuiltJson).toContain("merged-second-exact");
+		expect(rebuiltJson).not.toContain("sig-merged-first");
+		expect(rebuiltJson).not.toContain("merged-second-exact");
 		expect(rebuiltJson).not.toContain("deleted separating task");
 		expect(JSON.stringify(branch)).toBe(durableBefore);
 	});
@@ -318,7 +318,7 @@ describe("turn-aware signed-thinking compaction", () => {
 		expect(rebuiltJson).not.toContain("deleted safe separator");
 	});
 
-	it("repairs a partial merged sequence when every custom boundary block is filtered", () => {
+	it("completes a partial merged omission when every custom boundary block is filtered", () => {
 		resetIds();
 		const first = entry(thinkingAssistant("custom merged first", "sig-custom-merged-first"));
 		const customBoundary = customMessageEntry("temporary custom boundary");
@@ -332,8 +332,8 @@ describe("turn-aware signed-thinking compaction", () => {
 		const durableBefore = JSON.stringify(branch);
 
 		const rebuiltJson = JSON.stringify(buildSessionContext(branch).messages);
-		expect(rebuiltJson).toContain("sig-custom-merged-first");
-		expect(rebuiltJson).toContain("custom-merged-second");
+		expect(rebuiltJson).not.toContain("sig-custom-merged-first");
+		expect(rebuiltJson).not.toContain("custom-merged-second");
 		expect(rebuiltJson).not.toContain("temporary custom boundary");
 		expect(JSON.stringify(branch)).toBe(durableBefore);
 	});

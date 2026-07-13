@@ -134,7 +134,7 @@ describe("buildSessionContext", () => {
 			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
 			expect(ctx.messages.some((message) => message.role === "assistant")).toBe(false);
 		});
-		it("preserves paired tool results when stale thinking assistant content-block filters are skipped", () => {
+		it("omits paired tool results when stale signed-assistant blocks are filtered", () => {
 			const toolCallId = "toolu_stale_thinking_call";
 			const assistantContent = [
 				{ type: "thinking", thinking: "private thinking must remain indexed", thinkingSignature: "sig-thinking" },
@@ -167,16 +167,9 @@ describe("buildSessionContext", () => {
 			]);
 
 			const ctx = buildSessionContext([task, assistant, result, staleCompaction]);
-			const rebuiltAssistant = ctx.messages.find(
-				(message): message is AssistantMessage => message.role === "assistant",
-			);
-			const rebuiltResult = ctx.messages.find(
-				(message): message is ToolResultMessage => message.role === "toolResult",
-			);
-
-			expect(rebuiltAssistant?.content).toEqual(assistantContent);
-			expect(rebuiltResult?.toolCallId).toBe(toolCallId);
-			expect(rebuiltResult?.content).toEqual([{ type: "text", text: "old file contents" }]);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
+			expect(JSON.stringify(ctx.messages)).not.toContain(toolCallId);
+			expect(JSON.stringify(ctx.messages)).not.toContain("old file contents");
 		});
 		it("keeps non-thinking assistant persisted tool-call deletion behavior unchanged", () => {
 			const toolCallId = "toolu_non_thinking_call";

@@ -84,6 +84,7 @@ function addEntryDeletion(filters: ContextDeletionFilters, entryId: string): boo
 
 function addToolCallDeletion(filters: ContextDeletionFilters, ref: ToolCallReference): boolean {
 	if (filters.deletedEntryIds.has(ref.entry.id)) return false;
+	if (ref.hasThinkingContent) return addEntryDeletion(filters, ref.entry.id);
 	const deletedBlocks = filters.deletedContentBlocks.get(ref.entry.id) ?? new Set<number>();
 	if (deletedBlocks.has(ref.blockIndex)) return false;
 	deletedBlocks.add(ref.blockIndex);
@@ -91,18 +92,11 @@ function addToolCallDeletion(filters: ContextDeletionFilters, ref: ToolCallRefer
 	return true;
 }
 
-function restoreResultEntry(filters: ContextDeletionFilters, entryId: string): boolean {
-	const hadEntryDeletion = filters.deletedEntryIds.delete(entryId);
-	const hadBlockDeletion = filters.deletedContentBlocks.delete(entryId);
-	return hadEntryDeletion || hadBlockDeletion;
-}
-
 /**
- * Reconcile persisted context-compaction filters in place so replay never
- * retains only one side of a tool-call/tool-result pair. Callers should pass a
- * fresh, unshared filter set; this mutates and returns that same object. The
- * fixpoint normally converges in one or two passes, while the bounded pass
- * count is only a non-termination backstop for malformed historical sessions.
+ * Expand persisted context-compaction filters in place until replay retains
+ * both sides of every tool-call/tool-result pair or neither side. Durable
+ * omissions are authoritative: repair may only add omissions, never restore a
+ * persisted target. Callers should pass a fresh, unshared filter set.
  */
 export function reconcilePersistedToolDependencyFilters(
 	path: SessionEntry[],
@@ -132,13 +126,6 @@ export function reconcilePersistedToolDependencyFilters(
 
 			for (const resultRef of resultRefs) {
 				if (!isToolResultDeleted(resultRef, filters)) continue;
-				const retainedThinkingCall = callRefs.some(
-					(ref) => ref.hasThinkingContent && !isToolCallDeleted(ref, filters),
-				);
-				if (retainedThinkingCall) {
-					changed = restoreResultEntry(filters, resultRef.entry.id) || changed;
-					continue;
-				}
 				for (const callRef of callRefs) {
 					if (!isToolCallDeleted(callRef, filters)) {
 						changed = addToolCallDeletion(filters, callRef) || changed;

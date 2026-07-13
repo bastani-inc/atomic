@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed resumed sessions resurrecting records hidden by earlier Verbatim Compaction entries after later compactions changed signed-thinking turn or tool-call/result dependencies. Persisted logical deletions are now an authoritative lower bound during every context rebuild: Atomic closes unsafe replay structures by adding transient omissions instead of restoring compacted calls/results, leaves unrelated retained history unchanged, and keeps the append-only session file intact.
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed
