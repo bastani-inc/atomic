@@ -150,7 +150,7 @@ describe("Cursor provider registration", () => {
 		assert.deepEqual(refreshCredentials, { access: "access-refreshed", refresh: "refresh-live", expires: 456 });
 		assert.equal(registrations.length, 3);
 		assert.deepEqual(discoveryRequests.map((request) => request.accessToken), ["access-live", "access-refreshed"]);
-		assert.equal(discoveryRequests[0]?.signal, signal);
+		assert.equal(discoveryRequests[0]?.signal?.aborted, false);
 		for (const request of discoveryRequests) {
 			assert.match(request.requestId, /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
 		}
@@ -404,24 +404,27 @@ describe("Cursor provider registration", () => {
 		}
 		assert.equal(discoverySignals[0]?.aborted, true);
 	});
-	test("login model discovery is best-effort like the reference provider", async () => {
-		const fakeAuth = { async login(): Promise<OAuthCredentials> { return { access: "access-live", refresh: "refresh-live", expires: 123 }; } } as unknown as CursorAuthService;
+	test("login rejects rather than presenting estimated models after authenticated discovery fails", async () => {
+		const accessToken = "authenticated-access-secret";
+		const fakeAuth = { async login(): Promise<OAuthCredentials> { return { access: accessToken, refresh: "refresh-live", expires: 123 }; } } as unknown as CursorAuthService;
+		const { host, registrations } = makeHost();
+		const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError("CursorApiRejected", `Cursor rejected ${accessToken}`); } } as unknown as CursorModelDiscoveryService;
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(), authService: fakeAuth, discoveryService: discovery,
+			catalogCache: new MemoryCursorCatalogCache(), uuid: () => "request-failure",
+		});
 
-		for (const code of ["Unauthorized", "CursorApiRejected", "Aborted", "NoUsableModels", "NetworkError", "ProtocolError"] as const) {
-			const { host, registrations } = makeHost();
-			const discovery = { async discover(): Promise<CursorModelCatalog> { throw new CursorModelDiscoveryError(code, `blocked ${code}`); } } as unknown as CursorModelDiscoveryService;
-			const runtime = registerCursorProvider(host, {
-				transport: new CursorMockTransport(),
-				authService: fakeAuth,
-				discoveryService: discovery,
-				catalogCache: new MemoryCursorCatalogCache(),
-				uuid: () => "request-failure",
-			});
-			assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
-			assert.equal(registrations.length, 1);
-			assert.ok(registrations[0]!.config.models.some((model) => /estimated/u.test(model.name)));
-			await runtime.dispose();
-		}
+		await assert.rejects(
+			registrations[0]!.config.oauth.login(callbacks()),
+			(error: Error) => {
+				assert.match(error.message, /authentication succeeded, but authenticated model discovery failed/u);
+				assert.doesNotMatch(error.message, new RegExp(accessToken, "u"));
+				return true;
+			},
+		);
+		assert.equal(registrations.length, 1);
+		assert.ok(registrations[0]!.config.models.every((model) => /estimated/u.test(model.name)));
+		await runtime.dispose();
 	});
 	test("authenticated discovery ignores unscoped or future cache freshness and awaits stale refresh", async () => {
 		let now = 1_050;

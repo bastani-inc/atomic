@@ -157,8 +157,15 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 				name: CURSOR_LOGIN_NAME,
 				async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 					const credentials = await authService.login(callbacks);
-					const generation = ++catalogRefreshGeneration;
-					await registerLiveCatalogBestEffort(credentials.access, uuid(), callbacks.signal, generation);
+					const task = scheduleTrackedCatalogDiscovery(credentials.access, true);
+					const registered = task ? await waitForCursorLoginCatalog(task, callbacks.signal) : false;
+					const credentialScope = deriveCursorCredentialScope(credentials.access);
+					const activeCredentialMatches = credentialScope
+						? credentialScope === lastCatalogCredentialScope
+						: credentials.access === lastCatalogAccessToken;
+					if (!registered || callbacks.signal?.aborted || !activeCredentialMatches || catalogRefreshStatus.state !== "fresh") {
+						throw new Error(`Cursor authentication succeeded, but authenticated model discovery failed: ${catalogRefreshStatus.error ?? "no live models were returned"}`);
+					}
 					return credentials;
 				},
 				async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -357,6 +364,23 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		getCatalogRefreshStatus: () => catalogRefreshStatus,
 		dispose: disposeRuntime,
 	};
+}
+
+async function waitForCursorLoginCatalog(task: Promise<boolean>, signal: AbortSignal | undefined): Promise<boolean> {
+	if (!signal) return task;
+	if (signal.aborted) return false;
+	let onAbort: (() => void) | undefined;
+	try {
+		return await Promise.race([
+			task,
+			new Promise<boolean>((resolve) => {
+				onAbort = () => resolve(false);
+				signal.addEventListener("abort", onAbort, { once: true });
+			}),
+		]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	}
 }
 
 async function waitForCatalogDiscoveryTasks(tasks: ReadonlySet<Promise<boolean>>, timeoutMs: number): Promise<void> {
