@@ -4,7 +4,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
@@ -27,6 +27,23 @@ class Atomic(BaseInstalledAgent):
     _LOG_SESSION_DIR = f"/logs/agent/{_SESSION_DIR_NAME}"
     _OPENAI_CODEX_PROVIDER = "openai-codex"
     _AUTH_UPLOAD_TARGET = "/tmp/atomic-subscription-auth.json"
+    _PROVIDER_AUTH_ENV_KEYS: dict[str, tuple[str, ...]] = {
+        "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
+        "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"),
+        "github-copilot": ("COPILOT_GITHUB_TOKEN",),
+        "google": (
+            "GEMINI_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "GOOGLE_API_KEY",
+        ),
+        "groq": ("GROQ_API_KEY",),
+        "huggingface": ("HF_TOKEN",),
+        "mistral": ("MISTRAL_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+        "openrouter": ("OPENROUTER_API_KEY",),
+        "xai": ("XAI_API_KEY",),
+    }
 
     CLI_FLAGS = [
         CliFlag(
@@ -36,6 +53,48 @@ class Atomic(BaseInstalledAgent):
             choices=["off", "minimal", "low", "medium", "high", "xhigh"],
         ),
     ]
+
+    @override
+    def __init__(
+        self,
+        logs_dir: Path,
+        prompt_template_path: Path | str | None = None,
+        version: str | None = None,
+        extra_env: dict[str, str] | None = None,
+        *,
+        disallowed_subscriptions: str | list[str] | tuple[str, ...] | None = None,
+        **kwargs: object,
+    ) -> None:
+        self._disallowed_subscriptions: frozenset[str] = (
+            self._normalize_disallowed_subscriptions(disallowed_subscriptions)
+        )
+        super().__init__(
+            logs_dir=logs_dir,
+            prompt_template_path=prompt_template_path,
+            version=version,
+            extra_env=extra_env,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
+        if value is None:
+            return frozenset()
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list | tuple):
+            raise TypeError(
+                "disallowed_subscriptions must be a string or list of strings"
+            )
+        subscriptions: set[str] = set()
+        for item in values:
+            if not isinstance(item, str):
+                raise TypeError(
+                    "disallowed_subscriptions must contain only provider names"
+                )
+            subscriptions.update(
+                name.strip() for name in item.split(",") if name.strip()
+            )
+        return frozenset(subscriptions)
 
     @staticmethod
     @override
@@ -80,7 +139,18 @@ class Atomic(BaseInstalledAgent):
             Path.home() / ".pi" / "agent" / "auth.json",
         )
 
-    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
+    @staticmethod
+    def _is_valid_provider_auth(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        credential_type = entry.get("type")
+        if credential_type == "api_key":
+            return isinstance(entry.get("key"), str) and bool(entry["key"])
+        if credential_type == "oauth":
+            return isinstance(entry.get("access"), str) and bool(entry["access"])
+        return False
+
+    def _load_provider_auths(self) -> dict[str, dict[str, object]]:
         merged: dict[str, object] = {}
         for auth_path in reversed(self._auth_config_paths()):
             try:
@@ -89,13 +159,23 @@ class Atomic(BaseInstalledAgent):
                 continue
             if isinstance(data, dict):
                 merged.update(data)
-        entry = merged.get(provider)
-        return entry if isinstance(entry, dict) else None
+        return {
+            provider: cast(dict[str, object], entry)
+            for provider, entry in merged.items()
+            if provider
+            and provider not in self._disallowed_subscriptions
+            and self._is_valid_provider_auth(entry)
+        }
+
+    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
+        return self._load_provider_auths().get(provider)
 
     def _has_subscription_auth(self, provider: str) -> bool:
         if provider == "anthropic":
-            return bool(self._get_env("ANTHROPIC_OAUTH_TOKEN")) or (
-                self._load_provider_auth(provider) is not None
+            return bool(
+                self._get_env("ANTHROPIC_API_KEY")
+                or self._get_env("ANTHROPIC_OAUTH_TOKEN")
+                or self._load_provider_auth(provider) is not None
             )
         if provider == self._OPENAI_CODEX_PROVIDER:
             return self._load_provider_auth(provider) is not None
@@ -126,24 +206,36 @@ class Atomic(BaseInstalledAgent):
                 return fallback
         return provider, model
 
-    def _should_provision_subscription_auth(self, provider: str) -> bool:
-        if provider == self._OPENAI_CODEX_PROVIDER:
-            return True
-        # Provision the local Claude Pro/Max OAuth entry only when no explicit
-        # env credential is supplied; ANTHROPIC_OAUTH_TOKEN keeps precedence.
-        return provider == "anthropic" and not self._get_env("ANTHROPIC_OAUTH_TOKEN")
-
     async def _provision_subscription_auth(
         self,
         environment: BaseEnvironment,
         provider: str,
+        env: dict[str, str] | None = None,
     ) -> None:
-        if not self._should_provision_subscription_auth(provider):
+        auth_data = self._load_provider_auths()
+        if env is None:
+            keys = list(self._PROVIDER_AUTH_ENV_KEYS.get(provider, ()))
+            if provider in {"anthropic", self._OPENAI_CODEX_PROVIDER}:
+                keys.append("OPENROUTER_API_KEY")
+            environment_keys = {
+                key: value for key in keys if (value := self._get_env(key))
+            }
+        else:
+            environment_keys = env.copy()
+        for credential_keys in self._PROVIDER_AUTH_ENV_KEYS.values():
+            for key in credential_keys:
+                if value := self._get_env(key):
+                    environment_keys[key] = value
+        for auth_provider, credential_keys in self._PROVIDER_AUTH_ENV_KEYS.items():
+            has_environment_auth = (
+                all(environment_keys.get(key) for key in credential_keys)
+                if auth_provider == "amazon-bedrock"
+                else any(environment_keys.get(key) for key in credential_keys)
+            )
+            if has_environment_auth:
+                auth_data.pop(auth_provider, None)
+        if not auth_data:
             return
-        entry = self._load_provider_auth(provider)
-        if entry is None:
-            return
-        auth_data = {provider: entry}
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             temp_path = Path(handle.name)
             json.dump(auth_data, handle, indent=2)
@@ -209,6 +301,7 @@ class Atomic(BaseInstalledAgent):
             "trap 'cleanup_atomic_sessions 143; exit 143' TERM; "
         )
 
+    @override
     @with_prompt_template
     async def run(
         self,
@@ -265,7 +358,7 @@ class Atomic(BaseInstalledAgent):
         skills_command = self._build_register_skills_command()
         if skills_command:
             await self.exec_as_agent(environment, command=skills_command)
-        await self._provision_subscription_auth(environment, requested_provider)
+        await self._provision_subscription_auth(environment, requested_provider, env)
 
         # Atomic state stays under the container user's ~/.atomic/agent; after
         # the run, transcripts are copied to /logs for Harbor artifact parsing.
