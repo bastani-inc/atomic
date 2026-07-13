@@ -128,7 +128,7 @@
     "@types/node": "24.12.4",
     "@types/proper-lockfile": "4.1.4",
     "@types/semver": "7.7.1",
-    "@typescript/native-preview": "7.0.0-dev.20260511.1",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
     "shx": "0.4.0",
     "typescript": "5.9.3",
     "vitest": "4.1.9"
