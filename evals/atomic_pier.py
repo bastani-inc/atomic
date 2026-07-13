@@ -1,3 +1,5 @@
+# pyright: reportMissingTypeStubs=false
+
 from __future__ import annotations
 
 import json
@@ -7,7 +9,7 @@ import shlex
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast, override
+from typing import ClassVar, cast, override
 from urllib.parse import urlparse
 
 from pier.agents.installed.base import (
@@ -31,7 +33,9 @@ from pier.models.trajectories import (
     Trajectory,
 )
 from pier.models.trial.paths import EnvironmentPaths
-from pier.utils.trajectory_utils import format_trajectory_json
+from pier.utils.trajectory_utils import (
+    format_trajectory_json,  # pyright: ignore[reportUnknownVariableType]
+)
 from prerequisites import (
     agent_install_command,
     root_install_command,
@@ -39,18 +43,32 @@ from prerequisites import (
 )
 
 
+type JsonValue = str | int | float | bool | None | list[JsonValue] | JsonObject
+type JsonObject = dict[str, JsonValue]
+
+
+def _json_object(value: object) -> JsonObject | None:
+    if not isinstance(value, dict):
+        return None
+    return cast(JsonObject, value)
+
+
 class Atomic(BaseInstalledAgent):
     """Pier installed-agent adapter for the Atomic coding agent."""
 
     SUPPORTS_ATIF: bool = True
 
-    _OUTPUT_FILENAME = "atomic.txt"
-    _SESSION_DIR_NAME = "atomic-sessions"
-    _CONTAINER_AGENT_DIR = "$HOME/.atomic/agent"
-    _CONTAINER_SESSION_DIR = f"{_CONTAINER_AGENT_DIR}/{_SESSION_DIR_NAME}"
-    _LOG_SESSION_DIR = str(EnvironmentPaths.agent_dir / _SESSION_DIR_NAME)
-    _OPENAI_CODEX_PROVIDER = "openai-codex"
-    _AUTH_UPLOAD_TARGET = "/tmp/atomic-subscription-auth.json"
+    _OUTPUT_FILENAME: ClassVar[str] = "atomic.txt"
+    _SESSION_DIR_NAME: ClassVar[str] = "atomic-sessions"
+    _CONTAINER_AGENT_DIR: ClassVar[str] = "$HOME/.atomic/agent"
+    _CONTAINER_SESSION_DIR: ClassVar[str] = (
+        f"{_CONTAINER_AGENT_DIR}/{_SESSION_DIR_NAME}"
+    )
+    _LOG_SESSION_DIR: ClassVar[str] = str(
+        EnvironmentPaths.agent_dir / _SESSION_DIR_NAME
+    )
+    _OPENAI_CODEX_PROVIDER: ClassVar[str] = "openai-codex"
+    _AUTH_UPLOAD_TARGET: ClassVar[str] = "/tmp/atomic-subscription-auth.json"
 
     _PROVIDER_ENV_KEYS: dict[str, tuple[str, ...]] = {
         "amazon-bedrock": ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
@@ -134,7 +152,7 @@ class Atomic(BaseInstalledAgent):
         "xai": ("api.x.ai",),
     }
 
-    CLI_FLAGS = [
+    CLI_FLAGS: ClassVar[list[CliFlag]] = [
         CliFlag(
             "thinking",
             cli="--thinking",
@@ -157,7 +175,7 @@ class Atomic(BaseInstalledAgent):
         self._disallowed_subscriptions: frozenset[str] = (
             self._normalize_disallowed_subscriptions(disallowed_subscriptions)
         )
-        super().__init__(
+        super().__init__(  # pyright: ignore[reportUnknownMemberType]
             logs_dir=logs_dir,
             prompt_template_path=prompt_template_path,
             version=version,
@@ -169,8 +187,11 @@ class Atomic(BaseInstalledAgent):
     def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
         if value is None:
             return frozenset()
-        values = [value] if isinstance(value, str) else value
-        if not isinstance(values, list | tuple):
+        if isinstance(value, str):
+            values: list[object] | tuple[object, ...] = [value]
+        elif isinstance(value, list | tuple):
+            values = cast(list[object] | tuple[object, ...], value)
+        else:
             raise TypeError(
                 "disallowed_subscriptions must be a string or list of strings"
             )
@@ -192,7 +213,11 @@ class Atomic(BaseInstalledAgent):
 
     @override
     def get_version_command(self) -> str | None:
-        return f"{runtime_environment_command()}; if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; atomic --version"
+        return (
+            f"{runtime_environment_command()}; "
+            "if [ -s ~/.nvm/nvm.sh ]; then . ~/.nvm/nvm.sh; fi; "
+            "atomic --version"
+        )
 
     @override
     def parse_version(self, stdout: str) -> str:
@@ -253,33 +278,44 @@ class Atomic(BaseInstalledAgent):
 
     @staticmethod
     def _is_valid_provider_auth(entry: object) -> bool:
-        if not isinstance(entry, dict):
+        auth = _json_object(entry)
+        if auth is None:
             return False
-        credential_type = entry.get("type")
+        credential_type = auth.get("type")
         if credential_type == "api_key":
-            return isinstance(entry.get("key"), str) and bool(entry["key"])
+            key = auth.get("key")
+            return isinstance(key, str) and bool(key)
         if credential_type == "oauth":
-            return isinstance(entry.get("access"), str) and bool(entry["access"])
+            access = auth.get("access")
+            return isinstance(access, str) and bool(access)
         return False
 
-    def _load_provider_auths(self) -> dict[str, dict[str, object]]:
-        merged: dict[str, object] = {}
+    def _load_provider_auths(self) -> dict[str, JsonObject]:
+        merged: JsonObject = {}
         for auth_path in reversed(self._auth_config_paths()):
             try:
-                data = json.loads(auth_path.read_text(encoding="utf-8"))
+                data = cast(
+                    object,
+                    json.loads(auth_path.read_text(encoding="utf-8")),
+                )
             except (OSError, json.JSONDecodeError):
                 continue
-            if isinstance(data, dict):
-                merged.update(data)
-        return {
-            provider: cast(dict[str, object], entry)
-            for provider, entry in merged.items()
-            if provider
-            and provider not in self._disallowed_subscriptions
-            and self._is_valid_provider_auth(entry)
-        }
+            if data_object := _json_object(data):
+                merged.update(data_object)
 
-    def _load_provider_auth(self, provider: str) -> dict[str, object] | None:
+        auths: dict[str, JsonObject] = {}
+        for provider, entry in merged.items():
+            auth = _json_object(entry)
+            if (
+                provider
+                and provider not in self._disallowed_subscriptions
+                and auth is not None
+                and self._is_valid_provider_auth(auth)
+            ):
+                auths[provider] = auth
+        return auths
+
+    def _load_provider_auth(self, provider: str) -> JsonObject | None:
         return self._load_provider_auths().get(provider)
 
     def _has_subscription_auth(self, provider: str) -> bool:
@@ -345,13 +381,13 @@ class Atomic(BaseInstalledAgent):
                 else any(environment_keys.get(key) for key in credential_keys)
             )
             if has_environment_auth:
-                auth_data.pop(auth_provider, None)
+                _ = auth_data.pop(auth_provider, None)
         if not auth_data:
             return
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
             temp_path = Path(handle.name)
             json.dump(auth_data, handle, indent=2)
-            handle.write("\n")
+            _ = handle.write("\n")
         try:
             os.chmod(temp_path, 0o600)
             await environment.upload_file(temp_path, self._AUTH_UPLOAD_TARGET)
@@ -409,12 +445,13 @@ class Atomic(BaseInstalledAgent):
             "wait \"$atomic_session_sync_pid\" 2>/dev/null || true; "
             "return \"$status\"; "
             "}; "
-            "trap 'status=$?; cleanup_atomic_sessions \"$status\"; exit \"$status\"' EXIT; "
+            "trap 'status=$?; cleanup_atomic_sessions \"$status\"; "
+            "exit \"$status\"' EXIT; "
             "trap 'cleanup_atomic_sessions 143; exit 143' TERM; "
         )
 
-    @override
-    @with_prompt_template
+    @override  # pyright: ignore[reportAny]
+    @with_prompt_template  # pyright: ignore[reportAny]
     async def run(
         self,
         instruction: str,
@@ -425,7 +462,10 @@ class Atomic(BaseInstalledAgent):
             raise ValueError("Model name must be in the format provider/model_name")
 
         requested_provider, requested_model = self.model_name.split("/", 1)
-        provider, model = self._select_provider_model(requested_provider, requested_model)
+        provider, model = self._select_provider_model(
+            requested_provider,
+            requested_model,
+        )
         env = {
             key: value
             for key in (
@@ -454,7 +494,9 @@ class Atomic(BaseInstalledAgent):
 
         session_dir = self._CONTAINER_SESSION_DIR
         log_session_dir = shlex.quote(self._LOG_SESSION_DIR)
-        output_file = shlex.quote(str(EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME))
+        output_file = shlex.quote(
+            str(EnvironmentPaths.agent_dir / self._OUTPUT_FILENAME)
+        )
         copilot_config_command = self._copilot_models_config_command(copilot_base_url)
         command = (
             f"rm -rf {session_dir} {log_session_dir} && mkdir -p {session_dir} && "
@@ -473,7 +515,6 @@ class Atomic(BaseInstalledAgent):
         )
         await self.exec_as_agent(environment, command=command, env=env)
         self.populate_context_post_run(context)
-
 
     def _copilot_api_base_url(self) -> str:
         api_target = self._get_env("COPILOT_API_TARGET")
@@ -500,7 +541,8 @@ class Atomic(BaseInstalledAgent):
 
     @staticmethod
     def _copilot_api_base_url_from_server_url(server_url: str) -> str:
-        host = urlparse(server_url if "://" in server_url else f"https://{server_url}").hostname
+        parsed_url = server_url if "://" in server_url else f"https://{server_url}"
+        host = urlparse(parsed_url).hostname
         if not host or host == "github.com":
             return "https://api.githubcopilot.com"
         if host.endswith(".ghe.com"):
@@ -528,55 +570,57 @@ class Atomic(BaseInstalledAgent):
     def _cost_total(value: object) -> float:
         if isinstance(value, int | float):
             return float(value)
-        if not isinstance(value, dict):
+        cost = _json_object(value)
+        if cost is None:
             return 0.0
-        total = value.get("total")
+        total = cost.get("total")
         if isinstance(total, int | float):
             return float(total)
         return sum(
             float(part)
             for key in ("input", "output", "cacheRead", "cacheWrite")
-            if isinstance((part := value.get(key)), int | float)
+            if isinstance((part := cost.get(key)), int | float)
         )
 
     @staticmethod
     def _assistant_message_fingerprint(message: object) -> str | None:
-        if not isinstance(message, dict) or message.get("role") != "assistant":
+        message_object = _json_object(message)
+        if message_object is None or message_object.get("role") != "assistant":
             return None
-        timestamp = message.get("timestamp")
+        timestamp = message_object.get("timestamp")
         if timestamp is None:
             return None
-        usage = message.get("usage")
+        usage = _json_object(message_object.get("usage"))
         usage_fingerprint = ""
-        if isinstance(usage, dict):
+        if usage is not None:
             usage_fingerprint = ":".join(
                 str(usage.get(key, ""))
                 for key in ("input", "output", "cacheRead", "cacheWrite", "totalTokens")
             )
         message_fingerprint = ":".join(
-            str(message.get(key, ""))
+            str(message_object.get(key, ""))
             for key in ("timestamp", "provider", "model", "stopReason")
         )
         return f"{message_fingerprint}:{usage_fingerprint}"
 
     @staticmethod
-    def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-        entries: list[dict[str, Any]] = []
+    def _read_jsonl(path: Path) -> list[JsonObject]:
+        entries: list[JsonObject] = []
         try:
             for line in path.read_text(encoding="utf-8").splitlines():
                 if not line.strip():
                     continue
                 try:
-                    entry = json.loads(line)
+                    entry = cast(object, json.loads(line))
                 except json.JSONDecodeError:
                     continue
-                if isinstance(entry, dict):
-                    entries.append(entry)
+                if entry_object := _json_object(entry):
+                    entries.append(entry_object)
         except OSError:
             return []
         return entries
 
-    def _read_session_header(self, session_file: Path) -> dict[str, Any] | None:
+    def _read_session_header(self, session_file: Path) -> JsonObject | None:
         for entry in self._read_jsonl(session_file):
             return entry if entry.get("type") == "session" else None
         return None
@@ -584,7 +628,7 @@ class Atomic(BaseInstalledAgent):
     def _should_count_session_file(
         self,
         session_file: Path,
-        header: dict[str, Any] | None,
+        header: JsonObject | None,
     ) -> bool:
         if not header:
             return False
@@ -602,7 +646,13 @@ class Atomic(BaseInstalledAgent):
             key=lambda path: (len(path.parts), str(path)),
         )
         return [
-            (path, self._should_count_session_file(path, self._read_session_header(path)))
+            (
+                path,
+                self._should_count_session_file(
+                    path,
+                    self._read_session_header(path),
+                ),
+            )
             for path in session_files
         ]
 
@@ -616,11 +666,14 @@ class Atomic(BaseInstalledAgent):
             return None
 
     @staticmethod
-    def _jsonable_arguments(value: object) -> dict[str, Any]:
-        return value if isinstance(value, dict) else {"value": value}
+    def _jsonable_arguments(value: object) -> dict[str, object]:
+        return cast(dict[str, object], value) if isinstance(value, dict) else {
+            "value": value
+        }
 
     def _split_message_content(
-        self, message: dict[str, Any]
+        self,
+        message: JsonObject,
     ) -> tuple[str, str | None, list[ToolCall] | None]:
         content = message.get("content")
         if isinstance(content, str):
@@ -632,24 +685,28 @@ class Atomic(BaseInstalledAgent):
         reasoning_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for block in content:
-            if not isinstance(block, dict):
+            block_object = _json_object(block)
+            if block_object is None:
                 continue
-            block_type = block.get("type")
-            if block_type == "text" and isinstance(block.get("text"), str):
-                text_parts.append(block["text"])
+            block_type = block_object.get("type")
+            text = block_object.get("text")
+            if block_type == "text" and isinstance(text, str):
+                text_parts.append(text)
             elif block_type in {"thinking", "redacted_thinking"}:
-                thinking = block.get("thinking") or block.get("text")
+                thinking = block_object.get("thinking") or text
                 if isinstance(thinking, str):
                     reasoning_parts.append(thinking)
             elif block_type == "toolCall":
-                tool_id = block.get("id")
-                name = block.get("name")
+                tool_id = block_object.get("id")
+                name = block_object.get("name")
                 if isinstance(tool_id, str) and isinstance(name, str):
                     tool_calls.append(
                         ToolCall(
                             tool_call_id=tool_id,
                             function_name=name,
-                            arguments=self._jsonable_arguments(block.get("arguments", {})),
+                            arguments=self._jsonable_arguments(
+                                block_object.get("arguments", {})
+                            ),
                         )
                     )
         return (
@@ -659,13 +716,14 @@ class Atomic(BaseInstalledAgent):
         )
 
     def _metrics_from_usage(self, usage: object) -> Metrics | None:
-        if not isinstance(usage, dict):
+        usage_object = _json_object(usage)
+        if usage_object is None:
             return None
-        input_tokens = self._token_count(usage.get("input"))
-        output_tokens = self._token_count(usage.get("output"))
-        cache_read = self._token_count(usage.get("cacheRead"))
-        cache_write = self._token_count(usage.get("cacheWrite"))
-        cost = self._cost_total(usage.get("cost"))
+        input_tokens = self._token_count(usage_object.get("input"))
+        output_tokens = self._token_count(usage_object.get("output"))
+        cache_read = self._token_count(usage_object.get("cacheRead"))
+        cache_write = self._token_count(usage_object.get("cacheWrite"))
+        cost = self._cost_total(usage_object.get("cost"))
         if not any((input_tokens, output_tokens, cache_read, cache_write, cost)):
             return None
         extra = {
@@ -683,7 +741,7 @@ class Atomic(BaseInstalledAgent):
     def _append_observation(
         self,
         steps: list[Step],
-        message: dict[str, Any],
+        message: JsonObject,
         timestamp: str | None,
     ) -> None:
         call_id = message.get("toolCallId")
@@ -725,7 +783,7 @@ class Atomic(BaseInstalledAgent):
 
     def _step_from_message(
         self,
-        message: dict[str, Any],
+        message: JsonObject,
         step_id: int,
         timestamp: str | None,
         entry_id: object,
@@ -744,11 +802,12 @@ class Atomic(BaseInstalledAgent):
             if fingerprint:
                 seen_fingerprints.add(fingerprint)
             metrics = None if copied else self._metrics_from_usage(message.get("usage"))
+            message_model = message.get("model")
             return Step(
                 step_id=step_id,
                 timestamp=timestamp,
                 source="agent",
-                model_name=message.get("model") if isinstance(message.get("model"), str) else None,
+                model_name=message_model if isinstance(message_model, str) else None,
                 message=text,
                 reasoning_content=reasoning,
                 tool_calls=tool_calls,
@@ -757,7 +816,12 @@ class Atomic(BaseInstalledAgent):
                 llm_call_count=1 if metrics else None,
             )
         if role == "user":
-            return Step(step_id=step_id, timestamp=timestamp, source="user", message=text)
+            return Step(
+                step_id=step_id,
+                timestamp=timestamp,
+                source="user",
+                message=text,
+            )
         if role == "bashExecution":
             command = message.get("command")
             output = message.get("output")
@@ -767,16 +831,25 @@ class Atomic(BaseInstalledAgent):
                 source="system",
                 message=f"bash: {command}" if isinstance(command, str) else "bash",
                 observation=Observation(
-                    results=[ObservationResult(content=output if isinstance(output, str) else None)]
+                    results=[
+                        ObservationResult(
+                            content=output if isinstance(output, str) else None
+                        )
+                    ]
                 ),
             )
         if role in {"custom", "branchSummary"}:
-            return Step(step_id=step_id, timestamp=timestamp, source="system", message=text)
+            return Step(
+                step_id=step_id,
+                timestamp=timestamp,
+                source="system",
+                message=text,
+            )
         return None
 
     def _trajectory_from_entries(
         self,
-        entries: list[dict[str, Any]],
+        entries: list[JsonObject],
         trajectory_id: str | None,
         seen_ids: set[str],
         seen_fingerprints: set[str],
@@ -794,8 +867,11 @@ class Atomic(BaseInstalledAgent):
             message = entry.get("message")
             if not isinstance(message, dict):
                 continue
-            timestamp = entry.get("timestamp") if isinstance(entry.get("timestamp"), str) else None
-            timestamp = timestamp or self._iso_from_message_timestamp(message.get("timestamp"))
+            entry_timestamp = entry.get("timestamp")
+            timestamp = entry_timestamp if isinstance(entry_timestamp, str) else None
+            timestamp = timestamp or self._iso_from_message_timestamp(
+                message.get("timestamp")
+            )
             if message.get("role") == "toolResult":
                 self._append_observation(steps, message, timestamp)
                 continue
@@ -811,8 +887,9 @@ class Atomic(BaseInstalledAgent):
                 steps.append(step)
         if not steps:
             return None, summarization_count
+        header_id = header.get("id")
         trajectory = Trajectory(
-            session_id=header.get("id") if isinstance(header.get("id"), str) else None,
+            session_id=header_id if isinstance(header_id, str) else None,
             trajectory_id=trajectory_id,
             agent=Agent(
                 name=self.name(),
@@ -833,13 +910,21 @@ class Atomic(BaseInstalledAgent):
         entries = [
             {"type": "message", "message": event.get("message")}
             for event in events
-            if event.get("type") == "message_end" and isinstance(event.get("message"), dict)
+            if event.get("type") == "message_end"
+            and _json_object(event.get("message")) is not None
         ]
-        trajectory, _ = self._trajectory_from_entries(entries, None, seen_ids, seen_fingerprints)
+        trajectory, _ = self._trajectory_from_entries(
+            entries,
+            None,
+            seen_ids,
+            seen_fingerprints,
+        )
         return trajectory
 
     @staticmethod
-    def _metric_totals(steps: list[Step]) -> tuple[int, int, int, float, int | None]:
+    def _metric_totals(
+        steps: list[Step],
+    ) -> tuple[int, int, int, float, int | None]:
         prompt = completion = cached = 0
         cost = 0.0
         peak: int | None = None
@@ -852,10 +937,18 @@ class Atomic(BaseInstalledAgent):
             cached += metrics.cached_tokens or 0
             cost += metrics.cost_usd or 0.0
             if metrics.prompt_tokens is not None:
-                peak = metrics.prompt_tokens if peak is None else max(peak, metrics.prompt_tokens)
+                peak = (
+                    metrics.prompt_tokens
+                    if peak is None
+                    else max(peak, metrics.prompt_tokens)
+                )
         return prompt, completion, cached, cost, peak
 
-    def _write_trajectory(self, context: AgentContext, classified: list[tuple[Path, bool]]) -> None:
+    def _write_trajectory(
+        self,
+        context: AgentContext,
+        classified: list[tuple[Path, bool]],
+    ) -> None:
         seen_ids: set[str] = set()
         seen_fingerprints: set[str] = set()
         main_files = [path for path, should_count in classified if not should_count]
@@ -915,7 +1008,7 @@ class Atomic(BaseInstalledAgent):
 
         trajectory_path = self.logs_dir / "trajectory.json"
         try:
-            trajectory_path.write_text(
+            _ = trajectory_path.write_text(
                 format_trajectory_json(root.to_json_dict()), encoding="utf-8"
             )
         except OSError as exc:
@@ -935,15 +1028,19 @@ class Atomic(BaseInstalledAgent):
         seen_message_ids: set[str] = set()
         seen_message_fingerprints: set[str] = set()
 
-        def add_assistant_message_usage(message: object, entry_id: object = None) -> None:
+        def add_assistant_message_usage(
+            message: object,
+            entry_id: object = None,
+        ) -> None:
             nonlocal total_input_tokens, total_output_tokens
             nonlocal total_cache_read_tokens, total_cache_write_tokens, total_cost
-            if not isinstance(message, dict) or message.get("role") != "assistant":
+            message_object = _json_object(message)
+            if message_object is None or message_object.get("role") != "assistant":
                 return
-            usage = message.get("usage")
-            if not isinstance(usage, dict):
+            usage = _json_object(message_object.get("usage"))
+            if usage is None:
                 return
-            fingerprint = self._assistant_message_fingerprint(message)
+            fingerprint = self._assistant_message_fingerprint(message_object)
             if isinstance(entry_id, str):
                 if entry_id in seen_message_ids:
                     return
@@ -959,12 +1056,16 @@ class Atomic(BaseInstalledAgent):
             total_cache_write_tokens += self._token_count(usage.get("cacheWrite"))
             total_cost += self._cost_total(usage.get("cost"))
 
-        def mark_assistant_message_seen(message: object, entry_id: object = None) -> None:
-            if not isinstance(message, dict) or message.get("role") != "assistant":
+        def mark_assistant_message_seen(
+            message: object,
+            entry_id: object = None,
+        ) -> None:
+            message_object = _json_object(message)
+            if message_object is None or message_object.get("role") != "assistant":
                 return
             if isinstance(entry_id, str):
                 seen_message_ids.add(entry_id)
-            fingerprint = self._assistant_message_fingerprint(message)
+            fingerprint = self._assistant_message_fingerprint(message_object)
             if fingerprint:
                 seen_message_fingerprints.add(fingerprint)
 
