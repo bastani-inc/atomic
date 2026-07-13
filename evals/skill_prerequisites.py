@@ -17,7 +17,7 @@ class SkillPrerequisite:
 
 SHIPPED_SKILLS = (
     "create-spec",
-    "effective-liteparse",
+    "liteparse",
     "impeccable",
     "intercom",
     "playwright-cli",
@@ -31,33 +31,33 @@ SHIPPED_SKILLS = (
 
 PREREQUISITES = (
     SkillPrerequisite(
-        "effective-liteparse",
+        "liteparse",
         "Node.js 18+",
         "current NVM Node.js or distro nodejs",
         "node --version",
     ),
     SkillPrerequisite(
-        "effective-liteparse",
+        "liteparse",
         "@llamaindex/liteparse",
         "npm install -g @llamaindex/liteparse",
         "lit --version",
     ),
     SkillPrerequisite(
-        "effective-liteparse",
+        "liteparse",
         "LibreOffice",
         "install distro libreoffice package",
         "libreoffice --version",
         "Office documents",
     ),
     SkillPrerequisite(
-        "effective-liteparse",
+        "liteparse",
         "ImageMagick",
         "install distro imagemagick package",
         "magick -version || convert -version",
         "images",
     ),
     SkillPrerequisite(
-        "effective-liteparse",
+        "liteparse",
         "uv and uv-managed Python",
         "install uv; uv python install",
         "uv --version; uv python find --managed-python",
