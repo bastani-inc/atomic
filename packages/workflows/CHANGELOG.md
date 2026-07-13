@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Hardened the shared builtin `goal`/`ralph` prompt contracts against over-implementation drift (observed in eval traces where near-perfect patches lost binary reward to a single invented strictness: returning a read-only mapping proxy where the contract said "dict", marking an optional schema field required, and rejecting duplicate aliases the task's hidden tests expected to be tolerated). The literal objective contract now states that the loud-error preference applies only to error conditions the contract enumerates and that the default for unenumerated behavior is permissive acceptance (never invent a validation error, required field, uniqueness constraint, or rejection the contract does not name); that contract-named types/shapes/formats must be produced exactly, with no defensive substitutes such as read-only proxies, frozen collections, or tuples-for-lists, because consumers may check type identity literally; and that unspecified behavior defaults to preserving input verbatim over normalizing, deduplicating, reordering, or rewriting it.
+- Extended the worker/orchestrator acceptance-matrix contract with rows for literal contract examples (checked character-for-character rather than paraphrased) and for each contract-constrained interface decision (types by identity, required-vs-optional per field, duplicate handling, ordering, raw-vs-normalized text), recording the permissive/preserving default whenever the contract leaves a decision open.
+- Added a shared `CONTRACT_FIDELITY_AUDIT` adversarial divergence pass to the Goal worker and Ralph orchestrator prompts (`<divergence_audit>`): after checks are green and before claiming readiness, re-read each contract clause asking what plausible independent check would fail the implementation, probing the recurring divergence categories — type-identity assertions, optional fields omitted, duplicated/aliased inputs, ordering assumptions, verbatim-vs-normalized text, and any raised error the contract does not enumerate. Forked continuation prompts reference the audit in their established-guidance pointer.
+- Made Goal and Ralph reviewers hunt over-implementation as seriously as gaps via a shared `REVIEWER_OVERIMPLEMENTATION_GUARD`: validation errors, required fields, uniqueness/format constraints, immutability wrappers, or normalization the contract does not require are `required_by_objective` defects, and reviewers must probe at least one contract-permitted input the worker's own tests do not exercise before approving. The independent-verification contract and reviewer action items now include contract-permitted-input and type/shape/text-identity probes alongside the existing boundary/edge/negative probes.
+
+### Fixed
+
+- Fixed the builtin `open-claude-design` artifact directory fallback to use a per-user OS tmpdir namespace (`open-claude-design-<username>`), preventing `EACCES` failures on shared hosts where another user already owns the plain `<tmpdir>/open-claude-design` directory. The legacy shared path remains a secondary fallback, and the last-resort synthesized path now also uses the per-user namespace so best-effort feedback persistence can actually create it.
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

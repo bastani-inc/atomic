@@ -48,6 +48,8 @@ const WORKER_CONTRACT_PATTERNS = [
     /derive an observable acceptance matrix from the literal objective/i,
     /Stateful behavior modeling:/,
     /enumerate the states, the legal transitions between them, the invariants/i,
+    /<divergence_audit>/,
+    /what plausible independent check of this clause would my implementation fail/i,
     /<findings_batch>/,
     /one consolidated batch of findings, not a queue to repair one item per turn/i,
     /<regression_evidence>/,
@@ -60,6 +62,8 @@ const REVIEWER_CONTRACT_PATTERNS = [
     /<independent_verification>/,
     /Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list/i,
     /never substitute for them/i,
+    /contract-permitted-input probes/i,
+    /Hunt over-implementation as seriously as gaps/i,
     /<regression_evidence>/,
     /<evidence_closure>/,
     /required_by_objective finding at any priority \(P3 included/i,
@@ -232,6 +236,7 @@ describe("ralph convergence contracts", () => {
         for (const pattern of [
             /<acceptance_matrix>/,
             /Stateful behavior modeling:/,
+            /<divergence_audit>/,
             /<findings_batch>/,
             /<regression_evidence>/,
         ]) {
