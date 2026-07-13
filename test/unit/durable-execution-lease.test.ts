@@ -24,6 +24,15 @@ describe("durable execution ownership", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test("encodes Windows-illegal workflow id characters in durable filenames", () => {
+    const workflowId = "wf:*?<>|\\/quoted\"";
+    const filePath = durableStateFileFor(dir, workflowId);
+    assert.equal(filePath.includes("*"), false);
+    const backend = new WorkflowFileDurableBackend(dir);
+    backend.registerWorkflow({ workflowId, name: "portable", inputs: {}, createdAt: 1, status: "paused" });
+    assert.equal(existsSync(filePath), true);
+  });
+
   test("active ownership hides a running workflow and graceful pause releases it", () => {
     const owner = new WorkflowFileDurableBackend(dir);
     const contender = new WorkflowFileDurableBackend(dir);

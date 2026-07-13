@@ -331,5 +331,8 @@ export function defaultDurableStateDir(): string | undefined {
 }
 
 export function durableStateFileFor(dir: string, workflowId: string): string {
-  return `${dir}/workflow-${encodeURIComponent(workflowId)}.json`;
+  // encodeURIComponent leaves `*` unescaped even though Windows forbids it
+  // in path components. The fixed prefix/suffix avoid reserved device names.
+  const encodedId = encodeURIComponent(workflowId).replaceAll("*", "%2A");
+  return `${dir}/workflow-${encodedId}.json`;
 }
