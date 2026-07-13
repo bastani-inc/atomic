@@ -167,8 +167,7 @@ def agent_install_command(version_spec: str) -> str:
         "browser_path=$(command -v chromium || command -v chromium-browser); "
         "printf '%s\\n' \"export PLAYWRIGHT_MCP_EXECUTABLE_PATH='$browser_path'\" "
         '>> "$env_tmp"; '
-        "else playwright-cli install-browser chromium --with-deps --dry-run; "
-        "playwright-cli install-browser chromium; "
+        "else playwright-cli install-browser chromium; "
         "playwright-cli install-browser --list; fi; "
         'mv -f "$env_tmp" "$HOME/.atomic-eval-env"; '
         f"{runtime_environment_command()}"
