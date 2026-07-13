@@ -1,124 +1,44 @@
-"""Shared sandbox provisioning for the runtime prerequisites of shipped Atomic skills."""
+"""Shared eval-sandbox provisioning for Atomic, tmux, and playwright-cli."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class SkillPrerequisite:
-    skill: str
-    prerequisite: str
-    install: str
-    verify: str
-    required_for: str = "all uses"
-
-
-SHIPPED_SKILLS = (
-    "create-spec",
-    "liteparse",
-    "impeccable",
-    "intercom",
-    "playwright-cli",
-    "prompt-engineer",
-    "research-codebase",
-    "skill-creator",
-    "subagent",
-    "tdd",
-    "tmux",
-)
-
-PREREQUISITES = (
-    SkillPrerequisite(
-        "liteparse",
-        "Node.js 18+",
-        "current NVM Node.js or distro nodejs",
-        "node --version",
-    ),
-    SkillPrerequisite(
-        "liteparse",
-        "@llamaindex/liteparse",
-        "npm install -g @llamaindex/liteparse",
-        "lit --version",
-    ),
-    SkillPrerequisite(
-        "liteparse",
-        "LibreOffice",
-        "install distro libreoffice package",
-        "libreoffice --version",
-        "Office documents",
-    ),
-    SkillPrerequisite(
-        "liteparse",
-        "ImageMagick",
-        "install distro imagemagick package",
-        "magick -version || convert -version",
-        "images",
-    ),
-    SkillPrerequisite(
-        "liteparse",
-        "uv and uv-managed Python",
-        "install uv; uv python install",
-        "uv --version; uv python find --managed-python",
-        "bundled ranked-search helper",
-    ),
-    SkillPrerequisite(
-        "playwright-cli",
-        "@playwright/cli",
-        "npm install -g @playwright/cli; playwright-cli install-browser chromium",
-        "playwright-cli --version; installed-browser listing; offline browser launch",
-    ),
-    SkillPrerequisite(
-        "tmux", "tmux-compatible CLI", "install distro tmux package", "tmux -V"
-    ),
-    SkillPrerequisite(
-        "impeccable", "Node.js", "current NVM Node.js or distro nodejs", "node --version"
-    ),
-    SkillPrerequisite(
-        "skill-creator",
-        "Python 3 and PyYAML",
-        "install distro python3 and PyYAML packages",
-        'python3 -c "import yaml"',
-    ),
-)
-
-NO_EXTERNAL_PREREQUISITES = (
-    "create-spec",
-    "intercom",
-    "prompt-engineer",
-    "research-codebase",
-    "subagent",
-    "tdd",
-)
 
 
 def root_install_command(*, harbor: bool = False) -> str:
-    """Return an idempotent, noninteractive system-package installation command."""
+    """Install Atomic runtime tools plus tmux and Playwright browser libraries."""
+    # Playwright-managed Chromium is reliable on Debian/Ubuntu, unlike Ubuntu's
+    # snap-backed distro Chromium. The t64 names are needed by newer Ubuntu
+    # images; apt-cache selects them without breaking older Debian images.
     apt = (
-        "apt-get update && apt-get install -y --no-install-recommends "
-        "bash ca-certificates curl fd-find git imagemagick libreoffice python3 python3-yaml ripgrep tmux "
-        "fonts-freefont-ttf fonts-ipafont-gothic fonts-liberation fonts-noto-color-emoji "
-        "fonts-tlwg-loma-otf fonts-unifont fonts-wqy-zenhei libasound2 "
-        "libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcairo2 libcups2 "
-        "libdbus-1-3 libdrm2 libfontconfig1 libfreetype6 libgbm1 libglib2.0-0 "
-        "libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 "
-        "libxdamage1 libxext6 libxfixes3 libxi6 libxkbcommon0 libxrandr2 xvfb && "
+        "apt-get update && "
+        "asound=$(if apt-cache show libasound2t64 >/dev/null 2>&1; then "
+        "echo libasound2t64; else echo libasound2; fi) && "
+        "atk=$(if apt-cache show libatk1.0-0t64 >/dev/null 2>&1; then "
+        "echo libatk1.0-0t64; else echo libatk1.0-0; fi) && "
+        "cups=$(if apt-cache show libcups2t64 >/dev/null 2>&1; then "
+        "echo libcups2t64; else echo libcups2; fi) && "
+        "apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git "
+        "ripgrep tmux fonts-liberation \"$asound\" \"$atk\" libatk-bridge2.0-0 "
+        "libatspi2.0-0 libcairo2 \"$cups\" libdbus-1-3 libdrm2 libfontconfig1 "
+        "libfreetype6 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 "
+        "libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 "
+        "libxi6 libxkbcommon0 libxrandr2 && "
         "ln -sf /usr/bin/fdfind /usr/local/bin/fd && rm -rf /var/lib/apt/lists/*"
     )
     if harbor:
         return "set -euo pipefail; " + apt
     apk = (
-        "apk add --no-cache bash ca-certificates curl fd git imagemagick libreoffice nodejs npm "
-        "py3-yaml python3 ripgrep tmux chromium && "
-        "apk add --no-cache libc++ --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main"
+        "apk add --no-cache bash ca-certificates curl fd git nodejs npm "
+        "ripgrep tmux chromium"
     )
+    # Fedora provides these directly; RHEL-compatible images need EPEL. Avoid
+    # DNF-only flags/subcommands because some supported images expose real yum.
     yum = (
-        "yum install -y --allowerasing bash ca-certificates curl git dnf-plugins-core epel-release && "
-        "(dnf config-manager --set-enabled crb || "
-        "dnf config-manager --set-enabled powertools || true) && yum makecache && "
-        "yum install -y --allowerasing ImageMagick chromium libreoffice-core libreoffice-writer "
-        "libreoffice-calc libreoffice-impress python3 python3-pyyaml ripgrep tmux"
+        "yum install -y bash ca-certificates git tmux && "
+        "(command -v curl >/dev/null 2>&1 || yum install -y curl) && "
+        "(yum install -y chromium ripgrep fd-find || "
+        "(yum install -y epel-release && yum install -y chromium ripgrep fd-find))"
     )
     return (
         "set -euo pipefail; "
@@ -143,7 +63,7 @@ def runtime_environment_command() -> str:
 
 
 def agent_install_command(version_spec: str) -> str:
-    """Install Atomic plus skill CLIs, browsers, and uv as the sandbox user."""
+    """Install Atomic and playwright-cli, then configure Chromium."""
     _validate_version_spec(version_spec)
     node_setup = (
         "if command -v apk >/dev/null 2>&1; then "
@@ -156,7 +76,7 @@ def agent_install_command(version_spec: str) -> str:
         'git clone --depth=1 https://github.com/nvm-sh/nvm.git "$NVM_DIR"; fi; '
         '. "$NVM_DIR/nvm.sh"; '
         "command -v nvm >/dev/null 2>&1 || { echo 'Error: NVM failed to load' >&2; exit 1; }; "
-        "nvm install node; nvm alias default node; fi"
+        "nvm install 22; nvm alias default 22; fi"
     )
     browser_setup = (
         'env_tmp="$HOME/.atomic-eval-env.tmp"; '
@@ -167,8 +87,7 @@ def agent_install_command(version_spec: str) -> str:
         "browser_path=$(command -v chromium || command -v chromium-browser); "
         "printf '%s\\n' \"export PLAYWRIGHT_MCP_EXECUTABLE_PATH='$browser_path'\" "
         '>> "$env_tmp"; '
-        "else playwright-cli install-browser chromium; "
-        "playwright-cli install-browser --list; fi; "
+        "else playwright-cli install-browser chromium; fi; "
         'mv -f "$env_tmp" "$HOME/.atomic-eval-env"; '
         f"{runtime_environment_command()}"
     )
@@ -176,32 +95,6 @@ def agent_install_command(version_spec: str) -> str:
         "set -euo pipefail; "
         f"{node_setup}; "
         'export PATH="$HOME/.local/bin:$PATH"; '
-        f"npm install -g @bastani/atomic{version_spec} "
-        "@playwright/cli @llamaindex/liteparse; "
-        "curl -fsSL https://astral.sh/uv/install.sh | "
-        'env UV_INSTALL_DIR="$HOME/.local/bin" sh; '
-        "uv python install; "
-        "python3 -c 'import yaml' 2>/dev/null || uv pip install "
-        "--python \"$(python3 -c 'import sys; print(sys.executable)')\" pyyaml; "
-        "uv run --managed-python --with bm25s --with aiofiles "
-        "python -c 'import aiofiles, bm25s'; "
-        f"{browser_setup}; " + verification_command()
-    )
-
-
-def verification_command() -> str:
-    """Fail fast unless every provisioned prerequisite is functional, including offline Chromium."""
-    return (
-        "atomic --version; node --version; npm --version; tmux -V; lit --version; "
-        "uv --version; uv python find --managed-python >/dev/null; "
-        "UV_OFFLINE=1 uv run --managed-python --with bm25s --with aiofiles "
-        "python -c 'import aiofiles, bm25s'; "
-        "python3 -c 'import yaml'; libreoffice --version; "
-        "(magick -version || convert -version); playwright-cli --version; "
-        "if [ -n \"${PLAYWRIGHT_MCP_EXECUTABLE_PATH:-}\" ]; then "
-        "test -x \"$PLAYWRIGHT_MCP_EXECUTABLE_PATH\"; "
-        "else playwright-cli install-browser --list; fi; "
-        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm_config_offline=true "
-        "PLAYWRIGHT_MCP_BROWSER=chromium playwright-cli open about:blank; "
-        "playwright-cli snapshot >/dev/null; playwright-cli close"
+        f"npm install -g @bastani/atomic{version_spec} @playwright/cli; "
+        f"{browser_setup}"
     )

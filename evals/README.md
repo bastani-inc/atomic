@@ -185,32 +185,3 @@ uv run pier run \
 The Atomic Pier adapter reads `OPENROUTER_API_KEY` from the Pier process environment and passes it into the sandbox for Atomic. If your launcher does not inherit shell exports, pass it explicitly with `--agent-env OPENROUTER_API_KEY=...` instead.
 
 The Pier network allowlist automatically includes `openrouter.ai` when the model provider is `openrouter`. To use a custom OpenRouter-compatible endpoint, pass it with `--agent-env OPENROUTER_BASE_URL=...`.
-
-## Pre-provisioned shipped-skill prerequisites
-
-Pier and Harbor install Atomic's default shipped skills with their runtime prerequisites during the sandbox setup phase, while network access is available. `skill_prerequisites.py` is the shared inventory and command source consumed explicitly by both adapters during their install phases, before task runtime and restricted-network execution. Prerequisite installers select their current versions without explicit pins; Atomic itself still follows `--agent-kwarg version` and defaults to `@latest`.
-
-| Shipped skill | Provisioned prerequisite | Install command/source | Early verification |
-| --- | --- | --- | --- |
-| `liteparse` | Node.js; `lit`; LibreOffice; ImageMagick; `uv`; uv-managed Python with cached `bm25s`/`aiofiles` | Current NVM Node.js or distro Node.js; `npm install -g @llamaindex/liteparse`; distro packages; Astral's current-version installer; `uv python install` and a dependency-prefetch run | `node --version`, `lit --version`, `libreoffice --version`, `magick -version` or `convert -version`, `uv --version`, managed-Python lookup and imports |
-| `playwright-cli` | `@playwright/cli`, Playwright-managed Chromium and Chromium headless shell, and Linux runtime libraries | Unpinned `npm install -g @playwright/cli`, followed on Debian/Ubuntu by the supported `playwright-cli install-browser chromium` flow after root setup installs the Linux dependency set. Setup validates those packages and prints the browser plan with `--with-deps --dry-run`, then prints `--list` output after installation. Alpine/musl and yum-family RHEL-compatible images retain distro Chromium because Playwright's managed Linux dependency path is not supported there; their explicit executable, Chromium, headless, and sandbox settings are written idempotently to `~/.atomic-eval-env`, which both adapters source in non-login shells. | CLI version and Playwright-managed installed-browser listing or fallback executable check, followed by an actual headless `about:blank` open, snapshot, and close with browser downloads and npm network access disabled |
-| `tmux` | tmux-compatible CLI | Distro `tmux` package (`apk`, `apt-get`, or `yum` in Pier; Debian `apt-get` in Harbor). Alpine also receives edge `libc++`, needed by LiteParse's published musl native module. Yum-family images enable EPEL and CRB/PowerTools before installing Chromium, ImageMagick, ripgrep, and LibreOffice component packages. | `tmux -V` |
-| `impeccable` | Node.js for bundled `.mjs` scripts | Node.js as above | `node --version` |
-| `skill-creator` | Python 3 and PyYAML for bundled validation/packaging scripts | Distro `python3` and PyYAML package; after installing `uv`, setup first tests whether the active `python3` can import `yaml` and, when it cannot, installs PyYAML with `uv pip install --python <active-python3>` into that exact interpreter (covering task images whose `/usr/local` or virtualenv Python precedes the distro interpreter on `PATH` without modifying an already-working externally-managed distro Python) | `python3 -c "import yaml"` |
-| `create-spec`, `intercom`, `prompt-engineer`, `research-codebase`, `subagent`, `tdd` | No independently installed external runtime | Harness tools, bundled extensions, or target-project tooling | Not applicable |
-
-The inventory excludes repository-local `.agents` developer helpers such as Crabbox, prek, and GitHub commit/PR skills. Conditional examples are not promoted to universal dependencies: for example, Claude Code is needed only for `skill-creator`'s optional description-optimization path, a browser tool is conditional for Impeccable live mode, and `gh`/`curl` are conditional research paths. Conversely, Office/image support and the `liteparse` ranked-search helper are provisioned because they are declared capabilities of the shipped skill.
-
-The setup commands are noninteractive, repeatable, fail on unsupported package managers or unusable tools, and preload Chromium, Chromium headless shell, Linux browser libraries, and the uv/Python artifacts so skill use does not depend on downloading them after restricted-network task execution begins. The Playwright install uses the public `playwright-cli install-browser` command rather than a package-internal Node entrypoint. This increases eval image size and setup time, especially from LibreOffice and Chromium, in exchange for deterministic availability.
-
-## Adapter behavior
-
-The adapter is self-contained; it does not require patching Pier or Harbor. It follows the installed-agent pattern:
-
-1. Install Atomic and required local search tools (`rg` and `fd`) during setup.
-2. Run the Atomic CLI in JSON mode.
-3. Keep Atomic's mutable agent state under the sandbox user's `~/.atomic/agent` directory by setting Atomic's existing agent-dir environment override, passing `--session-dir ~/.atomic/agent/atomic-sessions`, and exporting `ATOMIC_TODO_PATH=$HOME/.atomic/agent/todos` inside the sandbox so the default todo tool cannot create `.atomic/todos` in the benchmark repository.
-4. Tee Atomic's JSON stream to `/logs/agent/atomic.txt` and continuously mirror session transcripts to `/logs/agent/atomic-sessions/` during the run, with a final exit-trap sync to preserve transcripts on normal exits and SIGTERM-based timeouts. Mirrored transcript permissions are normalized after every copy so job artifacts remain readable and removable by the host user even when the sandbox agent runs as root.
-5. Collect usage and trajectory data from the main chat plus workflow-stage and nested child transcripts, de-duplicating copied parent context and reporting the combined agent-step count (`n_agent_steps` in Pier and Harbor context metadata).
-
-Like the built-in Pier agents, it does not auto-commit work. Deep SWE tasks rely on the agent following the task instruction to commit.
