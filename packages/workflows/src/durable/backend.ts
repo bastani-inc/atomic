@@ -23,6 +23,7 @@
 
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { createHash } from "node:crypto";
+import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
   DurableCheckpoint,
   DurableCheckpointEntry,
@@ -107,8 +108,8 @@ export interface DurableWorkflowBackend {
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
 
   /**
-   * List resumable workflows (not completed/cancelled, or explicitly marked
-   * resumable after failure). Used by the `/workflow resume` selector.
+   * List resumable root workflows: running/paused runs with progress and
+   * failed/blocked runs unless explicitly marked non-resumable.
    */
   listResumableWorkflows(): readonly ResumableWorkflowEntry[];
   /** List successful completed root workflows with durable checkpoint progress. */
@@ -272,7 +273,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
     return [...this.workflows.values()]
-      .filter((rec) => isRootWorkflow(rec.handle) && isResumableHandle(rec.handle))
+      .filter((rec) => isDurableWorkflowResumable(rec.handle))
       .map((rec) => toResumableEntry(rec.handle));
   }
 
@@ -329,16 +330,6 @@ function isRootWorkflow(handle: DurableWorkflowHandle): boolean {
 
 function hasResumeProgress(handle: DurableWorkflowHandle): boolean {
   return handle.completedCheckpoints > 0 || handle.pendingPrompts > 0;
-}
-
-function isResumableHandle(handle: DurableWorkflowHandle): boolean {
-  if (handle.status === "failed" || handle.status === "blocked") return handle.resumable !== false;
-  // `running`/`paused` are both resumable at the backend level: a `running`
-  // durable handle may belong to a crashed process (no live executor), which
-  // is exactly the cross-session crash-recovery case. Same-session
-  // double-resume is prevented by the command layer, which hides durable
-  // entries that match an active live run.
-  return (handle.status === "running" || handle.status === "paused") && hasResumeProgress(handle);
 }
 
 function isCompletedHandle(handle: DurableWorkflowHandle): boolean {

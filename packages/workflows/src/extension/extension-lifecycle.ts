@@ -4,6 +4,7 @@ import { cancellationRegistry } from "../runs/background/cancellation-registry.j
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
 import { restoreOnSessionStart } from "../shared/persistence-restore.js";
+import { findResumableWorkflowNotices } from "../shared/resumable-workflow-notices.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
@@ -57,7 +58,7 @@ export function registerWorkflowLifecycleHandlers(
     return { cancel: true };
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     runtimeState.resetWorkflowDiscoveryForSession();
     deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
     await runtimeState.ensureWorkflowConfigLoaded();
@@ -85,16 +86,45 @@ export function registerWorkflowLifecycleHandlers(
     if (sessionManager) {
       const cfg = runtimeState.configLoadRef.current?.config;
       withWorkflowLifecycleNotificationsSuppressed(runtimeState.lifecycleNotificationState, () => {
-        restoreOnSessionStart(
-          sessionManager,
-          {
-            resumeInFlight: cfg?.resumeInFlight ?? "ask",
-            persistRuns: cfg?.persistRuns ?? true,
-          },
-          store,
-        );
+        try {
+          restoreOnSessionStart(
+            sessionManager,
+            {
+              resumeInFlight: cfg?.resumeInFlight ?? "ask",
+              persistRuns: cfg?.persistRuns ?? true,
+            },
+            store,
+          );
+        } catch {
+          // Host session-entry failures must not prevent the session from starting.
+        }
         seedWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState, store.snapshot());
       });
+      const reason = typeof event === "object" && event !== null && "reason" in event
+        ? (event as { readonly reason?: string }).reason
+        : undefined;
+      if (reason === "startup" || reason === "resume") {
+        const getEntries = sessionManager.getEntries;
+        if (typeof getEntries === "function") {
+          let authoritativeCatalog: Awaited<ReturnType<typeof runtimeState.runtimeProxy.prepareDurableResumable>> = [];
+          try {
+            authoritativeCatalog = await runtimeState.runtimeProxy.prepareDurableResumable();
+          } catch {
+            // A resume-catalog failure must not prevent the host session from starting.
+          }
+          try {
+            const resumable = findResumableWorkflowNotices(getEntries.call(sessionManager), authoritativeCatalog);
+            if (resumable.length > 0) {
+              const commands = resumable
+                .map((workflow) => `\`${workflow.name}\` (${workflow.workflowId.slice(0, 8)}): /workflow resume ${workflow.workflowId}`)
+                .join("\n");
+              ctx?.ui?.notify?.(`This session has resumable workflows:\n${commands}`, "info");
+            }
+          } catch {
+            // Host session-entry failures must not prevent the session from starting.
+          }
+        }
+      }
     }
   });
 

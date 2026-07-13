@@ -4,7 +4,6 @@ import type { RunOpts } from "../runs/foreground/executor.js";
 import type { Store } from "../shared/store.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
-  isBackendTerminal,
   prepareRuntimeDurableResumable,
   resumeDurableWorkflow as resumeDurableWorkflowAdapter,
   type ResumeDurableDeps,
@@ -12,6 +11,7 @@ import {
 } from "../durable/resume-runtime.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { scanResumableWorkflows } from "../durable/resume-catalog.js";
+import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import {
   openCompletedDurableWorkflow as openCompletedSnapshot,
@@ -66,11 +66,10 @@ export function createDurableResumeRuntime(
       if (dir === undefined) return live;
       const scanned = scanResumableWorkflows(dir);
       const liveIds = new Set(live.map((entry) => entry.workflowId));
-      const compatible = scanned.filter((entry) =>
-        !liveIds.has(entry.workflowId) &&
-        backend.getWorkflow(entry.workflowId) !== undefined &&
-        !isBackendTerminal(backend, entry.workflowId)
-      );
+      const compatible = scanned.filter((entry) => {
+        const handle = backend.getWorkflow(entry.workflowId);
+        return !liveIds.has(entry.workflowId) && handle !== undefined && isDurableWorkflowResumable(handle);
+      });
       return [...live, ...compatible];
     },
     async prepareDurableResumable(workflowIdOrPrefix, sessionDir) {

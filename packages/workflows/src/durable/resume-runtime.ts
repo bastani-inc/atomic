@@ -31,6 +31,7 @@ import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js"
 import { getDurableBackend } from "./factory.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
+import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -140,15 +141,15 @@ export function resumeDurableWorkflow(
     };
   }
   if (handle.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
-    return alreadyRunningResult(resolved.name, resolved.workflowId, deps.baseRunOpts.store);
+    return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
   }
-  if (!isResumableEntry(resolved)) {
-    return { ok: false, reason: "not_resumable", message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${resolved.status}, not resumable.` };
+  if (!isDurableWorkflowResumable(handle)) {
+    return { ok: false, reason: "not_resumable", message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${handle.status}, not resumable.` };
   }
 
-  const def = deps.registry.get(resolved.name);
+  const def = deps.registry.get(handle.name);
   if (def === undefined) {
-    return { ok: false, reason: "workflow_not_found", message: `Workflow definition not found: ${resolved.name}` };
+    return { ok: false, reason: "workflow_not_found", message: `Workflow definition not found: ${handle.name}` };
   }
   if (!isWorkflowDefinition(def)) {
     return { ok: false, reason: "workflow_not_found", message: workflowDefinitionRequirementMessage("resumeDurableWorkflow", def) };
@@ -180,8 +181,8 @@ export function resumeDurableWorkflow(
     ok: true,
     runId: accepted.runId,
     workflowId: resolved.workflowId,
-    name: resolved.name,
-    message: `Resuming durable workflow "${resolved.name}" (${resolved.workflowId.slice(0, 8)}) — completed checkpoints will be replayed.`,
+    name: handle.name,
+    message: `Resuming durable workflow "${handle.name}" (${resolved.workflowId.slice(0, 8)}) — completed checkpoints will be replayed.`,
   };
 }
 
@@ -207,20 +208,6 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
       here ? " in this session" : " in another session"
     }. Attach with \`/workflow connect ${workflowId.slice(0, 8)}\`, or if that session has ended, clear it with \`/workflow kill ${workflowId.slice(0, 8)}\` and re-run.`,
   };
-}
-
-function hasResumeProgress(entry: ResumableWorkflowEntry): boolean {
-  return entry.completedCheckpoints > 0 || entry.pendingPrompts > 0;
-}
-
-function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
-  const isRoot = entry.rootWorkflowId === undefined || entry.rootWorkflowId === entry.workflowId;
-  if (!isRoot) return false;
-  if (entry.status === "failed" || entry.status === "blocked") return entry.resumable !== false;
-  // `running` is resumable at this layer: a `running` durable handle may be a
-  // crashed process. Same-session double-resume is blocked separately via
-  // `hasActiveLiveRun` before dispatch.
-  return (entry.status === "running" || entry.status === "paused") && hasResumeProgress(entry);
 }
 
 /**
@@ -251,9 +238,6 @@ export function isBackendTerminal(backend: DurableWorkflowBackend, workflowId: s
   return false;
 }
 
-function hasBackendResumeState(backend: DurableWorkflowBackend, workflowId: string): boolean {
-  return backend.getWorkflow(workflowId) !== undefined;
-}
 
 /**
  * Runtime-facing async preparation: hydrate the durable backend from DBOS
@@ -293,10 +277,9 @@ export async function prepareRuntimeDurableResumable(
   // durable backend handle/checkpoint state, selecting the row can only fail
   // as stale (or risk re-running from scratch), so it should not clutter the
   // resume selector.
-  const suppressed = scanned.filter((e) =>
-    !liveIds.has(e.workflowId) &&
-    hasBackendResumeState(backend, e.workflowId) &&
-    !isBackendTerminal(backend, e.workflowId)
-  );
+  const suppressed = scanned.filter((entry) => {
+    const handle = backend.getWorkflow(entry.workflowId);
+    return !liveIds.has(entry.workflowId) && handle !== undefined && isDurableWorkflowResumable(handle);
+  });
   return [...live, ...suppressed];
 }

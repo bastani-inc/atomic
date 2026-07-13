@@ -141,6 +141,23 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(result.reason, "not_resumable");
   });
 
+  test("rejects when authoritative backend state is ineligible despite stale catalog progress", () => {
+    backend.registerWorkflow({
+      workflowId: "wf-zero-progress",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      createdAt: 1,
+      status: "paused",
+    });
+    const staleCatalog = [makeEntry("wf-zero-progress", "resumable-pipeline", "paused")];
+
+    const result = resumeDurableWorkflow("wf-zero-progress", deps(), staleCatalog);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "not_resumable");
+    assert.equal(backend.getWorkflow("wf-zero-progress")?.status, "paused");
+  });
+
   test("returns workflow_not_found when definition is missing", () => {
     backend.registerWorkflow({ workflowId: "wf-ghost-1", name: "missing-workflow", inputs: {}, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-ghost-1", deps());
@@ -367,6 +384,22 @@ describe("terminal cache suppression (issue #1498)", () => {
 
     const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
     assert.equal(catalog.length, 0);
+  });
+
+  test("stale session-cache progress is suppressed when backend has zero progress", async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), "zero-progress-cache-"));
+    backend.registerWorkflow({
+      workflowId: "wf-zero-progress",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      createdAt: 1,
+      status: "running",
+    });
+    writeSessionCacheEntry("wf-zero-progress", "resumable-pipeline", "running");
+
+    const catalog = await prepareRuntimeDurableResumable(() => backend, () => tmpDir);
+
+    assert.equal(catalog.some((entry) => entry.workflowId === "wf-zero-progress"), false);
   });
 
   test("non-terminal backend status does NOT suppress session-cache entries", async () => {
