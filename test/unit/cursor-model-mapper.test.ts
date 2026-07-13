@@ -8,8 +8,11 @@ import {
 	parseCursorVariant,
 	resolveCursorModelVariant,
 	type CursorModelCatalog,
+	type CursorModelRouting,
 	type CursorUsableModel,
 } from "../../packages/cursor/src/model-mapper.js";
+import { authenticatedFable5Model } from "./cursor-fable-test-fixture.js";
+import { authenticatedGpt56SolModel } from "./cursor-gpt-test-fixture.js";
 
 const parameter = (id: string, value: string) => ({ id, value });
 const variant = (parameters: readonly { id: string; value: string }[], isMaxMode = false) => ({ parameters, isMaxMode });
@@ -31,10 +34,27 @@ function liveCatalog(models: readonly CursorUsableModel[]): CursorModelCatalog {
 	return { source: "live", fetchedAt: 100, models };
 }
 
+
 describe("Cursor model metadata mapping", () => {
+	test("exposes complete authenticated Fable 5 tuples as stable mode rows", () => {
+		const models = mapCursorCatalogToProviderModels(liveCatalog([authenticatedFable5Model()]));
+		assert.deepEqual(models.map(({ id, name }) => ({ id, name })), [
+			{ id: "claude-fable-5-1m-max", name: "Fable 5 (1M, Max)" },
+			{ id: "claude-fable-5-1m-max-thinking", name: "Fable 5 (1M, Max, Thinking)" },
+			{ id: "claude-fable-5-300k", name: "Fable 5 (300K)" },
+			{ id: "claude-fable-5-300k-thinking", name: "Fable 5 (300K, Thinking)" },
+		]);
+		assert.equal(models.some((model) => /(?:max-mode-low|context-1m-max-mode)/u.test(model.id)), false);
+		const completeTuples = new Set(models.flatMap((model) => Object.values(model.compat?.cursorRouting ?? {}))
+			.filter((route) => route.parameters?.length === 3)
+			.map((route) => JSON.stringify([route.modelId, route.maxMode, route.parameters])));
+		assert.equal(completeTuples.size, 20);
+		const cached = parseCursorCatalogCacheRecord(JSON.parse(JSON.stringify(toCursorCatalogCacheRecord(liveCatalog([authenticatedFable5Model()])))));
+		assert.deepEqual(cached?.models[0]?.parameterDefinitions, authenticatedFable5Model().parameterDefinitions);
+	});
 	const cases = [
 		{ family: "Claude thinking", id: "claude-sonnet-5", params: [parameter("thinking", "true")], expected: "claude-sonnet-5-thinking", reasoning: true },
-		{ family: "GPT effort", id: "gpt-5.5", params: [parameter("reasoning", "high")], expected: "gpt-5.5-high", reasoning: true, high: "gpt-5.5-high" },
+		{ family: "GPT effort", id: "gpt-5.5", params: [parameter("reasoning", "high")], expected: "gpt-5.5", reasoning: true, high: "gpt-5.5-high" },
 		{ family: "Gemini non-reasoning", id: "gemini-3-pro", params: [parameter("temperature", "balanced")], expected: "gemini-3-pro-temperature-balanced", reasoning: false },
 		{ family: "Composer fast", id: "composer-2", params: [parameter("fast", "true")], expected: "composer-2-fast", reasoning: false },
 	] as const;
@@ -79,6 +99,33 @@ describe("Cursor model metadata mapping", () => {
 		assert.equal(resolveCursorModelVariant(model?.id ?? "gpt-5.5-low", model?.thinkingLevelMap, "xhigh"), "gpt-5.5-extra-high");
 	});
 
+	test("makes all authenticated GPT-5.6 Sol tuples reachable through public rows and levels", () => {
+		const models = mapCursorCatalogToProviderModels(liveCatalog([authenticatedGpt56SolModel()]));
+		assert.deepEqual(models.map(({ id, name }) => ({ id, name })), [
+			{ id: "gpt-5.6-sol-1m-max", name: "GPT-5.6 Sol (1M, Max)" },
+			{ id: "gpt-5.6-sol-272k", name: "GPT-5.6 Sol (272K)" },
+			{ id: "gpt-5.6-sol-272k-fast", name: "GPT-5.6 Sol (272K, Fast)" },
+		]);
+		const levels = [
+			["off", "none"], ["low", "low"], ["medium", "medium"],
+			["high", "high"], ["xhigh", "xhigh"], ["max", "max"],
+		] as const;
+		const reached = new Set<string>();
+		for (const model of models) {
+			assert.equal(resolveCursorModelVariant(model.id, model.thinkingLevelMap, undefined, true), model.id);
+			const defaultEffort = model.id.endsWith("-fast") ? "none" : "medium";
+			assert.equal(model.compat?.cursorRouting?.[model.id]?.parameters?.find(({ id }) => id === "reasoning")?.value, defaultEffort);
+			for (const [level, effort] of levels) {
+				const routeId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, level);
+				const route: CursorModelRouting | undefined = model.compat?.cursorRouting?.[routeId];
+				assert.ok(route);
+				assert.equal(route.parameters?.find(({ id }) => id === "reasoning")?.value, effort);
+				reached.add(JSON.stringify([route.modelId, route.maxMode, route.parameters]));
+			}
+		}
+		assert.equal(reached.size, 18);
+	});
+
 	test("keeps fast, thinking, Max context, Max-only, and effort semantics distinct", () => {
 		const mapped = mapCursorCatalogToProviderModels(liveCatalog([
 			availableModel({
@@ -92,11 +139,27 @@ describe("Cursor model metadata mapping", () => {
 			}),
 			availableModel({ id: "max-only-model", supportsNonMaxMode: false, variants: [variant([], true)] }),
 		]));
-		assert.deepEqual(mapped.map((model) => model.id), ["gpt-5.5-high-fast", "gpt-5.5-low", "gpt-5.5-max-mode-high", "max-only-model-max-mode"]);
-		assert.equal(mapped.find((model) => model.id === "gpt-5.5-low")?.contextWindow, 200_000);
-		assert.equal(mapped.find((model) => model.id === "gpt-5.5-max-mode-high")?.contextWindow, 1_000_000);
-		assert.equal(mapped.find((model) => model.id === "max-only-model-max-mode")?.reasoning, false);
-		assert.deepEqual(mapped.find((model) => model.id === "gpt-5.5-low")?.input, ["text", "image"]);
+		assert.deepEqual(mapped.map((model) => model.id), ["gpt-5.5", "gpt-5.5-fast", "gpt-5.5-max", "max-only-model-max"]);
+		assert.equal(mapped.find((model) => model.id === "gpt-5.5")?.contextWindow, 200_000);
+		assert.equal(mapped.find((model) => model.id === "gpt-5.5-max")?.contextWindow, 1_000_000);
+		assert.equal(mapped.find((model) => model.id === "max-only-model-max")?.reasoning, false);
+		assert.deepEqual(mapped.find((model) => model.id === "gpt-5.5")?.input, ["text", "image"]);
+	});
+
+	test("groups variants only when reasoning effort is their sole difference", () => {
+		const models = mapCursorCatalogToProviderModels(liveCatalog([availableModel({
+			id: "effort-family",
+			variants: [
+				variant([parameter("fast", "false"), parameter("effort", "low")]),
+				variant([parameter("fast", "false"), parameter("effort", "high")]),
+				variant([parameter("fast", "true"), parameter("effort", "medium")]),
+			],
+		})]));
+		assert.deepEqual(models.map((model) => model.id), ["effort-family", "effort-family-fast"]);
+		assert.equal(models[0]?.thinkingLevelMap?.low, "effort-family-low");
+		assert.equal(models[0]?.thinkingLevelMap?.high, "effort-family-high");
+		assert.equal(models[0]?.thinkingLevelMap?.medium, null);
+		assert.equal(models[1]?.thinkingLevelMap?.medium, "effort-family-medium-fast");
 	});
 
 	test("creates routed normal and Max models when only model-level Max metadata is available", () => {
@@ -136,13 +199,25 @@ describe("Cursor model metadata mapping", () => {
 		assert.deepEqual(routes.map(([, routing]) => routing.parameters?.[0]?.value).sort(), ["a+b", "a-b"]);
 	});
 
+	test("resolves concise selectable-id collisions deterministically", () => {
+		const colliding = [
+			availableModel({ id: "collision-1m", variants: [variant([parameter("effort", "low")])] }),
+			availableModel({ id: "collision", variants: [variant([parameter("context", "1m"), parameter("effort", "high")])] }),
+		];
+		const forward = mapCursorCatalogToProviderModels(liveCatalog(colliding));
+		const reversed = mapCursorCatalogToProviderModels(liveCatalog([...colliding].reverse()));
+		assert.deepEqual(forward.map((model) => model.id), reversed.map((model) => model.id));
+		assert.equal(new Set(forward.map((model) => model.id)).size, 2);
+		assert.ok(forward.every((model) => /^collision-1m-[0-9a-f]{8}$/u.test(model.id)));
+	});
+
 	test("preserves supplied output limits and does not combine normal and Max contexts", () => {
 		const models = mapCursorCatalogToProviderModels(liveCatalog([
 			availableModel({ id: "claude-sonnet", contextWindow: 180_000, maxModeContextWindow: 900_000, maxTokens: 32_000, variants: [variant([]), variant([], true)] }),
 		]));
 		assert.equal(models.find((model) => model.id === "claude-sonnet")?.contextWindow, 180_000);
 		assert.equal(models.find((model) => model.id === "claude-sonnet")?.maxTokens, 32_000);
-		assert.equal(models.find((model) => model.id === "claude-sonnet-max-mode")?.contextWindow, 900_000);
+		assert.equal(models.find((model) => model.id === "claude-sonnet-max")?.contextWindow, 900_000);
 	});
 
 	test("keeps context and output evidence attached to one corresponding variant", () => {
@@ -163,14 +238,14 @@ describe("Cursor model metadata mapping", () => {
 		assert.doesNotMatch(model?.metadataProvenance.contextWindow ?? "", /AvailableModels/u);
 	});
 
-	test("does not infer defaults for unmarked effort-only variants", () => {
+	test("maps explicit none to off without inferring other unmarked defaults", () => {
 		for (const effort of ["none", "minimal", "medium"] as const) {
 			const id = `unmarked-${effort}`;
 			const [model] = mapCursorCatalogToProviderModels(liveCatalog([
 				{ id, effort, parameters: [parameter("reasoning", effort)], requestedModelId: "unmarked", metadataProvenance: "available-models-reverse-engineered" },
 			]));
 			assert.equal(model?.id, id);
-			assert.equal(model?.thinkingLevelMap?.off, null);
+			assert.equal(model?.thinkingLevelMap?.off, effort === "none" ? id : null);
 			assert.equal(model?.compat?.cursorRouting?.[id]?.parameters?.[0]?.value, effort);
 		}
 	});
@@ -231,7 +306,7 @@ describe("Cursor model metadata mapping", () => {
 		}
 	});
 
-	test("keeps colliding context presets distinct and honors Cursor-marked defaults", () => {
+	test("keeps colliding context presets distinct and preserves Cursor-marked defaults separately from off", () => {
 		const models = mapCursorCatalogToProviderModels(liveCatalog([
 			availableModel({
 				id: "gpt-contextual",
@@ -241,21 +316,22 @@ describe("Cursor model metadata mapping", () => {
 				],
 			}),
 		]));
-		assert.deepEqual(models.map((model) => model.id), ["gpt-contextual-context-1m", "gpt-contextual-context-272k-low"]);
-		const selected = models.find((model) => model.id === "gpt-contextual-context-1m");
-		assert.equal(selected?.thinkingLevelMap?.off, "gpt-contextual-context-1m-high");
-		assert.equal(selected?.compat?.cursorRouting?.["gpt-contextual-context-1m"]?.parameters?.find((item) => item.id === "context")?.value, "1m");
+		assert.deepEqual(models.map((model) => model.id), ["gpt-contextual-1m", "gpt-contextual-272k"]);
+		const selected = models.find((model) => model.id === "gpt-contextual-1m");
+		assert.equal(selected?.thinkingLevelMap?.off, null);
+		assert.equal(selected?.compat?.cursorRouting?.["gpt-contextual-1m"]?.parameters?.find((item) => item.id === "reasoning")?.value, "high");
+		assert.equal(selected?.compat?.cursorRouting?.["gpt-contextual-1m"]?.parameters?.find((item) => item.id === "context")?.value, "1m");
 	});
 
 	test("table-driven live/cache parity and fallback degradation covers representative semantics", () => {
 		const scenarios = [
-			{ name: "Claude", model: availableModel({ id: "claude", maxTokens: 32_000, variants: [variant([parameter("reasoning", "high")])] }), ids: ["claude-high"], reasoning: true, level: ["high", "claude-high"] as const, context: 200_000, output: 32_000 },
-			{ name: "GPT", model: availableModel({ id: "gpt", variants: [{ ...variant([parameter("reasoning", "low")]), isDefaultNonMaxConfig: true }] }), ids: ["gpt"], reasoning: true, level: ["low", "gpt-low"] as const, off: "gpt-low", context: 200_000, output: 64_000 },
+			{ name: "Claude", model: availableModel({ id: "claude", maxTokens: 32_000, variants: [variant([parameter("reasoning", "high")])] }), ids: ["claude"], reasoning: true, level: ["high", "claude-high"] as const, context: 200_000, output: 32_000 },
+			{ name: "GPT", model: availableModel({ id: "gpt", variants: [{ ...variant([parameter("reasoning", "low")]), isDefaultNonMaxConfig: true }] }), ids: ["gpt"], reasoning: true, level: ["low", "gpt-low"] as const, off: null, context: 200_000, output: 64_000 },
 			{ name: "Gemini", model: availableModel({ id: "gemini", variants: [variant([parameter("thinking", "true")])] }), ids: ["gemini-thinking"], reasoning: true, context: 200_000, output: 64_000 },
 			{ name: "Composer", model: availableModel({ id: "composer", variants: [variant([])] }), ids: ["composer"], reasoning: false, context: 200_000, output: 64_000 },
 			{ name: "fast", model: availableModel({ id: "fast-model", variants: [variant([parameter("fast", "true")])] }), ids: ["fast-model-fast"], reasoning: false, context: 200_000, output: 64_000 },
 			{ name: "thinking", model: availableModel({ id: "thinking-model", variants: [variant([parameter("thinking", "true")])] }), ids: ["thinking-model-thinking"], reasoning: true, context: 200_000, output: 64_000 },
-			{ name: "Max", model: availableModel({ id: "max-model", variants: [variant([], true)] }), ids: ["max-model-max-mode"], reasoning: false, context: 1_000_000, output: 64_000, maxMode: true },
+			{ name: "Max", model: availableModel({ id: "max-model", variants: [variant([], true)] }), ids: ["max-model-max"], reasoning: false, context: 1_000_000, output: 64_000, maxMode: true },
 			{ name: "Max-only", model: availableModel({ id: "max-only", supportsNonMaxMode: false, variants: [] }), ids: ["max-only-max-mode"], reasoning: false, context: 1_000_000, output: 64_000, maxMode: true },
 			{ name: "non-reasoning", model: availableModel({ id: "plain", variants: [variant([parameter("temperature", "balanced")])] }), ids: ["plain-temperature-balanced"], reasoning: false, context: 200_000, output: 64_000 },
 		] as const;
@@ -270,7 +346,7 @@ describe("Cursor model metadata mapping", () => {
 			assert.equal(liveMapped[0]?.contextWindow, scenario.context, `${scenario.name}: mode-specific context`);
 			assert.equal(liveMapped[0]?.maxTokens, scenario.output, `${scenario.name}: output limit`);
 			if ("level" in scenario) assert.equal(liveMapped[0]?.thinkingLevelMap?.[scenario.level[0]], scenario.level[1], `${scenario.name}: exact level`);
-			if ("off" in scenario) assert.equal(liveMapped[0]?.thinkingLevelMap?.off, scenario.off, `${scenario.name}: discovered default`);
+			if ("off" in scenario) assert.equal(liveMapped[0]?.thinkingLevelMap?.off, scenario.off, `${scenario.name}: explicit off level`);
 			if ("maxMode" in scenario) assert.equal(liveMapped[0]?.compat?.cursorRouting?.[scenario.ids[0]]?.maxMode, scenario.maxMode, `${scenario.name}: Max routing`);
 			const [fallback] = mapCursorCatalogToProviderModels({ source: "estimated", fetchedAt: 1, models: [{ id: scenario.model.id, metadataProvenance: "static-fallback" }] });
 			assert.equal(fallback?.reasoning, false, `${scenario.name}: no level synthesis without fallback evidence`);

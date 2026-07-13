@@ -1,6 +1,8 @@
-import type { ThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai/compat";
+import type { ModelThinkingLevel, ThinkingLevelMap } from "@earendil-works/pi-ai/compat";
 import { CURSOR_API, CURSOR_API_BASE_URL } from "./config.js";
 import rawFallbackModels from "./cursor-models-raw.json" with { type: "json" };
+import type { CursorParameterDefinitionMetadata } from "./model-display.js";
+import { cursorModelAliases, groupCursorModels, selectDefaultVariant, titleCaseModelId } from "./model-groups.js";
 import { positiveIntOrUndefined } from "./model-reference.js";
 
 export type CursorCatalogSource = "live" | "estimated";
@@ -8,6 +10,7 @@ export type CursorEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhi
 export type CursorMetadataProvenance = "available-models-reverse-engineered" | "get-usable-models" | "legacy-cache" | "static-fallback";
 
 export interface CursorModelParameter { readonly id: string; readonly value: string }
+export type { CursorParameterDefinitionMetadata, CursorParameterOptionMetadata } from "./model-display.js";
 export interface CursorParameterizedVariant {
 	readonly parameters: readonly CursorModelParameter[];
 	readonly isMaxMode: boolean;
@@ -32,12 +35,15 @@ export interface CursorUsableModel {
 	readonly supportsNonMaxMode?: boolean;
 	readonly serverModelName?: string;
 	readonly variants?: readonly CursorParameterizedVariant[];
+	readonly parameterDefinitions?: readonly CursorParameterDefinitionMetadata[];
 	readonly metadataProvenance?: CursorMetadataProvenance;
 	readonly effort?: CursorEffort;
 	readonly requestedModelId?: string;
 	readonly requestedMaxMode?: boolean;
 	readonly isDefaultVariant?: boolean;
 	readonly parameters?: readonly CursorModelParameter[];
+	/** Internal identity retained while expanding one raw Cursor model into selectable rows. */
+	readonly sourceModelId?: string;
 }
 
 export interface CursorModelCatalog {
@@ -71,13 +77,15 @@ export interface CursorProviderModelDefinition {
 	readonly metadataProvenance: { readonly catalog: CursorCatalogSource; readonly capabilities: string; readonly contextWindow: string; readonly maxTokens: string };
 	readonly compat?: {
 		readonly cursorRouting?: Readonly<Record<string, CursorModelRouting>>;
+		readonly cursorModelAliases?: readonly string[];
 		readonly cursorMetadataProvenance?: CursorProviderModelDefinition["metadataProvenance"];
 	};
 }
 
-interface CursorVariant {
+export interface CursorVariant {
 	readonly id: string;
 	readonly baseId: string;
+	readonly sourceModelId: string;
 	readonly displayName: string;
 	readonly effort?: CursorEffort;
 	readonly fast: boolean;
@@ -91,9 +99,11 @@ interface CursorVariant {
 	readonly supportsImages?: boolean;
 	readonly metadataProvenance?: CursorMetadataProvenance;
 	readonly routing: CursorModelRouting;
+	readonly parameterized: boolean;
+	readonly parameterDefinitions?: readonly CursorParameterDefinitionMetadata[];
 }
 
-interface CursorVariantGroup {
+export interface CursorVariantGroup {
 	readonly baseId: string;
 	readonly primaryId: string;
 	readonly displayName: string;
@@ -120,18 +130,18 @@ export function createEstimatedCursorCatalog(now = Date.now()): CursorModelCatal
 export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): CursorProviderModelDefinition[] {
 	const expandedModels = expandParameterizedModels(catalog.models);
 	const groupedModels = catalog.source === "estimated" ? annotateCompatibilityEffortSets(expandedModels) : expandedModels;
-	const groups = groupCursorModels(groupedModels);
+	const groups = groupCursorModels(groupedModels.map(parseCursorVariant));
 	return groups.map((group) => {
-		const effortVariants = collectEffortVariants(group.variants, group.primaryId);
+		const effortVariants = collectEffortVariants(group.variants);
 		const supportsReasoning = catalog.source === "live" && (effortVariants.size > 0 || group.variants.some((variant) => variant.supportsReasoning === true || variant.supportsThinking === true || variant.thinking));
-		const limitVariant = selectLimitVariant(group);
+		const limitVariant = selectDefaultVariant(group.variants);
 		const explicitContext = positiveIntOrUndefined(limitVariant?.contextWindow);
 		const explicitMaxContext = positiveIntOrUndefined(limitVariant?.maxModeContextWindow);
 		const explicitOutput = positiveIntOrUndefined(limitVariant?.maxTokens);
 		const contextWindow = positiveIntLimit(explicitContext, ESTIMATED_CONTEXT_WINDOW);
 		const maxTokens = positiveIntLimit(explicitOutput, ESTIMATED_MAX_TOKENS);
 		const thinkingLevelMap = supportsReasoning && effortVariants.size > 0
-			? buildCursorThinkingLevelMap(group, effortVariants)
+			? buildCursorThinkingLevelMap(effortVariants)
 			: supportsReasoning ? unsupportedCursorThinkingLevelMap() : undefined;
 		const capabilities = capabilityProvenance(group.variants, catalog.source);
 		const contextProvenance = limitFieldProvenance(limitVariant, explicitContext, "context");
@@ -155,7 +165,8 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 				maxTokens: outputProvenance,
 			},
 			compat: {
-				cursorRouting: buildRoutingMap(group, thinkingLevelMap),
+				cursorRouting: buildRoutingMap(group),
+				cursorModelAliases: cursorModelAliases(group),
 				cursorMetadataProvenance: {
 					catalog: catalog.source,
 					capabilities,
@@ -167,8 +178,6 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 	});
 }
 
-
-
 function positiveIntLimit(value: number | undefined, fallback: number): number {
 	// Provider registration rejects non-positive/non-integer windows and would
 	// drop the whole catalog; guarantee a valid positive integer here so limit
@@ -179,16 +188,14 @@ function positiveIntLimit(value: number | undefined, fallback: number): number {
 export function resolveCursorModelVariant(
 	baseModelId: string,
 	thinkingLevelMap: ThinkingLevelMap | undefined,
-	thinkingLevel: ThinkingLevel | undefined,
+	thinkingLevel: ModelThinkingLevel | undefined,
+	useProviderDefault = false,
 ): string {
-	if (!thinkingLevelMap) return baseModelId;
-	if (!thinkingLevel) {
-		const off = thinkingLevelMap.off;
-		return typeof off === "string" && off !== "default" ? off : baseModelId;
-	}
-	const mapped = thinkingLevelMap[thinkingLevel];
+	if (!thinkingLevelMap || (thinkingLevel === undefined && useProviderDefault)) return baseModelId;
+	const requestedLevel = thinkingLevel ?? "off";
+	const mapped = thinkingLevelMap[requestedLevel];
 	if (typeof mapped === "string" && mapped !== "default") return mapped;
-	throw new Error(`Cursor model ${baseModelId} does not support the requested ${thinkingLevel} reasoning level.`);
+	throw new Error(`Cursor model ${baseModelId} does not support the requested ${requestedLevel} reasoning level.`);
 }
 
 export function insertEffortBeforeCursorSuffix(modelId: string, effort: CursorEffort): string {
@@ -207,7 +214,6 @@ export function insertEffortBeforeCursorSuffix(modelId: string, effort: CursorEf
 	return `${base}-${effort}${thinking ? "-thinking" : ""}${fast ? "-fast" : ""}`;
 }
 
-
 export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 	let base = model.id;
 	let fast = false;
@@ -225,6 +231,7 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 	return {
 		id: model.id,
 		baseId: base,
+		sourceModelId: model.sourceModelId ?? base,
 		displayName: model.displayName ?? model.name ?? titleCaseModelId(base),
 		effort,
 		fast,
@@ -236,6 +243,8 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 		supportsThinking: model.supportsThinking,
 		supportsImages: model.supportsImages,
 		metadataProvenance: model.metadataProvenance,
+		parameterized: model.sourceModelId !== undefined && model.parameters !== undefined,
+		parameterDefinitions: model.parameterDefinitions,
 		isDefaultVariant: model.isDefaultVariant,
 		routing: {
 			modelId: cursorBackendModelId(model),
@@ -245,42 +254,15 @@ export function parseCursorVariant(model: CursorUsableModel): CursorVariant {
 	};
 }
 
-function groupCursorModels(models: readonly CursorUsableModel[]): CursorVariantGroup[] {
-	const groups = new Map<string, CursorVariant[]>();
-	for (const model of models) {
-		const variant = parseCursorVariant(model);
-		const key = cursorVariantGroupKey(variant);
-		const existing = groups.get(key) ?? [];
-		existing.push(variant);
-		groups.set(key, existing);
-	}
-	return [...groups.values()]
-		.map((variants) => {
-			const baseId = variants[0]?.baseId ?? "cursor";
-			const primaryId = choosePrimaryId(variants, baseId);
-			return {
-				baseId,
-				primaryId,
-				displayName: chooseDisplayName(variants, baseId, primaryId),
-				variants,
-			};
-		})
-		.sort((left, right) => left.primaryId.localeCompare(right.primaryId));
-}
-
-function cursorVariantGroupKey(variant: CursorVariant): string {
-	return `${variant.baseId}|fast=${variant.fast ? "1" : "0"}|thinking=${variant.thinking ? "1" : "0"}`;
-}
-
-function collectEffortVariants(variants: readonly CursorVariant[], _primaryId: string): ReadonlyMap<CursorEffort, string> {
+function collectEffortVariants(variants: readonly CursorVariant[]): ReadonlyMap<CursorEffort, string> {
 	const byEffort = new Map<CursorEffort, string>();
 	for (const variant of variants) if (variant.effort && !byEffort.has(variant.effort)) byEffort.set(variant.effort, variant.id);
 	return byEffort;
 }
 
-function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: ReadonlyMap<CursorEffort, string>): ThinkingLevelMap {
-	const map: ThinkingLevelMap = {
-		off: null,
+function buildCursorThinkingLevelMap(effortVariants: ReadonlyMap<CursorEffort, string>): ThinkingLevelMap {
+	return {
+		off: effortVariants.get("none") ?? null,
 		minimal: effortVariants.get("minimal") ?? null,
 		low: effortVariants.get("low") ?? null,
 		medium: effortVariants.get("medium") ?? null,
@@ -288,20 +270,16 @@ function buildCursorThinkingLevelMap(group: CursorVariantGroup, effortVariants: 
 		xhigh: effortVariants.get("xhigh") ?? effortVariants.get("extra-high") ?? null,
 		max: effortVariants.get("max") ?? null,
 	};
-	const concreteDefault = group.variants.find((variant) => variant.isDefaultVariant);
-	if (concreteDefault) map.off = concreteDefault.id;
-	return map;
 }
 
 function unsupportedCursorThinkingLevelMap(): ThinkingLevelMap {
 	return { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null, max: null };
 }
 
-function buildRoutingMap(group: CursorVariantGroup, thinkingLevelMap: ThinkingLevelMap | undefined): Readonly<Record<string, CursorModelRouting>> {
+function buildRoutingMap(group: CursorVariantGroup): Readonly<Record<string, CursorModelRouting>> {
 	const routing: Record<string, CursorModelRouting> = {};
 	for (const variant of group.variants) routing[variant.id] = variant.routing;
-	const off = thinkingLevelMap?.off;
-	if (typeof off === "string" && routing[off]) routing[group.primaryId] = routing[off];
+	if (group.variants.some((variant) => variant.parameterized)) routing[group.primaryId] = selectDefaultVariant(group.variants).routing;
 	else routing[group.primaryId] ??= { modelId: group.primaryId };
 	return routing;
 }
@@ -406,6 +384,7 @@ function parameterizedVariantRow(model: CursorUsableModel, variant: CursorParame
 		isDefaultVariant: variant.isMaxMode ? variant.isDefaultMaxConfig === true : variant.isDefaultNonMaxConfig === true,
 		requestedMaxMode: variant.isMaxMode,
 		parameters,
+		sourceModelId: model.id,
 	}];
 }
 
@@ -429,40 +408,6 @@ function encodeParameterComponent(value: string): string {
 		encoded += isAsciiAlphaNumeric ? String.fromCharCode(byte) : `_${byte.toString(16).padStart(2, "0")}`;
 	}
 	return encoded;
-}
-function selectLimitVariant(group: CursorVariantGroup): CursorVariant | undefined {
-	return group.variants.find((variant) => variant.isDefaultVariant)
-		?? group.variants.find((variant) => variant.id === group.primaryId)
-		?? group.variants[0];
-}
-
-
-function choosePrimaryId(variants: readonly CursorVariant[], baseId: string): string {
-	if (variants.some((variant) => variant.effort)) {
-		const explicitDefault = variants.find((variant) => variant.isDefaultVariant);
-		if (explicitDefault) {
-			return `${baseId}${explicitDefault.thinking ? "-thinking" : ""}${explicitDefault.fast ? "-fast" : ""}`;
-		}
-		return variants[0]?.id ?? baseId;
-	}
-	return variants.find((variant) => variant.id === baseId)?.id ?? variants[0]?.id ?? baseId;
-}
-
-function chooseDisplayName(variants: readonly CursorVariant[], baseId: string, primaryId: string): string {
-	return variants.find((variant) => variant.id === primaryId)?.displayName
-		?? variants.find((variant) => variant.effort === "medium")?.displayName
-		?? variants.find((variant) => !variant.effort)?.displayName
-		?? variants[0]?.displayName
-		?? titleCaseModelId(baseId);
-}
-
-
-function titleCaseModelId(id: string): string {
-	return id
-		.split(/[-_/]+/u)
-		.filter((part) => part.length > 0)
-		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-		.join(" ");
 }
 
 function subscriptionCost(): { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number } {

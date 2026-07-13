@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { findUniqueModelAlias, hasModelAlias } from "./model-id-aliases.ts";
 import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
 import type { ParsedModelResult } from "./model-resolver-types.ts";
 
@@ -60,7 +61,14 @@ export function findExactModelReferenceMatch(
   }
 
   const idMatches = availableModels.filter((model) => model.id.toLowerCase() === normalizedReference);
-  return idMatches.length === 1 ? idMatches[0] : undefined;
+  if (idMatches.length === 1) return idMatches[0];
+  if (idMatches.length > 1) return undefined;
+  if (slashIndex !== -1) {
+    const provider = trimmedReference.substring(0, slashIndex).trim();
+    const modelId = trimmedReference.substring(slashIndex + 1).trim();
+    if (provider && modelId) return findUniqueModelAlias(availableModels, modelId, provider);
+  }
+  return findUniqueModelAlias(availableModels, trimmedReference);
 }
 
 /**
@@ -71,6 +79,14 @@ function tryMatchModel(modelPattern: string, availableModels: Model<Api>[]): Mod
   const exactMatch = findExactModelReferenceMatch(modelPattern, availableModels);
   if (exactMatch) {
     return exactMatch;
+  }
+  const slashIndex = modelPattern.indexOf("/");
+  if (slashIndex !== -1) {
+    const provider = modelPattern.substring(0, slashIndex).trim();
+    const modelId = modelPattern.substring(slashIndex + 1).trim();
+    if (provider && modelId && hasModelAlias(availableModels, modelId, provider)) return undefined;
+  } else if (hasModelAlias(availableModels, modelPattern)) {
+    return undefined;
   }
 
   const matches = availableModels.filter(

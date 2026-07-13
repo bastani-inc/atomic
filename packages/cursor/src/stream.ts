@@ -97,7 +97,8 @@ export class CursorStreamAdapter {
 			const requestId = this.#runtime.uuid();
 			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
 			activeConversationKey = conversationIdentity.activeKey;
-			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning);
+			const useProviderDefault = !Object.prototype.hasOwnProperty.call(options, "reasoning");
+			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning, useProviderDefault);
 			const cursorRouting = (model.compat as { cursorRouting?: Readonly<Record<string, { modelId: string; maxMode?: boolean; parameters?: readonly { id: string; value: string }[] }>> } | undefined)?.cursorRouting?.[resolvedModelId];
 			if (!cursorRouting) throw new Error(`Cursor model ${model.id} is missing exact backend routing metadata for ${resolvedModelId}. Refresh the authenticated Cursor catalog.`);
 			const trailingToolResults = getTrailingToolResults(context);

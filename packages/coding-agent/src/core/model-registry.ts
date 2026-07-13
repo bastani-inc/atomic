@@ -11,13 +11,14 @@ import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, validateProviderConfig } from "./model-registry-dynamic.ts";
+import { findUniqueModelAlias, hasModelAlias } from "./model-id-aliases.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
 import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
 
-const REMOTE_CATALOG_PROVIDERS = new Set(["cursor", "github-copilot", "openrouter", "vercel-ai-gateway"]);
+const REMOTE_CATALOG_PROVIDERS = new Set(["github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 
 export type { ProviderConfigInput, ResolvedRequestAuth } from "./model-registry-types.ts";
@@ -122,11 +123,15 @@ export class ModelRegistry {
 		return this.models.filter((m) => this.hasConfiguredAuth(m));
 	}
 
-	/**
-	 * Find a model by provider and ID.
-	 */
+	/** Whether any current model claims a provider-scoped compatibility alias. */
+	hasModelAlias(provider: string, modelId: string): boolean {
+		return hasModelAlias(this.models, modelId, provider, true);
+	}
+
+	/** Find a model by provider and current ID or one unambiguous compatibility alias. */
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.models.find((m) => m.provider === provider && m.id === modelId);
+		return this.models.find((model) => model.provider === provider && model.id === modelId)
+			?? findUniqueModelAlias(this.models, modelId, provider, true);
 	}
 
 	/** Whether an authenticated provider may reconstruct an absent saved model ID. */

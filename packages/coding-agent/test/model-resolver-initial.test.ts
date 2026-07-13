@@ -150,23 +150,74 @@ describe("default model selection", () => {
 		expect(result.model).toBe(cursorBaseModel);
 		expect(result.thinkingLevel).toBe("medium");
 	});
-	test("restoreModelFromSession restores saved custom Cursor model ids from an authenticated provider template", async () => {
+	test("restoreModelFromSession rejects unknown Cursor ids that lack exact routing", async () => {
 		const registry = {
 			find: () => undefined,
-			canRestoreUnknownModel: () => true,
+			canRestoreUnknownModel: () => false,
 			getAvailable: async () => [cursorBaseModel],
 		} as unknown as Parameters<typeof restoreModelFromSession>[4];
 		const result = await restoreModelFromSession(
 			"cursor",
 			"cursor-compose-2.5",
-			undefined,
+			cursorBaseModel,
 			false,
 			registry,
 		);
-		expect(result.fallbackMessage).toBeUndefined();
-		expect(result.model?.provider).toBe("cursor");
-		expect(result.model?.id).toBe("cursor-compose-2.5");
-		expect(result.model?.api).toBe("cursor-agent");
+		expect(result.model).toBe(cursorBaseModel);
+		expect(result.model?.id).not.toBe("cursor-compose-2.5");
+		expect(result.fallbackMessage).toContain("model no longer exists");
+	});
+	test("registry and session restore migrate one prior Cursor synthetic id to the canonical row", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.set("cursor", { type: "api_key", key: "cursor-test-key" });
+		const registry = ModelRegistry.inMemory(authStorage);
+		registry.registerProvider("cursor", {
+			baseUrl: "https://api2.cursor.sh",
+			apiKey: "cursor-test-key",
+			api: "cursor-agent",
+			models: [{
+				id: "claude-fable-5-1m-max",
+				name: "Fable 5 (1M, Max)",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+				compat: { cursorModelAliases: ["claude-fable-5-context-1m-max-mode-low"] } as Model<"cursor-agent">["compat"],
+			}],
+		});
+		const legacyId = "claude-fable-5-context-1m-max-mode-low";
+		const canonical = registry.find("cursor", "claude-fable-5-1m-max");
+		expect(registry.find("cursor", legacyId)).toBe(canonical);
+		const restored = await restoreModelFromSession("cursor", legacyId, undefined, false, registry);
+		expect(restored.model).toBe(canonical);
+		expect(restored.model?.id).toBe("claude-fable-5-1m-max");
+	});
+	test("session restore rejects an ambiguous prior Cursor synthetic id", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.set("cursor", { type: "api_key", key: "cursor-test-key" });
+		const registry = ModelRegistry.inMemory(authStorage);
+		const legacyId = "claude-fable-5-context-1m-max-mode-low";
+		registry.registerProvider("cursor", {
+			baseUrl: "https://api2.cursor.sh",
+			apiKey: "cursor-test-key",
+			api: "cursor-agent",
+			models: ["first", "second"].map((id) => ({
+				id,
+				name: id,
+				reasoning: true,
+				input: ["text" as const],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 1_000_000,
+				maxTokens: 64_000,
+				compat: { cursorModelAliases: [legacyId] } as Model<"cursor-agent">["compat"],
+			})),
+		});
+		const current = registry.find("cursor", "first");
+		const restored = await restoreModelFromSession("cursor", legacyId, current, false, registry);
+		expect(restored.model).toBe(current);
+		expect(restored.model?.id).not.toBe(legacyId);
+		expect(restored.fallbackMessage).toContain("model no longer exists");
 	});
 	test("restoreModelFromSession does not synthesize removed catalog-backed OpenAI ids", async () => {
 		const openaiBaseModel = allModels[1]!;

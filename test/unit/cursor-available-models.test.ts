@@ -34,6 +34,65 @@ function availableModelsFixture(): Uint8Array {
 	return cursorProtoTest.encodeMessageField(2, model);
 }
 
+function fableAvailableModelsFixture(): Uint8Array {
+	const option = (value: string, label?: string, wireField3 = false) => cursorProtoTest.concatBytes(
+		cursorProtoTest.encodeStringField(1, value),
+		...(label ? [cursorProtoTest.encodeStringField(2, label)] : []),
+		...(wireField3 ? [cursorProtoTest.encodeVarintField(3, 1n)] : []),
+	);
+	const definition = (id: string, displayName: string, description: string, typeField: 1 | 2, options: readonly Uint8Array[], wireField5 = false) => {
+		const optionList = cursorProtoTest.concatBytes(...options.map((entry) => cursorProtoTest.encodeMessageField(1, entry)));
+		const config = cursorProtoTest.encodeMessageField(typeField, optionList);
+		return cursorProtoTest.concatBytes(
+			cursorProtoTest.encodeStringField(1, id),
+			cursorProtoTest.encodeStringField(2, displayName),
+			cursorProtoTest.encodeStringField(3, description),
+			cursorProtoTest.encodeMessageField(4, config),
+			...(wireField5 ? [cursorProtoTest.encodeVarintField(5, 1n)] : []),
+		);
+	};
+	const definitions = [
+		definition("thinking", "Thinking", "Does the model use thinking to generate its response?", 1, [option("false"), option("true")]),
+		definition("context", "Context", "Context size the model has available.", 2, [option("300k", "300K"), option("1m", "1M", true)]),
+		definition("effort", "Effort", "Effort the model uses to generate its response.", 2, [
+			option("low", "Low"), option("medium", "Medium"), option("high", "High"), option("xhigh", "Extra High"), option("max", "Max"),
+		], true),
+	];
+	const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
+	const modes = [
+		{ thinking: "false", context: "300k", max: false },
+		{ thinking: "false", context: "1m", max: true },
+		{ thinking: "true", context: "300k", max: false },
+		{ thinking: "true", context: "1m", max: true },
+	] as const;
+	const variants = modes.flatMap((mode) => efforts.map((effort) => {
+		const parameters = [["thinking", mode.thinking], ["context", mode.context], ["effort", effort]] as const;
+		return cursorProtoTest.concatBytes(
+			...parameters.map(([id, value]) => cursorProtoTest.encodeMessageField(1, cursorProtoTest.concatBytes(
+				cursorProtoTest.encodeStringField(1, id), cursorProtoTest.encodeStringField(2, value),
+			))),
+			cursorProtoTest.encodeStringField(2, "Fable 5"),
+			...(mode.max ? [cursorProtoTest.encodeVarintField(3, 1n)] : []),
+			...(mode.thinking === "true" && effort === "high"
+				? [cursorProtoTest.encodeVarintField(mode.max ? 4 : 5, 1n)]
+				: []),
+			cursorProtoTest.encodeStringField(8, "Fable 5"),
+			cursorProtoTest.encodeStringField(9, `claude-fable-5[thinking=${mode.thinking},context=${mode.context},effort=${effort}]`),
+		);
+	}));
+	const model = cursorProtoTest.concatBytes(
+		cursorProtoTest.encodeStringField(1, "claude-fable-5"),
+		cursorProtoTest.encodeVarintField(10, 1n),
+		cursorProtoTest.encodeVarintField(14, 1n),
+		cursorProtoTest.encodeStringField(17, "Fable 5"),
+		cursorProtoTest.encodeStringField(18, "claude-fable-5"),
+		cursorProtoTest.encodeVarintField(19, 1n),
+		...definitions.map((entry) => cursorProtoTest.encodeMessageField(29, entry)),
+		...variants.map((entry) => cursorProtoTest.encodeMessageField(30, entry)),
+	);
+	return cursorProtoTest.encodeMessageField(2, model);
+}
+
 type UnaryFixture = Uint8Array | { readonly statusCode: number; readonly body: Uint8Array };
 
 class UnaryClient implements CursorHttp2Client {
@@ -84,6 +143,7 @@ describe("Cursor AvailableModels discovery", () => {
 			supportsNonMaxMode: true,
 			contextWindow: 272_000,
 			maxModeContextWindow: 1_000_000,
+			parameterDefinitions: [],
 			variants: [{
 				parameters: [{ id: "reasoning", value: "high" }],
 				isMaxMode: true,
@@ -92,6 +152,24 @@ describe("Cursor AvailableModels discovery", () => {
 				variantStringRepresentation: "gpt-5.5-high-max",
 			}],
 			metadataProvenance: "available-models-reverse-engineered",
+		});
+	});
+
+	test("decodes authenticated Fable 5 parameter labels and all complete variants", () => {
+		const [model] = new CursorProtobufProtocolCodec().decodeAvailableModelsResponse(fableAvailableModelsFixture());
+		assert.equal(model?.variants.length, 20);
+		assert.deepEqual(model?.parameterDefinitions, [
+			{ id: "thinking", displayName: "Thinking", description: "Does the model use thinking to generate its response?", type: "boolean", options: [{ value: "false" }, { value: "true" }] },
+			{ id: "context", displayName: "Context", description: "Context size the model has available.", type: "enum", options: [{ value: "300k", label: "300K" }, { value: "1m", label: "1M", wireField3: true }] },
+			{ id: "effort", displayName: "Effort", description: "Effort the model uses to generate its response.", type: "enum", options: [{ value: "low", label: "Low" }, { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "xhigh", label: "Extra High" }, { value: "max", label: "Max" }], wireField5: true },
+		]);
+		assert.deepEqual(model?.variants[17], {
+			parameters: [{ id: "thinking", value: "true" }, { id: "context", value: "1m" }, { id: "effort", value: "high" }],
+			isMaxMode: true,
+			isDefaultMaxConfig: true,
+			displayName: "Fable 5",
+			displayNameOutsidePicker: "Fable 5",
+			variantStringRepresentation: "claude-fable-5[thinking=true,context=1m,effort=high]",
 		});
 	});
 

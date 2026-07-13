@@ -145,7 +145,9 @@ export function resolveCliModel(options: {
     }
   }
 
-  if (provider) {
+  // Cursor's authenticated catalog requires exact routing metadata; an arbitrary
+  // fallback ID would be selectable but could never produce a valid request.
+  if (provider && provider !== "cursor") {
     // Registered resolution above takes precedence, including model IDs whose final colon
     // segment happens to look like a thinking level. Only custom fallback splits it.
     const customPattern = splitCustomModelThinkingSuffix(pattern);

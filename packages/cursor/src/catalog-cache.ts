@@ -2,7 +2,7 @@ import { randomUUID, scryptSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { CursorModelCatalog, CursorParameterizedVariant, CursorUsableModel } from "./model-mapper.js";
+import type { CursorModelCatalog, CursorParameterizedVariant, CursorParameterDefinitionMetadata, CursorUsableModel } from "./model-mapper.js";
 
 export const CURSOR_CATALOG_CACHE_VERSION = 2;
 export const CURSOR_CATALOG_CACHE_FILENAME = "cursor-model-catalog.json";
@@ -149,6 +149,11 @@ function parseCachedCursorModel(value: unknown): CursorUsableModel | null {
 	}
 	if (value.parameters !== undefined) { const parameters = parseParameters(value.parameters); if (!parameters) return null; model.parameters = parameters }
 	if (value.variants !== undefined) { const variants = parseVariants(value.variants); if (!variants) return null; model.variants = variants }
+	if (value.parameterDefinitions !== undefined) {
+		const definitions = parseParameterDefinitions(value.parameterDefinitions);
+		if (!definitions) return null;
+		model.parameterDefinitions = definitions;
+	}
 	return model as unknown as CursorUsableModel;
 }
 
@@ -174,6 +179,36 @@ function parseVariants(value: unknown): readonly CursorParameterizedVariant[] | 
 		return variant as unknown as CursorParameterizedVariant;
 	});
 	return parsed.every((entry) => entry !== null) ? parsed : null;
+}
+
+function parseParameterDefinitions(value: unknown): readonly CursorParameterDefinitionMetadata[] | null {
+	if (!Array.isArray(value)) return null;
+	const definitions = value.map((entry): CursorParameterDefinitionMetadata | null => {
+		if (!isRecord(entry)) return null;
+		const id = requiredString(entry.id);
+		if (!id || !isOneOf(entry.type, ["boolean", "enum", "unknown"]) || !Array.isArray(entry.options)) return null;
+		const options = entry.options.map((option) => {
+			if (!isRecord(option)) return null;
+			const optionValue = requiredString(option.value);
+			if (!optionValue) return null;
+			const label = option.label === undefined ? undefined : optionalString(option.label);
+			if (label === null || (option.wireField3 !== undefined && typeof option.wireField3 !== "boolean")) return null;
+			return { value: optionValue, ...(label !== undefined ? { label } : {}), ...(option.wireField3 !== undefined ? { wireField3: option.wireField3 } : {}) };
+		});
+		if (options.some((option) => option === null)) return null;
+		const displayName = entry.displayName === undefined ? undefined : optionalString(entry.displayName);
+		const description = entry.description === undefined ? undefined : optionalString(entry.description);
+		if (displayName === null || description === null || (entry.wireField5 !== undefined && typeof entry.wireField5 !== "boolean")) return null;
+		return {
+			id,
+			type: entry.type as CursorParameterDefinitionMetadata["type"],
+			options: options as CursorParameterDefinitionMetadata["options"],
+			...(displayName !== undefined ? { displayName } : {}),
+			...(description !== undefined ? { description } : {}),
+			...(entry.wireField5 !== undefined ? { wireField5: entry.wireField5 } : {}),
+		};
+	});
+	return definitions.every((definition) => definition !== null) ? definitions : null;
 }
 
 function getDefaultAtomicAgentDir(): string {

@@ -1,4 +1,4 @@
-import type { CursorUsableModel } from "../model-mapper.js";
+import type { CursorParameterDefinitionMetadata, CursorUsableModel } from "../model-mapper.js";
 
 /** Reverse-engineered metadata from Cursor's private AiService/AvailableModels RPC. */
 export interface CursorModelParameter {
@@ -23,6 +23,7 @@ export interface CursorAvailableModel extends CursorUsableModel {
 	readonly supportsNonMaxMode?: boolean;
 	readonly maxModeContextWindow?: number;
 	readonly variants: readonly CursorParameterizedVariant[];
+	readonly parameterDefinitions: readonly CursorParameterDefinitionMetadata[];
 	readonly metadataProvenance: "available-models-reverse-engineered";
 }
 
@@ -65,6 +66,7 @@ function decodeModel(bytes: Uint8Array): CursorAvailableModel | undefined {
 	let contextWindow: number | undefined;
 	let maxModeContextWindow: number | undefined;
 	const variants: CursorParameterizedVariant[] = [];
+	const parameterDefinitions: CursorParameterDefinitionMetadata[] = [];
 	while (reader.offset < bytes.length) {
 		const tag = readVarint(reader);
 		const fieldNumber = Math.floor(tag / 8);
@@ -77,6 +79,10 @@ function decodeModel(bytes: Uint8Array): CursorAvailableModel | undefined {
 		else if (fieldNumber === 17 && wireType === 2) displayName = nonEmpty(decodeString(readLengthDelimited(reader)));
 		else if (fieldNumber === 18 && wireType === 2) serverModelName = nonEmpty(decodeString(readLengthDelimited(reader)));
 		else if (fieldNumber === 19 && wireType === 0) supportsNonMaxMode = readVarint(reader) !== 0;
+		else if (fieldNumber === 29 && wireType === 2) {
+			const definition = decodeParameterDefinition(readLengthDelimited(reader));
+			if (definition.id) parameterDefinitions.push(definition);
+		}
 		else if (fieldNumber === 30 && wireType === 2) variants.push(decodeVariant(readLengthDelimited(reader)));
 		else skipWireField(reader, wireType);
 	}
@@ -90,6 +96,7 @@ function decodeModel(bytes: Uint8Array): CursorAvailableModel | undefined {
 		...(supportsNonMaxMode !== undefined ? { supportsNonMaxMode } : {}),
 		...(contextWindow !== undefined ? { contextWindow } : {}),
 		...(maxModeContextWindow !== undefined ? { maxModeContextWindow } : {}),
+		parameterDefinitions,
 		variants,
 		metadataProvenance: "available-models-reverse-engineered",
 	};
@@ -126,6 +133,85 @@ function decodeVariant(bytes: Uint8Array): CursorParameterizedVariant {
 		...(displayNameOutsidePicker ? { displayNameOutsidePicker } : {}),
 		...(variantStringRepresentation ? { variantStringRepresentation } : {}),
 	};
+}
+
+function decodeParameterDefinition(bytes: Uint8Array): CursorParameterDefinitionMetadata {
+	const reader: WireReader = { bytes, offset: 0 };
+	let id = "";
+	let displayName: string | undefined;
+	let description: string | undefined;
+	let type: CursorParameterDefinitionMetadata["type"] = "unknown";
+	let options: CursorParameterDefinitionMetadata["options"] = [];
+	let wireField5: boolean | undefined;
+	while (reader.offset < bytes.length) {
+		const tag = readVarint(reader);
+		const fieldNumber = Math.floor(tag / 8);
+		const wireType = tag % 8;
+		if (fieldNumber === 1 && wireType === 2) id = decodeString(readLengthDelimited(reader));
+		else if (fieldNumber === 2 && wireType === 2) displayName = nonEmpty(decodeString(readLengthDelimited(reader)));
+		else if (fieldNumber === 3 && wireType === 2) description = nonEmpty(decodeString(readLengthDelimited(reader)));
+		else if (fieldNumber === 4 && wireType === 2) {
+			const decoded = decodeParameterConfig(readLengthDelimited(reader));
+			type = decoded.type;
+			options = decoded.options;
+		}
+		else if (fieldNumber === 5 && wireType === 0) wireField5 = readVarint(reader) !== 0;
+		else skipWireField(reader, wireType);
+	}
+	return {
+		id,
+		...(displayName ? { displayName } : {}),
+		...(description ? { description } : {}),
+		type,
+		options,
+		...(wireField5 !== undefined ? { wireField5 } : {}),
+	};
+}
+
+function decodeParameterConfig(bytes: Uint8Array): Pick<CursorParameterDefinitionMetadata, "type" | "options"> {
+	const reader: WireReader = { bytes, offset: 0 };
+	while (reader.offset < bytes.length) {
+		const tag = readVarint(reader);
+		const fieldNumber = Math.floor(tag / 8);
+		const wireType = tag % 8;
+		if ((fieldNumber === 1 || fieldNumber === 2) && wireType === 2) {
+			return { type: fieldNumber === 1 ? "boolean" : "enum", options: decodeParameterOptions(readLengthDelimited(reader)) };
+		}
+		skipWireField(reader, wireType);
+	}
+	return { type: "unknown", options: [] };
+}
+
+function decodeParameterOptions(bytes: Uint8Array): CursorParameterDefinitionMetadata["options"] {
+	const reader: WireReader = { bytes, offset: 0 };
+	const options: Array<CursorParameterDefinitionMetadata["options"][number]> = [];
+	while (reader.offset < bytes.length) {
+		const tag = readVarint(reader);
+		const fieldNumber = Math.floor(tag / 8);
+		const wireType = tag % 8;
+		if (fieldNumber === 1 && wireType === 2) {
+			const option = decodeParameterOption(readLengthDelimited(reader));
+			if (option.value) options.push(option);
+		} else skipWireField(reader, wireType);
+	}
+	return options;
+}
+
+function decodeParameterOption(bytes: Uint8Array): CursorParameterDefinitionMetadata["options"][number] {
+	const reader: WireReader = { bytes, offset: 0 };
+	let value = "";
+	let label: string | undefined;
+	let wireField3: boolean | undefined;
+	while (reader.offset < bytes.length) {
+		const tag = readVarint(reader);
+		const fieldNumber = Math.floor(tag / 8);
+		const wireType = tag % 8;
+		if (fieldNumber === 1 && wireType === 2) value = decodeString(readLengthDelimited(reader));
+		else if (fieldNumber === 2 && wireType === 2) label = nonEmpty(decodeString(readLengthDelimited(reader)));
+		else if (fieldNumber === 3 && wireType === 0) wireField3 = readVarint(reader) !== 0;
+		else skipWireField(reader, wireType);
+	}
+	return { value, ...(label ? { label } : {}), ...(wireField3 !== undefined ? { wireField3 } : {}) };
 }
 
 function decodeParameter(bytes: Uint8Array): CursorModelParameter {

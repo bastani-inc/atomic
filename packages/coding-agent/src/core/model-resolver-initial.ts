@@ -28,6 +28,7 @@ export async function resolveRestoredModelReference(
 ): Promise<Model<Api> | undefined> {
   const found = modelRegistry.find(provider, modelId);
   if (found) return modelRegistry.hasConfiguredAuth(found) ? found : undefined;
+  if (modelRegistry.hasModelAlias?.(provider, modelId)) return undefined;
   if (!modelRegistry.canRestoreUnknownModel(provider)) return undefined;
   return buildConfiguredProviderFallbackModel(provider, modelId, modelRegistry);
 }
