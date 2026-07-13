@@ -1,6 +1,5 @@
 import chalk from "chalk";
 import { parseArgs, printHelp } from "./cli/args.ts";
-import { listModels } from "./cli/list-models.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { ENV_OFFLINE, ENV_SESSION_DIR, ENV_SKIP_VERSION_CHECK, ENV_STARTUP_BENCHMARK, expandTildePath, getAgentDir, getEnvValue, setEnvValue, VERSION } from "./config.ts";
 import { type CreateAgentSessionRuntimeFactory, createAgentSessionRuntime } from "./core/agent-session-runtime.ts";
@@ -24,7 +23,7 @@ import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-inp
 import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
 import { createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
-import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
+import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, listModelsAfterExtensionStartup, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
@@ -393,7 +392,7 @@ export async function main(args: string[], options?: MainOptions) {
 			restoreStdout();
 		}
 		reportDiagnostics(runtime.diagnostics);
-		await listModels(modelRegistry, searchPattern);
+		await listModelsAfterExtensionStartup(runtime, modelRegistry, searchPattern);
 		process.exit(0);
 	}
 

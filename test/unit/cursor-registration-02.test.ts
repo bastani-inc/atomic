@@ -2,33 +2,39 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import type { Api, AssistantMessageEvent, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import type { CursorAuthService } from "../../packages/cursor/src/auth.js";
-import { FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { deriveCursorCredentialScope, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryError, type CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider } from "../../packages/cursor/src/provider.js";
 import { CursorMockTransport } from "./cursor-test-helpers.js";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver.ts";
 
+function jwtForSubject(subject: string, randomness: string): string {
+	return `header.${Buffer.from(JSON.stringify({ sub: subject, randomness })).toString("base64url")}.signature`;
+}
 type CursorHost = Parameters<typeof registerCursorProvider>[0];
 type CursorConfig = Parameters<CursorHost["registerProvider"]>[1];
 
 class MemoryCursorCatalogCache implements CursorCatalogCache {
 	saved: CursorModelCatalog[] = [];
+	readonly #scoped = new Map<string, CursorModelCatalog>();
 
-	constructor(private catalog: CursorModelCatalog | null = null) {}
-
-	load(): CursorModelCatalog | null {
-		return this.catalog;
+	constructor(private catalog: CursorModelCatalog | null = null) {
+		if (catalog?.credentialScope) this.#scoped.set(catalog.credentialScope, catalog);
 	}
 
-	save(catalog: CursorModelCatalog): void {
-		this.saved.push(catalog);
-		this.catalog = catalog;
+	load(credentialScope?: string): CursorModelCatalog | null {
+		return credentialScope ? this.#scoped.get(credentialScope) ?? null : this.catalog;
+	}
+
+	save(catalog: CursorModelCatalog, credentialScope?: string): void {
+		const saved = credentialScope ? { ...catalog, credentialScope } : catalog;
+		this.saved.push(saved);
+		this.catalog = saved;
+		if (credentialScope) this.#scoped.set(credentialScope, saved);
 	}
 }
 
@@ -218,8 +224,9 @@ describe("Cursor provider registration", () => {
 		assert.equal(cache.saved.length, 0);
 		await runtime.dispose();
 	});
-	test("surfaces cache persistence warnings during background refresh", async () => {
+	test("surfaces cache persistence warnings during background and print refresh", async () => {
 		const notifications: string[] = [];
+		const diagnostics: string[] = [];
 		const discovery = {
 			async discover(): Promise<CursorModelCatalog> {
 				return { source: "live", fetchedAt: 44, models: [{ id: "live-after-warning" }] };
@@ -229,17 +236,17 @@ describe("Cursor provider registration", () => {
 		const runtime = registerCursorProvider(host, {
 			transport: new CursorMockTransport(), discoveryService: discovery,
 			catalogCache: new ThrowingCursorCatalogCache(), uuid: () => "cache-warning",
+			onCatalogDiagnostic: (message) => diagnostics.push(message),
 		});
 		const handler = lifecycleHandlers.get("session_start")?.[0];
 		assert.ok(handler);
-		await handler({}, {
-			mode: "tui",
-			ui: { notify: (message: string) => notifications.push(message) },
-			modelRegistry: { getApiKeyForProvider: async () => "token" },
-		});
+		const registry = { getApiKeyForProvider: async () => "token" };
+		await handler({}, { mode: "tui", ui: { notify: (message: string) => notifications.push(message) }, modelRegistry: registry });
 		await nextTick();
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "live-after-warning"), true);
 		assert.match(notifications[0] ?? "", /cache persistence failed/u);
+		await handler({}, { mode: "print", modelRegistry: registry });
+		assert.match(diagnostics[0] ?? "", /cache persistence failed/u);
 		await runtime.dispose();
 	});
 	test("authenticated streams scope catalog freshness to the active credential", async () => {
@@ -336,6 +343,33 @@ describe("Cursor provider registration", () => {
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "model-a-old" || model.id === "model-b"), false);
 		await runtime.dispose();
 	});
+	test("activating a fresh scoped cache supersedes another account's in-flight discovery", async () => {
+		const tokenA = jwtForSubject("account-a", "token");
+		const tokenB = jwtForSubject("account-b", "token");
+		const scopeB = deriveCursorCredentialScope(tokenB);
+		assert.ok(scopeB);
+		const cache = new MemoryCursorCatalogCache({ source: "live", fetchedAt: 100, credentialScope: scopeB, models: [{ id: "cached-b" }] });
+		let resolveA: ((catalog: CursorModelCatalog) => void) | undefined;
+		const discovery = { discover(): Promise<CursorModelCatalog> { return new Promise((resolve) => { resolveA = resolve; }); } } as unknown as CursorModelDiscoveryService;
+		const { host, lifecycleHandlers, registrations } = makeHost();
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
+			discoveryService: discovery, catalogCache: cache, now: () => 100, catalogCacheTtlMs: 100,
+			uuid: () => "account-race",
+		});
+		const config = registrations[0]!.config;
+		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: tokenA }));
+		await nextTick();
+		const start = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(start);
+		await start({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => tokenB } });
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "cached-b"), true);
+		resolveA?.({ source: "live", fetchedAt: 101, models: [{ id: "late-a" }] });
+		await nextTick();
+		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "late-a"), false);
+		assert.equal(cache.saved.some((catalog) => catalog.models.some((model) => model.id === "late-a")), false);
+		await runtime.dispose();
+	});
 	test("dispose aborts pending first-use rediscovery and does not hang when discovery ignores abort", async () => {
 		const { host, registrations } = makeHost();
 		const discoverySignals: AbortSignal[] = [];
@@ -422,17 +456,26 @@ describe("Cursor provider registration", () => {
 		await runtime.dispose();
 	});
 
-	test("surfaces refresh failures while retaining cached models", async () => {
+	test("print mode awaits failed refresh, reports a diagnostic, and retains the scoped cache", async () => {
 		const surfaced: string[] = [];
+		const diagnostics: string[] = [];
 		const discovery = { async discover(): Promise<CursorModelCatalog> { throw new Error("refresh unavailable"); } } as unknown as CursorModelDiscoveryService;
 		const notifications: string[] = [];
-		const cache = new MemoryCursorCatalogCache({ source: "live", fetchedAt: 1, models: [{ id: "cached", displayName: "Cached" }] });
+		const token = jwtForSubject("cached-account", "token");
+		const scope = deriveCursorCredentialScope(token);
+		assert.ok(scope);
+		const cache = new MemoryCursorCatalogCache({ source: "live", fetchedAt: 1, credentialScope: scope, models: [{ id: "cached", displayName: "Cached" }] });
 		const { host, lifecycleHandlers, registrations } = makeHost();
-		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), discoveryService: discovery, catalogCache: cache, catalogCacheTtlMs: 1, now: () => 10, onCatalogRefreshError: (error) => surfaced.push(error.message), uuid: () => "failed" });
+		const runtime = registerCursorProvider(host, {
+			transport: new CursorMockTransport(), discoveryService: discovery, catalogCache: cache,
+			catalogCacheTtlMs: 1, now: () => 10, onCatalogRefreshError: (error) => surfaced.push(error.message),
+			onCatalogDiagnostic: (message) => diagnostics.push(message), uuid: () => "failed",
+		});
 		const handler = lifecycleHandlers.get("session_start")?.[0];
 		assert.ok(handler);
-		await assert.rejects(() => handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => "token" } }), /refresh unavailable/u);
-		await handler({}, { mode: "tui", ui: { notify: (message: string) => notifications.push(message) }, modelRegistry: { getApiKeyForProvider: async () => "token" } });
+		await handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => token } });
+		assert.deepEqual(diagnostics, ["Cursor model refresh warning: refresh unavailable"]);
+		await handler({}, { mode: "tui", ui: { notify: (message: string) => notifications.push(message) }, modelRegistry: { getApiKeyForProvider: async () => token } });
 		await nextTick();
 		assert.match(notifications[0] ?? "", /refresh unavailable/u);
 		assert.deepEqual(surfaced, ["refresh unavailable", "refresh unavailable"]);

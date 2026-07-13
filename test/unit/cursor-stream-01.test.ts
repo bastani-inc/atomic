@@ -44,6 +44,20 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(transport.runs.length, 0);
 	});
 
+	test("rejects a Cursor model that lacks exact backend routing metadata", async () => {
+		const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "missing-route" });
+		const unroutedModel = { ...model(), compat: undefined };
+
+		const events = await collectEventsWithTimeout(adapter.streamSimple(unroutedModel, context(), { apiKey: "access-secret" }));
+
+		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+		const terminal = events.at(-1);
+		assert.equal(terminal?.type, "error");
+		if (terminal?.type === "error") assert.match(terminal.error.errorMessage ?? "", /exact backend routing metadata/u);
+		assert.equal(transport.runs.length, 0);
+	});
+
 	test("pauses after collecting Cursor MCP tool call usage metadata", async () => {
 		const transport = new CursorMockTransport({
 			messages: [

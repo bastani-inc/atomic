@@ -7,28 +7,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessageEvent, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import type { CursorAuthService } from "../../packages/cursor/src/auth.js";
-import { FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { deriveCursorCredentialScope, FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryError, type CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider } from "../../packages/cursor/src/provider.js";
 import { CursorMockTransport } from "./cursor-test-helpers.js";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver.ts";
 
+function jwtForSubject(subject: string, randomness: string): string {
+	return `header.${Buffer.from(JSON.stringify({ sub: subject, randomness })).toString("base64url")}.signature`;
+}
+
 type CursorHost = Parameters<typeof registerCursorProvider>[0];
 type CursorConfig = Parameters<CursorHost["registerProvider"]>[1];
 
 class MemoryCursorCatalogCache implements CursorCatalogCache {
 	saved: CursorModelCatalog[] = [];
+	readonly #scoped = new Map<string, CursorModelCatalog>();
 
-	constructor(private catalog: CursorModelCatalog | null = null) {}
-
-	load(): CursorModelCatalog | null {
-		return this.catalog;
+	constructor(private catalog: CursorModelCatalog | null = null) {
+		if (catalog?.credentialScope) this.#scoped.set(catalog.credentialScope, catalog);
 	}
 
-	save(catalog: CursorModelCatalog): void {
-		this.saved.push(catalog);
-		this.catalog = catalog;
+	load(credentialScope?: string): CursorModelCatalog | null {
+		return credentialScope ? this.#scoped.get(credentialScope) ?? null : this.catalog;
+	}
+
+	save(catalog: CursorModelCatalog, credentialScope?: string): void {
+		const saved = credentialScope ? { ...catalog, credentialScope } : catalog;
+		this.saved.push(saved);
+		this.catalog = saved;
+		if (credentialScope) this.#scoped.set(credentialScope, saved);
 	}
 }
 
@@ -148,7 +157,7 @@ describe("Cursor provider registration", () => {
 		]);
 		await runtime.dispose();
 	});
-	test("registers a valid token-free cached live catalog at startup", async () => {
+	test("does not register an unscoped cached catalog before credentials are known", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache({
 			source: "live",
@@ -159,13 +168,12 @@ describe("Cursor provider registration", () => {
 		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "startup-cache" });
 
 		assert.equal(registrations.length, 1);
-		const cachedComposer = registrations[0]?.config.models.find((model) => model.id === "composer-2");
-		assert.equal(cachedComposer?.name, "Cached Composer");
-		assert.equal(cachedComposer?.contextWindow, 1234);
-		assert.doesNotMatch(cachedComposer?.name ?? "", /estimated/u);
+		const fallbackComposer = registrations[0]?.config.models.find((model) => model.id === "composer-2");
+		assert.match(fallbackComposer?.name ?? "", /estimated fallback/u);
+		assert.notEqual(fallbackComposer?.contextWindow, 1234);
 		await runtime.dispose();
 	});
-	test("cached live catalogs do not inject undiscovered composer defaults", async () => {
+	test("unscoped live-only cache entries cannot replace the startup fallback", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache({
 			source: "live",
@@ -175,14 +183,17 @@ describe("Cursor provider registration", () => {
 
 		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "startup-cache-no-default" });
 
-		assert.deepEqual(registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		assert.equal(registrations[0]?.config.models.some((model) => model.id === "composer-2.5"), false);
+		assert.equal(registrations[0]?.config.models.some((model) => /estimated fallback/u.test(model.name)), true);
 		await runtime.dispose();
 	});
-	test("login-persisted live-only models are available to the next provider runtime", async () => {
+	test("login-persisted live-only models are available to the same account after restart", async () => {
 		const cache = new MemoryCursorCatalogCache();
+		const accessToken = jwtForSubject("login-account", "first");
+		const rotatedToken = jwtForSubject("login-account", "rotated");
 		const authService = {
 			async login(): Promise<OAuthCredentials> {
-				return { access: "access-live-only", refresh: "refresh-live-only", expires: 123 };
+				return { access: accessToken, refresh: "refresh-live-only", expires: 123 };
 			},
 		} as unknown as CursorAuthService;
 		const discoveryService = {
@@ -192,22 +203,25 @@ describe("Cursor provider registration", () => {
 		} as unknown as CursorModelDiscoveryService;
 		const first = makeHost();
 		const firstRuntime = registerCursorProvider(first.host, {
-			transport: new CursorMockTransport(),
-			authService,
-			discoveryService,
-			catalogCache: cache,
-			uuid: () => "login-live-only",
+			transport: new CursorMockTransport(), authService, discoveryService, catalogCache: cache,
+			now: () => 60, catalogCacheTtlMs: 100, uuid: () => "login-live-only",
 		});
 
 		await first.registrations[0]!.config.oauth.login(callbacks());
 		await firstRuntime.dispose();
 
 		const second = makeHost();
-		const secondRuntime = registerCursorProvider(second.host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "restart-live-only" });
+		const secondRuntime = registerCursorProvider(second.host, {
+			transport: new CursorMockTransport(), catalogCache: cache, now: () => 60,
+			catalogCacheTtlMs: 100, uuid: () => "restart-live-only",
+		});
+		const start = second.lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(start);
+		await start({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => rotatedToken } });
 
 		assert.equal(cache.saved.length, 1);
-		assert.equal(second.registrations[0]?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
-		assert.deepEqual(second.registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		assert.equal(second.registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+		assert.deepEqual(second.registrations.at(-1)?.config.models.map((model) => model.id), ["composer-2.5"]);
 		await secondRuntime.dispose();
 	});
 	test("session_start discovers live models from stored Cursor OAuth credentials when cache is missing", async () => {
@@ -384,7 +398,7 @@ describe("Cursor provider registration", () => {
 		assert.deepEqual(discoveryRequests, ["stored-access-1", "stored-access-2"]);
 		await runtime.dispose();
 	});
-	test("catalog cache ignores missing/corrupt files and writes live catalogs atomically without credentials", () => {
+	test("catalog cache isolates live catalogs by stable credential scope and writes no credentials", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-cursor-cache-"));
 		try {
 			const cachePath = join(dir, "catalog.json");
@@ -409,18 +423,36 @@ describe("Cursor provider registration", () => {
 					} as CursorModelCatalog["models"][number] & { accessToken: string; refreshToken: string },
 				],
 			};
-			cache.save(liveCatalog);
+			const accessToken = jwtForSubject("account-a", "rotation-a");
+			const rotatedToken = jwtForSubject("account-a", "rotation-b");
+			const otherToken = jwtForSubject("account-b", "rotation-a");
+			const scope = deriveCursorCredentialScope(accessToken);
+			assert.ok(scope);
+			assert.equal(deriveCursorCredentialScope(rotatedToken), scope);
+			assert.notEqual(deriveCursorCredentialScope(otherToken), scope);
+			cache.save(liveCatalog, scope);
 
-			const raw = readFileSync(cachePath, "utf8");
+			const scopedPath = `${cachePath}.${scope}`;
+			const raw = readFileSync(scopedPath, "utf8");
 			assert.match(raw, /"version"\s*:\s*2/u);
 			assert.match(raw, /"fetchedAt"\s*:\s*77/u);
-			assert.doesNotMatch(raw, /access-secret|refresh-secret|"source"|"note"/u);
+			assert.match(raw, new RegExp(`"credentialScope"\\s*:\\s*"${scope}"`, "u"));
+			assert.doesNotMatch(raw, /access-secret|refresh-secret|account-a|rotation-a|"source"|"note"/u);
 			assert.equal(readdirSync(dir).some((entry) => entry.endsWith(".tmp")), false);
-			assert.deepEqual(cache.load(), {
+			assert.equal(cache.load(deriveCursorCredentialScope(otherToken)), null);
+			assert.equal(readdirSync(dir).some((entry) => entry.endsWith(".lock")), false);
+			assert.deepEqual(cache.load(scope), {
 				source: "live",
 				fetchedAt: 77,
+				credentialScope: scope,
 				models: [{ id: "composer-2", displayName: "Live Composer", contextWindow: 200_000, maxTokens: 64_000, supportsReasoning: true }],
 			});
+
+			cache.save({ source: "live", fetchedAt: 80, models: [{ id: "newer" }] }, scope);
+			cache.save({ source: "live", fetchedAt: 79, models: [{ id: "older" }] }, scope);
+			assert.equal(cache.load(scope)?.models[0]?.id, "newer");
+			cache.save({ source: "live", fetchedAt: 80, models: [{ id: "equal-time-loser" }] }, scope);
+			assert.equal(cache.load(scope)?.models[0]?.id, "newer");
 
 			writeFileSync(cachePath, JSON.stringify({
 				version: 1,

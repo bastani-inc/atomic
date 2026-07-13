@@ -1,5 +1,8 @@
 import chalk from "chalk";
+import { listModels } from "./cli/list-models.ts";
+import type { AgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
+import type { ModelRegistry } from "./core/model-registry.ts";
 import type { SettingsManager } from "./core/settings-manager.ts";
 
 /**
@@ -83,4 +86,30 @@ function drainWritable(stream: DrainableWritable): Promise<void> {
 
 export async function drainProcessStdio(): Promise<void> {
 	await Promise.all([drainWritable(process.stdout), drainWritable(process.stderr)]);
+}
+
+/** Run extension startup before a metadata-only model listing without entering a UI mode. */
+async function bindExtensionsForModelListing(runtime: AgentSessionRuntime): Promise<void> {
+	const { session } = runtime;
+	await session.bindExtensions({
+		mode: "print",
+		commandContextActions: {
+			waitForIdle: () => session.agent.waitForIdle(),
+			newSession: async (options) => runtime.newSession(options),
+			fork: async (entryId, options) => ({ cancelled: (await runtime.fork(entryId, options)).cancelled }),
+			navigateTree: async (targetId, options) => ({ cancelled: (await session.navigateTree(targetId, options)).cancelled }),
+			switchSession: (sessionPath, options) => runtime.switchSession(sessionPath, options),
+			reload: () => session.reload(),
+		},
+		onError: (error) => console.error(chalk.yellow(`Extension error (${error.extensionPath}): ${error.error}`)),
+	});
+}
+
+export async function listModelsAfterExtensionStartup(
+	runtime: AgentSessionRuntime,
+	modelRegistry: ModelRegistry,
+	searchPattern: string | undefined,
+): Promise<void> {
+	await bindExtensionsForModelListing(runtime);
+	await listModels(modelRegistry, searchPattern);
 }

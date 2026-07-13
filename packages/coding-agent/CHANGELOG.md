@@ -8,8 +8,9 @@
 
 ### Fixed
 
-- Made `--list-models` await stale authenticated Cursor catalog refresh and report refresh diagnostics instead of racing background discovery ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
-- Fixed Cursor account changes reusing another credential's catalog TTL, out-of-order refreshes replacing the newest account snapshot, future cache timestamps suppressing refresh, and exact discovered parameter presets collapsing or sending a generated ID through Cursor's still-authoritative legacy model field ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Made `--list-models` await stale authenticated Cursor catalog refresh, warn on failure, and list the retained scoped catalog instead of racing discovery or aborting model output ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Fixed Cursor account changes reusing another account's catalog TTL by scoping schema-v2 files to a stable subject digest without persisting or hashing OAuth tokens; rotated same-account credentials retain the 30-minute cache, legacy unscoped caches are not trusted, out-of-order refreshes and older persisted snapshots cannot replace newer state, and future timestamps cannot suppress discovery ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Fixed exact discovered Cursor parameter presets collapsing, sending a generated ID through Cursor's still-authoritative legacy model field, or silently degrading to picker/display IDs when route metadata is missing ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
 
 ## [0.9.8] - 2026-07-12
 

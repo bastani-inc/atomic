@@ -43,6 +43,7 @@ export interface CursorUsableModel {
 export interface CursorModelCatalog {
 	readonly source: CursorCatalogSource;
 	readonly fetchedAt: number;
+	readonly credentialScope?: string;
 	readonly note?: string;
 	readonly models: readonly CursorUsableModel[];
 }

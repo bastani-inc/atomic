@@ -13,7 +13,14 @@ export function model(): Model<Api> {
 		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
-	};
+		compat: {
+			cursorRouting: {
+				"composer-2": { modelId: "composer-2" },
+				"composer-2-high": { modelId: "composer-2", parameters: [{ id: "reasoning", value: "high" }] },
+				"composer-2-max": { modelId: "composer-2", maxMode: true, parameters: [{ id: "reasoning", value: "max" }] },
+			},
+		},
+	} as Model<Api>;
 }
 
 export function context(): Context {
