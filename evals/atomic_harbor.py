@@ -179,7 +179,11 @@ class Atomic(BaseInstalledAgent):
                 key: value for key in keys if (value := self._get_env(key))
             }
         else:
-            environment_keys = env
+            environment_keys = env.copy()
+        for credential_keys in self._PROVIDER_AUTH_ENV_KEYS.values():
+            for key in credential_keys:
+                if value := self._get_env(key):
+                    environment_keys[key] = value
         for auth_provider, credential_keys in self._PROVIDER_AUTH_ENV_KEYS.items():
             has_environment_auth = (
                 all(environment_keys.get(key) for key in credential_keys)
