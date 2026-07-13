@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Synchronized the builtin `playwright-cli` skill with microsoft/playwright-cli at `793cfb32572733cbcb401e6f28d05a7a914ce408`, including current installation, snapshot search, mobile emulation, and test generation guidance.
+- Renamed the builtin `effective-liteparse` skill to `liteparse` and synchronized it with run-llama/llamaparse-agent-skills at `2dcef7c62417bd2ec4671fce4621bb1e8cce48d0`; existing `/skill:effective-liteparse` references must migrate to `/skill:liteparse`.
+
 ## [0.9.8-alpha.1] - 2026-07-12
 
 ### Changed

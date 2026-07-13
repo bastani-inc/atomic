@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-07-12
+
+### Changed
+
+- Published the stable Atomic 0.9.8 release for the native transport package; no native transport changes were made after 0.9.7.
+
 ## [0.9.8-alpha.1] - 2026-07-12
 
 ### Changed
