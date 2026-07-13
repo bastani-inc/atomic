@@ -152,7 +152,7 @@ export async function run<
 
   const tracker = new GraphFrontierTracker();
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
-  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs), gitWorktreeSetupCache = createGitWorktreeSetupCache();
+  const inputRuntimeDefaults = resolveInputRuntimeDefaults(def, resolvedInputs), gitWorktreeSetupCache = opts.gitWorktreeSetupCache ?? createGitWorktreeSetupCache();
   const workflowInvocationCwd = opts.cwd ?? process.cwd();
   let workflowCwd: string | undefined;
   const resolveWorkflowCwd = (): string => {

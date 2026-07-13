@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
-import { CONFIG_DIR_NAME, isCodexFastModeCandidateModelId } from "@bastani/atomic";
+import { APP_NAME, CONFIG_DIR_NAME, isCodexFastModeCandidateModelId } from "@bastani/atomic";
 import { Type } from "typebox";
 import type {
   StageOptions,
@@ -10,7 +10,6 @@ import type {
   WorkflowDetails,
   WorkflowDirectOptions,
   WorkflowDirectTaskItem,
-  WorkflowOutputMode,
   WorkflowOutputSchema,
   WorkflowTaskResult,
   WorkflowTaskStep,
@@ -30,9 +29,10 @@ import {
   type GitWorktreeSetupResult,
   type WorktreeSetup,
 } from "../shared/worktree.js";
+import { resolveWorktreeStageCwd } from "../shared/worktree-cwd.js";
 import type { RunOpts, RunResult } from "./executor-types.js";
 import { isWorkflowExitStatus } from "./executor-abort.js";
-import { directTaskWithDefaults, resolveWorkflowPath, taskBaseDir, withoutUndefinedProperties } from "./executor-task-prompts.js";
+import { directTaskWithDefaults, withoutUndefinedProperties } from "./executor-task-prompts.js";
 export { createGitWorktreeSetupCache } from "../shared/worktree.js";
 export type { GitWorktreeSetupCache } from "../shared/worktree.js";
 
@@ -190,11 +190,17 @@ function namespaceRepeatedOutput(output: WorkflowDirectTaskItem["output"], index
   return join(dirname(output), `${base}-${index + 1}${ext}`);
 }
 
+export interface DirectOutputIsolation {
+  readonly baseDir: string;
+  readonly trustedRoot: string;
+}
+
 export interface PreparedDirectWorktrees {
   readonly tasks: WorkflowDirectTaskItem[];
   readonly setup?: WorktreeSetup;
   readonly agents: string[];
   readonly diffsDir?: string;
+  readonly outputIsolations?: readonly DirectOutputIsolation[];
 }
 
 export function directRunId(runOptions: RunOpts): string {
@@ -205,20 +211,18 @@ function hasDirectWorktreeIsolation(tasks: readonly WorkflowDirectTaskItem[], op
   return options.worktree === true || tasks.some((task) => task.worktree === true);
 }
 
-function resolveSharedDirectWorktreeCwd(tasks: readonly WorkflowDirectTaskItem[]): string {
+function resolveSharedDirectWorktreeCwd(
+  tasks: readonly WorkflowDirectTaskItem[],
+  workflowInvocationCwd: string,
+): string {
   const explicitCwd = tasks.find((task) => typeof task.cwd === "string")?.cwd;
-  if (explicitCwd === undefined) return process.cwd();
-  return isAbsolute(explicitCwd) ? explicitCwd : resolve(process.cwd(), explicitCwd);
+  if (explicitCwd === undefined) return workflowInvocationCwd;
+  return isAbsolute(explicitCwd) ? explicitCwd : resolve(workflowInvocationCwd, explicitCwd);
 }
 
-function normalizeDirectTaskCwd(cwd: string | undefined): string | undefined {
+function normalizeDirectTaskCwd(cwd: string | undefined, workflowInvocationCwd: string): string | undefined {
   if (cwd === undefined) return undefined;
-  return isAbsolute(cwd) ? cwd : resolve(process.cwd(), cwd);
-}
-
-export function resolveWorktreeCwdOverride(cwd: string | undefined, worktreeCwd: string): string | undefined {
-  if (cwd === undefined || cwd.length === 0) return undefined;
-  return isAbsolute(cwd) ? cwd : resolve(worktreeCwd, cwd);
+  return isAbsolute(cwd) ? cwd : resolve(workflowInvocationCwd, cwd);
 }
 
 export function stageOptionsWithInputDefaults<T extends StageOptions>(options: T | undefined, inputDefaults: Partial<StageOptions>): T | undefined {
@@ -229,13 +233,16 @@ export function stageOptionsWithInputDefaults<T extends StageOptions>(options: T
 
 export function stageOptionsWithGitWorktree<T extends StageOptions>(options: T | undefined, workflowInvocationCwd: string, cache?: GitWorktreeSetupCache): T | undefined {
   if (options === undefined) return undefined;
-  if (typeof options.gitWorktreeDir !== "string" || options.gitWorktreeDir.trim().length === 0) return options;
+  if (typeof options.gitWorktreeDir !== "string") return options;
+  if (options.gitWorktreeDir.trim().length === 0) {
+    throw new Error("atomic-workflows: gitWorktreeDir cannot be empty; provide a reusable worktree path or omit gitWorktreeDir for a non-worktree run.");
+  }
   const setup = setupGitWorktreeCached({
     gitWorktreeDir: options.gitWorktreeDir,
     baseBranch: options.baseBranch,
     cwd: workflowInvocationCwd,
   }, cache);
-  const explicitCwd = resolveWorktreeCwdOverride(options.cwd, setup.cwd);
+  const explicitCwd = resolveWorktreeStageCwd(options.cwd, setup);
   return { ...options, gitWorktreeDir: undefined, baseBranch: undefined, cwd: explicitCwd ?? setup.cwd };
 }
 
@@ -267,9 +274,24 @@ export function workflowInvocationMetadata(inputDefaults: Partial<StageOptions>,
   };
 }
 
+function nonBlankChainDir(chainDir: string | undefined): string | undefined {
+  return typeof chainDir === "string" && chainDir.trim().length > 0 ? chainDir : undefined;
+}
+
+function directWorktreeArtifactBase(options: WorkflowDirectOptions, setup: WorktreeSetup): string {
+  return nonBlankChainDir(options.chainDir) ?? join(setup.cwd, CONFIG_DIR_NAME, "workflows");
+}
+
 function directWorktreeDiffsDir(options: WorkflowDirectOptions, setup: WorktreeSetup, runId: string, scope: string): string {
-  const baseDir = options.chainDir ?? join(setup.cwd, CONFIG_DIR_NAME, "workflows");
-  return join(baseDir, "worktree-diffs", runId, scope);
+  return join(directWorktreeArtifactBase(options, setup), "worktree-diffs", runId, scope);
+}
+
+function directWorktreeOutputsRoot(): string {
+  return join(tmpdir(), `${APP_NAME}-workflow-outputs`);
+}
+
+function directWorktreeOutputsDir(runId: string, scope: string, index: number): string {
+  return join(directWorktreeOutputsRoot(), runId, scope, String(index));
 }
 
 export function prepareDirectWorktrees(
@@ -277,6 +299,7 @@ export function prepareDirectWorktrees(
   options: WorkflowDirectOptions,
   runId: string,
   scope: string,
+  workflowInvocationCwd: string = process.cwd(),
 ): PreparedDirectWorktrees {
   if (!hasDirectWorktreeIsolation(tasks, options)) {
     return {
@@ -289,9 +312,9 @@ export function prepareDirectWorktrees(
     throw new Error("atomic-workflows: worktree and gitWorktreeDir are mutually exclusive; use gitWorktreeDir for a reusable worktree or worktree:true for temporary isolated worktrees.");
   }
 
-  const sharedCwd = resolveSharedDirectWorktreeCwd(tasks);
+  const sharedCwd = resolveSharedDirectWorktreeCwd(tasks, workflowInvocationCwd);
   const conflict = findWorktreeTaskCwdConflict(
-    tasks.map((task) => ({ agent: task.name, cwd: normalizeDirectTaskCwd(task.cwd) })),
+    tasks.map((task) => ({ agent: task.name, cwd: normalizeDirectTaskCwd(task.cwd, workflowInvocationCwd) })),
     sharedCwd,
   );
   if (conflict !== undefined) throw new Error(formatWorktreeTaskCwdConflict(conflict, sharedCwd));
@@ -306,6 +329,10 @@ export function prepareDirectWorktrees(
     setup,
     agents,
     diffsDir: directWorktreeDiffsDir(options, setup, runId, scope),
+    outputIsolations: tasks.map((_, index) => ({
+      baseDir: directWorktreeOutputsDir(runId, scope, index),
+      trustedRoot: directWorktreeOutputsRoot(),
+    })),
   };
 }
 
@@ -343,31 +370,11 @@ export function isRunOpts(value: WorkflowDirectOptions | RunOpts | undefined): v
     "adapters" in value || "ui" in value || "store" in value || "persistence" in value ||
     "mcp" in value || "cancellation" in value || "overlay" in value || "signal" in value ||
     "config" in value || "depth" in value || "stageControlRegistry" in value || "runId" in value ||
-    "onRunStart" in value || "onStageStart" in value || "onStageEnd" in value || "onRunEnd" in value ||
-    "models" in value
+    "gitWorktreeSetupCache" in value || "onRunStart" in value || "onStageStart" in value ||
+    "onStageEnd" in value || "onRunEnd" in value || "models" in value
   );
 }
 
-export async function writeDirectOutput(
-  item: { readonly chainDir?: string; readonly cwd?: string; readonly output?: string | false; readonly outputMode?: WorkflowOutputMode },
-  result: WorkflowTaskResult,
-): Promise<{ result: WorkflowTaskResult; artifact?: WorkflowArtifact }> {
-  if (typeof item.output !== "string") return { result };
-
-  const outputPath = resolveWorkflowPath(item.output, taskBaseDir(item));
-  await mkdir(dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, result.text, "utf8");
-
-  const visibleResult = item.outputMode === "file-only" ? { ...result, text: "" } : result;
-  return {
-    result: visibleResult,
-    artifact: {
-      kind: "output",
-      path: outputPath,
-      taskName: result.name,
-    },
-  };
-}
 
 function directFailureMessage(error: unknown): string {
   return classifyWorkflowFailure(error).userMessage;

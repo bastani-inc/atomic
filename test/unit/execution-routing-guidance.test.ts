@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_PROMPT_GUIDANCE as workflowGuidance, WORKFLOW_TOOL_DESCRIPTION } from "../../packages/workflows/src/extension/workflow-prompts.js";
+import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { DEFAULT_PROMPT_GUIDANCE as subagentGuidance } from "../../packages/subagents/src/extension/prompt-guidance.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "../../packages/subagents/src/extension/tool-description.js";
 
@@ -113,6 +114,34 @@ describe("workflow-first execution routing", () => {
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
     }
+  });
+
+  test("distinguishes starting cwd from runner-managed worktree isolation", () => {
+    for (const phrase of [
+      "Natural-language instructions to create or use a worktree do not enable runner isolation",
+      "`cwd` only selects the starting directory",
+      "set `worktree: true` or `gitWorktreeDir`",
+      "one run per independent item",
+    ]) {
+      expect(combinedGuidance).toContain(phrase);
+    }
+  });
+
+  test("documents worktree isolation semantics at the workflow tool boundary", () => {
+    expect(WorkflowParametersSchema).toMatchObject({
+      properties: {
+        cwd: {
+          description: "Starting directory only; does not provide worktree isolation.",
+        },
+        worktree: {
+          description: "Runner-managed temporary per-task worktree isolation for direct runs.",
+        },
+        gitWorktreeDir: {
+          description:
+            "Runner-managed reusable worktree; natural-language worktree instructions do not set this option.",
+        },
+      },
+    });
   });
 
   test("keeps workflow lifecycle, transcript, and artifact handoff guidance", () => {

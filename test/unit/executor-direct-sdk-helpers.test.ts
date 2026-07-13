@@ -96,6 +96,29 @@ describe("direct SDK helpers", () => {
         assert.equal(calls[0]?.thinkingLevel, "high");
     });
 
+    test("runTask rejects a blank reusable worktree before starting a session", async () => {
+        let creates = 0;
+        const details = await runTask(
+            { name: "scout", prompt: "inspect repo" },
+            { gitWorktreeDir: "   " },
+            {
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            creates += 1;
+                            return mockSession();
+                        },
+                    },
+                },
+                store: createStore(),
+            },
+        );
+
+        assert.equal(details.status, "failed");
+        assert.match(details.error ?? "", /gitWorktreeDir cannot be empty/);
+        assert.equal(creates, 0);
+    });
+
     test("runTask retries fallback models and returns attempt metadata", async () => {
         const calls: string[] = [];
         const details = await runTask(

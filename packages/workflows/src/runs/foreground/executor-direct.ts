@@ -13,6 +13,7 @@ import type { RunOpts } from "./executor-types.js";
 import { run } from "./executor-run.js";
 import {
   cleanupPreparedWorktrees,
+  createGitWorktreeSetupCache,
   collectWorktreeDiffs,
   defineDirectWorkflow,
   directModelRequestsFromChain,
@@ -23,8 +24,9 @@ import {
   prepareDirectWorktrees,
   validateDirectModels,
   workflowDetailsFromRun,
-  writeDirectOutput,
+  type GitWorktreeSetupCache,
 } from "./executor-direct-helpers.js";
+import { writeDirectOutput } from "./executor-direct-output.js";
 import {
   directTaskPrompt,
   directTaskToStep,
@@ -57,27 +59,32 @@ export async function runTask(
   } catch (err) {
     return failedDirectDetails("single", runId, 1, err, options);
   }
-  const prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single");
+  const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
+  const prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single", workflowInvocationCwd);
   const preparedTask = prepared.tasks[0]!;
+  const gitWorktreeSetupCache = createGitWorktreeSetupCache();
   const direct = defineDirectWorkflow("direct-task", async (ctx) => {
-    try {
-      const rawResult = await ctx.task(preparedTask.name, directTaskToStep(preparedTask));
-      const { result, artifact } = await writeDirectOutput(preparedTask, rawResult);
-      const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
-      return {
-        results: [result],
-        text: result.text,
-        artifacts: [
-          ...worktreeDiffs.artifacts,
-          ...(artifact === undefined ? [] : [artifact]),
-        ],
-        ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
-      };
-    } finally {
-      cleanupPreparedWorktrees(prepared);
-    }
+    const rawResult = await ctx.task(preparedTask.name, directTaskToStep(preparedTask));
+    const { result, artifact } = await writeDirectOutput(
+      preparedTask, rawResult, workflowInvocationCwd, prepared.outputIsolations?.[0], gitWorktreeSetupCache,
+    );
+    const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
+    return {
+      results: [result],
+      text: result.text,
+      artifacts: [
+        ...worktreeDiffs.artifacts,
+        ...(artifact === undefined ? [] : [artifact]),
+      ],
+      ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
+    };
   });
-  const runResult = await run(direct, {}, { ...runOptions, runId });
+  let runResult;
+  try {
+    runResult = await run(direct, {}, { ...runOptions, runId, gitWorktreeSetupCache });
+  } finally {
+    cleanupPreparedWorktrees(prepared);
+  }
   const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
   return workflowDetailsFromRun("single", runResult, results, options, validationWarnings);
 }
@@ -96,35 +103,40 @@ export async function runParallel(
   } catch (err) {
     return failedDirectDetails("parallel", runId, expanded.length, err, options);
   }
-  const prepared = prepareDirectWorktrees(expanded, options, runId, "parallel");
+  const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
+  const prepared = prepareDirectWorktrees(expanded, options, runId, "parallel", workflowInvocationCwd);
+  const gitWorktreeSetupCache = createGitWorktreeSetupCache();
   const direct = defineDirectWorkflow("direct-parallel", async (ctx) => {
-    try {
-      const steps = prepared.tasks.map((task) => directTaskToStep(task));
-      const rawResults = await ctx.parallel(steps, {
-        task: options.task,
-        concurrency: options.concurrency,
-        failFast: options.failFast,
-      });
-      const persisted = await Promise.all(
-        rawResults.map((result, index) => writeDirectOutput(prepared.tasks[index]!, result)),
-      );
-      const results = persisted.map((item) => item.result);
-      const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
-      const artifacts = [
-        ...worktreeDiffs.artifacts,
-        ...persisted.flatMap((item) => item.artifact === undefined ? [] : [item.artifact]),
-      ];
-      return {
-        results,
-        count: results.length,
-        artifacts,
-        ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
-      };
-    } finally {
-      cleanupPreparedWorktrees(prepared);
-    }
+    const steps = prepared.tasks.map((task) => directTaskToStep(task));
+    const rawResults = await ctx.parallel(steps, {
+      task: options.task,
+      concurrency: options.concurrency,
+      failFast: options.failFast,
+    });
+    const persisted = await Promise.all(
+      rawResults.map((result, index) => writeDirectOutput(
+        prepared.tasks[index]!, result, workflowInvocationCwd, prepared.outputIsolations?.[index], gitWorktreeSetupCache,
+      )),
+    );
+    const results = persisted.map((item) => item.result);
+    const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
+    const artifacts = [
+      ...worktreeDiffs.artifacts,
+      ...persisted.flatMap((item) => item.artifact === undefined ? [] : [item.artifact]),
+    ];
+    return {
+      results,
+      count: results.length,
+      artifacts,
+      ...(worktreeDiffs.summary === undefined ? {} : { worktreeSummary: worktreeDiffs.summary }),
+    };
   });
-  const runResult = await run(direct, {}, { ...runOptions, runId });
+  let runResult;
+  try {
+    runResult = await run(direct, {}, { ...runOptions, runId, gitWorktreeSetupCache });
+  } finally {
+    cleanupPreparedWorktrees(prepared);
+  }
   const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
   return workflowDetailsFromRun("parallel", runResult, results, options, validationWarnings);
 }
@@ -137,6 +149,8 @@ async function runDirectChainStep(
   prior: WorkflowTaskResult | readonly WorkflowTaskResult[] | undefined,
   options: WorkflowDirectOptions,
   runId: string,
+  workflowInvocationCwd: string,
+  gitWorktreeSetupCache: GitWorktreeSetupCache,
 ): Promise<{ results: WorkflowTaskResult[]; artifacts: WorkflowArtifact[] }> {
   if ("parallel" in step) {
     const stepOptions = {
@@ -146,7 +160,9 @@ async function runDirectChainStep(
       ...(step.baseBranch !== undefined ? { baseBranch: step.baseBranch } : {}),
     };
     const expanded = expandedParallelTasks(step.parallel.map((item) => directTaskWithDefaults(item, stepOptions)));
-    const prepared = prepareDirectWorktrees(expanded, stepOptions, `${runId}-s${index}`, `step-${index}`);
+    const prepared = prepareDirectWorktrees(
+      expanded, stepOptions, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd,
+    );
     try {
       const steps = prepared.tasks.map((item) =>
         directTaskToStep(item, directTaskPrompt(item) ?? "{previous}", item.previous ?? prior),
@@ -159,7 +175,10 @@ async function runDirectChainStep(
       } as WorkflowParallelOptions);
       const persisted = await Promise.all(
         rawResults.map((result, taskIndex) =>
-          writeDirectOutput({ ...prepared.tasks[taskIndex]!, chainDir: options.chainDir }, result),
+          writeDirectOutput(
+            { ...prepared.tasks[taskIndex]!, chainDir: options.chainDir }, result, workflowInvocationCwd,
+            prepared.outputIsolations?.[taskIndex], gitWorktreeSetupCache,
+          ),
         ),
       );
       const worktreeDiffs = collectWorktreeDiffs(prepared, stepOptions.artifacts !== false);
@@ -176,7 +195,9 @@ async function runDirectChainStep(
   }
 
   const prompt = directTaskPrompt(step) ?? (index === 0 ? "{task}" : "{previous}");
-  const prepared = prepareDirectWorktrees([directTaskWithDefaults(step, options)], options, `${runId}-s${index}`, `step-${index}`);
+  const prepared = prepareDirectWorktrees(
+    [directTaskWithDefaults(step, options)], options, `${runId}-s${index}`, `step-${index}`, workflowInvocationCwd,
+  );
   const preparedStep = prepared.tasks[0]!;
   try {
     const rawResult = await ctx.task(
@@ -186,7 +207,10 @@ async function runDirectChainStep(
         ...(typeof options.chainDir === "string" ? { chainDir: options.chainDir } : {}),
       } as WorkflowTaskOptions,
     );
-    const { result, artifact } = await writeDirectOutput({ ...preparedStep, chainDir: options.chainDir }, rawResult);
+    const { result, artifact } = await writeDirectOutput(
+      { ...preparedStep, chainDir: options.chainDir }, rawResult, workflowInvocationCwd,
+      prepared.outputIsolations?.[0], gitWorktreeSetupCache,
+    );
     const worktreeDiffs = collectWorktreeDiffs(prepared, options.artifacts !== false);
     return {
       results: [result],
@@ -215,19 +239,31 @@ export async function runChain(
   } catch (err) {
     return failedDirectDetails("chain", runId, chain.length, err, options);
   }
+  const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
+  const gitWorktreeSetupCache = createGitWorktreeSetupCache();
   const direct = defineDirectWorkflow("direct-chain", async (ctx) => {
     const results: WorkflowTaskResult[] = [];
     const artifacts: WorkflowArtifact[] = [];
     let prior: WorkflowTaskResult | readonly WorkflowTaskResult[] | undefined;
     for (let index = 0; index < chain.length; index += 1) {
-      const step = await runDirectChainStep(ctx, chain[index]!, index, options.task ?? "", prior, options, runId);
+      const step = await runDirectChainStep(
+        ctx,
+        chain[index]!,
+        index,
+        options.task ?? "",
+        prior,
+        options,
+        runId,
+        workflowInvocationCwd,
+        gitWorktreeSetupCache,
+      );
       results.push(...step.results);
       artifacts.push(...step.artifacts);
       prior = step.results.length === 1 ? step.results[0] : step.results;
     }
     return { results, count: results.length, artifacts };
   });
-  const runResult = await run(direct, {}, { ...runOptions, runId });
+  const runResult = await run(direct, {}, { ...runOptions, runId, gitWorktreeSetupCache });
   const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
   return workflowDetailsFromRun("chain", runResult, results, options, validationWarnings);
 }

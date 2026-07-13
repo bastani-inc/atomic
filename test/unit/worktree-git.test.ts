@@ -58,15 +58,23 @@ describe("workflow reusable git worktree git runner", () => {
 
   test("retries transient rev-parse timeouts before creating a missing worktree", () => {
     const { root, repo, sourceCwd } = createRepoShape();
-    const calls: Array<{ readonly cwd: string; readonly args: readonly string[] }> = [];
-    let showTopLevelCalls = 0;
+    const worktree = join(root, "transient-wt");
+    const commonDir = join(root, "common.git");
+    mkdirSync(commonDir);
+    let sourceTopLevelCalls = 0;
     const runner: GitRunner = (cwd, args) => {
-      calls.push({ cwd, args: [...args] });
       if (isArgs(args, ["rev-parse", "--show-toplevel"])) {
-        showTopLevelCalls += 1;
-        return showTopLevelCalls === 1 ? timedOutGit() : successfulGit(`${repo}\n`);
+        if (cwd === sourceCwd) {
+          sourceTopLevelCalls += 1;
+          return sourceTopLevelCalls === 1 ? timedOutGit() : successfulGit(`${repo}\n`);
+        }
+        return successfulGit(`${worktree}\n`);
       }
-      if (isArgs(args.slice(0, 3), ["worktree", "add", "--detach"])) return successfulGit();
+      if (isArgs(args, ["rev-parse", "--git-common-dir"])) return successfulGit(`${commonDir}\n`);
+      if (isArgs(args.slice(0, 3), ["worktree", "add", "--detach"])) {
+        mkdirSync(worktree);
+        return successfulGit();
+      }
       return failingGit(args);
     };
 
@@ -81,28 +89,36 @@ describe("workflow reusable git worktree git runner", () => {
       assert.equal(setup.repositoryRoot, repo);
       assert.equal(setup.worktreeRoot, join(root, "transient-wt"));
       assert.equal(setup.cwd, join(root, "transient-wt", "packages", "api"));
-      assert.equal(showTopLevelCalls, 2);
-      assert.deepEqual(calls.map((call) => call.args), [
-        ["rev-parse", "--show-toplevel"],
-        ["rev-parse", "--show-toplevel"],
-        ["worktree", "add", "--detach", join(root, "transient-wt"), "main"],
-      ]);
+      assert.equal(sourceTopLevelCalls, 2);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("caches repeated workflow input worktree setup within a run", () => {
+  test("caches setup and revalidates checkout identity within a run", () => {
     const { root, repo, sourceCwd } = createRepoShape();
-    let showTopLevelCalls = 0;
+    const worktree = join(root, "cached-wt");
+    const commonDir = join(root, "common.git");
+    const worktreeGitDir = join(root, "cached-wt.git");
+    mkdirSync(commonDir);
+    mkdirSync(worktreeGitDir);
     let worktreeAddCalls = 0;
-    const runner: GitRunner = (_cwd, args) => {
+    let identityProbeCalls = 0;
+    const runner: GitRunner = (cwd, args) => {
       if (isArgs(args, ["rev-parse", "--show-toplevel"])) {
-        showTopLevelCalls += 1;
-        return successfulGit(`${repo}\n`);
+        return successfulGit(`${cwd === sourceCwd ? repo : worktree}\n`);
+      }
+      if (isArgs(args, ["rev-parse", "--git-common-dir"])) {
+        identityProbeCalls += 1;
+        return successfulGit(`${commonDir}\n`);
+      }
+      if (isArgs(args, ["rev-parse", "--absolute-git-dir"])) {
+        identityProbeCalls += 1;
+        return successfulGit(`${worktreeGitDir}\n`);
       }
       if (isArgs(args.slice(0, 3), ["worktree", "add", "--detach"])) {
         worktreeAddCalls += 1;
+        mkdirSync(worktree);
         return successfulGit();
       }
       return failingGit(args);
@@ -116,8 +132,8 @@ describe("workflow reusable git worktree git runner", () => {
         assert.equal(setup.cwd, join(root, "cached-wt", "packages", "api"));
         assert.equal(cache.get(options), setup);
       });
-      assert.equal(showTopLevelCalls, 1);
       assert.equal(worktreeAddCalls, 1);
+      assert.ok(identityProbeCalls > 0, "cache reuse should probe the selected checkout identity");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
