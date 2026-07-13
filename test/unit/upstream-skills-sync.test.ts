@@ -21,20 +21,11 @@ function assertRegularTree(path: string): void {
   }
 }
 
-function treeFiles(base: string, current = base): string[] {
-  return readdirSync(current, { withFileTypes: true }).flatMap((entry) => {
-    const child = join(current, entry.name);
-    return entry.isDirectory() ? treeFiles(base, child) : [child.slice(base.length + 1).replaceAll("\\", "/")];
-  });
-}
 
-function upstreamFiles(base: string): string[] {
-  return JSON.parse(readFileSync(join(base, "UPSTREAM_FILES.json"), "utf8")) as string[];
-}
-
-function assertCompleteTree(base: string): void {
-  const additions = new Set(["LICENSE", "UPSTREAM.md", "UPSTREAM_FILES.json"]);
-  assert.deepEqual(treeFiles(base).filter((path) => !additions.has(path)).sort(), upstreamFiles(base).sort());
+function assertNoScaffolding(base: string): void {
+  for (const path of ["LICENSE", "UPSTREAM.md", "UPSTREAM_FILES.json"]) {
+    assert.equal(existsSync(join(base, path)), false, `unexpected Atomic scaffolding: ${path}`);
+  }
 }
 
 function assertPacked(packageDir: string, skillPaths: readonly string[]): void {
@@ -48,7 +39,7 @@ function assertFiles(base: string, paths: readonly string[]): void {
   for (const path of paths) assert.ok(existsSync(join(base, path)), `missing bundled resource: ${path}`);
 }
 
-describe("pinned upstream skill trees", () => {
+describe("synced upstream skill trees", () => {
   test("discovers the renamed subagent skills and removes the old name", () => {
     clearSkillCache();
     const result = resolveSkills(["playwright-cli", "liteparse", "effective-liteparse"], root);
@@ -74,29 +65,26 @@ describe("pinned upstream skill trees", () => {
     }
   });
 
-  test("bundles complete upstream inventories, provenance, licenses, and supporting resources", () => {
+  test("bundles meaningful upstream skill content without Atomic scaffolding", () => {
     assertFiles(join(subagentSkills, "playwright-cli"), [
-      "LICENSE", "UPSTREAM.md", "references/element-attributes.md", "references/playwright-tests.md",
+      "SKILL.md", "references/element-attributes.md", "references/playwright-tests.md",
       "references/request-mocking.md", "references/running-code.md", "references/session-management.md",
       "references/storage-state.md", "references/test-generation.md", "references/tracing.md", "references/video-recording.md",
     ]);
-    assertFiles(join(subagentSkills, "liteparse"), ["LICENSE", "UPSTREAM.md", "scripts/search.py"]);
+    assertFiles(join(subagentSkills, "liteparse"), ["SKILL.md", "scripts/search.py"]);
     assertFiles(join(workflowSkills, "impeccable"), [
-      "LICENSE", "UPSTREAM.md", "agents/openai.yaml", "reference/live.md", "reference/hooks.md",
+      "SKILL.md", "agents/openai.yaml", "reference/live.md", "reference/hooks.md",
       "scripts/command-metadata.json", "scripts/lib/provider.mjs", "scripts/detector/cli/main.mjs",
       "scripts/live/browser-script-parts.mjs", "scripts/modern-screenshot.umd.js",
     ]);
-    assert.match(readFileSync(join(subagentSkills, "playwright-cli/UPSTREAM.md"), "utf8"), /793cfb32572733cbcb401e6f28d05a7a914ce408/);
-    assert.match(readFileSync(join(subagentSkills, "liteparse/UPSTREAM.md"), "utf8"), /2dcef7c62417bd2ec4671fce4621bb1e8cce48d0/);
-    assert.match(readFileSync(join(workflowSkills, "impeccable/UPSTREAM.md"), "utf8"), /630fc2682a5bd39b25a8e61f74b6b3f14f2b1e21/);
-    assertCompleteTree(join(subagentSkills, "playwright-cli"));
-    assertCompleteTree(join(subagentSkills, "liteparse"));
-    assertCompleteTree(join(workflowSkills, "impeccable"));
+    assertNoScaffolding(join(subagentSkills, "playwright-cli"));
+    assertNoScaffolding(join(subagentSkills, "liteparse"));
+    assertNoScaffolding(join(workflowSkills, "impeccable"));
     assertPacked(join(root, "packages/subagents"), [
-      "skills/playwright-cli/UPSTREAM_FILES.json", "skills/liteparse/scripts/search.py",
+      "skills/playwright-cli/references/test-generation.md", "skills/liteparse/scripts/search.py",
     ]);
     assertPacked(join(root, "packages/workflows"), [
-      "skills/impeccable/UPSTREAM_FILES.json", "skills/impeccable/scripts/lib/provider.mjs",
+      "skills/impeccable/scripts/live/svelte-component.mjs", "skills/impeccable/scripts/lib/provider.mjs",
     ]);
   });
 
