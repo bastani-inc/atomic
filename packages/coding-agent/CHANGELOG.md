@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection, while rows missing checkpoints or a usable retained conversation are treated as stale and excluded. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
+- Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing globally newest-first, deduplicated picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection; rows need checkpoints and at least one strictly valid retained conversation, invalid per-stage transcript paths cannot open chat, repeated inspection refreshes changed authoritative chat handles, and selector mount failures close safely. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
 
 ## [0.9.8] - 2026-07-12
 

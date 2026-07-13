@@ -78,6 +78,16 @@ function durableWorkflowSession(
   };
 }
 
+function compareResumeItemsByRecency(
+  left: WorkflowResumeSelectorItem,
+  right: WorkflowResumeSelectorItem,
+): number {
+  const recencyDifference = right.session.modified.getTime() - left.session.modified.getTime();
+  if (recencyDifference !== 0) return recencyDifference;
+  const idDifference = left.session.id.localeCompare(right.session.id);
+  return idDifference !== 0 ? idDifference : left.session.path.localeCompare(right.session.path);
+}
+
 export function workflowResumeSelectorItems(
   liveRuns: readonly RunSnapshot[],
   durableEntries: readonly ResumableWorkflowEntry[],
@@ -93,7 +103,7 @@ export function workflowResumeSelectorItems(
     ...completedEntries
       .filter((entry) => !liveIds.has(entry.workflowId) && !durableIds.has(entry.workflowId))
       .map((entry) => durableWorkflowSession(entry, "completed")),
-  ];
+  ].sort(compareResumeItemsByRecency);
 }
 
 export function openWorkflowResumeSelector(
@@ -119,8 +129,11 @@ export function openWorkflowResumeSelector(
     const settle = (result: WorkflowResumeSelectorResult, done?: (result: undefined) => void): void => {
       if (settled) return;
       settled = true;
-      resolve(result);
-      done?.(undefined);
+      try {
+        done?.(undefined);
+      } finally {
+        resolve(result);
+      }
     };
 
     const factory = (
@@ -157,6 +170,12 @@ export function openWorkflowResumeSelector(
       };
     };
 
-    void custom(factory, { overlay: false });
+    try {
+      void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
+        settle({ kind: "close" });
+      });
+    } catch {
+      settle({ kind: "close" });
+    }
   });
 }

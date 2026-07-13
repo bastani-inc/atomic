@@ -86,13 +86,8 @@ export function completedWorkflowSnapshot(
   if (handle === undefined || handle.status !== "completed") return undefined;
   const checkpoints = backend.listCheckpoints(entry.workflowId);
   if (checkpoints.length === 0) return undefined;
-  const stages = stageSnapshotsFromCheckpoints(checkpoints, handle.updatedAt);
-  const retainedTranscripts = stages.flatMap((stage) =>
-    stage.sessionFile === undefined ? [] : [stage.sessionFile]
-  );
-  if (retainedTranscripts.length === 0 || !retainedTranscripts.every(isReopenableSessionTranscript)) {
-    return undefined;
-  }
+  const stages = stageSnapshotsFromCheckpoints(checkpoints, handle.updatedAt).map(validatedStageTranscript);
+  if (!stages.some((stage) => stage.sessionFile !== undefined)) return undefined;
 
   return {
     id: handle.workflowId,
@@ -107,34 +102,56 @@ export function completedWorkflowSnapshot(
   };
 }
 
+function validatedStageTranscript(stage: StageSnapshot): StageSnapshot {
+  if (stage.sessionFile === undefined || isReopenableSessionTranscript(stage.sessionFile)) return stage;
+  const { sessionFile, ...withoutSessionFile } = stage;
+  void sessionFile;
+  return withoutSessionFile;
+}
+
 function isReopenableSessionTranscript(path: string): boolean {
   try {
     const stats = statSync(path);
     if (!stats.isFile() || stats.size === 0) return false;
     const lines = readFileSync(path, "utf8").split("\n").filter((line) => line.trim().length > 0);
     if (lines.length < 2) return false;
-    const entries = lines.flatMap((line): SessionTranscriptEntry[] => {
-      try {
-        const parsed = JSON.parse(line) as object;
-        return typeof parsed === "object" && parsed !== null ? [parsed as SessionTranscriptEntry] : [];
-      } catch {
-        return [];
-      }
-    });
+    const entries: SessionTranscriptEntry[] = [];
+    for (const line of lines) {
+      const parsed = JSON.parse(line) as object;
+      if (typeof parsed !== "object" || parsed === null) return false;
+      entries.push(parsed as SessionTranscriptEntry);
+    }
     const header = entries[0];
     return header?.type === "session" && typeof header.id === "string" && entries.some(isUsableContextMessage);
   } catch {
     return false;
   }
 }
+
 function isUsableContextMessage(entry: SessionTranscriptEntry): boolean {
   return entry.type === "message"
     && typeof entry.id === "string"
     && typeof entry.timestamp === "string"
     && typeof entry.message?.role === "string"
-    && entry.message.content !== undefined;
+    && hasUsableMessageContent(entry.message.content);
 }
 
+function hasUsableMessageContent(content: string | object | undefined): boolean {
+  if (typeof content === "string") return content.trim().length > 0;
+  return Array.isArray(content) && content.some(hasUsableContentBlock);
+}
+
+function hasUsableContentBlock(block: object): boolean {
+  if (typeof block !== "object" || block === null) return false;
+  const contentBlock = block as {
+    readonly text?: string;
+    readonly thinking?: string;
+    readonly data?: string;
+    readonly name?: string;
+  };
+  return [contentBlock.text, contentBlock.thinking, contentBlock.data, contentBlock.name]
+    .some((value) => typeof value === "string" && value.trim().length > 0);
+}
 
 function stageSnapshotsFromCheckpoints(
   checkpoints: readonly DurableCheckpoint[],

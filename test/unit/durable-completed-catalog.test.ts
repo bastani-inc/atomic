@@ -137,4 +137,81 @@ describe("completed durable catalog", () => {
     assert.deepEqual(listOpenableCompletedWorkflows(backend).map((entry) => entry.workflowId), ["merged-stage"]);
     assert.equal(completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!)?.stages[0]?.sessionFile, validTranscript);
   });
+
+  test("keeps a completed workflow when at least one stage has a usable transcript", () => {
+    const backend = new InMemoryDurableBackend();
+    const validTranscript = join(tempDir, "usable.jsonl");
+    writeSessionTranscript(validTranscript, "usable-session");
+    registerCompleted(backend, "partially-retained");
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "partially-retained", checkpointId: "stage:1", name: "retained",
+      replayKey: "stage:retained:1", sessionFile: validTranscript, completedAt: 20,
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "partially-retained", checkpointId: "stage:2", name: "stale",
+      replayKey: "stage:stale:1", sessionFile: join(tempDir, "missing.jsonl"), completedAt: 21,
+    });
+
+    const snapshot = completedWorkflowSnapshot(backend, listCompletedFromBackend(backend)[0]!);
+    assert.deepEqual(listOpenableCompletedWorkflows(backend).map((item) => item.workflowId), ["partially-retained"]);
+    assert.equal(snapshot?.stages[0]?.sessionFile, validTranscript);
+    assert.equal(snapshot?.stages[1]?.sessionFile, undefined);
+  });
+
+  test("rejects partially malformed and context-empty transcripts", () => {
+    const backend = new InMemoryDurableBackend();
+    const malformed = join(tempDir, "partially-malformed.jsonl");
+    writeFileSync(malformed, [
+      JSON.stringify({ type: "session", id: "partially-malformed" }),
+      JSON.stringify({ type: "message", id: "valid", timestamp: new Date().toISOString(), message: { role: "user", content: "context" } }),
+      "not-json",
+    ].join("\n"));
+    const emptyContent = [
+      { id: "blank-string", content: "   " },
+      { id: "empty-array", content: [] },
+      { id: "empty-object", content: {} },
+      { id: "empty-block", content: [{}] },
+      { id: "blank-text-block", content: [{ type: "text", text: "" }] },
+    ] as const;
+    registerCompleted(backend, "partially-malformed");
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "partially-malformed", checkpointId: "stage:1", name: "final",
+      replayKey: "stage:final:1", sessionFile: malformed, completedAt: 20,
+    });
+    for (const item of emptyContent) {
+      const path = join(tempDir, `${item.id}.jsonl`);
+      writeFileSync(path, [
+        JSON.stringify({ type: "session", id: item.id }),
+        JSON.stringify({ type: "message", id: `${item.id}-message`, timestamp: new Date().toISOString(), message: { role: "user", content: item.content } }),
+      ].join("\n"));
+      registerCompleted(backend, item.id);
+      backend.recordCheckpoint({
+        kind: "stage", workflowId: item.id, checkpointId: "stage:1", name: "final",
+        replayKey: "stage:final:1", sessionFile: path, completedAt: 20,
+      });
+    }
+
+    assert.deepEqual(listOpenableCompletedWorkflows(backend), []);
+  });
+
+  test("accepts a retained transcript with a meaningful structured content block", () => {
+    const backend = new InMemoryDurableBackend();
+    const path = join(tempDir, "structured-context.jsonl");
+    writeFileSync(path, [
+      JSON.stringify({ type: "session", id: "structured-context" }),
+      JSON.stringify({
+        type: "message",
+        id: "structured-context-message",
+        timestamp: new Date().toISOString(),
+        message: { role: "user", content: [{ type: "text", text: "retained context" }] },
+      }),
+    ].join("\n"));
+    registerCompleted(backend, "structured-context");
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "structured-context", checkpointId: "stage:1", name: "final",
+      replayKey: "stage:final:1", sessionFile: path, completedAt: 20,
+    });
+
+    assert.deepEqual(listOpenableCompletedWorkflows(backend).map((item) => item.workflowId), ["structured-context"]);
+  });
 });

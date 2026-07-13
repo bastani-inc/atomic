@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SessionManager } from "../../packages/coding-agent/src/core/session-manager.js";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { openCompletedDurableWorkflow } from "../../packages/workflows/src/durable/completed-inspection.js";
 import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
@@ -14,10 +15,17 @@ let tempDir = "";
 beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), "atomic-completed-inspection-")); });
 afterEach(() => { rmSync(tempDir, { recursive: true, force: true }); });
 
-function retainedSession(name: string): string {
+function retainedSession(name: string, internal = false): string {
   const path = join(tempDir, `${name}.jsonl`);
   writeFileSync(path, [
-    JSON.stringify({ type: "session", version: 3, id: `${name}-session`, timestamp: new Date().toISOString(), cwd: tempDir }),
+    JSON.stringify({
+      type: "session",
+      version: 3,
+      id: `${name}-session`,
+      timestamp: new Date().toISOString(),
+      cwd: tempDir,
+      ...(internal ? { internal: true, workflow: { runId: name, stageId: "final", stageName: "final" } } : {}),
+    }),
     JSON.stringify({ type: "message", id: `${name}-message`, parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: "Original workflow request", timestamp: Date.now() } }),
   ].join("\n") + "\n");
   return path;
@@ -120,5 +128,91 @@ describe("completed workflow inspection", () => {
     assert.equal(store.runs()[0]?.name, "durable-name");
     assert.equal(store.runs()[0]?.stages[0]?.name, "durable-stage");
     assert.equal(store.runs()[0]?.stages[0]?.sessionFile, sessionFile);
+  });
+
+  test("refreshes a retained chat handle when authoritative transcript detail changes", () => {
+    const backend = new InMemoryDurableBackend();
+    const store = createStore();
+    const registry = createStageControlRegistry();
+    const firstSessionFile = retainedSession("first-authoritative");
+    const secondSessionFile = retainedSession("second-authoritative");
+    backend.registerWorkflow({
+      workflowId: "refresh-chat", name: "completed-flow", inputs: {}, createdAt: 1, status: "completed",
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "refresh-chat", checkpointId: "stage:1", name: "final",
+      replayKey: "stage:final:1", sessionFile: firstSessionFile, completedAt: 2,
+    });
+    const deps = {
+      durableBackend: backend,
+      store,
+      stageControlRegistry: registry,
+      adapters: { agentSession: { async create() { return mockSession(); } } },
+    };
+
+    assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
+    const firstHandle = registry.get("refresh-chat", "completed-stage-1");
+    assert.equal(firstHandle?.sessionFile, firstSessionFile);
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "refresh-chat", checkpointId: "stage:2", name: "final",
+      replayKey: "stage:final:1", sessionFile: secondSessionFile, completedAt: 3,
+    });
+
+    assert.equal(openCompletedDurableWorkflow("refresh-chat", deps).ok, true);
+    assert.equal(firstHandle?.isDisposed, true);
+    assert.equal(registry.get("refresh-chat", "completed-stage-1")?.sessionFile, secondSessionFile);
+  });
+
+  test("removes a retained chat handle when its transcript becomes invalid", () => {
+    const backend = new InMemoryDurableBackend();
+    const store = createStore();
+    const registry = createStageControlRegistry();
+    const invalidatedSessionFile = retainedSession("invalidated-stage");
+    const retainedSessionFile = retainedSession("still-retained-stage");
+    backend.registerWorkflow({
+      workflowId: "invalidate-chat", name: "completed-flow", inputs: {}, createdAt: 1, status: "completed",
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "invalidate-chat", checkpointId: "stage:1", name: "first",
+      replayKey: "stage:first:1", sessionFile: invalidatedSessionFile, completedAt: 2,
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "invalidate-chat", checkpointId: "stage:2", name: "second",
+      replayKey: "stage:second:1", sessionFile: retainedSessionFile, completedAt: 3,
+    });
+    const deps = {
+      durableBackend: backend,
+      store,
+      stageControlRegistry: registry,
+      adapters: { agentSession: { async create() { return mockSession(); } } },
+    };
+
+    assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
+    const invalidatedHandle = registry.get("invalidate-chat", "completed-stage-1");
+    assert.ok(invalidatedHandle);
+    rmSync(invalidatedSessionFile);
+
+    assert.equal(openCompletedDurableWorkflow("invalidate-chat", deps).ok, true);
+    assert.equal(invalidatedHandle.isDisposed, true);
+    assert.equal(registry.get("invalidate-chat", "completed-stage-1"), undefined);
+    assert.equal(registry.get("invalidate-chat", "completed-stage-2")?.sessionFile, retainedSessionFile);
+  });
+
+  test("opens a retained internal stage transcript without exposing it in ordinary history", async () => {
+    const backend = new InMemoryDurableBackend();
+    const store = createStore();
+    const internalSessionFile = retainedSession("internal-completed", true);
+    retainedSession("regular-history");
+    backend.registerWorkflow({
+      workflowId: "internal-completed", name: "completed-flow", inputs: {}, createdAt: 1, status: "completed",
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: "internal-completed", checkpointId: "stage:1", name: "final",
+      replayKey: "stage:final:1", sessionFile: internalSessionFile, completedAt: 2,
+    });
+
+    assert.equal(openCompletedDurableWorkflow("internal-completed", { durableBackend: backend, store }).ok, true);
+    assert.equal(store.runs()[0]?.stages[0]?.sessionFile, internalSessionFile);
+    assert.deepEqual((await SessionManager.list(tempDir, tempDir)).map((session) => session.id), ["regular-history-session"]);
   });
 });

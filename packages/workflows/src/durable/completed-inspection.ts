@@ -27,6 +27,16 @@ export interface OpenCompletedDurableDeps {
   readonly defaultSessionDir?: string;
 }
 
+interface CompletedChatRegistration {
+  readonly handle: StageControlHandle;
+  readonly unregister: () => void;
+}
+
+const completedChatRegistrations = new WeakMap<
+  StageControlRegistry,
+  Map<string, CompletedChatRegistration>
+>();
+
 /**
  * Open a completed durable workflow as an immutable run snapshot. The only
  * mutable surface is a lazily reopened stage chat, which appends follow-up
@@ -85,12 +95,53 @@ function registerCompletedChatHandles(
 ): void {
   if (deps.adapters?.agentSession === undefined) return;
   const registry = deps.stageControlRegistry ?? defaultStageControlRegistry;
+  const registrations = completedChatRegistrations.get(registry) ?? new Map();
+  completedChatRegistrations.set(registry, registrations);
+  const desiredKeys = new Set(
+    snapshot.stages
+      .filter((stage) => stage.sessionFile !== undefined)
+      .map((stage) => completedChatKey(snapshot.id, stage.id)),
+  );
+  for (const [key, registration] of registrations) {
+    if (!key.startsWith(`${snapshot.id}:`) || desiredKeys.has(key)) continue;
+    removeCompletedChatRegistration(registrations, key, registration);
+  }
   for (const stage of snapshot.stages) {
-    if (stage.sessionFile === undefined || registry.get(snapshot.id, stage.id) !== undefined) continue;
+    if (stage.sessionFile === undefined) continue;
+    const key = completedChatKey(snapshot.id, stage.id);
+    const registration = registrations.get(key);
+    const existing = registry.get(snapshot.id, stage.id);
+    if (existing?.sessionFile === stage.sessionFile && !existing.isDisposed) continue;
+    if (registration !== undefined) {
+      removeCompletedChatRegistration(registrations, key, registration);
+    } else if (existing !== undefined) {
+      disposeCompletedChatHandle(existing);
+    }
     const handle = createCompletedChatHandle(snapshot, stage, stage.sessionFile, deps.adapters, deps.cwd, deps.defaultSessionDir);
-    registry.register(handle);
+    const unregister = registry.register(handle);
+    registrations.set(key, { handle, unregister });
     registry.detachControl(snapshot.id, stage.id, handle);
   }
+}
+
+function completedChatKey(runId: string, stageId: string): string {
+  return `${runId}:${stageId}`;
+}
+
+function removeCompletedChatRegistration(
+  registrations: Map<string, CompletedChatRegistration>,
+  key: string,
+  registration: CompletedChatRegistration,
+): void {
+  registration.unregister();
+  registrations.delete(key);
+  disposeCompletedChatHandle(registration.handle);
+}
+
+function disposeCompletedChatHandle(handle: StageControlHandle): void {
+  void Promise.resolve(handle.dispose?.()).catch((error: Error) => {
+    console.warn("atomic-workflows: completed chat handle dispose failed", error);
+  });
 }
 
 function createCompletedChatHandle(
