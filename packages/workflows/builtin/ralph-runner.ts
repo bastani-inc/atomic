@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import type { WorkflowRunContext, WorkflowTaskResult } from "../src/shared/types.js";
 import {
   ACCEPTANCE_MATRIX_CONTRACT,
+  CONTRACT_FIDELITY_AUDIT,
   E2E_VERIFICATION_GUIDANCE,
   FINDINGS_CONSOLIDATION_CONTRACT,
   LITERAL_OBJECTIVE_CONTRACT,
@@ -129,6 +130,7 @@ export async function runRalphWorkflow(
         ["acceptance_criteria", acceptanceCriteria],
         ["literal_contract", LITERAL_OBJECTIVE_CONTRACT],
         ["acceptance_matrix", ACCEPTANCE_MATRIX_CONTRACT],
+        ["divergence_audit", CONTRACT_FIDELITY_AUDIT],
         ["findings_batch", FINDINGS_CONSOLIDATION_CONTRACT],
         ["regression_evidence", REGRESSION_EVIDENCE_CONTRACT],
         workflowCwdContext,
