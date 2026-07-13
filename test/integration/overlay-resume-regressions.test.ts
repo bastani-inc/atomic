@@ -91,6 +91,43 @@ describe("/workflow resume — durable regression coverage", () => {
     assert.doesNotMatch(messages.join("\n"), /Snapshot available/);
   });
 
+  test("restored-running resume refreshes a stale DBOS external-owner marker then proceeds", async () => {
+    const runId = "dbos-stale-external-owner";
+    singletonStore.recordRunStart({ id: runId, name: "dbos-wf", inputs: {}, status: "running", stages: [], startedAt: 1 });
+    let refreshed = false;
+    let resumedTarget: string | undefined;
+    const runtime = {
+      // A DBOS observer cached this workflow as externally owned; the real
+      // owner has since exited. The command must refresh remote ownership
+      // before the sync active check, which clears the stale marker.
+      refreshDurableWorkflowExecution: async (target: string) => { if (target === runId) refreshed = true; },
+      isDurableWorkflowExecutionActive: (target: string) => target === runId && !refreshed,
+      isDurableRootResumable: (target: string) => target === runId,
+      prepareDurableResumable: async () => [],
+      resumeDurableWorkflow: (target: string) => {
+        resumedTarget = target;
+        return { ok: true as const, runId: target, workflowId: target, name: "dbos-wf", message: `Resumed durable ${target}` };
+      },
+      registry: { has: () => true },
+    } as unknown as ExtensionRuntime;
+    const messages: string[] = [];
+
+    await handleRunControlCommand("resume", [runId], { hasUI: false, ui: { notify: () => undefined } }, {
+      info: (message) => messages.push(message),
+      error: (message) => messages.push(message),
+    }, {
+      pi: buildMockPi().pi,
+      overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+      getPersistence: () => undefined,
+      runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => undefined,
+    });
+
+    assert.equal(refreshed, true);
+    assert.equal(resumedTarget, runId);
+    assert.doesNotMatch(messages.join("\n"), /already running/);
+  });
+
   test("headless no-arg durable resume prints catalog without awaiting no-op custom UI", async () => {
     const runtime = {
       prepareDurableResumable: async () => [{
