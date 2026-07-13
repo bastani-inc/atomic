@@ -477,4 +477,6 @@ export interface WorkflowDefinition<
   TRunInputs extends WorkflowInputValues = TInputs,
 > extends Omit<AuthoringContract.WorkflowDefinition<TInputs, TOutputs, TRunInputs, WorkflowDefinitionBrand>, "run">, WorkflowDefinitionBrand {
   readonly run: WorkflowRunFn<TInputs, TOutputs>;
+  /** Internal authored run source used only to fingerprint durable compatibility. */
+  readonly definitionSource?: string;
 }

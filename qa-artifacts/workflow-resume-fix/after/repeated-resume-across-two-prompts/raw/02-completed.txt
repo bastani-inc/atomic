@@ -1,0 +1,59 @@
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  workflow-resume-e2e-fixture                                                                                                                                                                         ✓ 1
+ ╰──────────────╯
+
+
+
+                                                                                                ╭─────── input ────────╮
+                                                                                                │          0s          │
+                                                                                                │      ✓ complete      │
+                                                                                                │         root         │
+                                                                                                ╰──────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │                                                                                                                       MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctrl+d detach  ·  q quit
+ ╰───────╯

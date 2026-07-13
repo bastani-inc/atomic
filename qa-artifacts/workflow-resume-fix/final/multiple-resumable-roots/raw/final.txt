@@ -1,0 +1,19 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+   STAGE  workflow-resume-e2e-fixture / input
+────────────────────────────────────────────────────────────────────────────────
+╭ AWAITING INPUT ──────────────────────────────────────────────────────────────╮
+│                                                                              │
+│  E2E first answer for final-multi-A                                          │
+│                                                                              │
+│  response                                                                    │
+│  ──────────────────────────────────────────────────────────────────────────  │
+│  final-multi-A-answer                                                        │
+│  ──────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│  enter Submit · ctrl+c Skip             ctrl+d graph · ctrl+t copy mode off  │
+╰──────────────────────────────────────────────────────────────────────────────╯

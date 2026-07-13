@@ -1,0 +1,30 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░    /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+                                                                                                                                                                                             $0.000 (sub) • 0.0%/372k (auto)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Folder)                                                                                                                                          ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (on)
+
+>
+
+› workflow-resume-e2e-fixture  paused  1 checkpoints  0 prompts                                                                                                  workflow-durable:f4abdc9a-84f6-4c3b-8adb-1701a4b1f544 1 now
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

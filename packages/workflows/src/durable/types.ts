@@ -26,6 +26,8 @@ export interface DurableWorkflowHandle {
   readonly name: string;
   /** Workflow inputs (JSON-serializable). */
   readonly inputs: Readonly<WorkflowSerializableObject>;
+  /** Hash of the workflow definition used to create this durable progress. */
+  readonly definitionHash?: string;
   /** Creation timestamp (ms since epoch). */
   readonly createdAt: number;
   /** Last update timestamp (ms since epoch). */
@@ -158,6 +160,7 @@ export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSeriali
 export interface DurableCheckpointEntry {
   readonly type: "workflow.durable.checkpoint";
   readonly workflowId: string;
+  readonly definitionHash?: string;
   readonly name: string;
   readonly inputs: WorkflowSerializableObject;
   readonly status: DurableWorkflowStatus;
@@ -181,6 +184,7 @@ export interface ResumableWorkflowEntry {
   readonly workflowId: string;
   readonly name: string;
   readonly inputs?: WorkflowSerializableObject;
+  readonly definitionHash?: string;
   readonly status: DurableWorkflowStatus;
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;

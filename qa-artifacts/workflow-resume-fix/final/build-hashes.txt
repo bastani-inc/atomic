@@ -1,0 +1,3 @@
+21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf  qa-artifacts/workflow-resume-fix/final/final-source-files.sha256
+552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f  packages/coding-agent/dist-dev/cli.js
+ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf  qa-artifacts/workflow-resume-fix/final/corrected-workflow-resume-e2e-fixture.ts

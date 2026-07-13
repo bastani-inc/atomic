@@ -127,11 +127,12 @@ describe("persistDurableCacheEntry", () => {
         return "entry-id";
       },
     };
-    const entry = makeEntry("wf-test", "test-workflow", "running", Date.now());
+    const entry = { ...makeEntry("wf-test", "test-workflow", "running", Date.now()), definitionHash: "h-definition-v1" };
     persistDurableCacheEntry(persistence, entry);
     assert.equal(appended.length, 1);
     assert.equal(appended[0]!.type, "workflow.durable.checkpoint");
     assert.equal(appended[0]!.payload["workflowId"], "wf-test");
+    assert.equal(appended[0]!.payload["definitionHash"], entry.definitionHash);
   });
 
   test("no-ops when persistence port lacks appendEntry", () => {

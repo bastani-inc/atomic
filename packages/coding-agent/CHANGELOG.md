@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed cross-session `/workflow resume` so exact `--session` restoration resumes the authoritative paused durable root instead of opening an ended snapshot, heartbeat-backed file and DBOS execution leases hide and refuse workflows still active in another Atomic process while recovering same-host hard crashes and malformed, migrated-host, or reused-PID stale ownership, stale write locks recover after interrupted owner publication, changed workflow definitions are refused before stage execution rather than reinterpreting persisted checkpoints, and multiple resumable roots have deterministic newest-first ordering.
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed

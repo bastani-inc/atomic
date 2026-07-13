@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-rapid-resu-13698.sock send-keys -t burst:0.0 Enter
+tmux -S /tmp/atomic-final-rapid-resu-13698.sock send-keys -t burst:0.0 final-rapid-second Enter
+tmux -S /tmp/atomic-final-rapid-resu-13698.sock kill-server; rm -f /tmp/atomic-final-rapid-resu-13698.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/rapid-resume-command-burst/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

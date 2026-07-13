@@ -21,7 +21,7 @@
  * cross-ref: issue #1498 — DBOS integration behind a backend seam.
  */
 
-import type { WorkflowSerializableValue } from "../shared/types.js";
+import type { WorkflowDefinition, WorkflowSerializableValue } from "../shared/types.js";
 import { createHash } from "node:crypto";
 import type {
   DurableCheckpoint,
@@ -106,6 +106,18 @@ export interface DurableWorkflowBackend {
   /** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
 
+  /** Atomically claim ownership before executing a persistent workflow. */
+  claimWorkflowExecution?(workflowId: string): boolean;
+
+  /** Release execution ownership when setup aborts before durable registration. */
+  releaseWorkflowExecution?(workflowId: string): void;
+
+  /** Report whether another live process currently owns workflow execution. */
+  isWorkflowExecutionActive?(workflowId: string): boolean;
+
+  /** List handles currently protected by a live execution owner for diagnostics. */
+  listActiveWorkflowHandles?(): readonly DurableWorkflowHandle[];
+
   /**
    * List resumable workflows (not completed/cancelled, or explicitly marked
    * resumable after failure). Used by the `/workflow resume` selector.
@@ -133,6 +145,19 @@ export interface DurableWorkflowBackend {
   hydrateResumableWorkflows?(): Promise<void>;
 }
 
+export class WorkflowExecutionAlreadyClaimedError extends Error {
+  constructor(readonly workflowId: string) {
+    super(`Workflow ${workflowId.slice(0, 8)} is already running in another Atomic process.`);
+    this.name = "WorkflowExecutionAlreadyClaimedError";
+  }
+}
+
+export function claimWorkflowExecution(backend: DurableWorkflowBackend, workflowId: string): void {
+  if (backend.claimWorkflowExecution !== undefined && !backend.claimWorkflowExecution(workflowId)) {
+    throw new WorkflowExecutionAlreadyClaimedError(workflowId);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hashing helpers
 // ---------------------------------------------------------------------------
@@ -158,6 +183,16 @@ function canonicalJsonString(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonString(obj[k])}`).join(",")}}`;
+}
+
+export function workflowDefinitionHash(definition: WorkflowDefinition): string {
+  return durableHash({
+    name: definition.name,
+    runSource: definition.definitionSource ?? String(definition.run),
+    inputsSchema: JSON.stringify(definition.inputs),
+    outputsSchema: JSON.stringify(definition.outputs ?? {}),
+    inputBindings: JSON.stringify(definition.inputBindings ?? {}),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +230,13 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       workflowId: handle.workflowId,
       name: handle.name,
       inputs: handle.inputs,
-      createdAt: handle.createdAt,
+      createdAt: existing?.handle.createdAt ?? handle.createdAt,
       status: handle.status,
       ...(handle.invocationCwd !== undefined ? { invocationCwd: handle.invocationCwd } : existing?.handle.invocationCwd !== undefined ? { invocationCwd: existing.handle.invocationCwd } : {}),
       ...(handle.workflowCwd !== undefined ? { workflowCwd: handle.workflowCwd } : existing?.handle.workflowCwd !== undefined ? { workflowCwd: existing.handle.workflowCwd } : {}),
       ...(handle.repositoryRoot !== undefined ? { repositoryRoot: handle.repositoryRoot } : existing?.handle.repositoryRoot !== undefined ? { repositoryRoot: existing.handle.repositoryRoot } : {}),
       ...(handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: handle.gitWorktreeRoot } : existing?.handle.gitWorktreeRoot !== undefined ? { gitWorktreeRoot: existing.handle.gitWorktreeRoot } : {}),
+      ...(handle.definitionHash !== undefined ? { definitionHash: handle.definitionHash } : existing?.handle.definitionHash !== undefined ? { definitionHash: existing.handle.definitionHash } : {}),
       ...(handle.sessionFile !== undefined ? { sessionFile: handle.sessionFile } : {}),
       completedCheckpoints,
       pendingPrompts,
@@ -271,7 +307,8 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
     return [...this.workflows.values()]
       .filter((rec) => isRootWorkflow(rec.handle) && isResumableHandle(rec.handle))
-      .map((rec) => toResumableEntry(rec.handle));
+      .map((rec) => toResumableEntry(rec.handle))
+      .sort((a, b) => b.updatedAt - a.updatedAt || a.workflowId.localeCompare(b.workflowId));
   }
 
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined {
@@ -283,6 +320,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
       workflowId: h.workflowId,
       name: h.name,
       inputs: h.inputs,
+      ...(h.definitionHash !== undefined ? { definitionHash: h.definitionHash } : {}),
       status: h.status,
       completedCheckpoints: h.completedCheckpoints,
       pendingPrompts: h.pendingPrompts,
@@ -338,6 +376,7 @@ function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry
     workflowId: handle.workflowId,
     name: handle.name,
     inputs: handle.inputs,
+    ...(handle.definitionHash !== undefined ? { definitionHash: handle.definitionHash } : {}),
     status: handle.status,
     completedCheckpoints: handle.completedCheckpoints,
     pendingPrompts: handle.pendingPrompts,

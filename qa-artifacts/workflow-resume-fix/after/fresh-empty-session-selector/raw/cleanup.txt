@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-fresh-empt-4290.sock send-keys -t second:0.0 Enter
+tmux -S /tmp/atomic-final-fresh-empt-4290.sock send-keys -t second:0.0 final-fresh-answer Enter
+tmux -S /tmp/atomic-final-fresh-empt-4290.sock kill-server; rm -f /tmp/atomic-final-fresh-empt-4290.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/fresh-empty-session-selector/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

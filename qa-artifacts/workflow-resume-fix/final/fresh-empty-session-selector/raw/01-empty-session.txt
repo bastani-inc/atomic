@@ -1,0 +1,44 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+ Session Info
+
+ Name: subagent-worker-0f39ced4-1
+ File:
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifact
+ s/workflow-resume-fix/final/fresh-empty-session-selector/sessions/2026-07-13T1
+ 2-43-04-252Z_019f5b80-a0bc-7094-a354-8916a0e08072.jsonl
+ ID: 019f5b80-a0bc-7094-a354-8916a0e08072
+
+ Messages
+ User: 0
+ Assistant: 0
+ Tool Calls: 0
+ Tool Results: 0
+ Total: 0
+
+ Tokens
+ Input: 0
+ Output: 0
+ Total: 0
+
+
+                                                 $0.000 (sub) • 0.0%/372k (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...

@@ -1,0 +1,1 @@
+/tmp/atomic-final-stale-pick-9694.sock

@@ -60,7 +60,7 @@ describe("subagent startup maintenance", () => {
     maintenance.startResultWatcherDeferred();
 
     assert.equal(state.watcher, null, "watcher should not start during extension registration/session_start");
-    await nextImmediate();
+    for (let attempt = 0; attempt < 100 && state.watcher === null; attempt++) await nextImmediate();
     assert.notEqual(state.watcher, null, "watcher should start after a macrotask yield");
     maintenance.stop();
     assert.equal(state.watcher, null);

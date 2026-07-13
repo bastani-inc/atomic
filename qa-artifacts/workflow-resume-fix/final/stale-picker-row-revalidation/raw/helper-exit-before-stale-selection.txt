@@ -1,0 +1,2 @@
+helper_pid=35448
+helper_exited=false

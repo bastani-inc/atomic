@@ -29,7 +29,7 @@ import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { runDetached, type DetachedAccepted } from "../runs/background/runner.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { getDurableBackend } from "./factory.js";
-import type { DurableWorkflowBackend } from "./backend.js";
+import { workflowDefinitionHash, type DurableWorkflowBackend } from "./backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 import { workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
@@ -37,7 +37,7 @@ import type { RunSnapshot } from "../shared/store-types.js";
 
 export type ResumeDurableResult =
   | { ok: true; runId: string; workflowId: string; name: string; message: string }
-  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "invalid_inputs" | "not_registered" | "stale"; message: string };
+  | { ok: false; reason: "workflow_not_found" | "not_resumable" | "incompatible_definition" | "invalid_inputs" | "not_registered" | "stale"; message: string };
 
 export interface ResumeDurableDeps {
   readonly registry: WorkflowRegistry;
@@ -109,12 +109,29 @@ export function resumeDurableWorkflow(
   const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
   const resolved = resolveDurableEntry(workflowIdOrPrefix, resolvedCatalog);
   if (resolved === undefined) {
-    // Not in the (filtered) resumable catalog. It may still be a workflow the
-    // backend knows about. Only surface "already running" when there is a live,
-    // actively-executing run for it in this session; otherwise a `running`
-    // durable handle is a crashed process and falls through to not-found.
+    // A persistent backend may intentionally hide a running workflow from its
+    // resumable catalog while another process owns its execution lease.
+    const activeHandles = backend.listActiveWorkflowHandles?.() ?? [];
+    const activeExact = activeHandles.find((handle) => handle.workflowId === workflowIdOrPrefix);
+    const activeMatches = activeExact === undefined
+      ? activeHandles.filter((handle) => handle.workflowId.startsWith(workflowIdOrPrefix))
+      : [activeExact];
+    if (activeMatches.length === 1) {
+      const active = activeMatches[0]!;
+      return alreadyRunningResult(active.name, active.workflowId, deps.baseRunOpts.store);
+    }
+    if (activeMatches.length > 1) {
+      return {
+        ok: false,
+        reason: "not_registered",
+        message: `Ambiguous active workflow prefix "${workflowIdOrPrefix}" matches: ${activeMatches.map((handle) => `${handle.name} (${handle.workflowId.slice(0, 8)})`).join(", ")}`,
+      };
+    }
     const direct = backend.getWorkflow(workflowIdOrPrefix);
-    if (direct !== undefined && direct.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
+    if (direct !== undefined && direct.status === "running" && (
+      hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)
+      || backend.isWorkflowExecutionActive?.(direct.workflowId) === true
+    )) {
       return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
     }
     return { ok: false, reason: "not_registered", message: `No durable workflow found for id/prefix: ${workflowIdOrPrefix}` };
@@ -153,6 +170,14 @@ export function resumeDurableWorkflow(
   if (!isWorkflowDefinition(def)) {
     return { ok: false, reason: "workflow_not_found", message: workflowDefinitionRequirementMessage("resumeDurableWorkflow", def) };
   }
+  const currentDefinitionHash = workflowDefinitionHash(def);
+  if (handle.definitionHash !== undefined && handle.definitionHash !== currentDefinitionHash) {
+    return {
+      ok: false,
+      reason: "incompatible_definition",
+      message: `Workflow definition for ${resolved.name} (${resolved.workflowId.slice(0, 8)}) changed since its durable checkpoint was created; refusing resume before stage execution. Restore the original definition or kill and re-run the workflow.`,
+    };
+  }
 
   const inputs: Record<string, unknown> = { ...handle.inputs };
   try {
@@ -160,29 +185,36 @@ export function resumeDurableWorkflow(
   } catch (err) {
     return { ok: false, reason: "invalid_inputs", message: `invalid_inputs: ${err instanceof Error ? err.message : String(err)}` };
   }
-  removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
+  if (backend.claimWorkflowExecution !== undefined && !backend.claimWorkflowExecution(resolved.workflowId)) {
+    return alreadyRunningResult(resolved.name, resolved.workflowId, deps.baseRunOpts.store);
+  }
+  try {
+    removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
 
+    // Mark the workflow as resuming in the backend, then re-dispatch with the
+    // ORIGINAL workflow id as the run id so durable checkpoints replay.
+    backend.setWorkflowStatus(resolved.workflowId, "running");
 
-  // Mark the workflow as resuming in the backend, then re-dispatch with the
-  // ORIGINAL workflow id as the run id so durable checkpoints replay.
-  backend.setWorkflowStatus(resolved.workflowId, "running");
+    const resumeRunOpts: RunOpts = {
+      ...deps.baseRunOpts,
+      ...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
+      runId: resolved.workflowId,
+      durableBackend: backend,
+    };
 
-  const resumeRunOpts: RunOpts = {
-    ...deps.baseRunOpts,
-    ...(handle.invocationCwd !== undefined ? { cwd: handle.invocationCwd } : {}),
-    runId: resolved.workflowId,
-    durableBackend: backend,
-  };
+    const accepted: DetachedAccepted = runDetached(def, inputs, resumeRunOpts);
 
-  const accepted: DetachedAccepted = runDetached(def, inputs, resumeRunOpts);
-
-  return {
-    ok: true,
-    runId: accepted.runId,
-    workflowId: resolved.workflowId,
-    name: resolved.name,
-    message: `Resuming durable workflow "${resolved.name}" (${resolved.workflowId.slice(0, 8)}) — completed checkpoints will be replayed.`,
-  };
+    return {
+      ok: true,
+      runId: accepted.runId,
+      workflowId: resolved.workflowId,
+      name: resolved.name,
+      message: `Resuming durable workflow "${resolved.name}" (${resolved.workflowId.slice(0, 8)}) — completed checkpoints will be replayed.`,
+    };
+  } catch (error) {
+    backend.releaseWorkflowExecution?.(resolved.workflowId);
+    throw error;
+  }
 }
 
 function isDurableResumeShadow(run: RunSnapshot): boolean {
@@ -289,14 +321,13 @@ export async function prepareRuntimeDurableResumable(
   const { scanResumableWorkflows } = await import("./resume-catalog.js");
   const scanned = scanResumableWorkflows(effectiveSessionDir);
   const liveIds = new Set(live.map((e) => e.workflowId));
-  // Suppress cache-only entries from older workflow engines. Without a
-  // durable backend handle/checkpoint state, selecting the row can only fail
-  // as stale (or risk re-running from scratch), so it should not clutter the
-  // resume selector.
-  const suppressed = scanned.filter((e) =>
-    !liveIds.has(e.workflowId) &&
-    hasBackendResumeState(backend, e.workflowId) &&
-    !isBackendTerminal(backend, e.workflowId)
+  // Session JSONL is discovery metadata only. Merge a row only when the
+  // backend still has resumable state and no live process owns execution.
+  const discovered = scanned.filter((entry) =>
+    !liveIds.has(entry.workflowId)
+    && hasBackendResumeState(backend, entry.workflowId)
+    && !isBackendTerminal(backend, entry.workflowId)
+    && backend.isWorkflowExecutionActive?.(entry.workflowId) !== true
   );
-  return [...live, ...suppressed];
+  return [...live, ...discovered];
 }

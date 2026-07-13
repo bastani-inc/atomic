@@ -1,0 +1,12 @@
+
+────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+› subagent-worker-0f39ced4-1                                               2 now
+
+────────────────────────────────────────────────────────────────────────────────

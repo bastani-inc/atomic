@@ -49,6 +49,59 @@ describe("/workflow resume — durable regression coverage", () => {
     assert.equal(messages.some((message) => message.includes("missing")), true);
   });
 
+  test("targeted resume prefers a paused durable root over an ended restored snapshot", async () => {
+    const runId = "restored-shadow-durable-root";
+    singletonStore.recordRunStart({
+      id: runId,
+      name: "restored-shadow",
+      inputs: {},
+      status: "running",
+      stages: [],
+      startedAt: 1,
+    });
+    singletonStore.recordRunEnd(runId, "failed", undefined, "Run did not complete — process was interrupted", {
+      resumable: false,
+    });
+    let preparedTarget: string | undefined;
+    let resumedTarget: string | undefined;
+    const runtime = {
+      prepareDurableResumable: async (target?: string) => {
+        preparedTarget = target;
+        return [{
+          workflowId: runId,
+          name: "restored-shadow",
+          status: "paused" as const,
+          completedCheckpoints: 1,
+          pendingPrompts: 0,
+          createdAt: 1,
+          updatedAt: 2,
+        }];
+      },
+      resumeDurableWorkflow: (target: string) => {
+        resumedTarget = target;
+        return { ok: true as const, runId: target, workflowId: target, name: "restored-shadow", message: `Resumed durable ${target}` };
+      },
+      registry: { has: () => true },
+    } as unknown as ExtensionRuntime;
+    const messages: string[] = [];
+
+    await handleRunControlCommand("resume", [runId], { hasUI: false, ui: { notify: () => undefined } }, {
+      info: (message) => messages.push(message),
+      error: (message) => messages.push(message),
+    }, {
+      pi: buildMockPi().pi,
+      overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+      getPersistence: () => undefined,
+      runtimeForContext: () => runtime,
+      ensureWorkflowResourcesLoaded: () => undefined,
+    });
+
+    assert.equal(preparedTarget, runId);
+    assert.equal(resumedTarget, runId);
+    assert.match(messages.join("\n"), /Resumed durable restored-shadow-durable-root/);
+    assert.doesNotMatch(messages.join("\n"), /Snapshot available/);
+  });
+
   test("headless no-arg durable resume prints catalog without awaiting no-op custom UI", async () => {
     const runtime = {
       prepareDurableResumable: async () => [{

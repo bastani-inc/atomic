@@ -1,0 +1,12 @@
+scenario=multiple-resumable-roots
+result={"scenario_id":"multiple-resumable-roots","outcome":"pass","tested_head":"af5472addf0f46b0c65ef85ff67b0e44c0250c18","source_diff_hash":"86155d18c212045a57d6a3c7c8d0ce8a816d89adfa24ffc5f5857a3d8c7a4e68","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"a4ef1332ae34bad28a05215334f45b79bac56721c9ec982ac9ec042ebba50327","run_ids":["f4abdc9a-84f6-4c3b-8adb-1701a4b1f544","8f4ecaa5-6796-422b-8ae8-077741a10fb7"],"definition_hash_verified":true,"ordering_evidence":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/after/multiple-resumable-roots/raw/ordering-assertion.json","id_timestamp_evidence":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/after/multiple-resumable-roots/raw/root-ids-timestamps.jsonl","independent_state_evidence":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/after/multiple-resumable-roots/raw/durable-a-after-b-completed.json"}
+{"file":"/tmp/atomic-final-matrix-20260713c/after/multiple-resumable-roots/raw/durable-a-after-b-completed.json","workflowId":"f4abdc9a-84f6-4c3b-8adb-1701a4b1f544","status":"paused","resumable":true,"checkpoints":1,"definitionHash":"h55e5f33a373e7293c086a73675d1a29a"}
+{"file":"/tmp/atomic-final-matrix-20260713c/after/multiple-resumable-roots/raw/durable-a-before.json","workflowId":"f4abdc9a-84f6-4c3b-8adb-1701a4b1f544","status":"running","resumable":true,"checkpoints":1,"definitionHash":"h55e5f33a373e7293c086a73675d1a29a"}
+{"file":"/tmp/atomic-final-matrix-20260713c/after/multiple-resumable-roots/raw/durable-b-before.json","workflowId":"8f4ecaa5-6796-422b-8ae8-077741a10fb7","status":"running","resumable":true,"checkpoints":1,"definitionHash":"h55e5f33a373e7293c086a73675d1a29a"}
+marker_events:
+{"event":"checkpoint-before","timestamp":1783941864032}
+{"event":"first-answer:final-multi-second-answer","timestamp":1783941911272}
+{"event":"final:final-multi-second-answer","timestamp":1783941911273}
+{"event":"checkpoint-before","timestamp":1783941866512}
+{"event":"first-answer:final-multi-first-answer","timestamp":1783941871272}
+{"event":"final:final-multi-first-answer","timestamp":1783941871273}

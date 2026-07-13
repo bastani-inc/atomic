@@ -1,0 +1,99 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░    /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+ Resuming durable workflow "workflow-resume-e2e-fixture" (8facdbb3) — completed checkpoints will be replayed.
+
+╭ WORKFLOW FAILED ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ✗ Workflow "workflow-resume-e2e-fixture" failed                                                                                                                                                                          │
+│ workflow  workflow-resume-e2e-fixture                                                                                                                                                                                    │
+│ run       8facdbb3-4960-4325-8fcf-dd7d64e0350d                                                                                                                                                                           │
+│ error     Workflow run completed without creating any workflow stages. Create at least one stage with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), or ctx.workflow().                                           │
+│ duration  7ms                                                                                                                                                                                                            │
+│ ▸ /workflow status 8facdbb3-4960-4325-8fcf-dd7d64e0350d                                                                                                                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Planning workflow failure inspection
+
+ Workflow mode: I’ll inspect the failed run, trace why no stage was created, and prepare a fix with validation.
+
+workflow: list retained runs
+╭ WORKFLOW RUN ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 8facdbb3-4960-4325-8fcf-dd7d64e0350d: failed — workflows cannot invoke workflows from workflow stages                                                                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Inspecting workflow definition
+
+workflow: get "workflow-resume-e2e-fixture"
+╭ WORKFLOW RUN ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  workflow-resume-e2e-fixture
+ ╰──────────────╯
+
+
+
+                                                                                                 waiting for stage events…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │                                                                                                                       MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctrl+d detach  ·  q quit
+ ╰───────╯

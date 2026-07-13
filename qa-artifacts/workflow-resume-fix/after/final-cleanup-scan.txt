@@ -1,0 +1,6 @@
+COMMAND: find qa-artifacts/workflow-resume-fix -type d (agent|project)
+COMMAND: find qa-artifacts/workflow-resume-fix credential/cache filenames
+COMMAND: scoped scenario CLI process scan
+COMMAND: short tmux socket scan
+COMMAND: secret value regex count (excluding command provenance and session JSONL)
+0

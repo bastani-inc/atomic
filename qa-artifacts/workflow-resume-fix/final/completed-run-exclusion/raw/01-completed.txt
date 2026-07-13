@@ -1,0 +1,44 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────╮
+│ ●  397873d1  workflow-resume-e2e-fixture  ● running                          │
+│   mode="completed"  ·  marker_root="/Users/tony…"  ·  label="final-compl…"   │
+│                                                                              │
+│  ▸ /workflow connect 397873d1  watch, attach & steer                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭ WORKFLOW COMPLETE ───────────────────────────────────────────────────────────╮
+│ ✓ Workflow "workflow-resume-e2e-fixture" completed                           │
+│ workflow  workflow-resume-e2e-fixture                                        │
+│ run       397873d1-b355-4ab2-b1b9-201f89601956                               │
+│ duration  2.6s                                                               │
+│ ▸ /workflow status 397873d1-b355-4ab2-b1b9-201f89601956                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ ⠙ Consecrating the callbacks...
+
+                                                 $0.000 (sub) • 0.1%/372k (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+esc to interrupt
+
+╭ BACKGROUND  1 run  ✓ 1 complete ─────────────────────────────────────────────╮
+│   ✓  397873  workflow-resume-e2e-fixture                                     │
+│     complete · 2s                                                            │
+╰──────────────────────────────────────────────────────────────────────────────╯

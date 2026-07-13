@@ -1,0 +1,6 @@
+{"scenario_id":"fresh-empty-session-selector","outcome":"pass","tested_head":"f660468db560d1c429037ae12a8258f9aee5318a","source_manifest_hash":"21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf","evidence":"raw/final.txt"}
+marker_events:
+{"event":"checkpoint-before","timestamp":1783946579433}
+{"event":"first-answer:final-fresh-answer","timestamp":1783946626910}
+{"event":"final:final-fresh-answer","timestamp":1783946626911}
+durable_checkpoint_session_entries:

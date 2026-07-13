@@ -1,0 +1,26 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+ Error: No durable workflow found for id/prefix:
+ 82ca4c15-5e6b-4d51-be2b-8c7ee8f4c788
+
+
+                                                 $0.000 (sub) • 0.0%/372k (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...

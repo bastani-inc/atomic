@@ -44,7 +44,7 @@ import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
-import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { claimWorkflowExecution, workflowDefinitionHash, WorkflowExecutionAlreadyClaimedError, type DurableWorkflowBackend } from "../durable/backend.js";
 
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -133,22 +133,10 @@ export async function run<
     return classified;
   };
 
-  activeStore.recordRunStart(runSnapshot);
-  if (!opts.signal) opts.cancellation?.register(runId, ownController);
-  opts.onRunStart?.(runSnapshot);
-  if (opts.persistence) {
-    appendRunStart(opts.persistence, {
-      runId,
-      name: def.name,
-      inputs: resolvedInputs,
-      ...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
-      ...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
-      ...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
-      ...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
-      ...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
-      ts: runSnapshot.startedAt,
-    });
-  }
+  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
+    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
+    : rootBackend;
 
   const tracker = new GraphFrontierTracker();
   const inputConcurrency = resolveInputConcurrency(def.inputs, resolvedInputs);
@@ -185,16 +173,6 @@ export async function run<
     classifyExecutorFailure,
     drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
   });
-  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
-  // Declared early so the stage-end recorder can attach to stageOptions.
-  // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
-  // Child runs with a durable scope route their internal side-effect
-  // checkpoints under the root workflow so interrupted children do not
-  // re-execute completed side effects on parent resume.
-  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
-  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
-    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
-    : rootBackend;
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
@@ -284,11 +262,6 @@ export async function run<
     workflowBoundaryReplayCounts.set(name, next);
     return `workflow:${name}:${next}`;
   };
-  // Durable child workflow replay keys use a SEPARATE counter so that cache
-  // hits (which do not invoke the inner workflow runner) do not desync the
-  // ordinal sequence. Without this, repeated ctx.workflow(child) calls would
-  // shift replay keys on resume and re-execute completed children.
-  // cross-ref: issue #1498.
   const durableChildReplayCounts = new Map<string, number>();
   const nextDurableChildReplayKey = (name: string): string => {
     const next = (durableChildReplayCounts.get(name) ?? 0) + 1;
@@ -314,18 +287,13 @@ export async function run<
   const durableRootWorkflowRegistration = {
     workflowId: runId,
     name: def.name,
-    inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>,
+    inputs: resolvedInputs as Record<string, import("../shared/types.js").WorkflowSerializableValue>, definitionHash: workflowDefinitionHash(def),
     createdAt: runSnapshot.startedAt,
     status: "running" as const,
     rootWorkflowId: runId,
     resumable: true,
     ...(opts.persistence !== undefined ? { sessionFile: undefined } : {}),
   };
-  if (opts.continuation === undefined && opts.parentRun === undefined) {
-    durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, invocationCwd: workflowInvocationCwd });
-  } else if (opts.parentRun === undefined) {
-    durableBackend.setWorkflowStatus(runId, "running");
-  }
   const tool = createToolPrimitive({
     workflowId: runId,
     backend: durableBackend,
@@ -395,6 +363,30 @@ export async function run<
   };
 
   try {
+    if (opts.parentRun === undefined) claimWorkflowExecution(durableBackend, runId);
+    try {
+      activeStore.recordRunStart(runSnapshot);
+      if (!opts.signal) opts.cancellation?.register(runId, ownController);
+      opts.onRunStart?.(runSnapshot);
+      if (opts.persistence) {
+        appendRunStart(opts.persistence, {
+          runId,
+          name: def.name,
+          inputs: resolvedInputs,
+          ...(runSnapshot.parentRunId !== undefined ? { parentRunId: runSnapshot.parentRunId } : {}),
+          ...(runSnapshot.parentStageId !== undefined ? { parentStageId: runSnapshot.parentStageId } : {}),
+          ...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
+          ...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
+          ...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
+          ts: runSnapshot.startedAt,
+        });
+      }
+    } catch (error) {
+      activeStore.removeRun(runId);
+      opts.cancellation?.unregister(runId);
+      durableBackend.releaseWorkflowExecution?.(runId);
+      throw error;
+    }
     if (opts.deferWorkflowStart === true) {
       await nextEventLoopTurn();
       if (ownController.signal.aborted) {
@@ -405,11 +397,13 @@ export async function run<
         return finalizeKilled(runId, runSnapshot, activeStore, opts.persistence, opts.onRunEnd);
       }
     }
-
-    if (opts.continuation === undefined && opts.parentRun === undefined) {
-      durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
+    if (opts.parentRun === undefined) {
+      if (opts.continuation === undefined) {
+        durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
+      } else {
+        durableBackend.setWorkflowStatus(runId, "running");
+      }
     }
-
     const rawResult = await def.run(ctx);
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
@@ -434,6 +428,8 @@ export async function run<
     }
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
+    if (!activeStore.runs().some((run) => run.id === runId)) throw err;
+    if (err instanceof WorkflowExecutionAlreadyClaimedError) throw err;
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
     if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);
 
@@ -494,7 +490,11 @@ export async function run<
         persistence: opts.persistence,
       });
     } finally {
-      gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+      try {
+        if (opts.parentRun === undefined) durableBackend.releaseWorkflowExecution?.(runId);
+      } finally {
+        gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));
+      }
     }
   }
 }

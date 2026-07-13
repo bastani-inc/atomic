@@ -1,0 +1,9 @@
+{
+  "scenario_id": "incompatible-definition-on-resume",
+  "outcome": "product_failure",
+  "workflow_run_id": "b2bddb92-8b0a-418f-b030-84e9aba83017",
+  "finding": "The first definition-hash implementation fingerprinted workflow()'s stable wrapper instead of the authored run function, so V1 and V2 collided and V2 executed.",
+  "v2_marker_count": 1,
+  "durable_changed": true,
+  "regression_test": "test/unit/durable-execution-lease.test.ts — definition hashes change when authored workflow code changes"
+}

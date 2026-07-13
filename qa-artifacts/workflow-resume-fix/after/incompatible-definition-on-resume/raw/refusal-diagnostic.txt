@@ -1,0 +1,9 @@
+ │   mode="double-prompt"  ·  marker_root="/tmp/atomic-final-matrix-20260713c/after…"  ·  label="final-incompatible"                                                                                                      │
+ inputs: mode="double-prompt", marker_root="/tmp/atomic-final-matrix-20260713c/after/incompatible-definition-on-resume/markers", label="final-incompatible"
+ Question: E2E first answer for final-incompatible User responded with: final-incompatible-first. Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop
+ Error: Workflow definition for workflow-resume-e2e-fixture (fdf49378) changed since its durable checkpoint was created; refusing resume before stage execution. Restore the original definition or kill and re-run the
+ │   mode="double-prompt"  ·  marker_root="/tmp/atomic-final-matrix-20260713c/after…"  ·  label="final-incompatible"                                                                                                      │
+ inputs: mode="double-prompt", marker_root="/tmp/atomic-final-matrix-20260713c/after/incompatible-definition-on-resume/markers", label="final-incompatible"
+ Question: E2E first answer for final-incompatible User responded with: final-incompatible-first. Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop
+ Error: Workflow definition for workflow-resume-e2e-fixture (fdf49378) changed since its durable checkpoint was created; refusing resume before stage execution. Restore the original definition or kill and re-run the
+ Error: Workflow definition for workflow-resume-e2e-fixture (fdf49378) changed since its durable checkpoint was created; refusing resume before stage execution. Restore the original definition or kill and re-run the

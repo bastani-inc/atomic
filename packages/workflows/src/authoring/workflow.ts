@@ -172,6 +172,7 @@ export function workflow<
     inputs: frozenInputs,
     outputs: frozenOutputs,
     ...(inputBindings !== undefined ? { inputBindings } : {}),
+    definitionSource: String(specRun),
     run,
   };
 

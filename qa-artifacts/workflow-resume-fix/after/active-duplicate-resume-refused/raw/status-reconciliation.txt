@@ -1,0 +1,7 @@
+scenario=active-duplicate-resume-refused
+result={"scenario_id":"active-duplicate-resume-refused","outcome":"pass","tested_head":"af5472addf0f46b0c65ef85ff67b0e44c0250c18","source_diff_hash":"86155d18c212045a57d6a3c7c8d0ce8a816d89adfa24ffc5f5857a3d8c7a4e68","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"a4ef1332ae34bad28a05215334f45b79bac56721c9ec982ac9ec042ebba50327","run_id":"f75bc366-9dab-470c-979b-738af3a9ad9b","definition_hash_verified":true,"evidence":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/after/active-duplicate-resume-refused/raw/02-direct-refusal.txt"}
+{"file":"/tmp/atomic-final-matrix-20260713c/after/active-duplicate-resume-refused/raw/durable-active-before-contender.json","workflowId":"f75bc366-9dab-470c-979b-738af3a9ad9b","status":"running","resumable":true,"checkpoints":1,"definitionHash":"h55e5f33a373e7293c086a73675d1a29a"}
+marker_events:
+{"event":"checkpoint-before","timestamp":1783941529863}
+{"event":"first-answer:final-active-answer","timestamp":1783941534275}
+{"event":"final:final-active-answer","timestamp":1783941534275}

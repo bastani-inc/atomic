@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-exact-sess-2565.sock send-keys -t reopened:0.0 Enter
+tmux -S /tmp/atomic-final-exact-sess-2565.sock send-keys -t reopened:0.0 final-exact-answer Enter
+tmux -S /tmp/atomic-final-exact-sess-2565.sock kill-server; rm -f /tmp/atomic-final-exact-sess-2565.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/exact-session-after-ctrl-c/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

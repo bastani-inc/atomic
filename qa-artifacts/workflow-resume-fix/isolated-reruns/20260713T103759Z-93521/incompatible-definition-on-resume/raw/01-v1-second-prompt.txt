@@ -1,0 +1,59 @@
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  workflow-resume-e2e-fixture                                                                                                                                                                    ✓ 1  ↵ 1
+ ╰──────────────╯
+
+
+
+                                                                                                ╭─────── input ────────╮
+                                                                                                │          8s          │
+                                                                                                │      ✓ complete      │
+                                                                                                │         root         │
+                                                                                                ╰──────────────────────╯
+                                                                                                            │
+                                                                                                            │
+                                                                                                            │
+                                                                                                ╭─────── input ────────╮
+                                                                                                │  ？ awaiting input   │
+                                                                                                │ waiting for response │
+                                                                                                │  ↵ enter to respond  │
+                                                                                                ╰──────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │                                                                                                                                            ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctrl+d detach  ·  q quit
+ ╰───────╯

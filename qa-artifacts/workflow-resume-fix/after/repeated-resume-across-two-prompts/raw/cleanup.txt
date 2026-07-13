@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-repeated-r-4686.sock new-session -d -s fourth -- /tmp/atomic-final-matrix-20260713c/after/repeated-resume-across-two-prompts/launch.sh
+tmux -S /tmp/atomic-final-repeated-r-4686.sock send-keys -t fourth:0.0 -l -- /workflow\ resume\ 95d57d9e-6a32-4ece-b3dc-69186eedb5d7; tmux -S /tmp/atomic-final-repeated-r-4686.sock send-keys -t fourth:0.0 Enter
+tmux -S /tmp/atomic-final-repeated-r-4686.sock kill-server; rm -f /tmp/atomic-final-repeated-r-4686.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/repeated-resume-across-two-prompts/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

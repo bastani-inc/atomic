@@ -289,6 +289,8 @@ describe("/workflow pause — top-level command", () => {
 });
 
 describe("/workflow resume — paused vs non-paused branching", () => {
+  beforeEach(() => setDurableBackend(new InMemoryDurableBackend()));
+  afterEach(() => setDurableBackend(undefined));
   test("resume <runId> on a non-paused run still reopens the overlay", async () => {
     singletonStore.clear();
     const runId = `test-non-paused-${Date.now()}`;

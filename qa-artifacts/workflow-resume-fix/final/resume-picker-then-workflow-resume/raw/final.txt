@@ -1,0 +1,73 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+
+ Reply with exactly QA_HOST_READY.
+
+
+ QA_HOST_READY
+
+
+
+ [workflows:chat-surface]
+
+ ╭ DISPATCHED ────────────────────────────────────────────────────────────────╮
+ │ ●  90c18b45  workflow-resume-e2e-fixture  ● running                        │
+ │   mode="prompt"  ·  marker_root="/Users/ton…"  ·  label="final-pick…"      │
+ │                                                                            │
+ │  ▸ /workflow connect 90c18b45  watch, attach & steer                       │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+ run id: 90c18b45-9c31-4e27-9c95-69b8e0c4be1e
+ inputs: mode="prompt",
+ marker_root="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2
+ e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/ma
+ rkers", label="final-picker"
+
+
+ Resuming durable workflow "workflow-resume-e2e-fixture" (90c18b45) — completed
+ checkpoints will be replayed.
+
+╭ HIL ANSWERED ────────────────────────────────────────────────────────────────╮
+│ ✓ Workflow "workflow-resume-e2e-fixture" received the user's response        │
+│ workflow  workflow-resume-e2e-fixture                                        │
+│ run       90c18b45-9c31-4e27-9c95-69b8e0c4be1e                               │
+│ stage     input                                                              │
+│ prompt    E2E first answer for final-picker                                  │
+│ answer    final-picker-answer                                                │
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  workflow-resume-e2e-fixture                             ✓ 1
+ ╰──────────────╯
+
+
+
+                          ╭─────── input ────────╮
+                          │        1m 9s         │
+                          │      ✓ complete      │
+                          │         root         │
+                          ╰──────────────────────╯
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctr
+ ╰───────╯

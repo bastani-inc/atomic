@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-sigkill-af-11277.sock send-keys -t recovered:0.0 Enter
+tmux -S /tmp/atomic-final-sigkill-af-11277.sock send-keys -t recovered:0.0 final-sigkill-second Enter
+tmux -S /tmp/atomic-final-sigkill-af-11277.sock kill-server; rm -f /tmp/atomic-final-sigkill-af-11277.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/sigkill-after-next-prompt-render/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

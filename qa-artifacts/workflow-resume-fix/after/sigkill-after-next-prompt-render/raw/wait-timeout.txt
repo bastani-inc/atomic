@@ -1,0 +1,64 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░    /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+
+ Reply with exactly QA_HOST_READY.
+
+
+ QA_HOST_READY
+
+
+
+ [workflows:chat-surface]
+
+ ╭ DISPATCHED ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ●  0812ec39  workflow-resume-e2e-fixture  ● running                                                                                                                                                                    │
+ │   mode="double-prompt"  ·  marker_root="/tmp/atomic-final-matrix-20260713c/after…"  ·  label="final-sigkill"                                                                                                           │
+ │                                                                                                                                                                                                                        │
+ │  ▸ /workflow connect 0812ec39  watch, attach & steer                                                                                                                                                                   │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ run id: 0812ec39-8590-4e03-b99e-26d799ea141a
+ inputs: mode="double-prompt", marker_root="/tmp/atomic-final-matrix-20260713c/after/sigkill-after-next-prompt-render/markers", label="final-sigkill"
+
+
+
+
+ [workflows:hil-answer-notice]
+
+ ✓ Workflow "workflow-resume-e2e-fixture" received the user's response for its pending human-in-the-loop prompt (run 0812ec39-8590-4e03-b99e-26d799ea141a, stage input, prompt hil-529a64e8-5557-489b-8949-7b9b1b7315f1).
+ Question: E2E first answer for final-sigkill User responded with: final-sigkill-first. Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop prompt unless
+ the user explicitly provides that answer.
+
+
+                                                                                                                                                                ↑370 • ↓7 • R12k • CH97.0% • $0.016 (sub) • 3.4%/372k (auto)
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Folder)                                                                                                                                          ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+› workflow-resume-e2e-fixture  running  3 checkpoints  0 prompts                                                                                                                                                       3 now
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+
+╭ BACKGROUND  1 run  ✗ 1 failed ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   ✗  0812ec  workflow-resume-e2e-fixture                                                                                                                                                                                 │
+│     failed · 50s                                                                                                                                                                                                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

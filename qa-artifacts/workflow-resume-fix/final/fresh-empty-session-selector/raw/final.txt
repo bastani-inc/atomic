@@ -1,0 +1,91 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+ Session Info
+
+ Name: subagent-worker-0f39ced4-1
+ File:
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifact
+ s/workflow-resume-fix/final/fresh-empty-session-selector/sessions/2026-07-13T1
+ 2-43-04-252Z_019f5b80-a0bc-7094-a354-8916a0e08072.jsonl
+ ID: 019f5b80-a0bc-7094-a354-8916a0e08072
+
+ Messages
+ User: 0
+ Assistant: 0
+ Tool Calls: 0
+ Tool Results: 0
+ Total: 0
+
+ Tokens
+ Input: 0
+ Output: 0
+ Total: 0
+
+
+
+ workflow resume
+
+
+ Planning workflow resume command
+
+ Verifying run control command limitations
+
+ Inline mode — I’ll identify the paused workflow run before resuming it.
+
+workflow: list retained runs
+╭ WORKFLOW RUN ────────────────────────────────────────────────────────────────╮
+│ --all: failed — workflows cannot invoke workflows from workflow stages       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ Clarifying workflow resume run ID
+
+ Please provide the paused workflow’s run ID (or unique prefix) to resume it.
+
+ Resuming durable workflow "workflow-resume-e2e-fixture" (d324b297) — completed
+ checkpoints will be replayed.
+
+╭ HIL ANSWERED ────────────────────────────────────────────────────────────────╮
+│ ✓ Workflow "workflow-resume-e2e-fixture" received the user's response        │
+│ workflow  workflow-resume-e2e-fixture                                        │
+│ run       d324b297-66d4-4d1d-a3f5-268d60d5786b                               │
+│ stage     input                                                              │
+│ prompt    E2E first answer for final-fresh                                   │
+│ answer    final-fresh-answer                                                 │
+
+ ╭──────────────╮
+ │ ORCHESTRATOR │  workflow-resume-e2e-fixture                             ✓ 1
+ ╰──────────────╯
+
+
+
+                          ╭─────── input ────────╮
+                          │          0s          │
+                          │      ✓ complete      │
+                          │         root         │
+                          ╰──────────────────────╯
+
+
+
+
+
+
+
+
+ ╭───────╮
+ │ GRAPH │MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctr
+ ╰───────╯

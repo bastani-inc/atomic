@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-active-dup-9295.sock send-keys -t active:0.0 Enter
+tmux -S /tmp/atomic-final-active-dup-9295.sock send-keys -t active:0.0 final-active-answer Enter
+tmux -S /tmp/atomic-final-active-dup-9295.sock kill-server; rm -f /tmp/atomic-final-active-dup-9295.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/active-duplicate-resume-refused/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

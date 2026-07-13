@@ -107,6 +107,7 @@ describe("InMemoryDurableBackend", () => {
     assert.ok(!ids.includes("child-run"));
   });
 
+
   test("non-resumable terminal finalization hides failed durable workflow", async () => {
     const runSnapshot: RunSnapshot = {
       id: WORKFLOW_ID,
@@ -138,6 +139,22 @@ describe("InMemoryDurableBackend", () => {
     const handle = backend.getWorkflow(WORKFLOW_ID)!;
     assert.equal(handle.status, "failed");
     assert.ok(handle.updatedAt >= before);
+  });
+
+  test("re-registration preserves workflow creation identity", () => {
+    const originalCreatedAt = backend.getWorkflow(WORKFLOW_ID)!.createdAt;
+    backend.registerWorkflow({
+      workflowId: WORKFLOW_ID,
+      name: "test-workflow",
+      inputs: { topic: "testing" },
+      definitionHash: "definition-v1",
+      createdAt: originalCreatedAt + 10_000,
+      status: "running",
+    });
+
+    const handle = backend.getWorkflow(WORKFLOW_ID)!;
+    assert.equal(handle.createdAt, originalCreatedAt);
+    assert.equal(handle.definitionHash, "definition-v1");
   });
 
   test("toCacheEntry exports session-cache entry", () => {

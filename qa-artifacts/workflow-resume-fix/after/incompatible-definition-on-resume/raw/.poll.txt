@@ -1,0 +1,48 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░    /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+
+
+ Reply with exactly QA_HOST_READY.
+
+
+ QA_HOST_READY
+
+
+
+ [workflows:chat-surface]
+
+ ╭ DISPATCHED ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ●  fdf49378  workflow-resume-e2e-fixture  ● running                                                                                                                                                                    │
+ │   mode="double-prompt"  ·  marker_root="/tmp/atomic-final-matrix-20260713c/after…"  ·  label="final-incompatible"                                                                                                      │
+ │                                                                                                                                                                                                                        │
+ │  ▸ /workflow connect fdf49378  watch, attach & steer                                                                                                                                                                   │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ run id: fdf49378-cf06-41c8-92f5-1cc5891203b0
+ inputs: mode="double-prompt", marker_root="/tmp/atomic-final-matrix-20260713c/after/incompatible-definition-on-resume/markers", label="final-incompatible"
+
+
+
+
+ [workflows:hil-answer-notice]
+
+ ✓ Workflow "workflow-resume-e2e-fixture" received the user's response for its pending human-in-the-loop prompt (run fdf49378-cf06-41c8-92f5-1cc5891203b0, stage input, prompt hil-a5581f7c-f6dc-4348-a468-3fa4a7974c10).
+ Question: E2E first answer for final-incompatible User responded with: final-incompatible-first. Do not ask the same question again. No main-chat action is needed; do not answer any other workflow human-in-the-loop
+ prompt unless the user explicitly provides that answer.
+
+
+                                                                                                                                                                                 ↑12k • ↓7 • $0.122 (sub) • 3.4%/372k (auto)
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

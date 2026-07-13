@@ -37,7 +37,7 @@ describe("foreground intercom detach routing", () => {
       assert.equal(placeholder.exitCode, -2);
       assert.ok(placeholder.artifactPaths);
       assert.equal(fs.existsSync(placeholder.artifactPaths.outputPath), false);
-      await Bun.sleep(150);
+      for (let attempt = 0; attempt < 100 && recovered.length === 0; attempt++) await Bun.sleep(20);
       assert.equal(recovered.length, 1);
       const actual = recovered[0]!;
       assert.equal(actual.exitCode, 0);

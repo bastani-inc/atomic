@@ -155,6 +155,29 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(result.reason, "invalid_inputs");
   });
 
+  test("refuses to reinterpret checkpoints with a changed workflow definition", () => {
+    backend.registerWorkflow({
+      workflowId: "wf-incompatible-definition",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      definitionHash: "h-persisted-v1",
+      createdAt: 1,
+      status: "paused",
+      completedCheckpoints: 1,
+    });
+
+    const result = resumeDurableWorkflow("wf-incompatible-definition", deps());
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "incompatible_definition");
+      assert.match(result.message, /definition.*changed/i);
+      assert.match(result.message, /refusing resume/i);
+    }
+    assert.equal(backend.getWorkflow("wf-incompatible-definition")?.status, "paused");
+    assert.equal(store.runs().some((run) => run.id === "wf-incompatible-definition"), false);
+  });
+
   test("successfully re-dispatches with the ORIGINAL workflow id", () => {
     backend.registerWorkflow({ workflowId: "wf-resume-target", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "failed" });
     const result = resumeDurableWorkflow("wf-resume-target", deps());
@@ -204,6 +227,42 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(backend.getWorkflow("wf-scan-only"), undefined);
   });
 
+  test("prepared selector does not resurrect an actively owned workflow from session cache", async () => {
+    class ActiveOwnerCatalogBackend extends InMemoryDurableBackend {
+      listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
+        return [];
+      }
+
+      isWorkflowExecutionActive(workflowId: string): boolean {
+        return workflowId === "wf-active-cache";
+      }
+    }
+    const activeBackend = new ActiveOwnerCatalogBackend();
+    activeBackend.registerWorkflow({
+      workflowId: "wf-active-cache",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      createdAt: 1,
+      status: "running",
+      completedCheckpoints: 1,
+    });
+    const entry = {
+      type: "workflow.durable.checkpoint",
+      workflowId: "wf-active-cache",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      status: "running",
+      completedCheckpoints: 1,
+      pendingPrompts: 0,
+      ts: Date.now(),
+    };
+    writeFileSync(join(tmpDir, "active-session.jsonl"), JSON.stringify({ type: "custom", customType: "workflow.durable.checkpoint", data: entry }) + "\n");
+
+    const prepared = await prepareRuntimeDurableResumable(() => activeBackend, () => tmpDir);
+
+    assert.equal(prepared.some((candidate) => candidate.workflowId === "wf-active-cache"), false);
+  });
+
   test("resume succeeds when the backend has durable checkpoint state for the workflow", () => {
     backend.registerWorkflow({ workflowId: "wf-has-state", name: "resumable-pipeline", inputs: { topic: "data" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     const result = resumeDurableWorkflow("wf-has-state", deps());
@@ -238,6 +297,45 @@ describe("resumeDurableWorkflow", () => {
       assert.match(result.message, /\/workflow kill/);
     }
     store.removeRun("wf-active");
+  });
+
+  test("resume refuses when the persistent backend reports an active owner in another process", () => {
+    class ActivelyOwnedBackend extends InMemoryDurableBackend {
+      claimWorkflowExecution(): boolean {
+        return false;
+      }
+
+      isWorkflowExecutionActive(): boolean {
+        return true;
+      }
+
+      listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
+        return [];
+      }
+
+      listActiveWorkflowHandles() {
+        const handle = this.getWorkflow("wf-active-elsewhere");
+        return handle === undefined ? [] : [handle];
+      }
+    }
+    const activelyOwned = new ActivelyOwnedBackend();
+    activelyOwned.registerWorkflow({
+      workflowId: "wf-active-elsewhere",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      createdAt: 1,
+      status: "running",
+      completedCheckpoints: 1,
+    });
+
+    const result = resumeDurableWorkflow("wf-active", { ...deps(), durableBackend: activelyOwned });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "not_resumable");
+      assert.match(result.message, /already running in another session/);
+      assert.match(result.message, /\/workflow connect/);
+    }
   });
 
   test("running and paused workflows are both resumable at the catalog level", () => {

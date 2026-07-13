@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-nested-chi-8905.sock send-keys -t second:0.0 Enter
+tmux -S /tmp/atomic-final-nested-chi-8905.sock send-keys -t second:0.0 final-nested-answer Enter
+tmux -S /tmp/atomic-final-nested-chi-8905.sock kill-server; rm -f /tmp/atomic-final-nested-chi-8905.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/nested-child-root-only/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

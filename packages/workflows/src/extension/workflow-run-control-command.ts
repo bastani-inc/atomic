@@ -426,6 +426,24 @@ export async function handleRunControlCommand(
     if (!isPaused && run?.exitReason === "quit" && action === "resume") {
       return await handleDurableResume(stageRunId, ctx, reporter, deps);
     }
+    // Exact-session restoration can retain an ended, non-resumable snapshot
+    // with the same id as an authoritative paused durable root. Check durable
+    // state before falling back to read-only snapshot mode so the restored
+    // history entry cannot shadow cross-session resume.
+    if (!isPaused && run?.endedAt !== undefined && action === "resume") {
+      await ensureWorkflowResourcesVisible();
+      const runtime = deps.runtimeForContext(ctx);
+      try {
+        const durable = await runtime.prepareDurableResumable(stageRunId);
+        if (durable.some((entry) => entry.workflowId === stageRunId)) {
+          return await handleDurableResume(stageRunId, ctx, reporter, deps);
+        }
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        fail(`Failed to inspect durable workflow ${stageRunId.slice(0, 8)}: ${detail}`);
+        return true;
+      }
+    }
     const result = resumeRun(stageRunId, { stageId, message });
     if (!result.ok) {
       fail(`Run not found: ${stageRunId.slice(0, 8)}`);

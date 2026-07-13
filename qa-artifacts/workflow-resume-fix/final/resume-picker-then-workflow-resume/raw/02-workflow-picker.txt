@@ -1,0 +1,61 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+
+ Reply with exactly QA_HOST_READY.
+
+
+ QA_HOST_READY
+
+
+
+ [workflows:chat-surface]
+
+ ╭ DISPATCHED ────────────────────────────────────────────────────────────────╮
+ │ ●  90c18b45  workflow-resume-e2e-fixture  ● running                        │
+ │   mode="prompt"  ·  marker_root="/Users/ton…"  ·  label="final-pick…"      │
+ │                                                                            │
+ │  ▸ /workflow connect 90c18b45  watch, attach & steer                       │
+ ╰────────────────────────────────────────────────────────────────────────────╯
+ run id: 90c18b45-9c31-4e27-9c95-69b8e0c4be1e
+ inputs: mode="prompt",
+ marker_root="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2
+ e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/ma
+ rkers", label="final-picker"
+
+
+ ⠹ Working...
+
+                    ↑669 • ↓7 • R12k • CH94.6% • $0.019 (sub) • 3.4%/372k (auto)
+
+────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+› workflow-resume-e2e-fixture  paused  1 checkpoints  0 prompts            1 now
+
+────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...
+
+╭ BACKGROUND  1 run  ✗ 1 failed ───────────────────────────────────────────────╮
+│   ✗  90c18b  workflow-resume-e2e-fixture                                     │
+│     failed · 6s                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯

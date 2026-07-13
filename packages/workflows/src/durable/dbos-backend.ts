@@ -4,11 +4,9 @@ import type { DurableCheckpoint, DurableCheckpointEntry, DurableWorkflowHandle, 
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend, type WorkflowRegistrationInput } from "./backend.js";
+import { defaultDurableStateDir } from "./file-backend.js";
+import { DbosExecutionLeaseRegistry } from "./dbos-execution-lease.js";
 import { encodeCheckpoint, decodeToCheckpoint } from "./dbos-envelope.js";
-
-// ---------------------------------------------------------------------------
-// SDK abstraction
-// ---------------------------------------------------------------------------
 
 /**
  * Abstraction over the real `@dbos-inc/dbos-sdk` so the adapter is testable
@@ -44,10 +42,6 @@ export interface DbosStepRecord {
   readonly output: WorkflowSerializableValue;
   readonly completedAt?: number;
 }
-
-// ---------------------------------------------------------------------------
-// Real SDK handle factory (lazy import, no top-level dependency)
-// ---------------------------------------------------------------------------
 
 interface DbosWorkflowHandle {
   readonly workflowID?: string;
@@ -96,7 +90,12 @@ export async function createDbosDurableBackend(config?: { readonly systemDatabas
   const mainWorkflow = sdk.registerWorkflow(async (_name: string, inputs: DurableInputs) => inputs, { name: "atomicWorkflowHandle" });
   const checkpointWorkflow = sdk.registerWorkflow(async (_workflowId: string, _stepName: string, output: WorkflowSerializableValue) => output, { name: "atomicWorkflowCheckpoint" });
   await sdk.launch();
-  return new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow));
+  const executionLeaseDir = defaultDurableStateDir();
+  if (executionLeaseDir === undefined) {
+    await sdk.shutdown();
+    throw new Error("DBOS workflow durability requires HOME or USERPROFILE for cross-process execution leases.");
+  }
+  return new DbosDurableBackend(createRealDbosHandle(sdk, mainWorkflow, checkpointWorkflow), executionLeaseDir);
 }
 
 async function importDbosSdk(): Promise<DbosStatic> {
@@ -173,8 +172,6 @@ function statusToInfo(status: DbosStatus, fallbackId: string): DbosWorkflowInfo 
     status: status.status ?? "PENDING",
     createdAt: status.createdAt ?? Date.now(),
   };
-  // Inputs were passed as (name, inputs) to the main workflow; extract the
-  // inputs object from the second positional argument.
   if (status.input !== undefined && status.input.length >= 2) {
     const inputs = status.input[1];
     if (typeof inputs === "object" && inputs !== null && !Array.isArray(inputs)) {
@@ -183,10 +180,6 @@ function statusToInfo(status: DbosStatus, fallbackId: string): DbosWorkflowInfo 
   }
   return info;
 }
-
-// ---------------------------------------------------------------------------
-// Backend adapter
-// ---------------------------------------------------------------------------
 
 /**
  * DBOS-backed durable backend. Wraps a {@link DbosSdkHandle} to implement the
@@ -201,12 +194,14 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = true;
   private readonly mem = new InMemoryDurableBackend();
   private readonly sdk: DbosSdkHandle;
+  private readonly executionLeases: DbosExecutionLeaseRegistry;
   private readonly hydrated = new Set<string>();
   private writeQueue: Promise<void> = Promise.resolve();
   private writeErrors: Error[] = [];
 
-  constructor(sdk: DbosSdkHandle) {
+  constructor(sdk: DbosSdkHandle, executionLeaseDir?: string) {
     this.sdk = sdk;
+    this.executionLeases = new DbosExecutionLeaseRegistry(executionLeaseDir);
   }
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
@@ -252,12 +247,31 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       if (status === "cancelled") await this.sdk.cancelWorkflow(workflowId);
       else if (status === "running") await this.sdk.resumeWorkflow(workflowId);
       await this.writeMetadata(workflowId);
+      if (status !== "running") this.releaseWorkflowExecution(workflowId);
     });
   }
 
-  listResumableWorkflows(): readonly ResumableWorkflowEntry[] { return this.mem.listResumableWorkflows(); }
+  claimWorkflowExecution(workflowId: string): boolean { return this.executionLeases.claim(workflowId); }
+  releaseWorkflowExecution(workflowId: string): void { this.executionLeases.release(workflowId); }
+  isWorkflowExecutionActive(workflowId: string): boolean { return this.executionLeases.active(workflowId); }
+
+  listActiveWorkflowHandles(): readonly DurableWorkflowHandle[] {
+    return this.mem.exportAll()
+      .map((record) => record.handle)
+      .filter((handle) => this.isWorkflowExecutionActive(handle.workflowId));
+  }
+
+  listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
+    return this.mem.listResumableWorkflows().filter((entry) => !this.isWorkflowExecutionActive(entry.workflowId));
+  }
   toCacheEntry(workflowId: string) { return this.mem.toCacheEntry(workflowId); }
-  reset(): void { this.mem.reset(); this.hydrated.clear(); this.writeQueue = Promise.resolve(); this.writeErrors = []; }
+  reset(): void {
+    this.executionLeases.reset();
+    this.mem.reset();
+    this.hydrated.clear();
+    this.writeQueue = Promise.resolve();
+    this.writeErrors = [];
+  }
   async flush(): Promise<void> {
     await this.writeQueue;
     if (this.writeErrors.length === 0) return;
@@ -356,6 +370,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       status: entry.status,
       completedCheckpoints: entry.completedCheckpoints,
       pendingPrompts: entry.pendingPrompts,
+      ...(entry.definitionHash !== undefined ? { definitionHash: entry.definitionHash } : {}),
       ...(entry.label !== undefined ? { label: entry.label } : {}),
       ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
       ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
@@ -393,6 +408,7 @@ function encodeMetadata(entry: DurableCheckpointEntry): WorkflowSerializableValu
       workflowId: entry.workflowId,
       name: entry.name,
       inputs: entry.inputs,
+      ...(entry.definitionHash !== undefined ? { definitionHash: entry.definitionHash } : {}),
       status: entry.status,
       completedCheckpoints: entry.completedCheckpoints,
       pendingPrompts: entry.pendingPrompts,
@@ -431,6 +447,7 @@ function parseDurableCheckpointEntry(value: WorkflowSerializableValue): DurableC
     || typeof entry.completedCheckpoints !== "number"
     || typeof entry.pendingPrompts !== "number"
     || typeof entry.ts !== "number"
+    || (entry.definitionHash !== undefined && typeof entry.definitionHash !== "string")
     || (entry.label !== undefined && typeof entry.label !== "string")
     || (entry.rootWorkflowId !== undefined && typeof entry.rootWorkflowId !== "string")
     || (entry.resumable !== undefined && typeof entry.resumable !== "boolean")
@@ -445,6 +462,7 @@ function parseDurableCheckpointEntry(value: WorkflowSerializableValue): DurableC
     workflowId: entry.workflowId,
     name: entry.name,
     inputs: entry.inputs,
+    ...(entry.definitionHash !== undefined ? { definitionHash: entry.definitionHash } : {}),
     status: entry.status,
     completedCheckpoints: entry.completedCheckpoints,
     pendingPrompts: entry.pendingPrompts,

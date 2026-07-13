@@ -3,6 +3,7 @@ import { quitAllRuns } from "../runs/background/quit.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
+import { getDurableBackend } from "../durable/factory.js";
 import { restoreOnSessionStart } from "../shared/persistence-restore.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
@@ -99,7 +100,7 @@ export function registerWorkflowLifecycleHandlers(
   });
 
   installCompactionHook(pi, store);
-  pi.on("session_shutdown", (event) => {
+  pi.on("session_shutdown", async (event) => {
     const reason = typeof event === "object" && event !== null && "reason" in event
       ? (event as { readonly reason?: string }).reason
       : undefined;
@@ -110,6 +111,7 @@ export function registerWorkflowLifecycleHandlers(
       // `/workflow kill`. Durable-progress workflows stay available through
       // `/workflow resume`; stage handles are disposed after being paused.
       quitAllRuns({ store, stageControlRegistry });
+      await getDurableBackend().flush?.();
       stageControlRegistry.clear();
     }
     deps.storeWidgetRef.current?.();

@@ -1,0 +1,8 @@
+cleanup_scope=scenario isolated HOME/agent/session/durable/marker paths and dedicated tmux socket
+commands:
+tmux -S /tmp/atomic-final-incompat-proof-13328.sock send-keys -t proof:0.0 -l -- /workflow\ resume\ fdf49378-cf06-41c8-92f5-1cc5891203b0; tmux -S /tmp/atomic-final-incompat-proof-13328.sock send-keys -t proof:0.0 Enter
+tmux -S /tmp/atomic-final-incompat-proof-13328.sock send-keys -t proof:0.0 -l -- /workflow\ resume\ fdf49378-cf06-41c8-92f5-1cc5891203b0; tmux -S /tmp/atomic-final-incompat-proof-13328.sock send-keys -t proof:0.0 Enter
+tmux -S /tmp/atomic-final-incompat-proof-13328.sock kill-server; rm -f /tmp/atomic-final-incompat-proof-13328.sock; rm -rf /tmp/atomic-final-matrix-20260713c/after/incompatible-definition-on-resume/agent
+agent_dir_absent=true
+socket_absent=true
+scoped_processes:

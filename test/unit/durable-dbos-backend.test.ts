@@ -224,6 +224,7 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(backend.getWorkflow("wf-4")!.status, "running");
   });
 
+
   test("versioned metadata hydrates latest mutable status and checkpoint count", async () => {
     backend.registerWorkflow({ workflowId: "wf-meta-update", name: "test", inputs: {}, createdAt: 1, status: "running" });
     await backend.flush();
@@ -324,7 +325,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 
   test("hydrateResumableWorkflows uses Atomic metadata status instead of DBOS helper completion", async () => {
     const session1 = new DbosDurableBackend(sdk);
-    session1.registerWorkflow({ workflowId: "wf-meta", name: "meta", inputs: { x: 1 }, createdAt: 10, status: "running" });
+    session1.registerWorkflow({ workflowId: "wf-meta", name: "meta", inputs: { x: 1 }, definitionHash: "h-definition-v1", createdAt: 10, status: "running" });
     session1.recordCheckpoint({ kind: "tool", workflowId: "wf-meta", checkpointId: "tool:meta", name: "meta-step", argsHash: "h-meta", output: "ok", completedAt: 11 });
     session1.setWorkflowStatus("wf-meta", "paused");
     await session1.flush();
@@ -337,6 +338,7 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.ok(entry !== undefined);
     assert.equal(entry.status, "paused");
     assert.deepEqual(entry.inputs, { x: 1 });
+    assert.equal(entry.definitionHash, "h-definition-v1");
   });
 
 

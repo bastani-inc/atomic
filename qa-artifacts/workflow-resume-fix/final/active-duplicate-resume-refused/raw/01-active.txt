@@ -1,0 +1,34 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────╮
+│ ●  c44d902b  workflow-resume-e2e-fixture  ● running                          │
+│   mode="prompt"  ·  marker_root="/Users/tony…"  ·  label="final-active"      │
+│                                                                              │
+│  ▸ /workflow connect c44d902b  watch, attach & steer                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+                                                 $0.000 (sub) • 0.0%/372k (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...
+
+╭ BACKGROUND  1 run  ● 1 running  ？ ↵ 1 needs attention (attach to workflow … ╮
+│   ●  c44d90  workflow-resume-e2e-fixture                                     │
+│     single · 0/1 · 1s                                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
