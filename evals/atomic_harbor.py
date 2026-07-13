@@ -13,7 +13,7 @@ from harbor.agents.installed.base import (
 )
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-from skill_prerequisites import (
+from prerequisites import (
     agent_install_command,
     root_install_command,
     runtime_environment_command,

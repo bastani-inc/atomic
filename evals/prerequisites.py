@@ -32,13 +32,12 @@ def root_install_command(*, harbor: bool = False) -> str:
         "apk add --no-cache bash ca-certificates curl fd git nodejs npm "
         "ripgrep tmux chromium"
     )
-    # Fedora provides these directly; RHEL-compatible images need EPEL. Avoid
-    # DNF-only flags/subcommands because some supported images expose real yum.
+    # Fedora provides these directly; RHEL-compatible images need EPEL.
     yum = (
         "yum install -y bash ca-certificates git tmux && "
         "(command -v curl >/dev/null 2>&1 || yum install -y curl) && "
-        "(yum install -y chromium ripgrep fd-find || "
-        "(yum install -y epel-release && yum install -y chromium ripgrep fd-find))"
+        "(yum install -y chromium fd-find ripgrep || "
+        "(yum install -y epel-release && yum install -y chromium fd-find ripgrep))"
     )
     return (
         "set -euo pipefail; "
@@ -71,9 +70,8 @@ def agent_install_command(version_spec: str) -> str:
         "{ echo 'Error: Alpine nodejs must be Node.js 18 or newer' >&2; exit 1; }; "
         'npm config set prefix "$HOME/.local"; export PATH="$HOME/.local/bin:$PATH"; '
         'else export NVM_DIR="$HOME/.nvm"; '
-        'if [ -d "$NVM_DIR/.git" ]; then git -C "$NVM_DIR" fetch --depth=1 origin master && '
-        'git -C "$NVM_DIR" reset --hard origin/master; else rm -rf "$NVM_DIR" && '
-        'git clone --depth=1 https://github.com/nvm-sh/nvm.git "$NVM_DIR"; fi; '
+        'if [ ! -s "$NVM_DIR/nvm.sh" ]; then '
+        "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.2/install.sh | bash; fi; "
         '. "$NVM_DIR/nvm.sh"; '
         "command -v nvm >/dev/null 2>&1 || { echo 'Error: NVM failed to load' >&2; exit 1; }; "
         "nvm install 22; nvm alias default 22; fi"
@@ -85,9 +83,13 @@ def agent_install_command(version_spec: str) -> str:
         "'export PLAYWRIGHT_MCP_SANDBOX=false' > \"$env_tmp\"; "
         "if command -v apk >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then "
         "browser_path=$(command -v chromium || command -v chromium-browser); "
+        "else playwright-cli install-browser --only-shell chromium; "
+        'browser_path=$(find "$HOME/.cache/ms-playwright" -type f '
+        "\\( -name headless_shell -o -name chrome-headless-shell \\) "
+        "-perm -u+x -print -quit); fi; "
+        'test -n "$browser_path" && test -x "$browser_path"; '
         "printf '%s\\n' \"export PLAYWRIGHT_MCP_EXECUTABLE_PATH='$browser_path'\" "
         '>> "$env_tmp"; '
-        "else playwright-cli install-browser chromium; fi; "
         'mv -f "$env_tmp" "$HOME/.atomic-eval-env"; '
         f"{runtime_environment_command()}"
     )
