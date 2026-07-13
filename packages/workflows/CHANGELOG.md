@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented the synced Impeccable fixture's nested `git init` from inheriting hook-local Git repository variables and corrupting a linked repository's shared `core.worktree`. Runner-managed reusable worktrees now remap propagated invoking-repository `cwd` values and relative direct outputs into the selected worktree; reject blank, self, nested, foreign, lexical-escape, symlink-escape, and changed cached targets before opening a later session; key cached identity by canonical repository/target across equivalent path and ref spellings; revalidate newly created targets; and expose clearer workflow tool guidance/schema descriptions so natural-language worktree requests cannot be mistaken for runtime configuration. Temporary direct task and parallel worktrees also derive omitted/relative task cwd values from the runner invocation cwd and clean up when startup fails before their workflow callback, while relative outputs are persisted to stable runner-owned artifacts before cleanup and reject parent traversal or symlink escapes across direct, parallel, and chain modes; blank `chainDir` values no longer bypass reusable-worktree output routing.
+
 ## [0.9.8] - 2026-07-12
 
 ### Changed
