@@ -4,7 +4,7 @@ import re
 import shlex
 import tempfile
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from harbor.agents.installed.base import (
     BaseInstalledAgent,
@@ -53,6 +53,48 @@ class Atomic(BaseInstalledAgent):
             choices=["off", "minimal", "low", "medium", "high", "xhigh"],
         ),
     ]
+
+    @override
+    def __init__(
+        self,
+        logs_dir: Path,
+        prompt_template_path: Path | str | None = None,
+        version: str | None = None,
+        extra_env: dict[str, str] | None = None,
+        *,
+        disallowed_subscriptions: str | list[str] | tuple[str, ...] | None = None,
+        **kwargs: object,
+    ) -> None:
+        self._disallowed_subscriptions: frozenset[str] = (
+            self._normalize_disallowed_subscriptions(disallowed_subscriptions)
+        )
+        super().__init__(
+            logs_dir=logs_dir,
+            prompt_template_path=prompt_template_path,
+            version=version,
+            extra_env=extra_env,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _normalize_disallowed_subscriptions(value: object) -> frozenset[str]:
+        if value is None:
+            return frozenset()
+        values = [value] if isinstance(value, str) else value
+        if not isinstance(values, list | tuple):
+            raise TypeError(
+                "disallowed_subscriptions must be a string or list of strings"
+            )
+        subscriptions: set[str] = set()
+        for item in values:
+            if not isinstance(item, str):
+                raise TypeError(
+                    "disallowed_subscriptions must contain only provider names"
+                )
+            subscriptions.update(
+                name.strip() for name in item.split(",") if name.strip()
+            )
+        return frozenset(subscriptions)
 
     @staticmethod
     @override
@@ -118,10 +160,10 @@ class Atomic(BaseInstalledAgent):
             if isinstance(data, dict):
                 merged.update(data)
         return {
-            provider: entry
+            provider: cast(dict[str, object], entry)
             for provider, entry in merged.items()
-            if isinstance(provider, str)
-            and provider
+            if provider
+            and provider not in self._disallowed_subscriptions
             and self._is_valid_provider_auth(entry)
         }
 
@@ -259,6 +301,7 @@ class Atomic(BaseInstalledAgent):
             "trap 'cleanup_atomic_sessions 143; exit 143' TERM; "
         )
 
+    @override
     @with_prompt_template
     async def run(
         self,
