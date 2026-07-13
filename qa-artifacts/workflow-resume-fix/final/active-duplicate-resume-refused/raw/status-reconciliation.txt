@@ -1,6 +1,4 @@
-{"scenario_id":"active-duplicate-resume-refused","outcome":"pass","tested_head":"f660468db560d1c429037ae12a8258f9aee5318a","source_manifest_hash":"21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf","evidence":"raw/final.txt"}
-marker_events:
-{"event":"checkpoint-before","timestamp":1783946736154}
-{"event":"first-answer:final-active-answer","timestamp":1783946745000}
-{"event":"final:final-active-answer","timestamp":1783946745001}
-durable_checkpoint_session_entries:
+COMMAND: cat raw/durable-final-snapshot.json (or preserved durable snapshot)
+{"version":1,"workflows":[{"handle":{"workflowId":"da49da3a-3ae9-4550-9bdc-69225513cf80","name":"workflow-resume-e2e-fixture","inputs":{"mode":"prompt","marker_root":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/markers","label":"final-active"},"createdAt":1783971014656,"status":"running","invocationCwd":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e","definitionHash":"h8744d5504524d20c58d8118bcbb373b8","completedCheckpoints":1,"pendingPrompts":0,"updatedAt":1783971014663,"rootWorkflowId":"da49da3a-3ae9-4550-9bdc-69225513cf80","resumable":true},"checkpoints":[{"kind":"tool","workflowId":"da49da3a-3ae9-4550-9bdc-69225513cf80","checkpointId":"tool:ha67681cc5c73b1b668461df4bff536a3","name":"checkpoint-before","argsHash":"ha67681cc5c73b1b668461df4bff536a3","output":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/markers/final-active.events.jsonl","completedAt":1783971014663}]}]}
+SUMMARY:
+{'workflowId': 'da49da3a-3ae9-4550-9bdc-69225513cf80', 'status': 'running', 'completedCheckpoints': 1, 'resumable': True, 'definitionHash': 'h8744d5504524d20c58d8118bcbb373b8', 'updatedAt': 1783971014663}

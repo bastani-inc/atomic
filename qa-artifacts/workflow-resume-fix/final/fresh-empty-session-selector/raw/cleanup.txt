@@ -1,2 +1,22 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-fresh-empty-sessio-50122.sock' list-sessions
+chooser: 1 windows (created Mon Jul 13 12:17:00 2026)
+tui: 1 windows (created Mon Jul 13 12:15:53 2026)
+COMMAND: ps -ef | grep scenario
+  501 51329     1   0 12:15PM ??         0:00.36 tmux -S /tmp/atomic-final-fresh-empty-sessio-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/fresh-empty-session-selector/launch.sh
+  501 51557 51329   0 12:15PM ttys000    0:10.86 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/fresh-empty-session-selector/sessions
+  501 51965 51329   0 12:17PM ttys004    0:08.37 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/fresh-empty-session-selector/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/fresh-empty-session-selector/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:17 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:15 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:15 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:15 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:15 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:15 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/fresh-empty-session-selector/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:15 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:15 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:15 .atomic

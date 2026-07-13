@@ -1,6 +1,4 @@
-{"scenario_id":"resume-picker-then-workflow-resume","outcome":"pass","tested_head":"f660468db560d1c429037ae12a8258f9aee5318a","source_manifest_hash":"21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf","evidence":"raw/final.txt"}
-marker_events:
-{"event":"checkpoint-before","timestamp":1783946488347}
-{"event":"first-answer:final-picker-answer","timestamp":1783946567067}
-{"event":"final:final-picker-answer","timestamp":1783946567067}
-durable_checkpoint_session_entries:
+COMMAND: cat raw/durable-final-snapshot.json (or preserved durable snapshot)
+{"version":1,"workflows":[{"handle":{"workflowId":"b903e6e6-b231-4e5e-bf2f-0e8260cb3396","name":"workflow-resume-e2e-fixture","inputs":{"mode":"prompt","marker_root":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/markers","label":"final-picker"},"createdAt":1783970004767,"status":"running","invocationCwd":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e","definitionHash":"h8744d5504524d20c58d8118bcbb373b8","completedCheckpoints":1,"pendingPrompts":0,"updatedAt":1783970004776,"rootWorkflowId":"b903e6e6-b231-4e5e-bf2f-0e8260cb3396","resumable":true},"checkpoints":[{"kind":"tool","workflowId":"b903e6e6-b231-4e5e-bf2f-0e8260cb3396","checkpointId":"tool:hf2a07741c0bdcb1652dd5b43477b6183","name":"checkpoint-before","argsHash":"hf2a07741c0bdcb1652dd5b43477b6183","output":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/markers/final-picker.events.jsonl","completedAt":1783970004776}]}]}
+SUMMARY:
+{'workflowId': 'b903e6e6-b231-4e5e-bf2f-0e8260cb3396', 'status': 'running', 'completedCheckpoints': 1, 'resumable': True, 'definitionHash': 'h8744d5504524d20c58d8118bcbb373b8', 'updatedAt': 1783970004776}

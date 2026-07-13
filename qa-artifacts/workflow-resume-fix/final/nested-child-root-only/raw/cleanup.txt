@@ -1,2 +1,22 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-nested-50122.sock' list-sessions
+chooser: 1 windows (created Mon Jul 13 12:28:25 2026)
+tui: 1 windows (created Mon Jul 13 12:26:59 2026)
+COMMAND: ps -ef | grep scenario
+  501 56782     1   0 12:26PM ??         0:00.47 tmux -S /tmp/atomic-final-nested-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/nested-child-root-only/launch.sh
+  501 57020 56782   0 12:26PM ttys000    0:11.14 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/nested-child-root-only/sessions
+  501 57558 56782   0 12:28PM ttys004    0:09.69 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/nested-child-root-only/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/nested-child-root-only/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:28 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:27 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:27 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:27 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:27 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:26 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/nested-child-root-only/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:27 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:27 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:27 .atomic

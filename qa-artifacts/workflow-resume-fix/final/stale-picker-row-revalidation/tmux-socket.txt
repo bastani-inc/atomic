@@ -1,1 +1,1 @@
-/tmp/af2-stale-picker-row-rev.sock
+/tmp/atomic-6-stale-picker-row-revalidation.sock

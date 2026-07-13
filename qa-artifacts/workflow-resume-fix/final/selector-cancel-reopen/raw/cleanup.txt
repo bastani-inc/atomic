@@ -1,2 +1,1 @@
-agent_dir_absent=true
-socket_absent=true
+socket_absent=false

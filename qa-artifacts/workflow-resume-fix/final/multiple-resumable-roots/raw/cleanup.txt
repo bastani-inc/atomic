@@ -1,2 +1,24 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-multi-50122.sock' list-sessions
+a: 1 windows (created Mon Jul 13 12:21:04 2026)
+b: 1 windows (created Mon Jul 13 12:21:10 2026)
+chooser: 1 windows (created Mon Jul 13 12:21:14 2026)
+COMMAND: ps -ef | grep scenario
+  501 53677     1   0 12:21PM ??         0:00.69 tmux -S /tmp/atomic-final-multi-50122.sock new-session -d -s a -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/launch.sh
+  501 53907 53677   0 12:21PM ttys000    0:12.88 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/sessions
+  501 53951 53677   0 12:21PM ttys004    0:07.54 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/sessions
+  501 53977 53677   0 12:21PM ttys006    0:12.80 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:21 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:21 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:21 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:21 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:21 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:21 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:21 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:21 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:21 .atomic

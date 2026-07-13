@@ -1,1 +1,1 @@
-/tmp/af2-exact-session-after-.sock
+/tmp/atomic-6-exact-session-after-ctrl-c.sock

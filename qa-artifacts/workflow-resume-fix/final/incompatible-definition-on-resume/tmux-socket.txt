@@ -1,1 +1,1 @@
-/tmp/af2-incompatible-definit.sock
+/tmp/atomic-6-incompatible-definition-on-resume.sock

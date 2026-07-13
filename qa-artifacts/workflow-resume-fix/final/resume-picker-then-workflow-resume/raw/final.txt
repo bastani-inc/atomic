@@ -1,6 +1,6 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0
-    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+    ██████▙                ▟██████░░   (unknown) unknown
      ██████▙              ▟██████░░
  /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
       ██████▙            ▟██████░░
@@ -12,62 +12,29 @@
             ░████████████░░░
               ░░░░░░░░░░░░
 
-RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
 
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
 
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
 
- Reply with exactly QA_HOST_READY.
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
 
+ ⠴ Working...
 
- QA_HOST_READY
+                                                                   0.0%/0 (auto)
 
+────────────────────────────────────────────────────────────────────────────────
 
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
 
- [workflows:chat-surface]
+> final-picker-answer
 
- ╭ DISPATCHED ────────────────────────────────────────────────────────────────╮
- │ ●  90c18b45  workflow-resume-e2e-fixture  ● running                        │
- │   mode="prompt"  ·  marker_root="/Users/ton…"  ·  label="final-pick…"      │
- │                                                                            │
- │  ▸ /workflow connect 90c18b45  watch, attach & steer                       │
- ╰────────────────────────────────────────────────────────────────────────────╯
- run id: 90c18b45-9c31-4e27-9c95-69b8e0c4be1e
- inputs: mode="prompt",
- marker_root="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2
- e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/ma
- rkers", label="final-picker"
+  No sessions in current folder. tab view all.
 
-
- Resuming durable workflow "workflow-resume-e2e-fixture" (90c18b45) — completed
- checkpoints will be replayed.
-
-╭ HIL ANSWERED ────────────────────────────────────────────────────────────────╮
-│ ✓ Workflow "workflow-resume-e2e-fixture" received the user's response        │
-│ workflow  workflow-resume-e2e-fixture                                        │
-│ run       90c18b45-9c31-4e27-9c95-69b8e0c4be1e                               │
-│ stage     input                                                              │
-│ prompt    E2E first answer for final-picker                                  │
-│ answer    final-picker-answer                                                │
-
- ╭──────────────╮
- │ ORCHESTRATOR │  workflow-resume-e2e-fixture                             ✓ 1
- ╰──────────────╯
-
-
-
-                          ╭─────── input ────────╮
-                          │        1m 9s         │
-                          │      ✓ complete      │
-                          │         root         │
-                          ╰──────────────────────╯
-
-
-
-
-
-
-
-
- ╭───────╮
- │ GRAPH │MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctr
- ╰───────╯
+────────────────────────────────────────────────────────────────────────────────
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

@@ -1,2 +1,2 @@
-helper_pid=35448
-helper_exited=false
+helper_pid=69850
+helper_exited=true

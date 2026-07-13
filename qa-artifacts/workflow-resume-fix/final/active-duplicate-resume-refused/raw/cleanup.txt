@@ -1,2 +1,22 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-active-50122.sock' list-sessions
+contender: 1 windows (created Mon Jul 13 12:31:16 2026)
+owner: 1 windows (created Mon Jul 13 12:30:10 2026)
+COMMAND: ps -ef | grep scenario
+  501 58198     1   0 12:30PM ??         0:00.29 tmux -S /tmp/atomic-final-active-50122.sock new-session -d -s owner -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/launch.sh
+  501 58429 58198   0 12:30PM ttys000    0:11.20 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/sessions
+  501 58832 58198   0 12:31PM ttys004    0:06.52 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:31 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:30 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:30 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:30 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:30 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:30 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/active-duplicate-resume-refused/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:30 .
+drwxr-xr-x@ 11 tonystark  staff  352 Jul 13 12:30 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:30 .atomic

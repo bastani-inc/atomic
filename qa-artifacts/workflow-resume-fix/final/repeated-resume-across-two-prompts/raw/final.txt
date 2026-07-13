@@ -1,6 +1,6 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0
-    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+    ██████▙                ▟██████░░   (unknown) unknown
      ██████▙              ▟██████░░
  /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
       ██████▙            ▟██████░░
@@ -12,15 +12,36 @@
             ░████████████░░░
               ░░░░░░░░░░░░
 
+
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
 RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
 
 
- Error: No durable workflow found for id/prefix:
- 019f5b83-b682-7f90-8ad8-09d4a6a154aa
+ Error: Workflow "workflow-resume-e2e-fixture" (545a217b) is already running in
+ another session. Attach with `/workflow connect 545a217b`, or if that session
+ has ended, clear it with `/workflow kill 545a217b` and re-run.
 
 
-                                                 $0.000 (sub) • 0.0%/372k (auto)
+ Error: No API key found for the selected model.
+
+ Use /login to log into a provider via OAuth or API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
+
+
+                                                                   0.0%/0 (auto)
 ────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────
-(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

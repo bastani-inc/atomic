@@ -1,1 +1,1 @@
-/tmp/af2-sigkill-after-next-p.sock
+/tmp/atomic-6-sigkill-after-next-prompt-render.sock

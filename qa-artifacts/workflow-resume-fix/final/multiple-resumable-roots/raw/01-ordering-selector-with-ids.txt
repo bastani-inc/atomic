@@ -1,0 +1,40 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (unknown) unknown
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
+
+ ⠹ Working...
+
+                                                                   0.0%/0 (auto)
+
+────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+  No sessions in current folder. tab view all.
+
+────────────────────────────────────────────────────────────────────────────────
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

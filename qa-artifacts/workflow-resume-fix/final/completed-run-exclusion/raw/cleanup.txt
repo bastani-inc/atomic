@@ -1,2 +1,20 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-completed-50122.sock' list-sessions
+tui: 1 windows (created Mon Jul 13 12:25:31 2026)
+COMMAND: ps -ef | grep scenario
+  501 55784     1   0 12:25PM ??         0:00.04 tmux -S /tmp/atomic-final-completed-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/completed-run-exclusion/launch.sh
+  501 56012 55784   0 12:25PM ttys000    0:07.21 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/completed-run-exclusion/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/completed-run-exclusion/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:25 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:25 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:25 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:25 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:25 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:25 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/completed-run-exclusion/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:25 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:25 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:25 .atomic

@@ -1,2 +1,20 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-recover-50122.sock' list-sessions
+tui: 1 windows (created Mon Jul 13 12:24:04 2026)
+COMMAND: ps -ef | grep scenario
+  501 54989     1   0 12:24PM ??         0:00.04 tmux -S /tmp/atomic-final-recover-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/recoverable-failure-resume/launch.sh
+  501 55218 54989   0 12:24PM ttys000    0:06.95 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/recoverable-failure-resume/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/recoverable-failure-resume/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:24 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:24 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:24 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:24 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:24 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:24 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/recoverable-failure-resume/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:24 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:24 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:24 .atomic

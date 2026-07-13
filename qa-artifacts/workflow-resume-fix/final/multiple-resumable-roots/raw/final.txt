@@ -1,19 +1,40 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0
-    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+    ██████▙                ▟██████░░   (unknown) unknown
      ██████▙              ▟██████░░
  /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
       ██████▙            ▟██████░░
-   STAGE  workflow-resume-e2e-fixture / input
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
+
+ ⠙ Working...
+
+                                                                   0.0%/0 (auto)
+
 ────────────────────────────────────────────────────────────────────────────────
-╭ AWAITING INPUT ──────────────────────────────────────────────────────────────╮
-│                                                                              │
-│  E2E first answer for final-multi-A                                          │
-│                                                                              │
-│  response                                                                    │
-│  ──────────────────────────────────────────────────────────────────────────  │
-│  final-multi-A-answer                                                        │
-│  ──────────────────────────────────────────────────────────────────────────  │
-│                                                                              │
-│  enter Submit · ctrl+c Skip             ctrl+d graph · ctrl+t copy mode off  │
-╰──────────────────────────────────────────────────────────────────────────────╯
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+> final-multi-B-answer/workflow resumefinal-multi-A-answer
+
+  No sessions in current folder. tab view all.
+
+────────────────────────────────────────────────────────────────────────────────
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

@@ -1,1 +1,1 @@
-/tmp/af2-resume-picker-then-w.sock
+/tmp/atomic-final-resume-picker-then-50122.sock

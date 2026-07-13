@@ -1,6 +1,6 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0
-    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+    ██████▙                ▟██████░░   (unknown) unknown
      ██████▙              ▟██████░░
  /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
       ██████▙            ▟██████░░
@@ -12,15 +12,66 @@
             ░████████████░░░
               ░░░░░░░░░░░░
 
+
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
 RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
 
 
- Error: No durable workflow found for id/prefix:
- 397873d1-b355-4ab2-b1b9-201f89601956
+────────────────────────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and running
+ agent workflows you can feel confident in.
+ Use it to implement tickets, research a codebase, design a UI,
+ or build and run your own loops.
+ Run dynamic workflows and save the ones you like for future use.
+ Start building a verifiable software factory.
+
+ Type a message or slash command below to continue normally.
+ If you have not connected a provider yet, run `/login` first.
+ Run `/atomic` for guides or `/workflow list` to see built-in workflows.
+────────────────────────────────────────────────────────────────────────────────
 
 
-                                                 $0.000 (sub) • 0.0%/372k (auto)
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────╮
+│ ●  8ba20bf9  workflow-resume-e2e-fixture  ● running                          │
+│   mode="completed"  ·  marker_root="/Users/tony…"  ·  label="final-compl…"   │
+│                                                                              │
+│  ▸ /workflow connect 8ba20bf9  watch, attach & steer                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+╭ WORKFLOW FAILED ─────────────────────────────────────────────────────────────╮
+│ ✗ Workflow "workflow-resume-e2e-fixture" failed                              │
+│ workflow  workflow-resume-e2e-fixture                                        │
+│ run       8ba20bf9-d08b-4cad-9090-4370693073b4                               │
+│ error                                                                        │
+│   Workflow run completed without creating any workflow stages. Create at     │
+│   least one stage with ctx.stage(), ctx.task(), ctx.chain(), ctx.parallel(), │
+│   or ctx.workflow().                                                         │
+│ duration  12ms                                                               │
+│ ▸ /workflow status 8ba20bf9-d08b-4cad-9090-4370693073b4                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+ Error: No API provider registered for api: unknown
+
+ ⠼ Working...
+
+                                                                   0.0%/0 (auto)
+
 ────────────────────────────────────────────────────────────────────────────────
-❯
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+>
+
+› workflow-resume-e2e-fixture  failed  0/0 stages                           0 1m
+
 ────────────────────────────────────────────────────────────────────────────────
-(openai-codex) gpt-5.6-sol high fast • /Users/tonystark/Documents/projects/at...
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

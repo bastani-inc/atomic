@@ -1,1 +1,1 @@
-/tmp/af2-rapid-resume-command.sock
+/tmp/atomic-6-rapid-resume-command-burst.sock

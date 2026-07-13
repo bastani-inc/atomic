@@ -1,5 +1,5 @@
 #!/bin/sh
 export HOME="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/sigkill-after-next-prompt-render/home" ATOMIC_CODING_AGENT_DIR="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/sigkill-after-next-prompt-render/agent" ATOMIC_CODING_AGENT_SESSION_DIR="/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/sigkill-after-next-prompt-render/sessions" ATOMIC_OFFLINE=1 ATOMIC_SKIP_VERSION_CHECK=1 ATOMIC_TELEMETRY=0 TERM=xterm-256color
-unset DBOS_SYSTEM_DATABASE_URL ATOMIC_WORKFLOW_DURABLE
+unset DBOS_SYSTEM_DATABASE_URL ATOMIC_WORKFLOW_DURABLE ATOMIC_WORKFLOW_STAGE_SUBAGENT_GUARD ATOMIC_SUBAGENT_CHILD_AGENT ATOMIC_SUBAGENT_CHILD_INDEX ATOMIC_SUBAGENT_CHILD ATOMIC_SUBAGENT_DEPTH ATOMIC_SUBAGENT_FANOUT_CHILD ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME ATOMIC_SUBAGENT_MAX_DEPTH ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET ATOMIC_SUBAGENT_RUN_ID ATOMIC_INTERCOM_SESSION_ID
 cd "/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e"
 exec bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir "/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/sigkill-after-next-prompt-render/sessions" "$@"

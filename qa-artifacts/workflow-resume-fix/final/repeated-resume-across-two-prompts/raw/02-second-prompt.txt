@@ -1,6 +1,6 @@
 
    ██████▙                  ▟██████    Atomic v0.0.0
-    ██████▙                ▟██████░░   (openai-codex) gpt-5.6-sol high fast
+    ██████▙                ▟██████░░   (unknown) unknown
      ██████▙              ▟██████░░
  /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
       ██████▙            ▟██████░░
@@ -12,29 +12,29 @@
             ░████████████░░░
               ░░░░░░░░░░░░
 
-RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
 
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
 
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
 
- ╭──────────────╮
- │ ORCHESTRATOR │  workflow-resume-e2e-fixture                        ✓ 1  ↵ 1
- ╰──────────────╯
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
 
-                          ╭─────── input ────────╮
-                          │          0s          │
-                          │      ✓ complete      │
-                          │         root         │
-                          ╰──────────────────────╯
-                                      │
-                                      │
-                                      │
-                          ╭─────── input ────────╮
-                          │  ？ awaiting input   │
-                          │ waiting for response │
-                          │  ↵ enter to respond  │
-                          ╰──────────────────────╯
+ ⠹ Working...
 
+                                                                   0.0%/0 (auto)
 
- ╭───────╮
- │ GRAPH │MCP: 0/1 servers  ·  ↑↓←→ navigate  ·  ↵ attach  ·  / stages  ·  ctr
- ╰───────╯
+────────────────────────────────────────────────────────────────────────────────
+
+Resume Session (Current Fold ◉ Current Folder | ○ All  Name: All  Sort: Threaded
+tab scope · re:<pattern> regex · "phrase" exact
+ctrl+s Sort · ctrl+n Named · ctrl+d Delete · ctrl+p Path (off)
+
+> final-repeated-first
+
+  No sessions in current folder. tab view all.
+
+────────────────────────────────────────────────────────────────────────────────
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e

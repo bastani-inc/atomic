@@ -1,2 +1,24 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-repeat-50122.sock' list-sessions
+r1: 1 windows (created Mon Jul 13 12:18:34 2026)
+r2: 1 windows (created Mon Jul 13 12:19:39 2026)
+tui: 1 windows (created Mon Jul 13 12:18:26 2026)
+COMMAND: ps -ef | grep scenario
+  501 52492     1   0 12:18PM ??         0:00.47 tmux -S /tmp/atomic-final-repeat-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/launch.sh
+  501 52721 52492   0 12:18PM ttys000    0:11.10 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/sessions
+  501 52763 52492   0 12:18PM ttys004    0:10.03 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/sessions
+  501 53155 52492   0 12:19PM ttys006    0:02.87 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:19 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:18 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:18 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:18 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:18 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:18 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/repeated-resume-across-two-prompts/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:18 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:18 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:18 .atomic

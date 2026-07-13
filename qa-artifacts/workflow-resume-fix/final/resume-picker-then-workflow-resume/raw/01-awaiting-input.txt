@@ -1,0 +1,57 @@
+
+   ██████▙                  ▟██████    Atomic v0.0.0
+    ██████▙                ▟██████░░   (unknown) unknown
+     ██████▙              ▟██████░░
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+      ██████▙            ▟██████░░
+       ████████████████████████░░
+        ██████▛░░░░░░░░▜██████░░
+         ██████▛      ▜██████░░
+          ██████▛    ▜██████░░
+           ██████▛  ▜██████░░
+            ░████████████░░░
+              ░░░░░░░░░░░░
+
+
+ Warning: No models available. Use /login to log into a provider via OAuth or
+ API key. See:
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/providers.md
+
+ /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/packages/co
+ ding-agent/docs/models.md
+RESOURCES context ready · 18 skills · 14 prompts · 6 extensions
+
+
+────────────────────────────────────────────────────────────────────────────────
+ Atomic is a verifiable coding agent runtime for building and running
+ agent workflows you can feel confident in.
+ Use it to implement tickets, research a codebase, design a UI,
+ or build and run your own loops.
+ Run dynamic workflows and save the ones you like for future use.
+ Start building a verifiable software factory.
+
+ Type a message or slash command below to continue normally.
+ If you have not connected a provider yet, run `/login` first.
+ Run `/atomic` for guides or `/workflow list` to see built-in workflows.
+────────────────────────────────────────────────────────────────────────────────
+
+
+╭ DISPATCHED ──────────────────────────────────────────────────────────────────╮
+│ ●  b903e6e6  workflow-resume-e2e-fixture  ● running                          │
+│   mode="prompt"  ·  marker_root="/Users/tony…"  ·  label="final-picker"      │
+│                                                                              │
+│  ▸ /workflow connect b903e6e6  watch, attach & steer                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+                                                                   0.0%/0 (auto)
+────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────
+unknown • /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e
+
+╭ BACKGROUND  1 run  ● 1 running  ？ ↵ 1 needs attention (attach to workflow … ╮
+│   ●  b903e6  workflow-resume-e2e-fixture                                     │
+│     single · 0/1 · 1m 1s                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯

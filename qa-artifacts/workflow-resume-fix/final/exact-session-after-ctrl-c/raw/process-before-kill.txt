@@ -1,0 +1,4 @@
+COMMAND: tmux -S '/tmp/atomic-6-exact-session-after-ctrl-c.sock' display-message -p -t owner '#{pane_pid}'
+70237
+  PID  PPID COMMAND
+70237 70010 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/exact-session-after-ctrl-c/sessions

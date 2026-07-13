@@ -1,1 +1,1 @@
-/tmp/af2-selector-cancel-reop.sock
+/tmp/atomic-6-selector-cancel-reopen.sock

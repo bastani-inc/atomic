@@ -1,4 +1,2 @@
-{"event":"checkpoint-before","timestamp":1783946651815}
-{"event":"intentional-first-failure","timestamp":1783946651816}
-{"event":"recovered-after-failure","timestamp":1783946655014}
-{"event":"final:","timestamp":1783946664012}
+{"event":"checkpoint-before","timestamp":1783970648828}
+{"event":"intentional-first-failure","timestamp":1783970648829}

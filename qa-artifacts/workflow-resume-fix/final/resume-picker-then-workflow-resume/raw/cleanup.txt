@@ -1,2 +1,22 @@
-agent_dir_absent=true
-socket_absent=true
+COMMAND: tmux -S '/tmp/atomic-final-resume-picker-then-50122.sock' list-sessions
+chooser: 1 windows (created Mon Jul 13 12:14:27 2026)
+tui: 1 windows (created Mon Jul 13 12:13:20 2026)
+COMMAND: ps -ef | grep scenario
+  501 50136     1   0 12:13PM ??         0:00.31 tmux -S /tmp/atomic-final-resume-picker-then-50122.sock new-session -d -s tui -- /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/launch.sh
+  501 50363 50136   0 12:13PM ttys000    0:10.84 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/sessions
+  501 50791 50136   0 12:14PM ttys004    0:07.12 bun packages/coding-agent/dist-dev/cli.js --approve --no-context-files --session-dir /Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/sessions
+COMMAND: ls -la home agent
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/agent:
+total 16
+drwxr-xr-x@  6 tonystark  staff  192 Jul 13 12:14 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:13 ..
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:13 cache
+-rw-r--r--@  1 tonystark  staff   35 Jul 13 12:13 mcp-cache.json
+-rw-r--r--@  1 tonystark  staff  115 Jul 13 12:13 settings.json
+drwxr-xr-x@  3 tonystark  staff   96 Jul 13 12:13 workflows
+
+/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/resume-picker-then-workflow-resume/home:
+total 0
+drwx------@  3 tonystark  staff   96 Jul 13 12:13 .
+drwxr-xr-x@ 12 tonystark  staff  384 Jul 13 12:13 ..
+drwx------@  3 tonystark  staff   96 Jul 13 12:13 .atomic

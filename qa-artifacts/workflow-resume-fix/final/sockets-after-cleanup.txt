@@ -1,0 +1,2 @@
+$ find /tmp -maxdepth 1 -type s -name atomic-6-*.sock -print
+RESULT: no matching QA sockets

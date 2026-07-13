@@ -1,6 +1,6 @@
-{"scenario_id":"rapid-resume-command-burst","outcome":"pass","tested_head":"f660468db560d1c429037ae12a8258f9aee5318a","source_manifest_hash":"21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf","evidence":"raw/final.txt"}
-marker_events:
-{"event":"checkpoint-before","timestamp":1783946936666}
-{"event":"first-answer:final-rapid-answer","timestamp":1783946947645}
-{"event":"final:final-rapid-answer","timestamp":1783946947646}
-durable_checkpoint_session_entries:
+COMMAND: cat raw/durable-final-snapshot.json
+{"version":1,"workflows":[{"handle":{"workflowId":"cc5a2fe3-a4e8-4ace-84aa-4bcc411700ed","name":"workflow-resume-e2e-fixture","inputs":{"mode":"prompt","marker_root":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/rapid-resume-command-burst/markers","label":"final-rapid"},"createdAt":1783971791239,"status":"running","invocationCwd":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e","definitionHash":"h8744d5504524d20c58d8118bcbb373b8","completedCheckpoints":1,"pendingPrompts":0,"updatedAt":1783971791248,"rootWorkflowId":"cc5a2fe3-a4e8-4ace-84aa-4bcc411700ed","resumable":true},"checkpoints":[{"kind":"tool","workflowId":"cc5a2fe3-a4e8-4ace-84aa-4bcc411700ed","checkpointId":"tool:h3d773a144c93d8e00f9bf6931b53a908","name":"checkpoint-before","argsHash":"h3d773a144c93d8e00f9bf6931b53a908","output":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/rapid-resume-command-burst/markers/final-rapid.events.jsonl","completedAt":1783971791248}]}]}
+MARKER EVENTS
+{"event":"checkpoint-before","timestamp":1783971791248}
+{"event":"first-answer:final-rapid-answer","timestamp":1783971805311}
+{"event":"final:final-rapid-answer","timestamp":1783971805312}

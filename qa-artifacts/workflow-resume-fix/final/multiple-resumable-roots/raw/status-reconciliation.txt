@@ -1,9 +1,4 @@
-{"scenario_id":"multiple-resumable-roots","outcome":"pass","tested_head":"f660468db560d1c429037ae12a8258f9aee5318a","source_manifest_hash":"21d683dc93560eb5c1c153bdab90c00f55fbfe69a671f4a6cdeef93618d5b2cf","bundle_hash":"552f75605db2a9fb7025dec94dad5b6cf5778974b03023422d10e23e642d328f","fixture_hash":"ac762e71b4440093f66a1ab4c0e8c4f0203fb0c847ecfceea0d9cd47c3e947bf","evidence":"raw/final.txt"}
-marker_events:
-{"event":"checkpoint-before","timestamp":1783946839997}
-{"event":"first-answer:final-multi-A-answer","timestamp":1783946898029}
-{"event":"final:final-multi-A-answer","timestamp":1783946898030}
-{"event":"checkpoint-before","timestamp":1783946846550}
-{"event":"first-answer:final-multi-B-answer","timestamp":1783946875810}
-{"event":"final:final-multi-B-answer","timestamp":1783946875811}
-durable_checkpoint_session_entries:
+COMMAND: cat raw/durable-final-snapshot.json (or preserved durable snapshot)
+{"version":1,"workflows":[{"handle":{"workflowId":"7e3ea699-26ef-4ab5-8d1e-8d747811b4f8","name":"workflow-resume-e2e-fixture","inputs":{"mode":"prompt","marker_root":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/markers","label":"final-multi-B"},"createdAt":1783970472746,"status":"running","invocationCwd":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e","definitionHash":"h8744d5504524d20c58d8118bcbb373b8","completedCheckpoints":1,"pendingPrompts":0,"updatedAt":1783970472754,"rootWorkflowId":"7e3ea699-26ef-4ab5-8d1e-8d747811b4f8","resumable":true},"checkpoints":[{"kind":"tool","workflowId":"7e3ea699-26ef-4ab5-8d1e-8d747811b4f8","checkpointId":"tool:h655eef4cb1e348a692e062636f994e41","name":"checkpoint-before","argsHash":"h655eef4cb1e348a692e062636f994e41","output":"/Users/tonystark/Documents/projects/atomic-fix-workflow-resume-e2e/qa-artifacts/workflow-resume-fix/final/multiple-resumable-roots/markers/final-multi-B.events.jsonl","completedAt":1783970472754}]}]}
+SUMMARY:
+{'workflowId': '7e3ea699-26ef-4ab5-8d1e-8d747811b4f8', 'status': 'running', 'completedCheckpoints': 1, 'resumable': True, 'definitionHash': 'h8744d5504524d20c58d8118bcbb373b8', 'updatedAt': 1783970472754}

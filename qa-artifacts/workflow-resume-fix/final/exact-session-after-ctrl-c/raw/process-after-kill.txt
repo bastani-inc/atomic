@@ -1,0 +1,3 @@
+COMMAND: kill -0 70237
+/tmp/run-exact.sh: line 6: kill: (70237) - No such process
+  PID  PPID COMMAND
