@@ -190,15 +190,22 @@ describe("InteractiveMode compaction events", () => {
 });
 
 describe("compaction boundary component", () => {
-	it("renders the exact collapsed summary and expanded verbatim marker text", () => {
+	it("matches pi's collapsed style and expands the verbatim marker text", () => {
 		const component = new CompactionBoundaryMessageComponent(result);
-		const collapsed = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(collapsed).toContain("✻ Context compacted · kept 3/4 lines · 50% tokens · planned");
+		const collapsedRaw = component.render(200).join("\n");
+		const collapsed = stripVTControlCharacters(collapsedRaw);
+		expect(collapsedRaw).toContain(theme.fg("customMessageLabel", theme.bold("✻ Context compacted")));
+		expect(collapsed).toContain("✻ Context compacted");
+		expect(collapsed).toContain("Compacted from 100 tokens (");
+		expect(collapsed).toContain(" to expand)");
 		expect(collapsed).not.toContain("retained");
+		expect(collapsed).not.toContain("planned");
 
 		component.setExpanded(true);
 		const expandedRaw = component.render(200).join("\n");
 		const expanded = stripVTControlCharacters(expandedRaw).split("\n").map((line) => line.trimEnd()).join("\n");
+		expect(expanded).toContain("✻ Context compacted");
+		expect(expanded).toContain("Compacted from 100 tokens");
 		expect(expanded).toContain("[User]: retained\n (filtered 1 lines)");
 		expect(expandedRaw).toContain(theme.fg("dim", "(filtered 1 lines)"));
 	});

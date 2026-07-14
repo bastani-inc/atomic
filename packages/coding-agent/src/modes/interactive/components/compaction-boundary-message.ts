@@ -2,6 +2,7 @@ import { Box, Spacer, Text } from "@earendil-works/pi-tui";
 import type { VerbatimCompactionDetails, VerbatimCompactionResult, VerbatimCompactionStats } from "../../../core/compaction/index.ts";
 import { VERBATIM_COMPACTION_PREFIX, type CustomMessage } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.ts";
+import { keyText } from "./keybinding-hints.ts";
 
 interface BoundaryView {
 	text: string;
@@ -27,16 +28,26 @@ export class CompactionBoundaryMessageComponent extends Box {
 
 	private updateDisplay(): void {
 		this.clear();
-		const { stats } = this.view;
+		const tokenStr = this.view.stats.tokensBefore.toLocaleString();
+		const label = theme.fg("customMessageLabel", theme.bold("✻ Context compacted"));
+		this.addChild(new Text(label, 0, 0));
+		this.addChild(new Spacer(1));
 		if (this.expanded) {
-			this.addChild(new Text(theme.fg("customMessageLabel", "✻ Context compacted"), 0, 0));
+			this.addChild(new Text(theme.bold(theme.fg("customMessageText", `Compacted from ${tokenStr} tokens`)), 0, 0));
 			this.addChild(new Spacer(1));
 			const rendered = this.view.text.split("\n").map((line) => /^\(filtered \d+ lines\)$/.test(line) ? theme.fg("dim", line) : theme.fg("customMessageText", line)).join("\n");
 			this.addChild(new Text(rendered, 0, 0));
 			return;
 		}
-		const summary = `✻ Context compacted · kept ${stats.linesKept}/${stats.linesBefore} lines · ${formatPercent(stats.percentReduction)} tokens · ${this.view.rung}`;
-		this.addChild(new Text(theme.fg("customMessageText", summary), 0, 0));
+		this.addChild(
+			new Text(
+				theme.fg("customMessageText", `Compacted from ${tokenStr} tokens (`) +
+					theme.fg("dim", keyText("app.tools.expand")) +
+					theme.fg("customMessageText", " to expand)"),
+				0,
+				0,
+			),
+		);
 	}
 }
 
@@ -53,9 +64,4 @@ export function compactionBoundaryFromMessage(message: CustomMessage, expanded: 
 	});
 	component.setExpanded(expanded);
 	return component;
-}
-
-function formatPercent(value: number): string {
-	const rounded = Math.round(value * 10) / 10;
-	return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
 }
