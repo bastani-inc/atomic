@@ -20,6 +20,7 @@ import { join } from "node:path";
 import type { DurableCheckpointEntry, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 
 // ---------------------------------------------------------------------------
 // Session file scanning
@@ -52,7 +53,7 @@ export function scanResumableWorkflows(sessionDir: string): readonly ResumableWo
       }
     }
   }
-  return [...entries.values()].filter(isResumableEntry).sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...entries.values()].filter(isDurableWorkflowResumable).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpointEntry[] {
@@ -155,24 +156,6 @@ function entryToResumable(entry: DurableCheckpointEntry, sessionFile: string): R
   };
 }
 
-function isResumableStatus(status: DurableWorkflowStatus): boolean {
-  // `running`/`paused` are both resumable at the catalog level. A `running`
-  // durable handle may be a crashed process (cross-session crash recovery);
-  // same-session double-resume is filtered out by the command layer.
-  return status === "running" || status === "paused";
-}
-function hasResumeProgress(entry: ResumableWorkflowEntry): boolean {
-  return entry.completedCheckpoints > 0 || entry.pendingPrompts > 0;
-}
-
-
-function isResumableEntry(entry: ResumableWorkflowEntry): boolean {
-  const isRoot = entry.rootWorkflowId === undefined || entry.rootWorkflowId === entry.workflowId;
-  if (!isRoot) return false;
-  if (entry.status === "failed" || entry.status === "blocked") return entry.resumable !== false;
-  return isResumableStatus(entry.status) && hasResumeProgress(entry);
-}
-
 // ---------------------------------------------------------------------------
 // Backend-backed catalog
 // ---------------------------------------------------------------------------
@@ -217,13 +200,14 @@ export function persistDurableCacheEntry(
  * Format the resumable workflow list for display in the selector.
  */
 export function formatResumableWorkflowList(entries: readonly ResumableWorkflowEntry[]): string {
-  if (entries.length === 0) return "No resumable workflows found.";
-  const lines = entries.map((e, i) => {
-    const id = e.workflowId.slice(0, 8);
-    const status = e.status.padEnd(8);
-    const checkpoints = `${e.completedCheckpoints} checkpoint${e.completedCheckpoints === 1 ? "" : "s"}`;
-    const label = e.label ? ` "${e.label}"` : "";
-    return `  ${i + 1}. ${id}  ${status}  ${e.name}${label}  (${checkpoints})`;
+  if (entries.length === 0) return "No resumable or completed workflows found.";
+  const hasCompleted = entries.some((entry) => entry.status === "completed");
+  const lines = entries.map((entry, index) => {
+    const id = entry.workflowId.slice(0, 8);
+    const status = entry.status === "completed" ? "✓ completed" : entry.status.padEnd(8);
+    const checkpoints = `${entry.completedCheckpoints} checkpoint${entry.completedCheckpoints === 1 ? "" : "s"}`;
+    const label = entry.label ? ` "${entry.label}"` : "";
+    return `  ${index + 1}. ${id}  ${status}  ${entry.name}${label}  (${checkpoints})`;
   });
-  return `Resumable workflows:\n${lines.join("\n")}`;
+  return `${hasCompleted ? "Workflow resume targets" : "Resumable workflows"}:\n${lines.join("\n")}`;
 }

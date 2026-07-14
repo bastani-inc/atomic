@@ -86,15 +86,17 @@ describe("InMemoryDurableBackend", () => {
     assert.equal(cps[1]!.checkpointId, "cp-1");
   });
 
-  test("listResumableWorkflows includes running/paused after checkpoint progress", () => {
+  test("keeps completed workflows out of resumable listing and in completed listing", () => {
     // A `running` durable handle may belong to a crashed process (cross-session
     // crash recovery), so it is resumable at the backend level alongside
     // `paused`. Same-session double-resume is filtered by the command layer.
     assert.equal(backend.listResumableWorkflows().length, 0);
+    assert.equal(backend.listCompletedWorkflows().length, 0);
     backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     assert.equal(backend.listResumableWorkflows().length, 1);
     backend.setWorkflowStatus(WORKFLOW_ID, "completed");
     assert.equal(backend.listResumableWorkflows().length, 0);
+    assert.deepEqual(backend.listCompletedWorkflows().map((entry) => entry.workflowId), [WORKFLOW_ID]);
   });
 
   test("listResumableWorkflows filters children and non-recoverable failures", () => {
@@ -187,6 +189,25 @@ describe("FileDurableBackend", () => {
     assert.equal(backend2.getWorkflow(WORKFLOW_ID)!.name, "file-workflow");
   });
 
+  test("preserves latest active-stage timing across a file process boundary", () => {
+    const replayKey = "stage:analyze:1";
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: WORKFLOW_ID, checkpointId: "stage-session:1", name: "analyze", replayKey,
+      sessionFile: "/tmp/analyze.jsonl", startedAt: 1000, durationMs: 400, completedAt: 1400,
+    });
+    backend.recordCheckpoint({
+      kind: "stage", workflowId: WORKFLOW_ID, checkpointId: "stage-session:2", name: "analyze", replayKey,
+      sessionFile: "/tmp/analyze.jsonl", startedAt: 1000, durationMs: 750, completedAt: 1750,
+    });
+
+    const fresh = new FileDurableBackend(join(tmpDir, "state.json"));
+    assert.deepEqual(fresh.getStageSession(WORKFLOW_ID, replayKey), {
+      sessionFile: "/tmp/analyze.jsonl",
+      startedAt: 1000,
+      durationMs: 750,
+    });
+  });
+
   test("lists resumable workflows from a new backend instance", () => {
     backend.recordCheckpoint(makeToolCheckpoint(WORKFLOW_ID, "progress", "h-progress", "done"));
     backend.setWorkflowStatus(WORKFLOW_ID, "paused");
@@ -240,14 +261,15 @@ describe("WorkflowFileDurableBackend", () => {
     assert.deepEqual(ids, ["wf-a", "wf-b"]);
   });
 
-  test("prunes completed workflow files", () => {
+  test("retains completed workflow files for authoritative inspection", () => {
     const backend = new WorkflowFileDurableBackend(tmpDir);
     backend.registerWorkflow({ workflowId: "wf-done", name: "done", inputs: {}, createdAt: 1, status: "running" });
     backend.recordCheckpoint(makeToolCheckpoint("wf-done", "done", "hash-done", "ok", "cp-done"));
     backend.setWorkflowStatus("wf-done", "completed");
 
-    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-done")), false);
+    assert.equal(existsSync(durableStateFileFor(tmpDir, "wf-done")), true);
     assert.equal(backend.listResumableWorkflows().length, 0);
+    assert.deepEqual(backend.listCompletedWorkflows().map((entry) => entry.workflowId), ["wf-done"]);
   });
 
   test("reset clears workflow files without wiping unrelated durable-root files", () => {

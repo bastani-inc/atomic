@@ -18,6 +18,10 @@ function nonNegative(ms: number): number {
   return Math.max(0, ms);
 }
 
+export function rebasedStageStartedAt(accumulatedDurationMs: number | undefined, resumedAt: number): number {
+  return resumedAt - nonNegative(accumulatedDurationMs ?? 0);
+}
+
 function elapsedFromStart(
   startedAt: number,
   now: number,

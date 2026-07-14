@@ -126,6 +126,11 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     return this.mem.listResumableWorkflows();
   }
 
+  listCompletedWorkflows() {
+    this.ensureLoaded();
+    return this.mem.listCompletedWorkflows();
+  }
+
   toCacheEntry(workflowId: string) {
     this.ensureLoaded();
     return this.mem.toCacheEntry(workflowId);
@@ -192,6 +197,12 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     const mem = new InMemoryDurableBackend();
     mem.importAll(mergeRecords([], this.readAllRecords()));
     return mem.listResumableWorkflows();
+  }
+
+  listCompletedWorkflows() {
+    const mem = new InMemoryDurableBackend();
+    mem.importAll(mergeRecords([], this.readAllRecords()));
+    return mem.listCompletedWorkflows();
   }
 
   toCacheEntry(workflowId: string) {
@@ -407,7 +418,7 @@ function chmodBestEffort(path: string, mode: number): void {
 }
 
 function isPrunableTerminalStatus(status: DurableWorkflowStatus, resumable?: boolean): boolean {
-  if (status === "completed" || status === "cancelled") return true;
+  if (status === "cancelled") return true;
   return (status === "failed" || status === "blocked") && resumable === false;
 }
 

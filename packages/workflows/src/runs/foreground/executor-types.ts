@@ -15,6 +15,7 @@ import type { WorkflowRegistry } from "../../workflows/registry.js";
 import type { CancellationRegistry } from "../background/cancellation-registry.js";
 import type { StageAdapters } from "./stage-runner.js";
 import type { StageControlRegistry } from "./stage-control-registry.js";
+import type { GitWorktreeSetupCache } from "../shared/worktree.js";
 
 export interface ResolvedInputs extends WorkflowInputValues {}
 
@@ -68,6 +69,8 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   stageControlRegistry?: StageControlRegistry;
   /** Pre-allocated runId. */
   runId?: string;
+  /** Internal reusable-worktree cache shared with direct output persistence. */
+  gitWorktreeSetupCache?: GitWorktreeSetupCache;
   /** Replay completed stages from a failed source run, then resume at this stage. */
   continuation?: RunContinuationOpts;
   /**

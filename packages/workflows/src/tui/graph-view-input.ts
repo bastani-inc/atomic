@@ -1,5 +1,6 @@
 import { expandedStageTarget } from "../shared/expanded-workflow-graph.js";
 import {
+  GRAPH_SCROLL_STEP_COLS,
   GRAPH_SCROLL_STEP_ROWS,
 } from "./graph-view-constants.js";
 import { GraphViewRenderer } from "./graph-view-render.js";
@@ -16,6 +17,11 @@ interface SgrMouseEvent {
   col: number;
   row: number;
   final: "M" | "m";
+}
+
+interface MouseWheelDelta {
+  cols: number;
+  rows: number;
 }
 
 /** Keyboard, mouse, switcher, prompt, and focus navigation handling. */
@@ -46,10 +52,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
 
   private _isNonTextGraphControlBeforePrompt(data: string): boolean {
-    return (
-      this._mouseWheelDeltaRows(data) !== 0 ||
-      matchesKey(data, Key.ctrl("d"))
-    );
+    return this._mouseWheelDelta(data) !== null || matchesKey(data, Key.ctrl("d"));
   }
 
   private _handlePromptInput(data: string): boolean {
@@ -81,9 +84,10 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
 
   private _handleGraphInput(data: string): boolean {
     const stageCount = this.cachedLayout.length;
-    const wheelDeltaRows = this._mouseWheelDeltaRows(data);
-    if (wheelDeltaRows !== 0) {
-      this._scrollGraphBy(wheelDeltaRows);
+    const wheelDelta = this._mouseWheelDelta(data);
+    if (wheelDelta) {
+      if (wheelDelta.rows !== 0) this._scrollGraphBy(wheelDelta.rows);
+      if (wheelDelta.cols !== 0) this._scrollGraphHorizontallyBy(wheelDelta.cols);
       return true;
     }
 
@@ -308,6 +312,11 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     this.graphScrollOffset = Math.max(0, this.graphScrollOffset + deltaRows);
   }
 
+  private _scrollGraphHorizontallyBy(deltaCols: number): void {
+    this.pendingEnsureFocusedVisible = false;
+    this.graphScrollColOffset = Math.max(0, this.graphScrollColOffset + deltaCols);
+  }
+
   private _graphNodeIndexForClick(data: string): number | null | undefined {
     const click = this._sgrLeftMousePress(data);
     if (!click) return undefined;
@@ -353,7 +362,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return { col: sgr.col, row: sgr.row };
   }
 
-  private _mouseWheelDeltaRows(data: string): number {
+  private _mouseWheelDelta(data: string): MouseWheelDelta | null {
     const sgr = this._parseSgrMouse(data);
     if (sgr && sgr.final === "M") {
       return this._wheelDeltaForButtonCode(sgr.buttonCode);
@@ -361,15 +370,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     if (data.startsWith("\x1b[M") && data.length >= 6) {
       return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
     }
-    return 0;
+    return null;
   }
 
-  private _wheelDeltaForButtonCode(code: number): number {
-    if ((code & 64) === 0) return 0;
+  private _wheelDeltaForButtonCode(code: number): MouseWheelDelta | null {
+    if ((code & 64) === 0) return null;
     const direction = code & 3;
-    if (direction === 0) return -GRAPH_SCROLL_STEP_ROWS;
-    if (direction === 1) return GRAPH_SCROLL_STEP_ROWS;
-    return 0;
+    if (direction === 0) return { cols: 0, rows: -GRAPH_SCROLL_STEP_ROWS };
+    if (direction === 1) return { cols: 0, rows: GRAPH_SCROLL_STEP_ROWS };
+    if (direction === 2) return { cols: -GRAPH_SCROLL_STEP_COLS, rows: 0 };
+    return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
   }
 
   // ---- test seams ----

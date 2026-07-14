@@ -92,7 +92,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
       },
     });
 
-    assert.equal(refreshCalls, 0);
+    assert.equal(refreshCalls, 1);
     assert.equal(pickerCalls, 1);
   });
 

@@ -148,6 +148,16 @@ export function createWorkflowExtensionRuntimeState(
     resumeDurableWorkflow(workflowIdOrPrefix, options) { return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options); },
     listDurableResumable(sessionDir) { return runtimeRef.current.listDurableResumable(sessionDir); },
     prepareDurableResumable(workflowIdOrPrefix, sessionDir) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix, sessionDir); },
+    prepareCompletedDurable() {
+      return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
+    },
+    openCompletedDurableWorkflow(workflowIdOrPrefix, catalog) {
+      const open = runtimeRef.current.openCompletedDurableWorkflow;
+      if (open === undefined) {
+        return { ok: false, reason: "not_found", message: `No completed durable workflow found for id/prefix: ${workflowIdOrPrefix}` };
+      }
+      return open(workflowIdOrPrefix, catalog);
+    },
   };
 
   function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {

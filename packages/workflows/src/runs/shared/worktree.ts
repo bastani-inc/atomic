@@ -1,4 +1,6 @@
 export { createGitWorktreeSetupCache, setupGitWorktree, setupGitWorktreeCached } from "./worktree-git.js";
+export { createGitWorktreeSetupCacheOwner } from "./worktree-cache-lifecycle.js";
+export type { GitWorktreeSetupCacheOwner } from "./worktree-cache-lifecycle.js";
 export {
 	cleanupWorktrees,
 	createWorktrees,

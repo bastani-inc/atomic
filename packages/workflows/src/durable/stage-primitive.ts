@@ -7,6 +7,7 @@ import type { DurableWorkflowBackend } from "./backend.js";
 import type { ParallelFailFastScope } from "../runs/foreground/executor-types.js";
 import { durableHash } from "./backend.js";
 import { recordCheckpointDurably } from "./tool-primitive.js";
+import { elapsedStageMs } from "../shared/timing.js";
 import { RESUME_CONTINUATION_PROMPT } from "../shared/resume-continuation.js";
 import type { DurableStageCheckpoint } from "./types.js";
 export type DurableCompletedStageCheckpoint = DurableStageCheckpoint & { readonly output: WorkflowSerializableValue };
@@ -17,6 +18,7 @@ export interface DurableStageDeps {
   readonly nextCheckpointId: () => string;
   readonly nextReplayKey: (stageName: string) => string;
   readonly replayKeyForCompletedStage?: (stage: StageSnapshot) => string | undefined;
+  readonly now?: () => number;
 }
 
 export async function recordStageCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
@@ -51,17 +53,25 @@ export async function recordStageCheckpoint(deps: DurableStageDeps, stage: Stage
 export async function recordStageSessionCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
   if (stage.sessionFile === undefined) return false;
+  const checkpointNow = deps.now?.() ?? Date.now();
+  const durationMs = elapsedStageMs(stage, checkpointNow) ?? 0;
   const current = deps.backend.getStageSession(deps.workflowId, replayKey);
-  if (current?.sessionFile === stage.sessionFile) return false;
+  if (current !== undefined
+    && current.sessionId === stage.sessionId
+    && current.sessionFile === stage.sessionFile
+    && current.startedAt === stage.startedAt
+    && current.durationMs === durationMs) return false;
   const checkpoint: DurableStageCheckpoint = {
     kind: "stage",
     workflowId: deps.workflowId,
-    checkpointId: stageSessionCheckpointId(replayKey, stage),
+    checkpointId: stageSessionCheckpointId(replayKey, stage, durationMs),
     name: stage.name,
     replayKey,
     ...(stage.sessionId !== undefined ? { sessionId: stage.sessionId } : {}),
     sessionFile: stage.sessionFile,
-    completedAt: Date.now(),
+    ...(stage.startedAt !== undefined ? { startedAt: stage.startedAt } : {}),
+    durationMs,
+    completedAt: checkpointNow,
   };
   await recordCheckpointDurably(deps.backend, checkpoint);
   return true;
@@ -107,7 +117,10 @@ export function createDurableStagePrimitive(input: {
     const liveOptions: StageOptions | undefined = {
       ...(options ?? {}),
       durableReplayKey: replayKey,
-      ...(isMidSessionResume ? { resumeFromSessionFile: session.sessionFile } : {}),
+      ...(isMidSessionResume ? {
+        resumeFromSessionFile: session.sessionFile,
+        durableAccumulatedDurationMs: session.durationMs ?? 0,
+      } : {}),
     };
     const live = withMidSessionResumePrompt(input.stage(name, liveOptions, replayKey), isMidSessionResume);
     if (options?.schema === undefined) return live;
@@ -139,7 +152,10 @@ export function createDurableTaskPrimitive(input: {
     const taskOptions: WorkflowTaskOptions = {
       ...options,
       durableReplayKey: replayKey,
-      ...(session?.sessionFile !== undefined ? { resumeFromSessionFile: session.sessionFile } : {}),
+      ...(session?.sessionFile !== undefined ? {
+        resumeFromSessionFile: session.sessionFile,
+        durableAccumulatedDurationMs: session.durationMs ?? 0,
+      } : {}),
     };
     const result = await input.task(name, taskOptions, stageFailFastScope);
     await recordCheckpointDurably(input.backend, {
@@ -299,8 +315,11 @@ function metadataValue<K extends keyof DurableStageCheckpoint>(
   checkpoints: readonly DurableStageCheckpoint[],
   key: K,
 ): Pick<DurableStageCheckpoint, K> | Record<string, never> {
-  const value = checkpoints.find((checkpoint) => checkpoint[key] !== undefined)?.[key];
-  return value === undefined ? {} : { [key]: value } as Pick<DurableStageCheckpoint, K>;
+  for (let index = checkpoints.length - 1; index >= 0; index -= 1) {
+    const value = checkpoints[index]?.[key];
+    if (value !== undefined) return { [key]: value } as Pick<DurableStageCheckpoint, K>;
+  }
+  return {};
 }
 
 
@@ -317,10 +336,12 @@ export function stableCheckpointId(kind: string, replayKey: string): string {
   return `${kind}:${replayKey}`;
 }
 
-function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot): string {
+function stageSessionCheckpointId(replayKey: string, stage: StageSnapshot, durationMs: number): string {
   return `${stableCheckpointId("stage-session", replayKey)}:${durableHash({
     sessionId: stage.sessionId ?? "",
     sessionFile: stage.sessionFile ?? "",
+    startedAt: stage.startedAt ?? 0,
+    durationMs,
   })}`;
 }
 

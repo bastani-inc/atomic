@@ -7,6 +7,7 @@ import { raceAbort } from "./executor-abort.js";
 import { hasExplicitFastModeCandidate } from "./executor-direct-helpers.js";
 import { applyFailureToStage } from "./executor-lifecycle.js";
 import { isTerminalStage } from "./executor-scheduler.js";
+import { rebasedStageStartedAt } from "../../shared/timing.js";
 
 export interface TrackedStageCallOptions {
   readonly eagerSession?: boolean;
@@ -110,8 +111,9 @@ export function createTrackedStageCaller(input: {
       }
     }
     if (trackStageLifecycle) {
+      const now = Date.now();
       runtime.stageSnapshot.status = "running";
-      runtime.stageSnapshot.startedAt = Date.now();
+      runtime.stageSnapshot.startedAt ??= rebasedStageStartedAt(input.options?.durableAccumulatedDurationMs, now);
       const hasNoExplicitModelConfig = input.options?.model === undefined && input.options?.fallbackModels === undefined;
       const promptAdapterHandlesInitialPrompt = input.adapters.prompt !== undefined;
       if (callOptions.eagerSession && !promptAdapterHandlesInitialPrompt && (hasNoExplicitModelConfig || await hasExplicitFastModeCandidate({

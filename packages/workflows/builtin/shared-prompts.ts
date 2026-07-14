@@ -46,25 +46,40 @@ export const LITERAL_OBJECTIVE_CONTRACT = [
   "- Prefer loud errors over silent reinterpretation: when the objective/acceptance criteria enumerate required error conditions, messages, or rejections, give each enumerated error the widest plausible trigger surface. When the contract leaves an input ambiguous or unspecified near an enumerated error case, prefer raising that error over silently reinterpreting the input as different valid behavior, even when external spec knowledge says the input is valid.",
   "- Only narrow an enumerated error's trigger surface when the objective, acceptance criteria, or pre-existing required tests explicitly require the ambiguous input to be accepted. Widening an enumerated error to nearby ambiguous inputs is applying the contract, not adding beyond it.",
   "- Do not add behaviors, restrictions, error conditions, or follow-up requirements beyond what the objective/acceptance criteria require.",
+  "- The loud-error preference applies ONLY to error conditions the objective/acceptance criteria enumerate. For anything the contract does not enumerate, the default is the opposite: accept permissively and never invent a new validation error, required field, uniqueness constraint, or rejection the contract does not name.",
+  "- When the contract names a concrete type, shape, or format ('returns a dict', 'a list of strings', a JSON object with named keys), produce exactly that — no defensive substitutes such as read-only proxies, frozen collections, tuples-for-lists, or wrapper subclasses unless the contract requires them. Consumers may check type identity literally.",
+  "- Where behavior is unspecified, prefer the choice that preserves input verbatim over one that normalizes, deduplicates, reorders, or rewrites it; transform only what the contract says to transform.",
 ].join("\n");
 
 export const REVIEWER_SPEC_VS_OBJECTIVE_GUARD =
   "Do not use external spec/standard conformance alone to flag a wide trigger surface for an error condition the objective/acceptance criteria enumerate; the contract prefers loud errors over silent reinterpretation of ambiguous inputs, so classify such spec-vs-objective tension as beyond_objective rather than a blocking defect.";
+
+export const REVIEWER_OVERIMPLEMENTATION_GUARD =
+  "Hunt over-implementation as seriously as gaps: any validation error, required field, uniqueness/format constraint, immutability wrapper, or normalization the contract does not require is a defect that rejects inputs or produces shapes the contract permits — classify it required_by_objective. Probe at least one contract-permitted input the worker's own tests do not exercise before approving.";
 
 export const ACCEPTANCE_MATRIX_CONTRACT = [
   "Acceptance/contract matrix:",
   "- Before implementing, derive an observable acceptance matrix from the literal objective and acceptance criteria: one row per explicit clause, requirement, named artifact, command, gate, invariant, and deliverable, each mapped to the concrete observable check (command, test, executable scenario, artifact inspection, or state assertion) that would prove it in the current checkout.",
   "- Record the matrix in the receipt/implementation notes on the first turn and keep it current as work proceeds; every later completion claim must map back to matrix rows with current evidence.",
   "- The matrix inherits the literal contract's scope: do not add rows for behavior the objective/acceptance criteria do not require, and do not drop rows because they are inconvenient to prove.",
+  "- Add one row per literal example in the objective/acceptance criteria (sample inputs/outputs, rendered text, file contents), checked character-for-character rather than paraphrased.",
+  "- Add explicit rows for each interface decision the contract constrains: return/field types by identity, required-vs-optional per field, duplicate handling, ordering, and raw-vs-normalized text. When the contract leaves such a decision open, record the permissive/preserving default chosen.",
   "",
   "Stateful behavior modeling:",
   "- When the work involves stateful behavior (lifecycles, sessions, caches, persisted data, protocols, retries, concurrency, or multi-step flows), model the state space explicitly before implementing: enumerate the states, the legal transitions between them, the invariants that must hold in every state, and how illegal transitions or unexpected inputs are handled.",
   "- Tie matrix rows for stateful clauses to specific states, transitions, and invariants so their checks exercise transitions and invariant preservation, not just happy-path end states.",
 ].join("\n");
 
+export const CONTRACT_FIDELITY_AUDIT = [
+  "Adversarial divergence pass:",
+  "- After checks are green and before claiming readiness for review, re-read the literal objective/acceptance criteria and ask for each clause: what plausible independent check of this clause would my implementation fail?",
+  "- Probe the recurring divergence categories specifically: (1) type-identity assertions on returned values, (2) inputs with optional fields omitted, (3) duplicated or aliased inputs, (4) ordering assumptions, (5) text expected verbatim where the implementation normalizes it, and (6) any raised error the contract does not enumerate.",
+  "- Fix each divergence or record its justification in the receipt/implementation notes; an unexamined divergence category is unfinished verification, not a nice-to-have.",
+].join("\n");
+
 export const REVIEWER_INDEPENDENT_VERIFICATION_CONTRACT = [
   "Independent verification derivation:",
-  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes, and state/transition/invariant probes for stateful behavior.",
+  "- Before relying on the worker receipt, worker-authored tests, or any prior reviewer output, derive your own adversarial check list from the literal objective and acceptance criteria alone: per-clause observable checks plus boundary, edge, negative, and invalid-input probes; contract-permitted-input probes (permissive inputs the implementation might wrongly reject: optional fields omitted, duplicates or aliases present, unusual-but-allowed values) and exact type/shape/text-identity probes for anything the contract names; and state/transition/invariant probes for stateful behavior.",
   "- Execute or delegate the highest-value derived checks against the current repository state before mapping worker evidence to requirements.",
   "- Worker-authored tests, snapshots, and receipts corroborate your derived checks; they never substitute for them. Passing worker-authored tests is circular evidence for the clauses those tests were written from.",
   "- Keep derived checks inside the literal contract's scope; do not manufacture requirements beyond the objective/acceptance criteria.",

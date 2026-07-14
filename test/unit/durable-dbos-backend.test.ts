@@ -300,15 +300,22 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
 
   test("hydrateWorkflow reconstructs stage checkpoints from DBOS envelopes", async () => {
     const cp: DurableStageCheckpoint = {
-      kind: "stage", workflowId: "wf-h3", checkpointId: "stage:r1", name: "build", replayKey: "stage:build:1", output: "done", completedAt: 3000,
+      kind: "stage", workflowId: "wf-h3", checkpointId: "stage:r1", name: "build", replayKey: "stage:build:1", output: "done", completedAt: 1400,
+      sessionFile: "/tmp/build.jsonl", startedAt: 1000, durationMs: 400,
     };
     seedMockWorkflow(sdk, { workflowId: "wf-h3", name: "test", status: "PENDING" });
     seedMockCheckpoint(sdk, "wf-h3", cp);
+    seedMockCheckpoint(sdk, "wf-h3", {
+      ...cp, checkpointId: "stage-session:r2", output: undefined, durationMs: 900, completedAt: 1900,
+    });
 
     const fresh = new DbosDurableBackend(sdk);
     assert.equal(fresh.getStageOutput("wf-h3", "stage:build:1"), undefined);
     await fresh.hydrateWorkflow("wf-h3");
+    await fresh.hydrateWorkflow("wf-h3");
     assert.equal(fresh.getStageOutput("wf-h3", "stage:build:1"), "done");
+    assert.equal(fresh.getStageSession("wf-h3", "stage:build:1")?.durationMs, 900);
+    assert.equal(fresh.listCheckpoints("wf-h3").length, 2);
   });
 
   test("hydrateWorkflow handles legacy/simple payloads gracefully", async () => {

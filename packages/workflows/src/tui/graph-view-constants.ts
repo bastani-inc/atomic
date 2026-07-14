@@ -42,4 +42,5 @@ export const ANIMATION_TICK_MS = 100;
  * eased lerp inside `pickBorder` traces one full breath per cycle.
  */
 export const PULSE_PERIOD_MS = 2000;
+export const GRAPH_SCROLL_STEP_COLS = 4;
 export const GRAPH_SCROLL_STEP_ROWS = 4;

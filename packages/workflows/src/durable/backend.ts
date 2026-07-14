@@ -23,6 +23,7 @@
 
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { createHash } from "node:crypto";
+import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type {
   DurableCheckpoint,
   DurableCheckpointEntry,
@@ -94,8 +95,13 @@ export interface DurableWorkflowBackend {
   /** Look up a cached stage output by replay key. */
   getStageOutput(workflowId: string, replayKey: string): WorkflowSerializableValue | undefined;
 
-  /** Look up resumable stage session metadata by replay key, when available. */
-  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined;
+  /** Look up the latest resumable stage session and accumulated active timing. */
+  getStageSession(workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined;
 
   /** List all checkpoints for a workflow (in completion order). */
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[];
@@ -107,10 +113,12 @@ export interface DurableWorkflowBackend {
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
 
   /**
-   * List resumable workflows (not completed/cancelled, or explicitly marked
-   * resumable after failure). Used by the `/workflow resume` selector.
+   * List resumable root workflows: running/paused runs with progress and
+   * failed/blocked runs unless explicitly marked non-resumable.
    */
   listResumableWorkflows(): readonly ResumableWorkflowEntry[];
+  /** List successful completed root workflows with durable checkpoint progress. */
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
 
   /** Export a session-cache entry for the given workflow (for JSONL persistence). */
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined;
@@ -246,10 +254,20 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     return checkpoint !== undefined && "output" in checkpoint ? checkpoint.output : undefined;
   }
 
-  getStageSession(workflowId: string, replayKey: string): { sessionId?: string; sessionFile?: string } | undefined {
+  getStageSession(workflowId: string, replayKey: string): {
+    sessionId?: string;
+    sessionFile?: string;
+    startedAt?: number;
+    durationMs?: number;
+  } | undefined {
     const checkpoint = this.workflows.get(workflowId)?.stageSessionByReplayKey.get(replayKey);
     if (checkpoint?.sessionId === undefined && checkpoint?.sessionFile === undefined) return undefined;
-    return { ...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}), ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}) };
+    return {
+      ...(checkpoint.sessionId !== undefined ? { sessionId: checkpoint.sessionId } : {}),
+      ...(checkpoint.sessionFile !== undefined ? { sessionFile: checkpoint.sessionFile } : {}),
+      ...(checkpoint.startedAt !== undefined ? { startedAt: checkpoint.startedAt } : {}),
+      ...(checkpoint.durationMs !== undefined ? { durationMs: checkpoint.durationMs } : {}),
+    };
   }
 
   listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
@@ -270,7 +288,13 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
     return [...this.workflows.values()]
-      .filter((rec) => isRootWorkflow(rec.handle) && isResumableHandle(rec.handle))
+      .filter((rec) => isDurableWorkflowResumable(rec.handle))
+      .map((rec) => toResumableEntry(rec.handle));
+  }
+
+  listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {
+    return [...this.workflows.values()]
+      .filter((rec) => isRootWorkflow(rec.handle) && isCompletedHandle(rec.handle))
       .map((rec) => toResumableEntry(rec.handle));
   }
 
@@ -323,14 +347,8 @@ function hasResumeProgress(handle: DurableWorkflowHandle): boolean {
   return handle.completedCheckpoints > 0 || handle.pendingPrompts > 0;
 }
 
-function isResumableHandle(handle: DurableWorkflowHandle): boolean {
-  if (handle.status === "failed" || handle.status === "blocked") return handle.resumable !== false;
-  // `running`/`paused` are both resumable at the backend level: a `running`
-  // durable handle may belong to a crashed process (no live executor), which
-  // is exactly the cross-session crash-recovery case. Same-session
-  // double-resume is prevented by the command layer, which hides durable
-  // entries that match an active live run.
-  return (handle.status === "running" || handle.status === "paused") && hasResumeProgress(handle);
+function isCompletedHandle(handle: DurableWorkflowHandle): boolean {
+  return handle.status === "completed" && hasResumeProgress(handle);
 }
 
 function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry {

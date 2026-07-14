@@ -45,7 +45,7 @@ const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
 
 const StageSessionOptionProperties = {
   schema: Type.Optional(JsonSchemaObject),
-  cwd: Type.Optional(Type.String()),
+  cwd: Type.Optional(Type.String({ description: "Starting directory only; does not provide worktree isolation." })),
   agentDir: Type.Optional(Type.String()),
   authStorage: Type.Optional(SdkSessionOptionSchema("authStorage")),
   modelRegistry: Type.Optional(SdkSessionOptionSchema("modelRegistry")),
@@ -88,8 +88,8 @@ const WorkflowTaskOptionProperties = {
   output: Type.Optional(WorkflowOutputSchema),
   outputMode: Type.Optional(Type.Union([Type.Literal("inline"), Type.Literal("file-only")])),
   reads: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Literal(false)])),
-  worktree: Type.Optional(Type.Boolean()),
-  gitWorktreeDir: Type.Optional(Type.String()),
+  worktree: Type.Optional(Type.Boolean({ description: "Runner-managed temporary per-task worktree isolation for direct runs." })),
+  gitWorktreeDir: Type.Optional(Type.String({ description: "Runner-managed reusable worktree; natural-language worktree instructions do not set this option." })),
   baseBranch: Type.Optional(Type.String()),
   maxOutput: Type.Optional(MaxOutputSchema),
   artifacts: Type.Optional(Type.Boolean()),
@@ -107,8 +107,8 @@ const ParallelChainStepSchema = Type.Object({
   parallel: Type.Array(DirectTaskSchema),
   concurrency: Type.Optional(Type.Number()),
   failFast: Type.Optional(Type.Boolean()),
-  worktree: Type.Optional(Type.Boolean()),
-  gitWorktreeDir: Type.Optional(Type.String()),
+  worktree: Type.Optional(Type.Boolean({ description: "Runner-managed temporary per-task worktree isolation for direct runs." })),
+  gitWorktreeDir: Type.Optional(Type.String({ description: "Runner-managed reusable worktree; natural-language worktree instructions do not set this option." })),
   baseBranch: Type.Optional(Type.String()),
 });
 
