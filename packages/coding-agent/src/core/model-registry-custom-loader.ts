@@ -1,4 +1,4 @@
-import { type Api, getModels, getProviders, type KnownProvider, type Model } from "@earendil-works/pi-ai/compat";
+import { type Api, type BuiltinProvider, getModels, getProviders, type Model } from "@earendil-works/pi-ai/compat";
 import { existsSync, readFileSync } from "fs";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import { mergeCompat, mergeCustomModels } from "./model-registry-builtins.ts";
@@ -194,7 +194,7 @@ function parseModels(
 	const getBuiltInDefaults = (providerName: string): { api: string; baseUrl: string } | undefined => {
 		if (!builtInProviders.has(providerName)) return undefined;
 		if (builtInDefaultsCache.has(providerName)) return builtInDefaultsCache.get(providerName);
-		const builtIn = getModels(providerName as KnownProvider) as Model<Api>[];
+		const builtIn = getModels(providerName as BuiltinProvider) as Model<Api>[];
 		if (builtIn.length === 0) return undefined;
 		const defaults = { api: builtIn[0].api, baseUrl: builtIn[0].baseUrl };
 		builtInDefaultsCache.set(providerName, defaults);

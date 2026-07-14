@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the Pi runtime dependency set (`@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui`) from `^0.80.6` to `^0.80.7` across Atomic and its bundled packages, with matching Bun and npm lock metadata. This inherits the upstream provider authentication, session-affinity, reasoning replay, tool-choice, model-catalog, terminal input, and prompt-cache fixes from [Pi v0.80.7](https://github.com/earendil-works/pi/releases/tag/v0.80.7) while preserving versionless `0.0.0` workspace manifests.
+
 ## [0.9.9-alpha.1] - 2026-07-14
 
 ### Breaking Changes

@@ -2,7 +2,7 @@ import {
 	type Api,
 	getModels,
 	getProviders,
-	type KnownProvider,
+	type BuiltinProvider,
 	type Model,
 	type OpenAICompletionsCompat,
 } from "@earendil-works/pi-ai/compat";
@@ -155,7 +155,7 @@ export function loadBuiltInModels(
 	modelOverrides: Map<string, Map<string, ModelOverride>>,
 ): Model<Api>[] {
 	return getProviders().flatMap((provider) => {
-		const models = withDynamicGitHubCopilotModels(provider, getModels(provider as KnownProvider) as Model<Api>[]);
+		const models = withDynamicGitHubCopilotModels(provider, getModels(provider as BuiltinProvider) as Model<Api>[]);
 		const providerOverride = overrides.get(provider);
 		const perModelOverrides = modelOverrides.get(provider);
 
