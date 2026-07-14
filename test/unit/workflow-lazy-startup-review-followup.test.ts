@@ -7,6 +7,8 @@ import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/
 import type { WorkflowToolResult } from "../../packages/workflows/src/extension/render-result.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "../../packages/workflows/src/extension/workflow-run-control-command.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 const previousWorkflowStageSubagentGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
 
@@ -20,6 +22,19 @@ type SelectorFactory = (
   keys: unknown,
   done: () => void,
 ) => SelectorComponent;
+class HydrationCapableBackend extends InMemoryDurableBackend {
+  hydrateCalls = 0;
+  async hydrateWorkflow(): Promise<void> { this.hydrateCalls += 1; }
+}
+
+class UnclassifiedHydrationBackend extends HydrationCapableBackend {
+  loadable = false;
+  override isWorkflowLoadable(): boolean { return this.loadable; }
+  async hydrateResumableWorkflows(): Promise<void> {
+    this.hydrateCalls += 1;
+    this.loadable = true;
+  }
+}
 
 function registerFactory(piOverrides: Partial<ExtensionAPI> = {}): Array<{ name: string; options: PiCommandOptions }> {
   const commands: Array<{ name: string; options: PiCommandOptions }> = [];
@@ -56,6 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   store.clear();
+  setDurableBackend(undefined);
   if (previousWorkflowStageSubagentGuard === undefined) {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
     return;
@@ -134,6 +150,40 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
   });
 
+  test("/workflow resume keeps hydration-capable current live runs on the lazy fast path", async () => {
+    const backend = new HydrationCapableBackend();
+    setDurableBackend(backend);
+    let refreshCalls = 0;
+    const commands = registerFactory({ refreshWorkflowResources: async () => { refreshCalls += 1; return []; } });
+    const runId = "dbos-like-current-live";
+    store.recordRunStart({ id: runId, name: "current live", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    assert.equal(store.recordRunPaused(runId), true);
+    const workflowCmd = commands.find((command) => command.name === "workflow");
+    assert.ok(workflowCmd);
+
+    await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+
+    assert.equal(refreshCalls, 0);
+    assert.equal(backend.hydrateCalls, 0);
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+  });
+
+  test("/workflow resume prepares unclassified hydration-capable restored runs before choosing live path", async () => {
+    const backend = new UnclassifiedHydrationBackend();
+    setDurableBackend(backend);
+    let refreshCalls = 0;
+    const commands = registerFactory({ refreshWorkflowResources: async () => { refreshCalls += 1; return []; } });
+    const runId = "dbos-like-unclassified-restored";
+    store.recordRunStart({ id: runId, name: "restored", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
+    assert.equal(store.recordRunPaused(runId), true);
+    const workflowCmd = commands.find((command) => command.name === "workflow");
+    assert.ok(workflowCmd);
+    await workflowCmd.options.handler?.(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+    assert.equal(refreshCalls, 1);
+    assert.ok(backend.hydrateCalls >= 1);
+    assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+  });
+
   test("/workflow resume routes quit durable shadows through durable resume", async () => {
     const runId = "quit-shadow-durable-resume";
     store.recordRunStart({ id: runId, name: "quit shadow workflow", inputs: {}, status: "running", stages: [], startedAt: Date.now(), exitReason: "quit", resumable: true });
@@ -202,6 +252,8 @@ describe("workflow lazy-startup review follow-up fixes", () => {
   });
 
   test("workflow tool failed resume re-resolves runtime after lazy discovery", async () => {
+    const backend = new HydrationCapableBackend();
+    setDurableBackend(backend);
     const sourceRunId = "lazy-tool-model-resume-source";
     store.recordRunStart({ id: sourceRunId, name: "lazy model resume", inputs: {}, status: "running", stages: [], startedAt: Date.now() });
     store.recordStageStart(sourceRunId, { id: "retry-old", name: "retry", status: "failed", parentIds: [], toolEvents: [], error: "boom" });
@@ -230,6 +282,7 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     const result = await handler({ action: "resume", runId: sourceRunId }, { model: { provider: "fake", id: "model" } } as never);
 
     assert.equal(ensureCalls, 1);
+    assert.equal(backend.hydrateCalls, 0);
     assert.equal(result.action, "resume");
     assert.equal(result.status, "running");
     assert.equal(result.runId, "continued-run");

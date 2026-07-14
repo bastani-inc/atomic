@@ -44,15 +44,15 @@ export async function prepareWorkflowResumeCatalog(
   target?: string,
 ): Promise<WorkflowResumeCatalog> {
   const prepared = await runtime.prepareDurableResumable(target);
-  const resumable = filterSelectorDurableEntries(runtime, prepared)
-    .filter((entry) => !activeLiveIds.has(entry.workflowId));
   const backend = getDurableBackend();
+  const resumable = filterSelectorDurableEntries(runtime, prepared)
+    .filter((entry) => !activeLiveIds.has(entry.workflowId) && backend.isWorkflowLoadable(entry.workflowId));
   const completed = runtime.prepareCompletedDurable !== undefined
     ? await runtime.prepareCompletedDurable()
     : listOpenableCompletedWorkflows(backend);
   return {
     resumable,
-    completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId)),
+    completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId) && backend.isWorkflowLoadable(entry.workflowId)),
   };
 }
 

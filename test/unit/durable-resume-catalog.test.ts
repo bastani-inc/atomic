@@ -20,6 +20,7 @@ import type { DurableCheckpointEntry } from "../../packages/workflows/src/durabl
 
 function makeEntry(workflowId: string, name: string, status: string, ts: number): DurableCheckpointEntry {
   return {
+    formatVersion: 2,
     type: "workflow.durable.checkpoint",
     workflowId,
     name,

@@ -127,6 +127,14 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return undefined;
   }
 
+  async deleteWorkflow(_workflowId: string): Promise<void> {
+    // No-op: scoped children never own or delete root durable state.
+  }
+
+  isWorkflowLoadable(_workflowId: string): boolean {
+    return false;
+  }
+
   reset(): void {
     // No-op: scoped backends never own root state.
   }

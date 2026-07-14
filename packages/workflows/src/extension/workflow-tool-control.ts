@@ -9,6 +9,7 @@ import {
 } from "../runs/background/status.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { store } from "../shared/store.js";
+import { getDurableBackend } from "../durable/factory.js";
 import type { WorkflowExecutionPolicy, WorkflowPersistencePort } from "../shared/types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowToolResult } from "./render-result.js";
@@ -176,6 +177,21 @@ export async function workflowResumeAction(
   if (target.kind === "all") return { action: "resume", runId: "--all", status: "noop", message: "Resume does not support --all." };
   if (target.kind === "ambiguous") return { action: "resume", runId: target.target, status: "noop", message: ambiguousRunMessage(target.target, target.matches) };
   if (target.kind === "not_found") return { action: "resume", runId: target.target, status: "noop", message: target.message };
+  const backend = getDurableBackend();
+  if (!backend.isWorkflowLoadable(target.runId)) {
+    try {
+      await deps.ensureWorkflowResourcesLoaded();
+      await deps.getRuntime().prepareDurableResumable(target.runId);
+    } catch {
+      // Durable compatibility preparation failures fall through to the
+      // authoritative loadability check below; workflow resume remains best-effort.
+    }
+    if (!backend.isWorkflowLoadable(target.runId)) {
+      store.removeRun(target.runId);
+      return { action: "resume", runId: target.runId, status: "noop", message: `Run not found: ${target.runId}` };
+    }
+  }
+  let warning: string | undefined;
   const stage = resolveToolStageTarget(target.runId, args.stageId);
   if (!stage.ok) return { action: "resume", runId: target.runId, status: "noop", message: stage.message };
   const stageRunId = stage.runId ?? target.runId;
@@ -188,7 +204,6 @@ export async function workflowResumeAction(
     (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable")
   );
   if (isResumableContinuation) {
-    let warning: string | undefined;
     try {
       await deps.ensureWorkflowResourcesLoaded();
     } catch (error) {

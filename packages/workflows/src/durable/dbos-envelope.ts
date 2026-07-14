@@ -23,9 +23,10 @@ import type {
   DurableUiCheckpoint,
   UiPromptKind,
 } from "./types.js";
+import { classifyDurableFormatVersion, DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 /** Envelope schema version. */
-export const DBOS_ENVELOPE_VERSION = 1;
+export const DBOS_ENVELOPE_VERSION = DURABLE_FORMAT_VERSION;
 
 /** Marker key present on every envelope payload. */
 const ENVELOPE_MARKER = "__dbos_checkpoint__";
@@ -105,9 +106,35 @@ export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope 
  * Type guard: is this value a checkpoint envelope?
  */
 export function isCheckpointEnvelope(value: WorkflowSerializableValue | undefined): value is DbosCheckpointEnvelope {
+  if (!hasCheckpointEnvelopeMarker(value)) return false;
+  return value.v === DBOS_ENVELOPE_VERSION;
+}
+
+function hasCheckpointEnvelopeMarker(value: WorkflowSerializableValue | undefined): value is Record<string, WorkflowSerializableValue> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const obj = value as Record<string, unknown>;
-  return obj[ENVELOPE_MARKER] === ENVELOPE_MARKER;
+  return (value as Record<string, WorkflowSerializableValue>)[ENVELOPE_MARKER] === ENVELOPE_MARKER;
+}
+export type DbosCheckpointCompatibility =
+  | { readonly kind: "current"; readonly checkpoint: DurableCheckpoint }
+  | { readonly kind: "legacy" }
+  | { readonly kind: "unknown" };
+
+/** Classify and decode one DBOS checkpoint payload without reinterpreting marked formats. */
+export function classifyCheckpointPayload(
+  workflowId: string,
+  stepName: string,
+  value: WorkflowSerializableValue,
+): DbosCheckpointCompatibility {
+  if (!hasCheckpointEnvelopeMarker(value)) return { kind: "current", checkpoint: decodeLegacy(workflowId, stepName, value) };
+  const compatibility = classifyDurableFormatVersion(value.v);
+  if (compatibility !== "current") return { kind: compatibility };
+  const hasOutput = value["hasOutput"];
+  const containsOutput = value["output"] !== undefined;
+  if (value["checkpointId"] !== stepName || typeof hasOutput !== "boolean" || hasOutput !== containsOutput) {
+    return { kind: "unknown" };
+  }
+  const checkpoint = decodeEnvelope(workflowId, value as DbosCheckpointEnvelope);
+  return checkpoint === undefined ? { kind: "unknown" } : { kind: "current", checkpoint };
 }
 
 /**
@@ -124,15 +151,18 @@ export function decodeToCheckpoint(
   stepName: string,
   value: WorkflowSerializableValue,
 ): DurableCheckpoint | undefined {
-  if (isCheckpointEnvelope(value)) return decodeEnvelope(workflowId, value);
-  if (value === undefined) return undefined;
-  return decodeLegacy(workflowId, stepName, value);
+  const classified = classifyCheckpointPayload(workflowId, stepName, value);
+  return classified.kind === "current" ? classified.checkpoint : undefined;
 }
 
 function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): DurableCheckpoint | undefined {
+  if (typeof env.checkpointId !== "string" || env.checkpointId.length === 0
+    || typeof env.completedAt !== "number" || !Number.isFinite(env.completedAt)
+    || (env.name !== undefined && typeof env.name !== "string")
+    || (env.hasOutput !== undefined && typeof env.hasOutput !== "boolean")) return undefined;
   const common = { workflowId, checkpointId: env.checkpointId, completedAt: env.completedAt };
   if (env.kind === "tool") {
-    if (env.argsHash === undefined || env.output === undefined) return undefined;
+    if (typeof env.argsHash !== "string" || env.output === undefined) return undefined;
     return {
       kind: "tool",
       ...common,
@@ -142,7 +172,8 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     } as DurableToolCheckpoint;
   }
   if (env.kind === "ui") {
-    if (env.promptHash === undefined || env.promptKind === undefined || env.output === undefined) return undefined;
+    if (typeof env.promptHash !== "string" || !isUiPromptKind(env.promptKind) || env.output === undefined
+      || (env.message !== undefined && typeof env.message !== "string")) return undefined;
     return {
       kind: "ui",
       ...common,
@@ -152,6 +183,18 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
       response: env.output,
     } as DurableUiCheckpoint;
   }
+  if (env.kind !== "stage"
+    || (env.replayKey !== undefined && typeof env.replayKey !== "string")
+    || (env.sessionId !== undefined && typeof env.sessionId !== "string")
+    || (env.sessionFile !== undefined && typeof env.sessionFile !== "string")
+    || !isOptionalFiniteNumber(env.startedAt)
+    || !isOptionalFiniteNumber(env.endedAt)
+    || !isOptionalFiniteNumber(env.durationMs)
+    || (env.result !== undefined && typeof env.result !== "string")
+    || (env.model !== undefined && typeof env.model !== "string")
+    || (env.fastMode !== undefined && typeof env.fastMode !== "boolean")
+    || (env.attemptedModels !== undefined && !isStringArray(env.attemptedModels))
+    || (env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts))) return undefined;
   return {
     kind: "stage",
     ...common,
@@ -171,6 +214,39 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
   } as DurableStageCheckpoint;
 }
 
+
+function isModelAttempts(value: WorkflowSerializableValue | undefined): boolean {
+  return Array.isArray(value) && value.every((attempt) => {
+    if (typeof attempt !== "object" || attempt === null || Array.isArray(attempt)) return false;
+    const record = attempt as Record<string, WorkflowSerializableValue>;
+    return typeof record["model"] === "string"
+      && typeof record["success"] === "boolean"
+      && (record["reasoningLevel"] === undefined || isReasoningLevel(record["reasoningLevel"]))
+      && (record["error"] === undefined || typeof record["error"] === "string")
+      && (record["usage"] === undefined || isModelUsage(record["usage"]));
+  });
+}
+
+function isReasoningLevel(value: WorkflowSerializableValue): boolean {
+  return value === "off" || value === "minimal" || value === "low" || value === "medium"
+    || value === "high" || value === "xhigh" || value === "max";
+}
+
+function isModelUsage(value: WorkflowSerializableValue): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const usage = value as Record<string, WorkflowSerializableValue>;
+  return ["input", "output", "cacheRead", "cacheWrite", "cost", "turns"]
+    .every((key) => usage[key] === undefined || (typeof usage[key] === "number" && Number.isFinite(usage[key])));
+}
+
+function isUiPromptKind(value: WorkflowSerializableValue | undefined): value is UiPromptKind {
+  return value === "input" || value === "confirm" || value === "select"
+    || value === "editor" || value === "custom";
+}
+
+function isOptionalFiniteNumber(value: WorkflowSerializableValue | undefined): boolean {
+  return value === undefined || (typeof value === "number" && Number.isFinite(value));
+}
 
 function isStringArray(value: WorkflowSerializableValue | undefined): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");

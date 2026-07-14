@@ -87,7 +87,7 @@ export function createDefaultFileBackend(): DurableWorkflowBackend {
 export function createWorkflowFileBackend(workflowId: string): DurableWorkflowBackend {
   const dir = defaultDurableStateDir();
   if (dir === undefined) return createInMemoryBackend();
-  return new FileDurableBackend(durableStateFileFor(dir, workflowId));
+  return new FileDurableBackend(durableStateFileFor(dir, workflowId), workflowId);
 }
 
 function isDurabilityOptedOut(): boolean {

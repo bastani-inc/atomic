@@ -24,6 +24,7 @@
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { createHash } from "node:crypto";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { DURABLE_FORMAT_VERSION } from "./format-version.js";
 import type {
   DurableCheckpoint,
   DurableCheckpointEntry,
@@ -123,6 +124,12 @@ export interface DurableWorkflowBackend {
   /** Export a session-cache entry for the given workflow (for JSONL persistence). */
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined;
 
+  /** Permanently remove one root workflow and its durable checkpoints. */
+  deleteWorkflow(workflowId: string): Promise<void>;
+
+  /** Whether a workflow id may be exposed or resumed from live/restored metadata. */
+  isWorkflowLoadable(workflowId: string): boolean;
+
   /** Clear all state (for tests). */
   reset(): void;
 
@@ -193,8 +200,10 @@ function checkpointKey(c: DurableCheckpoint): string {
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = false;
   private readonly workflows = new Map<string, InMemoryWorkflowRecord>();
+  private readonly deletedWorkflowIds = new Set<string>();
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
+    this.deletedWorkflowIds.delete(handle.workflowId);
     const existing = this.workflows.get(handle.workflowId);
     const completedCheckpoints = handle.completedCheckpoints ?? existing?.handle.completedCheckpoints ?? 0;
     const pendingPrompts = handle.pendingPrompts ?? existing?.handle.pendingPrompts ?? 0;
@@ -303,6 +312,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     if (!rec) return undefined;
     const h = rec.handle;
     return {
+      formatVersion: DURABLE_FORMAT_VERSION,
       type: "workflow.durable.checkpoint",
       workflowId: h.workflowId,
       name: h.name,
@@ -321,8 +331,18 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     };
   }
 
+  async deleteWorkflow(workflowId: string): Promise<void> {
+    this.workflows.delete(workflowId);
+    this.deletedWorkflowIds.add(workflowId);
+  }
+
+  isWorkflowLoadable(workflowId: string): boolean {
+    return !this.deletedWorkflowIds.has(workflowId);
+  }
+
   reset(): void {
     this.workflows.clear();
+    this.deletedWorkflowIds.clear();
   }
 
   /** Export all records (for FileDurableBackend serialization or debugging). */

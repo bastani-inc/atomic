@@ -122,6 +122,28 @@ describe("resumeDurableWorkflow", () => {
     assert.equal(result.reason, "not_registered");
   });
 
+  test("resolves a unique prefix before exact-id loadability checks", () => {
+    class ExactOnlyLoadableBackend extends InMemoryDurableBackend {
+      override isWorkflowLoadable(workflowId: string): boolean {
+        return this.getWorkflow(workflowId) !== undefined;
+      }
+    }
+    const exactBackend = new ExactOnlyLoadableBackend();
+    exactBackend.registerWorkflow({
+      workflowId: "wf-prefix-current",
+      name: "resumable-pipeline",
+      inputs: { topic: "data" },
+      createdAt: 1,
+      status: "paused",
+      completedCheckpoints: 1,
+    });
+
+    const result = resumeDurableWorkflow("wf-prefix", { ...deps(), durableBackend: exactBackend });
+
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.workflowId, "wf-prefix-current");
+  });
+
   test("returns ambiguous when prefix matches multiple", () => {
     backend.registerWorkflow({ workflowId: "wf-x-1", name: "resumable-pipeline", inputs: { topic: "a" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
     backend.registerWorkflow({ workflowId: "wf-x-2", name: "resumable-pipeline", inputs: { topic: "b" }, createdAt: 1, status: "paused", completedCheckpoints: 1 });
@@ -188,6 +210,7 @@ describe("resumeDurableWorkflow", () => {
 
   test("scan-only resume entries are hidden from prepared selector catalog", async () => {
     const entry = {
+      formatVersion: 2,
       type: "workflow.durable.checkpoint",
       workflowId: "wf-scan-only",
       name: "resumable-pipeline",
@@ -314,6 +337,8 @@ describe("resumeDurableWorkflow", () => {
       listResumableWorkflows = this.mem.listResumableWorkflows.bind(this.mem);
       listCompletedWorkflows = this.mem.listCompletedWorkflows.bind(this.mem);
       toCacheEntry = this.mem.toCacheEntry.bind(this.mem) as (workflowId: string) => DurableCheckpointEntry | undefined;
+      deleteWorkflow = this.mem.deleteWorkflow.bind(this.mem);
+      isWorkflowLoadable = this.mem.isWorkflowLoadable.bind(this.mem);
       reset = this.mem.reset.bind(this.mem);
       async hydrateResumableWorkflows(): Promise<void> {
         this.hydrated = true;
@@ -344,6 +369,7 @@ describe("terminal cache suppression (issue #1498)", () => {
 
   function writeSessionCacheEntry(workflowId: string, name: string, status: string): void {
     const entry = {
+      formatVersion: 2,
       type: "workflow.durable.checkpoint",
       workflowId,
       name,

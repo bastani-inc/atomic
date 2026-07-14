@@ -10,6 +10,7 @@
  */
 
 import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
+import type { DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -156,6 +157,8 @@ export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSeriali
  * the minimal top-level metadata needed for `/workflow resume` discovery.
  */
 export interface DurableCheckpointEntry {
+  /** Durable metadata schema version used to reject incompatible discovery rows. */
+  readonly formatVersion: typeof DURABLE_FORMAT_VERSION;
   readonly type: "workflow.durable.checkpoint";
   readonly workflowId: string;
   readonly name: string;

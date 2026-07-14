@@ -11,76 +11,159 @@
  * cross-ref: issue #1498 — durable fallback when DBOS/Postgres is unavailable.
  */
 
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { hostname } from "node:os";
-import { dirname } from "node:path";
+import { readdirSync, rmSync } from "node:fs";
 import type { DurableCheckpoint, DurableWorkflowHandle, DurableWorkflowStatus } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
+import { DURABLE_FORMAT_VERSION } from "./format-version.js";
+import { readDurableFileState, type FileDurableRecord, type FileDurableState } from "./file-state.js";
+import { withDurableFileLock, writeDurableFileState } from "./file-lock.js";
 
-interface FileDurableRecord {
-  readonly handle: DurableWorkflowHandle;
-  readonly checkpoints: readonly DurableCheckpoint[];
-}
-
-interface FileDurableState {
-  readonly version: number;
-  readonly workflows: readonly FileDurableRecord[];
-}
-
-interface LockOwner {
-  readonly pid: number;
-  readonly host: string;
-  readonly token: string;
-  readonly acquiredAt: number;
-}
-
-const FILE_FORMAT_VERSION = 1;
-const LOCK_OWNER_FILE = "owner.json";
-const STALE_LOCK_MS = 30_000;
+const FILE_FORMAT_VERSION = DURABLE_FORMAT_VERSION;
 
 export class FileDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = true;
   private readonly mem = new InMemoryDurableBackend();
   private readonly filePath: string;
+  private readonly expectedWorkflowId?: string;
   private loaded = false;
+  private unknownState = false;
+  private suppressedAll = false;
+  private readonly deletedWorkflowIds = new Set<string>();
+  private readonly revivedWorkflowIds = new Set<string>();
 
-  constructor(filePath: string) {
+  constructor(
+    filePath: string,
+    expectedWorkflowId?: string,
+    private readonly writeState: typeof writeDurableFileState = writeDurableFileState,
+  ) {
     this.filePath = filePath;
+    this.expectedWorkflowId = expectedWorkflowId;
   }
-
   private ensureLoaded(): void {
     if (this.loaded) return;
+    let result = readDurableFileState(this.filePath);
+    if (result.kind === "legacy" && this.expectedWorkflowId !== undefined
+      && (result.workflowIds.length === 0 || result.workflowIds.some((id) => id !== this.expectedWorkflowId))) {
+      this.unknownState = true;
+      this.suppressedAll = true;
+      this.loaded = true;
+      return;
+    }
+    if (result.kind === "legacy") {
+      this.replaceLegacyState();
+      result = readDurableFileState(this.filePath);
+    }
+    if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
+      this.unknownState = true;
+      this.suppressedAll = true;
+      this.loaded = true;
+      return;
+    }
+    if (result.kind === "current") {
+      result.state.deletedWorkflowIds.forEach((id) => this.deletedWorkflowIds.add(id));
+      this.mem.importAll(result.state.workflows.filter((record) => !this.deletedWorkflowIds.has(record.handle.workflowId)));
+    }
     this.loaded = true;
-    this.mem.importAll(readState(this.filePath).workflows);
+  }
+
+  private replaceLegacyState(): void {
+    withDurableFileLock(this.filePath, () => {
+      const latest = readDurableFileState(this.filePath);
+      if (latest.kind !== "legacy") return;
+      const ids = this.expectedWorkflowId === undefined
+        ? latest.workflowIds
+        : [this.expectedWorkflowId];
+      if (ids.length === 0) {
+        rmSync(this.filePath, { force: true });
+        this.suppressedAll = true;
+        return;
+      }
+      ids.forEach((id) => this.deletedWorkflowIds.add(id));
+      this.writeState(this.filePath, emptyState(ids));
+    });
+  }
+
+  private assertWritable(): void {
+    if (this.unknownState) throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
   }
 
   private persist(): void {
-    withFileLock(this.filePath, () => {
-      const merged = mergeRecords(readState(this.filePath).workflows, this.mem.exportAll());
-      this.mem.reset();
-      this.mem.importAll(merged);
-      writeState(this.filePath, { version: FILE_FORMAT_VERSION, workflows: merged });
+    this.assertWritable();
+    withDurableFileLock(this.filePath, () => {
+      const result = readDurableFileState(this.filePath);
+      if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
+        this.unknownState = true;
+        this.suppressedAll = true;
+        this.mem.reset();
+        throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
+      }
+      const stored = result.kind === "current" ? result.state.workflows : [];
+      const deleted = new Set(
+        result.kind === "current" ? result.state.deletedWorkflowIds
+          : result.kind === "legacy" ? result.workflowIds
+            : [],
+      );
+      this.deletedWorkflowIds.forEach((id) => deleted.add(id));
+      this.revivedWorkflowIds.forEach((id) => deleted.delete(id));
+      const merged = mergeRecords(stored, this.mem.exportAll()).filter((record) => !deleted.has(record.handle.workflowId));
+      const state = currentState(merged, deleted);
+      this.writeState(this.filePath, state);
+      this.replaceMirror(state);
+      this.revivedWorkflowIds.clear();
     });
+  }
+  private refreshCompatibilityFromDisk(): void {
+    const result = readDurableFileState(this.filePath);
+    if (result.kind === "current" && this.matchesExpectedId(result.state)) {
+      this.unknownState = false;
+      this.suppressedAll = false;
+      this.replaceMirror(result.state);
+      return;
+    }
+    if (result.kind === "unknown"
+      || (result.kind === "current" && !this.matchesExpectedId(result.state))
+      || (result.kind === "legacy" && this.expectedWorkflowId !== undefined
+        && (result.workflowIds.length === 0 || result.workflowIds.some((id) => id !== this.expectedWorkflowId)))) {
+      this.unknownState = true;
+      this.suppressedAll = true;
+      this.mem.reset();
+      return;
+    }
+    if (result.kind === "legacy") {
+      this.loaded = false;
+      this.mem.reset();
+      this.deletedWorkflowIds.clear();
+      this.ensureLoaded();
+    }
+  }
+
+
+  private replaceMirror(state: FileDurableState): void {
+    this.mem.reset();
+    this.deletedWorkflowIds.clear();
+    state.deletedWorkflowIds.forEach((id) => this.deletedWorkflowIds.add(id));
+    this.mem.importAll(state.workflows.filter((record) => !this.deletedWorkflowIds.has(record.handle.workflowId)));
+  }
+
+  private matchesExpectedId(state: FileDurableState): boolean {
+    if (this.expectedWorkflowId === undefined) return true;
+    return state.workflows.every((record) => record.handle.workflowId === this.expectedWorkflowId)
+      && state.deletedWorkflowIds.every((id) => id === this.expectedWorkflowId);
   }
 
   registerWorkflow(handle: Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]): void {
     this.ensureLoaded();
+    this.assertWritable();
+    this.suppressedAll = false;
+    this.deletedWorkflowIds.delete(handle.workflowId);
+    this.revivedWorkflowIds.add(handle.workflowId);
     this.mem.registerWorkflow(handle);
     this.persist();
   }
 
   recordCheckpoint(checkpoint: DurableCheckpoint): void {
     this.ensureLoaded();
+    this.assertWritable();
     this.mem.recordCheckpoint(checkpoint);
     this.persist();
   }
@@ -117,6 +200,7 @@ export class FileDurableBackend implements DurableWorkflowBackend {
 
   setWorkflowStatus(workflowId: string, status: Parameters<DurableWorkflowBackend["setWorkflowStatus"]>[1], pendingPrompts?: number, resumable?: boolean): void {
     this.ensureLoaded();
+    this.assertWritable();
     this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
     this.persist();
   }
@@ -135,62 +219,72 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     this.ensureLoaded();
     return this.mem.toCacheEntry(workflowId);
   }
+  async deleteWorkflow(workflowId: string): Promise<void> {
+    this.ensureLoaded();
+    this.assertWritable();
+    withDurableFileLock(this.filePath, () => {
+      const result = readDurableFileState(this.filePath);
+      if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
+        throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
+      }
+      const stored = result.kind === "current" ? result.state.workflows : [];
+      const deleted = new Set(
+        result.kind === "current" ? result.state.deletedWorkflowIds
+          : result.kind === "legacy" ? result.workflowIds
+            : [],
+      );
+      deleted.add(workflowId);
+      const merged = mergeRecords(stored, this.mem.exportAll())
+        .filter((record) => !deleted.has(record.handle.workflowId));
+      const state = currentState(merged, deleted);
+      this.writeState(this.filePath, state);
+      this.replaceMirror(state);
+    });
+  }
+
+  isWorkflowLoadable(workflowId: string): boolean {
+    this.ensureLoaded();
+    this.refreshCompatibilityFromDisk();
+    return !this.suppressedAll && !this.deletedWorkflowIds.has(workflowId);
+  }
 
   reset(): void {
     this.mem.reset();
-    withFileLock(this.filePath, () => writeState(this.filePath, { version: FILE_FORMAT_VERSION, workflows: [] }));
+    this.unknownState = false;
+    this.suppressedAll = false;
+    this.deletedWorkflowIds.clear();
+    this.revivedWorkflowIds.clear();
+    withDurableFileLock(this.filePath, () => this.writeState(this.filePath, emptyState()));
   }
 }
 
-/**
- * Directory-backed durable backend that stores each root workflow in its own
- * JSON file while preserving the same DurableWorkflowBackend interface.
- */
 export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = true;
   private readonly dir: string;
   private readonly fileBackends = new Map<string, FileDurableBackend>();
+  private readonly suppressedIds = new Set<string>();
 
-  constructor(dir: string) {
-    this.dir = dir;
-  }
+  constructor(dir: string) { this.dir = dir; }
 
   registerWorkflow(handle: Parameters<DurableWorkflowBackend["registerWorkflow"]>[0]): void {
     this.backendFor(handle.workflowId).registerWorkflow(handle);
+    this.suppressedIds.delete(handle.workflowId);
   }
 
-  recordCheckpoint(checkpoint: DurableCheckpoint): void {
-    this.backendFor(checkpoint.workflowId).recordCheckpoint(checkpoint);
-  }
-
-  getToolOutput(workflowId: string, argsHash: string) {
-    return this.backendFor(workflowId).getToolOutput(workflowId, argsHash);
-  }
-
-  getUiResponse(workflowId: string, promptHash: string) {
-    return this.backendFor(workflowId).getUiResponse(workflowId, promptHash);
-  }
-
-  getStageOutput(workflowId: string, replayKey: string) {
-    return this.backendFor(workflowId).getStageOutput(workflowId, replayKey);
-  }
-
-  getStageSession(workflowId: string, replayKey: string) {
-    return this.backendFor(workflowId).getStageSession(workflowId, replayKey);
-  }
-
-  listCheckpoints(workflowId: string): readonly DurableCheckpoint[] {
-    return this.backendFor(workflowId).listCheckpoints(workflowId);
-  }
-
-  getWorkflow(workflowId: string) {
-    return this.backendFor(workflowId).getWorkflow(workflowId);
-  }
+  recordCheckpoint(checkpoint: DurableCheckpoint): void { this.backendFor(checkpoint.workflowId).recordCheckpoint(checkpoint); }
+  getToolOutput(workflowId: string, argsHash: string) { return this.backendFor(workflowId).getToolOutput(workflowId, argsHash); }
+  getUiResponse(workflowId: string, promptHash: string) { return this.backendFor(workflowId).getUiResponse(workflowId, promptHash); }
+  getStageOutput(workflowId: string, replayKey: string) { return this.backendFor(workflowId).getStageOutput(workflowId, replayKey); }
+  getStageSession(workflowId: string, replayKey: string) { return this.backendFor(workflowId).getStageSession(workflowId, replayKey); }
+  listCheckpoints(workflowId: string): readonly DurableCheckpoint[] { return this.backendFor(workflowId).listCheckpoints(workflowId); }
+  getWorkflow(workflowId: string) { return this.backendFor(workflowId).getWorkflow(workflowId); }
 
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
     const backend = this.backendFor(workflowId);
     backend.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
-    if (isPrunableTerminalStatus(status, resumable)) this.removeWorkflowFile(workflowId);
+    if (isPrunableTerminalStatus(status, resumable)
+      && backend.isWorkflowLoadable(workflowId)
+      && backend.getWorkflow(workflowId) !== undefined) this.removeWorkflowFile(workflowId);
   }
 
   listResumableWorkflows() {
@@ -205,24 +299,43 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     return mem.listCompletedWorkflows();
   }
 
-  toCacheEntry(workflowId: string) {
-    return this.backendFor(workflowId).toCacheEntry(workflowId);
+  toCacheEntry(workflowId: string) { return this.backendFor(workflowId).toCacheEntry(workflowId); }
+
+  async deleteWorkflow(workflowId: string): Promise<void> {
+    await this.backendFor(workflowId).deleteWorkflow(workflowId);
+    this.suppressedIds.add(workflowId);
+  }
+
+  isWorkflowLoadable(workflowId: string): boolean {
+    const filePath = durableStateFileFor(this.dir, workflowId);
+    const ownState = readDurableFileState(filePath);
+    if (ownState.kind === "current" && stateMatchesWorkflowId(ownState.state, workflowId)) {
+      const loadable = this.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
+      if (loadable) this.suppressedIds.delete(workflowId);
+      else this.suppressedIds.add(workflowId);
+      return loadable;
+    }
+    if (this.suppressedIds.has(workflowId)) return false;
+    const loadable = this.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
+    if (!loadable) this.suppressedIds.add(workflowId);
+    return loadable;
   }
 
   reset(): void {
     this.fileBackends.clear();
+    this.suppressedIds.clear();
     for (const filePath of this.stateFiles()) this.removeStateFile(filePath);
     for (const lockPath of this.lockDirs()) rmSync(lockPath, { recursive: true, force: true });
   }
 
   private backendFor(workflowId: string): FileDurableBackend {
-    return this.backendForFile(durableStateFileFor(this.dir, workflowId));
+    return this.backendForFile(durableStateFileFor(this.dir, workflowId), workflowId);
   }
 
-  private backendForFile(filePath: string): FileDurableBackend {
+  private backendForFile(filePath: string, expectedWorkflowId: string): FileDurableBackend {
     const existing = this.fileBackends.get(filePath);
     if (existing !== undefined) return existing;
-    const backend = new FileDurableBackend(filePath);
+    const backend = new FileDurableBackend(filePath, expectedWorkflowId);
     this.fileBackends.set(filePath, backend);
     return backend;
   }
@@ -232,9 +345,7 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
       return readdirSync(this.dir, { withFileTypes: true })
         .filter((entry) => entry.isFile() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json"))
         .map((entry) => `${this.dir}/${entry.name}`);
-    } catch {
-      return [];
-    }
+    } catch { return []; }
   }
 
   private lockDirs(): readonly string[] {
@@ -242,18 +353,37 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
       return readdirSync(this.dir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json.lock"))
         .map((entry) => `${this.dir}/${entry.name}`);
-    } catch {
-      return [];
-    }
+    } catch { return []; }
   }
 
   private readAllRecords(): readonly FileDurableRecord[] {
-    return this.stateFiles().flatMap((filePath) => readState(filePath).workflows);
+    return this.stateFiles().flatMap((filePath) => {
+      const workflowId = workflowIdFromStateFile(this.dir, filePath);
+      if (workflowId === undefined) return [];
+      const result = readDurableFileState(filePath);
+      const embeddedIds = result.kind === "current"
+        ? [...result.state.workflows.map((record) => record.handle.workflowId), ...result.state.deletedWorkflowIds]
+        : result.kind === "legacy" ? result.workflowIds : [];
+      const mismatched = embeddedIds.filter((id) => id !== workflowId);
+      if (mismatched.length > 0) {
+        this.suppressedIds.add(workflowId);
+        mismatched.forEach((id) => this.suppressedIds.add(id));
+        this.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
+        return [];
+      }
+      const backend = this.backendForFile(filePath, workflowId);
+      if (!backend.isWorkflowLoadable(workflowId)) {
+        this.suppressedIds.add(workflowId);
+        return [];
+      }
+      this.suppressedIds.delete(workflowId);
+      const current = readDurableFileState(filePath);
+      if (current.kind !== "current" || !stateMatchesWorkflowId(current.state, workflowId)) return [];
+      return current.state.workflows.filter((record) => !current.state.deletedWorkflowIds.includes(record.handle.workflowId));
+    });
   }
 
-  private removeWorkflowFile(workflowId: string): void {
-    this.removeStateFile(durableStateFileFor(this.dir, workflowId));
-  }
+  private removeWorkflowFile(workflowId: string): void { this.removeStateFile(durableStateFileFor(this.dir, workflowId)); }
 
   private removeStateFile(filePath: string): void {
     this.fileBackends.delete(filePath);
@@ -262,161 +392,26 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   }
 }
 
-function readState(filePath: string): FileDurableState {
-  if (!existsSync(filePath)) return { version: FILE_FORMAT_VERSION, workflows: [] };
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as FileDurableState;
-    return parsed && Array.isArray(parsed.workflows) ? parsed : { version: FILE_FORMAT_VERSION, workflows: [] };
-  } catch {
-    return { version: FILE_FORMAT_VERSION, workflows: [] };
-  }
+function workflowIdFromStateFile(dir: string, filePath: string): string | undefined {
+  const prefix = `${dir}/workflow-`;
+  if (!filePath.startsWith(prefix) || !filePath.endsWith(".json")) return undefined;
+  try { return decodeURIComponent(filePath.slice(prefix.length, -".json".length)); }
+  catch { return undefined; }
 }
 
-function writeState(filePath: string, state: FileDurableState): void {
-  const dir = dirname(filePath);
-  ensureSecureDir(dir);
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(state), { encoding: "utf-8", mode: 0o600 });
-  chmodBestEffort(tmp, 0o600);
-  renameSync(tmp, filePath);
-  chmodBestEffort(filePath, 0o600);
+
+function emptyState(deletedWorkflowIds: readonly string[] = []): FileDurableState {
+  return { version: FILE_FORMAT_VERSION, workflows: [], deletedWorkflowIds };
 }
 
-function withFileLock<T>(filePath: string, fn: () => T): T {
-  const dir = dirname(filePath);
-  ensureSecureDir(dir);
-  const lockDir = `${filePath}.lock`;
-  const deadline = Date.now() + 5000;
-  while (true) {
-    try {
-      mkdirSync(lockDir, { mode: 0o700 });
-      try {
-        chmodBestEffort(lockDir, 0o700);
-        writeLockOwner(lockDir);
-      } catch (ownerErr) {
-        rmSync(lockDir, { recursive: true, force: true });
-        throw ownerErr;
-      }
-      break;
-    } catch (err) {
-      if (errorCode(err) !== "EEXIST") throw err;
-      if (tryReclaimStaleLock(lockDir, STALE_LOCK_MS)) continue;
-      if (Date.now() > deadline) throw new Error(`Timed out acquiring durable workflow state lock: ${lockDir}`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
-    }
-  }
-  try {
-    return fn();
-  } finally {
-    rmSync(lockDir, { recursive: true, force: true });
-  }
+function currentState(records: readonly FileDurableRecord[], deleted: ReadonlySet<string>): FileDurableState {
+  return { version: FILE_FORMAT_VERSION, workflows: records, deletedWorkflowIds: [...deleted] };
 }
 
-function tryReclaimStaleLock(lockDir: string, staleMs: number): boolean {
-  if (!isStaleLock(lockDir, staleMs)) return false;
-  const owner = readLockOwner(lockDir);
-  if (owner === undefined || !isLockOwnerAbandoned(owner)) return false;
-  const quarantine = `${lockDir}.stale.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-  try {
-    renameSync(lockDir, quarantine);
-  } catch {
-    return false;
-  }
-  const quarantinedOwner = readLockOwner(quarantine);
-  if (!sameLockOwner(owner, quarantinedOwner)) {
-    restoreQuarantinedLock(lockDir, quarantine);
-    return false;
-  }
-  try {
-    rmSync(quarantine, { recursive: true, force: true });
-  } catch {
-    // The stale lock has already been moved away from the active lock path.
-  }
-  return true;
+function stateMatchesWorkflowId(state: FileDurableState, workflowId: string): boolean {
+  return state.workflows.every((record) => record.handle.workflowId === workflowId)
+    && state.deletedWorkflowIds.every((id) => id === workflowId);
 }
-
-function isStaleLock(lockDir: string, staleMs: number): boolean {
-  try {
-    const stat = statSync(lockDir);
-    return Date.now() - stat.mtimeMs > staleMs;
-  } catch {
-    return false;
-  }
-}
-
-function writeLockOwner(lockDir: string): void {
-  const owner: LockOwner = {
-    pid: process.pid,
-    host: hostname(),
-    token: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    acquiredAt: Date.now(),
-  };
-  const ownerPath = `${lockDir}/${LOCK_OWNER_FILE}`;
-  writeFileSync(ownerPath, JSON.stringify(owner), { encoding: "utf-8", mode: 0o600 });
-  chmodBestEffort(ownerPath, 0o600);
-}
-
-function readLockOwner(lockDir: string): LockOwner | undefined {
-  try {
-    const parsed = JSON.parse(readFileSync(`${lockDir}/${LOCK_OWNER_FILE}`, "utf-8"));
-    if (!isLockOwner(parsed)) return undefined;
-    return parsed;
-  } catch {
-    return undefined;
-  }
-}
-
-function isLockOwner(value: unknown): value is LockOwner {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const record = value as Partial<LockOwner>;
-  return typeof record.pid === "number"
-    && typeof record.host === "string"
-    && typeof record.token === "string"
-    && typeof record.acquiredAt === "number";
-}
-
-function isLockOwnerAbandoned(owner: LockOwner): boolean {
-  if (owner.host !== hostname()) return false;
-  if (!Number.isInteger(owner.pid) || owner.pid <= 0) return false;
-  try {
-    process.kill(owner.pid, 0);
-    return false;
-  } catch (err) {
-    const code = errorCode(err);
-    return code === "ESRCH";
-  }
-}
-
-function sameLockOwner(a: LockOwner, b: LockOwner | undefined): boolean {
-  return b !== undefined && a.pid === b.pid && a.host === b.host && a.token === b.token;
-}
-
-function restoreQuarantinedLock(lockDir: string, quarantine: string): void {
-  try {
-    if (!existsSync(lockDir)) renameSync(quarantine, lockDir);
-    else rmSync(quarantine, { recursive: true, force: true });
-  } catch {
-    // Best-effort: never delete the active lock path after a failed compare.
-  }
-}
-
-function errorCode(err: unknown): string | undefined {
-  return typeof err === "object" && err !== null && "code" in err ? String(err.code) : undefined;
-}
-
-function ensureSecureDir(dir: string): void {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  chmodBestEffort(dir, 0o700);
-}
-
-function chmodBestEffort(path: string, mode: number): void {
-  try {
-    chmodSync(path, mode);
-  } catch {
-    // chmod is unavailable or unsupported on some filesystems/platforms.
-  }
-}
-
 function isPrunableTerminalStatus(status: DurableWorkflowStatus, resumable?: boolean): boolean {
   if (status === "cancelled") return true;
   return (status === "failed" || status === "blocked") && resumable === false;
