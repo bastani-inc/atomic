@@ -10,11 +10,7 @@ import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/comp
 import { completeSimple } from "@earendil-works/pi-ai/compat";
 import { formatCopilotProviderError } from "../copilot-errors.ts";
 import { convertToLlm, createBranchSummaryMessage, createCustomMessage } from "../messages.ts";
-import {
-	buildContextDeletionFilteredPath,
-	type ReadonlySessionManager,
-	type SessionEntry,
-} from "../session-manager.ts";
+import type { ReadonlySessionManager, SessionEntry } from "../session-manager.ts";
 import { estimateTokens } from "./compaction.ts";
 import {
 	computeFileLists,
@@ -196,7 +192,7 @@ function getMessageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 export function prepareBranchEntries(entries: SessionEntry[], tokenBudget: number = 0): BranchPreparation {
 	const messages: AgentMessage[] = [];
 	const fileOps = createFileOps();
-	const filteredEntries = buildContextDeletionFilteredPath(entries);
+	const filteredEntries = entries;
 	let totalTokens = 0;
 
 	// First pass: collect file ops from ALL entries (even if they don't fit in token budget)

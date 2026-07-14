@@ -122,7 +122,7 @@ function contextEntry(targets: ContextCompactionEntry["deletedTargets"]): Contex
 	return result;
 }
 
-describe("branch summarization context deletion filtering", () => {
+describe("branch summarization with archival compaction entries", () => {
 	it("adds Copilot long-context guidance to prompt-limit summarization errors", async () => {
 		resetIds();
 		const rawError = "prompt token count of 500000 exceeds the limit of 400000";
@@ -172,7 +172,7 @@ describe("branch summarization context deletion filtering", () => {
 		expect(result.error).not.toContain("Copilot long-context/usage-based billing");
 	});
 
-	it("omits whole-entry and content-block logical deletions from prepared prompt input", () => {
+	it("treats legacy logical-deletion records as inert when preparing prompt input", () => {
 		resetIds();
 		const deletedEntrySentinel = "ITER7_BRANCH_DELETED_ENTRY_SENTINEL";
 		const deletedBlockSentinel = "ITER7_BRANCH_DELETED_BLOCK_SENTINEL";
@@ -195,11 +195,11 @@ describe("branch summarization context deletion filtering", () => {
 		const preparedJson = JSON.stringify(prepared.messages);
 		const promptInput = serializeConversation(convertToLlm(prepared.messages));
 
-		expect(preparedJson).not.toContain(deletedEntrySentinel);
-		expect(preparedJson).not.toContain(deletedBlockSentinel);
+		expect(preparedJson).toContain(deletedEntrySentinel);
+		expect(preparedJson).toContain(deletedBlockSentinel);
 		expect(preparedJson).toContain(retainedBlockSentinel);
-		expect(promptInput).not.toContain(deletedEntrySentinel);
-		expect(promptInput).not.toContain(deletedBlockSentinel);
+		expect(promptInput).toContain(deletedEntrySentinel);
+		expect(promptInput).toContain(deletedBlockSentinel);
 		expect(promptInput).toContain(retainedBlockSentinel);
 	});
 });

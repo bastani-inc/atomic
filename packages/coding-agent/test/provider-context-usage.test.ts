@@ -11,6 +11,7 @@ import { createAgentSession } from "../src/core/sdk.ts";
 import { getLatestCompactionBoundaryEntry, SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
+import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -42,16 +43,6 @@ function createUserMessage(text: string, timestamp: number): AgentMessage {
 	return { role: "user", content: text, timestamp };
 }
 
-function createContextCompactionStats(tokensBefore: number, tokensAfter: number) {
-	return {
-		objectsBefore: 1,
-		objectsAfter: 1,
-		objectsDeleted: 0,
-		tokensBefore,
-		tokensAfter,
-		percentReduction: tokensBefore === 0 ? 0 : ((tokensBefore - tokensAfter) / tokensBefore) * 100,
-	};
-}
 
 function getAssistantAt(messages: AgentMessage[], index: number): AssistantMessage {
 	const message = messages[index];
@@ -87,7 +78,7 @@ describe("provider-bound context usage", () => {
 
 		sessionManager.appendMessage(createUserMessage("before", 0));
 		sessionManager.appendMessage(oldAssistant);
-		sessionManager.appendContextCompaction([], [], createContextCompactionStats(243_928, 84_731));
+		appendTestCompaction(sessionManager, 243_928, 84_731);
 		sessionManager.appendMessage(createUserMessage("continue", Date.now() + 1));
 
 		const authStorage = AuthStorage.inMemory();
@@ -105,8 +96,8 @@ describe("provider-bound context usage", () => {
 		try {
 			expect(session.agent.transformContext).toBeDefined();
 			const transformed = await session.agent.transformContext!(session.agent.state.messages);
-			const transformedAssistant = getAssistantAt(transformed, 1);
-			const durableAssistant = getAssistantAt(session.agent.state.messages, 1);
+			const transformedAssistant = getAssistantAt(transformed, 2);
+			const durableAssistant = getAssistantAt(session.agent.state.messages, 2);
 
 			expect(transformedAssistant.content).toEqual(oldAssistant.content);
 			expect(transformedAssistant.usage).toMatchObject({
@@ -130,7 +121,7 @@ describe("provider-bound context usage", () => {
 		const sessionManager = SessionManager.inMemory(cwd);
 		sessionManager.appendMessage(createUserMessage("before", 0));
 		sessionManager.appendMessage(createAssistantMessage("old", 1, createUsage(267_857)));
-		sessionManager.appendContextCompaction([], [], createContextCompactionStats(243_928, 84_731));
+		appendTestCompaction(sessionManager, 243_928, 84_731);
 		const boundary = getLatestCompactionBoundaryEntry(sessionManager.getBranch());
 		expect(boundary).not.toBeNull();
 
@@ -141,8 +132,8 @@ describe("provider-bound context usage", () => {
 		const messages = sessionManager.buildSessionContext().messages;
 		const transformed = scrubPreCompactionAssistantUsage(messages, sessionManager.getBranch());
 
-		expect(getAssistantAt(transformed, 1).usage.totalTokens).toBe(0);
-		expect(getAssistantAt(transformed, 3).usage.totalTokens).toBe(25_000);
-		expect(getAssistantAt(messages, 1).usage.totalTokens).toBe(267_857);
+		expect(getAssistantAt(transformed, 2).usage.totalTokens).toBe(0);
+		expect(getAssistantAt(transformed, 4).usage.totalTokens).toBe(25_000);
+		expect(getAssistantAt(messages, 2).usage.totalTokens).toBe(267_857);
 	});
 });

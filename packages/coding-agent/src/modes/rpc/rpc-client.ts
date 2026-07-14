@@ -9,7 +9,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
-import type { ContextCompactionResult } from "../../core/compaction/index.ts";
+import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
@@ -284,17 +284,12 @@ export class RpcClient {
 		await this.send({ type: "set_follow_up_mode", mode });
 	}
 
-	/** Compact session context with deletion-only verbatim context compaction. */
-	async compact(): Promise<ContextCompactionResult> {
+	/** Compact session context with verbatim line-range compaction. */
+	async compact(): Promise<VerbatimCompactionResult> {
 		const response = await this.send({ type: "compact" });
 		return this.getData(response);
 	}
 
-	/** @deprecated Use compact() instead. */
-	async contextCompact(): Promise<ContextCompactionResult> {
-		const response = await this.send({ type: "context_compact" });
-		return this.getData(response);
-	}
 	async setAutoCompaction(enabled: boolean): Promise<void> {
 		await this.send({ type: "set_auto_compaction", enabled });
 	}

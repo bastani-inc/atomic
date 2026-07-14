@@ -289,14 +289,8 @@ export function setFollowUpMode(this: AgentSession, mode: "all" | "one-at-a-time
 }
 
 // =========================================================================
-// Compaction
+// Queue and delivery settings
 // =========================================================================
-
-/**
- * Apply validated logical deletions and rebuild active agent context.
- * Retained transcript entries/content blocks stay verbatim.
- */
-
 export const agentSessionMessageQueueMethods = {
 	_queueSteer,
 	_queueFollowUp,

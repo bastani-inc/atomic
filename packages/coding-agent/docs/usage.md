@@ -93,7 +93,7 @@ Useful session commands:
 - `/tree` navigates the in-file session tree and can summarize abandoned branches.
 - `/fork` creates a new session from an earlier user message.
 - `/clone` duplicates the current active branch into a new session file.
-- `/compact` uses Verbatim Compaction: a fixed no-argument deletion-only planner searches/reads transcript slices, records exact deletion targets, and applies only locally validated logical deletions. Retained transcript content stays verbatim. Atomic's approach is informed by Morph's Context Compaction article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+- `/compact` uses verbatim line compaction: the model selects one-based numbered ranges to delete, Atomic validates them, and retained text is reconstructed mechanically with `(filtered N lines)` markers. Recent logical turns remain ordinary messages.
 
 See [Sessions](/sessions) and [Compaction](/compaction) for details.
 

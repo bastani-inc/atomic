@@ -24,7 +24,7 @@ import type { ResourceLoader } from "./resource-loader.ts";
 import type { SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SourceInfo } from "./source-info.ts";
-import type { ContextCompactionResult } from "./compaction/index.ts";
+import type { VerbatimCompactionResult } from "./compaction/index.ts";
 
 export type AgentSessionEvent =
 	| AgentEvent
@@ -34,7 +34,6 @@ export type AgentSessionEvent =
 			followUp: readonly string[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
-	| { type: "context_compaction_start"; reason: "manual" }
 	| { type: "session_info_changed"; name: string | undefined }
 	| {
 			type: "model_changed";
@@ -47,18 +46,10 @@ export type AgentSessionEvent =
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
-			result: ContextCompactionResult | undefined;
+			result: VerbatimCompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
 			unresolvedOverflow?: boolean;
-			errorMessage?: string;
-	  }
-	| {
-			type: "context_compaction_end";
-			reason: "manual";
-			result: ContextCompactionResult | undefined;
-			aborted: boolean;
-			willRetry: false;
 			errorMessage?: string;
 	  }
 	| { type: "agent_continue_error"; source: "post_compaction"; errorMessage: string }

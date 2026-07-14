@@ -1,12 +1,11 @@
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
 import { join } from "path";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
+import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import {
 	CURRENT_SESSION_VERSION,
 	type BranchSummaryEntry,
-	type ContextCompactionEntry,
-	type ContextCompactionStats,
-	type ContextDeletionTarget,
+	type CompactionEntry,
 	type ContextWindowChangeEntry,
 	type CustomEntry,
 	type CustomMessageEntry,
@@ -107,24 +106,25 @@ export function createModelChangeEntry(
 	};
 }
 
-export function createContextCompactionEntry(
-	deletedTargets: ContextDeletionTarget[],
-	protectedEntryIds: string[],
-	stats: ContextCompactionStats,
-	backupPath: string | undefined,
+export function createCompactionEntry(
+	compactedText: string,
+	firstKeptEntryId: string,
+	tokensBefore: number,
+	details: VerbatimCompactionDetails,
 	byId: { has(id: string): boolean },
 	parentId: string | null,
-): ContextCompactionEntry {
+): CompactionEntry<VerbatimCompactionDetails> {
 	return {
-		type: "context_compaction",
+		type: "compaction",
 		...entryBase(byId, parentId),
-		promptVersion: 1,
-		deletedTargets,
-		protectedEntryIds,
-		stats,
-		backupPath,
+		summary: compactedText,
+		firstKeptEntryId,
+		tokensBefore,
+		details,
+		fromHook: details.rung === "extension" || undefined,
 	};
 }
+
 
 export function createCustomEntry(
 	customType: string,

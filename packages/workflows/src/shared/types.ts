@@ -6,7 +6,7 @@
 import type {
   AgentSession,
   AgentSessionEvent,
-  ContextCompactionResult,
+  VerbatimCompactionResult,
   CreateAgentSessionOptions,
   ModelCycleResult,
   PromptOptions,
@@ -19,7 +19,7 @@ import type * as AuthoringContract from "./authoring-contract.js";
 
 export type { TSchema };
 
-export type { AgentSessionEvent, ContextCompactionResult, ModelCycleResult, PromptOptions };
+export type { AgentSessionEvent, VerbatimCompactionResult, ModelCycleResult, PromptOptions };
 
 export type StageUserMessageContent = Parameters<AgentSession["sendUserMessage"]>[0];
 
@@ -354,7 +354,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
   ): Promise<{ editorText?: string; cancelled: boolean }>;
 
   /** Compaction. */
-  compact(): Promise<ContextCompactionResult>;
+  compact(): Promise<VerbatimCompactionResult>;
   abortCompaction(): void;
 
   /** Abort current operation. */

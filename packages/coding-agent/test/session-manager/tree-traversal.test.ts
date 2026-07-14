@@ -65,35 +65,35 @@ describe("SessionManager append and tree traversal", () => {
 
 			expect(entries[2].parentId).toBe(modelId);
 		});
-
-		it("appendContextCompaction integrates into tree", () => {
+		it("appendCompaction integrates into tree", () => {
 			const session = SessionManager.inMemory();
-
 			const id1 = session.appendMessage(userMsg("1"));
 			const id2 = session.appendMessage(assistantMsg("2"));
-			const stats = {
-				objectsBefore: 2,
-				objectsAfter: 1,
-				objectsDeleted: 1,
-				tokensBefore: 1000,
-				tokensAfter: 500,
-				percentReduction: 50,
-			};
-			const compactionId = session.appendContextCompaction([{ kind: "entry", entryId: id1 }], [], stats);
-			const _id3 = session.appendMessage(userMsg("3"));
-
-			const entries = session.getEntries();
-			const compactionEntry = entries.find((e) => e.type === "context_compaction");
-			expect(compactionEntry).toBeDefined();
-			expect(compactionEntry?.id).toBe(compactionId);
-			expect(compactionEntry?.parentId).toBe(id2);
-			if (compactionEntry?.type === "context_compaction") {
-				expect(compactionEntry.deletedTargets).toEqual([{ kind: "entry", entryId: id1 }]);
-				expect(compactionEntry.stats.tokensBefore).toBe(1000);
-				expect(compactionEntry.stats.objectsDeleted).toBe(1);
+			const compactionId = session.appendCompaction("[User]: 1\n(filtered 3 lines)", id1, 1000, {
+				strategy: "verbatim-lines",
+				promptVersion: 2,
+				parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "1" },
+				stats: {
+					linesBefore: 5,
+					linesDeleted: 3,
+					linesKept: 2,
+					rangeCount: 1,
+					tokensBefore: 1000,
+					tokensAfter: 500,
+					percentReduction: 50,
+				},
+				rung: "standard",
+			});
+			const id3 = session.appendMessage(userMsg("3"));
+			const entry = session.getEntry(compactionId);
+			expect(entry?.type).toBe("compaction");
+			if (entry?.type === "compaction") {
+				expect(entry.parentId).toBe(id2);
+				expect(entry.summary).toContain("(filtered 3 lines)");
+				expect(entry.firstKeptEntryId).toBe(id1);
+				expect(entry.details).toMatchObject({ strategy: "verbatim-lines" });
 			}
-
-			expect(entries[3].parentId).toBe(compactionId);
+			expect(session.getEntry(id3)?.parentId).toBe(compactionId);
 		});
 
 		it("appendCustomEntry integrates into tree", () => {

@@ -15,35 +15,31 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
-function createContextCompactionStats(tokensBefore: number, tokensAfter: number) {
-	return {
-		objectsBefore: 1,
-		objectsAfter: 1,
-		objectsDeleted: 0,
-		tokensBefore,
-		tokensAfter,
-		percentReduction: tokensBefore === 0 ? 0 : ((tokensBefore - tokensAfter) / tokensBefore) * 100,
-	};
-}
 
 const compactionMocks = vi.hoisted(() => ({
-	contextCompact: vi.fn(async (..._args: unknown[]) => ({
-		deletedTargets: [],
-		protectedEntryIds: [],
-		stats: createContextCompactionStats(190_000, 120_000),
+	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
+		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
+		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 190_000, tokensAfter: 120_000, percentReduction: 36.8 },
+		rung: "standard" as const,
 	})),
 	estimateContextTokens: vi.fn(() => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null })),
 }));
-
 vi.mock("../src/core/compaction/index.js", () => ({
+	VERBATIM_COMPACTION_PROMPT_VERSION: 2,
+	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
 	calculateContextTokens: (usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number }) =>
 		usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	compact: async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 100, details: {} }),
-	contextCompact: compactionMocks.contextCompact,
+	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareContextCompaction: () => ({ dummy: true }),
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 190_000,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
 	shouldCompact: (contextTokens: number, contextWindow: number, settings: { enabled: boolean; reserveTokens: number }) =>
 		settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
 }));
@@ -54,7 +50,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		compactionMocks.contextCompact.mockClear();
+		compactionMocks.runVerbatimCompaction.mockClear();
 		compactionMocks.estimateContextTokens.mockReset();
 		compactionMocks.estimateContextTokens.mockReturnValue({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null });
 		tempDir = join(tmpdir(), `pi-auto-compaction-length-${Date.now()}`);
@@ -64,6 +60,7 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		const model = { ...getModel("anthropic", "claude-sonnet-4-5")!, contextWindow: 200_000 };
 		const agent = new Agent({ initialState: { model, systemPrompt: "Test", tools: [] } });
 		sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");

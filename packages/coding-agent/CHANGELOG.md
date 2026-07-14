@@ -2,9 +2,26 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced deletion-target context compaction with durable verbatim line compaction. Legacy `context_compaction` entries are now inert archival records, so content they previously hid may re-enter context when old sessions resume; start a new conversation or compact again to establish a new boundary.
+- Removed the deprecated `contextCompact()` SDK method, `context_compact` RPC command, and `context_compaction_start`/`context_compaction_end` events. Use `compact()` and `compaction_start`/`compaction_end`.
+- Changed extension compaction hooks: `session_before_compact` now accepts `cancel` or a complete non-empty `compactedText` override instead of `deletionRequest`; `session_compact` exposes `VerbatimCompactionResult` and the saved `compactionEntry`.
+
+### Added
+
+- Added verbatim string compaction: Atomic numbers serialized transcript lines, asks the session model only for one-based inclusive JSON deletion ranges, validates/clamps/sorts/merges them while protecting role headers, and mechanically reconstructs retained text with exact `(filtered N lines)` markers. Repeated compaction cumulatively sums swallowed marker counts.
+- Added a string-based overflow ladder with standard and critical planning followed by deterministic oldest-first line eviction when provider planning overflows or cannot meet the active token budget.
+- Added durable pi-style `CompactionEntry` boundaries discriminated by `details.strategy: "verbatim-lines"`, plus resumable custom-role boundary messages and a collapsible TUI card showing retained-line and token-reduction statistics.
+
+### Changed
+
+- Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn.
+- Simplified resume reconstruction to load the persisted compacted string followed by original messages from `firstKeptEntryId`; no deletion filters, signed-thinking repair pass, or tool dependency repair is re-derived.
+
+
 ### Fixed
 
-- Fixed resumed sessions resurrecting records hidden by earlier Verbatim Compaction entries after later compactions changed signed-thinking turn or tool-call/result dependencies. Persisted logical deletions are now an authoritative lower bound during every context rebuild: Atomic closes unsafe replay structures by adding transient omissions instead of restoring compacted calls/results, pairs each result with its concrete call occurrence so independent exchanges may reuse an opaque call ID, leaves unrelated retained history unchanged, and keeps the append-only session file intact.
 - Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing globally newest-first, deduplicated picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection; rows need checkpoints and at least one strictly valid retained conversation, invalid per-stage transcript paths cannot open chat, repeated inspection refreshes changed authoritative chat handles, and selector mount failures close safely. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
 
 ## [0.9.8] - 2026-07-12

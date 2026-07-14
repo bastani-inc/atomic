@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type Message, type AgentSessionEvent, type ContextCompactionResult, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
+import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
 
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
@@ -326,7 +326,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         } else if (event.result) {
           this.chatContainer.clear();
           this.rebuildChatFromMessages();
-          this.addContextCompactionSummaryToChat(event.result as ContextCompactionResult);
+          // The rebuilt context contains the visible compaction boundary message.
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {
@@ -343,54 +343,6 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         break;
       }
 
-      case "context_compaction_start": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(true);
-        }
-        this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-        this.defaultEditor.onEscape = () => {
-          this.session.abortCompaction();
-        };
-        this.statusContainer.clear();
-        const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
-        this.autoCompactionLoader = new Loader(
-          this.ui,
-          (spinner) => theme.fg("accent", spinner),
-          (text) => theme.fg("muted", text),
-          `Compacting context... ${cancelHint}`,
-        );
-        this.statusContainer.addChild(this.autoCompactionLoader);
-        this.ui.requestRender();
-        break;
-      }
-
-      case "context_compaction_end": {
-        if (this.settingsManager.getShowTerminalProgress()) {
-          this.ui.terminal.setProgress(false);
-        }
-        if (this.autoCompactionEscapeHandler) {
-          this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-          this.autoCompactionEscapeHandler = undefined;
-        }
-        if (this.autoCompactionLoader) {
-          this.autoCompactionLoader.stop();
-          this.autoCompactionLoader = undefined;
-          this.statusContainer.clear();
-        }
-        if (event.aborted) {
-          this.showError("Context compaction cancelled");
-        } else if (event.result) {
-          this.chatContainer.clear();
-          this.rebuildChatFromMessages();
-          this.addContextCompactionSummaryToChat(event.result);
-          this.footer.invalidate();
-        } else if (event.errorMessage) {
-          this.showError(event.errorMessage);
-        }
-        void this.flushCompactionQueue({ willRetry: event.willRetry });
-        this.ui.requestRender();
-        break;
-      }
 
       case "auto_retry_start": {
         // Set up escape to abort retry

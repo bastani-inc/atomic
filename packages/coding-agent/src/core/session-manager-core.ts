@@ -2,6 +2,7 @@ import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/c
 import { existsSync, statSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
+import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import {
 	createBackupSnapshot,
@@ -10,7 +11,7 @@ import {
 } from "./session-manager-archive.ts";
 import {
 	createBranchSummaryEntry,
-	createContextCompactionEntry,
+	createCompactionEntry,
 	createContextWindowChangeEntry,
 	createCustomEntry,
 	createCustomMessageEntry,
@@ -39,8 +40,6 @@ import {
 } from "./session-manager-storage.ts";
 import type {
 	BranchSummaryEntry,
-	ContextCompactionStats,
-	ContextDeletionTarget,
 	FileEntry,
 	NewSessionOptions,
 	SessionContext,
@@ -247,15 +246,9 @@ export class SessionManager {
 		this._appendEntry(entry);
 		return entry.id;
 	}
-
-	/** Append logical deletion metadata for deletion-only context compaction. */
-	appendContextCompaction(
-		deletedTargets: ContextDeletionTarget[],
-		protectedEntryIds: string[],
-		stats: ContextCompactionStats,
-		backupPath?: string,
-	): string {
-		const entry = createContextCompactionEntry(deletedTargets, protectedEntryIds, stats, backupPath, this.byId, this.leafId);
+	appendCompaction(compactedText: string, firstKeptEntryId: string, tokensBefore: number, details: VerbatimCompactionDetails): string {
+		if (!this.byId.has(firstKeptEntryId)) throw new Error(`Entry ${firstKeptEntryId} not found`);
+		const entry = createCompactionEntry(compactedText, firstKeptEntryId, tokensBefore, details, this.byId, this.leafId);
 		this._appendEntry(entry);
 		return entry.id;
 	}

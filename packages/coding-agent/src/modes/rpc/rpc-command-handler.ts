@@ -152,10 +152,6 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "compact", result);
 			}
 
-			case "context_compact": {
-				const result = await session.contextCompact();
-				return createRpcSuccessResponse(id, "context_compact", result);
-			}
 
 			case "set_auto_compaction": {
 				session.setAutoCompactionEnabled(command.enabled);

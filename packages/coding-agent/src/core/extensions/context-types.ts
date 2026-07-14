@@ -1,5 +1,5 @@
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai/compat";
-import type { ContextCompactionResult } from "../compaction/index.ts";
+import type { VerbatimCompactionResult } from "../compaction/index.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ReadonlySessionManager, SessionManager } from "../session-manager.ts";
@@ -22,7 +22,7 @@ export interface CompactOptions {
 	preserve_recent?: number;
 	/** Focus query for relevance-based pruning. Defaults to auto-detected session context. */
 	query?: string;
-	onComplete?: (result: ContextCompactionResult) => void;
+	onComplete?: (result: VerbatimCompactionResult) => void;
 	onError?: (error: Error) => void;
 }
 

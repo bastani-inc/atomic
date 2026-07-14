@@ -9,7 +9,7 @@ import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core"
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
-import type { ContextCompactionResult } from "../../core/compaction/index.ts";
+import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -47,7 +47,6 @@ export type RpcCommand =
 
 	// Compaction
 	| { id?: string; type: "compact" }
-	| { id?: string; type: "context_compact" }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
 
 	// Retry
@@ -181,8 +180,7 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "set_follow_up_mode"; success: true }
 
 	// Compaction
-	| { id?: string; type: "response"; command: "compact"; success: true; data: ContextCompactionResult }
-	| { id?: string; type: "response"; command: "context_compact"; success: true; data: ContextCompactionResult }
+	| { id?: string; type: "response"; command: "compact"; success: true; data: VerbatimCompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
 
 	// Retry

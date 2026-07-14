@@ -87,7 +87,6 @@ export function applyChatSessionAgentEvent<
       changed = state.liveChat.applyEvent(legacyThinkingEvent(event));
       break;
     case "compaction_start":
-    case "context_compaction_start":
       state.compacting = true;
       state.sdkBusy = true;
       state.statusMessage = "compacting context…";
@@ -95,17 +94,6 @@ export function applyChatSessionAgentEvent<
       break;
     case "compaction_end": {
       const compaction = event as Extract<AgentSessionEvent, { type: "compaction_end" }>;
-      state.compacting = false;
-      state.sdkBusy = false;
-      state.statusMessage = compaction.errorMessage ?? "";
-      if (!compaction.aborted && !compaction.errorMessage && state.compactionQueuedMessages.length > 0) {
-        void flushChatSessionCompactionQueue(state);
-      }
-      changed = true;
-      break;
-    }
-    case "context_compaction_end": {
-      const compaction = event as Extract<AgentSessionEvent, { type: "context_compaction_end" }>;
       state.compacting = false;
       state.sdkBusy = false;
       state.statusMessage = compaction.errorMessage ?? "";

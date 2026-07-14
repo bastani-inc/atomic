@@ -7,6 +7,7 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
+import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
 const model = getModel("anthropic", "claude-sonnet-4-5")!;
 
@@ -52,16 +53,6 @@ function createUserMessage(text: string, timestamp: number) {
 	};
 }
 
-function createContextCompactionStats(tokensBefore: number, tokensAfter: number) {
-	return {
-		objectsBefore: 1,
-		objectsAfter: 1,
-		objectsDeleted: 0,
-		tokensBefore,
-		tokensAfter,
-		percentReduction: tokensBefore === 0 ? 0 : ((tokensBefore - tokensAfter) / tokensBefore) * 100,
-	};
-}
 
 function createSession() {
 	const settingsManager = SettingsManager.inMemory();
@@ -119,8 +110,8 @@ describe("AgentSession.getSessionStats", () => {
 			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
 			sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
-			sessionManager.appendMessage(createUserMessage("third", 5));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -140,9 +131,9 @@ describe("AgentSession.getSessionStats", () => {
 			sessionManager.appendMessage(createAssistantMessage("response1", 180_000, 2));
 			sessionManager.appendMessage(createUserMessage("second", 3));
 			sessionManager.appendMessage(createAssistantMessage("response2", 195_000, 4));
-			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
-			sessionManager.appendMessage(createUserMessage("third", 5));
-			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, 6));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			sessionManager.appendMessage(createUserMessage("third", Date.now() + 1));
+			sessionManager.appendMessage(createAssistantMessage("response3", 25_000, Date.now() + 2));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -160,8 +151,8 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			sessionManager.appendMessage(createUserMessage("first", 1));
 			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
-			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
-			sessionManager.appendMessage(createUserMessage("second", 3));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			sessionManager.appendMessage(createUserMessage("second", Date.now() + 1));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -179,9 +170,9 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			sessionManager.appendMessage(createUserMessage("first", 1));
 			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
-			sessionManager.appendContextCompaction([], [], createContextCompactionStats(195_000, 50_000));
-			sessionManager.appendMessage(createUserMessage("second", 3));
-			sessionManager.appendMessage(createAssistantMessage("response2", 25_000, 4));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			sessionManager.appendMessage(createUserMessage("second", Date.now() + 1));
+			sessionManager.appendMessage(createAssistantMessage("response2", 25_000, Date.now() + 2));
 			syncAgentMessages(session, sessionManager);
 
 			const stats = session.getSessionStats();
@@ -199,8 +190,8 @@ describe("AgentSession.getSessionStats", () => {
 		try {
 			sessionManager.appendMessage(createUserMessage("first", 1));
 			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
-			sessionManager.appendContextCompaction([], [], createContextCompactionStats(216_006, 81_414));
-			sessionManager.appendMessage(createUserMessage("second", 3));
+			appendTestCompaction(sessionManager, 216_006, 81_414);
+			sessionManager.appendMessage(createUserMessage("second", Date.now() + 1));
 			sessionManager.appendMessage(
 				createAssistantMessageWithUsage(
 					"response2",
@@ -212,7 +203,7 @@ describe("AgentSession.getSessionStats", () => {
 						totalTokens: 232_500,
 						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 					},
-					4,
+					Date.now() + 2,
 				),
 			);
 			syncAgentMessages(session, sessionManager);

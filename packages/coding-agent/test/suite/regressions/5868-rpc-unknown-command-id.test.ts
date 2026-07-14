@@ -86,7 +86,7 @@ describe("RPC unknown command responses (#5868)", () => {
 		rpcIo.lineHandler = undefined;
 	});
 
-	test("preserves the request id on unknown command errors", async () => {
+	test.each(["foobar", "context_compact"])("preserves the request id and rejects removed/unknown command %s", async (command) => {
 		const listenerSnapshot = takeListenerSnapshot();
 		const harness = await createHarness();
 
@@ -94,15 +94,15 @@ describe("RPC unknown command responses (#5868)", () => {
 			void runRpcMode(createRuntimeHost(harness));
 			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
-			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: "foobar" }));
+			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: command }));
 
 			await vi.waitFor(() => {
 				expect(parseOutputLines()).toContainEqual({
 					id: "test",
 					type: "response",
-					command: "foobar",
+					command,
 					success: false,
-					error: "Unknown command: foobar",
+					error: `Unknown command: ${command}`,
 				});
 			});
 		} finally {

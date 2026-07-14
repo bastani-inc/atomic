@@ -15,7 +15,7 @@ export { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../
 export type { AutocompleteProviderFactory, EditorFactory, ExtensionCommandContext, ExtensionContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions } from "../../core/extensions/index.ts";
 export { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 export { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
-export type { ContextCompactionResult } from "../../core/compaction/index.ts";
+export type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 export { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope, resolveModelScopeWithDiagnostics, resolveRestoredModelReference } from "../../core/model-resolver.ts";
 export { formatCodexFastModeModelLabel, hasSupportedCodexFastModeModel, shouldApplyCodexFastMode } from "../../core/codex-fast-mode.ts";
 export { configureHttpDispatcher } from "../../core/http-dispatcher.ts";
@@ -46,7 +46,7 @@ export { BorderedLoader } from "./components/bordered-loader.ts";
 export { BranchSummaryMessageComponent } from "./components/branch-summary-message.ts";
 export { chatEntriesFromAgentMessages, renderChatMessageEntry, type ChatMessageEntry, type ChatMessageRenderOptions } from "./components/chat-message-renderer.ts";
 export { addChatTranscriptEntry } from "./components/chat-transcript.ts";
-export { ContextCompactionSummaryMessageComponent } from "./components/context-compaction-summary-message.ts";
+export { CompactionBoundaryMessageComponent } from "./components/compaction-boundary-message.ts";
 export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";

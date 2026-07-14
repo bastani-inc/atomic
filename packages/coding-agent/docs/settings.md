@@ -134,17 +134,25 @@ Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Us
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `compaction.enabled` | boolean | `true` | Enable automatic Verbatim Compaction |
-| `compaction.reserveTokens` | number | `16384` | Tokens reserved for LLM response |
+| `compaction.enabled` | boolean | `true` | Enable automatic verbatim line compaction |
+| `compaction.reserveTokens` | number | `16384` | Tokens reserved for the next model response; automatic threshold compaction begins before this reserve is consumed |
+| `compaction.compression_ratio` | number | `0.5` | Fraction of compactable transcript **lines to keep** (`0 < value < 1`) |
+| `compaction.preserve_recent` | number | `2` | Recent context-visible messages kept outside the compactable region; Atomic widens the cut to a user-turn start and always retains the final logical turn |
+| `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
 
 ```json
 {
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384
+    "reserveTokens": 16384,
+    "compression_ratio": 0.5,
+    "preserve_recent": 2,
+    "query": "optional focus"
   }
 }
 ```
+
+The model emits numbered line ranges only; Atomic reconstructs retained text mechanically. `preserve_recent` is enforced client-side and is not a provider parameter.
 
 ### Branch Summary
 
@@ -350,7 +358,9 @@ See [Atomic packages](/packages) for package management details.
   "theme": "dark",
   "compaction": {
     "enabled": true,
-    "reserveTokens": 16384
+    "reserveTokens": 16384,
+    "compression_ratio": 0.5,
+    "preserve_recent": 2
   },
   "retry": {
     "enabled": true,

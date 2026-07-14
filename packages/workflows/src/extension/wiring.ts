@@ -140,14 +140,17 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
     },
     async compact(): ReturnType<StageSessionRuntime["compact"]> {
       return {
-        promptVersion: 1,
+        compactedText: "[User]: retained",
+        firstKeptEntryId: "kept",
+        tokensBefore: 0,
+        promptVersion: 2,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        deletedTargets: [],
-        protectedEntryIds: [],
+        rung: "deterministic",
         stats: {
-          objectsBefore: 0,
-          objectsAfter: 0,
-          objectsDeleted: 0,
+          linesBefore: 0,
+          linesDeleted: 0,
+          linesKept: 0,
+          rangeCount: 0,
           tokensBefore: 0,
           tokensAfter: 0,
           percentReduction: 0,

@@ -9,6 +9,7 @@ import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
 import { BashExecutionComponent } from "./bash-execution.ts";
 import { BranchSummaryMessageComponent } from "./branch-summary-message.ts";
+import { compactionBoundaryFromMessage } from "./compaction-boundary-message.ts";
 import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
@@ -450,11 +451,10 @@ export function renderChatMessageEntry(
     case "user":
       return userMessageComponent(messageEntry.text, markdownTheme, options.toolOutputExpanded ?? false, options.outputPad ?? 1);
     case "custom": {
-      const component = new CustomMessageComponent(
-        messageEntry.message,
-        options.getCustomMessageRenderer?.(messageEntry.message.customType),
-        markdownTheme,
-      );
+      if (messageEntry.message.customType === "compaction") {
+        return compactionBoundaryFromMessage(messageEntry.message, options.toolOutputExpanded ?? false);
+      }
+      const component = new CustomMessageComponent(messageEntry.message, options.getCustomMessageRenderer?.(messageEntry.message.customType), markdownTheme);
       component.setExpanded(options.toolOutputExpanded ?? false);
       return component;
     }

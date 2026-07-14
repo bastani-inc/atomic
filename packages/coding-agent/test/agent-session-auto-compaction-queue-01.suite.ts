@@ -11,34 +11,21 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { getEffectiveInputBudget } from "../src/core/context-window.ts";
 import { createTestResourceLoader } from "./utilities.ts";
+import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
-function createContextCompactionStats(tokensBefore: number, tokensAfter: number) {
-	return {
-		objectsBefore: 1,
-		objectsAfter: 1,
-		objectsDeleted: 0,
-		tokensBefore,
-		tokensAfter,
-		percentReduction: tokensBefore === 0 ? 0 : ((tokensBefore - tokensAfter) / tokensBefore) * 100,
-	};
-}
 
 const compactionMocks = vi.hoisted(() => ({
-	contextCompact: vi.fn(async (..._args: unknown[]) => ({
-		deletedTargets: [{ kind: "entry", entryId: "entry-1" }],
-		protectedEntryIds: [],
-		stats: {
-			objectsBefore: 1,
-			objectsAfter: 1,
-			objectsDeleted: 0,
-			tokensBefore: 100,
-			tokensAfter: 50,
-			percentReduction: 50,
-		},
+	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
+		text: "[User]: retained test context\n(filtered 1 lines)",
+		ranges: [{ start: 2, end: 2 }],
+		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		rung: "standard" as const,
 	})),
 }));
 
 vi.mock("../src/core/compaction/index.js", () => ({
+	VERBATIM_COMPACTION_PROMPT_VERSION: 2,
+	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
 	calculateContextTokens: (usage: {
 		input: number;
 		output: number;
@@ -47,13 +34,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		totalTokens?: number;
 	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	compact: async () => ({
-		summary: "compacted",
-		firstKeptEntryId: "entry-1",
-		tokensBefore: 100,
-		details: {},
-	}),
-	contextCompact: compactionMocks.contextCompact,
+	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: (
 		messages: Array<{
 			role: string;
@@ -73,7 +54,13 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
 	},
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareContextCompaction: () => ({ dummy: true }),
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
 	shouldCompact: (
 		contextTokens: number,
 		contextWindow: number,
@@ -86,7 +73,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 	let tempDir: string;
 
 	beforeEach(() => {
-		compactionMocks.contextCompact.mockClear();
+		compactionMocks.runVerbatimCompaction.mockClear();
 		tempDir = join(tmpdir(), `pi-auto-compaction-queue-${Date.now()}`);
 		mkdirSync(tempDir, { recursive: true });
 		vi.useFakeTimers();
@@ -101,6 +88,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		});
 
 		sessionManager = SessionManager.inMemory();
+		sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
 		const settingsManager = SettingsManager.create(tempDir, tempDir);
 		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
@@ -135,8 +123,8 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await runAutoCompaction("threshold", false);
 
-		expect(compactionMocks.contextCompact).toHaveBeenCalledTimes(1);
-		expect(compactionMocks.contextCompact.mock.calls[0]?.[5]).toBe("high");
+		expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[5]).toBe("high");
 	});
 	it("passes threshold and overflow ladder budgets to context compaction", async () => {
 		const runAutoCompaction = (
@@ -148,13 +136,13 @@ describe("AgentSession auto-compaction queue resume", () => {
 		const settings = session.settingsManager.getCompactionSettings();
 
 		await runAutoCompaction("threshold", false);
-		expect(compactionMocks.contextCompact.mock.calls[0]?.[6]).toEqual({
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({
 			acceptanceTokenBudget: effectiveBudget - settings.reserveTokens,
 		});
 
-		compactionMocks.contextCompact.mockClear();
+		compactionMocks.runVerbatimCompaction.mockClear();
 		await runAutoCompaction("overflow", false);
-		expect(compactionMocks.contextCompact.mock.calls[0]?.[6]).toEqual({
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({
 			acceptanceTokenBudget: effectiveBudget,
 			criticalEvictionTokenBudget: effectiveBudget,
 		});
@@ -413,7 +401,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp - 1000,
 		});
 		sessionManager.appendMessage(staleAssistant);
-		sessionManager.appendContextCompaction([], [], createContextCompactionStats(staleAssistant.usage.totalTokens, 50_000));
+		appendTestCompaction(sessionManager, staleAssistant.usage.totalTokens, 50_000);
 
 		sessionManager.appendMessage({
 			role: "user",
@@ -467,7 +455,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			timestamp: staleAssistantTimestamp - 1000,
 		});
 		sessionManager.appendMessage(staleAssistant);
-		sessionManager.appendContextCompaction([], [], createContextCompactionStats(610_000, 50_000));
+		appendTestCompaction(sessionManager, 610_000, 50_000);
 		sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: "session recovery payload" }],

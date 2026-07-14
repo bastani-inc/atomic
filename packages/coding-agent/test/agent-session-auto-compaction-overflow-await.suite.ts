@@ -12,24 +12,24 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
 vi.mock("../src/core/compaction/index.js", () => ({
+	VERBATIM_COMPACTION_PROMPT_VERSION: 2,
+	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
 	calculateContextTokens: () => 0,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	compact: async () => ({ summary: "compacted", firstKeptEntryId: "entry-1", tokensBefore: 100, details: {} }),
-	contextCompact: async () => ({
-		deletedTargets: [{ kind: "entry", entryId: "entry-1" }],
-		protectedEntryIds: [],
-		stats: {
-			objectsBefore: 1,
-			objectsAfter: 1,
-			objectsDeleted: 0,
-			tokensBefore: 100,
-			tokensAfter: 50,
-			percentReduction: 50,
-		},
+	runVerbatimCompaction: async () => ({
+		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
+		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		rung: "standard" as const,
 	}),
 	estimateContextTokens: () => ({ tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null }),
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareContextCompaction: () => ({ dummy: true }),
+	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
 	shouldCompact: () => false,
 }));
 
@@ -64,6 +64,7 @@ describe("AgentSession overflow auto-compaction continuation", () => {
 	});
 
 	it("waits for overflow retry continuation before prompt resolves", async () => {
+		session.sessionManager.appendMessage({ role: "user", content: [{ type: "text", text: "existing compactable context" }], timestamp: Date.now() });
 		let promptResolved = false;
 		let continued = false;
 		const runAutoCompaction = (

@@ -126,8 +126,8 @@ interface AgentSession {
   // In-place tree navigation within the current session file
   navigateTree(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: BranchSummaryEntry }>;
 
-  // Verbatim Compaction (deletion-only Context Compaction)
-  compact(): Promise<ContextCompactionResult>;
+  // Verbatim line compaction
+  compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
   abortCompaction(): void;
 
   // Abort current operation
@@ -138,7 +138,7 @@ interface AgentSession {
 }
 ```
 
-`compact()` accepts no custom summary instructions. It runs the same transcript-bound Verbatim Compaction planner as `/compact`: inspect transcript slices, record exact deletion targets, validate them locally, append a `context_compaction` entry, and rebuild active context with retained content unchanged.
+`compact()` serializes older context to numbered lines, asks the session model for JSON deleted ranges, validates them, and mechanically reconstructs a durable verbatim transcript string. It appends a `compaction` entry with `details.strategy: "verbatim-lines"`; the recent tail remains ordinary messages. The model never authors replacement context text.
 
 Session replacement APIs such as new-session, resume, fork, and import live on `AgentSessionRuntime`, not on `AgentSession`.
 

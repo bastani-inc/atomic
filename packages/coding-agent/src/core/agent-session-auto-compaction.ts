@@ -365,7 +365,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		// overflow recovery then falls back to deterministic no-auth eviction, while
 		// threshold compaction keeps the previous no-op behavior.
 		const model = this.model;
-		const result = await this._applyContextVerbatimCompaction({
+		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
 				if (!authResult.ok || !authResult.apiKey) {

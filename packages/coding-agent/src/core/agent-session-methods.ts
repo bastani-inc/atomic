@@ -1,10 +1,7 @@
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { BashResult } from "./bash-executor.ts";
-import type {
-	ContextCompactionParameters,
-	ContextCompactionResult,
-} from "./compaction/index.ts";
+import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -42,7 +39,7 @@ import type {
 } from "./agent-session-types.ts";
 import type { SendMessageOptions } from "./extensions/index.ts";
 
-export interface ContextCompactionApplyOptions {
+export interface VerbatimCompactionApplyOptions {
 	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
 	abortController: AbortController;
 	backupLabel: string;
@@ -192,9 +189,8 @@ export interface AgentSessionMethodSurface {
 	_applyContextWindowReplay(contextWindow: number | undefined): void;
 	_appendContextWindowChangeIfChanged(previousModel: Model<Api> | undefined, nextModel: Model<Api>): void;
 
-	_applyContextVerbatimCompaction(options: ContextCompactionApplyOptions): Promise<ContextCompactionResult | undefined>;
-	compact(options?: Partial<ContextCompactionParameters>): Promise<ContextCompactionResult>;
-	contextCompact(): Promise<ContextCompactionResult>;
+	_applyVerbatimCompaction(options: VerbatimCompactionApplyOptions): Promise<VerbatimCompactionResult | undefined>;
+	compact(options?: Partial<VerbatimCompactionParameters>): Promise<VerbatimCompactionResult>;
 	abortCompaction(): void;
 	abortBranchSummary(): void;
 	_checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck?: boolean): Promise<void>;
@@ -302,7 +298,6 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "setSteeringMode"
 	| "setFollowUpMode"
 	| "compact"
-	| "contextCompact"
 	| "abortCompaction"
 	| "abortBranchSummary"
 	| "setAutoCompactionEnabled"

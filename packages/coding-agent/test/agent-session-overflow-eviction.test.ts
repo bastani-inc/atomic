@@ -57,13 +57,12 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 	});
 
 	function seedCompactableBranch(): void {
-		sessionManager.appendMessage(text("user", "Keep this task anchor."));
-		for (let index = 0; index < 4; index++) {
-			sessionManager.appendMessage(text("assistant", `old deletable ${index} ${"x ".repeat(800)}`));
+		for (let turn = 0; turn < 3; turn++) {
+			sessionManager.appendMessage(text("user", `Task checkpoint ${turn}.\n${"objective\n".repeat(4)}`));
+			sessionManager.appendMessage(text("assistant", `old deletable ${turn}\n${"x x x x\n".repeat(8)}`));
 		}
-		for (let index = 0; index < 5; index++) {
-			sessionManager.appendMessage(text("assistant", `recent continuity ${index} ${"r ".repeat(2)}`));
-		}
+		sessionManager.appendMessage(text("user", "Continue with the final protected turn."));
+		sessionManager.appendMessage(text("assistant", "recent continuity"));
 	}
 
 	function seedUnpreparableBranch(): void {
@@ -79,7 +78,7 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
 		expect(end.errorMessage).toContain("Context overflow recovery failed");
 		expect(end.errorMessage).toContain("nothing more was safely deletable");
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "context_compaction")).toHaveLength(0);
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
 	it("keeps threshold auto-compaction with no preparable transcript as a silent no-op", async () => {
@@ -89,7 +88,7 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false });
 		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "context_compaction")).toHaveLength(0);
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
 	it("commits deterministic tier-4 eviction for overflow auto-compaction when auth is missing", async () => {
@@ -101,7 +100,7 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
 		expect(end.result).toBeDefined();
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "context_compaction")).toHaveLength(1);
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
 	});
 
 	it("keeps threshold auto-compaction with missing auth as a silent no-op", async () => {
@@ -111,6 +110,6 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
 		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined });
 		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "context_compaction")).toHaveLength(0);
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 });

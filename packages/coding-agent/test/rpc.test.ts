@@ -111,9 +111,9 @@ describe.skipIf(!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_OAUTH_T
 			.split("\n")
 			.map((line) => JSON.parse(line));
 
-		const compactionEntries = entries.filter((e: { type: string }) => e.type === "context_compaction");
+		const compactionEntries = entries.filter((entry: { type: string }) => entry.type === "compaction");
 		expect(compactionEntries.length).toBe(1);
-		expect(compactionEntries[0].stats).toBeDefined();
+		expect(compactionEntries[0].details.strategy).toBe("verbatim-lines");
 	}, 120000);
 
 	test("should execute bash command", async () => {

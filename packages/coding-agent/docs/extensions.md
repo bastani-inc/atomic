@@ -338,9 +338,9 @@ user sends another prompt ◄─────────────────
   └─► resources_discover { reason: "startup" }
 
 /compact or auto-compaction
-  ├─► compaction_start / compaction_end (deletion-only context compaction status)
-  ├─► session_before_compact (can cancel or provide a deletion request)
-  └─► session_compact (after the context_compaction entry is persisted)
+  ├─► compaction_start / compaction_end (verbatim line-compaction status)
+  ├─► session_before_compact (can cancel or provide compactedText)
+  └─► session_compact (after the compaction boundary is persisted)
 
 /tree navigation
   ├─► session_before_tree (can cancel or customize)
@@ -460,40 +460,36 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Compaction is deletion-only: extensions can cancel the run or return exact entry/content-block deletion targets for Atomic to validate locally. Extensions cannot return generated summaries.
+Fired by `/compact` and auto-compaction. Atomic prepares a protected recent tail and a numbered compactable region. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
 
 ```typescript
-pi.on("session_before_compact", async (event, ctx) => {
-  const { preparation, branchEntries, reason, signal } = event;
-  const { transcript } = preparation;
+pi.on("session_before_compact", async (event) => {
+  const { preparation, branchEntries, parameters, reason, signal } = event;
 
-  // transcript.entries - compactable entries on the active branch
-  // transcript.protectedEntryIds - entries validation will reject if directly deleted
-  // transcript.tokensBefore - token estimate before compaction
-  // branchEntries - raw session entries on the current branch
+  // preparation.region.lines - unnumbered compactable transcript lines
+  // preparation.firstKeptEntryId - fixed start of the verbatim tail
+  // preparation.tokensBefore - whole-context token estimate
+  // parameters - compression_ratio, preserve_recent, query
+  // branchEntries - raw entries on the active branch
   // reason - "manual" | "threshold" | "overflow"
+  // preparation is a deep-frozen clone
 
   if (signal.aborted) return { cancel: true };
 
   // Cancel compaction:
   return { cancel: true };
 
-  // Or provide a deletion request. Atomic validates IDs, protected targets,
-  // tool-call/tool-result pairing, and non-empty remaining context before saving.
+  // Or replace only the prepared region. Whitespace-only text is rejected.
   return {
-    deletionRequest: {
-      deletions: [
-        { kind: "entry", entryId: "abc123", rationale: "Old successful command output" },
-        { kind: "content_block", entryId: "def456", blockIndex: 2, rationale: "Verbose obsolete log" },
-      ],
-    },
+    compactedText: preparation.region.lines.slice(0, 40).join("\n"),
   };
 });
 
-pi.on("session_compact", async (event, ctx) => {
-  // event.result - ContextCompactionResult with deletedTargets/protectedEntryIds/stats
-  // event.contextCompactionEntry - the saved context_compaction entry
-  // event.fromExtension - true if session_before_compact provided deletionRequest
+pi.on("session_compact", async (event) => {
+  // event.result - VerbatimCompactionResult (text, boundary, stats, parameters, rung)
+  // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
+  // event.fromExtension - true when session_before_compact provided compactedText
+  // Observe-only: errors are isolated after persistence.
 });
 ```
 
@@ -1049,15 +1045,15 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's default Verbatim Compaction without awaiting completion. This is deletion-only Context Compaction: the internal planner searches/reads transcript slices, records exact entry/content-block deletion targets with transcript-bound tools, and Atomic applies only locally validated logical deletions. Retained transcript content stays unchanged. The approach is informed by Morph's Context Compaction write-up: [Morph's Context Compaction](https://www.morphllm.com/context-compaction). Use `compression_ratio`, `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
+Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
-  compression_ratio: 0.5, // fraction to keep: 0.3 aggressive, 0.7 light
-  preserve_recent: 2,    // keep the last N context-eligible messages
+  compression_ratio: 0.5, // fraction of compactable lines to keep
+  preserve_recent: 2,    // keep recent messages and widen to a user-turn start
   query: "keep active migration details",
   onComplete: (result) => {
-    ctx.ui.notify(`Compaction deleted ${result.stats.objectsDeleted} objects`, "info");
+    ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");
   },
   onError: (error) => {
     ctx.ui.notify(`Compaction failed: ${error.message}`, "error");
@@ -1065,7 +1061,7 @@ ctx.compact({
 });
 ```
 
-Verbatim Compaction uses a fixed internal prompt; no custom summary text can be injected. The `query` parameter guides relevance-based pruning inside that fixed prompt; it is not replacement summary text.
+The planner cannot author context text: only validated line ranges enter the mechanical reconstruction path. The `query` parameter guides relevance selection inside the fixed prompt; it is not replacement prose. Extensions that need an offline replacement can return `compactedText` from `session_before_compact`.
 
 ### ctx.getSystemPrompt()
 
@@ -2657,7 +2653,7 @@ All examples in [examples/extensions/](https://github.com/bastani-inc/atomic/tre
 | `prompt-customizer.ts` | Add context-aware tool guidance using `systemPromptOptions` | `on("before_agent_start")`, `BuildSystemPromptOptions` |
 | `file-trigger.ts` | File watcher triggers messages | `sendMessage` |
 | **Compaction & Sessions** |||
-| `custom-compaction.ts` | Custom deletion-request compaction policy | `on("session_before_compact")` |
+| `custom-compaction.ts` | Offline compacted-text override | `on("session_before_compact")` |
 | `trigger-compact.ts` | Trigger compaction manually | `compact()` |
 | `git-checkpoint.ts` | Git stash on turns | `on("turn_start")`, `on("session_before_fork")`, `exec` |
 | `auto-commit-on-exit.ts` | Commit on shutdown | `on("session_shutdown")`, `exec` |

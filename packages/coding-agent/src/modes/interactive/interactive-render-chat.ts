@@ -1,5 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
-import { type AgentMessage, type Component, type ContextCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, ContextCompactionSummaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
+import { type AgentMessage, type Component, type VerbatimCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, CompactionBoundaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
@@ -92,12 +92,9 @@ InteractiveModeBase.prototype.addRenderedChatEntry = function(this: InteractiveM
     return component;
   };
 
-InteractiveModeBase.prototype.addContextCompactionSummaryToChat = function(this: InteractiveModeBase, result: ContextCompactionResult): void {
+InteractiveModeBase.prototype.addCompactionBoundaryToChat = function(this: InteractiveModeBase, result: VerbatimCompactionResult): void {
     this.chatContainer.addChild(new Spacer(1));
-    const component = new ContextCompactionSummaryMessageComponent(
-      result,
-      this.getMarkdownThemeWithSettings(),
-    );
+    const component = new CompactionBoundaryMessageComponent(result);
     component.setExpanded(this.toolOutputExpanded);
     this.chatContainer.addChild(component);
   };
@@ -261,7 +258,7 @@ InteractiveModeBase.prototype.renderInitialMessages = function(this: Interactive
     // Show compaction info if session was compacted
     const allEntries = this.sessionManager.getEntries();
     const compactionCount = allEntries.filter(
-      (e) => e.type === "compaction",
+      (entry) => entry.type === "compaction" && (entry.details as { strategy?: string } | undefined)?.strategy === "verbatim-lines",
     ).length;
     if (compactionCount > 0) {
       const times =

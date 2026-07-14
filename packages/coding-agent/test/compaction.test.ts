@@ -421,7 +421,7 @@ describe("buildSessionContext", () => {
 		expect(loaded.thinkingLevel).toBe("high");
 	});
 
-	it("context_compaction entries filter deleted targets from active context", () => {
+	it("legacy context_compaction entries are inert archival records", () => {
 		const u1 = createMessageEntry(createUserMessage("old user task"));
 		const wholeDeleted = createMessageEntry(createAssistantMessage("WHOLE_ENTRY_DELETED"));
 		const partialDeleted = createMessageEntry({
@@ -441,21 +441,15 @@ describe("buildSessionContext", () => {
 
 		const loaded = buildSessionContext(entries);
 
-		// The deleted entry should not appear at all
-		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "WHOLE_ENTRY_DELETED"
-		))).toBeUndefined();
-
-		// The retained block from the partial deletion should still be present
-		const partialMsg = loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "RETAINED_BLOCK"
-		));
-		expect(partialMsg).toBeDefined();
-
-		// The deleted block should NOT appear
-		expect(loaded.messages.find((m) => m.role === "assistant" && (m as AssistantMessage).content.some(
-			(c) => c.type === "text" && c.text === "DELETED_BLOCK"
-		))).toBeUndefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "WHOLE_ENTRY_DELETED",
+		))).toBeDefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "RETAINED_BLOCK",
+		))).toBeDefined();
+		expect(loaded.messages.find((message) => message.role === "assistant" && message.content.some(
+			(block) => block.type === "text" && block.text === "DELETED_BLOCK",
+		))).toBeDefined();
 	});
 });
 

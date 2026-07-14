@@ -414,7 +414,7 @@ Response:
 
 #### compact
 
-Run Atomic's default Verbatim Compaction to reduce token usage. This command has no prompt/config fields; send no custom instructions. The selected model runs Atomic's fixed internal planner with transcript-bound tools (`context_search_transcript`, `context_read_entry`, `context_delete`, and `context_grep_delete`); Atomic validates the cumulative deletion targets locally, appends a `context_compaction` entry, and rebuilds active context with surviving entries/content blocks reused verbatim. This deletion-only Context Compaction approach is informed by Morph's article: [Morph's Context Compaction](https://www.morphllm.com/context-compaction).
+Run Atomic's verbatim line compactor. The selected session model receives a numbered transcript and returns JSON deleted ranges; Atomic validates them and mechanically reconstructs retained lines with `(filtered N lines)` markers. The command appends a durable `compaction` entry with `details.strategy: "verbatim-lines"`. Recent logical turns remain ordinary messages.
 
 ```json
 {"type": "compact"}
@@ -427,16 +427,24 @@ Response:
   "command": "compact",
   "success": true,
   "data": {
-    "promptVersion": 1,
-    "deletedTargets": [{ "kind": "entry", "entryId": "abc123" }],
-    "protectedEntryIds": ["user-task-entry"],
+    "compactedText": "[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.",
+    "firstKeptEntryId": "m7",
+    "tokensBefore": 150000,
+    "promptVersion": 2,
+    "parameters": {
+      "compression_ratio": 0.5,
+      "preserve_recent": 2,
+      "query": "fix the test"
+    },
+    "rung": "standard",
     "stats": {
-      "objectsBefore": 20,
-      "objectsAfter": 19,
-      "objectsDeleted": 1,
+      "linesBefore": 812,
+      "linesDeleted": 417,
+      "linesKept": 395,
+      "rangeCount": 63,
       "tokensBefore": 150000,
-      "tokensAfter": 120000,
-      "percentReduction": 20
+      "tokensAfter": 72000,
+      "percentReduction": 52
     },
     "backupPath": "/path/to/session.jsonl.2026-06-06T00-00-00-000Z.compact.bak"
   }
@@ -880,10 +888,8 @@ Events are streamed to stdout as JSON lines during agent operation. Events do NO
 | `tool_execution_end` | Tool completes |
 | `queue_update` | Pending steering/follow-up queue changed |
 | `context_window_changed` | Active context-window token budget changed |
-| `compaction_start` | Default Verbatim Compaction begins |
-| `compaction_end` | Default Verbatim Compaction completes |
-| `context_compaction_start` | Compatibility `context_compact` RPC begins |
-| `context_compaction_end` | Compatibility `context_compact` RPC completes |
+| `compaction_start` | Verbatim line compaction begins |
+| `compaction_end` | Verbatim line compaction completes |
 | `auto_retry_start` | Auto-retry begins (after transient error) |
 | `auto_retry_end` | Auto-retry completes (success or final failure) |
 | `extension_error` | Extension threw an error |
@@ -1059,16 +1065,20 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
   "type": "compaction_end",
   "reason": "threshold",
   "result": {
-    "promptVersion": 1,
-    "deletedTargets": [{ "kind": "entry", "entryId": "abc123" }],
-    "protectedEntryIds": ["user-task-entry"],
+    "compactedText": "[User]: fix the test\n(filtered 42 lines)",
+    "firstKeptEntryId": "m7",
+    "tokensBefore": 150000,
+    "promptVersion": 2,
+    "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the test"},
+    "rung": "standard",
     "stats": {
-      "objectsBefore": 20,
-      "objectsAfter": 19,
-      "objectsDeleted": 1,
+      "linesBefore": 812,
+      "linesDeleted": 417,
+      "linesKept": 395,
+      "rangeCount": 63,
       "tokensBefore": 150000,
-      "tokensAfter": 120000,
-      "percentReduction": 20
+      "tokensAfter": 72000,
+      "percentReduction": 52
     }
   },
   "aborted": false,
@@ -1084,9 +1094,7 @@ If compaction failed (e.g., API quota exceeded), `result` is `null`, `aborted` i
 
 If overflow recovery exhausts the same-model compact-and-retry attempt, `compaction_end` includes `"unresolvedOverflow": true` and an `errorMessage`. Workflow orchestration treats that signal as a context-length failure that can advance configured model fallback tiers.
 
-### context_compaction_start / context_compaction_end
-
-The compatibility RPC command `context_compact` emits these events. It uses the same deletion-only Verbatim Compaction path as `compact`, but reports the historical context-compaction event names. The result contains `deletedTargets`, `protectedEntryIds`, `stats`, `promptVersion`, and optional `backupPath`.
+There is no `context_compact` command; Atomic reports it as an unknown command. Use `compact`. Only `compaction_start` and `compaction_end` events are emitted.
 
 ### auto_retry_start / auto_retry_end
 
