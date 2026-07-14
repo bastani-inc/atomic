@@ -1,6 +1,5 @@
-import type { ExtensionAPI } from "@bastani/atomic";
+import { StringEnum, type ExtensionAPI } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
-import { StringEnum } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { renderWebSearchResult } from "./result-renderers.js";
 import type { ExtractedContent } from "./extract.js";

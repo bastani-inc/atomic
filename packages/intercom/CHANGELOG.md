@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Changed
 
 - Aligned the intercom extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no intercom source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
 
 ## [0.9.9-alpha.1] - 2026-07-14
 

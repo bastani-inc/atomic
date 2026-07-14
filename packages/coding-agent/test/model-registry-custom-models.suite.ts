@@ -3,8 +3,6 @@ import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
 describeModelRegistry((context) => {
 	const {
 		providerConfig,

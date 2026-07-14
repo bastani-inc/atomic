@@ -22,6 +22,7 @@ function writeConsumerFixture(tempDir: string): string {
 	writeFileSync(
 		consumerPath,
 		`import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { Type, type Static } from "typebox";
 import {
 	formatContextWindow,
 	getModelDefaultContextWindow,
@@ -29,6 +30,7 @@ import {
 	normalizeContextWindowOptions,
 	parseContextWindowValue,
 	selectContextWindow,
+	StringEnum,
 	validateContextWindowValue,
 	withContextWindowOptions,
 	type ContextWindowParseResult,
@@ -50,6 +52,9 @@ const model: Model<Api> = {
 	contextWindowOptions: [1_000_000] as const,
 	maxTokens: 4096,
 };
+
+const toolParameters = Type.Object({ action: StringEnum(["list", "add"] as const) });
+const toolInput: Static<typeof toolParameters> = { action: "list" };
 
 const parseResult: ContextWindowParseResult = parseContextWindowValue("1m");
 if (parseResult.value === undefined) {
@@ -73,7 +78,7 @@ const selection: ContextWindowSelection = selected;
 const formatted: string = formatContextWindow(selection.contextWindow);
 const modelDefault: number = getModelDefaultContextWindow(selection.model);
 
-void [options, defaultWindow, validation, supported, formatted, modelDefault];
+void [options, defaultWindow, validation, supported, formatted, modelDefault, toolInput];
 `,
 	);
 	return consumerPath;
@@ -87,12 +92,11 @@ function writeTsconfig(tempDir: string, consumerPath: string): string {
 			{
 				extends: resolve(REPO_ROOT, "tsconfig.base.json"),
 				compilerOptions: {
-					baseUrl: tempDir,
 					ignoreDeprecations: "6.0",
 					noEmit: true,
 					typeRoots: [resolve(REPO_ROOT, "node_modules/@types")],
 					paths: {
-						"@bastani/atomic": ["dist/index.d.ts"],
+						"@bastani/atomic": ["./dist/index.d.ts"],
 						"@earendil-works/pi-agent-core": [
 							resolve(REPO_ROOT, "node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"),
 						],
@@ -109,6 +113,7 @@ function writeTsconfig(tempDir: string, consumerPath: string): string {
 							resolve(REPO_ROOT, "node_modules/@earendil-works/pi-tui/dist/*.d.ts"),
 							resolve(REPO_ROOT, "node_modules/@earendil-works/pi-tui/dist/components/*.d.ts"),
 						],
+						"typebox": [resolve(REPO_ROOT, "node_modules/typebox/build/index.d.mts")],
 					},
 				},
 				files: [consumerPath],

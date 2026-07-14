@@ -5,6 +5,7 @@
 ### Changed
 
 - Aligned the subagents extension peer dependencies with the `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` `^0.80.7` runtime set as part of the consolidated Pi v0.80.7 dependency update; no subagent source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
 
 ## [0.9.9-alpha.1] - 2026-07-14
 

@@ -1336,9 +1336,11 @@ Use `promptSnippet` to opt a custom tool into a one-line entry in `Available too
 
 See [dynamic-tools.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/dynamic-tools.ts) for a full example.
 
+Use Atomic's export rather than importing `StringEnum` directly from Pi. It preserves Pi's Google-compatible runtime schema while keeping the schema typed against Atomic's direct TypeBox version.
+
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@bastani/atomic";
 
 pi.registerTool({
   name: "my_tool",
@@ -1815,7 +1817,7 @@ async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 
 ```typescript
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@bastani/atomic";
 import { Text } from "@earendil-works/pi-tui";
 
 pi.registerTool({
@@ -1827,7 +1829,7 @@ pi.registerTool({
     "Use my_tool for todo planning instead of direct file edits when the user asks for a task list."
   ],
   parameters: Type.Object({
-    action: StringEnum(["list", "add"] as const),  // Use StringEnum for Google compatibility
+    action: StringEnum(["list", "add"] as const),  // Atomic's Pi-compatible TypeBox helper
     text: Type.Optional(Type.String()),
   }),
   prepareArguments(args) {
@@ -1884,7 +1886,7 @@ async execute(toolCallId, params) {
 }
 ```
 
-**Important:** Use `StringEnum` from `@earendil-works/pi-ai` for string enums. `Type.Union`/`Type.Literal` doesn't work with Google's API.
+**Important:** Use `StringEnum` from `@bastani/atomic` for string enums. It retains Pi's Google-compatible schema and composes with Atomic's direct TypeBox types; `Type.Union`/`Type.Literal` doesn't work with Google's API.
 
 **Argument preparation:** `prepareArguments(args)` is optional. If defined, it runs before schema validation and before `execute()`. Use it only when a custom tool must normalize arguments before validation. Return the object you want validated against `parameters`, keep the public schema strict, and avoid advertising deprecated fields.
 

@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai/compat";
+import { StringEnum } from "@bastani/atomic";
 import { Type } from "typebox";
 
 export const MAX_PARALLEL_TASKS = 50;

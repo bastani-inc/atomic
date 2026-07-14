@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Aligned the MCP extension peer dependencies with `@earendil-works/pi-ai` and `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no MCP source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
 
 ## [0.9.9-alpha.1] - 2026-07-14
 

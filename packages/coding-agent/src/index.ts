@@ -43,6 +43,7 @@ export {
   reconstructFlattenedKeys,
   unflattenArgumentsWithSchema,
 } from "./core/flattened-tool-arguments.ts";
+export { StringEnum, type StringEnumOptions } from "./core/typebox-compat.ts";
 export {
 	AgentSession,
 	type AgentSessionConfig,

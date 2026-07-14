@@ -129,4 +129,13 @@ describe("validateInputs", () => {
     assert.equal(errors[0]!.key, "count");
     assert.match(errors[0]!.reason, /finite number/);
   });
+
+  test("rejects non-plain object instances as non-serializable", () => {
+    for (const value of [new Date(), new Map(), /pattern/]) {
+      const errors = validateInputs(schema({ value: Type.Unknown() }), { value: value as never });
+      assert.equal(errors.length, 1, `${value.constructor.name} should be rejected`);
+      assert.equal(errors[0]!.key, "value");
+      assert.match(errors[0]!.reason, /JSON-serializable/);
+    }
+  });
 });

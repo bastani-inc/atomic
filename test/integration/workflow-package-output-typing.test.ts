@@ -106,7 +106,6 @@ function writePackageFixture(fixtureRoot: string): void {
           allowImportingTsExtensions: true,
           allowArbitraryExtensions: true,
           ignoreDeprecations: "6.0",
-          baseUrl: ".",
           typeRoots: [join(repoRoot, "node_modules", "@types")],
           paths: {
             "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
