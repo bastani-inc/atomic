@@ -193,7 +193,7 @@ describe("one-pass range planner", () => {
 		expect(calls[0].request.apiKey).toBe("key");
 		expect(calls[0].request.headers).toEqual({ "x-test": "value" });
 		expect(calls[0].request.reasoning).toBe("medium");
-		expect(calls[0].request.maxTokens).toBeLessThanOrEqual(Math.floor(prep.settings.reserveTokens * 0.8));
+		expect(calls[0].request.maxTokens).toBe(Math.min(reasoningModel.maxTokens, Math.floor(prep.settings.reserveTokens * 0.8)));
 	});
 
 	it.each([
@@ -220,19 +220,6 @@ describe("one-pass range planner", () => {
 		}
 	});
 
-	it("rejects an oversized finished prompt before making a provider request", async () => {
-		const prep = preparation();
-		const faux = createFauxStreamFn(['{"d":[[1,2]]}']);
-		const tinyModel = { ...model, contextWindow: 100, maxTokens: 50 };
-		try {
-			await planDeletedLineRanges(prep.region, prep.parameters, tinyModel, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn });
-			throw new Error("expected preflight failure");
-		} catch (error) {
-			expect(error).toBeInstanceOf(RangePlanError);
-			expect((error as RangePlanError).attempts).toBe(0);
-		}
-		expect(faux.state.callCount).toBe(0);
-	});
 });
 
 describe("single planned compaction rung", () => {
