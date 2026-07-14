@@ -81,7 +81,7 @@ export const REVIEWER_INTERCOM_COORDINATION_PROTOCOL = [
   "Concurrent reviewer coordination protocol:",
   "- At review start, use Intercom to initialize/check coordination and discover sibling reviewers participating in the same workflow run.",
   "- Tell those sibling reviewers your validation plan and intended check ownership before running checks. Claim ownership before starting any expensive, lock-prone, or potentially conflicting command that uses a shared checkout or shared environment.",
-  "- Coordinate and serialize conflicting shared-checkout or shared-environment commands, including full test suites, Cargo builds or tests, package-manager operations, browser or E2E sessions, migrations, and generated-artifact steps. Announce each coordinated check when it starts and finishes, release every claimed resource when finished, and share reusable command outcomes and evidence so siblings can avoid redundant execution where appropriate.",
+  "- Coordinate and serialize conflicting shared-checkout or shared-environment commands, including full test suites, build or test commands, package-manager operations, browser or E2E sessions, migrations, and generated-artifact steps. Announce each coordinated check when it starts and finishes. Release every claimed resource when finished, then send siblings an explicit resource-release update. Share reusable command outcomes and evidence so siblings can avoid redundant execution where appropriate.",
   "- Operational coordination does not make the review collective: independently inspect the patch, perform your own analysis, and produce your own verdict. Never copy or defer to a sibling reviewer's conclusions.",
 ].join("\n");
 
