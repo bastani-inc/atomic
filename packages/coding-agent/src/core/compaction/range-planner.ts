@@ -75,12 +75,6 @@ function compactRanges(value: JsonValue): RawLineRange[] | undefined {
 		.map((item) => ({ start: endpoint(item[0]), end: endpoint(item[1]) }));
 }
 
-function legacyRanges(value: JsonValue): RawLineRange[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	return value
-		.filter((item): item is { [key: string]: JsonValue } => Boolean(item) && !Array.isArray(item) && typeof item === "object")
-		.map((item) => ({ start: endpoint(item.start), end: endpoint(item.end) }));
-}
 
 export function extractDeletedRanges(text: string): RawLineRange[] | undefined {
 	const objectText = firstBalancedObject(text);
@@ -88,7 +82,7 @@ export function extractDeletedRanges(text: string): RawLineRange[] | undefined {
 	try {
 		const parsed = JSON.parse(objectText) as JsonValue;
 		if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return undefined;
-		return "d" in parsed ? compactRanges(parsed.d) : legacyRanges(parsed.deleted_ranges);
+		return "d" in parsed ? compactRanges(parsed.d) : undefined;
 	} catch {
 		return undefined;
 	}

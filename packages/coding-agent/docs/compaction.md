@@ -34,7 +34,7 @@ The planner sees the same text numbered as `N→content` and may return only one
 {"d":[[2,5]]}
 ```
 
-Prompt version 3 emits this compact grammar. The migration parser also accepts legacy `deleted_ranges` objects. Atomic safety-normalizes finite integer endpoints by truncating, swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
+Prompt version 3 accepts only this compact grammar. Atomic safety-normalizes finite integer endpoints by truncating, swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
 
 ### Markers and repeated compaction
 

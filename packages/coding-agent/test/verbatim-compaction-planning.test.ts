@@ -148,13 +148,12 @@ describe("compaction boundary preparation", () => {
 });
 
 describe("one-pass range planner", () => {
-	it("prefers compact d grammar and temporarily accepts legacy objects", () => {
+	it("parses only the compact d grammar", () => {
 		expect(extractDeletedRanges('note {"d":[[2,4],["8",6]]} trailing')).toEqual([
 			{ start: 2, end: 4 },
 			{ start: "8", end: 6 },
 		]);
-		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toEqual([{ start: 2, end: 4 }]);
-		expect(extractDeletedRanges('{"d":[],"deleted_ranges":[{"start":2,"end":4}]}')).toEqual([]);
+		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toBeUndefined();
 	});
 
 	it("uses the exact one-pass contract with whole-region numbering and ordinary role headers", () => {
