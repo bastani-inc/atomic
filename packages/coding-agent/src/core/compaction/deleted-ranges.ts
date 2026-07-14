@@ -73,7 +73,9 @@ function foldAdjacentMarkers(region: NumberedRegion, ranges: ValidatedRanges): L
 		for (const lineNumber of region.priorMarkerNs.keys()) {
 			const index = lineNumber - 1;
 			if (deleted[index]) continue;
-			if (deleted[index - 1] || deleted[index + 1]) {
+			const previousDeleted = index > 0 ? (deleted[index - 1] ?? false) : false;
+			const nextDeleted = index + 1 < deleted.length ? (deleted[index + 1] ?? false) : false;
+			if (previousDeleted || nextDeleted) {
 				deleted[index] = true;
 				changed = true;
 			}
@@ -83,8 +85,11 @@ function foldAdjacentMarkers(region: NumberedRegion, ranges: ValidatedRanges): L
 	const folded: LineRange[] = [];
 	let start: number | undefined;
 	for (let index = 0; index <= deleted.length; index++) {
-		if (deleted[index] && start === undefined) start = index + 1;
-		if (!deleted[index] && start !== undefined) {
+		// Sentinel iteration at index === deleted.length: treat as not deleted so a
+		// trailing open range closes without reading past the array bounds.
+		const isDeleted = index < deleted.length ? (deleted[index] ?? false) : false;
+		if (isDeleted && start === undefined) start = index + 1;
+		if (!isDeleted && start !== undefined) {
 			folded.push({ start, end: index });
 			start = undefined;
 		}

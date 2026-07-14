@@ -11,7 +11,12 @@ import { store } from "../../packages/workflows/src/shared/store.js";
 
 let tempDir = "";
 
-beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), "atomic-completed-command-")); });
+beforeEach(() => {
+  // The workflows store is a module-level singleton shared across test files in
+  // the same bun process; clear leftovers so index/id lookups see only this file's runs.
+  store.clear();
+  tempDir = mkdtempSync(join(tmpdir(), "atomic-completed-command-"));
+});
 afterEach(() => {
   setDurableBackend(undefined);
   store.clear();
@@ -79,7 +84,7 @@ describe("/workflow resume completed target", () => {
     assert.equal(resumeCalls, 0);
     assert.deepEqual(opened, ["completed-command-target"]);
     assert.match(result.messages.join("\n"), /read-only inspection and follow-up chat/);
-    assert.equal(store.runs()[0]?.status, "completed");
+    assert.equal(store.runs().find((run) => run.id === "completed-command-target")?.status, "completed");
     assert.equal(backend.getWorkflow("completed-command-target")?.status, "completed");
   });
 
