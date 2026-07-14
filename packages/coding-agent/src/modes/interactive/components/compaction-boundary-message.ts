@@ -40,6 +40,7 @@ export class CompactionBoundaryMessageComponent extends Box {
 	}
 }
 
+
 export function compactionBoundaryFromMessage(message: CustomMessage, expanded: boolean): CompactionBoundaryMessageComponent {
 	const details = message.details as VerbatimCompactionDetails;
 	const content = Array.isArray(message.content)

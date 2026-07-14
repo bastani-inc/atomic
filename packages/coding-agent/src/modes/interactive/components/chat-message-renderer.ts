@@ -3,7 +3,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { Container, Text, type Component, type MarkdownTheme, type TUI } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import type { MessageRenderer, ToolDefinition } from "../../../core/extensions/types.ts";
-import type { BashExecutionMessage, BranchSummaryMessage, CustomMessage } from "../../../core/messages.ts";
+import { isVerbatimCompactionMessage, type BashExecutionMessage, type BranchSummaryMessage, type CustomMessage } from "../../../core/messages.ts";
 import { parseSkillBlock } from "../../../core/agent-session.ts";
 import { getMarkdownTheme, theme } from "../theme/theme.ts";
 import { AssistantMessageComponent } from "./assistant-message.ts";
@@ -14,6 +14,7 @@ import { CustomMessageComponent } from "./custom-message.ts";
 import { SkillInvocationMessageComponent } from "./skill-invocation-message.ts";
 import { ToolExecutionComponent } from "./tool-execution.ts";
 import { UserMessageComponent } from "./user-message.ts";
+import { extractMessageText } from "./chat-session-host-utils.ts";
 export type ChatMessageEntry =
   | { role: "assistant"; kind: "assistant"; message: AssistantMessage }
   | { role: "tool"; kind: "tool"; toolName: string; toolCallId: string; args: unknown; result?: ToolResultMessage; isPartial?: boolean }
@@ -133,6 +134,14 @@ export class LiveChatEntriesController {
 	}
   appendMessages(messages: readonly AgentMessage[]): void {
     this.entries.push(...chatEntriesFromAgentMessages(messages));
+    this.reindexPendingTools();
+  }
+  replaceMessages(
+    messages: readonly AgentMessage[],
+    preservedEntries: readonly { role: string }[] = [],
+  ): void {
+    this.entries.splice(0, this.entries.length, ...chatEntriesFromAgentMessages(messages), ...preservedEntries);
+    this.streamingAssistantIndex = undefined;
     this.reindexPendingTools();
   }
   appendUserText(text: string): void {
@@ -451,7 +460,7 @@ export function renderChatMessageEntry(
     case "user":
       return userMessageComponent(messageEntry.text, markdownTheme, options.toolOutputExpanded ?? false, options.outputPad ?? 1);
     case "custom": {
-      if (messageEntry.message.customType === "compaction") {
+      if (isVerbatimCompactionMessage(messageEntry.message)) {
         return compactionBoundaryFromMessage(messageEntry.message, options.toolOutputExpanded ?? false);
       }
       const component = new CustomMessageComponent(messageEntry.message, options.getCustomMessageRenderer?.(messageEntry.message.customType), markdownTheme);
@@ -480,21 +489,5 @@ function userMessageComponent(text: string, markdownTheme: MarkdownTheme, expand
   return container;
 }
 function getMessageText(message: Extract<AgentMessage, { role: "user" }>): string {
-  return messageContentText(message.content).trim();
-}
-function messageContentText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts: string[] = [];
-  for (const item of content) {
-    if (item == null) continue;
-    if (typeof item === "string") {
-      parts.push(item);
-      continue;
-    }
-    if (typeof item !== "object") continue;
-    const text = (item as { text?: unknown }).text;
-    if (typeof text === "string") parts.push(text);
-  }
-  return parts.join("");
+  return extractMessageText(message.content).trim();
 }

@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentMessage, type Component, type VerbatimCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, CompactionBoundaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
+import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
     const children = this.chatContainer.children;
@@ -306,9 +307,29 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
     }
   };
 
-InteractiveModeBase.prototype.rebuildChatFromMessages = function(this: InteractiveModeBase): void {
+InteractiveModeBase.prototype.rebuildChatFromMessages = function(
+  this: InteractiveModeBase,
+  options: { suppressCompactionBoundary?: VerbatimCompactionResult } = {},
+): void {
     this.chatContainer.clear();
     this.attachStartupNoticesContainer();
-    const context = this.sessionManager.buildSessionContext();
+    let context = this.sessionManager.buildSessionContext();
+    const synthesizedBoundary = options.suppressCompactionBoundary;
+    if (synthesizedBoundary && isSynthesizedCompactionBoundary(context.messages[0], synthesizedBoundary)) {
+      context = { ...context, messages: context.messages.slice(1) };
+    }
     this.renderSessionContext(context);
   };
+
+function isSynthesizedCompactionBoundary(
+  message: AgentMessage | undefined,
+  result: VerbatimCompactionResult,
+): boolean {
+  if (message?.role !== "custom" || message.customType !== "compaction" || !message.display) return false;
+  const details = message.details as { strategy?: string } | undefined;
+  if (details?.strategy !== "verbatim-lines") return false;
+  const content = Array.isArray(message.content)
+    ? message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
+    : message.content;
+  return content === VERBATIM_COMPACTION_PREFIX + result.compactedText;
+}

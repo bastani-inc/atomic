@@ -97,6 +97,12 @@ export function applyChatSessionAgentEvent<
       state.compacting = false;
       state.sdkBusy = false;
       state.statusMessage = compaction.errorMessage ?? "";
+      if (!compaction.aborted && !compaction.errorMessage && compaction.result) {
+        const compactedMessages = state.getAgentSession?.()?.messages;
+        if (compactedMessages) {
+          state.liveChat.replaceMessages(compactedMessages, state.extraEntries);
+        }
+      }
       if (!compaction.aborted && !compaction.errorMessage && state.compactionQueuedMessages.length > 0) {
         void flushChatSessionCompactionQueue(state);
       }

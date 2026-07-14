@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { VERBATIM_COMPACTION_PREFIX, convertToLlm } from "../../src/core/messages.js";
+import { VERBATIM_COMPACTION_PREFIX, convertToLlm, isVerbatimCompactionMessage, type CustomMessage } from "../../src/core/messages.js";
 import { buildSessionContext, SessionManager, type SessionEntry } from "../../src/core/session-manager.js";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
 import { assistantMsg, userMsg } from "../utilities.js";
@@ -55,7 +55,10 @@ describe("verbatim compaction persistence and resume", () => {
 			expect(entry.details).toMatchObject({ strategy: "verbatim-lines" });
 		}
 
-		const beforeResume = convertToLlm(manager.buildSessionContext().messages);
+		const builtContext = manager.buildSessionContext();
+		expect(isVerbatimCompactionMessage(builtContext.messages[0] as CustomMessage)).toBe(true);
+		expect(isVerbatimCompactionMessage({ ...builtContext.messages[0] } as CustomMessage)).toBe(false);
+		const beforeResume = convertToLlm(builtContext.messages);
 		expect(beforeResume).toHaveLength(4);
 		expect(beforeResume[0]).toMatchObject({
 			role: "user",
@@ -69,7 +72,9 @@ describe("verbatim compaction persistence and resume", () => {
 		const file = manager.getSessionFile();
 		expect(file).toBeDefined();
 		const resumed = SessionManager.open(file!);
-		expect(convertToLlm(resumed.buildSessionContext().messages)).toEqual(beforeResume);
+		const resumedContext = resumed.buildSessionContext();
+		expect(isVerbatimCompactionMessage(resumedContext.messages[0] as CustomMessage)).toBe(true);
+		expect(convertToLlm(resumedContext.messages)).toEqual(beforeResume);
 	});
 
 	it("treats legacy deletion and non-verbatim compaction records as inert", () => {

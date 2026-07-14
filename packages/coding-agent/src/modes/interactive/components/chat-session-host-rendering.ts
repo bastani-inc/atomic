@@ -145,6 +145,9 @@ export function renderChatSessionEntry<
   state: ChatSessionHostState<TExtraEntry>,
   entry: ChatSessionHostEntry<TExtraEntry>,
 ): Component {
+  if (state.extraEntries.includes(entry as TExtraEntry)) {
+    return state.renderExtraEntry?.(entry as TExtraEntry) ?? new Text("", 0, 0);
+  }
   if (isChatMessageEntry(entry)) {
     return renderChatMessageEntry(
       streamingWindowedEntry(state, entry),

@@ -323,10 +323,10 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           } else {
             this.showStatus("Auto-compaction cancelled");
           }
-        } else if (event.result) {
+        } else if (event.result && !event.errorMessage) {
           this.chatContainer.clear();
-          this.rebuildChatFromMessages();
-          // The rebuilt context contains the visible compaction boundary message.
+          this.rebuildChatFromMessages({ suppressCompactionBoundary: event.result });
+          this.addCompactionBoundaryToChat(event.result);
           this.footer.invalidate();
         } else if (event.errorMessage) {
           if (event.reason === "manual") {

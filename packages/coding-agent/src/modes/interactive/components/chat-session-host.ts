@@ -86,6 +86,7 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
   }
 
   appendExtraEntry(entry: TExtraEntry): void {
+    this.state.extraEntries.push(entry);
     this.state.transcript.push(entry);
   }
 
