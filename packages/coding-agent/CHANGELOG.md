@@ -18,6 +18,7 @@
 
 - Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn. Role headers are now ordinary ranked lines; only explicit protected spans are split out of model-selected deletion ranges.
 - Simplified resume reconstruction to load the persisted compacted string followed by original messages from `firstKeptEntryId`; no deletion filters, signed-thinking repair pass, or tool dependency repair is re-derived.
+- Retuned the one-pass compaction classifier's retention guidance to surgically thin long tool results, preserve compact diagnostic/code/state anchors, prune repeated retry and superseded bodies, and treat formatting, stack position, markers, and query matches as contextual rather than hard categories.
 
 
 ### Fixed

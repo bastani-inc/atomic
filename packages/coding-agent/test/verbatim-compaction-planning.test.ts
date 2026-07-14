@@ -156,12 +156,17 @@ describe("one-pass range planner", () => {
 		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toBeUndefined();
 	});
 
-	it("uses the exact one-pass contract with whole-region numbering and ordinary role headers", () => {
+	it("uses the evidence-tuned one-pass contract with whole-region numbering", () => {
 		const prep = preparation();
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
 		expect(prompt).toContain('Target lines to keep: 12');
 		expect(prompt).toContain('{"d":[[start,end],...]}');
-		expect(prompt).toContain("Role headers and the first/final lines of sections are ordinary evidence-bearing lines");
+		expect(prompt).toContain("Rank lines inside long tool results individually across the whole result");
+		expect(prompt).toContain("Do not truncate by position or blanket-delete merely because a result is long");
+		expect(prompt).toContain("keyword matches do not guarantee retention");
+		expect(prompt).not.toContain("cannot erase generally critical context");
+		expect(prompt).toContain("No category, first/last position, or top/deep stack position is automatically kept or deleted");
+		expect(prompt).toContain("Treat old filtered/truncation markers as low-priority gap anchors");
 		expect(prompt).toContain(`1→${prep.region.lines[0]}`);
 		expect(prompt).toContain(`${prep.region.lines.length}→${prep.region.lines.at(-1)}`);
 		expect(prompt).not.toContain("deleted_ranges");
