@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.9-alpha.1] - 2026-07-14
+
 ### Fixed
 
 - Fixed first-party subagent transcripts launched inside workflow stages to inherit complete workflow ownership metadata in foreground and background execution, while fork-context children also inherit classification through the branched JSONL header.

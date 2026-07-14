@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.9-alpha.1] - 2026-07-14
+
 ### Changed
 
 - Hardened the shared builtin `goal`/`ralph` prompt contracts against over-implementation drift (observed in eval traces where near-perfect patches lost binary reward to a single invented strictness: returning a read-only mapping proxy where the contract said "dict", marking an optional schema field required, and rejecting duplicate aliases the task's hidden tests expected to be tolerated). The literal objective contract now states that the loud-error preference applies only to error conditions the contract enumerates and that the default for unenumerated behavior is permissive acceptance (never invent a validation error, required field, uniqueness constraint, or rejection the contract does not name); that contract-named types/shapes/formats must be produced exactly, with no defensive substitutes such as read-only proxies, frozen collections, or tuples-for-lists, because consumers may check type identity literally; and that unspecified behavior defaults to preserving input verbatim over normalizing, deduplicating, reordering, or rewriting it.

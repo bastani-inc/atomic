@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.9-alpha.1] - 2026-07-14
+
 ### Breaking Changes
 
 - Replaced deletion-target context compaction with durable verbatim line compaction. Legacy `context_compaction` entries are now inert archival records, so content they previously hid may re-enter context when old sessions resume; start a new conversation or compact again to establish a new boundary.
