@@ -30,6 +30,7 @@ import {
     readPathEndsWith,
     readPaths,
 } from "./builtin-workflows-helpers.js";
+import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("goal", () => {    type ReviewJsonFinding = {
         readonly title: string;
@@ -436,6 +437,17 @@ describe("goal", () => {    type ReviewJsonFinding = {
             ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "",
             /echo the prior blocker string/i,
         );
+        for (const reviewerName of [
+            "completion-reviewer-1",
+            "evidence-reviewer-1",
+            "risk-reviewer-1",
+        ]) {
+            assertReviewerIntercomCoordination(
+                ctx.calls.prompts[reviewerName]?.[0] ?? "",
+                reviewerName,
+            );
+        }
+
         const reviewerPrompt = ctx.calls.prompts["completion-reviewer-1"]?.[0] ?? "";
         assert.doesNotMatch(reviewerPrompt, /structured_output/i);
         assert.match(reviewerPrompt, /stop_review_loop=true/);

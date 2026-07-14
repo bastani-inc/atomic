@@ -30,6 +30,7 @@ import {
     readPathEndsWith,
     readPaths,
 } from "./builtin-workflows-helpers.js";
+import { assertReviewerIntercomCoordination } from "./reviewer-intercom-prompt-assertions.js";
 
 describe("ralph", () => {
     let tempCwd: string | undefined;
@@ -369,6 +370,13 @@ describe("ralph", () => {
             reviewerBFallbacks.some((m) => /gemini|sonnet/.test(m)),
             false,
         );
+        for (const reviewerName of ["reviewer-a", "reviewer-b"]) {
+            assertReviewerIntercomCoordination(
+                ctx.calls.prompts[reviewerName]?.[0] ?? "",
+                reviewerName,
+            );
+        }
+
         const reviewerPrompt = ctx.calls.prompts["reviewer-a"]?.[0] ?? "";
         assert.match(reviewerPrompt, /<structured_decision_assurance>/);
         assert.match(reviewerPrompt, /Always return findings as an array/);
