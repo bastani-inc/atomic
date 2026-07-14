@@ -125,13 +125,6 @@ export function findTranscriptContentBlock(
 	return findTranscriptEntry(transcript, target.entryId)?.contentBlocks.find((block) => block.blockIndex === target.blockIndex);
 }
 
-export function firstToolCallBlockTarget(
-	entry: CompactableTranscriptEntry,
-	callId: string,
-): ContextDeletionTarget | undefined {
-	const blockIndex = toolCallBlockIndexes(entry, callId)[0];
-	return blockIndex === undefined ? undefined : { kind: "content_block", entryId: entry.entryId, blockIndex };
-}
 
 export function formatProtectedDeletionError(transcript: CompactableTranscript, target: ContextDeletionTarget): string {
 	const entry = findTranscriptEntry(transcript, target.entryId);
@@ -240,20 +233,11 @@ export function assertNoLatestAssistantThinkingDeletionTargets(
 
 export function isToolCallBlockDeleted(
 	entry: CompactableTranscriptEntry,
-	callId: string,
+	blockIndex: number,
 	deletedEntryIds: ReadonlySet<string>,
 	deletedContentBlocks: ReadonlyMap<string, ReadonlySet<number>>,
 ): boolean {
-	if (deletedEntryIds.has(entry.entryId)) return true;
-	const deletedBlocks = deletedContentBlocks.get(entry.entryId);
-	if (!deletedBlocks) return false;
-	return entry.contentBlocks.some((block) => block.toolCallId === callId && deletedBlocks.has(block.blockIndex));
-}
-
-export function toolCallBlockIndexes(entry: CompactableTranscriptEntry, callId: string): number[] {
-	return entry.contentBlocks
-		.filter((block) => block.toolCallId === callId)
-		.map((block) => block.blockIndex);
+	return deletedEntryIds.has(entry.entryId) || deletedContentBlocks.get(entry.entryId)?.has(blockIndex) === true;
 }
 
 export function addTarget(targets: ContextDeletionTarget[], target: ContextDeletionTarget): boolean {
@@ -309,21 +293,16 @@ export function addToolCallDeletion(
 	transcript: CompactableTranscript,
 	targets: ContextDeletionTarget[],
 	entry: CompactableTranscriptEntry,
-	callId: string,
+	blockIndex: number,
 ): boolean {
 	if (assistantEntryHasThinkingContentBlock(entry)) {
 		if (!canDeleteTarget(transcript, { kind: "entry", entryId: entry.entryId })) return false;
 		return deleteEntryTarget(targets, entry.entryId);
 	}
 
-	let changed = false;
-	for (const blockIndex of toolCallBlockIndexes(entry, callId)) {
-		const target: ContextDeletionTarget = { kind: "content_block", entryId: entry.entryId, blockIndex };
-		if (!canDeleteTarget(transcript, target)) continue;
-		if (!getDeletedEntryIds(targets).has(entry.entryId)) {
-			changed = addTarget(targets, target) || changed;
-		}
-	}
+	const target: ContextDeletionTarget = { kind: "content_block", entryId: entry.entryId, blockIndex };
+	if (!canDeleteTarget(transcript, target) || getDeletedEntryIds(targets).has(entry.entryId)) return false;
+	const changed = addTarget(targets, target);
 	return canonicalizeEntryTargets(transcript, targets, entry) || changed;
 }
 

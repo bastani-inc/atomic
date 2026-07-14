@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed resumed sessions resurrecting records hidden by earlier Verbatim Compaction entries after later compactions changed signed-thinking turn or tool-call/result dependencies. Persisted logical deletions are now an authoritative lower bound during every context rebuild: Atomic closes unsafe replay structures by adding transient omissions instead of restoring compacted calls/results, pairs each result with its concrete call occurrence so independent exchanges may reuse an opaque call ID, leaves unrelated retained history unchanged, and keeps the append-only session file intact.
 - Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing globally newest-first, deduplicated picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection; rows need checkpoints and at least one strictly valid retained conversation, invalid per-stage transcript paths cannot open chat, repeated inspection refreshes changed authoritative chat handles, and selector mount failures close safely. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
 
 ## [0.9.8] - 2026-07-12

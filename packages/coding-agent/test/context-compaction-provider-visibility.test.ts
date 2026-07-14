@@ -13,6 +13,7 @@ import {
 	resetIds,
 	type SessionEntry,
 	user,
+	toolResult,
 	validateContextDeletionRequest,
 } from "./context-compaction-helpers.js";
 
@@ -83,7 +84,7 @@ describe("provider-visible signed-turn boundaries", () => {
 		}
 	});
 
-	it("persisted repair follows final LLM visibility and remains non-destructive", () => {
+	it("persisted omission closure follows final LLM visibility and remains non-destructive", () => {
 		for (const makeBoundary of invisibleBoundaries()) {
 			resetIds();
 			const first = entry(signed("sig-persisted-first"));
@@ -99,10 +100,67 @@ describe("provider-visible signed-turn boundaries", () => {
 			const durable = JSON.stringify(branch);
 			const llm = convertToLlm(buildSessionContext(branch).messages);
 			const serialized = JSON.stringify(llm);
-			expect(serialized).toContain("sig-persisted-first");
-			expect(serialized).toContain("sig-persisted-second");
+			expect(serialized).not.toContain("sig-persisted-first");
+			expect(serialized).not.toContain("sig-persisted-second");
 			expect(JSON.stringify(branch)).toBe(durable);
 		}
+	});
+
+	it("keeps genuine call/result closure across provider-invisible user-like entries", () => {
+		for (const makeBoundary of invisibleBoundaries()) {
+			resetIds();
+			const callId = "reused-across-invisible-boundary";
+			const call = entry({
+				...signed("sig-call-across-invisible-boundary"),
+				content: [
+					{ type: "thinking", thinking: "exact call reasoning", thinkingSignature: "sig-call-across-invisible-boundary" },
+					{ type: "toolCall", id: callId, name: "read", arguments: { path: "paired.ts" } },
+				],
+				stopReason: "toolUse",
+			} as AssistantMessage);
+			const result = entry(toolResult(callId, "deleted paired result"));
+			const branch = relink([
+				entry(user("historical task")),
+				call,
+				makeBoundary(),
+				result,
+				contextEntry([{ kind: "entry", entryId: result.id }]),
+				entry(user("current task")),
+			]);
+
+			const rebuilt = JSON.stringify(convertToLlm(buildSessionContext(branch).messages));
+			expect(rebuilt).not.toContain("sig-call-across-invisible-boundary");
+			expect(rebuilt).not.toContain("paired.ts");
+			expect(rebuilt).not.toContain("deleted paired result");
+		}
+
+		resetIds();
+		const filteredCallId = "call-across-filtered-boundary";
+		const filteredCall = entry({
+			...signed("sig-call-across-filtered-boundary"),
+			content: [
+				{ type: "thinking", thinking: "filtered boundary reasoning", thinkingSignature: "sig-call-across-filtered-boundary" },
+				{ type: "toolCall", id: filteredCallId, name: "read", arguments: { path: "filtered.ts" } },
+			],
+			stopReason: "toolUse",
+		} as AssistantMessage);
+		const filteredBoundary = entry(custom([{ type: "text", text: "deleted boundary" }]));
+		const filteredResult = entry(toolResult(filteredCallId, "filtered-boundary result"));
+		const filteredBranch = relink([
+			entry(user("historical filtered-boundary task")),
+			filteredCall,
+			filteredBoundary,
+			filteredResult,
+			contextEntry([
+				{ kind: "content_block", entryId: filteredBoundary.id, blockIndex: 0 },
+				{ kind: "entry", entryId: filteredResult.id },
+			]),
+			entry(user("current filtered-boundary task")),
+		]);
+		const filteredRebuilt = JSON.stringify(convertToLlm(buildSessionContext(filteredBranch).messages));
+		expect(filteredRebuilt).not.toContain("sig-call-across-filtered-boundary");
+		expect(filteredRebuilt).not.toContain("filtered.ts");
+		expect(filteredRebuilt).not.toContain("filtered-boundary result");
 	});
 
 	it("treats filtering the only visible custom block as removing the boundary", () => {
@@ -138,7 +196,9 @@ describe("provider-visible signed-turn boundaries", () => {
 			]),
 			entry(user("current task")),
 		]);
-		expect(JSON.stringify(convertToLlm(buildSessionContext(persisted).messages))).toContain("sig-filtered-boundary-first");
+		const rebuilt = JSON.stringify(convertToLlm(buildSessionContext(persisted).messages));
+		expect(rebuilt).not.toContain("sig-filtered-boundary-first");
+		expect(rebuilt).not.toContain("sig-filtered-boundary-second");
 	});
 	it("keeps image inputs and whitespace branch summaries as visible boundaries", () => {
 		const visibleBoundaries: Array<() => SessionEntry> = [
@@ -355,8 +415,8 @@ describe("provider-visible signed-turn boundaries", () => {
 		]);
 		const converted = convertToLlm(buildSessionContext(persisted).messages);
 		const serialized = JSON.stringify(converted);
-		expect(serialized).toContain("sig-mixed-first");
-		expect(serialized).toContain("sig-mixed-second");
+		expect(serialized).not.toContain("sig-mixed-first");
+		expect(serialized).not.toContain("sig-mixed-second");
 		expect(serialized).not.toContain("untyped-sentinel");
 		expect(serialized).not.toContain("blank-type-sentinel");
 	});
@@ -411,7 +471,7 @@ describe("provider-visible signed-turn boundaries", () => {
 		).toThrow(/protected|no user task/);
 	});
 
-	it("ignores malformed persisted branch summaries without crashing or splitting signed turns", () => {
+	it("ignores malformed persisted branch summaries while completing signed omissions", () => {
 		resetIds();
 		const first = entry(signed("sig-null-summary-first"));
 		const malformedSummary = branchSummary("") as SessionEntry & { summary: unknown };
@@ -431,8 +491,8 @@ describe("provider-visible signed-turn boundaries", () => {
 			converted = convertToLlm(buildSessionContext(branch).messages);
 		}).not.toThrow();
 		const serialized = JSON.stringify(converted);
-		expect(serialized).toContain("sig-null-summary-first");
-		expect(serialized).toContain("sig-null-summary-second");
+		expect(serialized).not.toContain("sig-null-summary-first");
+		expect(serialized).not.toContain("sig-null-summary-second");
 		expect(serialized).not.toContain("<summary>");
 	});
 

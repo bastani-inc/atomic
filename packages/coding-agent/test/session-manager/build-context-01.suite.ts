@@ -273,7 +273,7 @@ describe("buildSessionContext", () => {
 			expect((ctxBranch.messages[3] as any).summary).toContain("Tried wrong approach");
 			expect((ctxBranch.messages[4] as any).content).toBe("better approach");
 		});
-		it("repairs active-turn whole-entry deletion filters for signed thinking-bearing assistants", () => {
+		it("keeps active-turn persisted deletions authoritative for signed assistants", () => {
 			const assistantContent = [
 				{ type: "text", text: "visible text before thinking" },
 				{ type: "thinking", thinking: "active thinking must remain exact", thinkingSignature: "sig-thinking" },
@@ -303,12 +303,11 @@ describe("buildSessionContext", () => {
 
 			const ctx = buildSessionContext([task, signedAssistant, latestAssistant, compactionEntry]);
 
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
-			expect((ctx.messages[1] as AssistantMessage).content).toEqual(assistantContent);
-			expect(JSON.stringify((ctx.messages[1] as AssistantMessage).content)).toContain("sig-thinking");
-			expect((ctx.messages[2] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+			expect((ctx.messages[1] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
+			expect(JSON.stringify(ctx.messages)).not.toContain("sig-thinking");
 		});
-		it("restores old thinking content-block deletion filters when a newer assistant exists", () => {
+		it("promotes old thinking content-block deletion filters to whole-entry omission", () => {
 			const oldAssistantContent = [
 				{ type: "text", text: "keep old visible text" },
 				{ type: "thinking", thinking: "old thinking may be evicted", thinkingSignature: "sig-old" },
@@ -338,16 +337,11 @@ describe("buildSessionContext", () => {
 			]);
 
 			const ctx = buildSessionContext([task, oldAssistant, latestAssistant, compactionEntry]);
-			const rebuiltOldAssistant = ctx.messages.find(
-				(message): message is AssistantMessage =>
-					message.role === "assistant" && Array.isArray(message.content) &&
-					message.content.some((block) => block.type === "text" && block.text === "keep old visible text"),
-			);
-
-			expect(rebuiltOldAssistant?.content).toEqual(oldAssistantContent);
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "assistant"]);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+			expect(JSON.stringify(ctx.messages)).not.toContain("sig-old");
+			expect((ctx.messages[1] as AssistantMessage).content).toEqual((latestAssistant.message as AssistantMessage).content);
 		});
-		it("preserves paired tool results when restoring a partially filtered latest thinking-bearing assistant", () => {
+		it("omits paired tool results when a signed assistant block is filtered", () => {
 			const toolCallId = "toolu_restored_latest_thinking_call";
 			const assistantContent = [
 				{ type: "thinking", thinking: "latest tool-use thinking must remain", thinkingSignature: "sig-tool-thinking" },
@@ -380,19 +374,11 @@ describe("buildSessionContext", () => {
 			]);
 
 			const ctx = buildSessionContext([task, assistant, result, staleCompaction]);
-			const rebuiltAssistant = ctx.messages.find(
-				(message): message is AssistantMessage => message.role === "assistant",
-			);
-			const rebuiltResult = ctx.messages.find(
-				(message): message is ToolResultMessage => message.role === "toolResult",
-			);
-
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
-			expect(rebuiltAssistant?.content).toEqual(assistantContent);
-			expect(rebuiltResult?.toolCallId).toBe(toolCallId);
-			expect(rebuiltResult?.content).toEqual([{ type: "text", text: "old file contents" }]);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
+			expect(JSON.stringify(ctx.messages)).not.toContain(toolCallId);
+			expect(JSON.stringify(ctx.messages)).not.toContain("old file contents");
 		});
-		it("keeps paired tool results when later stale compactions try whole-entry deletion", () => {
+		it("keeps later whole-result deletion authoritative", () => {
 			const toolCallId = "toolu_later_whole_result_filter";
 			const assistantContent = [
 				{ type: "thinking", thinking: "tool-use thinking must remain", thinkingSignature: "sig-tool-thinking" },
@@ -426,15 +412,11 @@ describe("buildSessionContext", () => {
 			]);
 
 			const ctx = buildSessionContext([task, assistant, result, partialLatestCompaction, laterStaleResultDeletion]);
-			const rebuiltResult = ctx.messages.find(
-				(message): message is ToolResultMessage => message.role === "toolResult",
-			);
-
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
-			expect(rebuiltResult?.toolCallId).toBe(toolCallId);
-			expect(rebuiltResult?.content).toEqual([{ type: "text", text: "old file contents" }]);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
+			expect(JSON.stringify(ctx.messages)).not.toContain(toolCallId);
+			expect(JSON.stringify(ctx.messages)).not.toContain("old file contents");
 		});
-		it("keeps later valid content-block deletion filters for restored paired tool results", () => {
+		it("does not weaken whole-result deletion with a later content-block target", () => {
 			const toolCallId = "toolu_later_valid_result_filter";
 			const assistantContent = [
 				{ type: "thinking", thinking: "tool-use thinking must remain", thinkingSignature: "sig-tool-thinking" },
@@ -479,17 +461,10 @@ describe("buildSessionContext", () => {
 			]);
 
 			const ctx = buildSessionContext([task, assistant, result, staleCompaction, laterValidCompaction]);
-			const rebuiltAssistant = ctx.messages.find(
-				(message): message is AssistantMessage => message.role === "assistant",
-			);
-			const rebuiltResult = ctx.messages.find(
-				(message): message is ToolResultMessage => message.role === "toolResult",
-			);
-
-			expect(ctx.messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
-			expect(rebuiltAssistant?.content).toEqual(assistantContent);
-			expect(rebuiltResult?.toolCallId).toBe(toolCallId);
-			expect(rebuiltResult?.content).toEqual([{ type: "text", text: "keep me" }]);
+			expect(ctx.messages.map((message) => message.role)).toEqual(["user"]);
+			expect(JSON.stringify(ctx.messages)).not.toContain(toolCallId);
+			expect(JSON.stringify(ctx.messages)).not.toContain("delete me later");
+			expect(JSON.stringify(ctx.messages)).not.toContain("keep me");
 		});
 });
 });

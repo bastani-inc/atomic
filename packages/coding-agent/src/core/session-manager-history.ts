@@ -58,25 +58,6 @@ export function buildContextDeletionFilters(path: SessionEntry[]): ContextDeleti
 	return { deletedEntryIds, deletedContentBlocks };
 }
 
-function restoreEntry(filters: ContextDeletionFilters, entryId: string): void {
-	filters.deletedEntryIds.delete(entryId);
-	filters.deletedContentBlocks.delete(entryId);
-}
-
-function addDeletionTarget(
-	filters: ContextDeletionFilters,
-	target: ContextCompactionEntry["deletedTargets"][number],
-): void {
-	if (target.kind === "entry") {
-		filters.deletedEntryIds.add(target.entryId);
-		filters.deletedContentBlocks.delete(target.entryId);
-		return;
-	}
-	if (filters.deletedEntryIds.has(target.entryId)) return;
-	const existing = filters.deletedContentBlocks.get(target.entryId) ?? new Set<number>();
-	existing.add(target.blockIndex);
-	filters.deletedContentBlocks.set(target.entryId, existing);
-}
 
 function sessionBoundaryIsVisible(entry: SessionEntry, filters: ContextDeletionFilters): boolean {
 	if (filters.deletedEntryIds.has(entry.id)) return false;
@@ -131,76 +112,53 @@ function analyzeSessionAssistantTurns(path: SessionEntry[], filters: ContextDele
 	return analyzeAssistantToolUseTurns(path.flatMap((entry) => sessionEntryAsTurnEntry(entry, filters) ?? []));
 }
 
-function repairSignedThinkingTurnFilters(path: SessionEntry[], filters: ContextDeletionFilters): ContextDeletionFilters {
-	const turns = analyzeSessionAssistantTurns(path, filters);
+function omitEntry(filters: ContextDeletionFilters, entryId: string): void {
+	filters.deletedEntryIds.add(entryId);
+	filters.deletedContentBlocks.delete(entryId);
+}
 
-	// A retained signed assistant is byte-exact/all-or-nothing at message level.
-	// Whole-entry deletion alone counts toward a safe historical omission.
-	for (const turn of turns) {
+function repairSignedThinkingTurnFilters(path: SessionEntry[], filters: ContextDeletionFilters): ContextDeletionFilters {
+	// A persisted block omission in a signed assistant cannot be applied without
+	// changing its replay-sensitive content array. Promote it to a whole-message
+	// omission instead of weakening the durable deletion.
+	for (const turn of analyzeSessionAssistantTurns(path, filters)) {
 		for (const entryId of turn.signedThinkingEntryIds) {
-			if (!filters.deletedEntryIds.has(entryId)) filters.deletedContentBlocks.delete(entryId);
+			if ((filters.deletedContentBlocks.get(entryId)?.size ?? 0) > 0) omitEntry(filters, entryId);
 		}
 	}
 
-	for (const turn of turns) {
-		const deletedSignedIds = turn.signedThinkingEntryIds.filter((entryId) => filters.deletedEntryIds.has(entryId));
-		const unsafe = turn.active
-			? deletedSignedIds.length > 0
-			: deletedSignedIds.length > 0 && deletedSignedIds.length < turn.signedThinkingEntryIds.length;
-		if (!unsafe) continue;
-		for (const entryId of turn.signedThinkingEntryIds) restoreEntry(filters, entryId);
+	// Signed assistants in one logical turn are replayed all-or-none. Complete a
+	// partial persisted omission by omitting the remaining signed entries; never
+	// resurrect an entry named by an earlier context_compaction record.
+	for (const turn of analyzeSessionAssistantTurns(path, filters)) {
+		if (!turn.signedThinkingEntryIds.some((entryId) => filters.deletedEntryIds.has(entryId))) continue;
+		for (const entryId of turn.signedThinkingEntryIds) omitEntry(filters, entryId);
 	}
 	return filters;
 }
 
-function signedTurnReplayPolicy(
-	path: SessionEntry[],
-	finalIntent: ContextDeletionFilters,
-): { restoredEntryIds: Set<string>; retainedEntryIds: Set<string> } {
-	const restoredEntryIds = new Set<string>();
-	const retainedEntryIds = new Set<string>();
-	for (const turn of analyzeSessionAssistantTurns(path, finalIntent)) {
-		const deleted = turn.signedThinkingEntryIds.filter((entryId) => finalIntent.deletedEntryIds.has(entryId));
-		const restoreTurn = turn.active
-			? deleted.length > 0
-			: deleted.length > 0 && deleted.length < turn.signedThinkingEntryIds.length;
-		for (const entryId of turn.signedThinkingEntryIds) {
-			if (restoreTurn) restoredEntryIds.add(entryId);
-			if (restoreTurn || !finalIntent.deletedEntryIds.has(entryId)) retainedEntryIds.add(entryId);
-		}
-	}
-	return { restoredEntryIds, retainedEntryIds };
+function deletionFiltersFingerprint(filters: ContextDeletionFilters): string {
+	const entries = [...filters.deletedEntryIds].sort();
+	const blocks = [...filters.deletedContentBlocks]
+		.map(([entryId, indexes]) => [entryId, [...indexes].sort((a, b) => a - b)] as const)
+		.sort(([left], [right]) => left.localeCompare(right));
+	return JSON.stringify([entries, blocks]);
 }
 
 export function buildEffectiveContextDeletionFilters(path: SessionEntry[]): ContextDeletionFilters {
 	const derivedPath = normalizeDerivedSessionEntries(path);
-	const finalIntent = buildContextDeletionFilters(derivedPath);
-	if (!derivedPath.some((entry) => entry.type === "context_compaction")) return finalIntent;
+	const effective = buildContextDeletionFilters(derivedPath);
+	if (!derivedPath.some((entry) => entry.type === "context_compaction")) return effective;
 
-	// Decide turn-level restoration from the cumulative durable intent so safe
-	// complete historical omissions may span multiple compaction entries. Then
-	// replay each entry chronologically: reconciliation at each boundary restores
-	// an unsafe paired whole-result deletion without erasing a later independent
-	// content-block deletion on that result.
-	const { restoredEntryIds, retainedEntryIds } = signedTurnReplayPolicy(derivedPath, finalIntent);
-	const effective: ContextDeletionFilters = {
-		deletedEntryIds: new Set<string>(),
-		deletedContentBlocks: new Map<string, Set<number>>(),
-	};
-	for (const entry of derivedPath) {
-		if (entry.type !== "context_compaction") continue;
-		for (const target of entry.deletedTargets) {
-			if (target.kind === "entry" && restoredEntryIds.has(target.entryId)) continue;
-			if (target.kind === "content_block" && retainedEntryIds.has(target.entryId)) continue;
-			addDeletionTarget(effective, target);
-		}
+	// Persisted targets are the lower bound of effective omissions. Alternate
+	// signed-turn and tool-pair closure until neither can add another omission.
+	// The operation is finite because repair never restores a durable target.
+	while (true) {
+		const before = deletionFiltersFingerprint(effective);
+		repairSignedThinkingTurnFilters(derivedPath, effective);
 		reconcilePersistedToolDependencyFilters(derivedPath, effective);
+		if (deletionFiltersFingerprint(effective) === before) return effective;
 	}
-
-	// Defensive final repair handles malformed dependency graphs and keeps this
-	// reconstruction path authoritative even if reconciliation behavior evolves.
-	repairSignedThinkingTurnFilters(derivedPath, effective);
-	return reconcilePersistedToolDependencyFilters(derivedPath, effective);
 }
 
 function filterContentArray<T>(content: T[], deletedBlocks: ReadonlySet<number>): T[] {

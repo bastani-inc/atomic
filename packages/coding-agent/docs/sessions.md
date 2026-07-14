@@ -42,6 +42,8 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
+When Atomic reconstructs a resumed session, every logical deletion recorded by an active-branch `context_compaction` entry remains authoritative. Resume may add transient omissions needed to keep signed-thinking turns and tool-call/results structurally valid, but it never resurrects a compacted record or rewrites the append-only session file.
+
 In the picker you can:
 
 - search by typing

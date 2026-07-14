@@ -5,7 +5,11 @@ import type {
 	ContextDeletionRequest,
 	ValidatedContextDeletionResult,
 } from "./context-compaction-types.ts";
-import { assistantEntryHasThinkingContentBlock } from "./context-assistant-turns.js";
+import {
+	assistantEntryHasThinkingContentBlock,
+	isTranscriptEntryEffectivelyDeleted,
+	transcriptEntryStartsNewTurn,
+} from "./context-assistant-turns.js";
 import {
 	addToolCallDeletion,
 	assertIdOnlyDeletionTarget,
@@ -15,7 +19,6 @@ import {
 	canonicalizeEntryTargets,
 	canDeleteTarget,
 	deleteEntryTarget,
-	firstToolCallBlockTarget,
 	formatProtectedDeletionError,
 	formatProtectedToolDependencyError,
 	formatRecentContextDeletionError,
@@ -32,26 +35,57 @@ import {
 
 let warnedReconciliationNonConvergence = false;
 
+export interface CompactableToolDependencyPair {
+	callEntry: CompactableTranscriptEntry;
+	callId: string;
+	callBlockIndex: number;
+	resultEntry: CompactableTranscriptEntry;
+}
+
+export function collectCompactableToolDependencyPairs(
+	transcript: CompactableTranscript,
+	deletedEntryIds: ReadonlySet<string>,
+	deletedContentBlocks: ReadonlyMap<string, ReadonlySet<number>>,
+): CompactableToolDependencyPair[] {
+	const pairs: CompactableToolDependencyPair[] = [];
+	const pendingCalls = new Map<string, Array<{ entry: CompactableTranscriptEntry; blockIndex: number }>>();
+	for (const entry of transcript.entries) {
+		if (
+			!isTranscriptEntryEffectivelyDeleted(entry, deletedEntryIds, deletedContentBlocks) &&
+			transcriptEntryStartsNewTurn(entry, deletedContentBlocks.get(entry.entryId))
+		) {
+			pendingCalls.clear();
+		}
+		for (const block of entry.contentBlocks) {
+			if (!block.toolCallId) continue;
+			const pendingForId = pendingCalls.get(block.toolCallId) ?? [];
+			pendingForId.push({ entry, blockIndex: block.blockIndex });
+			pendingCalls.set(block.toolCallId, pendingForId);
+		}
+		if (!entry.toolResultFor) continue;
+		const pendingForId = pendingCalls.get(entry.toolResultFor);
+		const call = pendingForId?.shift();
+		if (!call) continue;
+		if (pendingForId?.length === 0) pendingCalls.delete(entry.toolResultFor);
+		pairs.push({
+			callEntry: call.entry,
+			callId: entry.toolResultFor,
+			callBlockIndex: call.blockIndex,
+			resultEntry: entry,
+		});
+	}
+	return pairs;
+}
+
 export function reconcileToolDependencies(
 	transcript: CompactableTranscript,
 	initialTargets: readonly ContextDeletionTarget[],
 ): ContextDeletionTarget[] {
 	const targets = [...initialTargets];
-	const callEntries = new Map<string, CompactableTranscriptEntry>();
-	const entriesWithToolCalls = new Set<CompactableTranscriptEntry>();
-	const resultEntries = new Map<string, CompactableTranscriptEntry[]>();
-
-	for (const entry of transcript.entries) {
-		for (const callId of entry.toolCallIds) {
-			callEntries.set(callId, entry);
-			entriesWithToolCalls.add(entry);
-		}
-		if (entry.toolResultFor) {
-			const results = resultEntries.get(entry.toolResultFor) ?? [];
-			results.push(entry);
-			resultEntries.set(entry.toolResultFor, results);
-		}
-	}
+	const entriesWithToolCalls = new Set(
+		transcript.entries.filter((entry) => entry.toolCallIds.length > 0),
+	);
+	let lastPairCount = 0;
 
 	// Bounded fixpoint repair: each pass can add/remove paired call/result targets. In practice this
 	// converges within one or two passes; the cap protects against accidental oscillation.
@@ -62,6 +96,8 @@ export function reconcileToolDependencies(
 		remainingPasses -= 1;
 		let deletedEntryIds = getDeletedEntryIds(targets);
 		let deletedContentBlocks = getDeletedContentBlocks(targets);
+		const pairs = collectCompactableToolDependencyPairs(transcript, deletedEntryIds, deletedContentBlocks);
+		lastPairCount = pairs.length;
 		const recordChange = (nextChanged: boolean): void => {
 			if (!nextChanged) return;
 			changed = true;
@@ -69,44 +105,38 @@ export function reconcileToolDependencies(
 			deletedContentBlocks = getDeletedContentBlocks(targets);
 		};
 
-		for (const [callId, callEntry] of callEntries) {
-			const callDeleted = isToolCallBlockDeleted(callEntry, callId, deletedEntryIds, deletedContentBlocks);
-			const results = resultEntries.get(callId) ?? [];
+		for (const { callEntry, callId, callBlockIndex, resultEntry } of pairs) {
+			const callDeleted = isToolCallBlockDeleted(
+				callEntry,
+				callBlockIndex,
+				deletedEntryIds,
+				deletedContentBlocks,
+			);
+			const resultDeleted = deletedEntryIds.has(resultEntry.entryId);
 
-			if (callDeleted) {
-				const retainedProtectedResult = results.find(
-					(entry) =>
-						!deletedEntryIds.has(entry.entryId) &&
-						!canDeleteTarget(transcript, { kind: "entry", entryId: entry.entryId }),
-				);
-				if (retainedProtectedResult) {
-					const retainedResultTarget: ContextDeletionTarget = { kind: "entry", entryId: retainedProtectedResult.entryId };
-					if (isRecentTarget(transcript, retainedResultTarget)) {
-						throw new Error(formatRecentContextDeletionError(transcript, retainedResultTarget));
+			if (callDeleted && !resultDeleted) {
+				const resultTarget: ContextDeletionTarget = { kind: "entry", entryId: resultEntry.entryId };
+				if (!canDeleteTarget(transcript, resultTarget)) {
+					if (isRecentTarget(transcript, resultTarget)) {
+						throw new Error(formatRecentContextDeletionError(transcript, resultTarget));
 					}
 					throw new Error(
 						formatProtectedToolDependencyError(
 							transcript,
-							retainedResultTarget,
-							`Cannot delete tool call ${callId} because its paired tool result entry ${retainedProtectedResult.entryId} is protected.`,
+							resultTarget,
+							`Cannot delete tool call ${callId} because its paired tool result entry ${resultEntry.entryId} is protected.`,
 						),
 					);
-				} else {
-					for (const result of results) {
-						recordChange(deleteEntryTarget(targets, result.entryId));
-					}
 				}
+				recordChange(deleteEntryTarget(targets, resultEntry.entryId));
+				continue;
 			}
 
-			if (isToolCallBlockDeleted(callEntry, callId, deletedEntryIds, deletedContentBlocks)) continue;
-
-			for (const result of results) {
-				if (!deletedEntryIds.has(result.entryId)) continue;
-				recordChange(deleteEntryTarget(targets, result.entryId));
+			if (resultDeleted && !callDeleted) {
 				const callEntryTarget: ContextDeletionTarget = { kind: "entry", entryId: callEntry.entryId };
-				const callBlockTarget = assistantEntryHasThinkingContentBlock(callEntry)
+				const callBlockTarget: ContextDeletionTarget = assistantEntryHasThinkingContentBlock(callEntry)
 					? callEntryTarget
-					: firstToolCallBlockTarget(callEntry, callId) ?? callEntryTarget;
+					: { kind: "content_block", entryId: callEntry.entryId, blockIndex: callBlockIndex };
 				if (!canDeleteTarget(transcript, callBlockTarget)) {
 					if (isRecentTarget(transcript, callBlockTarget)) {
 						throw new Error(formatRecentContextDeletionError(transcript, callBlockTarget));
@@ -115,11 +145,11 @@ export function reconcileToolDependencies(
 						formatProtectedToolDependencyError(
 							transcript,
 							callBlockTarget,
-							`Cannot delete tool result entry ${result.entryId} because that would require deleting protected tool block for tool call ${callId}.`,
+							`Cannot delete tool result entry ${resultEntry.entryId} because that would require deleting protected tool block for tool call ${callId}.`,
 						),
 					);
 				}
-				recordChange(addToolCallDeletion(transcript, targets, callEntry, callId));
+				recordChange(addToolCallDeletion(transcript, targets, callEntry, callBlockIndex));
 			}
 		}
 
@@ -131,7 +161,7 @@ export function reconcileToolDependencies(
 	if (changed && !warnedReconciliationNonConvergence) {
 		warnedReconciliationNonConvergence = true;
 		console.warn(
-			`Context compaction tool dependency reconciliation did not converge within the bounded pass limit; validation will continue with the last reconciled target set. entries=${transcript.entries.length} callEntries=${callEntries.size} targets=${targets.length}`,
+			`Context compaction tool dependency reconciliation did not converge within the bounded pass limit; validation will continue with the last reconciled target set. entries=${transcript.entries.length} pairs=${lastPairCount} targets=${targets.length}`,
 		);
 	}
 
@@ -141,34 +171,21 @@ export function reconcileToolDependencies(
 function validateToolDependencies(transcript: CompactableTranscript, targets: readonly ContextDeletionTarget[]): void {
 	const deletedEntryIds = getDeletedEntryIds(targets);
 	const deletedContentBlocks = getDeletedContentBlocks(targets);
-	const callEntries = new Map<string, CompactableTranscriptEntry>();
-	const resultEntries = new Map<string, CompactableTranscriptEntry[]>();
+	const pairs = collectCompactableToolDependencyPairs(transcript, deletedEntryIds, deletedContentBlocks);
 
-	for (const entry of transcript.entries) {
-		for (const callId of entry.toolCallIds) {
-			callEntries.set(callId, entry);
+	for (const { callEntry, callId, callBlockIndex, resultEntry } of pairs) {
+		const callDeleted = isToolCallBlockDeleted(
+			callEntry,
+			callBlockIndex,
+			deletedEntryIds,
+			deletedContentBlocks,
+		);
+		const resultDeleted = deletedEntryIds.has(resultEntry.entryId);
+		if (callDeleted && !resultDeleted) {
+			throw new Error(`Deleting tool call ${callId} would leave tool result entry ${resultEntry.entryId} orphaned`);
 		}
-		if (entry.toolResultFor) {
-			const results = resultEntries.get(entry.toolResultFor) ?? [];
-			results.push(entry);
-			resultEntries.set(entry.toolResultFor, results);
-		}
-	}
-
-	for (const [callId, callEntry] of callEntries) {
-		const callDeleted = isToolCallBlockDeleted(callEntry, callId, deletedEntryIds, deletedContentBlocks);
-		const results = resultEntries.get(callId) ?? [];
-		if (callDeleted) {
-			const danglingResult = results.find((entry) => !deletedEntryIds.has(entry.entryId));
-			if (danglingResult) {
-				throw new Error(`Deleting tool call ${callId} would leave tool result entry ${danglingResult.entryId} orphaned`);
-			}
-			continue;
-		}
-
-		const deletedResult = results.find((entry) => deletedEntryIds.has(entry.entryId));
-		if (deletedResult) {
-			throw new Error(`Deleting tool result entry ${deletedResult.entryId} would leave tool call ${callId} dangling`);
+		if (resultDeleted && !callDeleted) {
+			throw new Error(`Deleting tool result entry ${resultEntry.entryId} would leave tool call ${callId} dangling`);
 		}
 	}
 }

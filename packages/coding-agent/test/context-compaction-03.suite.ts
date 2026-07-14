@@ -202,7 +202,7 @@ describe("context compaction", () => {
 			expect(controller.getDeletionRequest().deletions).toEqual([]);
 		});
 
-		it("preserves assistant thinking-bearing content arrays when applying persisted content-block deletion filters", () => {
+		it("promotes persisted signed-assistant block filters to whole-entry omission", () => {
 			resetIds();
 			const task = entry(user("Task"));
 			const originalContent = [
@@ -224,24 +224,12 @@ describe("context compaction", () => {
 			const newerAssistant = entry(assistantText("newer assistant remains latest"));
 			const branch = [task, assistantWithThinking, newerAssistant, persistedDeletion];
 			const rebuilt = buildSessionContext(branch);
-			const rebuiltAssistant = rebuilt.messages.find((message) => message.role === "assistant") as AssistantMessage | undefined;
-	
-			expect(rebuiltAssistant?.content).toEqual(originalContent);
-	
+			expect(JSON.stringify(rebuilt.messages)).not.toContain("sig-thinking");
+			expect(JSON.stringify(rebuilt.messages)).toContain("Task");
+
 			const preparation = prepareContextCompaction(branch, DEFAULT_COMPACTION_SETTINGS)!;
-			const transcriptAssistant = preparation.transcript.entries.find((item) => item.entryId === assistantWithThinking.id)!;
-			expect(transcriptAssistant.contentBlocks.map((block) => block.type)).toEqual([
-				"text",
-				"thinking",
-				"redacted_thinking",
-				"text",
-			]);
-			expect(transcriptAssistant.contentBlocks.map((block) => block.text)).toEqual([
-				"obsolete visible text",
-				"persisted thinking must remain",
-				JSON.stringify({ type: "redacted_thinking", data: "opaque-redacted-payload" }),
-				"retained visible text",
-			]);
+			expect(preparation.transcript.entries.some((item) => item.entryId === assistantWithThinking.id)).toBe(false);
+			expect(preparation.transcript.entries.some((item) => item.entryId === newerAssistant.id)).toBe(true);
 		});
 
 		it("repairs deleted tool-call content blocks with combined call ids", () => {

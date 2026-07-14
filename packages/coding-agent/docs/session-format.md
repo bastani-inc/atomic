@@ -252,7 +252,7 @@ Created by `/compact`, RPC compaction commands, and auto-compaction. Stores Atom
 {"type":"context_compaction","id":"ctx12345","parentId":"f6g7h8i9","timestamp":"2024-12-03T14:12:00.000Z","promptVersion":1,"deletedTargets":[{"kind":"entry","entryId":"b2c3d4e5"}],"protectedEntryIds":["a1b2c3d4"],"stats":{"objectsBefore":20,"objectsAfter":19,"objectsDeleted":1,"tokensBefore":50000,"tokensAfter":43000,"percentReduction":14},"backupPath":"/path/session.jsonl.2024-12-03T14-12-00-000Z.compact.bak"}
 ```
 
-`deletedTargets` entries are either whole entries (`{ kind: "entry", entryId }`) or content blocks (`{ kind: "content_block", entryId, blockIndex }`). Content-block targets are not applied to retained assistant messages that contain `thinking` or `redacted_thinking`; those assistant messages are replay-sensitive for Anthropic-compatible extended-thinking providers and are restored as full content arrays during active context rebuild. The JSONL file remains append-only; this is logical deletion for active context rebuild.
+`deletedTargets` entries are either whole entries (`{ kind: "entry", entryId }`) or content blocks (`{ kind: "content_block", entryId, blockIndex }`). Persisted targets remain authoritative across every rebuild and resume. If applying a historical target directly would partially retain a replay-sensitive `thinking`/`redacted_thinking` assistant turn or orphan a tool call/result, `buildSessionContext()` expands the in-memory omission set until the signed turn and tool dependencies are closed; it never restores the targeted object. Tool results are paired with concrete preceding call occurrences inside their structural user turn rather than grouped globally by opaque ID, so a later independent exchange may safely reuse an ID. A targeted block inside a signed assistant is therefore omitted by hiding that assistant as a whole. The append-only JSONL remains unchanged, and unrelated retained history is preserved verbatim.
 
 ### BranchSummaryEntry
 
@@ -329,8 +329,8 @@ Entries form a tree:
 
 1. Collects all entries on the active branch path
 2. Extracts current model, thinking level, and context-window settings
-3. Applies every `ContextCompactionEntry` logical deletion on that path, filtering targeted entries/content blocks from active context while leaving retained content unchanged
-4. Converts `BranchSummaryEntry` and `CustomMessageEntry` to appropriate message formats
+3. Applies every `ContextCompactionEntry` logical deletion on that path as an authoritative lower bound, expanding omissions only when required to keep signed turns and tool-call/results structurally closed
+4. Leaves every unrelated retained entry/content block unchanged and converts `BranchSummaryEntry` and `CustomMessageEntry` to appropriate message formats
 5. Ignores retired `CompactionEntry` lines for active LLM context; they remain archival JSONL data only
 
 ## Parsing Example
