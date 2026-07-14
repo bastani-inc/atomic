@@ -643,7 +643,7 @@ interface ProviderModelConfig {
   /** Custom headers for this specific model. */
   headers?: Record<string, string>;
 
-  /** OpenAI compatibility settings for openai-completions API. */
+  /** API-specific provider compatibility settings. */
   compat?: {
     supportsStore?: boolean;
     supportsDeveloperRole?: boolean;
@@ -657,6 +657,10 @@ interface ProviderModelConfig {
     thinkingFormat?: "openai" | "openrouter" | "deepseek" | "together" | "zai" | "qwen" | "chat-template" | "qwen-chat-template" | "string-thinking" | "ant-ling";
     chatTemplateKwargs?: Record<string, string | number | boolean | null | { "$var": "thinking.enabled" | "thinking.effort"; omitWhenOff?: boolean }>;
     cacheControlFormat?: "anthropic";
+    sendSessionAffinityHeaders?: boolean;
+    sessionAffinityFormat?: "openai" | "openai-nosession" | "openrouter";
+    supportsLongCacheRetention?: boolean;
+    supportsToolSearch?: boolean;
   };
 }
 ```
@@ -665,3 +669,5 @@ The `cost` shape is equivalent to `Model<Api>["cost"]`. Base rates and every tie
 
 `openrouter` sends `reasoning: { effort }`. `deepseek` sends `thinking: { type: "enabled" | "disabled" }` and `reasoning_effort` when enabled. `together` sends `reasoning: { enabled }` and also `reasoning_effort` when `supportsReasoningEffort` is enabled. `qwen` is for DashScope-style top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that read `chat_template_kwargs.enable_thinking` and need `preserve_thinking`. Use `chat-template` for configurable `chat_template_kwargs`, for example DeepSeek V3.x behind vLLM with `chatTemplateKwargs: { "thinking": { "$var": "thinking.enabled" } }`.
 `cacheControlFormat: "anthropic"` applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user/assistant text content.
+
+For `openai-responses` providers, Pi v0.80.7 replaced `compat.sendSessionIdHeader` with `compat.sessionAffinityFormat`. Use `"openai"` for `session_id` plus `x-client-request-id`, `"openai-nosession"` to omit `session_id` while retaining `x-client-request-id`, or `"openrouter"` for `x-session-id`. Responses-compatible providers may also set `supportsToolSearch` when they support deferred tool loading.

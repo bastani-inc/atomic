@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Refreshed the native Rust lockfile to `rustls` 0.23.42, `bytes` 1.12.1, Rust `ignore` 0.4.28, `napi-derive` 3.5.10 (with `napi-derive-backend` 5.1.2), and `tree-sitter` 0.26.11; no native API or source changes were required.
+
 ## [0.9.9-alpha.1] - 2026-07-14
 
 ### Changed

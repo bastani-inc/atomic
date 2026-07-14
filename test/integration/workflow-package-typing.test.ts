@@ -26,7 +26,7 @@ describe("standalone workflow package typing", () => {
               "@bastani/workflows": "file:../../packages/workflows",
             },
             devDependencies: {
-              typescript: "^6.0.3",
+              typescript: "^7.0.2",
             },
           },
           null,
@@ -47,7 +47,7 @@ describe("standalone workflow package typing", () => {
               allowImportingTsExtensions: true,
               allowArbitraryExtensions: true,
               ignoreDeprecations: "6.0",
-              baseUrl: ".", typeRoots: [join(repoRoot, "node_modules", "@types")],
+              typeRoots: [join(repoRoot, "node_modules", "@types")],
               paths: {
                 "@bastani/atomic": [join(repoRoot, "packages", "coding-agent", "src", "index.ts")],
                 "@earendil-works/pi-tui": [join(repoRoot, "node_modules", "@earendil-works", "pi-tui", "dist", "index.d.ts")],

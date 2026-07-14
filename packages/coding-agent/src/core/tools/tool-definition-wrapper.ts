@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TSchema } from "typebox";
+import type { Static, TSchema } from "typebox";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.ts";
 
 declare module "@earendil-works/pi-agent-core" {
@@ -8,6 +8,9 @@ declare module "@earendil-works/pi-agent-core" {
 		maxResultSizeChars?: number;
 	}
 }
+
+type PiToolParams<TParams extends TSchema> = Parameters<AgentTool<TParams>["execute"]>[1];
+type PiPreparedParams<TParams extends TSchema> = ReturnType<NonNullable<AgentTool<TParams>["prepareArguments"]>>;
 
 /** Wrap a ToolDefinition into an AgentTool for the core runtime. */
 export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
@@ -20,10 +23,12 @@ export function wrapToolDefinition<TParams extends TSchema, TDetails = unknown>(
 		description: definition.description,
 		parameters: definition.parameters,
 		maxResultSizeChars: definition.maxResultSizeChars,
-		prepareArguments: definition.prepareArguments,
+		prepareArguments: definition.prepareArguments
+			? (args) => definition.prepareArguments?.(args) as PiPreparedParams<TParams>
+			: undefined,
 		executionMode: definition.executionMode,
 		execute: (toolCallId, params, signal, onUpdate) =>
-			definition.execute(toolCallId, params, signal, onUpdate, ctxFactory?.() as ExtensionContext),
+			definition.execute(toolCallId, params as Static<TParams>, signal, onUpdate, ctxFactory?.() as ExtensionContext),
 	};
 }
 
@@ -50,8 +55,11 @@ export function createToolDefinitionFromAgentTool<TParams extends TSchema = TSch
 		description: tool.description,
 		parameters: tool.parameters,
 		maxResultSizeChars: tool.maxResultSizeChars,
-		prepareArguments: tool.prepareArguments,
+		prepareArguments: tool.prepareArguments
+			? (args) => tool.prepareArguments?.(args) as Static<TParams>
+			: undefined,
 		executionMode: tool.executionMode,
-		execute: async (toolCallId, params, signal, onUpdate) => tool.execute(toolCallId, params, signal, onUpdate),
+		execute: async (toolCallId, params, signal, onUpdate) =>
+			tool.execute(toolCallId, params as PiToolParams<TParams>, signal, onUpdate),
 	};
 }

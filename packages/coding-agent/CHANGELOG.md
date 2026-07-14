@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the Pi runtime dependency set (`@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui`) from `^0.80.6` to `^0.80.7` across Atomic and its bundled packages, with matching Bun and npm lock metadata. This inherits the upstream provider authentication, session-affinity, reasoning replay, tool-choice, model-catalog, terminal input, and prompt-cache fixes from [Pi v0.80.7](https://github.com/earendil-works/pi/releases/tag/v0.80.7) while preserving versionless `0.0.0` workspace manifests.
+- Consolidated ten closed Dependabot updates into the Pi v0.80.7 branch: `linkedom` 0.18.13, npm `ignore` 7.0.6, `@typescript/native-preview` 7.0.0-dev.20260707.2, `typebox` 1.3.6, TypeScript 7.0.2, and the native dependency refreshes documented in `@bastani/atomic-natives`; regenerated the Bun, npm, and publish shrinkwrap dependency graphs without changing workspace package versions.
+- Added an Atomic `StringEnum` export that preserves Pi's Google-compatible enum schema while bridging Pi 0.80.7's TypeBox identity to the direct TypeBox 1.3.6 types; updated bundled extension examples and documentation to use the portable export, and updated TypeScript fixture configs for TypeScript 7's removal of `baseUrl`.
+
 ## [0.9.9-alpha.1] - 2026-07-14
 
 ### Breaking Changes

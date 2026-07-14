@@ -38,9 +38,9 @@
   },
   "peerDependencies": {
     "@bastani/atomic": "*",
-    "@earendil-works/pi-agent-core": "^0.80.6",
-    "@earendil-works/pi-ai": "^0.80.6",
-    "@earendil-works/pi-tui": "^0.80.6"
+    "@earendil-works/pi-agent-core": "^0.80.7",
+    "@earendil-works/pi-ai": "^0.80.7",
+    "@earendil-works/pi-tui": "^0.80.7"
   },
   "peerDependenciesMeta": {
     "@bastani/atomic": {
@@ -58,6 +58,6 @@
   },
   "dependencies": {
     "jiti": "^2.7.0",
-    "typebox": "^1.1.24"
+    "typebox": "^1.3.6"
   }
 }

@@ -115,13 +115,20 @@ const OpenAICompletionsCompatSchema = Type.Object({
 	openRouterRouting: Type.Optional(OpenRouterRoutingSchema),
 	vercelGatewayRouting: Type.Optional(VercelGatewayRoutingSchema),
 	supportsStrictMode: Type.Optional(Type.Boolean()),
+	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
+	sessionAffinityFormat: Type.Optional(
+		Type.Union([Type.Literal("openai"), Type.Literal("openai-nosession"), Type.Literal("openrouter")]),
+	),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
 });
 
 const OpenAIResponsesCompatSchema = Type.Object({
-	sendSessionIdHeader: Type.Optional(Type.Boolean()),
 	supportsDeveloperRole: Type.Optional(Type.Boolean()),
+	sessionAffinityFormat: Type.Optional(
+		Type.Union([Type.Literal("openai"), Type.Literal("openai-nosession"), Type.Literal("openrouter")]),
+	),
 	supportsLongCacheRetention: Type.Optional(Type.Boolean()),
+	supportsToolSearch: Type.Optional(Type.Boolean()),
 });
 
 const AnthropicMessagesCompatSchema = Type.Object({
@@ -130,6 +137,7 @@ const AnthropicMessagesCompatSchema = Type.Object({
 	sendSessionAffinityHeaders: Type.Optional(Type.Boolean()),
 	supportsCacheControlOnTools: Type.Optional(Type.Boolean()),
 	forceAdaptiveThinking: Type.Optional(Type.Boolean()),
+	supportsToolReferences: Type.Optional(Type.Boolean()),
 });
 
 const ProviderCompatSchema = Type.Union([

@@ -37,7 +37,7 @@ export const workflowSerializableValueSchema: TSchema = Type.Cyclic(
       Refine(
         Type.Record(Type.String(), Type.Ref("Serializable")),
         isPlainObjectValue,
-        "must be a plain JSON object",
+        () => "must be a plain JSON object",
       ),
     ]),
   },

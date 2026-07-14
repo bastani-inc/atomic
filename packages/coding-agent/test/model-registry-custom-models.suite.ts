@@ -1,8 +1,6 @@
-import type { AnthropicMessagesCompat, OpenAICompletionsCompat } from "@earendil-works/pi-ai/compat";
+import type { AnthropicMessagesCompat, OpenAICompletionsCompat, OpenAIResponsesCompat } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
@@ -329,6 +327,37 @@ describeModelRegistry((context) => {
 
 			expect(registry.getError()).toBeUndefined();
 			expect(compat?.supportsLongCacheRetention).toBe(false);
+		});
+
+		test("compat schema accepts Pi 0.80.7 Responses session affinity settings", () => {
+			writeRawModelsJson({
+				demo: {
+					baseUrl: "https://example.com/v1",
+					apiKey: "DEMO_KEY",
+					api: "openai-responses",
+					compat: {
+						sessionAffinityFormat: "openai-nosession",
+						supportsToolSearch: true,
+					},
+					models: [
+						{
+							id: "demo-model",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1000,
+							maxTokens: 100,
+						},
+					],
+				},
+			});
+
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const compat = registry.find("demo", "demo-model")?.compat as OpenAIResponsesCompat | undefined;
+
+			expect(registry.getError()).toBeUndefined();
+			expect(compat?.sessionAffinityFormat).toBe("openai-nosession");
+			expect(compat?.supportsToolSearch).toBe(true);
 		});
 
 		test("model-level baseUrl overrides provider-level baseUrl for custom models", () => {
