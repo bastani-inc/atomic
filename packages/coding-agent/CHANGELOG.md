@@ -26,6 +26,7 @@
 - Fixed resumed sessions resurrecting records hidden by earlier Verbatim Compaction entries after later compactions changed signed-thinking turn or tool-call/result dependencies. Persisted logical deletions are now an authoritative lower bound during every context rebuild: Atomic closes unsafe replay structures by adding transient omissions instead of restoring compacted calls/results, pairs each result with its concrete call occurrence so independent exchanges may reuse an opaque call ID, leaves unrelated retained history unchanged, and keeps the append-only session file intact.
 - Fixed successful manual and automatic compaction UI refreshes to render the compacted transcript with exactly one visible `✻ Context compacted` boundary, while aborted and failed compactions remain unchanged.
 - Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing globally newest-first, deduplicated picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection; rows need checkpoints and at least one strictly valid retained conversation, invalid per-stage transcript paths cannot open chat, repeated inspection refreshes changed authoritative chat handles, and selector mount failures close safely. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
+- Fixed workflow-owned transcripts leaking into normal `/resume`, `-r`, `-c`, and `--continue` history by requiring complete workflow ownership markers, persisting classification in initial fork headers, inheriting it across branches, and keeping malformed legacy markers and ordinary user forks visible.
 
 ## [0.9.8] - 2026-07-12
 
@@ -103,10 +104,6 @@
 - Restored workflow-first Atomic guidance for non-trivial work with verifiable objectives and synchronized help/docs around rich inline TypeScript workflow authoring, including dynamic branching, fan-out, verification, candidate-selection, human-gate, child-workflow, and bounded-loop patterns.
 - Documented compositional workflow authoring in model prompts and onboarding/help surfaces, including importing bundled workflows from `@bastani/workflows/builtin`, nesting definitions with `ctx.workflow(...)`, and building deeper reusable workflow graphs within `maxDepth`.
 - Restored tool-driven bundled Intercom startup so foreground subagent launches and bridged child session startup no longer connect either session automatically; the model or user must invoke Intercom when coordination is needed.
-
-### Fixed
-
-- Fixed workflow-owned transcripts leaking into normal `/resume`, `-r`, `-c`, and `--continue` history by requiring complete workflow ownership markers, persisting classification in initial fork headers, inheriting it across branches, and keeping malformed legacy markers and ordinary user forks visible.
 
 ## [0.9.5] - 2026-07-11
 

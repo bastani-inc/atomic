@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed startup and restored-session workflow notices to use the authoritative durable resume catalog's status/progress rules: failed and blocked root workflows are advertised unless explicitly marked `resumable: false`, running and paused workflows require durable progress, nested child workflows and stale cache-only entries are excluded, and legacy direct or payload-wrapped checkpoint entries are parsed correctly.
 - Fixed durable mid-stage workflow resume to refresh pause-adjusted active stage/task duration at repeated session checkpoints, preserve it through file and DBOS hydration, and continue accumulating it across repeated process-boundary resumes without resetting the baseline when concurrent tracked stage calls begin, double-counting earlier pauses, changing replay identity, or re-running completed side effects ([#1713](https://github.com/bastani-inc/atomic/issues/1713)).
 - Fixed incompatible durable workflow records appearing as loadable resume targets by moving file state, DBOS metadata/checkpoint envelopes, and JSONL discovery caches to one shared v2 format contract; exact legacy v1 file and DBOS rows are now suppressed and permanently deleted (including DBOS checkpoint-prefix records), with per-workflow deletion and loadability queries implemented across durable backends and safely isolated from child scopes. Resume selectors, explicit target resolution, completed catalogs, restored-session notices, status/listing state, cache merges, and live resume paths accept only loadable current-format rows; compatibility preparation purges matching restored/live snapshots even when DBOS deletion fails, so failure fallbacks cannot resurrect or dispatch them. Repeated discovery is idempotent, deletion failures stay hidden and retry later, compatible and newly registered runs plus unmarked raw DBOS checkpoint outputs remain supported, and malformed, unavailable, future-version, or unsupported marked-envelope data is conservatively preserved and hidden rather than overwritten, reinterpreted, or broadly deleted.
+- Fixed workflow stage session classification so fresh and fork-context stages persist complete ownership metadata before their transcripts can enter normal resume history, including custom session directories.
 
 ## [0.9.8] - 2026-07-12
 
@@ -103,10 +104,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Restored workflow-first model routing for non-trivial, structured, and verifiable work while retaining the newer ability to author task-specific TypeScript workflows inline. Prompt guidance now explicitly combines the documented classify/branch, fan-out/synthesis, adversarial verification, generate/filter, tournament, and bounded loop patterns instead of forcing every workflow-fit task into an installed workflow, direct shape, or builtin.
 - Restored Ralph's builtin implementation-stage prompts to require subagent-led investigation, editing, and validation, reversing the selective direct-implementation wording introduced with intent-first routing.
 - Expanded model-facing workflow guidance to treat composition as a first-class design option: custom parents can import reusable project/package workflows or bundled builtin definitions, invoke them through `ctx.workflow(...)`, and nest further child workflows within `maxDepth` while preserving expanded graph visibility, HIL, durability, controls, and declared output contracts.
-
-### Fixed
-
-- Fixed workflow stage session classification so fresh and fork-context stages persist complete ownership metadata before their transcripts can enter normal resume history, including custom session directories.
 
 ## [0.9.5] - 2026-07-11
 
