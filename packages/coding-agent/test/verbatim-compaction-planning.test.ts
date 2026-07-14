@@ -167,6 +167,14 @@ describe("one-pass range planner", () => {
 		expect(prompt).not.toContain("deleted_ranges");
 	});
 
+	it("puts the transcript first and the instructions after, matching pi's summarization prompt shape", () => {
+		const prep = preparation();
+		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
+		expect(prompt.startsWith("<numbered-transcript>\n")).toBe(true);
+		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("The numbered lines above are"));
+		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf('{"d":[[start,end],...]}'));
+	});
+
 	it("makes exactly one request and forwards model, auth, headers, and reasoning unchanged", async () => {
 		const prep = preparation();
 		const faux = createFauxStreamFn(['{"d":[[1,20]]}']);
