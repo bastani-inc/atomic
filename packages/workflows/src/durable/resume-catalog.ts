@@ -21,6 +21,7 @@ import type { DurableCheckpointEntry, DurableWorkflowStatus, ResumableWorkflowEn
 import type { DurableWorkflowBackend } from "./backend.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 // ---------------------------------------------------------------------------
 // Session file scanning
@@ -90,6 +91,8 @@ function durablePayloadFromJsonlEntry(parsed: Record<string, unknown>): Record<s
 }
 
 function parseDurableEntry(raw: Record<string, unknown>): DurableCheckpointEntry | undefined {
+  if (raw["formatVersion"] !== DURABLE_FORMAT_VERSION) return undefined;
+
   const workflowId = raw["workflowId"];
   const name = raw["name"];
   const inputs = raw["inputs"];
@@ -98,6 +101,7 @@ function parseDurableEntry(raw: Record<string, unknown>): DurableCheckpointEntry
   if (typeof workflowId !== "string" || typeof name !== "string" || typeof status !== "string" || typeof ts !== "number") return undefined;
   if (!isWorkflowSerializableObject(inputs)) return undefined;
   return {
+    formatVersion: DURABLE_FORMAT_VERSION,
     type: "workflow.durable.checkpoint",
     workflowId,
     name,
@@ -179,6 +183,7 @@ export function persistDurableCacheEntry(
 ): void {
   if (typeof persistence.appendEntry !== "function") return;
   persistence.appendEntry("workflow.durable.checkpoint", {
+    formatVersion: entry.formatVersion,
     workflowId: entry.workflowId,
     name: entry.name,
     inputs: entry.inputs as Record<string, unknown>,

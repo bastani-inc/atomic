@@ -27,6 +27,7 @@ interface MockDbosState {
   readonly starts: { workflowId: string; name: string }[];
   readonly cancels: string[];
   readonly resumes: string[];
+  readonly deletions: string[];
 }
 
 function createMockSdk(): DbosSdkHandle & { state: MockDbosState } {
@@ -36,6 +37,7 @@ function createMockSdk(): DbosSdkHandle & { state: MockDbosState } {
     starts: [],
     cancels: [],
     resumes: [],
+    deletions: [],
   };
   return {
     state,
@@ -65,6 +67,7 @@ function createMockSdk(): DbosSdkHandle & { state: MockDbosState } {
     async recordStepOutput(workflowId, stepName, output) {
       state.steps.set(`${workflowId}:checkpoint:${stepName}`, output);
     },
+    async deleteWorkflowData(workflowId) { state.deletions.push(workflowId); state.workflows.delete(workflowId); for (const key of state.steps.keys()) if (key.startsWith(`${workflowId}:checkpoint:`)) state.steps.delete(key); },
   };
 }
 
@@ -76,6 +79,9 @@ function seedMockWorkflow(sdk: ReturnType<typeof createMockSdk>, info: Partial<D
     createdAt: info.createdAt ?? Date.now(),
     ...(info.inputs !== undefined ? { inputs: info.inputs } : {}),
   });
+  const ts = info.createdAt ?? Date.now();
+  const entry = { formatVersion: 2, type: "workflow.durable.checkpoint", workflowId: info.workflowId, name: info.name ?? "test-workflow", inputs: info.inputs ?? {}, status: info.status === "SUCCESS" ? "completed" : info.status === "ERROR" ? "failed" : "running", completedCheckpoints: 0, pendingPrompts: 0, ts };
+  sdk.state.steps.set(`${info.workflowId}:checkpoint:__atomic_metadata:${ts}:seed`, { __atomicDurableMetadata: true, version: 2, entry });
 }
 
 function seedMockCheckpoint(sdk: ReturnType<typeof createMockSdk>, workflowId: string, cp: DurableCheckpoint): void {
@@ -441,7 +447,7 @@ describe("DBOS checkpoint envelope", () => {
       kind: "stage", workflowId: "w", checkpointId: "cp3", name: "build", replayKey: "stage:build:1", output: "ok", completedAt: 300,
     };
     const env = encodeCheckpoint(cp);
-    const decoded = decodeToCheckpoint("w", "stage:build:1", env);
+    const decoded = decodeToCheckpoint("w", "cp3", env);
     assert.ok(decoded !== undefined);
     assert.equal(decoded!.kind, "stage");
     const s = decoded as DurableStageCheckpoint;

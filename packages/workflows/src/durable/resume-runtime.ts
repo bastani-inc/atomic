@@ -110,6 +110,9 @@ export function resumeDurableWorkflow(
   const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
   const resolved = resolveDurableEntry(workflowIdOrPrefix, resolvedCatalog);
   if (resolved === undefined) {
+    if (!backend.isWorkflowLoadable(workflowIdOrPrefix)) {
+      return { ok: false, reason: "not_registered", message: `Durable workflow ${workflowIdOrPrefix.slice(0, 8)} uses an incompatible or unavailable persisted format and cannot be resumed.` };
+    }
     // Not in the (filtered) resumable catalog. It may still be a workflow the
     // backend knows about. Only surface "already running" when there is a live,
     // actively-executing run for it in this session; otherwise a `running`
@@ -126,6 +129,9 @@ export function resumeDurableWorkflow(
       reason: "not_registered",
       message: `Ambiguous workflow prefix "${workflowIdOrPrefix}" matches: ${resolved.matches.map((m) => `${m.name} (${m.workflowId.slice(0, 8)})`).join(", ")}`,
     };
+  }
+  if (!backend.isWorkflowLoadable(resolved.workflowId)) {
+    return { ok: false, reason: "not_registered", message: `Durable workflow ${resolved.workflowId.slice(0, 8)} uses an incompatible or unavailable persisted format and cannot be resumed.` };
   }
   // Authoritative backend-handle check: a cache-only entry (no handle) is
   // "stale" regardless of its cached status. A `running` handle is only
@@ -250,6 +256,17 @@ export function isBackendTerminal(backend: DurableWorkflowBackend, workflowId: s
  * terminal (completed/cancelled/non-resumable), stale cache rows for that id
  * are also suppressed. cross-ref: issue #1498.
  */
+/** Remove restored/live snapshots whose authoritative durable format is non-loadable. */
+export function purgeSuppressedWorkflowRuns(backend: DurableWorkflowBackend, store: RunOpts["store"]): readonly string[] {
+  if (store === undefined) return [];
+  const removed: string[] = [];
+  for (const run of store.runs()) {
+    if (backend.isWorkflowLoadable(run.id)) continue;
+    if (store.removeRun(run.id)) removed.push(run.id);
+  }
+  return removed;
+}
+
 export async function prepareRuntimeDurableResumable(
   getBackend: () => DurableWorkflowBackend,
   resolveSessionDir: () => string | undefined,

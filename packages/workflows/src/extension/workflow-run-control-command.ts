@@ -228,7 +228,7 @@ export async function handleRunControlCommand(
         // Only inactive workflows belong in the resume selector. Live runs:
         // show paused (quit) or recoverably-failed runs; actively-running live
         // runs are hidden (resuming one that is executing would double-dispatch).
-        const liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
+        let liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
           run.status === "paused" || (run.status === "failed" && run.resumable !== false),
         );
         const activeLiveIds = new Set(
@@ -245,12 +245,14 @@ export async function handleRunControlCommand(
           durableEntries = catalog.resumable;
           completedEntries = catalog.completed;
         } catch (error) {
+          liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
           const errorMessage = error instanceof Error ? error.message : String(error);
           if (liveRuns.length === 0) {
             fail(`Failed to list workflow resume targets: ${errorMessage}`);
             return true;
           }
         }
+        liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
         const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries, completedEntries);
         if (picked.kind === "durable" || picked.kind === "completed") {
           return await handleDurableResume(picked.workflowId, ctx, reporter, deps);
@@ -283,57 +285,50 @@ export async function handleRunControlCommand(
       if (action === "attach" && picked.kind === "kill") return handleRunControlCommand("kill", [picked.runId, "-y"], ctx, reporter, deps);
       if (picked.kind !== (action === "attach" ? "connect" : action)) return true;
       runId = picked.runId;
-    } else {
-      const resolved = resolveRunIdPrefix(target);
-      const exactLocal = store.runs().find((run) => run.id === target);
-      if (action === "resume" && exactLocal?.status === "completed") {
+    } else if (action === "resume") {
+      const backend = getDurableBackend();
+      const exactBeforePreparation = store.runs().find((run) => run.id === target);
+      let durable: readonly ResumableWorkflowEntry[] = [];
+      let preparationError: string | undefined;
+      const needsDurablePreparation = exactBeforePreparation === undefined
+        || !backend.isWorkflowLoadable(exactBeforePreparation.id);
+      if (needsDurablePreparation) {
+        await ensureWorkflowResourcesVisible();
+        const runtime = deps.runtimeForContext(ctx);
+        try {
+          durable = await runtime.prepareDurableResumable(target);
+        } catch (error) {
+          preparationError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const loadableRuns = topLevelWorkflowRuns(store.runs()).filter((run) => backend.isWorkflowLoadable(run.id));
+      const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, backend.listCompletedWorkflows());
+      if (combined.kind === "ambiguous") {
+        fail(`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`);
+        return true;
+      }
+      if (combined.kind === "completed" || combined.kind === "durable") {
+        return await handleDurableResume(combined.workflowId, ctx, reporter, deps);
+      }
+      if (combined.kind === "live") runId = combined.workflowId;
+      else {
+        if (preparationError !== undefined) {
+          fail(`Failed to resolve workflow resume target: ${preparationError}`);
+          return true;
+        }
         return await handleDurableResume(target, ctx, reporter, deps);
       }
-      if (action === "resume" && exactLocal === undefined) {
-        try {
-          await ensureWorkflowResourcesVisible();
-          const runtime = deps.runtimeForContext(ctx);
-          const durable = await runtime.prepareDurableResumable(target);
-          const combined = resolveWorkflowResumeTarget(
-            target,
-            topLevelWorkflowRuns(store.runs()),
-            durable,
-            getDurableBackend().listCompletedWorkflows(),
-          );
-          if (combined.kind === "ambiguous") {
-            fail(`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`);
-            return true;
-          }
-          if (combined.kind === "completed" || combined.kind === "durable") {
-            return await handleDurableResume(combined.workflowId, ctx, reporter, deps);
-          }
-          if (combined.kind === "live") runId = combined.workflowId;
-          else if (resolved.kind === "not_found") return await handleDurableResume(target, ctx, reporter, deps);
-          else if (resolved.kind === "ambiguous") {
-            fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
-            return true;
-          } else runId = resolved.runId;
-        } catch (error) {
-          if (resolved.kind === "not_found") {
-            fail(`Failed to resolve workflow resume target: ${error instanceof Error ? error.message : String(error)}`);
-            return true;
-          }
-          if (resolved.kind === "ambiguous") {
-            fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
-            return true;
-          }
-          runId = resolved.runId;
-        }
-      } else if (resolved.kind === "not_found") {
-        if (action === "resume") return await handleDurableResume(target, ctx, reporter, deps);
+    } else {
+      const resolved = resolveRunIdPrefix(target);
+      if (resolved.kind === "not_found") {
         fail(`Run not found: ${target}`);
         return true;
-      } else if (resolved.kind === "ambiguous") {
+      }
+      if (resolved.kind === "ambiguous") {
         fail(`Ambiguous run prefix "${target}" matches: ${resolved.matches.map((id) => id.slice(0, 12)).join(", ")}`);
         return true;
-      } else {
-        runId = resolved.runId;
       }
+      runId = resolved.runId;
     }
     if (action === "attach") {
       const stageId = resolveAttachStageId(runId, stageTarget);

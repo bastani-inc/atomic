@@ -5,6 +5,7 @@ import type { Store } from "../shared/store.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
   prepareRuntimeDurableResumable,
+  purgeSuppressedWorkflowRuns,
   resumeDurableWorkflow as resumeDurableWorkflowAdapter,
   type ResumeDurableDeps,
   type ResumeDurableResult,
@@ -49,6 +50,13 @@ export interface DurableResumeRuntimeDeps {
 export function createDurableResumeRuntime(
   deps: DurableResumeRuntimeDeps,
 ): DurableResumeRuntime {
+  const hydrateStoredWorkflowCandidates = async (backend: ReturnType<typeof getDurableBackend>, target?: string): Promise<void> => {
+    if (backend.hydrateWorkflow === undefined) return;
+    const ids = deps.store.runs()
+      .map((run) => run.id)
+      .filter((id) => target === undefined || id === target || id.startsWith(target));
+    for (const id of ids) await backend.hydrateWorkflow(id);
+  };
   let preparedCatalog: readonly ResumableWorkflowEntry[] = [];
   return {
     resumeDurableWorkflow(workflowIdOrPrefix, options): ResumeDurableResult {
@@ -74,19 +82,30 @@ export function createDurableResumeRuntime(
     },
     async prepareDurableResumable(workflowIdOrPrefix, sessionDir) {
       await deps.ensureReady();
-      preparedCatalog = await prepareRuntimeDurableResumable(
-        getDurableBackend,
-        () => deps.resolveDefaultStageSessionDir?.(),
-        workflowIdOrPrefix,
-        sessionDir,
-      );
-      return preparedCatalog;
+      const backend = getDurableBackend();
+      try {
+        await hydrateStoredWorkflowCandidates(backend, workflowIdOrPrefix);
+        preparedCatalog = await prepareRuntimeDurableResumable(
+          () => backend,
+          () => deps.resolveDefaultStageSessionDir?.(),
+          workflowIdOrPrefix,
+          sessionDir,
+        );
+        return preparedCatalog;
+      } finally {
+        purgeSuppressedWorkflowRuns(backend, deps.store);
+      }
     },
     async prepareCompletedDurable() {
       await deps.ensureReady();
       const backend = getDurableBackend();
-      await backend.hydrateResumableWorkflows?.();
-      return listOpenableCompletedWorkflows(backend);
+      try {
+        await backend.hydrateResumableWorkflows?.();
+        await hydrateStoredWorkflowCandidates(backend);
+        return listOpenableCompletedWorkflows(backend);
+      } finally {
+        purgeSuppressedWorkflowRuns(backend, deps.store);
+      }
     },
     openCompletedDurableWorkflow(workflowIdOrPrefix, catalog) {
       const backend = getDurableBackend();
