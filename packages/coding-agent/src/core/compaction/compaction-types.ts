@@ -1,15 +1,11 @@
 import type { CompactionSettings } from "./compaction.js";
 
-export const VERBATIM_COMPACTION_PROMPT_VERSION = 2 as const;
+export const VERBATIM_COMPACTION_PROMPT_VERSION = 3 as const;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
 
 export const DEFAULT_COMPRESSION_RATIO = 0.5;
 export const DEFAULT_PRESERVE_RECENT = 2;
-export const CRITICAL_COMPRESSION_RATIO = 0.2;
-export const RATIO_DRIFT_TOLERANCE = 0.15;
-export const MAX_RANGE_PLAN_ATTEMPTS = 3;
 export const MIN_COMPACTABLE_REGION_LINES = 20;
-export const CHUNK_TOKEN_MARGIN = 4096;
 
 export interface VerbatimCompactionParameters {
 	/** Fraction of compactable region lines to keep. */
@@ -67,7 +63,7 @@ export interface VerbatimCompactionDetails {
 	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
-	rung: "standard" | "critical" | "deterministic" | "extension";
+	rung: "planned" | "extension";
 	backupPath?: string;
 }
 

@@ -19,7 +19,7 @@ function text(role: AgentMessage["role"], body: string): AgentMessage {
 	return { role, content: [{ type: "text", text: body }], timestamp: Date.now() } as AgentMessage;
 }
 
-describe("AgentSession auth-missing overflow deterministic eviction", () => {
+describe("AgentSession auth-missing compaction failure semantics", () => {
 	let session: AgentSession;
 	let sessionManager: SessionManager;
 	let tempDir: string;
@@ -91,25 +91,25 @@ describe("AgentSession auth-missing overflow deterministic eviction", () => {
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
-	it("commits deterministic tier-4 eviction for overflow auto-compaction when auth is missing", async () => {
+	it("fails overflow compaction without deterministic eviction or persistence when auth is missing", async () => {
 		seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", false);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("overflow", true);
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "overflow");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", aborted: false });
-		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
+		expect(end).toMatchObject({ type: "compaction_end", reason: "overflow", result: undefined, aborted: false, willRetry: false });
 		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
-		expect(end.result).toBeDefined();
-		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(end.errorMessage).toContain("Compaction provider authentication is unavailable");
+		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 
-	it("keeps threshold auto-compaction with missing auth as a silent no-op", async () => {
+	it("fails threshold compaction without persistence when auth is missing", async () => {
 		seedCompactableBranch();
-		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", false);
+		await (session as unknown as AutoCompactionSurface)._runAutoCompaction("threshold", true);
 
 		const end = events.find((event) => event.type === "compaction_end" && event.reason === "threshold");
-		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined });
-		expect(end && "errorMessage" in end ? end.errorMessage : undefined).toBeUndefined();
+		expect(end).toMatchObject({ type: "compaction_end", reason: "threshold", result: undefined, aborted: false, willRetry: false });
+		if (end?.type !== "compaction_end") throw new Error("missing compaction_end");
+		expect(end.errorMessage).toContain("Compaction provider authentication is unavailable");
 		expect(sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(0);
 	});
 });

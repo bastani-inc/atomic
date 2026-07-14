@@ -358,12 +358,10 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			return;
 		}
 
-		// Auth is resolved lazily: only called when the planner fallback is needed.
-		// This allows extension-provided deletion requests to run before auth is checked,
-		// enabling local extension compaction even when API credentials are unavailable.
-		// Auto-mode resolver returns undefined (rather than throwing) when auth is missing;
-		// overflow recovery then falls back to deterministic no-auth eviction, while
-		// threshold compaction keeps the previous no-op behavior.
+		// Resolve auth only after extension hooks have had an opportunity to cancel
+		// compaction or provide compacted text, so local extension compaction does not
+		// require provider credentials. Missing auth then fails model-driven compaction
+		// before persistence or continuation, matching other provider-call failures.
 		const model = this.model;
 		const result = await this._applyVerbatimCompaction({
 			resolvePlannerAuth: async () => {

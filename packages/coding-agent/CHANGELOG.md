@@ -10,13 +10,13 @@
 
 ### Added
 
-- Added verbatim string compaction: Atomic numbers serialized transcript lines, asks the session model only for one-based inclusive JSON deletion ranges, validates/clamps/sorts/merges them while protecting role headers, and mechanically reconstructs retained text with exact `(filtered N lines)` markers. Repeated compaction cumulatively sums swallowed marker counts.
-- Added a string-based overflow ladder with standard and critical planning followed by deterministic oldest-first line eviction when provider planning overflows or cannot meet the active token budget.
+- Added one-pass contextual line-ranking compaction: Atomic asks the active session model at its active reasoning level, through the normal session stream/provider wrapper, for one whole-region compact `{"d":[[start,end],...]}` deletion plan, then safety-normalizes ranges and mechanically reconstructs verbatim text with cumulative `(filtered N lines)` markers.
+- Added strict pi-style compaction failure semantics: oversized prompts, provider/API errors or overflow, aborts, malformed JSON, and empty/unusable ranges fail without persistence or continuation and without semantic retries, chunking, critical replans, deterministic fallback, or deterministic target correction.
 - Added durable pi-style `CompactionEntry` boundaries discriminated by `details.strategy: "verbatim-lines"`, plus resumable custom-role boundary messages and a collapsible TUI card showing retained-line and token-reduction statistics.
 
 ### Changed
 
-- Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn.
+- Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn. Role headers are now ordinary ranked lines; only explicit protected spans are split out of model-selected deletion ranges.
 - Simplified resume reconstruction to load the persisted compacted string followed by original messages from `firstKeptEntryId`; no deletion filters, signed-thinking repair pass, or tool dependency repair is re-derived.
 
 

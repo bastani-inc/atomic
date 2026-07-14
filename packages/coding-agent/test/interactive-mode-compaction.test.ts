@@ -13,12 +13,12 @@ describe("compaction boundary component", () => {
 			firstKeptEntryId: "m2",
 			tokensBefore: 100,
 			parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "task" },
-			promptVersion: 2,
-			rung: "standard",
+			promptVersion: 3,
+			rung: "planned",
 			stats: { linesBefore: 4, linesDeleted: 1, linesKept: 3, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
 		});
 		const collapsed = stripVTControlCharacters(component.render(200).join("\n"));
-		expect(collapsed).toContain("✻ Context compacted · kept 3/4 lines · 50% tokens · standard");
+		expect(collapsed).toContain("✻ Context compacted · kept 3/4 lines · 50% tokens · planned");
 		expect(collapsed).not.toContain("retained");
 
 		component.setExpanded(true);

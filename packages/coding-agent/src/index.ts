@@ -71,7 +71,7 @@ export {
 	type BranchSummaryResult,
 	type CollectEntriesResult,
 	type CompactedTranscript,
-	type CompactionLadderOptions,
+	type CompactionPlanOptions,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,

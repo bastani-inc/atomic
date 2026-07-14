@@ -8,8 +8,7 @@ import {
 	serializeConversationForCompaction,
 } from "../src/core/compaction/transcript-serialization.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "../src/core/compaction/deleted-ranges.js";
-import { evictLinesDeterministically } from "../src/core/compaction/deterministic-line-eviction.js";
-import type { LineRange, RawLineRange } from "../src/core/compaction/compaction-types.js";
+import type { RawLineRange } from "../src/core/compaction/compaction-types.js";
 
 function assistant(content: Extract<Message, { role: "assistant" }>["content"]): Extract<Message, { role: "assistant" }> {
 	return {
@@ -126,17 +125,16 @@ describe("deleted range validation", () => {
 		expect([...result]).toEqual([{ start: 1, end: 6 }]);
 	});
 
-	it("splits ranges around role headers and additional protected lines", () => {
-		const region = createNumberedRegion("one\n[User]: task\nthree\nfour\n[Assistant]: ok\nsix", new Set([4]));
+	it("keeps role headers ordinarily deletable while splitting around explicit protected blank lines", () => {
+		const region = createNumberedRegion("one\n[User]: task\nthree\n\n[Assistant]: ok\nsix", new Set([4]));
 		expect([...validateDeletedRanges([{ start: 1, end: 6 }], region)]).toEqual([
-			{ start: 1, end: 1 },
-			{ start: 3, end: 3 },
-			{ start: 6, end: 6 },
+			{ start: 1, end: 3 },
+			{ start: 5, end: 6 },
 		]);
 	});
 
-	it("returns an empty branded range list when nothing valid is deletable", () => {
-		const region = createNumberedRegion("[User]: task\n[Assistant]: ok");
+	it("returns an empty branded range list when explicit protection covers every line", () => {
+		const region = createNumberedRegion("[User]: task\n[Assistant]: ok", new Set([1, 2]));
 		expect([...validateDeletedRanges([{ start: 1, end: 2 }, {}], region)]).toEqual([]);
 	});
 
@@ -159,8 +157,8 @@ describe("deleted range validation", () => {
 				expect(range.end).toBeLessThanOrEqual(region.lines.length);
 				expect(range.start).toBeLessThanOrEqual(range.end);
 				if (index > 0) expect(range.start).toBeGreaterThan(ranges[index - 1].end);
-				for (const header of region.headerLineNumbers) {
-					expect(header < range.start || header > range.end).toBe(true);
+				for (const protectedLine of region.protectedLineNumbers ?? []) {
+					expect(protectedLine < range.start || protectedLine > range.end).toBe(true);
 				}
 			}
 		}
@@ -190,52 +188,16 @@ describe("mechanical reconstruction", () => {
 		expect(result.ranges).toEqual([{ start: 2, end: 4 }]);
 	});
 
-	it("retains cumulative original-line accounting across two compactions", () => {
+	it("retains cumulative original-line accounting across three compactions", () => {
 		const original = "a\nb\nc\nd\ne\nf\ng\nh";
 		const firstRegion = createNumberedRegion(original);
 		const first = reconstructCompactedTranscript(firstRegion, validateDeletedRanges([{ start: 2, end: 4 }], firstRegion));
 		const secondRegion = createNumberedRegion(first.text);
 		const second = reconstructCompactedTranscript(secondRegion, validateDeletedRanges([{ start: 3, end: 4 }], secondRegion));
+		const thirdRegion = createNumberedRegion(second.text);
+		const third = reconstructCompactedTranscript(thirdRegion, validateDeletedRanges([{ start: 3, end: 3 }], thirdRegion));
 		expect(expandLineCount(first.text)).toBe(8);
 		expect(expandLineCount(second.text)).toBe(8);
-	});
-});
-
-describe("deterministic line eviction", () => {
-	const transcript = [
-		"[User]: objective",
-		"must remain",
-		"old detail one",
-		"old detail two",
-		"[Assistant]: answer",
-		"answer lead",
-		"answer detail",
-		"[Tool result]: output",
-		"latest anchor",
-		"bulk one",
-		"bulk two",
-	].join("\n");
-
-	it("guts section bodies oldest-first and keeps every role header", () => {
-		const region = createNumberedRegion(transcript);
-		const result = evictLinesDeterministically(region, 39);
-		expect(result.ranges[0]).toEqual({ start: 3, end: 4 });
-		for (const header of region.headerLineNumbers) {
-			expect(result.ranges.every((range: LineRange) => header < range.start || header > range.end)).toBe(true);
-		}
-		expect(result.text).toContain("must remain");
-	});
-
-	it("returns unchanged text when already within budget", () => {
-		const region = createNumberedRegion(transcript);
-		expect(evictLinesDeterministically(region, region.tokenEstimate).text).toBe(transcript);
-	});
-
-	it("throws loudly for non-positive and exhausted budgets", () => {
-		const region = createNumberedRegion(transcript);
-		expect(() => evictLinesDeterministically(region, 0)).toThrow("nothing more was safely deletable");
-		expect(() => evictLinesDeterministically(region, 1)).toThrow(
-			/achieved tokensAfter=\d+; budget=1; nothing more was safely deletable/,
-		);
+		expect(expandLineCount(third.text)).toBe(8);
 	});
 });

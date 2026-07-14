@@ -51,8 +51,7 @@ export function validateDeletedRanges(raw: RawLineRange[], region: NumberedRegio
 	}
 	normalized.sort((left, right) => left.start - right.start || left.end - right.end);
 
-	const protectedLines = new Set(region.headerLineNumbers);
-	for (const line of region.protectedLineNumbers ?? []) protectedLines.add(line);
+	const protectedLines = new Set(region.protectedLineNumbers ?? []);
 	const split = mergeRanges(normalized).flatMap((range) => splitAroundProtected(range, protectedLines));
 	return Object.assign(split, { __brand: "ValidatedRanges" as const });
 }

@@ -10,6 +10,5 @@ export * from "./compaction-boundary.js";
 export * from "./range-planner.js";
 export * from "./compaction-runner.js";
 export * from "./deleted-ranges.js";
-export * from "./deterministic-line-eviction.js";
 export * from "./transcript-serialization.js";
 export * from "./utils.ts";

@@ -8,7 +8,7 @@ Compaction runs entirely locally with the active session model; no external comp
 
 | Mechanism | Trigger | Model output | Durable result |
 |---|---|---|---|
-| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | JSON `deleted_ranges` only | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
+| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Compact JSON `{"d":[[start,end],...]}` only | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
 There is one context-compaction door: `compact`.
@@ -31,10 +31,10 @@ Atomic serializes the compactable part of the conversation into role-tagged line
 The planner sees the same text numbered as `N→content` and may return only one-based, inclusive line ranges:
 
 ```json
-{"deleted_ranges":[{"start":2,"end":5}]}
+{"d":[[2,5]]}
 ```
 
-Atomic validates those ranges and reconstructs the compacted string from the original input lines. The model never writes, summarizes, reorders, or normalizes the retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
+Prompt version 3 emits this compact grammar. The migration parser also accepts legacy `deleted_ranges` objects. Atomic safety-normalizes finite integer endpoints by truncating, swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
 
 ### Markers and repeated compaction
 
@@ -48,15 +48,9 @@ The spelling is always plural, including `(filtered 1 lines)`. When a later comp
 
 ### Protected structure
 
-The following role-header lines are never deleted:
+Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The recent logical-turn tail is protected client-side by remaining outside the classifier request entirely.
 
-- `[User]:`
-- `[Assistant]:`
-- `[Assistant thinking]:`
-- `[Assistant tool calls]:`
-- `[Tool result]:`
-
-Out-of-bounds, reversed, duplicate, overlapping, and adjacent planner ranges are clamped, sorted, swapped where needed, and merged. Ranges are split around protected role headers. Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text is capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
+Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
 
 ## Parameters
 
@@ -84,7 +78,7 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 }
 ```
 
-`reserveTokens` controls the automatic threshold; it is not sent to the range planner. Manual calls can pass parameter overrides through the SDK.
+`reserveTokens` controls the automatic threshold that decides when compaction runs; it is not converted into a classifier line ratio. Manual calls can pass parameter overrides through the SDK.
 
 ## When compaction runs
 
@@ -94,13 +88,13 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 
 The in-flight/final logical turn is outside the compactable region. Cancellation and abort behavior remains consistent with normal session operations. Atomic writes a backup snapshot immediately before appending a compaction boundary.
 
-## Planning and overflow ladder
+## One-pass planning and failure behavior
 
-1. **Standard:** the session model receives the numbered transcript and a line-count deletion budget. Atomic accepts a non-empty validated result that meets the caller's token budget.
-2. **Critical:** overflow recovery retries the same region with `min(compression_ratio, 0.2)` and an aggressive prompt focused on objectives, unresolved errors, decisions, and file paths.
-3. **Deterministic:** if model planning overflows or still misses the budget, Atomic evicts old low-signal body lines without a model call while retaining protected structure and anchor lines.
+Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-Malformed or empty JSON can be retried at most three times per planner rung. A large region is split at section boundaries where possible, while ranges continue to use global line numbers. Provider overflow skips directly to deterministic eviction. If protected content alone cannot fit, Atomic fails loudly rather than silently rewriting it.
+The finished prompt is preflighted with numbering, system/user instructions, provider safety space, and compact-range output reserve. If it cannot fit, compaction fails before contacting the provider. Provider/API errors, overflow, abort, malformed JSON, or empty/unusable safe ranges likewise fail after at most that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+
+A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
 
 ## Persistence and resume
 
@@ -117,8 +111,8 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
   "tokensBefore": 51234,
   "details": {
     "strategy": "verbatim-lines",
-    "promptVersion": 2,
-    "rung": "standard",
+    "promptVersion": 3,
+    "rung": "planned",
     "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the failing test"},
     "stats": {"linesBefore": 812, "linesDeleted": 417, "linesKept": 395, "rangeCount": 63, "tokensBefore": 51234, "tokensAfter": 24980, "percentReduction": 51.2}
   }

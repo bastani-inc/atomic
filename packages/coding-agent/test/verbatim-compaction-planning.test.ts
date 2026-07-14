@@ -3,14 +3,13 @@ import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/comp
 import { describe, expect, it } from "vitest";
 import { DEFAULT_COMPACTION_SETTINGS, estimateContextTokens, estimateTokens } from "../src/core/compaction/compaction.js";
 import { getKeptTailTokenEstimate, prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
-import { runVerbatimCompaction } from "../src/core/compaction/compaction-runner.js";
-import { MAX_RANGE_PLAN_ATTEMPTS, type VerbatimCompactionPreparation } from "../src/core/compaction/compaction-types.js";
+import { runVerbatimCompaction, targetKeepLines } from "../src/core/compaction/compaction-runner.js";
+import type { VerbatimCompactionPreparation } from "../src/core/compaction/compaction-types.js";
 import {
 	buildRangePlannerPrompt,
 	extractDeletedRanges,
 	planDeletedLineRanges,
 	RangePlanError,
-	splitRegionChunks,
 } from "../src/core/compaction/range-planner.js";
 import { createNumberedRegion } from "../src/core/compaction/transcript-serialization.js";
 import { buildSessionContext } from "../src/core/session-manager-history.js";
@@ -148,183 +147,125 @@ describe("compaction boundary preparation", () => {
 	});
 });
 
-describe("range planner", () => {
-	it("extracts the first balanced JSON object from prose and fences", () => {
-		expect(extractDeletedRanges("note ```json\n{\"deleted_ranges\":[{\"start\":2,\"end\":4}]}\n```"))
-			.toEqual([{ start: 2, end: 4 }]);
+describe("one-pass range planner", () => {
+	it("prefers compact d grammar and temporarily accepts legacy objects", () => {
+		expect(extractDeletedRanges('note {"d":[[2,4],["8",6]]} trailing')).toEqual([
+			{ start: 2, end: 4 },
+			{ start: "8", end: 6 },
+		]);
+		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toEqual([{ start: 2, end: 4 }]);
+		expect(extractDeletedRanges('{"d":[],"deleted_ranges":[{"start":2,"end":4}]}')).toEqual([]);
 	});
 
-	it("bounds malformed retries and sends a corrective prompt", async () => {
+	it("uses the exact one-pass contract with whole-region numbering and ordinary role headers", () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(["not json", "still wrong", '{"deleted_ranges":[{"start":2,"end":16}]}']);
-		const ranges = await planDeletedLineRanges(prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", "", { streamFn: faux.streamFn });
-		expect(ranges).toEqual([{ start: 2, end: 16 }]);
-		expect(faux.state.callCount).toBe(3);
-		const correction = faux.state.contexts[1].messages[0];
-		expect(JSON.stringify(correction)).toContain("previous reply was not valid");
+		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
+		expect(prompt).toContain('Target lines to keep: 12');
+		expect(prompt).toContain('{"d":[[start,end],...]}');
+		expect(prompt).toContain("Role headers and the first/final lines of sections are ordinary evidence-bearing lines");
+		expect(prompt).toContain(`1→${prep.region.lines[0]}`);
+		expect(prompt).toContain(`${prep.region.lines.length}→${prep.region.lines.at(-1)}`);
+		expect(prompt).not.toContain("deleted_ranges");
 	});
 
-	it("fails after exactly MAX_RANGE_PLAN_ATTEMPTS malformed replies", async () => {
+	it("makes exactly one request and forwards model, auth, headers, and reasoning unchanged", async () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(["not json"]);
-		try {
-			await planDeletedLineRanges(prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", "", { streamFn: faux.streamFn });
-			throw new Error("expected range planning to fail");
-		} catch (error) {
-			expect(error).toBeInstanceOf(RangePlanError);
-			expect((error as RangePlanError).attempts).toBe(MAX_RANGE_PLAN_ATTEMPTS);
-		}
-		expect(faux.state.callCount).toBe(MAX_RANGE_PLAN_ATTEMPTS);
-	});
-
-	it("forwards non-off thinking only for reasoning models", async () => {
-		const prep = preparation();
-		const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":2,"end":20}]}']);
-		const options: SimpleStreamOptions[] = [];
+		const faux = createFauxStreamFn(['{"d":[[1,20]]}']);
+		const calls: Array<{ candidate: Model<Api>; request: SimpleStreamOptions }> = [];
 		const capture = (candidate: Model<Api>, context: Parameters<typeof faux.streamFn>[1], request?: SimpleStreamOptions) => {
-			options.push(request ?? {});
+			calls.push({ candidate, request: request ?? {} });
 			return faux.streamFn(candidate, context, request);
 		};
-		await planDeletedLineRanges(prep.region, prep.parameters, { ...model, reasoning: true }, { apiKey: "key" }, undefined, "medium", "", { streamFn: capture });
-		await planDeletedLineRanges(prep.region, prep.parameters, { ...model, reasoning: true }, { apiKey: "key" }, undefined, "off", "", { streamFn: capture });
-		await planDeletedLineRanges(prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "high", "", { streamFn: capture });
-		expect(options.map((item) => item.reasoning)).toEqual(["medium", undefined, undefined]);
+		const reasoningModel = { ...model, reasoning: true };
+		const ranges = await planDeletedLineRanges(
+			prep.region,
+			prep.parameters,
+			reasoningModel,
+			{ apiKey: "key", headers: { "x-test": "value" } },
+			undefined,
+			"medium",
+			prep.settings.reserveTokens,
+			10,
+			{ streamFn: capture },
+		);
+		expect(ranges).toEqual([{ start: 1, end: 20 }]);
+		expect(faux.state.callCount).toBe(1);
+		expect(calls[0].candidate).toBe(reasoningModel);
+		expect(calls[0].request.apiKey).toBe("key");
+		expect(calls[0].request.headers).toEqual({ "x-test": "value" });
+		expect(calls[0].request.reasoning).toBe("medium");
+		expect(calls[0].request.maxTokens).toBeLessThanOrEqual(Math.floor(prep.settings.reserveTokens * 0.8));
 	});
 
-	it("replans once when the kept-line ratio drifts high", async () => {
+	it.each([
+		["malformed", "not json"],
+		["empty", '{"d":[]}'],
+		["unusable", '{"d":[["nan",null]]}'],
+	])("fails after one %s response with no semantic retry", async (_label, response) => {
 		const prep = preparation();
-		const faux = createFauxStreamFn([
-			'{"deleted_ranges":[{"start":2,"end":10}]}',
-			'{"deleted_ranges":[{"start":2,"end":20}]}',
-		]);
-		const ranges = await planDeletedLineRanges(prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", "", { streamFn: faux.streamFn });
-		expect(ranges).toEqual([{ start: 2, end: 20 }]);
-		expect(JSON.stringify(faux.state.contexts[1])).toContain("delete at least");
+		const faux = createFauxStreamFn([response]);
+		await expect(planDeletedLineRanges(
+			prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn },
+		)).rejects.toBeInstanceOf(RangePlanError);
+		expect(faux.state.callCount).toBe(1);
 	});
 
-	it("chunks oversized regions at stable global boundaries", () => {
-		const region = createNumberedRegion(Array.from({ length: 80 }, (_, index) => index % 10 === 0 ? `[User]: ${index}` : "x".repeat(100)).join("\n"));
-		const smallModel = { ...model, contextWindow: 5_000 };
-		const chunks = splitRegionChunks(region, smallModel);
-		expect(chunks.length).toBeGreaterThan(1);
-		expect(chunks[0].start).toBe(1);
-		expect(chunks.at(-1)?.end).toBe(80);
-		expect(buildRangePlannerPrompt(region, preparation().parameters, chunks[1])).toContain(`lines="${chunks[1].start}-${chunks[1].end}"`);
-	});
-
-	it("clamps every chunk response and sends global numbering with per-chunk line budgets", async () => {
-		const region = createNumberedRegion(Array.from({ length: 80 }, (_, index) => index % 10 === 0 ? `[User]: ${index}` : "x".repeat(100)).join("\n"));
-		const smallModel = { ...model, contextWindow: 5_000 };
-		const chunks = splitRegionChunks(region, smallModel);
-		const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":1,"end":999}]}']);
-		const ranges = await planDeletedLineRanges(region, preparation().parameters, smallModel, { apiKey: "key" }, undefined, "off", "", { streamFn: faux.streamFn });
-		expect(ranges).toEqual(chunks);
-		for (let index = 0; index < chunks.length; index++) {
-			const chunk = chunks[index];
-			const prompt = JSON.stringify(faux.state.contexts[index]);
-			const lineCount = chunk.end - chunk.start + 1;
-			expect(prompt).toContain(`Delete approximately ${Math.round(lineCount * 0.5)} of the ${lineCount} lines`);
-			expect(prompt).toContain(`lines=\\"${chunk.start}-${chunk.end}\\"`);
-			expect(prompt).toContain(`${chunk.start}→`);
+	it("fails provider errors and overflow after one request", async () => {
+		for (const error of ["provider unavailable", "prompt is too long: context_length_exceeded"]) {
+			const prep = preparation();
+			const faux = createFauxStreamFn([{ error }]);
+			await expect(planDeletedLineRanges(
+				prep.region, prep.parameters, model, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn },
+			)).rejects.toBeInstanceOf(RangePlanError);
+			expect(faux.state.callCount).toBe(1);
 		}
+	});
+
+	it("rejects an oversized finished prompt before making a provider request", async () => {
+		const prep = preparation();
+		const faux = createFauxStreamFn(['{"d":[[1,2]]}']);
+		const tinyModel = { ...model, contextWindow: 100, maxTokens: 50 };
+		try {
+			await planDeletedLineRanges(prep.region, prep.parameters, tinyModel, { apiKey: "key" }, undefined, "off", prep.settings.reserveTokens, 10, { streamFn: faux.streamFn });
+			throw new Error("expected preflight failure");
+		} catch (error) {
+			expect(error).toBeInstanceOf(RangePlanError);
+			expect((error as RangePlanError).attempts).toBe(0);
+		}
+		expect(faux.state.callCount).toBe(0);
 	});
 });
 
-describe("verbatim compaction ladder", () => {
-	it("accepts a non-empty standard result for manual compaction", async () => {
+describe("single planned compaction rung", () => {
+	it.each(["manual", "threshold", "overflow"] as const)("makes one whole-region provider call for %s compaction", async (_reason) => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":2,"end":20}]}']);
-		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", { streamFn: faux.streamFn });
-		expect(result.rung).toBe("standard");
-		expect(result.stats.linesDeleted).toBeGreaterThan(0);
+		const faux = createFauxStreamFn(['{"d":[[2,10]]}']);
+		await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", { streamFn: faux.streamFn });
+		expect(faux.state.callCount).toBe(1);
+		expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
+		expect(JSON.stringify(faux.state.contexts[0])).toContain(`${prep.region.lines.length}→`);
 	});
 
-	it("uses critical parameters after the standard rung misses the overflow budget", async () => {
+	it("accepts a valid undershooting result without top-up or another call", async () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn([
-			'{"deleted_ranges":[{"start":2,"end":10}]}',
-			'{"deleted_ranges":[{"start":2,"end":10}]}',
-			'{"deleted_ranges":[{"start":2,"end":27}]}',
-		]);
+		const faux = createFauxStreamFn(['{"d":[[2,2]]}']);
 		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
-			acceptanceTokenBudget: 1,
-			criticalEvictionTokenBudget: prep.tokensBefore,
 			streamFn: faux.streamFn,
 		});
-		expect(result.rung).toBe("critical");
-		expect(JSON.stringify(faux.state.contexts)).toContain("critical-overflow-mode");
-		expect(JSON.stringify(faux.state.contexts)).toContain("80% — a LINE");
-	});
-
-	it("rejects a threshold-budget miss without entering overflow rungs", async () => {
-		const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":2,"end":27}]}']);
-		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, undefined, "off", {
-			acceptanceTokenBudget: 1,
-			streamFn: faux.streamFn,
-		})).rejects.toThrow("Compaction failed: standard achieved");
+		expect(result.rung).toBe("planned");
+		expect(result.stats.linesKept).toBeGreaterThan(targetKeepLines(prep));
+		expect(result.stats.linesDeleted).toBe(1);
 		expect(faux.state.callCount).toBe(1);
 	});
-
-	it("falls through a critical budget miss to deterministic eviction", async () => {
+	it("uses the prepared compression ratio directly for every trigger", () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":2,"end":10}]}']);
-		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
-			acceptanceTokenBudget: 1,
-			criticalEvictionTokenBudget: 40,
-			streamFn: faux.streamFn,
-		});
-		expect(result.rung).toBe("deterministic");
-		expect(faux.state.callCount).toBe(6);
+		const expected = Math.round(prep.region.lines.length * prep.parameters.compression_ratio);
+		expect(targetKeepLines(prep)).toBe(expected);
 	});
 
-	it("skips critical planning after provider overflow and uses deterministic eviction", async () => {
-		const prep = preparation();
-		const faux = createFauxStreamFn([{ error: "prompt is too long: context_length_exceeded" }]);
-		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
-			acceptanceTokenBudget: 1,
-			criticalEvictionTokenBudget: prep.tokensBefore - 10,
-			streamFn: faux.streamFn,
-		});
-		expect(result.rung).toBe("deterministic");
-		expect(faux.state.callCount).toBe(1);
-	});
-
-	it("classifies a thrown provider overflow and skips critical planning", async () => {
-		let calls = 0;
-		const throwingStream = () => {
-			calls++;
-			throw new Error("prompt is too long: context_length_exceeded");
-		};
-		const prep = preparation();
-		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
-			acceptanceTokenBudget: 1,
-			criticalEvictionTokenBudget: prep.tokensBefore - 10,
-			streamFn: throwingStream,
-		});
-		expect(result.rung).toBe("deterministic");
-		expect(calls).toBe(1);
-	});
-
-	it("honors aborts between standard and critical and between critical and deterministic", async () => {
-		for (const abortAfterCall of [1, 2]) {
-			const controller = new AbortController();
-			const faux = createFauxStreamFn(['{"deleted_ranges":[{"start":2,"end":27}]}']);
-			const abortingStream: typeof faux.streamFn = (candidate, context, request) => {
-				const stream = faux.streamFn(candidate, context, request);
-				if (faux.state.callCount === abortAfterCall) queueMicrotask(() => controller.abort());
-				return stream;
-			};
-			await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal, "off", {
-				acceptanceTokenBudget: 1,
-				criticalEvictionTokenBudget: 25,
-				streamFn: abortingStream,
-			})).rejects.toThrow("Compaction cancelled");
-		}
-	});
-
-	it("honors abort before the first rung", async () => {
+	it("honors abort before the request", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal)).rejects.toThrow("Compaction cancelled");
+		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal, undefined, { streamFn: createFauxStreamFn(['{"d":[[1,1]]}']).streamFn })).rejects.toThrow("Compaction cancelled");
 	});
 });

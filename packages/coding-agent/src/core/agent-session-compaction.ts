@@ -1,14 +1,12 @@
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApplyOptions } from "./agent-session-methods.ts";
-import { getEffectiveInputBudget } from "./context-window.ts";
 import {
-	evictLinesDeterministically,
 	getKeptTailTokenEstimate,
 	prepareCompactionBoundary,
 	runVerbatimCompaction,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
-	type CompactionLadderOptions,
+	type CompactionPlanOptions,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
@@ -77,12 +75,7 @@ export async function _applyVerbatimCompaction(
 		return undefined;
 	}
 
-	const effectiveBudget = getEffectiveInputBudget(model);
-	const ladder: CompactionLadderOptions | undefined = options.reason === "overflow"
-		? { acceptanceTokenBudget: effectiveBudget, criticalEvictionTokenBudget: effectiveBudget }
-		: options.reason === "threshold"
-			? { acceptanceTokenBudget: effectiveBudget - settings.reserveTokens }
-			: undefined;
+	const plan: CompactionPlanOptions = { streamFn: this.agent.streamFn };
 	let fromExtension = false;
 	let compacted: { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"] } | undefined;
 
@@ -111,25 +104,16 @@ export async function _applyVerbatimCompaction(
 
 	if (!compacted) {
 		const auth = await options.resolvePlannerAuth();
-		if (!auth) {
-			if (options.reason !== "overflow") return undefined;
-			const tailTokens = getKeptTailTokenEstimate(preparation);
-			const evicted = evictLinesDeterministically(preparation.region, effectiveBudget - tailTokens);
-			const tokensAfter = evicted.stats.tokensAfter + tailTokens;
-			compacted = {
-				text: evicted.text,
-				rung: "deterministic",
-				stats: {
-					...evicted.stats,
-					tokensBefore: preparation.tokensBefore,
-					tokensAfter,
-					percentReduction: preparation.tokensBefore === 0 ? 0 : Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10,
-				},
-			};
-		} else {
-			const planned = await runVerbatimCompaction(preparation, model, auth.apiKey, auth.headers, options.abortController.signal, this.thinkingLevel, ladder);
-			compacted = planned;
-		}
+		if (!auth) throw new Error("Compaction provider authentication is unavailable");
+		compacted = await runVerbatimCompaction(
+			preparation,
+			model,
+			auth.apiKey,
+			auth.headers,
+			options.abortController.signal,
+			this.thinkingLevel,
+			plan,
+		);
 	}
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
 

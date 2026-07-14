@@ -1,4 +1,4 @@
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
 import { createTestResourceLoader } from "./utilities.ts";
+import { createFauxStreamFn } from "./test-harness.ts";
 
 function assistant(text: string, timestamp: number): AssistantMessage {
 	return { role: "assistant", content: [{ type: "text", text }], api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-4-5", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp };
@@ -39,11 +40,13 @@ describe("verbatim compaction extension hooks", () => {
 		return { path: "test", resolvedPath: "/test.ts", sourceInfo: createSyntheticSourceInfo("<test>", { source: "test" }), handlers, tools: new Map(), messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map() };
 	}
 
-	function create(ext: Extension): void {
+	function create(ext: Extension, streamFn?: StreamFn): void {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		const manager = SessionManager.inMemory();
-		const agent = new Agent({ getApiKey: () => undefined, initialState: { model, systemPrompt: "test", tools: [] } });
-		session = new AgentSession({ agent, sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(), modelRegistry: ModelRegistry.create(AuthStorage.inMemory()), resourceLoader: { ...createTestResourceLoader(), getExtensions: () => ({ extensions: [ext], errors: [], runtime: createExtensionRuntime() }) } });
+		const agent = new Agent({ getApiKey: () => undefined, initialState: { model, systemPrompt: "test", tools: [] }, streamFn });
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		session = new AgentSession({ agent, sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(), modelRegistry: ModelRegistry.create(authStorage), resourceLoader: { ...createTestResourceLoader(), getExtensions: () => ({ extensions: [ext], errors: [], runtime: createExtensionRuntime() }) } });
 		const now = Date.now();
 		for (let turn = 0; turn < 5; turn++) {
 			manager.appendMessage({ role: "user", content: `task ${turn}\nline a\nline b`, timestamp: now + turn * 2 });
@@ -82,6 +85,28 @@ describe("verbatim compaction extension hooks", () => {
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});
 
+	it.each([
+		["malformed", "not json"],
+		["empty", '{"d":[]}'],
+	])("does not persist a compaction entry after one %s planner response", async (_label, response) => {
+		const faux = createFauxStreamFn([response]);
+		create(extension(() => undefined), faux.streamFn);
+		await expect(session.compact()).rejects.toThrow(/Compaction range planning/);
+		expect(faux.state.callCount).toBe(1);
+		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
+
+	it("does not persist after a provider failure", async () => {
+		let calls = 0;
+		const failingStream: StreamFn = () => {
+			calls++;
+			throw new Error("provider unavailable");
+		};
+		create(extension(() => undefined), failingStream);
+		await expect(session.compact()).rejects.toThrow("provider unavailable");
+		expect(calls).toBe(1);
+		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+	});
 	it("isolates errors from the post-commit observer", async () => {
 		create(extension(() => ({ compactedText: "[User]: retained" }), () => { throw new Error("observer failed"); }));
 		await expect(session.compact()).resolves.toMatchObject({ rung: "extension" });

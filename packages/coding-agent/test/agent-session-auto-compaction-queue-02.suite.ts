@@ -17,12 +17,12 @@ const compactionMocks = vi.hoisted(() => ({
 	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
 		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
-		rung: "standard" as const,
+		rung: "planned" as const,
 	})),
 }));
 
 vi.mock("../src/core/compaction/index.js", () => ({
-	VERBATIM_COMPACTION_PROMPT_VERSION: 2,
+	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
 	calculateContextTokens: (usage: {
 		input: number;

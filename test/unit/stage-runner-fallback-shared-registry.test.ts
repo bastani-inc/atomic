@@ -63,9 +63,9 @@ function makeFakeStageSession(config: FakeSessionConfig): StageSessionRuntime {
         compactedText: "[User]: retained",
         firstKeptEntryId: "kept",
         tokensBefore: 0,
-        promptVersion: 2,
+        promptVersion: 3,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        rung: "deterministic" as const,
+        rung: "planned" as const,
         stats: {
           linesBefore: 0,
           linesDeleted: 0,

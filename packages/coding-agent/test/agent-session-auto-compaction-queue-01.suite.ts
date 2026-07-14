@@ -9,7 +9,6 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
-import { getEffectiveInputBudget } from "../src/core/context-window.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
@@ -19,12 +18,12 @@ const compactionMocks = vi.hoisted(() => ({
 		text: "[User]: retained test context\n(filtered 1 lines)",
 		ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
-		rung: "standard" as const,
+		rung: "planned" as const,
 	})),
 }));
 
 vi.mock("../src/core/compaction/index.js", () => ({
-	VERBATIM_COMPACTION_PROMPT_VERSION: 2,
+	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
 	calculateContextTokens: (usage: {
 		input: number;
@@ -126,26 +125,41 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
 		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[5]).toBe("high");
 	});
-	it("passes threshold and overflow ladder budgets to context compaction", async () => {
+	it("passes active model and stream identity to one-pass context compaction", async () => {
 		const runAutoCompaction = (
 			session as unknown as {
 				_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
 			}
 		)._runAutoCompaction.bind(session);
-		const effectiveBudget = getEffectiveInputBudget(session.model!);
-		const settings = session.settingsManager.getCompactionSettings();
 
 		await runAutoCompaction("threshold", false);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({
-			acceptanceTokenBudget: effectiveBudget - settings.reserveTokens,
-		});
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[1]).toBe(session.model);
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({ streamFn: session.agent.streamFn });
 
 		compactionMocks.runVerbatimCompaction.mockClear();
 		await runAutoCompaction("overflow", false);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({
-			acceptanceTokenBudget: effectiveBudget,
-			criticalEvictionTokenBudget: effectiveBudget,
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({ streamFn: session.agent.streamFn });
+	});
+	it.each(["threshold", "overflow"] as const)("does not persist or schedule continuation when %s planning fails", async (reason) => {
+		compactionMocks.runVerbatimCompaction.mockRejectedValueOnce(new Error("malformed planner response"));
+		const events: Array<{ type: string; willRetry?: boolean; errorMessage?: string }> = [];
+		session.subscribe((event) => {
+			if (event.type === "compaction_end") events.push(event);
 		});
+		const continueSpy = vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const runAutoCompaction = (
+			session as unknown as {
+				_runAutoCompaction: (candidate: "overflow" | "threshold", willRetry: boolean) => Promise<void>;
+			}
+		)._runAutoCompaction.bind(session);
+
+		await runAutoCompaction(reason, true);
+		await vi.advanceTimersByTimeAsync(100);
+
+		expect(compactionMocks.runVerbatimCompaction).toHaveBeenCalledTimes(1);
+		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
+		expect(continueSpy).not.toHaveBeenCalled();
+		expect(events.at(-1)).toMatchObject({ type: "compaction_end", willRetry: false, errorMessage: expect.stringContaining("malformed planner response") });
 	});
 	it("should resume after threshold compaction when only agent-level queued messages exist", async () => {
 		session.agent.followUp({

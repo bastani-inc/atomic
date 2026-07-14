@@ -143,9 +143,9 @@ async function createTestAgentSession(_options?: CreateAgentSessionOptions): Pro
         compactedText: "[User]: retained",
         firstKeptEntryId: "kept",
         tokensBefore: 0,
-        promptVersion: 2,
+        promptVersion: 3,
         parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "auto-detected" },
-        rung: "deterministic",
+        rung: "planned",
         stats: {
           linesBefore: 0,
           linesDeleted: 0,
