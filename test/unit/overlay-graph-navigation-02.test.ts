@@ -423,7 +423,7 @@ describe("GraphView keyboard navigation", () => {
     view.handleInput("\r");
     assert.deepEqual(onStageAttach.mock.calls[0], ["run-1", "question"]);
 
-    view.handleInput("\x04");
+    view.handleInput("\x18");
     assert.equal(detached, 1);
     view.dispose();
   });

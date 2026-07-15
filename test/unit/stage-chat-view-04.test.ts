@@ -69,6 +69,7 @@ describe("StageChatView", () => {
             "2",
             "y",
             "n",
+            "q",
             " ",
         ];
         for (const key of forwarded) assert.equal(view.handleInput(key), true);
@@ -90,11 +91,11 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("ctrl+c closes and ctrl+d detaches without cancelling the pending custom UI", async () => {
+    test("ctrl+c closes and ctrl+x detaches without cancelling the pending custom UI", async () => {
         for (const variant of [
             { key: "\x03", expect: "close", status: "running" },
-            { key: "\x04", expect: "detach", status: "running" },
-            { key: "\x04", expect: "detach", status: "paused" },
+            { key: "\x18", expect: "detach", status: "running" },
+            { key: "\x18", expect: "detach", status: "paused" },
         ] as const) {
             const store = createStore();
             setupRun(store, "run-1", "stage-a", variant.status);
@@ -120,7 +121,7 @@ describe("StageChatView", () => {
                     terminal: { rows: 32, columns: 80 },
                 } as unknown as TUI,
                 piTheme: {},
-                piKeybindings: makeFakeKeybindings(),
+                piKeybindings: makeFakeKeybindings({ "tui.editor.deleteCharForward": ["\x18"] }),
                 stageUiBroker: broker,
             });
             const pending = broker.requestCustomUi("run-1", "stage-a", () => ({
@@ -218,7 +219,7 @@ describe("StageChatView", () => {
         const widths = [40, 56, 80, 120, 200];
 
         // Phase A: custom UI mounted (the path the scrollback fix changed). The stub
-        // never resolves and the alphabet omits ctrl+c/ctrl+d, so it stays mounted.
+        // never resolves and the alphabet omits ctrl+c/ctrl+x, so it stays mounted.
         {
             const store = createStore();
             setupRun(store, "run-1", "stage-a");

@@ -71,7 +71,7 @@ describe("StageChatView", () => {
         assert.equal(footerLineIndex, visibleLines.length - 1);
         assert.match(
             visibleLines[footerLineIndex] ?? "",
-            /esc to close\s+ctrl\+d graph · ctrl\+t copy mode off$/,
+            /esc to close\s+ctrl\+x leave stage chat · return to graph · ctrl\+t copy mode off$/,
         );
         assert.ok(footerLineIndex > responseLineIndex);
         assert.doesNotMatch(visible, /READ-ONLY SESSION/);

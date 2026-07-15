@@ -92,7 +92,7 @@ export async function handleRunControlCommand(
     }
     if (failHeadlessAttachCommand("connect", resolved.runId)) return true;
     if (policy.allowInputPicker) deps.overlay.open(resolved.runId, overlaySurfaceFromContext(ctx));
-    print(`Connected to ${resolved.runId.slice(0, 8)}. h hide · ctrl+d/q return to main chat · esc close.`);
+    print(`Connected to ${resolved.runId.slice(0, 8)}. h hide · ctrl+x leave graph · return to main chat · esc close.`);
     return true;
   }
 
@@ -392,7 +392,7 @@ export async function handleRunControlCommand(
       const stageRunId = resolvedStage.runId ?? runId;
       if (failHeadlessAttachCommand("attach", runId, stageId)) return true;
       if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
-      print(stageId ? `Attached to ${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}. ctrl+d return to graph · esc close.` : `Attached to ${runId.slice(0, 8)}. ↵ chat · ctrl+d detach.`);
+      print(stageId ? `Attached to ${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}. ctrl+x leave stage chat · return to graph · esc close.` : `Attached to ${runId.slice(0, 8)}. ↵ chat · ctrl+x leave graph · return to main chat.`);
       return true;
     }
     const resolvedStage = resolveStageTarget(runId, stageTarget);

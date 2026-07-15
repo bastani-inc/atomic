@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- Changed graph-overlay `q` and Ctrl+D to return to main chat without mutating workflow lifecycle state, including when a legacy prompt card or stage switcher is open; graph guidance now labels `q` as `return to main chat`.
+- Changed workflow hierarchy navigation to an unconditional Ctrl+X chord: attached stage chats now preserve composer and prompt drafts and pending custom questions while returning to the graph, and graph overlays return to main chat even with switchers or legacy prompts open. Ctrl+D retains ordinary editor/prompt behavior, `q` remains printable in text-owning prompts, workflow surfaces take Ctrl+X precedence over configurable actions, and graph/stage guidance now states the destination explicitly.
 - Reworded workflow-start guidance around actionable `/workflow connect <run-id>` commands so users know they can see agents working and chat with or steer each stage.
 
 ### Fixed

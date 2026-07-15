@@ -146,7 +146,7 @@ export function renderHintsForPrompt(
     return `${paint("enter", theme.textMuted, { bold: true })} Submit · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
   }
   if (kind === "custom") {
-    return `${paint("ctrl+d", theme.textMuted, { bold: true })} Graph · ${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
+    return `${paint("ctrl+x", theme.textMuted, { bold: true })} Leave stage chat · return to graph · ${paint("ctrl+c", theme.textMuted, { bold: true })} Close`;
   }
   return `${paint("enter", theme.textMuted, { bold: true })} Select · ${paint("ctrl+c", theme.textMuted, { bold: true })} Skip`;
 }

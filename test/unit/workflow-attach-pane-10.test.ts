@@ -6,7 +6,7 @@
  *  - Mounts in graph mode by default.
  *  - Pressing Enter on a graph node swaps the interior to stage chat
  *    without remounting the popup.
- *  - Ctrl+D in chat mode swaps back to graph with the same focused
+ *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
  *  - When a `uiStatus.setStatus` surface is provided, attach/detach
  *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
@@ -293,14 +293,14 @@ describe("WorkflowAttachPane", () => {
         assert.equal(pane.wantsMouseScrollTracking(), true);
         assert.deepEqual(mouseTracking, [true, true, false, true]);
 
-        pane.handleInput(Key.ctrl("d"));
+        pane.handleInput(Key.ctrl("x"));
         assert.equal(pane._mode, "graph");
         assert.equal(pane.wantsMouseScrollTracking(), true);
         assert.deepEqual(mouseTracking, [true, true, false, true, true]);
         pane.dispose();
         assert.deepEqual(mouseTracking, [true, true, false, true, true, false]);
     });
-    test("read-only stage copy mode releases terminal mouse tracking and ctrl+d returns to graph", () => {
+    test("read-only stage copy mode releases terminal mouse tracking and ctrl+x returns to graph", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A", status: "completed" }]);
         const mouseTracking: boolean[] = [];
@@ -322,7 +322,7 @@ describe("WorkflowAttachPane", () => {
         assert.match(pane.render(96).join("\n"), /copy mode on/);
         assert.equal(mouseTracking.at(-1), false);
 
-        pane.handleInput(Key.ctrl("d"));
+        pane.handleInput(Key.ctrl("x"));
         assert.equal(pane._mode, "graph");
         assert.equal(pane.wantsMouseScrollTracking(), true);
         assert.equal(mouseTracking.at(-1), true);

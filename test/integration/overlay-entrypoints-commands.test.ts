@@ -493,5 +493,5 @@ describe("/workflow attach — top-level command", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Graph-mode Ctrl+D / `h` — non-destructive hide, never kills the run
+// Graph-mode Ctrl+X / `h` — non-destructive hide, never kills the run
 // ---------------------------------------------------------------------------

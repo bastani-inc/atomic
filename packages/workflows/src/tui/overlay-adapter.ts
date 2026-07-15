@@ -236,7 +236,7 @@ export function buildGraphOverlayAdapter(
   }
 
   /**
-   * Non-destructive return path used by graph-mode `Ctrl+D` / `q` / `h`. Goes
+   * Non-destructive return path used by graph-mode `Ctrl+X` / `h`. Goes
    * through Pi/pi public primitives in priority order:
    *   1. `OverlayHandle.setHidden(true)` when the host exposed an
    *      overlay handle via `options.onHandle`. Keeps the overlay
@@ -328,7 +328,7 @@ export function buildGraphOverlayAdapter(
       // pi-tui dispatches key events only to the focused component, so a
       // mounted-but-visible overlay that is retargeted (e.g. to a stage-scoped
       // HIL prompt / readiness gate) would otherwise appear frozen — arrows,
-      // Enter, Ctrl+D and `q` all dead — if focus stayed on an underlying or
+      // Enter and Ctrl+X all dead — if focus stayed on an underlying or
       // previously-focused pane (issue #1120).
       currentHandle?.focus();
       return;

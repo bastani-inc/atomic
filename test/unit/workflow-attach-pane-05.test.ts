@@ -6,7 +6,7 @@
  *  - Mounts in graph mode by default.
  *  - Pressing Enter on a graph node swaps the interior to stage chat
  *    without remounting the popup.
- *  - Ctrl+D in chat mode swaps back to graph with the same focused
+ *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
  *  - When a `uiStatus.setStatus` surface is provided, attach/detach
  *    flips the `pi-workflows` tag through `<workflow>/<stage>`.
@@ -364,7 +364,7 @@ describe("WorkflowAttachPane", () => {
         pane.dispose();
     });
 
-    test("Ctrl+D in graph mode hides without resolving a pending stage prompt", () => {
+    test("Ctrl+X in graph mode hides without resolving a pending stage prompt", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
         const prompt = makePendingPrompt();
@@ -383,7 +383,7 @@ describe("WorkflowAttachPane", () => {
             },
         });
 
-        pane.handleInput(Key.ctrl("d"));
+        pane.handleInput(Key.ctrl("x"));
 
         assert.equal(hidden, 1);
         assert.equal(pane._mode, "graph");

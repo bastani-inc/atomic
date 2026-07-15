@@ -30,9 +30,9 @@ import {
 void [buildGraphOverlayAdapter, buildInteractiveHostCustomUi, buildMockPi, buildMockUi, buildOverlayHandle, buildPrintCtx, buildPrintCtxWithRealCustom, attachHostCustomUiState, createCancellationRegistry, createJobTracker, createStore, workflow, delay, factory, runDetached, setupBranchingRun, setupSequentialRun, setupWideFanoutRun, singletonStore, Type, visibleText, waitForRenderCount, waitForRunEnded, waitForStagePendingPrompt];
 
 
-describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
-  test("Ctrl+D without onHandle invokes factory done() and keeps the run alive", () => {
-    const runId = `ctrl-d-no-onhandle-${Date.now()}`;
+describe("buildGraphOverlayAdapter — Ctrl+X / h non-destructive hide", () => {
+  test("Ctrl+X without onHandle invokes factory done() and keeps the run alive", () => {
+    const runId = `ctrl-x-no-onhandle-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
       id: runId,
@@ -46,7 +46,7 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     let doneCalled = 0;
     let capturedComponent: PiCustomComponent | undefined;
     // Custom variant that skips `options.onHandle` so the adapter has
-    // no OverlayHandle to flip — `Ctrl+D` must fall back to `done()`.
+    // no OverlayHandle to flip — `Ctrl+X` must fall back to `done()`.
     const customFn: PiCustomOverlayFunction = (factoryArg, _options) => {
       const tui: PiCustomOverlayFactoryTui = {
         requestRender: () => undefined,
@@ -65,17 +65,17 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     assert.ok(capturedComponent, "factory should return a component");
     assert.equal(typeof capturedComponent!.handleInput, "function");
 
-    capturedComponent!.handleInput!("\x04");
+    capturedComponent!.handleInput!("\x18");
 
-    assert.equal(doneCalled, 1, "Ctrl+D should invoke done(undefined) exactly once");
+    assert.equal(doneCalled, 1, "Ctrl+X should invoke done(undefined) exactly once");
     const run = store.runs().find((r) => r.id === runId);
     assert.ok(run, "run should still exist in the store");
-    assert.notEqual(run!.status, "killed", "Ctrl+D must not transition status to killed");
-    assert.equal(run!.endedAt, undefined, "Ctrl+D must not end the run");
+    assert.notEqual(run!.status, "killed", "Ctrl+X must not transition status to killed");
+    assert.equal(run!.endedAt, undefined, "Ctrl+X must not end the run");
   });
 
-  test("Ctrl+D WITH onHandle hides via setHidden(true)+unfocus and keeps the run alive", () => {
-    const runId = `ctrl-d-with-onhandle-${Date.now()}`;
+  test("Ctrl+X WITH onHandle hides via setHidden(true)+unfocus and keeps the run alive", () => {
+    const runId = `ctrl-x-with-onhandle-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
       id: runId,
@@ -120,18 +120,18 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
     adapter.open(runId);
 
-    capturedComponent!.handleInput!("\x04");
+    capturedComponent!.handleInput!("\x18");
 
-    assert.deepEqual(setHiddenCalls, [true], "Ctrl+D should call setHidden(true) once");
-    assert.equal(unfocusCalls, 1, "Ctrl+D should release focus once");
-    assert.equal(doneCalled, 0, "Ctrl+D with onHandle must NOT invoke done()");
+    assert.deepEqual(setHiddenCalls, [true], "Ctrl+X should call setHidden(true) once");
+    assert.equal(unfocusCalls, 1, "Ctrl+X should release focus once");
+    assert.equal(doneCalled, 0, "Ctrl+X with onHandle must NOT invoke done()");
     const run = store.runs().find((r) => r.id === runId);
     assert.notEqual(run!.status, "killed");
     assert.equal(run!.endedAt, undefined);
   });
 
-  test("`q` on a real custom mount returns to main chat without mutating the run", () => {
-    const runId = `q-return-${Date.now()}`;
+  test("`q` on a real custom mount does not navigate or mutate the run", () => {
+    const runId = `q-printable-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
       id: runId,
@@ -161,9 +161,9 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
 
     capturedComponent!.handleInput!("q");
 
-    assert.deepEqual(overlay.state.setHiddenCalls, [true]);
-    assert.equal(overlay.state.unfocusCalls, 1);
-    assert.equal(overlay.state.focused, false);
+    assert.deepEqual(overlay.state.setHiddenCalls, []);
+    assert.equal(overlay.state.unfocusCalls, 0);
+    assert.equal(overlay.state.focused, true);
     assert.deepEqual(store.runs().find((r) => r.id === runId), before);
   });
 });

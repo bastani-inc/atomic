@@ -91,6 +91,32 @@ describe("StageChatView", () => {
         assert.equal(renders, 2);
         view.dispose();
     });
+    test("Ctrl+X leaves before a conflicting tools-expand action can consume it", () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const { handle } = makeHandle();
+        let expanded = true;
+        let detached = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => { detached += 1; },
+            onClose: () => {},
+            piKeybindings: makeFakeKeybindings({ "app.tools.expand": ["\x18"] }),
+            getToolsExpanded: () => expanded,
+            setToolsExpanded: (next) => { expanded = next; },
+        });
+
+        assert.equal(view.handleInput("\x18"), true);
+        assert.equal(detached, 1);
+        assert.equal(expanded, true);
+        view.dispose();
+    });
+
 
     test("renders and resolves a structured stage pending prompt locally", async () => {
         const store = createStore();
@@ -131,7 +157,7 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("restores prompt-card input drafts after Ctrl+D detach and reattach", async () => {
+    test("restores prompt-card input drafts after Ctrl+X detach and reattach", async () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const prompt = makePendingPrompt({ initial: "seed" });
@@ -160,7 +186,7 @@ describe("StageChatView", () => {
         });
 
         for (const ch of "-draft") firstView.handleInput(ch);
-        firstView.handleInput("\x04");
+        firstView.handleInput("\x18");
         assert.equal(detached, 1);
         assert.equal(store.runs()[0]?.stages[0]?.pendingPrompt?.id, prompt.id);
         firstView.dispose();
@@ -187,7 +213,7 @@ describe("StageChatView", () => {
         reattachedView.dispose();
     });
 
-    test("Ctrl+D detach leaves a prompt-card input pending and unresolved", async () => {
+    test("Ctrl+X detach leaves a prompt-card input pending and unresolved", async () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const prompt = makePendingPrompt();
@@ -218,7 +244,7 @@ describe("StageChatView", () => {
         });
 
         for (const ch of "draft") view.handleInput(ch);
-        view.handleInput("\x04");
+        view.handleInput("\x18");
         await flush();
         assert.equal(detached, 1);
         assert.equal(settled, false);

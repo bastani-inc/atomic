@@ -30,6 +30,16 @@ export function handleStageChatInput(
   ctx: StageChatViewContext,
   data: string,
 ): boolean {
+  if (matchesKey(data, Key.ctrl("x"))) {
+    if (ctx.mountedCustomUi) releaseMountedCustomUi(ctx);
+    else {
+      const stage = currentStage(ctx);
+      syncPromptState(ctx, stage?.pendingPrompt);
+      recordCurrentPromptDraft(ctx);
+    }
+    ctx.onDetach();
+    return true;
+  }
   if (matchesKey(data, Key.ctrl("t"))) {
     ctx.mouseScrollCaptureEnabled = !ctx.mouseScrollCaptureEnabled;
     ctx.requestRender?.();
@@ -43,12 +53,7 @@ export function handleStageChatInput(
   syncPromptState(ctx, stage?.pendingPrompt);
   const readOnlyArchive = isReadOnlyArchive(ctx, stage);
   const readOnlyPromptArchive = readOnlyArchive && stage?.promptFootprint !== undefined;
-  if (matchesKey(data, Key.ctrl("d"))) {
-    if (!ctx.promptState && ctx.chatHost.hasInputText()) return ctx.chatHost.handleInput(data);
-    recordCurrentPromptDraft(ctx);
-    ctx.onDetach();
-    return true;
-  }
+
   if (ctx.promptState) {
     if (handlePromptScrollInput(ctx, data, ctx.promptEditor === null)) return true;
     handlePromptInput(ctx, data);
@@ -108,14 +113,7 @@ function handleMountedCustomUiInput(
     ctx.requestRender?.();
     return true;
   }
-  if (matchesKey(data, Key.ctrl("d"))) {
-    // Detach stops *viewing* the stage; it does not cancel a pending human-input
-    // request. Release the local display only — the request stays pending and
-    // is re-displayed when the user re-attaches.
-    releaseMountedCustomUi(ctx);
-    ctx.onDetach();
-    return true;
-  }
+
   if (matchesKey(data, Key.ctrl("c"))) {
     // Close hides the overlay; the background run — and its pending human-input
     // request — keep living. Release the local display only.

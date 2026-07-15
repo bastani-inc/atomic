@@ -60,7 +60,7 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
 
   private _isReturnToMainChatInput(data: string): boolean {
-    return matchesKey(data, Key.ctrl("d")) || matchesKey(data, "q");
+    return matchesKey(data, Key.ctrl("x"));
   }
 
   private _returnToMainChat(): void {

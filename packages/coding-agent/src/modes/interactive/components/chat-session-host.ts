@@ -12,6 +12,7 @@ import {
 import {
   createChatSessionEditor,
   handleChatSessionInput,
+  setChatSessionEditorText,
 } from "./chat-session-host-editor.ts";
 import { applyChatSessionAgentEvent } from "./chat-session-host-events.ts";
 import {
@@ -182,6 +183,9 @@ export class ChatSessionHost<TExtraEntry extends ChatTranscriptEntryLike = never
 
   inputText(): string {
     return this.state.inputBuffer;
+  }
+  setInputText(text: string): void {
+    setChatSessionEditorText(this.state, text);
   }
 
   statusText(): string {

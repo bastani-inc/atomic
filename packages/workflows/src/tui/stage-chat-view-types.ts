@@ -33,6 +33,8 @@ export interface StageChatViewOpts {
   stageId: string;
   /** The workflow display name, used in the title chrome `<workflow> / <stage>`. */
   workflowName: string;
+  /** Unsent composer draft restored when reattaching to this stage. */
+  initialComposerDraft?: string;
   /**
    * Live stage-control handle when available. When absent the chat is
    * inspect-only (settled stage with no live handle).
@@ -40,7 +42,7 @@ export interface StageChatViewOpts {
   handle?: StageControlHandle;
   /** Why a retained terminal stage could not be reopened for follow-up chat. */
   postMortemUnavailableReason?: PostMortemUnavailableReason;
-  /** Called when the user presses Ctrl+D (back to graph). */
+  /** Called when the user presses Ctrl+X (back to graph). */
   onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   /** Called when the user presses Escape (close the whole popup). */
   onClose: () => void;

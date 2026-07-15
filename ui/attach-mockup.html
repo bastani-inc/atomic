@@ -586,15 +586,13 @@
                 <div class="hints">
                   <span class="pill-solid">[ GRAPH ]</span>
                   <span class="sep">·</span>
+                  <span class="key">ctrl+x</span> <span class="lbl">leave graph · return to main chat</span>
+                  <span class="sep">·</span>
                   <span><span class="key">↑↓←→</span> <span class="lbl">navigate</span></span>
                   <span class="sep">·</span>
                   <span><span class="key">↵</span> <span class="lbl">attach</span></span>
                   <span class="sep">·</span>
                   <span><span class="key">/</span> <span class="lbl">stages</span></span>
-                  <span class="sep">·</span>
-                  <span><span class="key">ctrl+d</span> <span class="lbl">detach</span></span>
-                  <span class="sep">·</span>
-                  <span><span class="key">q</span> <span class="lbl">quit</span></span>
                 </div>
               </div>
             </aside>
@@ -660,9 +658,9 @@
 
             <!-- in-chat back affordance: corner pill, always visible -->
             <div class="back-pill">
-              <span class="kc">ctrl+d</span>
+              <span class="kc">ctrl+x</span>
               <span class="arrow">←</span>
-              <span class="lbl">back to graph</span>
+              <span class="lbl">leave stage chat · return to graph</span>
             </div>
 
             <main class="welcome-pane">
@@ -749,13 +747,13 @@
       </section>
 
       <!-- ================================================
-           BACKWARD FLOW — ctrl+d detaches the sub-pane.
+           BACKWARD FLOW — ctrl+x leaves the stage chat for the graph.
            ================================================ -->
       <div class="flow">
         <div class="arrow">▲</div>
-        <div class="kbd"><span>ctrl+d</span></div>
+        <div class="kbd"><span>ctrl+x</span></div>
         <div class="caption">
-          detach <span class="verb">·</span> popup interior swaps back to the orchestrator <span class="verb">·</span> cursor still on <span class="target">review-a</span>, ready to re-attach
+          leave stage chat <span class="verb">·</span> return to graph <span class="verb">·</span> cursor still on <span class="target">review-a</span>, ready to re-attach
         </div>
       </div>
     </div>

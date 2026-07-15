@@ -102,11 +102,20 @@ export function embedOrchestratorReturnHintInWidget(
   }
   const lines = [...widgetLines];
   const targetIndex = widgetHintTargetLineIndex(lines);
+  const targetLine = lines[targetIndex] ?? "";
+  const trailingBorder = trailingWidgetBorderChar(targetLine);
+  const plainPrefix = stripAnsi(targetLine)
+    .slice(0, trailingBorder.length > 0 ? -trailingBorder.length : undefined)
+    .trimEnd();
   lines[targetIndex] = mergeOrchestratorReturnHintIntoLine(
     ctx,
-    lines[targetIndex] ?? "",
+    targetLine,
     width,
-    { preserveTrailingBorder: true, rightMargin: 2 },
+    {
+      preserveTrailingBorder: true,
+      rightMargin: 2,
+      minimumPrefixWidth: visibleWidth(plainPrefix) + 1,
+    },
   );
   return lines;
 }
@@ -123,18 +132,18 @@ function mergeOrchestratorReturnHintIntoLine(
 ): string {
   const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
   const fullHint = {
-    plain: `ctrl+d graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
+    plain: `ctrl+x leave stage chat · return to graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
     styled:
-      paint("ctrl+d", ctx.theme.text, { bold: true }) +
-      paint(" graph · ", ctx.theme.textMuted) +
+      paint("ctrl+x", ctx.theme.text, { bold: true }) +
+      paint(" leave stage chat · return to graph · ", ctx.theme.textMuted) +
       paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
       paint(` copy mode ${copyModeState}`, ctx.theme.textMuted),
   };
   const compactHint = {
-    plain: `ctrl+d · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
+    plain: `ctrl+x stage chat→graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
     styled:
-      paint("ctrl+d", ctx.theme.text, { bold: true }) +
-      paint(" · ", ctx.theme.textMuted) +
+      paint("ctrl+x", ctx.theme.text, { bold: true }) +
+      paint(" stage chat→graph · ", ctx.theme.textMuted) +
       paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
       paint(` ${copyModeState}`, ctx.theme.textMuted),
   };

@@ -6,7 +6,7 @@
  *  - Mounts in graph mode by default.
  *  - Pressing Enter on a graph node swaps the interior to stage chat
  *    without remounting the popup.
- *  - Ctrl+D in chat mode swaps back to graph with the same focused
+ *  - Ctrl+X in chat mode swaps back to graph with the same focused
  *    stage id preserved.
  *  - When a `uiStatus.setStatus` surface is provided, attach/detach
  *    flips the `pi-workflows` tag through `<workflow>/<stage>`.

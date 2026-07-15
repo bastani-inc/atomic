@@ -11,7 +11,7 @@ import {
     flush,
     stripAnsi,
     expectRightAlignedReturnHint,
-    RETURN_HINT_TEXT,
+    COMPACT_RETURN_HINT_TEXT,
     makePendingPrompt,
     type AgentSession,
     type Component,
@@ -428,7 +428,7 @@ describe("StageChatView", () => {
         assert.equal(hintIndex, questionIndex);
         assert.match(renderedLines[hintIndex] ?? "", /^│/);
         assert.ok(
-            (renderedLines[hintIndex] ?? "").endsWith(`  ${RETURN_HINT_TEXT}  │`),
+            (renderedLines[hintIndex] ?? "").endsWith(`  ${COMPACT_RETURN_HINT_TEXT}  │`),
             "expected return/copy-mode hint inside the custom UI border",
         );
         assert.doesNotMatch(renderedLines[hintIndex] ?? "", /^╰/);

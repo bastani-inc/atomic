@@ -29,9 +29,9 @@ export interface GraphViewOpts {
    */
   onStageAttach?: (runId: string, stageId: string) => void;
   /**
-   * Invoked when the user presses `Ctrl+D` or `q` in graph mode.
-   * Returns to main chat by hiding the popup with `setHidden(true)`.
-   * Falls back to `onHide` when unset.
+   * Invoked when the user presses `Ctrl+X` in graph mode. Returns to main
+   * chat by hiding the popup with `setHidden(true)`. Falls back to `onHide`
+   * when unset.
    */
   onDetach?: () => void;
   /**

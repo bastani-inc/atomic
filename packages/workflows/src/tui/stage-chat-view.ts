@@ -11,7 +11,7 @@
  *  - Idle stage (empty transcript, not streaming, not settled): Enter prompts.
  *  - Running live stages: Enter steers, Ctrl+F queues a follow-up, Escape uses
  *    the host chat interrupt path.
- *  - Paused stages: Enter resumes with composer text; Ctrl+D returns to graph.
+ *  - Paused stages: Enter resumes with composer text; Ctrl+X returns to graph.
  *  - Blocked and read-only archive stages absorb mutation keystrokes.
  *  - Workflow notices and prompt/custom UI panels keep workflow-specific chrome.
  *

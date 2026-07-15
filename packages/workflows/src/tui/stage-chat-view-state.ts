@@ -78,6 +78,9 @@ export function initializeStageChatView(
   ctx._unregisterStageUiHost = null;
   installFocusHold(ctx);
   ctx.chatHost = createChatHost(ctx, opts);
+  if (opts.initialComposerDraft !== undefined) {
+    ctx.chatHost.setInputText(opts.initialComposerDraft);
+  }
   ctx._unregisterStageUiHost = ctx.stageUiBroker.registerHost(ctx.runId, ctx.stageId, {
     showCustomUi: (request) => {
       void showCustomUi(ctx, request);
@@ -108,11 +111,8 @@ export function initializeStageChatView(
 function installFocusHold(ctx: StageChatViewContext): void {
   if (!ctx.requestFocus) return;
   ctx.focusHoldTimer = setInterval(() => {
-    // Hold focus on the overlay whenever there is something to interact with:
-    // a mounted custom UI (ask_user_question / readiness gate) must stay
-    // answerable even mid-turn, and an idle composer should keep focus. During
-    // a pure streaming continuation (no custom UI mounted) we leave focus alone
-    // so we never reclaim it out from under the agent's live output.
+    // Keep interactive custom UI and idle composer focus without reclaiming it
+    // from a streaming continuation.
     if (ctx.mountedCustomUi !== null || !isStreaming(ctx)) ctx.requestFocus?.();
   }, 150);
 }

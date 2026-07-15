@@ -1,5 +1,6 @@
 import { GraphCanvas } from "./graph-canvas.js";
 import {
+  COMPACT_HINT_KEYS,
   HINT_KEYS,
   MODE_PILL_LABEL,
   OVERLAY_LINE_COUNT,
@@ -105,22 +106,26 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
       bot,
       visibleWidth: pillW,
     } = renderOutlinePill(MODE_PILL_LABEL, t.accent, chromeBg);
-
-    // Hints — `<key> <label>` separated by `  ·  `. When other extensions
-    // publish status text (for example the async subagent widget), include it
-    // ahead of the controls so fullscreen workflow overlays do not hide it.
+    // Hints use `<key> <label>` segments. Keep the hierarchy transition first,
+    // followed by extension status and secondary graph controls, so width
+    // pressure never hides the way back to main chat.
     const sep = `${chromeBg}  ${dim}·${RESET}${chromeBg}  `;
-    const statusText = this._externalStatusText();
-    const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
-    const hintSegments = HINT_KEYS.map(
-      ({ key, label }) =>
-        `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
-    );
-    const hintsStyledRaw = [...statusSegment, ...hintSegments].join(sep);
-
     const leftEdgePad = 1;
     const rightEdgePad = 2;
     const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
+    const fullHierarchyHint = "ctrl+x leave graph · return to main chat";
+    const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint)
+      ? HINT_KEYS
+      : COMPACT_HINT_KEYS;
+    const statusText = this._externalStatusText();
+    const statusSegment = statusText ? [`${accent}${statusText}${RESET}${chromeBg}`] : [];
+    const hintSegments = hintKeys.map(
+      ({ key, label }) =>
+        `${text}${BOLD}${key}${RESET}${chromeBg} ${muted}${label}${RESET}${chromeBg}`,
+    );
+    const hintsStyledRaw = [hintSegments[0], ...statusSegment, ...hintSegments.slice(1)]
+      .filter((segment): segment is string => segment !== undefined)
+      .join(sep);
     const hintsStyled = truncateToWidth(hintsStyledRaw, hintsBudget, "");
     const hintsVisibleLen = visibleWidth(hintsStyled);
     const fillerVisible = Math.max(0, hintsBudget - hintsVisibleLen);
