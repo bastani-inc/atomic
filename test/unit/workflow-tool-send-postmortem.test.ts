@@ -16,7 +16,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { workflowSendAction } from "../../packages/workflows/src/extension/workflow-tool-send.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
-import { createStageControlRegistry } from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
+import {
+  createStageControlRegistry,
+  stageControlRegistry,
+  type StageControlHandle,
+} from "../../packages/workflows/src/runs/foreground/stage-control-registry.js";
 import type { PostMortemStageChatDeps } from "../../packages/workflows/src/runs/foreground/postmortem-stage-chat.js";
 import type { StageAdapters } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import { mockSession, type StageSessionRuntime } from "./executor-shared.js";
@@ -26,6 +30,7 @@ const RUN_ID = "postmortem-send-run";
 
 beforeEach(() => { tempDir = mkdtempSync(join(tmpdir(), "atomic-send-postmortem-")); });
 afterEach(() => {
+  stageControlRegistry.clear();
   rmSync(tempDir, { recursive: true, force: true });
   store.removeRun(RUN_ID);
 });
@@ -137,6 +142,41 @@ describe("workflow send — post-mortem parity", () => {
     assert.match(result.message, /Cannot steer a terminal post-mortem stage/);
     assert.deepEqual(deliveryCalls, []);
     assert.equal(counter.creates, 0);
+    assert.deepEqual(runExecutionSnapshot(), before);
+  });
+
+  test("queues an auto delivery to a streaming terminal post-mortem chat", async () => {
+    seedCompletedRun(undefined);
+    const deliveryCalls: string[] = [];
+    const handle: StageControlHandle = {
+      runId: RUN_ID,
+      stageId: "stage-a",
+      stageName: "final",
+      status: "completed",
+      sessionId: "retained-session",
+      sessionFile: undefined,
+      isStreaming: true,
+      messages: [],
+      async ensureAttached() {},
+      async prompt(text: string) { deliveryCalls.push(`prompt:${text}`); },
+      async followUp(text: string) { deliveryCalls.push(`followUp:${text}`); },
+      async steer(text: string) { deliveryCalls.push(`steer:${text}`); },
+      async pause() {},
+      async resume() {},
+      subscribe() { return () => {}; },
+    };
+    stageControlRegistry.register(handle);
+    const before = runExecutionSnapshot();
+
+    const result = await workflowSendAction({
+      runId: RUN_ID,
+      stageId: "stage-a",
+      text: "queue after the active turn",
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.delivery, "followUp");
+    assert.deepEqual(deliveryCalls, ["followUp:queue after the active turn"]);
     assert.deepEqual(runExecutionSnapshot(), before);
   });
 

@@ -179,10 +179,14 @@ export async function workflowSendAction(
     await handle.resume(text);
     return workflowSendResult(stageRunId, stage.stageId, "resume", "ok", "Resumed stage with message.");
   }
-  if (requestedDelivery === "steer" || (requestedDelivery === "auto" && handle.isStreaming)) {
+  if (requestedDelivery === "steer") {
     if (isTerminalPostMortemStage) {
       return workflowSendResult(stageRunId, stage.stageId, "steer", "noop", "Cannot steer a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
     }
+    await handle.steer(text);
+    return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
+  }
+  if (requestedDelivery === "auto" && handle.isStreaming && !isTerminalPostMortemStage) {
     await handle.steer(text);
     return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
   }
