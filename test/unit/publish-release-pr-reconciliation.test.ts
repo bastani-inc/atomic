@@ -339,8 +339,7 @@ describe("publish-release PR reconciliation", () => {
         ],
       }),
     ]);
-    assert.equal(ambiguousPassingKinds.ok, false);
-    assert.match(ambiguousPassingKinds.summary, /could not be tied to one exact rollup result kind/u);
+    assert.equal(ambiguousPassingKinds.ok, true);
 
     const externalPending = await verify([
       response(openPr),

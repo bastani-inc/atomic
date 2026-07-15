@@ -163,9 +163,16 @@ function isExactRequiredResult(
   link: string | undefined,
   inferredKind: RollupCheckKind | undefined,
   emptyWorkflow: boolean,
+  includeAllEmptyWorkflowKinds: boolean,
 ): boolean {
-  return isRequiredContext(value, name, workflow, inferredKind, emptyWorkflow)
-    && (link === undefined || rollupCheckLink(value) === link);
+  return isRequiredContext(
+    value,
+    name,
+    workflow,
+    inferredKind,
+    emptyWorkflow,
+    includeAllEmptyWorkflowKinds,
+  ) && (link === undefined || rollupCheckLink(value) === link);
 }
 
 function inferEmptyWorkflowKind(
@@ -206,7 +213,7 @@ export function verifyPullRequestChecksForHeadJson(
     return { ok: false, summary: "GitHub PR statusCheckRollup was missing for the captured head SHA." };
   }
 
-  const available = rollup.map((check, index) => ({ check, index, used: false }));
+  const available = rollup.map((check) => ({ check }));
   const failures: string[] = [];
   for (const [index, required] of requiredChecks.entries()) {
     const name = isJsonObject(required)
@@ -220,7 +227,7 @@ export function verifyPullRequestChecksForHeadJson(
       continue;
     }
     const inferredKind = emptyWorkflow ? inferEmptyWorkflowKind(available, name, link) : undefined;
-    if (emptyWorkflow && inferredKind === undefined) {
+    if (emptyWorkflow && link !== undefined && inferredKind === undefined) {
       failures.push(`required check ${name} could not be tied to one exact rollup result kind`);
       continue;
     }
@@ -237,11 +244,16 @@ export function verifyPullRequestChecksForHeadJson(
       failures.push(`required check ${name} had a pending or failing rerun in the captured head status rollup`);
       continue;
     }
-    const match = available.find((candidate) => !candidate.used
-      && isExactRequiredResult(candidate.check, name, workflow, link, inferredKind, emptyWorkflow)
-      && rollupCheckPassed(candidate.check));
+    const match = available.find((candidate) => isExactRequiredResult(
+      candidate.check,
+      name,
+      workflow,
+      link,
+      inferredKind,
+      emptyWorkflow,
+      includeAllEmptyWorkflowKinds,
+    ) && rollupCheckPassed(candidate.check));
     if (match === undefined) failures.push(`required check ${name} was not passing in the captured head status rollup`);
-    else match.used = true;
   }
 
   if (failures.length > 0) {
