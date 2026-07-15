@@ -299,36 +299,44 @@ export async function handleRunControlCommand(
         fail(`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`);
         return true;
       }
-      let durable: readonly ResumableWorkflowEntry[] = [];
-      let preparationError: string | undefined;
-      const needsDurablePreparation = exactBeforePreparation === undefined
-        || (!backend.isWorkflowLoadable(exactBeforePreparation.id)
-          && (!exactHasPausedState || backend.hydrateResumableWorkflows !== undefined));
-      if (needsDurablePreparation) {
-        await ensureWorkflowResourcesVisible();
-        const runtime = deps.runtimeForContext(ctx);
-        try {
-          durable = await runtime.prepareDurableResumable(target);
-        } catch (error) {
-          preparationError = error instanceof Error ? error.message : String(error);
+      if (exactBeforePreparation !== undefined
+        && exactHasPausedState
+        && backend.isWorkflowLoadable(exactBeforePreparation.id)) {
+        // Exact live state is authoritative. Avoid scanning the potentially
+        // large completed catalog while preserving live-over-durable precedence.
+        runId = exactBeforePreparation.id;
+      } else {
+        let durable: readonly ResumableWorkflowEntry[] = [];
+        let preparationError: string | undefined;
+        const needsDurablePreparation = exactBeforePreparation === undefined
+          || (!backend.isWorkflowLoadable(exactBeforePreparation.id)
+            && (!exactHasPausedState || backend.hydrateResumableWorkflows !== undefined));
+        if (needsDurablePreparation) {
+          await ensureWorkflowResourcesVisible();
+          const runtime = deps.runtimeForContext(ctx);
+          try {
+            durable = await runtime.prepareDurableResumable(target);
+          } catch (error) {
+            preparationError = error instanceof Error ? error.message : String(error);
+          }
         }
-      }
-      const loadableRuns = topLevelWorkflowRuns(store.runs()).filter((run) => backend.isWorkflowLoadable(run.id));
-      const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, backend.listCompletedWorkflows());
-      if (combined.kind === "ambiguous") {
-        fail(`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`);
-        return true;
-      }
-      if (combined.kind === "completed" || combined.kind === "durable") {
-        return await handleDurableResume(combined.workflowId, ctx, reporter, deps);
-      }
-      if (combined.kind === "live") runId = combined.workflowId;
-      else {
-        if (preparationError !== undefined) {
-          fail(`Failed to resolve workflow resume target: ${preparationError}`);
+        const loadableRuns = topLevelWorkflowRuns(store.runs()).filter((run) => backend.isWorkflowLoadable(run.id));
+        const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, backend.listCompletedWorkflows());
+        if (combined.kind === "ambiguous") {
+          fail(`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`);
           return true;
         }
-        return await handleDurableResume(target, ctx, reporter, deps);
+        if (combined.kind === "completed" || combined.kind === "durable") {
+          return await handleDurableResume(combined.workflowId, ctx, reporter, deps);
+        }
+        if (combined.kind === "live") runId = combined.workflowId;
+        else {
+          if (preparationError !== undefined) {
+            fail(`Failed to resolve workflow resume target: ${preparationError}`);
+            return true;
+          }
+          return await handleDurableResume(target, ctx, reporter, deps);
+        }
       }
     } else {
       const resolved = resolveRunIdPrefix(target);

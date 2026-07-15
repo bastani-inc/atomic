@@ -62,6 +62,8 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 installSlashDispatchTestHooks();
 
@@ -166,6 +168,61 @@ describe("/workflow resume <runId> — active run is refused", () => {
             msgs.every((m) => !m.includes("no resume needed")),
             true,
         );
+    });
+});
+
+describe("/workflow resume <runId> — exact live fast path", () => {
+    test.serial("exact paused live target bypasses completed durable catalog in headless mode", async () => {
+        class CatalogTrapBackend extends InMemoryDurableBackend {
+            completedCatalogCalls = 0;
+
+            override listCompletedWorkflows() {
+                this.completedCatalogCalls += 1;
+                throw new Error("completed durable catalog must not be enumerated");
+            }
+        }
+
+        const backend = new CatalogTrapBackend();
+        setDurableBackend(backend);
+        const { pi, commands, sent } = buildMockPi();
+        addFactoryStubs(pi);
+        const factoryModule = await import("../../packages/workflows/src/extension/index.js");
+        factoryModule.default(pi);
+        const handler = commands.find((command) => command.name === "workflow")!.options.handler;
+        const runId = `headless-fast-resume-${Date.now()}`;
+        const stageId = "stage-fast-resume";
+        backend.registerWorkflow({
+            workflowId: runId,
+            name: "durable-duplicate",
+            inputs: {},
+            createdAt: 1,
+            status: "completed",
+            completedCheckpoints: 1,
+        });
+        store.recordRunStart({
+            ...makeInflightRun(runId),
+            stages: [{
+                id: stageId,
+                name: "worker",
+                status: "paused",
+                parentIds: [],
+                startedAt: Date.now(),
+                toolEvents: [],
+            }],
+        });
+        registerTestStageHandle(runId, stageId, "paused");
+
+        const startedAt = performance.now();
+        await handler(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } });
+        const elapsedMs = performance.now() - startedAt;
+
+        assert.equal(backend.completedCatalogCalls, 0);
+        assert.ok(elapsedMs < 1_000, `exact live resume took ${elapsedMs.toFixed(1)}ms`);
+        const content = sent
+            .filter((message) => message.customType === WORKFLOW_COMMAND_OUTPUT_CUSTOM_TYPE)
+            .map((message) => message.content ?? "")
+            .join("\n");
+        assert.match(content, /Resumed 1 stage\(s\)/);
     });
 });
 

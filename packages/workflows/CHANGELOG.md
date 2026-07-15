@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - Fixed workflow resource reload to build and atomically publish a fresh registry for additions, edits, renames, deletions, config paths, conventional/legacy directories, and package resources without restarting Atomic. Reloads now serialize and coalesce, reject stale session generations, retain the active registry on fatal failures, remain safe during in-flight runs, and return visible config/discovery diagnostics through both slash-command and tool surfaces while preserving valid siblings.
+- Fixed exact paused live `/workflow resume <id>` targets to resume before enumerating retained completed durable history, preserving live-over-durable precedence and keeping headless command output responsive when the durable catalog is large. Slash-dispatch tests now isolate durable state in memory and restore the backend after each test so they never read or populate a user's workflow history.
 
 ## [0.9.9-alpha.3] - 2026-07-14
 
