@@ -540,7 +540,7 @@
           <b>Truncation</b> — uses <code>truncateToWidth(str, n, "…")</code> from <code>@earendil-works/pi-tui</code> (already a dep). Per-field budgets: <em>workflow name</em> 40 cells; <em>description</em> the rest of the row after <code>tag + 2 + status badge</code>; <em>single input value</em> half the row, with the closing quote preserved; <em>input list</em> 3 inline pairs then <code>+N more</code>; <em>stage activity label</em> 24 cells. Budgets shrink proportionally when <code>process.stdout.columns &lt; 80</code>.
         </li>
         <li>
-          <b>Hint rows</b> — one grammar everywhere: <code>▸&nbsp;&nbsp;<span class="blue">/slash command</span>&nbsp;&nbsp;<span class="dim">verb-phrase hint</span></code>. Echoes the orchestrator's bottom toolbar (<code>ctrl+x leave graph · return to main chat · ↵ open · / stages</code>).
+          <b>Hint rows</b> — one grammar everywhere: <code>▸&nbsp;&nbsp;<span class="blue">/slash command</span>&nbsp;&nbsp;<span class="dim">verb-phrase hint</span></code>. Echoes the orchestrator's bottom toolbar (<code>ctrl+x leave graph · return to main chat · ↵ open stage chat · / stages</code>).
         </li>
         <li>
           <b>Plain-text fallback</b> — bands collapse to <code>  BACKGROUND  2 runs   ⊘ 2</code> on uncoloured terminals; the card stripe degrades to <code>│</code>; the strip uses bare ASCII <code>[✓][✗][○]</code>. Same shape, no color.

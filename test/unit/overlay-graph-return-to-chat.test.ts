@@ -146,15 +146,18 @@ describe("GraphView return to main chat", () => {
 
   it("render explains the Ctrl+X hierarchy transition", () => {
     const view = makeView([makeStage("A"), makeStage("B", ["A"])]);
-    const text = visibleText(view.render(96));
+    const text = visibleText(view.render(120));
 
     assert.match(text, /ORCHESTRATOR/);
     assert.match(text, /GRAPH/);
     assert.match(text, /navigate/);
-    assert.match(text, /↵ open/);
+    assert.match(text, /↵ open stage chat/);
     assert.match(text, /stages/);
     assert.match(text, /ctrl\+x\s+leave graph\s+·\s+return to main chat/i);
     assert.doesNotMatch(text, /ctrl\+d|q\s+(?:quit|detach|return)/i);
+
+    const mediumText = visibleText(view.render(96));
+    assert.match(mediumText, /↵ open stage chat/);
 
     const compactText = visibleText(view.render(40));
     assert.match(compactText, /ctrl\+x\s+graph→main chat/i);

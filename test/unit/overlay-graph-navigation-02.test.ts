@@ -131,7 +131,7 @@ describe("GraphView keyboard navigation", () => {
     assert.equal(Array.isArray(lines), true);
     assert.ok(lines.length > 0);
     const text = visibleText(lines);
-    assert.match(text, /↵ open/);
+    assert.match(text, /↵ open stage chat/);
     assert.doesNotMatch(text, /↵ attach/);
     view.dispose();
   });
