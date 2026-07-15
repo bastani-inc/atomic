@@ -102,6 +102,14 @@ export async function findInitialModel(options: {
     }
   }
 
+  if (defaultProvider?.toLowerCase() === "cursor" && defaultModelId) {
+    return {
+      model: undefined,
+      thinkingLevel: DEFAULT_THINKING_LEVEL,
+      fallbackMessage: `Could not select saved Cursor model ${defaultProvider}/${defaultModelId}. Cursor model IDs changed; reselect an exact model with --list-models.`,
+    };
+  }
+
   const availableModels = await modelRegistry.getAvailable();
   if (availableModels.length > 0) {
     return {
@@ -142,6 +150,13 @@ export async function restoreModelFromSession(
   }
 
   const reason = !exactRestoredModel ? "model no longer exists" : "no auth configured";
+
+  if (savedProvider.toLowerCase() === "cursor") {
+    const reference = `${savedProvider}/${savedModelId}`;
+    const fallbackMessage = `Could not restore Cursor model ${reference} (${reason}). Cursor model IDs changed; reselect an exact model with --list-models.`;
+    if (shouldPrintMessages) console.error(chalk.yellow(fallbackMessage));
+    return { model: undefined, fallbackMessage };
+  }
 
   if (shouldPrintMessages) {
     console.error(chalk.yellow(`Warning: Could not restore model ${savedProvider}/${savedModelId} (${reason}).`));

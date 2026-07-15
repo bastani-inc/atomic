@@ -24,6 +24,12 @@ export function findExactModelReferenceMatch(
   modelReference: string,
   availableModels: Model<Api>[],
 ): Model<Api> | undefined {
+  const exactCursorMatches = availableModels.filter(
+    (model) => model.provider === "cursor" && (modelReference === model.id || modelReference === `cursor/${model.id}`),
+  );
+  if (exactCursorMatches.length === 1) return exactCursorMatches[0];
+  if (exactCursorMatches.length > 1) return undefined;
+
   const trimmedReference = modelReference.trim();
   if (!trimmedReference) {
     return undefined;
@@ -31,7 +37,7 @@ export function findExactModelReferenceMatch(
 
   const normalizedReference = trimmedReference.toLowerCase();
   const canonicalMatches = availableModels.filter(
-    (model) => `${model.provider}/${model.id}`.toLowerCase() === normalizedReference,
+    (model) => model.provider !== "cursor" && `${model.provider}/${model.id}`.toLowerCase() === normalizedReference,
   );
   if (canonicalMatches.length === 1) {
     return canonicalMatches[0];
@@ -47,6 +53,7 @@ export function findExactModelReferenceMatch(
     if (provider && modelId) {
       const providerMatches = availableModels.filter(
         (model) =>
+          model.provider !== "cursor" &&
           model.provider.toLowerCase() === provider.toLowerCase() &&
           model.id.toLowerCase() === modelId.toLowerCase(),
       );
@@ -59,8 +66,10 @@ export function findExactModelReferenceMatch(
     }
   }
 
-  const idMatches = availableModels.filter((model) => model.id.toLowerCase() === normalizedReference);
-  return idMatches.length === 1 ? idMatches[0] : undefined;
+  const idMatches = availableModels.filter((model) => model.provider !== "cursor" && model.id.toLowerCase() === normalizedReference);
+  if (idMatches.length === 1) return idMatches[0];
+  if (idMatches.length > 1) return undefined;
+  return undefined;
 }
 
 /**
@@ -72,11 +81,11 @@ function tryMatchModel(modelPattern: string, availableModels: Model<Api>[]): Mod
   if (exactMatch) {
     return exactMatch;
   }
-
   const matches = availableModels.filter(
-    (m) =>
-      m.id.toLowerCase().includes(modelPattern.toLowerCase()) ||
-      m.name?.toLowerCase().includes(modelPattern.toLowerCase()),
+    (model) => model.provider !== "cursor" && (
+      model.id.toLowerCase().includes(modelPattern.toLowerCase()) ||
+      model.name?.toLowerCase().includes(modelPattern.toLowerCase())
+    ),
   );
 
   if (matches.length === 0) {

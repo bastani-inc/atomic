@@ -377,6 +377,8 @@ await runParallel([
 
 When pi exposes its model registry, workflow runs validate user-specified `model` / `fallbackModels` before starting model-backed work and report all unavailable or ambiguous IDs together. Bare model IDs are accepted only when they resolve uniquely or match the current provider; otherwise use `provider/model`. Fallback attempts may send the same prompt/context to a different provider, so choose fallbacks that fit your cost, privacy, and data-handling requirements.
 
+Cursor is a deliberate exception to generic workflow fallback resolution because its authenticated live catalog is the only executable authority. An explicit Cursor `provider/id` string or Cursor `Model` object must match that catalog exactly; the runtime replaces a matching object with the live catalog row. An unavailable or stale Cursor reference fails with reselection guidance before stage session creation and does not advance to configured, current, provider, or model fallbacks. Non-Cursor qualified IDs and fallback behavior are unchanged. Builtin workflows do not hard-code account-specific Cursor routes.
+
 ### `createRegistry` — grouping workflows
 
 ```typescript

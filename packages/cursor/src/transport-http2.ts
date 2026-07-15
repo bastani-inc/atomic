@@ -1,7 +1,9 @@
 import type { CursorUsableModel } from "./model-mapper.js";
+import type { CursorAvailableModel } from "./proto/cursor-available-models-codec.js";
 import {
 	buildCursorRpcHeaders,
 	CURSOR_API_BASE_URL,
+	CURSOR_AVAILABLE_MODELS_PATH,
 	CURSOR_GET_USABLE_MODELS_PATH,
 	CURSOR_RUN_PATH,
 } from "./config.js";
@@ -48,28 +50,64 @@ export class Http2CursorAgentTransport implements CursorAgentTransport {
 		if (signal?.aborted) {
 			throw new CursorTransportError("Aborted", "Cursor model discovery was aborted before the request started.");
 		}
-		const headers = buildCursorRpcHeaders(accessToken, requestId, "application/proto");
 		try {
-			const response = await runWithDeadline(
-				(parentSignal) => this.#client.requestUnary({
-					baseUrl: this.#baseUrl,
-					path: CURSOR_GET_USABLE_MODELS_PATH,
-					headers,
-					body: this.#codec.encodeGetUsableModelsRequest(),
-					signal: parentSignal,
-					timeoutMs: this.#requestTimeoutMs,
-				}),
-				this.#requestTimeoutMs,
+			const response = await this.#requestModelCatalog(
+				CURSOR_GET_USABLE_MODELS_PATH,
+				this.#codec.encodeGetUsableModelsRequest(),
+				accessToken,
+				requestId,
 				signal,
-				"Cursor model discovery timed out.",
 			);
-			assertSuccessfulStatus(response.statusCode, response.body, [accessToken]);
-			// GetUsableModels uses application/proto unary bodies, not Connect
-			// stream envelopes; pass the raw protobuf response to the codec.
 			return this.#codec.decodeGetUsableModelsResponse(response.body);
 		} catch (error) {
 			throw sanitizeCursorTransportError(toError(error), [accessToken]);
 		}
+	}
+
+	async getAvailableModels(accessToken: string, requestId: string, signal?: AbortSignal): Promise<readonly CursorAvailableModel[]> {
+		if (signal?.aborted) {
+			throw new CursorTransportError("Aborted", "Cursor image metadata discovery was aborted before the request started.");
+		}
+		const encode = this.#codec.encodeAvailableModelsRequest;
+		const decode = this.#codec.decodeAvailableModelsResponse;
+		if (!encode || !decode) return [];
+		try {
+			const response = await this.#requestModelCatalog(
+				CURSOR_AVAILABLE_MODELS_PATH,
+				encode.call(this.#codec),
+				accessToken,
+				requestId,
+				signal,
+			);
+			return decode.call(this.#codec, response.body);
+		} catch (error) {
+			throw sanitizeCursorTransportError(toError(error), [accessToken]);
+		}
+	}
+
+	async #requestModelCatalog(
+		path: string,
+		body: Uint8Array,
+		accessToken: string,
+		requestId: string,
+		signal?: AbortSignal,
+	) {
+		const headers = buildCursorRpcHeaders(accessToken, requestId, "application/proto");
+		const response = await runWithDeadline(
+			(parentSignal) => this.#client.requestUnary({
+				baseUrl: this.#baseUrl,
+				path,
+				headers,
+				body,
+				signal: parentSignal,
+				timeoutMs: this.#requestTimeoutMs,
+			}),
+			this.#requestTimeoutMs,
+			signal,
+			"Cursor model discovery timed out.",
+		);
+		assertSuccessfulStatus(response.statusCode, response.body, [accessToken]);
+		return response;
 	}
 
 	async run(request: CursorRunRequest): Promise<CursorRunStream> {

@@ -7,28 +7,37 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api, AssistantMessageEvent, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import type { CursorAuthService } from "../../packages/cursor/src/auth.js";
-import { FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { deriveCursorCredentialScope, FileCursorCatalogCache, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryError, type CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider } from "../../packages/cursor/src/provider.js";
 import { CursorMockTransport } from "./cursor-test-helpers.js";
 import { defaultModelPerProvider } from "../../packages/coding-agent/src/core/model-resolver.ts";
 
+function jwtForSubject(subject: string, randomness: string): string {
+	return `header.${Buffer.from(JSON.stringify({ sub: subject, randomness })).toString("base64url")}.signature`;
+}
+
 type CursorHost = Parameters<typeof registerCursorProvider>[0];
 type CursorConfig = Parameters<CursorHost["registerProvider"]>[1];
 
 class MemoryCursorCatalogCache implements CursorCatalogCache {
 	saved: CursorModelCatalog[] = [];
+	readonly #scoped = new Map<string, CursorModelCatalog>();
 
-	constructor(private catalog: CursorModelCatalog | null = null) {}
-
-	load(): CursorModelCatalog | null {
-		return this.catalog;
+	constructor(private catalog: CursorModelCatalog | null = null) {
+		if (catalog?.credentialScope) this.#scoped.set(catalog.credentialScope, catalog);
 	}
 
-	save(catalog: CursorModelCatalog): void {
-		this.saved.push(catalog);
-		this.catalog = catalog;
+	load(credentialScope?: string): CursorModelCatalog | null {
+		return credentialScope ? this.#scoped.get(credentialScope) ?? null : this.catalog;
+	}
+
+	save(catalog: CursorModelCatalog, credentialScope?: string): void {
+		const saved = credentialScope ? { ...catalog, credentialScope } : catalog;
+		this.saved.push(saved);
+		this.catalog = saved;
+		if (credentialScope) this.#scoped.set(credentialScope, saved);
 	}
 }
 
@@ -106,7 +115,7 @@ function deterministicCursorConversationIdForSession(sessionId: string): string 
 	return [hex.slice(0, 8), hex.slice(8, 12), `4${hex.slice(13, 16)}`, `${variantNibble}${hex.slice(17, 20)}`, hex.slice(20, 32)].join("-");
 }
 describe("Cursor provider registration", () => {
-	test("registers Cursor OAuth provider with estimated models and streamSimple", async () => {
+	test("registers Cursor OAuth provider with no executable static models", async () => {
 		const { host, registrations, shutdownHandlers } = makeHost();
 
 		const runtime = registerCursorProvider(host, {
@@ -121,7 +130,7 @@ describe("Cursor provider registration", () => {
 		assert.equal(config?.oauth.name, "Cursor (Experimental)");
 		assert.equal(config?.api, "cursor-agent");
 		assert.equal(typeof config?.streamSimple, "function");
-		assert.ok(config?.models.some((model) => model.id === "composer-2" && /estimated/u.test(model.name)));
+		assert.deepEqual(config?.models, []);
 		assert.equal(shutdownHandlers.length, 1);
 		await runtime.dispose();
 	});
@@ -148,41 +157,36 @@ describe("Cursor provider registration", () => {
 		]);
 		await runtime.dispose();
 	});
-	test("registers a valid token-free cached live catalog at startup", async () => {
+	test("does not register an unscoped cached catalog before credentials are known", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache({
 			source: "live",
 			fetchedAt: 55,
-			models: [{ id: "composer-2", displayName: "Cached Composer", supportsReasoning: true, contextWindow: 1234, maxTokens: 567 }],
+			models: [{ id: "composer-2", displayName: "Cached Composer", maxMode: false }],
 		});
-
 		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "startup-cache" });
-
 		assert.equal(registrations.length, 1);
-		const cachedComposer = registrations[0]?.config.models.find((model) => model.id === "composer-2");
-		assert.equal(cachedComposer?.name, "Cached Composer");
-		assert.equal(cachedComposer?.contextWindow, 1234);
-		assert.doesNotMatch(cachedComposer?.name ?? "", /estimated/u);
+		assert.deepEqual(registrations[0]?.config.models, []);
 		await runtime.dispose();
 	});
-	test("cached live catalogs do not inject undiscovered composer defaults", async () => {
+	test("unscoped live-only cache entries cannot become executable fallback", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache({
 			source: "live",
 			fetchedAt: 56,
-			models: [{ id: "composer-2.5", displayName: "Composer 2.5", contextWindow: 1234, maxTokens: 567 }],
+			models: [{ id: "composer-2.5", displayName: "Composer 2.5", maxMode: false }],
 		});
-
 		const runtime = registerCursorProvider(host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "startup-cache-no-default" });
-
-		assert.deepEqual(registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		assert.deepEqual(registrations[0]?.config.models, []);
 		await runtime.dispose();
 	});
-	test("login-persisted live-only models are available to the next provider runtime", async () => {
+	test("login-persisted live-only models are available to the same account after restart", async () => {
 		const cache = new MemoryCursorCatalogCache();
+		const accessToken = jwtForSubject("login-account", "first");
+		const rotatedToken = jwtForSubject("login-account", "rotated");
 		const authService = {
 			async login(): Promise<OAuthCredentials> {
-				return { access: "access-live-only", refresh: "refresh-live-only", expires: 123 };
+				return { access: accessToken, refresh: "refresh-live-only", expires: 123 };
 			},
 		} as unknown as CursorAuthService;
 		const discoveryService = {
@@ -192,25 +196,28 @@ describe("Cursor provider registration", () => {
 		} as unknown as CursorModelDiscoveryService;
 		const first = makeHost();
 		const firstRuntime = registerCursorProvider(first.host, {
-			transport: new CursorMockTransport(),
-			authService,
-			discoveryService,
-			catalogCache: cache,
-			uuid: () => "login-live-only",
+			transport: new CursorMockTransport(), authService, discoveryService, catalogCache: cache,
+			now: () => 60, catalogCacheTtlMs: 100, uuid: () => "login-live-only",
 		});
 
 		await first.registrations[0]!.config.oauth.login(callbacks());
 		await firstRuntime.dispose();
 
 		const second = makeHost();
-		const secondRuntime = registerCursorProvider(second.host, { transport: new CursorMockTransport(), catalogCache: cache, uuid: () => "restart-live-only" });
+		const secondRuntime = registerCursorProvider(second.host, {
+			transport: new CursorMockTransport(), catalogCache: cache, now: () => 60,
+			catalogCacheTtlMs: 100, uuid: () => "restart-live-only",
+		});
+		const start = second.lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(start);
+		await start({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => rotatedToken } });
 
 		assert.equal(cache.saved.length, 1);
-		assert.equal(second.registrations[0]?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
-		assert.deepEqual(second.registrations[0]?.config.models.map((model) => model.id), ["composer-2.5"]);
+		assert.equal(second.registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+		assert.deepEqual(second.registrations.at(-1)?.config.models.map((model) => model.id), ["composer-2.5"]);
 		await secondRuntime.dispose();
 	});
-	test("session_start discovers live models from stored Cursor OAuth credentials when cache is missing", async () => {
+	test("model discovery preflight blocks TUI startup until stored-credential discovery registers live models", async () => {
 		const { host, registrations, lifecycleHandlers } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
 		const discoveryRequests: { readonly accessToken: string; readonly requestId: string }[] = [];
@@ -227,10 +234,12 @@ describe("Cursor provider registration", () => {
 			uuid: () => "session-start-discovery",
 		});
 
-		const handler = lifecycleHandlers.get("session_start")?.[0];
+		const handler = lifecycleHandlers.get("model_catalog_discover")?.[0];
 		assert.ok(handler);
-		await handler({}, { modelRegistry: { getApiKeyForProvider: async (provider: string) => provider === "cursor" ? "stored-access" : undefined } });
-		await nextTick();
+		await handler(
+			{ type: "model_catalog_discover" },
+			{ mode: "tui", modelRegistry: { getApiKeyForProvider: async (provider: string) => provider === "cursor" ? "stored-access" : undefined } },
+		);
 
 		assert.deepEqual(discoveryRequests, [{ accessToken: "stored-access", requestId: "session-start-discovery" }]);
 		assert.equal(cache.saved.length, 1);
@@ -384,76 +393,73 @@ describe("Cursor provider registration", () => {
 		assert.deepEqual(discoveryRequests, ["stored-access-1", "stored-access-2"]);
 		await runtime.dispose();
 	});
-	test("catalog cache ignores missing/corrupt files and writes live catalogs atomically without credentials", () => {
+	test("catalog cache v3 isolates exact routes by stable scope and invalidates old parameterized schemas", () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-cursor-cache-"));
 		try {
 			const cachePath = join(dir, "catalog.json");
 			const cache = new FileCursorCatalogCache(cachePath);
 			assert.equal(cache.load(), null);
-
-			writeFileSync(cachePath, "{not json", "utf8");
-			assert.equal(cache.load(), null);
-
-			const liveCatalog: CursorModelCatalog = {
+			const accessToken = jwtForSubject("account-a", "rotation-a");
+			const rotatedToken = jwtForSubject("account-a", "rotation-b");
+			const otherToken = jwtForSubject("account-b", "rotation-a");
+			const scope = deriveCursorCredentialScope(accessToken);
+			assert.ok(scope);
+			assert.equal(deriveCursorCredentialScope(rotatedToken), scope);
+			assert.notEqual(deriveCursorCredentialScope(otherToken), scope);
+			cache.save({
 				source: "live",
 				fetchedAt: 77,
-				models: [
-					{
-						id: "composer-2",
-						displayName: "Live Composer",
-						supportsReasoning: true,
-						contextWindow: 200_000,
-						maxTokens: 64_000,
-						accessToken: "access-secret",
-						refreshToken: "refresh-secret",
-					} as CursorModelCatalog["models"][number] & { accessToken: string; refreshToken: string },
-				],
-			};
-			cache.save(liveCatalog);
-
-			const raw = readFileSync(cachePath, "utf8");
-			assert.match(raw, /"version"\s*:\s*1/u);
-			assert.match(raw, /"fetchedAt"\s*:\s*77/u);
-			assert.doesNotMatch(raw, /access-secret|refresh-secret|"source"|"note"/u);
-			assert.equal(readdirSync(dir).some((entry) => entry.endsWith(".tmp")), false);
-			assert.deepEqual(cache.load(), {
+				models: [{
+					id: "cursor-grok-4.5-high",
+					displayName: "Grok High",
+					maxMode: true,
+					supportsImages: true,
+					accessToken: "access-secret",
+					parameters: [{ id: "effort", value: "high" }],
+				}],
+			}, scope);
+			const raw = readFileSync(`${cachePath}.${scope}`, "utf8");
+			assert.match(raw, /"version"\s*:\s*3/u);
+			assert.doesNotMatch(raw, /access-secret|account-a|rotation-a|parameters|source|note/u);
+			assert.equal(cache.load(deriveCursorCredentialScope(otherToken)), null);
+			assert.deepEqual(cache.load(scope), {
 				source: "live",
 				fetchedAt: 77,
-				models: [{ id: "composer-2", displayName: "Live Composer", contextWindow: 200_000, maxTokens: 64_000, supportsReasoning: true }],
+				credentialScope: scope,
+				models: [{ id: "cursor-grok-4.5-high", displayName: "Grok High", maxMode: true, supportsImages: true }],
 			});
+			assert.equal(readdirSync(dir).some((entry) => entry.endsWith(".tmp") || entry.endsWith(".lock")), false);
 
-			writeFileSync(cachePath, JSON.stringify({
-				version: 1,
+			cache.save({ source: "live", fetchedAt: 80, models: [{ id: "newer", maxMode: false }] }, scope);
+			cache.save({ source: "live", fetchedAt: 79, models: [{ id: "older", maxMode: false }] }, scope);
+			assert.equal(cache.load(scope)?.models[0]?.id, "newer");
+
+			for (const version of [1, 2]) {
+				assert.equal(parseCursorCatalogCacheRecord({
+					version,
+					fetchedAt: 88,
+					credentialScope: scope,
+					models: [{ id: "legacy", requestedModelId: "backend", parameters: [] }],
+				}, scope), null);
+			}
+			assert.equal(parseCursorCatalogCacheRecord({
+				version: 3,
 				fetchedAt: 88,
-				models: [
-					{ id: "still-valid", displayName: "Still Valid" },
-					{ id: "bad-display", displayName: 123 },
-					{ displayName: "missing id" },
-				],
-			}), "utf8");
-			assert.deepEqual(cache.load(), {
-				source: "live",
-				fetchedAt: 88,
-				models: [{ id: "still-valid", displayName: "Still Valid" }],
-			});
+				credentialScope: scope,
+				models: [{ id: "parameterized-v3", maxMode: false, parameters: [] }],
+			}, scope), null);
 
 			const sanitizedRecord = toCursorCatalogCacheRecord({
 				source: "live",
 				fetchedAt: 89,
-				models: [
-					{ id: "save-valid", displayName: "Save Valid" },
-					{ id: "save-bad", displayName: 123 } as CursorModelCatalog["models"][number] & { displayName: number },
-				],
-			});
-			assert.deepEqual(sanitizedRecord?.models, [{ id: "save-valid", displayName: "Save Valid" }]);
-			assert.deepEqual(parseCursorCatalogCacheRecord(sanitizedRecord), {
+				models: [{ id: " save-valid ", displayName: "Save Valid", maxMode: false }],
+			}, scope);
+			assert.deepEqual(parseCursorCatalogCacheRecord(sanitizedRecord, scope), {
 				source: "live",
 				fetchedAt: 89,
-				models: [{ id: "save-valid", displayName: "Save Valid" }],
+				credentialScope: scope,
+				models: [{ id: " save-valid ", displayName: "Save Valid", maxMode: false }],
 			});
-
-			writeFileSync(cachePath, JSON.stringify({ version: 1, fetchedAt: "bad", models: [] }), "utf8");
-			assert.equal(cache.load(), null);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

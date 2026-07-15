@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced experimental Cursor synthetic/parameterized IDs with exact authenticated `GetUsableModels` routes. Older IDs and schema-v1/v2 or parameterized caches are not migrated; saved defaults, CLI references, workflows, and sessions must reselect a current route and now fail clearly without alias, nearest-effort, provider, model, AvailableModels, or static fallback ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Changed
+
+- Documented and integrated Cursor's GetUsable-authoritative catalog: one row per exact returned ID, the same flat ID and GetUsable Max state in both request model structures, empty `RequestedModel.parameters`, and no tuple expansion, backend-route synthesis, or route-rewriting reasoning selector ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Limited the separate best-effort AvailableModels operation to unambiguous same-account image enrichment. It cannot change executable membership, route identity, display/Max data, parameters, or text availability; missing or ambiguous metadata remains text-only ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Upgraded Cursor's token-free account-scoped catalog to schema v3 with exact GetUsable-derived rows and optional image flags. Only a fresh same-account snapshot may bridge a temporary discovery failure, while old, stale, AvailableModels-only, and static data cannot become executable ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Fixed
+
+- Preserved Cursor authenticated discovery before explicit resolution, 30-minute TTL refresh, same-account credential rotation, out-of-order refresh fencing, redacted/abortable login gating, disposal cancellation, and strict current-turn user/MCP image serialization while removing old automatic migration and fallback paths ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Clarified that earlier-turn image reconstruction and structured clipboard attachments remain follow-up [#1807](https://github.com/bastani-inc/atomic/issues/1807), while assistant-generated images are outside the Cursor provider scope ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Fixed a source-CLI startup race where authenticated Cursor discovery could register the exact requested route after initial resolution while a stale pre-discovery `Unknown provider` diagnostic still prevented dispatch; exact recovery now clears only that obsolete resolution error and preserves unrelated diagnostics ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed

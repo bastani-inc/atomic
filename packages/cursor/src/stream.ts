@@ -2,7 +2,6 @@ import { createHash, randomUUID as nodeRandomUUID } from "node:crypto";
 import { type Api, type AssistantMessage, type AssistantMessageEventStream, calculateCost, type Context, createAssistantMessageEventStream, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
-import { resolveCursorModelVariant } from "./model-mapper.js";
 import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
 
 export interface CursorStreamAdapterOptions {
@@ -97,7 +96,10 @@ export class CursorStreamAdapter {
 			const requestId = this.#runtime.uuid();
 			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
 			activeConversationKey = conversationIdentity.activeKey;
-			const resolvedModelId = resolveCursorModelVariant(model.id, model.thinkingLevelMap, options.reasoning);
+			const cursorRouting = (model.compat as { cursorRouting?: Readonly<Record<string, { modelId: string; maxMode: boolean }>> } | undefined)?.cursorRouting?.[model.id];
+			if (!cursorRouting || cursorRouting.modelId !== model.id) {
+				throw new Error(`Cursor model ${model.id} is not an exact route in the authenticated catalog. Refresh the catalog and reselect a model.`);
+			}
 			const trailingToolResults = getTrailingToolResults(context);
 			if (trailingToolResults.length > 0) {
 				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, { signal: options.signal, timeoutMs: effectiveTimeoutMs });
@@ -107,8 +109,8 @@ export class CursorStreamAdapter {
 					requestId,
 					conversationId: conversationIdentity.wireConversationId,
 					model,
-					resolvedModelId,
-					thinkingLevel: options.reasoning,
+					resolvedModelId: model.id,
+					maxMode: cursorRouting.maxMode,
 					context,
 					signal: options.signal,
 					openTimeoutMs: effectiveTimeoutMs,

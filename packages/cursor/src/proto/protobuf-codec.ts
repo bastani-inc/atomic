@@ -17,6 +17,7 @@ import {
 } from "./agent_pb.js";
 import { blobKey, buildCursorRequest, buildMcpToolDefinitions, extractCurrentActionImages, extractCurrentActionText, parseHistoricalTurns } from "./protobuf-codec-request.js";
 import { createMcpToolResult, decodeAgentServerMessage, encodeExecClientMessage, encodeKvClientMessage, encodeNativeExecRejection, encodeRequestContextResult } from "./protobuf-codec-wire.js";
+import { decodeAvailableModelsResponse, encodeAvailableModelsRequest, type CursorAvailableModel } from "./cursor-available-models-codec.js";
 
 // Cursor protocol codec intentionally follows the MIT-licensed
 // ndraiman/pi-cursor-provider implementation. The request/control bytes are
@@ -35,6 +36,19 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 	readonly #toolDefinitions = new Map<string, readonly McpToolDefinition[]>();
 	readonly #runConversationIds = new Map<string, string>();
 	readonly #conversationStates = new Map<string, StoredCursorConversationState>();
+
+	encodeAvailableModelsRequest(): Uint8Array {
+		return encodeAvailableModelsRequest();
+	}
+
+	decodeAvailableModelsResponse(data: Uint8Array): readonly CursorAvailableModel[] {
+		try {
+			const unwrapped = unwrapConnectUnaryBody(data);
+			return decodeAvailableModelsResponse(unwrapped ?? data);
+		} catch (error) {
+			throw createCursorExperimentalProtocolError(`Cursor protobuf AvailableModels decoding failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
 
 	encodeGetUsableModelsRequest(): Uint8Array {
 		return toBinary(GetUsableModelsRequestSchema, create(GetUsableModelsRequestSchema, {}));
@@ -68,6 +82,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 			storedState?.checkpoint ?? null,
 			storedState?.blobStore,
 			extractCurrentActionImages(request),
+			request.maxMode ?? false,
 		);
 		this.#blobStores.set(request.requestId, payload.blobStore);
 		this.#toolDefinitions.set(request.requestId, buildMcpToolDefinitions(request));
@@ -173,13 +188,13 @@ function decodeGetUsableModelsBody(data: Uint8Array): readonly CursorUsableModel
 }
 
 function modelDetailsToCursorUsableModel(model: ModelDetails): CursorUsableModel | undefined {
-	const id = model.modelId.trim();
-	if (!id) return undefined;
+	if (model.modelId.trim().length === 0) return undefined;
 	return {
-		id,
-		displayName: model.displayName || model.displayNameShort || model.displayModelId || undefined,
-		supportsThinking: Boolean(model.thinkingDetails),
-		supportsReasoning: Boolean(model.thinkingDetails || model.maxMode),
+		id: model.modelId,
+		...(model.displayName ? { displayName: model.displayName } : {}),
+		...(model.displayNameShort ? { displayNameShort: model.displayNameShort } : {}),
+		...(model.displayModelId ? { displayModelId: model.displayModelId } : {}),
+		maxMode: model.maxMode === true,
 	};
 }
 

@@ -379,12 +379,13 @@ describe("Cursor HTTP2 transport boundary", () => {
 			cursorProtoTest.encodeStringField(1, "composer-2"),
 			cursorProtoTest.encodeStringField(4, "Composer 2"),
 			cursorProtoTest.encodeMessageField(2, new Uint8Array()),
+			cursorProtoTest.encodeVarintField(7, 1n),
 		);
 		client.unaryBody = cursorProtoTest.encodeMessageField(1, modelMessage);
 		const transport = new Http2CursorAgentTransport({ client });
 		const models = await transport.getUsableModels("secret-token", "request-proto");
 		assert.equal(models[0]?.id, "composer-2");
-		assert.equal(models[0]?.supportsThinking, true);
+		assert.equal(models[0]?.maxMode, true);
 		assert.ok(client.unaryRequests[0]?.body instanceof Uint8Array);
 	});
 });

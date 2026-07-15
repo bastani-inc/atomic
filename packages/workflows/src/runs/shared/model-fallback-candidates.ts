@@ -142,7 +142,6 @@ function resolveLongContextWindow(value: WorkflowModelValue): number | undefined
 
 const WORKFLOW_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly WorkflowThinkingLevel[];
 const WORKFLOW_THINKING_LEVEL_SET: ReadonlySet<string> = new Set(WORKFLOW_THINKING_LEVELS);
-
 export function splitReasoningSuffix(model: string): { readonly baseModel: string; readonly level?: WorkflowThinkingLevel } {
   const index = model.lastIndexOf(":");
   if (index < 0) return { baseModel: model };
@@ -151,6 +150,40 @@ export function splitReasoningSuffix(model: string): { readonly baseModel: strin
     return { baseModel: model.slice(0, index), level: suffix as WorkflowThinkingLevel };
   }
   return { baseModel: model };
+}
+
+function parseExplicitCursorReference(rawInput: string): {
+  readonly fullId: string;
+  readonly routeId: string;
+} | undefined {
+  const slashIndex = rawInput.indexOf("/");
+  if (slashIndex <= 0 || rawInput.slice(0, slashIndex).trim().toLowerCase() !== "cursor") return undefined;
+  const routeId = rawInput.slice(slashIndex + 1);
+  return { fullId: `cursor/${routeId}`, routeId };
+}
+
+function explicitCursorReference(rawInput: string): boolean {
+  return parseExplicitCursorReference(rawInput) !== undefined;
+}
+
+function explicitCursorModelObject(value: WorkflowModelValue | undefined): boolean {
+  return value !== undefined && typeof value !== "string" && String(value.provider).toLowerCase() === "cursor";
+}
+
+function hasExplicitCursorReference(input: {
+  readonly primaryModel?: WorkflowModelValue;
+  readonly fallbackModels?: readonly string[];
+}): boolean {
+  return explicitCursorModelObject(input.primaryModel)
+    || (typeof input.primaryModel === "string" && explicitCursorReference(input.primaryModel))
+    || (input.fallbackModels?.some(explicitCursorReference) ?? false);
+}
+
+function unavailableCursorFailure(input: string): ModelResolutionFailure {
+  return {
+    input,
+    reason: "not available; Cursor routes must match the authenticated catalog exactly—reselect with --list-models",
+  };
 }
 
 function candidateKey(candidate: WorkflowResolvedModelCandidate): string {
@@ -217,6 +250,20 @@ function resolveStringModel(
   availableModels: readonly WorkflowModelInfo[] | undefined,
   preferredProvider: string | undefined,
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
+  const cursorReference = parseExplicitCursorReference(rawInput);
+  if (cursorReference !== undefined) {
+    if (cursorReference.routeId.trim().length === 0 || availableModels === undefined) {
+      return unavailableCursorFailure(rawInput);
+    }
+    const exact = uniqueByFullId(availableModels).find(
+      (model) => model.provider === "cursor"
+        && model.id === cursorReference.routeId
+        && model.fullId === cursorReference.fullId,
+    );
+    return exact === undefined
+      ? unavailableCursorFailure(rawInput)
+      : makeCandidate(exact.fullId, exact.model ?? exact.fullId, undefined);
+  }
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
   // Extract the trailing context-window token, split the reasoning suffix, then
@@ -248,9 +295,7 @@ function resolveStringModel(
           : resolveRequestedContextWindow(value, requestedContextWindow),
     );
 
-  if (availableModels === undefined) {
-    return candidate(baseModel, baseModel);
-  }
+  if (availableModels === undefined) return candidate(baseModel, baseModel);
 
   const models = uniqueByFullId(availableModels);
   const explicit = models.find((model) => model.fullId === baseModel);
@@ -259,16 +304,10 @@ function resolveStringModel(
   }
 
   if (baseModel.includes("/")) {
-    // Trust an explicit provider/model id even when the live catalog does not
-    // list it, mirroring the subagent resolver (resolveModelCandidate's
-    // `if (model.includes("/")) return model;`). The workflow catalog
-    // (ctx.modelRegistry.getAvailable()) can legitimately be a partial view
-    // (auth/provider gating, freshly added models), so treating an absent
-    // fully-qualified id as a hard failure made buildModelCandidates throw and
-    // collapse the whole ordered candidate list down to just the user's
-    // currentModel — discarding the workflow's defined primary and fallbacks.
-    // Pass it through with the reasoning suffix split off; the runtime fallback
-    // loop skips it only if the SDK genuinely cannot create a session for it.
+    // Non-Cursor provider/model ids may be absent from this partial catalog
+    // because of auth/provider gating or a newly added route. Preserve the
+    // existing pass-through behavior for those providers; Cursor differs
+    // because its authenticated catalog is the sole executable authority.
     return candidate(baseModel, baseModel);
   }
 
@@ -300,7 +339,15 @@ function resolveModelValue(
   preferredProvider: string | undefined,
 ): WorkflowResolvedModelCandidate | ModelResolutionFailure {
   if (isModelObject(value)) {
-    return { id: workflowModelId(value)!, value };
+    if (!explicitCursorModelObject(value)) return { id: workflowModelId(value)!, value };
+    const input = `cursor/${value.id}`;
+    if (availableModels === undefined) return unavailableCursorFailure(input);
+    const exact = uniqueByFullId(availableModels).find(
+      (model) => model.provider === "cursor" && model.id === value.id && model.fullId === input,
+    );
+    return exact === undefined
+      ? unavailableCursorFailure(input)
+      : { id: exact.fullId, value: exact.model ?? exact.fullId };
   }
   return resolveStringModel(value, availableModels, preferredProvider);
 }
@@ -320,21 +367,21 @@ export function buildModelCandidates(input: {
   const rawValues: WorkflowModelValue[] = [];
   if (input.primaryModel !== undefined) rawValues.push(input.primaryModel);
   for (const [index, fallback] of (input.fallbackModels ?? []).entries()) {
-    // Trim once up front so the suffix split, the validation error input, and the
-    // compat concatenation all operate on the same value. Concatenating the raw
-    // (untrimmed) fallback would push trailing whitespace into the interior of
-    // `id:level`, which `resolveStringModel` can no longer trim away.
+    const compatLevel = input.fallbackThinkingLevels?.[index];
+    if (compatLevel !== undefined && !WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
+      throw new WorkflowModelValidationError([{ input: fallback, reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
+    }
+    if (explicitCursorReference(fallback)) {
+      rawValues.push(fallback);
+      continue;
+    }
+    // Generic model references keep their historical whitespace and suffix
+    // compatibility. Cursor references above preserve the route byte-for-byte.
     const trimmedFallback = fallback.trim();
     const split = splitReasoningSuffix(trimmedFallback);
-    const compatLevel = input.fallbackThinkingLevels?.[index];
-    if (split.level === undefined && compatLevel !== undefined) {
-      if (!WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
-        throw new WorkflowModelValidationError([{ input: trimmedFallback, reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
-      }
-      rawValues.push(`${trimmedFallback}:${compatLevel}`);
-    } else {
-      rawValues.push(trimmedFallback);
-    }
+    rawValues.push(split.level === undefined && compatLevel !== undefined
+      ? `${trimmedFallback}:${compatLevel}`
+      : trimmedFallback);
   }
   if (input.currentModel !== undefined) rawValues.push(input.currentModel);
 
@@ -372,6 +419,7 @@ export async function buildModelCandidatesFromCatalog(input: {
   readonly catalog?: WorkflowModelCatalogPort;
 }): Promise<WorkflowResolvedModelCandidate[]> {
   const hasExplicitModel = input.primaryModel !== undefined || (input.fallbackModels?.length ?? 0) > 0;
+  const strictCursorReference = hasExplicitCursorReference(input);
   if (!hasExplicitModel) return [];
 
   if (input.catalog === undefined) {
@@ -393,9 +441,7 @@ export async function buildModelCandidatesFromCatalog(input: {
       preferredProvider: input.catalog.preferredProvider,
     });
   } catch (err) {
-    if (input.catalog.currentModel === undefined) {
-      throw err;
-    }
+    if (strictCursorReference || input.catalog.currentModel === undefined) throw err;
     input.catalog.recordWarning?.(catalogUnavailableWarning());
     return buildModelCandidates({ currentModel: input.catalog.currentModel });
   }
@@ -413,6 +459,7 @@ export async function validateWorkflowModels(input: {
     (request) => request.model !== undefined || (request.fallbackModels?.length ?? 0) > 0,
   );
   if (relevant.length === 0) return [];
+  const strictCursorReference = relevant.some(hasExplicitCursorReference);
 
   const warnings: string[] = [];
   const recordWarning = (warning: string): void => {
@@ -426,7 +473,7 @@ export async function validateWorkflowModels(input: {
     try {
       availableModels = await input.catalog.listModels();
     } catch (err) {
-      if (input.catalog.currentModel === undefined) throw err;
+      if (strictCursorReference || input.catalog.currentModel === undefined) throw err;
       recordWarning(catalogUnavailableWarning());
       return warnings;
     }

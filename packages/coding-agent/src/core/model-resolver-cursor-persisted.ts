@@ -1,0 +1,53 @@
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "./model-registry.ts";
+
+export interface DeferredCursorModelReference {
+  readonly kind: "session" | "default";
+  readonly id: string;
+}
+
+interface CursorDiscoverySession {
+  discoverExtensionModels(mode: "print"): Promise<void>;
+  setModel(model: Model<Api>): Promise<void>;
+}
+
+export function selectDeferredCursorModelReference(input: {
+  readonly explicitModel: Model<Api> | undefined;
+  readonly sessionModel: { readonly provider: string; readonly modelId: string } | undefined;
+  readonly defaultProvider: string | undefined;
+  readonly defaultModelId: string | undefined;
+}): DeferredCursorModelReference | undefined {
+  if (input.explicitModel) return undefined;
+  if (input.sessionModel?.provider.toLowerCase() === "cursor") {
+    return { kind: "session", id: input.sessionModel.modelId };
+  }
+  if (input.defaultProvider?.toLowerCase() === "cursor" && input.defaultModelId) {
+    return { kind: "default", id: input.defaultModelId };
+  }
+  return undefined;
+}
+
+export async function recoverDeferredCursorModel(input: {
+  readonly reference: DeferredCursorModelReference;
+  readonly session: CursorDiscoverySession;
+  readonly modelRegistry: ModelRegistry;
+}): Promise<string | undefined> {
+  try {
+    await input.session.discoverExtensionModels("print");
+  } catch {
+    return cursorReselectionMessage(input.reference);
+  }
+  const exact = input.modelRegistry.getAll().find(
+    (model) => model.provider === "cursor" && model.id === input.reference.id,
+  );
+  if (!exact || !input.modelRegistry.hasConfiguredAuth(exact)) {
+    return cursorReselectionMessage(input.reference);
+  }
+  await input.session.setModel(exact);
+  return undefined;
+}
+
+export function cursorReselectionMessage(reference: DeferredCursorModelReference): string {
+  const action = reference.kind === "session" ? "restore" : "select saved";
+  return `Could not ${action} Cursor model cursor/${reference.id}. Cursor model IDs changed; reselect an exact model with --list-models.`;
+}

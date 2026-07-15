@@ -34,6 +34,7 @@ import type {
 import { convertToLlm } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import { findInitialModel, resolveRestoredModelReference } from "./model-resolver.ts";
+import { recoverDeferredCursorModel, selectDeferredCursorModelReference } from "./model-resolver-cursor-persisted.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
 import { getDefaultSessionDir, SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -163,9 +164,12 @@ export async function createAgentSession(
 
   let model = options.model;
   let modelFallbackMessage: string | undefined;
+  const deferredCursorModel = selectDeferredCursorModelReference({ explicitModel: options.model,
+    sessionModel: hasExistingSession ? (existingSession.model ?? undefined) : undefined,
+    defaultProvider: settingsManager.getDefaultProvider(), defaultModelId: settingsManager.getDefaultModel() });
 
   // If session has data, try to restore model from it
-  if (!model && hasExistingSession && existingSession.model) {
+  if (!model && !deferredCursorModel && hasExistingSession && existingSession.model) {
     const restoredModel = await resolveRestoredModelReference(
       existingSession.model.provider,
       existingSession.model.modelId,
@@ -180,7 +184,7 @@ export async function createAgentSession(
   }
 
   // If still no model, use findInitialModel (checks settings default, then provider defaults)
-  if (!model) {
+  if (!model && !deferredCursorModel) {
     const result = await findInitialModel({
       scopedModels: [],
       isContinuing: hasExistingSession,
@@ -191,7 +195,7 @@ export async function createAgentSession(
     });
     model = result.model;
     if (!model) {
-      modelFallbackMessage = formatNoModelsAvailableMessage();
+      modelFallbackMessage = result.fallbackMessage ?? formatNoModelsAvailableMessage();
     } else if (modelFallbackMessage) {
       modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
     }
@@ -483,6 +487,7 @@ export async function createAgentSession(
     sessionStartEvent: options.sessionStartEvent,
     orchestrationContext: options.orchestrationContext,
   });
+  if (deferredCursorModel) modelFallbackMessage = await recoverDeferredCursorModel({ reference: deferredCursorModel, session, modelRegistry });
   const extensionsResult = resourceLoader.getExtensions();
 
   return {

@@ -56,9 +56,10 @@ export async function resolveModelScopeWithDiagnostics(
   for (const pattern of patterns) {
     if (hasGlobCharacters(pattern)) {
       const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
-      const matchingModels = availableModels.filter((m) => {
-        const fullId = `${m.provider}/${m.id}`;
-        return minimatch(fullId, globPattern, { nocase: true }) || minimatch(m.id, globPattern, { nocase: true });
+      const matchingModels = availableModels.filter((model) => {
+        if (model.provider === "cursor") return false;
+        const fullId = `${model.provider}/${model.id}`;
+        return minimatch(fullId, globPattern, { nocase: true }) || minimatch(model.id, globPattern, { nocase: true });
       });
 
       if (matchingModels.length === 0) {

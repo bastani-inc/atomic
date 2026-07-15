@@ -2,7 +2,7 @@ import { basename, dirname } from "node:path";
 import { resetApiProviders } from "@earendil-works/pi-ai/compat";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { ExtensionBindings } from "./agent-session-types.ts";
-import type { ExtensionRunner } from "./extensions/index.ts";
+import type { ExtensionMode, ExtensionRunner } from "./extensions/index.ts";
 import type { ResourceExtensionPaths } from "./resource-loader.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
@@ -27,6 +27,12 @@ export async function bindExtensions(this: AgentSession, bindings: ExtensionBind
 	this._applyExtensionBindings(this._extensionRunner);
 	await this._extensionRunner.emit(this._sessionStartEvent);
 	await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
+}
+
+export async function discoverExtensionModels(this: AgentSession, mode: ExtensionMode): Promise<void> {
+	this._extensionMode = mode;
+	this._applyExtensionBindings(this._extensionRunner);
+	await this._extensionRunner.emit({ type: "model_catalog_discover" });
 }
 
 
@@ -276,6 +282,7 @@ export async function reload(this: AgentSession, options?: { reason?: "startup" 
 
 export const agentSessionExtensionBindingsMethods = {
 	bindExtensions,
+	discoverExtensionModels,
 	extendResourcesFromExtensions,
 	buildExtensionResourcePaths,
 	getExtensionSourceLabel,

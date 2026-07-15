@@ -4,7 +4,9 @@ import { join, sep } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { ExtensionFactory } from "../src/core/extensions/index.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -175,6 +177,112 @@ describe("createAgentSession session manager defaults", () => {
 		session.dispose();
 	});
 
+	for (const source of ["settings", "session"] as const) {
+		it(`preserves a stale Cursor ${source} reselection failure without SDK/workflow model fallback`, async () => {
+			const authStorage = AuthStorage.inMemory();
+			const modelRegistry = ModelRegistry.inMemory(authStorage);
+			const other = getModel("anthropic", "claude-sonnet-4-5")!;
+			modelRegistry.registerProvider("anthropic", {
+				baseUrl: other.baseUrl, apiKey: "test-key", api: other.api, models: [other],
+			});
+			const settingsManager = SettingsManager.inMemory();
+			const sessionManager = SessionManager.inMemory(cwd);
+			if (source === "settings") settingsManager.setDefaultModelAndProvider("cursor", "old-synthetic-high");
+			else {
+				sessionManager.appendModelChange("cursor", "old-synthetic-high");
+				sessionManager.appendMessage({ role: "user", content: "resume", timestamp: Date.now() });
+			}
+			const { session, modelFallbackMessage } = await createAgentSession({
+				cwd, agentDir, authStorage, modelRegistry, settingsManager, sessionManager,
+			});
+			expect(session.model?.provider).not.toBe("anthropic");
+			expect(session.model?.provider).not.toBe("cursor");
+			expect(modelFallbackMessage).toContain("cursor/old-synthetic-high");
+			expect(modelFallbackMessage).toContain("reselect an exact model");
+			session.dispose();
+		});
+	}
+
+	it("discovers and selects an exact saved Cursor default through real extension binding", async () => {
+		const exactId = "cursor-route:high (1m)/exact";
+		let discoveries = 0;
+		const extensionFactory: ExtensionFactory = (pi) => {
+			pi.on("model_catalog_discover", () => {
+				discoveries += 1;
+				pi.registerProvider("cursor", {
+					baseUrl: "https://api2.cursor.sh",
+					apiKey: "cursor-test-key",
+					api: "cursor-agent",
+					models: [{
+						id: exactId, name: "Exact Cursor Route", reasoning: false, input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 200_000, maxTokens: 64_000,
+					}],
+				});
+			});
+		};
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const settingsManager = SettingsManager.inMemory();
+		settingsManager.setDefaultModelAndProvider("cursor", exactId);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, settingsManager, extensionFactories: [extensionFactory],
+			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		});
+		await resourceLoader.reload();
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd, agentDir, authStorage, modelRegistry, settingsManager,
+			sessionManager: SessionManager.inMemory(cwd), resourceLoader,
+		});
+		expect(discoveries).toBe(1);
+		expect(session.model?.provider).toBe("cursor");
+		expect(session.model?.id).toBe(exactId);
+		expect(modelFallbackMessage).toBeUndefined();
+		session.dispose();
+	});
+
+	it("keeps a stale resumed Cursor reference fatal through real extension binding", async () => {
+		let discoveries = 0;
+		let runCalls = 0;
+		const extensionFactory: ExtensionFactory = (pi) => {
+			pi.on("model_catalog_discover", () => {
+				discoveries += 1;
+				pi.registerProvider("cursor", {
+					baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+					streamSimple: () => { runCalls += 1; throw new Error("must not dispatch"); },
+					models: [{
+						id: "current-exact", name: "Current Exact", reasoning: false, input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 200_000, maxTokens: 64_000,
+					}],
+				});
+			});
+		};
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const other = getModel("anthropic", "claude-sonnet-4-5")!;
+		modelRegistry.registerProvider("anthropic", {
+			baseUrl: other.baseUrl, apiKey: "test-key", api: other.api, models: [other],
+		});
+		const settingsManager = SettingsManager.inMemory();
+		const sessionManager = SessionManager.inMemory(cwd);
+		sessionManager.appendModelChange("cursor", "old-synthetic-high");
+		sessionManager.appendMessage({ role: "user", content: "resume", timestamp: Date.now() });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd, agentDir, settingsManager, extensionFactories: [extensionFactory],
+			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		});
+		await resourceLoader.reload();
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd, agentDir, authStorage, modelRegistry, settingsManager, sessionManager, resourceLoader,
+		});
+		expect(discoveries).toBe(1);
+		expect(session.model?.provider).toBe("unknown");
+		expect(modelFallbackMessage).toContain("cursor/old-synthetic-high");
+		expect(modelFallbackMessage).toContain("reselect an exact model");
+		expect(runCalls).toBe(0);
+		session.dispose();
+	});
 	it("marks the session header internal when a workflow-stage orchestration context is supplied", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeTruthy();

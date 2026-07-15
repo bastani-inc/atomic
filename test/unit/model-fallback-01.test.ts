@@ -280,6 +280,7 @@ describe("model fallback helpers", () => {
     assert.deepEqual(warnings, []);
   });
 
+
   test("validateWorkflowModels warns and falls back to current model when catalog is unavailable", async () => {
     const warnings = await validateWorkflowModels({
       catalog: {

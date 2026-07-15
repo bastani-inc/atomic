@@ -204,6 +204,7 @@ export interface AgentSessionMethodSurface {
 	setAutoCompactionEnabled(enabled: boolean): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
+	discoverExtensionModels(mode: ExtensionMode): Promise<void>;
 	extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void>;
 	buildExtensionResourcePaths(entries: ExtensionResourcePathEntry[]): ExtensionResourcePathResult[];
 	getExtensionSourceLabel(extensionPath: string): string;
@@ -302,6 +303,7 @@ export interface AgentSessionPublicSurface extends Pick<AgentSessionMethodSurfac
 	| "abortBranchSummary"
 	| "setAutoCompactionEnabled"
 	| "bindExtensions"
+	| "discoverExtensionModels"
 	| "refreshCurrentModelFromRegistry"
 	| "reload"
 	| "abortRetry"

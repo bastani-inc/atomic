@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the experimental Cursor parameterized/synthetic catalog with exact `AgentService/GetUsableModels` route IDs. Older experimental model IDs and schema-v1/v2 or parameterized caches are not migrated; settings, workflows, and sessions must reselect a current exact route. Unavailable IDs now fail clearly without alias, nearest-effort, static, AvailableModels, provider, or model fallback ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Changed
+
+- Made `GetUsableModels` the sole authority for runnable existence, exact IDs, display data, and Max state, with one row per exact returned ID. Requests preserve that flat ID in both model structures, set GetUsable Max in both, and leave `RequestedModel.parameters` empty; tuple expansion, backend-route construction, and route-rewriting reasoning selectors were removed ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Split `AvailableModels` into optional same-account image-only enrichment. It can mark only an unambiguous exact GetUsable route as image-capable and cannot add/remove/block/select/parameterize routes or provide display/Max data; missing or ambiguous metadata is text-only without family-name inference ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Introduced token-free, account-scoped schema-v3 catalogs containing only exact GetUsable-derived rows and optional image flags. Only a fresh same-account snapshot may bridge a temporary GetUsable failure; old, stale, AvailableModels-only, and static data cannot become executable fallback ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
+### Fixed
+
+- Preserved 30-minute TTL refresh, same-account credential rotation, stale/out-of-order refresh fencing, redacted abortable OAuth, live-catalog login gating, disposal cancellation, and discovery-before-resolution while removing authenticated static-route fallback ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+- Preserved strict current-turn user-image and live mixed MCP-result serialization, including base64/MIME validation and local capability rejection. Earlier-turn image reconstruction and structured clipboard attachments remain follow-up [#1807](https://github.com/bastani-inc/atomic/issues/1807); assistant-generated images remain out of scope ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed

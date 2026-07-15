@@ -16,6 +16,7 @@ import {
 	McpToolCallSchema,
 	McpToolDefinitionSchema,
 	ModelDetailsSchema,
+	RequestedModelSchema,
 	SelectedContextSchema,
 	SelectedImageSchema,
 	ToolCallSchema,
@@ -75,6 +76,7 @@ export function buildCursorRequest(
 	checkpoint: Uint8Array | null,
 	existingBlobStore?: Map<string, Uint8Array>,
 	userImages: readonly ImageContent[] = [],
+	maxMode = false,
 ): { readonly requestBytes: Uint8Array; readonly blobStore: Map<string, Uint8Array> } {
 	const blobStore = new Map<string, Uint8Array>(existingBlobStore ?? []);
 	const systemBlobId = storeAsBlob(textEncoder.encode(JSON.stringify({ role: "system", content: systemPrompt })), blobStore);
@@ -86,8 +88,18 @@ export function buildCursorRequest(
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
 	});
-	const modelDetails = create(ModelDetailsSchema, { modelId, displayModelId: modelId, displayName: modelId });
-	const runRequest = create(AgentRunRequestSchema, { conversationState, action, modelDetails, conversationId });
+	const modelDetails = create(ModelDetailsSchema, {
+		modelId,
+		displayModelId: modelId,
+		displayName: modelId,
+		maxMode,
+	});
+	const requestedModel = create(RequestedModelSchema, {
+		modelId,
+		maxMode,
+		parameters: [],
+	});
+	const runRequest = create(AgentRunRequestSchema, { conversationState, action, modelDetails, requestedModel, conversationId });
 	const clientMessage = create(AgentClientMessageSchema, {
 		message: { case: "runRequest", value: runRequest },
 	});

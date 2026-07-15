@@ -48,6 +48,7 @@ import type {
 import type { MessageRenderer, SendMessageOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type {
+	ModelCatalogDiscoverEvent,
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SessionBeforeCompactEvent,
@@ -76,6 +77,7 @@ export interface ExtensionAPI {
 	// =========================================================================
 
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
+	on(event: "model_catalog_discover", handler: ExtensionHandler<ModelCatalogDiscoverEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(

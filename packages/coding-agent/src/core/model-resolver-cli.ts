@@ -14,9 +14,9 @@ function buildProviderMap(availableModels: Model<Api>[]): Map<string, string> {
 
 function findRawExactModel(cliModel: string, availableModels: Model<Api>[]): Model<Api> | undefined {
   const lower = cliModel.toLowerCase();
-  return availableModels.find(
-    (m) => m.id.toLowerCase() === lower || `${m.provider}/${m.id}`.toLowerCase() === lower,
-  );
+  return availableModels.find((model) => model.provider === "cursor"
+    ? cliModel === model.id || cliModel === `cursor/${model.id}`
+    : model.id.toLowerCase() === lower || `${model.provider}/${model.id}`.toLowerCase() === lower);
 }
 
 function splitCustomModelThinkingSuffix(pattern: string): {
@@ -49,7 +49,7 @@ function splitCustomModelThinkingSuffix(pattern: string): {
 export function resolveCliModel(options: {
   cliProvider?: string;
   cliModel?: string;
-  modelRegistry: ModelRegistry;
+  modelRegistry: Pick<ModelRegistry, "getAll">;
 }): ResolveCliModelResult {
   const { cliProvider, cliModel, modelRegistry } = options;
 
@@ -117,6 +117,17 @@ export function resolveCliModel(options: {
     }
   }
 
+  if (provider?.toLowerCase() === "cursor") {
+    const exact = availableModels.find((model) => model.provider === provider && model.id === pattern);
+    if (exact) return { model: exact, thinkingLevel: undefined, warning: undefined, error: undefined };
+    return {
+      model: undefined,
+      thinkingLevel: undefined,
+      warning: undefined,
+      error: `Model "${provider}/${pattern}" not found. Use --list-models to see available models.`,
+    };
+  }
+
   const candidates = provider ? availableModels.filter((m) => m.provider === provider) : availableModels;
   const { model, thinkingLevel, warning } = parseModelPattern(pattern, candidates, {
     allowInvalidThinkingLevelFallback: false,
@@ -145,7 +156,9 @@ export function resolveCliModel(options: {
     }
   }
 
-  if (provider) {
+  // Cursor's authenticated catalog requires exact routing metadata; an arbitrary
+  // fallback ID would be selectable but could never produce a valid request.
+  if (provider && provider !== "cursor") {
     // Registered resolution above takes precedence, including model IDs whose final colon
     // segment happens to look like a thinking level. Only custom fallback splits it.
     const customPattern = splitCustomModelThinkingSuffix(pattern);

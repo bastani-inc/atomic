@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Changed workflow model validation so explicit Cursor strings and `Model` objects must match the authenticated exact live catalog before stage session creation. Stale Cursor references now fail with reselection guidance without trying configured/current/provider/model fallbacks, matching objects are replaced by the live catalog row, generic non-Cursor fallback behavior remains unchanged, and builtins no longer hard-code account-specific Cursor routes ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed

@@ -23,6 +23,11 @@ export interface ResourcesDiscoverResult {
 // Session Events
 // ============================================================================
 
+/** Fired before CLI model resolution so dynamic providers can install authenticated catalogs. */
+export interface ModelCatalogDiscoverEvent {
+	type: "model_catalog_discover";
+}
+
 /** Fired when a session is started, loaded, or reloaded */
 export interface SessionStartEvent {
 	type: "session_start";
@@ -113,6 +118,7 @@ export interface SessionTreeEvent {
 }
 
 export type SessionEvent =
+	| ModelCatalogDiscoverEvent
 	| SessionStartEvent
 	| SessionInfoChangedEvent
 	| SessionBeforeSwitchEvent

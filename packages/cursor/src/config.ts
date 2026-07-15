@@ -4,14 +4,15 @@ export const CURSOR_LOGIN_NAME = "Cursor (Experimental)";
 export const CURSOR_API = "cursor-agent";
 export const CURSOR_API_BASE_URL = "https://api2.cursor.sh";
 export const CURSOR_WEB_BASE_URL = "https://cursor.com";
-// Keep this in sync with Cursor CLI traffic if api2.cursor.sh starts rejecting
-// requests after a Cursor client release. Capture the current CLI headers from
-// a fresh Cursor login/model request and update this single constant.
-export const CURSOR_CLIENT_VERSION = "cli-2026.01.09-231024f";
+// This private-protocol compatibility identity comes from reverse-engineered
+// bridge inspection. It is not a stable public Cursor contract or evidence of
+// the latest identity for every account/server and may require refresh.
+export const CURSOR_CLIENT_VERSION = "cli-2026.05.01-eea359f";
 export const CURSOR_CLIENT_TYPE = "cli";
 export const CURSOR_DEFAULT_MODEL_ID = "composer-2";
 export const CURSOR_AUTH_POLL_PATH = "/auth/poll";
 export const CURSOR_REFRESH_PATH = "/auth/exchange_user_api_key";
+export const CURSOR_AVAILABLE_MODELS_PATH = "/aiserver.v1.AiService/AvailableModels";
 export const CURSOR_GET_USABLE_MODELS_PATH = "/agent.v1.AgentService/GetUsableModels";
 export const CURSOR_RUN_PATH = "/agent.v1.AgentService/Run";
 export const CURSOR_LOGIN_PATH = "/loginDeepControl";

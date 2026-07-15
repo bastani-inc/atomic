@@ -1,24 +1,28 @@
 # @bastani/cursor
 
-First-party Atomic provider for Cursor subscription models.
+First-party experimental Atomic provider for Cursor subscription models.
 
-## Status
+## Discovery, routing, and cache
 
-This package registers `cursor` via Atomic's bundled extension provider API. `/login` shows **Cursor (Experimental)** and stores credentials through Atomic OAuth storage (`~/.atomic/agent/auth.json`). The login URL and PKCE polling behavior intentionally match the MIT-licensed [`ndraiman/pi-cursor-provider`](https://github.com/ndraiman/pi-cursor-provider) reference: `callbacks.onAuth({ url: loginUrl })`, no extra login warning/instruction copy, and polling `api2.cursor.sh/auth/poll` until Cursor returns tokens.
+Atomic uses Cursor's browser PKCE OAuth flow and private CLI-compatible HTTP/2 protocol. `POST /agent.v1.AgentService/GetUsableModels` is the sole authority for the authenticated account's runnable model existence, exact executable IDs, display data, and Max state. Atomic registers one model row for each exact returned `model_id` and sends the selected ID unchanged in both `ModelDetails.model_id` and `RequestedModel.model_id`.
 
-The runtime protocol is also aligned to `ndraiman/pi-cursor-provider` at commit `82fc4e73f9ae820d87b34ac36713b18989910a36`: Atomic vendors the reference `cursor-models-raw.json` and generated `proto/agent_pb.ts`, and builds Cursor request/control messages through `@bufbuild/protobuf` descriptors instead of hand-maintained protobuf bytes. HTTP/2 itself is handled by the generated `@bastani/atomic-natives` Rust/N-API package rather than a separate local proxy.
+`POST /aiserver.v1.AiService/AvailableModels` is a separate, best-effort metadata call for image capability only. Atomic joins its metadata to a GetUsable route only through unambiguous exact identity/variant evidence from the same authenticated account. AvailableModels cannot add or remove executable rows, choose a route, supply Max state or request parameters, or block text usage. Missing, false, or ambiguous image metadata leaves the route text-only; model-family names are not used to infer image support.
 
-The unavoidable Atomic-specific integration difference is the provider surface: Atomic exposes a native `cursor-agent` `streamSimple` provider instead of the reference package's localhost OpenAI-compatible proxy. The Cursor auth/model/protocol bytes should otherwise stay reference-derived.
+Max comes exclusively from GetUsable and is encoded in both request model structures. `RequestedModel.parameters` is always empty. Atomic does not expand AvailableModels tuples, synthesize picker or backend routes, translate a reasoning selector into another route, or resolve legacy aliases. An old or unavailable Cursor ID in settings, a CLI command, a workflow, or a restored session fails clearly and must be reselected from the current authenticated catalog; Atomic does not substitute a nearest effort, static model, AvailableModels row, another Cursor model, or another provider.
+
+Authenticated catalogs use schema-v3, account-scoped files named `~/.atomic/agent/cursor-model-catalog.json.account-<digest>` with a 30-minute TTL. They contain only exact GetUsable-derived routes and optional same-account image flags. The digest is derived from the stable JWT subject claim, not from an OAuth token, and neither tokens nor account claims are persisted. Schema-v1, schema-v2, unscoped, and parameterized caches are ignored rather than migrated. A rotated token for the same account may reuse a fresh snapshot; another account cannot load or overwrite it. A fresh same-account v3 snapshot may keep its GetUsable-derived routes available during a temporary GetUsable failure, but stale snapshots, AvailableModels data, and static rows never become executable fallback.
+
+Credential changes refresh immediately, superseded or out-of-order requests cannot overwrite the latest account snapshot, and future-dated timestamps are not treated as fresh. A first-time `/login` succeeds only after authenticated discovery registers a usable catalog for that credential scope. Discovery participates in shutdown cancellation, its failures are redacted, `atomic --list-models` waits for a required refresh, and a successful live registration does not depend on best-effort cache persistence.
 
 ## Limitations
 
-- Image input is supported only for known multimodal Cursor Claude, Composer, Gemini, GPT, and Kimi model families (IDs beginning `claude-`, `composer-`, `gemini-`, `gpt-`, or `kimi-`), plus `grok-4.3`; text-only Cursor models still reject images.
-- User images and mixed text/image MCP tool results are serialized for image-capable Cursor models. Image payloads must be non-empty standard base64; MIME-style line wrapping whitespace is accepted and stripped before serialization.
-- Cursor's private API may change without notice.
-- HTTP/2 transport requires the bundled `@bastani/atomic-natives` Rust/N-API native client for the current platform.
-- Credentials are OAuth-only. Do not pass Cursor tokens via command-line args, environment variables, logs, or local proxy processes.
-- Cursor's private `GetUsableModels` response omits context-window and output-token limits. Atomic preserves positive limits when present and otherwise resolves them from Atomic's bundled `@earendil-works/pi-ai` model catalog by matching the Cursor model ID's family/version, falling back to a conservative 200k context / 64k output estimate for Cursor-only models without a pi-ai match. Cursor IDs or labels that explicitly say `1M` keep a 1,000,000-token context floor even when the nearest reference match advertises a smaller base window. Limit resolution never adds or removes models from the list.
+- Cursor is experimental. Its private API may change without notice, and use may conflict with Cursor terms or account policies.
+- The rewrite intentionally breaks older experimental Cursor model IDs and cache formats. Open `/model` and reselect an exact route returned for the authenticated account.
+- HTTP/2 requires bundled `@bastani/atomic-natives` for the current platform.
+- Credentials are OAuth-only. Do not pass Cursor tokens through arguments, environment variables, logs, or proxy processes.
+- Current-turn user images and live mixed text/image MCP results are sent only when unambiguous current-account metadata advertises image input. Image data must be non-empty standard base64; MIME whitespace is accepted and removed. Unsupported or invalid image input is rejected locally.
+- Reconstructing an image sent in an earlier turn and structured clipboard attachments remain follow-up [#1807](https://github.com/bastani-inc/atomic/issues/1807). Assistant-generated images are out of scope.
 
 ## Attribution
 
-Cursor auth, model fallback, and generated protobuf behavior are derived from the MIT-licensed `ndraiman/pi-cursor-provider` project.
+Auth and generated agent protobuf behavior derive from MIT-licensed `ndraiman/pi-cursor-provider`. The optional reverse-engineered AvailableModels identity/image interpretation follows the pinned `sfiorini/pi-stef` protocol notes referenced by issue #1702; it is evidence for conservative metadata enrichment, not a runnable-catalog authority or stable Cursor contract.

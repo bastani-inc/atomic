@@ -44,6 +44,20 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(transport.runs.length, 0);
 	});
 
+	test("rejects a Cursor model that lacks exact authenticated route metadata", async () => {
+		const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "missing-route" });
+		const unroutedModel = { ...model(), compat: undefined };
+
+		const events = await collectEventsWithTimeout(adapter.streamSimple(unroutedModel, context(), { apiKey: "access-secret" }));
+
+		assert.deepEqual(events.map((event) => event.type), ["start", "error"]);
+		const terminal = events.at(-1);
+		assert.equal(terminal?.type, "error");
+		if (terminal?.type === "error") assert.match(terminal.error.errorMessage ?? "", /not an exact route in the authenticated catalog/u);
+		assert.equal(transport.runs.length, 0);
+	});
+
 	test("pauses after collecting Cursor MCP tool call usage metadata", async () => {
 		const transport = new CursorMockTransport({
 			messages: [
@@ -82,7 +96,7 @@ describe("CursorStreamAdapter", () => {
 			assert.equal(done.message.usage.output, 5);
 			assert.equal(done.message.usage.totalTokens, 15);
 		}
-		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2-high");
+		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2");
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
 		await adapter.dispose();
 	});

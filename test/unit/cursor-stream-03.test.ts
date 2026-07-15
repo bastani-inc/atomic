@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import type { Context } from "@earendil-works/pi-ai/compat";
+import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage } from "../../packages/cursor/src/transport.js";
 import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
@@ -137,7 +137,8 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 
 		const imageTransport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
 		const imageAdapter = new CursorStreamAdapter({ transport: imageTransport, uuid: () => "run-image" });
-		const allowedEvents = await collectEvents(imageAdapter.streamSimple({ ...model(), id: "claude-4.5-sonnet", input: ["text", "image"] }, imageContext, { apiKey: "access-secret" }));
+		const imageModel = { ...model(), id: "claude-4.5-sonnet", input: ["text", "image"], compat: { cursorRouting: { "claude-4.5-sonnet": { modelId: "claude-4.5-sonnet" } } } } as Model<Api>;
+		const allowedEvents = await collectEvents(imageAdapter.streamSimple(imageModel, imageContext, { apiKey: "access-secret" }));
 		assert.equal(imageTransport.runs.length, 1);
 		assert.equal(allowedEvents.at(-1)?.type, "done");
 	});

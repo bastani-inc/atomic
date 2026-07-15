@@ -44,6 +44,41 @@ describe("createStageContext — model fallback", () => {
         ]);
     });
 
+    test("stale explicit Cursor route fails before stage session creation or fallback", async () => {
+        let createCalls = 0;
+        let promptCalls = 0;
+        const ctx = createStageContext(
+            makeOpts({
+                adapters: {
+                    agentSession: {
+                        async create() {
+                            createCalls += 1;
+                            return makeMockSession({
+                                async prompt() { promptCalls += 1; },
+                            }).session;
+                        },
+                    },
+                },
+                stageOptions: {
+                    model: "cursor/grok-4.5-high",
+                    fallbackModels: ["openai/fallback"],
+                },
+                models: {
+                    currentModel: "anthropic/current",
+                    listModels: async () => [
+                        { provider: "openai", id: "fallback", fullId: "openai/fallback" },
+                        { provider: "anthropic", id: "current", fullId: "anthropic/current" },
+                    ],
+                },
+            }),
+        ) as InternalStageContext;
+
+        await assert.rejects(() => ctx.prompt("must not run"), /cursor\/grok-4\.5-high.*reselect/s);
+        assert.equal(createCalls, 0);
+        assert.equal(promptCalls, 0);
+        assert.equal(ctx.__modelFallbackMeta().attemptedModels, undefined);
+    });
+
     test("only the (1m) fallback candidate receives the long-context window; the primary is untouched", async () => {
         const seen: Array<{ model: string; contextWindow: number | undefined }> = [];
         const agentSession: AgentSessionAdapter = {

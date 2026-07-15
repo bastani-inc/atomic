@@ -17,7 +17,7 @@ import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
 
-const REMOTE_CATALOG_PROVIDERS = new Set(["cursor", "github-copilot", "openrouter", "vercel-ai-gateway"]);
+const REMOTE_CATALOG_PROVIDERS = new Set(["github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 
 export type { ProviderConfigInput, ResolvedRequestAuth } from "./model-registry-types.ts";
@@ -122,11 +122,9 @@ export class ModelRegistry {
 		return this.models.filter((m) => this.hasConfiguredAuth(m));
 	}
 
-	/**
-	 * Find a model by provider and ID.
-	 */
+	/** Find a model by provider and exact current ID. */
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.models.find((m) => m.provider === provider && m.id === modelId);
+		return this.models.find((model) => model.provider === provider && model.id === modelId);
 	}
 
 	/** Whether an authenticated provider may reconstruct an absent saved model ID. */

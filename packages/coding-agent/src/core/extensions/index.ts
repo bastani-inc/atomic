@@ -93,6 +93,7 @@ export type {
 	LsToolResultEvent,
 	// Events - Message
 	MessageEndEvent,
+	ModelCatalogDiscoverEvent,
 	// Message Rendering
 	MessageRenderer,
 	MessageRenderOptions,
