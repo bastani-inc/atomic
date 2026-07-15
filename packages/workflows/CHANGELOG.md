@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.9-alpha.4] - 2026-07-15
+
 ### Fixed
 
 - Fixed workflow resource reload to build and atomically publish a fresh registry for additions, edits, renames, deletions, config paths, conventional/legacy directories, and package resources without restarting Atomic. Reloads now serialize and coalesce, reject stale session generations, retain the active registry on fatal failures, remain safe during in-flight runs, and return visible config/discovery diagnostics through both slash-command and tool surfaces while preserving valid siblings.

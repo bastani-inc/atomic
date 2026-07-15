@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.9-alpha.4] - 2026-07-15
+
 ### Fixed
 
 - Fixed in-process workflow reload to atomically publish freshly rescanned project, user, legacy, configured, and package workflow resources across list/get/inputs/help/completion/invocation surfaces. Overlapping requests are serialized and coalesced, stale session generations cannot overwrite current state, fatal refresh failures retain the prior registry, and reload no longer blocks or changes workflows already in flight. `/workflow reload` and the workflow tool now include actionable per-resource diagnostics instead of reporting bare success when malformed or missing resources were skipped.
