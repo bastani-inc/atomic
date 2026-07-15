@@ -1,6 +1,11 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { DURABLE_STAGE_TOPOLOGY_VERSION, type DurableCheckpoint, type DurableWorkflowHandle } from "./types.js";
+import {
+  DURABLE_STAGE_TOPOLOGY_VERSION,
+  type DurableCheckpoint,
+  type DurableStageTopology,
+  type DurableWorkflowHandle,
+} from "./types.js";
 import { classifyDurableFormatVersion, DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 export interface FileDurableRecord {
@@ -37,7 +42,14 @@ export function readDurableFileState(filePath: string): FileStateReadResult {
     }
     const deleted = parsed.deletedWorkflowIds ?? [];
     if (compatibility === "unknown" || !isStringArray(deleted) || !parsed.workflows.every(isFileDurableRecord)) return { kind: "unknown" };
-    return { kind: "current", state: { version: DURABLE_FORMAT_VERSION, workflows: parsed.workflows, deletedWorkflowIds: deleted } };
+    return {
+      kind: "current",
+      state: {
+        version: DURABLE_FORMAT_VERSION,
+        workflows: parsed.workflows.map(withoutInvalidTopology),
+        deletedWorkflowIds: deleted,
+      },
+    };
   } catch {
     return { kind: "unknown" };
   }
@@ -69,12 +81,24 @@ function isCheckpoint(value: unknown): value is DurableCheckpoint {
   if (value["kind"] === "ui") return typeof value["promptKind"] === "string" && typeof value["message"] === "string"
     && typeof value["promptHash"] === "string" && isSerializable(value["response"]);
   return value["kind"] === "stage" && typeof value["name"] === "string" && typeof value["replayKey"] === "string"
-    && (!("output" in value) || isSerializable(value["output"]))
-    && isOptionalStageTopology(value["topology"]);
+    && (!("output" in value) || isSerializable(value["output"]));
 }
 
-function isOptionalStageTopology(value: unknown): boolean {
-  if (value === undefined) return true;
+function withoutInvalidTopology(record: FileDurableRecord): FileDurableRecord {
+  return {
+    handle: record.handle,
+    checkpoints: record.checkpoints.map((checkpoint) => {
+      if (checkpoint.kind !== "stage" || checkpoint.topology === undefined || isStageTopology(checkpoint.topology)) {
+        return checkpoint;
+      }
+      const { topology, ...withoutTopology } = checkpoint;
+      void topology;
+      return withoutTopology;
+    }),
+  };
+}
+
+function isStageTopology(value: unknown): value is DurableStageTopology {
   return isObject(value) && value["version"] === DURABLE_STAGE_TOPOLOGY_VERSION && typeof value["stageId"] === "string"
     && isStringArray(value["parentIds"]);
 }

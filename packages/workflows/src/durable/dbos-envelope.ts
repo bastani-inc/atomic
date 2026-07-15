@@ -199,8 +199,7 @@ function decodeEnvelope(workflowId: string, env: DbosCheckpointEnvelope): Durabl
     || (env.model !== undefined && typeof env.model !== "string")
     || (env.fastMode !== undefined && typeof env.fastMode !== "boolean")
     || (env.attemptedModels !== undefined && !isStringArray(env.attemptedModels))
-    || (env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts))
-    || (env.topology !== undefined && topology === undefined)) return undefined;
+    || (env.modelAttempts !== undefined && !isModelAttempts(env.modelAttempts))) return undefined;
   return {
     kind: "stage",
     ...common,

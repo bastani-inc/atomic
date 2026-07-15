@@ -228,6 +228,50 @@ describe("completed durable topology across a fresh backend/store boundary", () 
     assert.equal(stages.every((stage) => stage.parentIds.length === 0), true);
   });
 
+  for (const fixture of [
+    { label: "unsupported", topology: { version: 2, stageId: "future-stage", parentIds: [] } },
+    { label: "malformed", topology: { version: 1, stageId: "broken-stage", parentIds: "not-an-array" } },
+  ] as const) {
+    test(`keeps file checkpoints readable when topology is ${fixture.label}`, () => {
+      const stateFile = join(tempDir, `${fixture.label}-topology.json`);
+      const writer = new FileDurableBackend(stateFile);
+      const workflowId = `${fixture.label}-topology-run`;
+      writer.registerWorkflow({
+        workflowId,
+        name: `${fixture.label}-topology`,
+        inputs: {},
+        createdAt: 1,
+        updatedAt: 2,
+        status: "completed",
+      });
+      writer.recordCheckpoint({
+        kind: "stage",
+        workflowId,
+        checkpointId: "stage:inspect:1",
+        name: "inspect",
+        replayKey: "stage:inspect:1",
+        output: "preserved output",
+        sessionFile: retainedSession(`${fixture.label}-topology-stage`),
+        completedAt: 2,
+        topology: { version: 1, stageId: "source-stage", parentIds: [] },
+      });
+      const persisted = JSON.parse(readFileSync(stateFile, "utf8")) as {
+        workflows: Array<{ checkpoints: Array<Record<string, object | string | number>> }>;
+      };
+      persisted.workflows[0]!.checkpoints[0]!["topology"] = fixture.topology;
+      writeFileSync(stateFile, JSON.stringify(persisted));
+
+      const checkpoint = new FileDurableBackend(stateFile).listCheckpoints(workflowId)[0];
+      assert.ok(checkpoint?.kind === "stage");
+      assert.equal(checkpoint.output, "preserved output");
+      assert.equal(checkpoint.topology, undefined);
+      const stage = inspectCompleted(stateFile, workflowId).stages[0];
+      assert.ok(stage);
+      assert.equal(stage.topologyState, "unavailable");
+      assert.deepEqual(stage.parentIds, []);
+    });
+  }
+
   test("does not claim partial topology when persisted source identities are duplicated", () => {
     const stateFile = join(tempDir, "duplicate-topology.json");
     const writer = new FileDurableBackend(stateFile);

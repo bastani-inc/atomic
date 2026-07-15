@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,6 +17,8 @@ import { Type } from "typebox";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 interface SentMessage {
   customType?: string;
@@ -32,12 +34,17 @@ async function cleanupJobs(): Promise<void> {
   await Promise.all(jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise));
 }
 
+beforeEach(() => {
+  setDurableBackend(new InMemoryDurableBackend());
+});
+
 afterEach(async () => {
   delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
   process.chdir(originalCwd);
   killAllRuns({ store, cancellation: cancellationRegistry });
   await cleanupJobs();
   store.clear();
+  setDurableBackend(undefined);
 });
 
 function workflowConfigDir(root: string): string {
