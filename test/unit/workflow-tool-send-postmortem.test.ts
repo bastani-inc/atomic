@@ -61,6 +61,11 @@ function resolvePostMortemDeps(session: StageSessionRuntime, counter: { creates:
   };
   return () => ({ registry: createStageControlRegistry(), adapters, cwd: tempDir });
 }
+function runExecutionSnapshot(): object {
+  const run = store.runs().find((candidate) => candidate.id === RUN_ID);
+  assert.ok(run);
+  return structuredClone(run);
+}
 
 describe("workflow send — post-mortem parity", () => {
   test("revives a retained session and delivers a follow-up", async () => {
@@ -83,30 +88,56 @@ describe("workflow send — post-mortem parity", () => {
     assert.equal(store.runs().find((r) => r.id === RUN_ID)?.stages[0]?.status, "completed");
   });
 
-  test("rejects explicit resume without appending or mutating terminal status", async () => {
+  test("returns a structured noop for explicit resume without appending or mutating terminal status", async () => {
     const sessionFile = retainedSession("send-no-resume");
     seedCompletedRun(sessionFile);
-    const promptCalls: string[] = [];
+    const deliveryCalls: string[] = [];
     const counter = { creates: 0 };
     const session: StageSessionRuntime = {
       ...mockSession(),
       sessionFile,
-      async prompt(text: string) { promptCalls.push(text); },
+      async prompt(text: string) { deliveryCalls.push(`prompt:${text}`); },
+      async followUp(text: string) { deliveryCalls.push(`followUp:${text}`); },
+      async steer(text: string) { deliveryCalls.push(`steer:${text}`); },
     };
+    const before = runExecutionSnapshot();
 
-    await assert.rejects(
-      () => workflowSendAction(
-        { runId: RUN_ID, stageId: "stage-a", text: "resume should be rejected", delivery: "resume" },
-        { resolvePostMortemDeps: resolvePostMortemDeps(session, counter) },
-      ),
-      /Post-mortem stage chat cannot pause or resume workflow execution\./,
+    const result = await workflowSendAction(
+      { runId: RUN_ID, stageId: "stage-a", text: "resume should be rejected", delivery: "resume" },
+      { resolvePostMortemDeps: resolvePostMortemDeps(session, counter) },
     );
 
-    assert.deepEqual(promptCalls, []);
+    assert.equal(result.status, "noop");
+    assert.equal(result.delivery, "resume");
+    assert.match(result.message, /Cannot resume a terminal post-mortem stage/);
+    assert.deepEqual(deliveryCalls, []);
     assert.equal(counter.creates, 0);
-    const run = store.runs().find((candidate) => candidate.id === RUN_ID);
-    assert.equal(run?.status, "completed");
-    assert.equal(run?.stages[0]?.status, "completed");
+    assert.deepEqual(runExecutionSnapshot(), before);
+  });
+
+  test("returns a structured noop for explicit steer of a terminal stage", async () => {
+    const sessionFile = retainedSession("send-no-steer");
+    seedCompletedRun(sessionFile);
+    const deliveryCalls: string[] = [];
+    const counter = { creates: 0 };
+    const session: StageSessionRuntime = {
+      ...mockSession(),
+      sessionFile,
+      async prompt(text: string) { deliveryCalls.push(`prompt:${text}`); },
+      async followUp(text: string) { deliveryCalls.push(`followUp:${text}`); },
+      async steer(text: string) { deliveryCalls.push(`steer:${text}`); },
+    };
+    const before = runExecutionSnapshot();
+    const result = await workflowSendAction(
+      { runId: RUN_ID, stageId: "stage-a", text: "steer attempt", delivery: "steer" },
+      { resolvePostMortemDeps: resolvePostMortemDeps(session, counter) },
+    );
+    assert.equal(result.status, "noop");
+    assert.equal(result.delivery, "steer");
+    assert.match(result.message, /Cannot steer a terminal post-mortem stage/);
+    assert.deepEqual(deliveryCalls, []);
+    assert.equal(counter.creates, 0);
+    assert.deepEqual(runExecutionSnapshot(), before);
   });
 
   test("stays a no-op with an explicit reason when the session is invalid", async () => {

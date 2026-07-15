@@ -167,11 +167,22 @@ export async function workflowSendAction(
   if (handle === undefined) {
     return workflowSendResult(stageRunId, stage.stageId, requestedDelivery, "noop", "No live handle for stage.");
   }
+  // A completed post-mortem handle is not live execution: its handle-level
+  // resume()/pause() reject by contract. Return a structured noop with guidance
+  // instead of letting that rejection cross the tool boundary. Failed handles
+  // remain eligible for their existing recoverable execution-resume semantics.
+  const isTerminalPostMortemStage = handle.status === "completed";
   if (requestedDelivery === "resume" || (requestedDelivery === "auto" && handle.status === "paused")) {
+    if (isTerminalPostMortemStage) {
+      return workflowSendResult(stageRunId, stage.stageId, "resume", "noop", "Cannot resume a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
+    }
     await handle.resume(text);
     return workflowSendResult(stageRunId, stage.stageId, "resume", "ok", "Resumed stage with message.");
   }
   if (requestedDelivery === "steer" || (requestedDelivery === "auto" && handle.isStreaming)) {
+    if (isTerminalPostMortemStage) {
+      return workflowSendResult(stageRunId, stage.stageId, "steer", "noop", "Cannot steer a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
+    }
     await handle.steer(text);
     return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
   }
