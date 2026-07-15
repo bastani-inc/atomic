@@ -16,6 +16,8 @@ import { cancellationRegistry } from "../../packages/workflows/src/runs/backgrou
 import { killAllRuns } from "../../packages/workflows/src/runs/background/status.js";
 import type { StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
 import { createWorkflowExtensionRuntimeState } from "../../packages/workflows/src/extension/extension-runtime-state.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 const originalCwd = process.cwd();
 const originalAgentDir = process.env.ATOMIC_CODING_AGENT_DIR;
@@ -33,6 +35,7 @@ afterEach(async () => {
   else process.env.USERPROFILE = originalUserProfile;
   killAllRuns({ store, cancellation: cancellationRegistry });
   store.clear();
+  setDurableBackend(undefined);
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -108,15 +111,24 @@ async function writeJson(path: string, value: object): Promise<void> {
 
 async function writeWorkflow(
   path: string,
-  options: { name: string; description: string; named?: boolean; prompt?: string },
+  options: {
+    name: string;
+    description: string;
+    named?: boolean;
+    prompt?: string;
+    inputName?: string;
+    outputName?: string;
+  },
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
+  const inputName = options.inputName ?? "message";
+  const outputName = options.outputName ?? "value";
   const definition = `workflow({
   name: ${JSON.stringify(options.name)},
   description: ${JSON.stringify(options.description)},
-  inputs: { message: Type.String() },
-  outputs: { value: Type.String() },
-  run: async (ctx) => ({ value: await ctx.stage("emit").prompt(${JSON.stringify(options.prompt ?? options.name)} + ":" + ctx.inputs.message) }),
+  inputs: { ${JSON.stringify(inputName)}: Type.String() },
+  outputs: { ${JSON.stringify(outputName)}: Type.String() },
+  run: async (ctx) => ({ ${JSON.stringify(outputName)}: await ctx.stage("emit").prompt(${JSON.stringify(options.prompt ?? options.name)} + ":" + ctx.inputs[${JSON.stringify(inputName)}]) }),
 })`;
   await writeFile(path, [
     `import { workflow } from "@bastani/workflows";`,
@@ -219,6 +231,7 @@ describe("workflow reload rediscovery matrix", () => {
     const completions = await workflowCommand.getArgumentCompletions("scope-project-at");
     assert.ok(completions?.some((item) => item.label === "scope-project-atomic"));
     const messageStart = harness.messages.length;
+
     await workflowCommand.handler?.("scope-project-atomic --help", { hasUI: false, ui: { notify: () => undefined } });
     assert.match(harness.messages.slice(messageStart).join("\n"), /message/);
 
@@ -226,6 +239,33 @@ describe("workflow reload rediscovery matrix", () => {
     assert.equal(run.action, "run");
     assert.equal(run.status, "completed", JSON.stringify(run));
     assert.deepEqual(run.result, { value: "declared:scope-project-atomic:hello" });
+  });
+
+  test.serial("post-start global and configured additions preserve the active registry", async () => {
+    const { root, project, agent } = await makeIsolatedRoots("workflow-reload-post-start");
+    const existing = join(project, ".atomic/workflows/existing.ts");
+    await writeWorkflow(existing, { name: "post-start-existing", description: "loaded first" });
+    const harness = createHarness();
+    await harness.execute({ action: "reload" });
+    const before = names(await harness.execute({ action: "list" }));
+    assert.deepEqual(before.filter((name) => name.startsWith("post-start-")), ["post-start-existing"]);
+    assert.ok(before.includes("goal"), "bundled workflows must survive reload");
+
+    const globalAdded = join(agent, "workflows/added.ts");
+    const configuredAdded = join(root, "configured-after-start/added.ts");
+    await writeWorkflow(globalAdded, { name: "post-start-global", description: "added globally" });
+    await writeWorkflow(configuredAdded, { name: "post-start-configured", description: "added by config" });
+    await writeJson(join(project, ".atomic/extensions/workflow/config.json"), {
+      workflows: { addedAfterStart: { path: configuredAdded } },
+    });
+
+    const report = reloadResult(await harness.execute({ action: "reload" }));
+    assert.equal(report.outcome, "applied");
+    const after = names(await harness.execute({ action: "list" }));
+    assert.ok(after.includes("post-start-existing"));
+    assert.ok(after.includes("post-start-global"));
+    assert.ok(after.includes("post-start-configured"));
+    assert.ok(after.includes("goal"), "bundled workflows must remain after rediscovery");
   });
 
   test.serial("add edit rename delete and malformed siblings replace metadata while preserving valid workflows", async () => {
@@ -239,21 +279,45 @@ describe("workflow reload rediscovery matrix", () => {
 
     await writeWorkflow(changing, { name: "reload-changing", description: "version one" });
     await writeFile(join(dir, "invalid.ts"), "export default { broken: true };", "utf8");
+    await writeFile(join(dir, "import-failed.ts"), "export default ;", "utf8");
     const added = reloadResult(await harness.execute({ action: "reload" }));
     assert.equal(added.status, "ok");
     assert.ok(added.diagnostics.some((diagnostic) => diagnostic.code === "INVALID_DEFINITION"));
+    assert.ok(added.diagnostics.some((diagnostic) => diagnostic.code === "IMPORT_FAILED"));
     assert.ok(names(await harness.execute({ action: "list" })).includes("reload-stable"));
+    const stableRun = await harness.execute({ action: "run", workflow: "reload-stable", inputs: { message: "still-valid" } });
+    assert.equal(stableRun.action, "run");
+    assert.equal(stableRun.status, "completed", JSON.stringify(stableRun));
+    assert.deepEqual(stableRun.result, { value: "declared:reload-stable:still-valid" });
     const slashMessageStart = harness.messages.length;
     await harness.commands.get("workflow")?.handler?.("reload", { hasUI: false, ui: { notify: () => undefined } });
-    assert.match(harness.messages.slice(slashMessageStart).join("\n"), /INVALID_DEFINITION/);
+    assert.match(harness.messages.slice(slashMessageStart).join("\n"), /INVALID_DEFINITION[\s\S]*IMPORT_FAILED|IMPORT_FAILED[\s\S]*INVALID_DEFINITION/);
 
-    await writeWorkflow(changing, { name: "reload-edited", description: "version two", named: true });
+    await writeWorkflow(changing, {
+      name: "reload-edited",
+      description: "version two",
+      named: true,
+      prompt: "edited",
+      inputName: "revisedInput",
+      outputName: "revisedValue",
+    });
     const edited = reloadResult(await harness.execute({ action: "reload" }));
     assert.equal(edited.status, "ok");
     const editedGet = await harness.execute({ action: "get", workflow: "reload-edited" });
     assert.equal(editedGet.action, "get");
     assert.equal(editedGet.details?.output?.description, "version two");
     assert.ok(!names(await harness.execute({ action: "list" })).includes("reload-changing"));
+    const editedInputs = await harness.execute({ action: "inputs", workflow: "reload-edited" });
+    assert.equal(editedInputs.action, "inputs");
+    assert.deepEqual(editedInputs.inputs.map((input) => input.name), ["revisedInput"]);
+    const editedRun = await harness.execute({
+      action: "run",
+      workflow: "reload-edited",
+      inputs: { revisedInput: "next" },
+    });
+    assert.equal(editedRun.action, "run");
+    assert.equal(editedRun.status, "completed", JSON.stringify(editedRun));
+    assert.deepEqual(editedRun.result, { revisedValue: "declared:edited:next" });
 
     const renamedPath = join(dir, "renamed.ts");
     await rename(changing, renamedPath);
@@ -280,6 +344,9 @@ describe("workflow reload rediscovery matrix", () => {
     });
     const applied = reloadResult(await harness.execute({ action: "reload" }));
     await writeWorkflow(workflowPath, { name: "reload-retained", description: "must not publish" });
+    const invalidConfig = join(project, ".atomic/extensions/workflow/config.json");
+    await mkdir(dirname(invalidConfig), { recursive: true });
+    await writeFile(invalidConfig, "{ invalid", "utf8");
     failRefresh = true;
     const failed = reloadResult(await harness.execute({ action: "reload" }));
     assert.equal(failed.status, "noop");
@@ -288,6 +355,8 @@ describe("workflow reload rediscovery matrix", () => {
     assert.equal(failed.generation, applied.generation);
     assert.equal(failed.workflowCount, applied.workflowCount);
     assert.equal(failed.error, "deterministic refresh failure");
+    assert.ok(failed.diagnostics.some((diagnostic) => diagnostic.code === "CONFIG_INVALID"));
+    assert.match(failed.message, /CONFIG_INVALID/);
     const retained = await harness.execute({ action: "get", workflow: "reload-retained" });
     assert.equal(retained.action, "get");
     assert.equal(retained.details?.output?.description, "before failure");
@@ -309,12 +378,24 @@ describe("workflow reload rediscovery matrix", () => {
         }),
       }),
     });
+    const durableBackend = new InMemoryDurableBackend();
+    durableBackend.registerWorkflow({
+      workflowId: "durable-reload-retained",
+      name: "durable retained",
+      inputs: {},
+      createdAt: 1,
+      status: "paused",
+      completedCheckpoints: 1,
+    });
+    setDurableBackend(durableBackend);
+    const durableBefore = structuredClone(durableBackend.listResumableWorkflows());
     await harness.execute({ action: "reload" });
     const running = harness.execute({ action: "run", workflow: "reload-inflight", inputs: { message: "value" } });
     await promptStarted;
     await writeWorkflow(workflowPath, { name: "reload-inflight", description: "new metadata", prompt: "new prompt" });
     const reloaded = reloadResult(await harness.execute({ action: "reload" }));
     assert.equal(reloaded.status, "ok");
+    assert.deepEqual(durableBackend.listResumableWorkflows(), durableBefore);
     const current = await harness.execute({ action: "get", workflow: "reload-inflight" });
     assert.equal(current.action, "get");
     assert.equal(current.details?.output?.description, "new metadata");
@@ -325,8 +406,8 @@ describe("workflow reload rediscovery matrix", () => {
     assert.deepEqual(completed.result, { value: "held:old prompt:value" });
   });
 
-  test.serial("overlapping reload requests serialize and coalesce one trailing generation", async () => {
-    await makeIsolatedRoots("workflow-reload-coalesce");
+  test.serial("overlapping reload recovers from an active failure and applies the coalesced trailing pass", async () => {
+    await makeIsolatedRoots("workflow-reload-coalesce-failure");
     const gates: Array<() => void> = [];
     const starts: Array<() => void> = [];
     let refreshCalls = 0;
@@ -338,6 +419,7 @@ describe("workflow reload rediscovery matrix", () => {
         const index = refreshCalls++;
         starts[index]?.();
         await new Promise<void>((resolve) => { gates[index] = resolve; });
+        if (index === 0) throw new Error("overlapping active failure");
         return [];
       },
     });
@@ -352,9 +434,14 @@ describe("workflow reload rediscovery matrix", () => {
     assert.equal(refreshCalls, 2);
     gates[1]?.();
     const [firstResult, secondResult, thirdResult] = await Promise.all([first, trailingA, trailingB]);
-    assert.equal(reloadResult(firstResult).coalescedRequests, 1);
-    assert.equal(reloadResult(secondResult).coalescedRequests, 2);
-    assert.equal(reloadResult(thirdResult).generation, reloadResult(secondResult).generation);
+    const failed = reloadResult(firstResult);
+    const applied = reloadResult(secondResult);
+    assert.equal(failed.outcome, "failed");
+    assert.equal(failed.error, "overlapping active failure");
+    assert.equal(applied.outcome, "applied");
+    assert.equal(applied.coalescedRequests, 2);
+    assert.equal(reloadResult(thirdResult).generation, applied.generation);
+    assert.ok(applied.generation > failed.generation);
   });
 
   test.serial("queued old-session requests cannot coalesce with or publish into a new session", async () => {

@@ -273,14 +273,18 @@ export function createWorkflowExtensionRuntimeState(
     };
   }
 
-  function failedReloadReport(error: unknown, coalescedRequests: number): WorkflowReloadReport {
+  function failedReloadReport(
+    error: unknown,
+    coalescedRequests: number,
+    configResult?: ConfigLoadResult,
+  ): WorkflowReloadReport {
     return {
       outcome: "failed",
       error: error instanceof Error ? error.message : String(error),
       generation: activeResourceGeneration,
       workflowCount: runtimeRef.current.registry.names().length,
       coalescedRequests,
-      diagnostics: [],
+      diagnostics: workflowReloadDiagnostics(configResult?.diagnostics ?? [], []),
     };
   }
 
@@ -310,33 +314,37 @@ export function createWorkflowExtensionRuntimeState(
     if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
       return supersededReloadReport(coalescedRequests, configResult);
     }
-    const hasGlobal = configResult.globalConfig != null;
-    const hasProject = configResult.projectConfig != null;
-    const discoveryConfig = hasGlobal || hasProject
-      ? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, { projectRoot: process.cwd() })
-      : undefined;
-    const packageWorkflowPaths = await loadPackageWorkflowPaths();
-    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
-      return supersededReloadReport(coalescedRequests, configResult);
-    }
-    const result = await discoverWorkflows({ config: discoveryConfig, packageWorkflowPaths });
-    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
-      return supersededReloadReport(coalescedRequests, configResult, result);
-    }
+    try {
+      const hasGlobal = configResult.globalConfig != null;
+      const hasProject = configResult.projectConfig != null;
+      const discoveryConfig = hasGlobal || hasProject
+        ? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, { projectRoot: process.cwd() })
+        : undefined;
+      const packageWorkflowPaths = await loadPackageWorkflowPaths();
+      if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+        return supersededReloadReport(coalescedRequests, configResult);
+      }
+      const result = await discoverWorkflows({ config: discoveryConfig, packageWorkflowPaths });
+      if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+        return supersededReloadReport(coalescedRequests, configResult, result);
+      }
 
-    // Commit config, diagnostics, and the replacement runtime synchronously,
-    // after every fallible/awaited discovery step has completed.
-    applyWorkflowConfig(configResult);
-    discoveryRef.current = result;
-    rebuildRuntime(result.registry);
-    activeResourceGeneration += 1;
-    return {
-      outcome: "applied",
-      generation: activeResourceGeneration,
-      workflowCount: result.registry.names().length,
-      coalescedRequests,
-      diagnostics: workflowReloadDiagnostics(configResult.diagnostics, result.errors),
-    };
+      // Commit config, diagnostics, and the replacement runtime synchronously,
+      // after every fallible/awaited discovery step has completed.
+      applyWorkflowConfig(configResult);
+      discoveryRef.current = result;
+      rebuildRuntime(result.registry);
+      activeResourceGeneration += 1;
+      return {
+        outcome: "applied",
+        generation: activeResourceGeneration,
+        workflowCount: result.registry.names().length,
+        coalescedRequests,
+        diagnostics: workflowReloadDiagnostics(configResult.diagnostics, result.errors),
+      };
+    } catch (error) {
+      return failedReloadReport(error, coalescedRequests, configResult);
+    }
   }
 
   const reloadCoordinator = createWorkflowReloadCoordinator(async (discoveryGeneration, coalescedRequests) => {
