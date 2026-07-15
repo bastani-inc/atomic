@@ -1,4 +1,4 @@
-import { getModelDefaultContextWindow, getSupportedContextWindows, parseContextWindowValue } from "@bastani/atomic";
+import { classifyBareCursorModelReference, getModelDefaultContextWindow, getSupportedContextWindows, parseContextWindowValue } from "@bastani/atomic";
 import type { CreateAgentSessionOptions } from "@bastani/atomic";
 import type {
   WorkflowModelCatalogPort,
@@ -6,6 +6,12 @@ import type {
   WorkflowModelValue,
   WorkflowThinkingLevel,
 } from "../../shared/types.js";
+import {
+  explicitCursorModelObject,
+  hasStrictCursorReference,
+  parseExplicitCursorReference,
+  strictCursorStringReference,
+} from "./model-fallback-cursor.js";
 
 export interface WorkflowResolvedModelCandidate {
   readonly id: string;
@@ -152,32 +158,6 @@ export function splitReasoningSuffix(model: string): { readonly baseModel: strin
   return { baseModel: model };
 }
 
-function parseExplicitCursorReference(rawInput: string): {
-  readonly fullId: string;
-  readonly routeId: string;
-} | undefined {
-  const slashIndex = rawInput.indexOf("/");
-  if (slashIndex <= 0 || rawInput.slice(0, slashIndex).trim().toLowerCase() !== "cursor") return undefined;
-  const routeId = rawInput.slice(slashIndex + 1);
-  return { fullId: `cursor/${routeId}`, routeId };
-}
-
-function explicitCursorReference(rawInput: string): boolean {
-  return parseExplicitCursorReference(rawInput) !== undefined;
-}
-
-function explicitCursorModelObject(value: WorkflowModelValue | undefined): boolean {
-  return value !== undefined && typeof value !== "string" && String(value.provider).toLowerCase() === "cursor";
-}
-
-function hasExplicitCursorReference(input: {
-  readonly primaryModel?: WorkflowModelValue;
-  readonly fallbackModels?: readonly string[];
-}): boolean {
-  return explicitCursorModelObject(input.primaryModel)
-    || (typeof input.primaryModel === "string" && explicitCursorReference(input.primaryModel))
-    || (input.fallbackModels?.some(explicitCursorReference) ?? false);
-}
 
 function unavailableCursorFailure(input: string): ModelResolutionFailure {
   return {
@@ -264,6 +244,14 @@ function resolveStringModel(
       ? unavailableCursorFailure(rawInput)
       : makeCandidate(exact.fullId, exact.model ?? exact.fullId, undefined);
   }
+  const bareCursorKind = classifyBareCursorModelReference(rawInput, availableModels ?? []);
+  if (bareCursorKind === "current-cursor") {
+    const exact = uniqueByFullId(availableModels ?? []).find(
+      (model) => model.provider === "cursor" && model.id === rawInput,
+    );
+    if (exact) return makeCandidate(exact.fullId, exact.model ?? exact.fullId, undefined);
+  }
+  if (bareCursorKind === "legacy-cursor") return unavailableCursorFailure(`cursor/${rawInput}`);
   const input = rawInput.trim();
   if (!input) return { input: rawInput, reason: "empty model id" };
   // Extract the trailing context-window token, split the reasoning suffix, then
@@ -371,7 +359,7 @@ export function buildModelCandidates(input: {
     if (compatLevel !== undefined && !WORKFLOW_THINKING_LEVEL_SET.has(compatLevel)) {
       throw new WorkflowModelValidationError([{ input: fallback, reason: `invalid fallbackThinkingLevels[${index}] "${compatLevel}"; expected one of ${WORKFLOW_THINKING_LEVELS.join(", ")}` }]);
     }
-    if (explicitCursorReference(fallback)) {
+    if (strictCursorStringReference(fallback)) {
       rawValues.push(fallback);
       continue;
     }
@@ -417,9 +405,10 @@ export async function buildModelCandidatesFromCatalog(input: {
   readonly fallbackModels?: readonly string[];
   readonly fallbackThinkingLevels?: readonly string[];
   readonly catalog?: WorkflowModelCatalogPort;
+  readonly signal?: AbortSignal;
 }): Promise<WorkflowResolvedModelCandidate[]> {
   const hasExplicitModel = input.primaryModel !== undefined || (input.fallbackModels?.length ?? 0) > 0;
-  const strictCursorReference = hasExplicitCursorReference(input);
+  const strictCursorReference = hasStrictCursorReference(input);
   if (!hasExplicitModel) return [];
 
   if (input.catalog === undefined) {
@@ -431,6 +420,7 @@ export async function buildModelCandidatesFromCatalog(input: {
   }
 
   try {
+    if (strictCursorReference) await input.catalog.discoverModels?.(input.signal);
     const availableModels = await input.catalog.listModels();
     return buildModelCandidates({
       primaryModel: input.primaryModel,
@@ -454,12 +444,16 @@ export async function validateWorkflowModels(input: {
     readonly fallbackThinkingLevels?: readonly string[];
   }[];
   readonly catalog?: WorkflowModelCatalogPort;
+  readonly signal?: AbortSignal;
 }): Promise<readonly string[]> {
   const relevant = input.requests.filter(
     (request) => request.model !== undefined || (request.fallbackModels?.length ?? 0) > 0,
   );
   if (relevant.length === 0) return [];
-  const strictCursorReference = relevant.some(hasExplicitCursorReference);
+  const strictCursorReference = relevant.some((request) => hasStrictCursorReference({
+    primaryModel: request.model,
+    fallbackModels: request.fallbackModels,
+  }));
 
   const warnings: string[] = [];
   const recordWarning = (warning: string): void => {
@@ -471,6 +465,7 @@ export async function validateWorkflowModels(input: {
   let availableModels: readonly WorkflowModelInfo[] | undefined;
   if (input.catalog !== undefined) {
     try {
+      if (strictCursorReference) await input.catalog.discoverModels?.(input.signal);
       availableModels = await input.catalog.listModels();
     } catch (err) {
       if (strictCursorReference || input.catalog.currentModel === undefined) throw err;

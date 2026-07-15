@@ -21,6 +21,7 @@ export class Http2CursorRunStream implements CursorRunStream {
 	readonly messages: AsyncIterable<CursorServerMessage>;
 	#closed = false;
 	#cancelled = false;
+	#cleanupTask: Promise<void> | undefined;
 	readonly #heartbeatTimer?: ReturnType<typeof setInterval>;
 	readonly #messageQueue: CursorServerMessage[] = [];
 	readonly #messageReaders: Array<{
@@ -61,42 +62,53 @@ export class Http2CursorRunStream implements CursorRunStream {
 		}
 	}
 
-	async cancel(): Promise<void> {
-		if (this.#cancelled) return;
+	cancel(): Promise<void> {
+		if (this.#cleanupTask) return this.#cleanupTask;
 		this.#cancelled = true;
-		this.clearHeartbeat();
-		let cancelError: Error | undefined;
-		try {
-			await this.handle.write(encodeCursorConnectFrame(this.codec.encodeCancelRequest()), { timeoutMs: DEFAULT_CANCEL_WRITE_TIMEOUT_MS }).catch(() => undefined);
-		} finally {
-			this.onCancel();
-			try {
-				await this.handle.cancel();
-			} catch (error) {
-				cancelError = toError(error);
-			} finally {
-				this.finishMessageQueue();
-				if (!this.#closed) {
-					this.#closed = true;
-					this.codec.disposeRun?.(this.id);
-					this.onClose();
-				}
-			}
-		}
-		if (cancelError) throw cancelError;
+		this.releaseLocal(true);
+		this.#cleanupTask = this.performCancel();
+		return this.#cleanupTask;
 	}
 
-	async close(): Promise<void> {
+	close(): Promise<void> {
+		if (this.#cleanupTask) return this.#cleanupTask;
+		this.releaseLocal(false);
+		try {
+			this.#cleanupTask = this.handle.close();
+		} catch (error) {
+			this.#cleanupTask = Promise.reject(error);
+		}
+		return this.#cleanupTask;
+	}
+
+	private async performCancel(): Promise<void> {
+		let cancelWrite: Promise<void>;
+		try {
+			cancelWrite = this.handle.write(
+				encodeCursorConnectFrame(this.codec.encodeCancelRequest()),
+				{ timeoutMs: DEFAULT_CANCEL_WRITE_TIMEOUT_MS },
+			).catch(() => undefined);
+		} catch {
+			cancelWrite = Promise.resolve();
+		}
+		let handleCancel: Promise<void>;
+		try {
+			handleCancel = this.handle.cancel();
+		} catch (error) {
+			handleCancel = Promise.reject(error);
+		}
+		const [, cancelResult] = await Promise.allSettled([cancelWrite, handleCancel]);
+		if (cancelResult.status === "rejected") throw toError(cancelResult.reason);
+	}
+
+	private releaseLocal(cancelled: boolean): void {
 		if (this.#closed) return;
 		this.#closed = true;
 		this.clearHeartbeat();
-		try {
-			await this.handle.close();
-		} finally {
-			this.finishMessageQueue();
-			this.codec.disposeRun?.(this.id);
-			this.onClose();
-		}
+		this.finishMessageQueue();
+		if (cancelled) this.onCancel();
+		this.codec.disposeRun?.(this.id);
+		this.onClose();
 	}
 
 	private clearHeartbeat(): void {

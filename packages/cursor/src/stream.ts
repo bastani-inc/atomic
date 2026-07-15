@@ -3,25 +3,22 @@ import { type Api, type AssistantMessage, type AssistantMessageEventStream, calc
 import { parseJsonObject, sanitizeDiagnosticText } from "./config.js";
 import { CursorConversationStateStore, type CursorConversationSnapshot } from "./conversation-state.js";
 import type { CursorAgentTransport, CursorRunStream, CursorServerMessage, CursorToolCallMessage, CursorToolResultMessage } from "./transport.js";
-
+import type { CursorAuthorizedRoute, CursorExecutionRouteAuthorizer } from "./execution-authority.js";
+import { CursorMessageReader, CursorStreamAbortError, CursorStreamTimeoutError, readNextCursorMessage } from "./stream-reader.js";
 export interface CursorStreamAdapterOptions {
 	readonly transport: CursorAgentTransport; readonly conversationState?: CursorConversationStateStore; readonly uuid?: () => string;
-	readonly pausedTurnIdleTimeoutMs?: number; readonly streamReadTimeoutMs?: number;
+	readonly pausedTurnIdleTimeoutMs?: number; readonly streamReadTimeoutMs?: number; readonly disposeGraceMs?: number;
+	readonly executionAuthorizer?: CursorExecutionRouteAuthorizer;
 }
 interface CursorStreamRuntime {
 	readonly transport: CursorAgentTransport; readonly conversationState: CursorConversationStateStore; readonly uuid: () => string;
-	readonly pausedTurnIdleTimeoutMs: number; readonly streamReadTimeoutMs: number;
+	readonly pausedTurnIdleTimeoutMs: number; readonly streamReadTimeoutMs: number; readonly disposeGraceMs: number;
 }
-
 const DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_STREAM_READ_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_DISPOSE_GRACE_MS = 1_000;
 const TOOL_CALL_BATCH_IDLE_TIMEOUT_MS = 100;
 
-type IteratorReadResult = { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage> } | { readonly kind: "aborted" };
-type CursorReadRaceResult =
-	| { readonly kind: "message"; readonly result: IteratorResult<CursorServerMessage>; readonly read: CursorMessageReadHandle }
-	| { readonly kind: "error"; readonly error: Error; readonly read: CursorMessageReadHandle }
-	| { readonly kind: "aborted" };
 
 function defaultCursorUuid(): string {
 	return nodeRandomUUID();
@@ -30,6 +27,11 @@ function defaultCursorUuid(): string {
 export class CursorStreamAdapter {
 	readonly #runtime: CursorStreamRuntime;
 	readonly #messageReaders = new WeakMap<CursorRunStream, CursorMessageReader>();
+	#executionAuthorizer: CursorExecutionRouteAuthorizer | undefined;
+	readonly #disposeController = new AbortController();
+	#disposePromise: Promise<void> | undefined;
+	readonly #cleanupTasks = new Set<Promise<void>>();
+	#cleanupTrackingClosed = false;
 
 	constructor(options: CursorStreamAdapterOptions) {
 		this.#runtime = {
@@ -38,7 +40,14 @@ export class CursorStreamAdapter {
 			uuid: options.uuid ?? defaultCursorUuid,
 			pausedTurnIdleTimeoutMs: options.pausedTurnIdleTimeoutMs ?? DEFAULT_PAUSED_TURN_IDLE_TIMEOUT_MS,
 			streamReadTimeoutMs: options.streamReadTimeoutMs ?? DEFAULT_STREAM_READ_TIMEOUT_MS,
+			disposeGraceMs: options.disposeGraceMs ?? DEFAULT_DISPOSE_GRACE_MS,
 		};
+		this.#executionAuthorizer = options.executionAuthorizer;
+	}
+
+	bindExecutionAuthority(authorizer: CursorExecutionRouteAuthorizer): void {
+		if (this.#executionAuthorizer) throw new Error("Cursor execution authority is already bound and cannot be replaced.");
+		this.#executionAuthorizer = authorizer;
 	}
 
 	streamSimple = (model: Model<Api>, context: Context, options?: SimpleStreamOptions): AssistantMessageEventStream => {
@@ -47,18 +56,47 @@ export class CursorStreamAdapter {
 		return stream;
 	};
 
-	async dispose(): Promise<void> {
-		await this.#runtime.conversationState.dispose();
-		await this.#runtime.transport.dispose();
+	dispose(): Promise<void> {
+		if (this.#disposePromise) return this.#disposePromise;
+		this.#cleanupTrackingClosed = true;
+		this.#disposeController.abort(new Error("Cursor stream adapter disposed."));
+		this.#disposePromise = (async () => {
+			const initial = [
+				this.#runtime.conversationState.dispose(),
+				this.#runtime.transport.dispose(),
+			];
+			await waitForCursorCleanup(this.#drainCleanup(initial), this.#runtime.disposeGraceMs);
+			this.#cleanupTasks.clear();
+			this.#runtime.conversationState.detachPendingCleanupTasks();
+		})();
+		return this.#disposePromise;
 	}
 
 	async cleanupSession(sessionId: string): Promise<void> {
-		await this.#runtime.conversationState.cancelTurn(deriveCursorBridgeKeyFromSessionId(sessionId));
+		const cleanup = this.#trackCleanup(this.#runtime.conversationState.cancelTurn(deriveCursorBridgeKeyFromSessionId(sessionId)));
+		await waitForCursorCleanup(cleanup, this.#runtime.disposeGraceMs);
 		this.#runtime.transport.discardConversation?.(deriveCursorWireConversationIdFromSessionId(sessionId));
 	}
 
 	getLifecycleSnapshot(): CursorConversationSnapshot {
 		return this.#runtime.conversationState.snapshot(this.#runtime.transport.getLifecycleSnapshot());
+	}
+
+	getPendingCleanupCount(): number {
+		return this.#cleanupTasks.size + this.#runtime.conversationState.pendingCleanupTasks;
+	}
+
+	#trackCleanup(cleanup: Promise<void>): Promise<void> {
+		let observed: Promise<void>;
+		observed = cleanup.catch(() => undefined).finally(() => this.#cleanupTasks.delete(observed));
+		if (!this.#cleanupTrackingClosed) this.#cleanupTasks.add(observed);
+		return observed;
+	}
+	async #drainCleanup(initial: readonly Promise<unknown>[]): Promise<void> {
+		await Promise.allSettled(initial);
+		while (this.#cleanupTasks.size > 0) {
+			await Promise.allSettled([...this.#cleanupTasks]);
+		}
 	}
 	#messageReaderFor(runStream: CursorRunStream): CursorMessageReader {
 		const existing = this.#messageReaders.get(runStream);
@@ -76,35 +114,47 @@ export class CursorStreamAdapter {
 		const output = createOutputMessage(model);
 		stream.push({ type: "start", partial: output });
 		let runStream: CursorRunStream | undefined;
-		let activeConversationKey: string | undefined;
+		let messageReader: CursorMessageReader | undefined;
+		const conversationIdentity = deriveCursorConversationIdentity(context, options?.sessionId);
+		const activeConversationKey = conversationIdentity.activeKey;
+		const trailingToolResults = getTrailingToolResults(context);
+		const resumeAttempt = trailingToolResults.length > 0;
+		let activeTurn = resumeAttempt ? this.#runtime.conversationState.captureTurn(activeConversationKey) : undefined;
 		let textIndex: number | undefined;
 		let thinkingIndex: number | undefined;
 		let terminalEventSent = false;
 		let sawToolCall = false;
 		const pendingToolCalls: CursorToolCallMessage[] = [];
+		let cursorRouting: CursorAuthorizedRoute | undefined;
 		const effectiveTimeoutMs = options?.timeoutMs ?? this.#runtime.streamReadTimeoutMs;
+		let executionSignal = options?.signal;
 		try {
 			if (!options?.apiKey) {
 				throw new Error("Cursor OAuth credentials are required. Run /login and select Cursor.");
 			}
-			if (hasImageInput(context) && !model.input.includes("image")) {
-				throw new Error(`Cursor model ${model.id} does not support image input.`);
-			}
 			if (options.signal?.aborted) {
 				throw new CursorStreamAbortError();
 			}
+			const executionAuthorizer = this.#executionAuthorizer;
+			if (!executionAuthorizer) throw new Error("Cursor execution requires a current authenticated catalog authority. Refresh the catalog and reselect a model.");
+			cursorRouting = await executionAuthorizer(model, options.apiKey, options.signal);
+			executionSignal = options.signal
+				? AbortSignal.any([options.signal, cursorRouting.authoritySignal, this.#disposeController.signal])
+				: AbortSignal.any([cursorRouting.authoritySignal, this.#disposeController.signal]);
+			if (cursorRouting.modelId !== model.id) throw new Error(`Cursor model ${model.id} is not an exact route in the authenticated catalog. Refresh the catalog and reselect a model.`);
+			if (hasImageInput(context) && !cursorRouting.supportsImages) throw new Error(`Cursor model ${model.id} does not support image input.`);
 			const requestId = this.#runtime.uuid();
-			const conversationIdentity = deriveCursorConversationIdentity(context, options.sessionId);
-			activeConversationKey = conversationIdentity.activeKey;
-			const cursorRouting = (model.compat as { cursorRouting?: Readonly<Record<string, { modelId: string; maxMode: boolean }>> } | undefined)?.cursorRouting?.[model.id];
-			if (!cursorRouting || cursorRouting.modelId !== model.id) {
-				throw new Error(`Cursor model ${model.id} is not an exact route in the authenticated catalog. Refresh the catalog and reselect a model.`);
-			}
-			const trailingToolResults = getTrailingToolResults(context);
-			if (trailingToolResults.length > 0) {
-				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, { signal: options.signal, timeoutMs: effectiveTimeoutMs });
+			if (resumeAttempt) {
+				runStream = await this.#runtime.conversationState.resumeTurnWithToolResults(activeConversationKey, trailingToolResults, {
+					authority: cursorRouting,
+					signal: executionSignal,
+					timeoutMs: effectiveTimeoutMs,
+				});
+				activeTurn = this.#runtime.conversationState.captureTurn(activeConversationKey);
+				messageReader = this.#messageReaderFor(runStream);
 			} else {
-				runStream = await this.#runtime.transport.run({
+				cursorRouting.assertCurrent();
+				const opening = this.#runtime.transport.run({
 					accessToken: options.apiKey,
 					requestId,
 					conversationId: conversationIdentity.wireConversationId,
@@ -112,18 +162,23 @@ export class CursorStreamAdapter {
 					resolvedModelId: model.id,
 					maxMode: cursorRouting.maxMode,
 					context,
-					signal: options.signal,
+					signal: executionSignal,
 					openTimeoutMs: effectiveTimeoutMs,
 				});
-				this.#runtime.conversationState.registerTurn(activeConversationKey, runStream);
+				runStream = await opening;
+				const openedReader = this.#messageReaderFor(runStream);
+				messageReader = openedReader;
+				activeTurn = this.#runtime.conversationState.registerTurn(activeConversationKey, runStream, cursorRouting, () => { void openedReader.finalize(); });
 			}
-			const reader = this.#messageReaderFor(runStream);
+			const reader = messageReader;
 			while (true) {
 				const readTimeoutMs = pendingToolCalls.length > 0 ? Math.min(effectiveTimeoutMs, TOOL_CALL_BATCH_IDLE_TIMEOUT_MS) : effectiveTimeoutMs;
-				const next = await readNextCursorMessage(reader, options.signal, readTimeoutMs);
+				const next = await readNextCursorMessage(reader, executionSignal, readTimeoutMs);
 				if (next.kind === "aborted") {
 					throw new CursorStreamAbortError();
 				}
+				cursorRouting.assertCurrent();
+				if (executionSignal?.aborted) throw new CursorStreamAbortError();
 				if (next.result.done) {
 					break;
 				}
@@ -131,7 +186,7 @@ export class CursorStreamAdapter {
 				if (pendingToolCalls.length > 0 && message.type !== "toolCall" && message.type !== "usage") {
 					closeOpenContent(stream, output, textIndex, thinkingIndex);
 					if (!(message.type === "done" && message.reason === "toolUse")) reader.unread(next.result);
-					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { authority: cursorRouting, signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
 					output.stopReason = "toolUse";
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					terminalEventSent = true;
@@ -154,7 +209,7 @@ export class CursorStreamAdapter {
 				} else {
 					closeOpenContent(stream, output, textIndex, thinkingIndex);
 					if (pendingToolCalls.length > 0) {
-						this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+						this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { authority: cursorRouting, signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
 						output.stopReason = "toolUse";
 						stream.push({ type: "done", reason: "toolUse", message: output });
 						runStream = undefined;
@@ -169,7 +224,7 @@ export class CursorStreamAdapter {
 			if (!terminalEventSent) {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
 				if (pendingToolCalls.length > 0 && runStream) {
-					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+					this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { authority: cursorRouting, signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
 					output.stopReason = "toolUse";
 					stream.push({ type: "done", reason: "toolUse", message: output });
 					runStream = undefined;
@@ -179,17 +234,27 @@ export class CursorStreamAdapter {
 				}
 			}
 		} catch (error) {
-			const aborted = error instanceof CursorStreamAbortError || options?.signal?.aborted;
+			const initiallyAborted = error instanceof CursorStreamAbortError || executionSignal?.aborted;
 			const timedOut = error instanceof CursorStreamTimeoutError;
-			if (timedOut && pendingToolCalls.length > 0 && runStream && activeConversationKey) {
+			let canPauseTimedOutTools = !initiallyAborted && timedOut && pendingToolCalls.length > 0 && !!runStream && !!cursorRouting;
+			if (canPauseTimedOutTools && cursorRouting) {
+				try {
+					cursorRouting.assertCurrent();
+					canPauseTimedOutTools = !executionSignal?.aborted;
+				} catch {
+					canPauseTimedOutTools = false;
+				}
+			}
+			if (canPauseTimedOutTools && runStream && cursorRouting) {
 				closeOpenContent(stream, output, textIndex, thinkingIndex);
-				this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
+				this.#runtime.conversationState.pauseTurnForTools(activeConversationKey, runStream, pendingToolCalls, { authority: cursorRouting, signal: options?.signal, idleTimeoutMs: this.#runtime.pausedTurnIdleTimeoutMs });
 				output.stopReason = "toolUse";
 				stream.push({ type: "done", reason: "toolUse", message: output });
 				terminalEventSent = true;
 				runStream = undefined;
 				return;
 			}
+			const aborted = initiallyAborted || executionSignal?.aborted;
 			output.stopReason = aborted ? "aborted" : "error";
 			output.errorMessage = aborted
 				? "Cursor stream aborted."
@@ -197,19 +262,26 @@ export class CursorStreamAdapter {
 					? "Cursor stream timed out while waiting for provider output."
 					: sanitizeDiagnosticText(error instanceof Error ? error.message : "Cursor stream failed.", [options?.apiKey ?? ""]);
 			stream.push({ type: "error", reason: output.stopReason, error: output });
-			if ((aborted || timedOut) && runStream && activeConversationKey) {
-				try {
-					await this.#runtime.conversationState.cancelTurn(activeConversationKey);
-				} catch {
-				} finally {
-					runStream = undefined;
-				}
+			if ((aborted || timedOut) && activeTurn) {
+				this.#trackCleanup(this.#runtime.conversationState.cancelTurn(activeConversationKey, activeTurn));
+				runStream = undefined;
+				activeTurn = undefined;
+			} else if (resumeAttempt && activeTurn) {
+				this.#trackCleanup(this.#runtime.conversationState.cancelTurn(activeConversationKey, activeTurn));
+				activeTurn = undefined;
 			}
 		} finally {
 			try {
-				if (runStream && !options?.signal?.aborted) {
-					await runStream.close();
-					if (activeConversationKey) this.#runtime.conversationState.completeTurn(activeConversationKey);
+				if (runStream) {
+					messageReader?.finalize();
+					if (executionSignal?.aborted) {
+						if (activeTurn) this.#trackCleanup(this.#runtime.conversationState.cancelTurn(activeConversationKey, activeTurn));
+					} else if (activeTurn) {
+						this.#runtime.conversationState.completeTurn(activeConversationKey, activeTurn);
+						this.#trackCleanup(runStream.close());
+					}
+					activeTurn = undefined;
+					runStream = undefined;
 				}
 			} finally {
 				stream.end(output);
@@ -217,89 +289,23 @@ export class CursorStreamAdapter {
 		}
 	}
 }
-class CursorStreamAbortError extends Error {
-	constructor() { super("Cursor stream aborted."); this.name = "CursorStreamAbortError"; }
-}
-class CursorStreamTimeoutError extends Error {
-	constructor() { super("Cursor stream timed out while waiting for provider output."); this.name = "CursorStreamTimeoutError"; }
-}
-interface CursorPendingMessageRead {
-	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
-	consumed: boolean;
-}
-interface CursorMessageReadHandle {
-	readonly promise: Promise<IteratorResult<CursorServerMessage>>;
-	consumeResult(result: IteratorResult<CursorServerMessage>): void;
-	consumeError(error: Error): void;
-}
-type CursorBufferedMessageRead =
-	| { readonly kind: "result"; readonly result: IteratorResult<CursorServerMessage> }
-	| { readonly kind: "error"; readonly error: Error };
-class CursorMessageReader {
-	readonly #iterator: AsyncIterator<CursorServerMessage>;
-	#pending: CursorPendingMessageRead | undefined;
-	#buffered: CursorBufferedMessageRead | undefined;
-	constructor(messages: AsyncIterable<CursorServerMessage>) {
-		this.#iterator = messages[Symbol.asyncIterator]();
-	}
-	unread(result: IteratorResult<CursorServerMessage>): void {
-		if (this.#buffered) return;
-		this.#buffered = { kind: "result", result };
-	}
-	peek(): CursorMessageReadHandle {
-		if (this.#buffered) return this.peekBuffered(this.#buffered);
-		const pending = this.#pending ?? this.startRead();
-		return {
-			promise: pending.promise,
-			consumeResult: (result) => {
-				pending.consumed = true;
-				if (this.#pending === pending) this.#pending = undefined;
-				if (this.#buffered?.kind === "result" && this.#buffered.result === result) this.#buffered = undefined;
-			},
-			consumeError: (error) => {
-				pending.consumed = true;
-				if (this.#pending === pending) this.#pending = undefined;
-				if (this.#buffered?.kind === "error" && this.#buffered.error === error) this.#buffered = undefined;
-			},
-		};
-	}
-	private peekBuffered(buffered: CursorBufferedMessageRead): CursorMessageReadHandle {
-		return {
-			promise: buffered.kind === "result" ? Promise.resolve(buffered.result) : Promise.reject(buffered.error),
-			consumeResult: (result) => {
-				if (this.#buffered === buffered && buffered.kind === "result" && buffered.result === result) this.#buffered = undefined;
-			},
-			consumeError: (error) => {
-				if (this.#buffered === buffered && buffered.kind === "error" && buffered.error === error) this.#buffered = undefined;
-			},
-		};
-	}
-	private startRead(): CursorPendingMessageRead {
-		const pending: CursorPendingMessageRead = {
-			promise: this.#iterator.next().catch((error: Error) => {
-				throw normalizeCursorReadError(error);
+
+
+async function waitForCursorCleanup(cleanup: Promise<unknown>, graceMs: number): Promise<void> {
+	const settled = cleanup.then(() => undefined, () => undefined);
+	if (graceMs <= 0) return;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			settled,
+			new Promise<void>((resolve) => {
+				timer = setTimeout(resolve, graceMs);
+				timer.unref?.();
 			}),
-			consumed: false,
-		};
-		this.#pending = pending;
-		pending.promise.then(
-			(result) => {
-				if (this.#pending !== pending) return;
-				this.#pending = undefined;
-				if (!pending.consumed) this.#buffered = { kind: "result", result };
-			},
-			(error: Error) => {
-				if (this.#pending !== pending) return;
-				this.#pending = undefined;
-				if (!pending.consumed) this.#buffered = { kind: "error", error };
-			},
-		);
-		void pending.promise.catch(() => undefined);
-		return pending;
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
 	}
-}
-function normalizeCursorReadError(error: Error): Error {
-	return error instanceof Error ? error : new Error(String(error));
 }
 function createOutputMessage(model: Model<Api>): AssistantMessage {
 	return {
@@ -383,12 +389,16 @@ function deterministicCursorConversationId(conversationKey: string): string {
 	].join("-");
 }
 function hasImageInput(context: Context): boolean {
-	for (const message of context.messages) {
-		if (message.role === "user") {
-			if (typeof message.content !== "string" && message.content.some((content) => content.type === "image")) return true;
-		} else if (message.role === "toolResult") {
-			if (message.content.some((content) => content.type === "image")) return true;
-		}
+	const last = context.messages.at(-1);
+	if (!last) return false;
+	if (last.role === "user") {
+		return typeof last.content !== "string" && last.content.some((content) => content.type === "image");
+	}
+	if (last.role !== "toolResult") return false;
+	for (let index = context.messages.length - 1; index >= 0; index--) {
+		const message = context.messages[index];
+		if (!message || message.role !== "toolResult") break;
+		if (message.content.some((content) => content.type === "image")) return true;
 	}
 	return false;
 }
@@ -457,39 +467,6 @@ function updateUsage(output: AssistantMessage, model: Model<Api>, message: Extra
 	}
 	output.usage.totalTokens = output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
 	output.usage.cost = calculateCost(model, output.usage);
-}
-async function readNextCursorMessage(reader: CursorMessageReader, signal: AbortSignal | undefined, timeoutMs: number): Promise<IteratorReadResult> {
-	if (signal?.aborted) return { kind: "aborted" };
-	let abortListener: (() => void) | undefined;
-	let timeout: ReturnType<typeof setTimeout> | undefined;
-	const abortPromise = signal ? new Promise<CursorReadRaceResult>((resolve) => {
-		abortListener = () => resolve({ kind: "aborted" });
-		signal.addEventListener("abort", abortListener, { once: true });
-	}) : undefined;
-	const timeoutPromise = timeoutMs > 0 ? new Promise<CursorReadRaceResult>((_resolve, reject) => {
-		timeout = setTimeout(() => reject(new CursorStreamTimeoutError()), timeoutMs);
-		timeout.unref?.();
-	}) : undefined;
-	const read = reader.peek();
-	const messagePromise = read.promise.then(
-		(result): CursorReadRaceResult => ({ kind: "message", result, read }),
-		(error: Error): CursorReadRaceResult => ({ kind: "error", error: normalizeCursorReadError(error), read }),
-	);
-	try {
-		const next = await Promise.race([messagePromise, ...(abortPromise ? [abortPromise] : []), ...(timeoutPromise ? [timeoutPromise] : [])]);
-		if (next.kind === "message") {
-			next.read.consumeResult(next.result);
-			return { kind: "message", result: next.result };
-		}
-		if (next.kind === "error") {
-			next.read.consumeError(next.error);
-			throw next.error;
-		}
-		return next;
-	} finally {
-		if (abortListener) signal?.removeEventListener("abort", abortListener);
-		if (timeout) clearTimeout(timeout);
-	}
 }
 export function createCursorStreamAdapter(options: CursorStreamAdapterOptions): CursorStreamAdapter {
 	return new CursorStreamAdapter(options);

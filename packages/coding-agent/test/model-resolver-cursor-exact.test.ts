@@ -85,6 +85,33 @@ describe("Cursor exact model resolution", () => {
 		});
 	}
 
+	test("bare legacy Cursor IDs cannot fall through to another provider", () => {
+		const registry = cursorRegistry();
+		registry.registerProvider("openai", {
+			baseUrl: "https://example.invalid", apiKey: "test", api: "openai-responses",
+			models: [{ ...cursorModel("composer-2"), provider: "openai", api: "openai-responses" }],
+		});
+		const rejected = resolveCliModel({ cliModel: "composer-2", modelRegistry: registry });
+		expect(rejected.model).toBeUndefined();
+		expect(rejected.error).toContain("Cursor model IDs changed");
+
+		registry.registerProvider("cursor", {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+			models: [cursorModel("composer-2")],
+		});
+		const current = resolveCliModel({ cliModel: "composer-2", modelRegistry: registry });
+		expect(current.model?.provider).toBe("cursor");
+	});
+
+	test("explicit non-Cursor provider intent overrides rejection-only tombstones", () => {
+		const registry = cursorRegistry();
+		registry.registerProvider("openai", {
+			baseUrl: "https://example.invalid", apiKey: "test", api: "openai-responses",
+			models: [{ ...cursorModel("composer-2"), provider: "openai", api: "openai-responses" }],
+		});
+		expect(resolveCliModel({ cliProvider: "openai", cliModel: "composer-2", modelRegistry: registry }).model?.provider).toBe("openai");
+	});
+
 	test("scope resolution accepts only an exact Cursor reference and excludes fuzzy or glob matches", async () => {
 		const registry = cursorRegistry();
 		const exact = await resolveModelScopeWithDiagnostics([exactId], registry);
@@ -93,6 +120,62 @@ describe("Cursor exact model resolution", () => {
 			const result = await resolveModelScopeWithDiagnostics([pattern], registry);
 			expect(result.scopedModels).toEqual([]);
 		}
+	});
+
+	test("enabled-model scope preserves exact provider-qualified Cursor route syntax", async () => {
+		const ids = ["cursor-route", "cursor-route:high", "cursor-route (1m)", " cursor-spaced ", "cursor/nested/route"];
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		registry.registerProvider("cursor", {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+			models: ids.map(cursorModel),
+		});
+
+		for (const id of ids.slice(1)) {
+			const result = await resolveModelScopeWithDiagnostics([`cursor/${id}`], registry);
+			expect(result.scopedModels).toHaveLength(1);
+			expect(result.scopedModels[0]?.model.id).toBe(id);
+			expect(result.scopedModels[0]?.thinkingLevel).toBeUndefined();
+			expect(result.diagnostics).toEqual([]);
+		}
+
+		for (const pattern of ["cursor/cursor-route:medium", "cursor/cursor-route (2m)", "cursor/CURSOR-ROUTE", "cursor/cursor-*", "cursor/cursor-rou"]) {
+			const result = await resolveModelScopeWithDiagnostics([pattern], registry);
+			expect(result.scopedModels).toEqual([]);
+			expect(result.diagnostics).toHaveLength(1);
+			expect(result.diagnostics[0]?.type).toBe("error");
+			expect(result.diagnostics[0]?.message).toContain("reselect");
+		}
+	});
+
+	test("enabled-model scope gives exact Cursor routes precedence over rejection-only tombstones", async () => {
+		const registry = cursorRegistry();
+		registry.registerProvider("openai", {
+			baseUrl: "https://example.invalid", apiKey: "test", api: "openai-responses",
+			models: [{ ...cursorModel("composer-2"), provider: "openai", api: "openai-responses" }],
+		});
+		const rejected = await resolveModelScopeWithDiagnostics(["composer-2"], registry);
+		expect(rejected.scopedModels).toEqual([]);
+		expect(rejected.diagnostics.map((entry) => entry.message).join("\n")).toContain("Cursor model IDs changed");
+
+		registry.registerProvider("cursor", {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+			models: [cursorModel("composer-2")],
+		});
+		const current = await resolveModelScopeWithDiagnostics(["composer-2"], registry);
+		expect(current.scopedModels.map((entry) => `${entry.model.provider}/${entry.model.id}`)).toEqual(["cursor/composer-2"]);
+
+		const explicitOther = await resolveModelScopeWithDiagnostics(["openai/composer-2"], registry);
+		expect(explicitOther.scopedModels.map((entry) => `${entry.model.provider}/${entry.model.id}`)).toEqual(["openai/composer-2"]);
+	});
+
+	test("enabled-model scope preserves ordinary non-Cursor fuzzy and glob behavior", async () => {
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		registry.registerProvider("anthropic", {
+			baseUrl: "https://example.invalid", apiKey: "test-key", api: "anthropic-messages",
+			models: [{ ...cursorModel("claude-sonnet-4-5"), provider: "anthropic", api: "anthropic-messages", name: "Claude Sonnet" }],
+		});
+		const result = await resolveModelScopeWithDiagnostics(["sonnet", "anthropic/*"], registry);
+		expect(result.scopedModels.map((entry) => entry.model.provider)).toEqual(["anthropic"]);
 	});
 
 	test("non-Cursor fuzzy matching remains unchanged", () => {

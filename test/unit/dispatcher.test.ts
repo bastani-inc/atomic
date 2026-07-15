@@ -17,8 +17,7 @@
 
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
-import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
+import { NON_INTERACTIVE_WORKFLOW_POLICY, type WorkflowDefinition, type WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { Type } from "typebox";
@@ -51,6 +50,7 @@ function freshDeps() {
     jobs: createJobTracker(),
   };
 }
+
 
 async function waitForRunEnded(
   store: ReturnType<typeof createStore>,
@@ -167,6 +167,7 @@ describe("dispatch run (always background)", () => {
       assert.match(result.error!, /not found/i);
     }
   });
+
 
   test("non-interactive policy awaits terminal snapshot", async () => {
     const deps = freshDeps();

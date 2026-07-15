@@ -79,6 +79,25 @@ test("drops a stale unknown-provider diagnostic when discovery already raced ahe
 	assert.deepEqual(diagnostics, [warning]);
 });
 
+test("drops a stale breaking-ID diagnostic when a provider-scoped exact route is current", async () => {
+	const exact = cursorModel("gpt-5.2");
+	let selected: Model<Api> | undefined;
+	const stale = reselectionError("cursor/gpt-5.2");
+	const diagnostics = await recoverUnresolvedCursorCliModel({
+		cliProvider: "cursor",
+		cliModel: "gpt-5.2",
+		diagnostics: [stale],
+		modelRegistry: { getAll: () => [exact] },
+		session: {
+			setModel: async (model) => { selected = model; },
+			setContextWindow: () => undefined,
+		},
+		discoverModels: async () => undefined,
+	});
+	assert.equal(selected, exact);
+	assert.deepEqual(diagnostics, []);
+});
+
 test("preserves the fatal diagnostic when authenticated discovery cannot resolve the exact row", async () => {
 	const registry = { getAll: () => [cursorModel("default")] } as ModelRegistry;
 	const error = { type: "error" as const, message: 'Model "cursor/missing" not found. Use --list-models to see available models.' };
@@ -194,6 +213,31 @@ test("reports an invalid deferred context window as a startup diagnostic", async
 		discoverModels: async () => { models = [cursorModel("default"), cursorModel("composer-2.5-fast")]; },
 	});
 	assert.deepEqual(diagnostics, [{ type: "error", message: "Context window 12345 is not supported by cursor/composer-2.5-fast." }]);
+});
+
+test("bare legacy ID waits for discovery and selects only a current exact Cursor row", async () => {
+	const other = { ...cursorModel("composer-2"), provider: "openai", api: "openai-responses" } as Model<Api>;
+	let models = [other];
+	let selected: Model<Api> | undefined;
+	const diagnostics = await recoverUnresolvedCursorCliModel({
+		cliModel: "composer-2", diagnostics: [], modelRegistry: { getAll: () => models },
+		session: { setModel: async (model) => { selected = model; }, setContextWindow: () => undefined },
+		discoverModels: async () => { models = [other, cursorModel("composer-2")]; },
+	});
+	assert.equal(selected?.provider, "cursor");
+	assert.deepEqual(diagnostics, []);
+});
+
+test("bare legacy ID cannot fall back when discovery does not return it", async () => {
+	const other = { ...cursorModel("composer-2"), provider: "openai", api: "openai-responses" } as Model<Api>;
+	let selected = false;
+	const diagnostics = await recoverUnresolvedCursorCliModel({
+		cliModel: "composer-2", diagnostics: [], modelRegistry: { getAll: () => [other] },
+		session: { setModel: async () => { selected = true; }, setContextWindow: () => undefined },
+		discoverModels: async () => undefined,
+	});
+	assert.equal(selected, false);
+	assert.deepEqual(diagnostics, [reselectionError("cursor/composer-2")]);
 });
 
 test("persisted Cursor reselection failures are fatal in every CLI startup mode", async () => {

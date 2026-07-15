@@ -57,13 +57,19 @@ export class CursorMockTransport implements CursorAgentTransport {
 	readonly discardedConversations: string[] = [];
 	#models: readonly CursorUsableModel[];
 	#messages: readonly CursorServerMessage[];
+	#messageFactory: (() => AsyncIterable<CursorServerMessage>) | undefined;
 	#openStreams = 0;
 	#cancelledStreams = 0;
 	#closedStreams = 0;
 
-	constructor(options: { readonly models?: readonly CursorUsableModel[]; readonly messages?: readonly CursorServerMessage[] } = {}) {
+	constructor(options: {
+		readonly models?: readonly CursorUsableModel[];
+		readonly messages?: readonly CursorServerMessage[];
+		readonly messageFactory?: () => AsyncIterable<CursorServerMessage>;
+	} = {}) {
 		this.#models = options.models ?? [];
 		this.#messages = options.messages ?? [];
+		this.#messageFactory = options.messageFactory;
 	}
 
 	setMessages(messages: readonly CursorServerMessage[]): void {
@@ -109,6 +115,10 @@ export class CursorMockTransport implements CursorAgentTransport {
 	}
 
 	private async *createMessageIterable(): AsyncIterable<CursorServerMessage> {
+		if (this.#messageFactory) {
+			yield* this.#messageFactory();
+			return;
+		}
 		// Each item is yielded independently so tests can model tool calls split
 		// across Connect frame/message boundaries.
 		for (const message of this.#messages) {

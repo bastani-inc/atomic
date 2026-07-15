@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
+import { classifyBareCursorModelReference } from "./legacy-cursor-model-ids.ts";
 import type { ResolveCliModelResult } from "./model-resolver-types.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 
@@ -64,6 +65,22 @@ export function resolveCliModel(options: {
       warning: undefined,
       error: "No models available. Check your installation or add models to models.json.",
     };
+  }
+  const classifyBareCursor = cliProvider === undefined || cliProvider.trim().toLowerCase() === "cursor";
+  if (classifyBareCursor) {
+    const kind = classifyBareCursorModelReference(cliModel, availableModels);
+    if (kind === "current-cursor") {
+      const current = availableModels.find((model) => model.provider.toLowerCase() === "cursor" && model.id === cliModel);
+      if (current) return { model: current, warning: undefined, thinkingLevel: undefined, error: undefined };
+    }
+    if (kind === "legacy-cursor") {
+      return {
+        model: undefined,
+        thinkingLevel: undefined,
+        warning: undefined,
+        error: `Model "cursor/${cliModel}" not found. Cursor model IDs changed; reselect an exact model with --list-models.`,
+      };
+    }
   }
 
   const providerMap = buildProviderMap(availableModels);

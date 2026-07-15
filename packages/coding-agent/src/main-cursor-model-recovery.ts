@@ -2,6 +2,7 @@ import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { Args } from "./cli/args.ts";
 import type { AgentSessionRuntime } from "./core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "./core/agent-session-services.ts";
+import { isLegacyBareCursorModelId } from "./core/legacy-cursor-model-ids.ts";
 import type { ModelRegistry } from "./core/model-registry.ts";
 import { resolveCliModel } from "./core/model-resolver.ts";
 import type { AppMode } from "./main-app-mode.ts";
@@ -102,14 +103,18 @@ function removePreDiscoveryCursorResolutionErrors(
 		staleErrors.add(`Unknown provider "${cliProvider}". Use --list-models to see available providers/models.`);
 	}
 	staleErrors.add(`Model "${reference}" not found. Use --list-models to see available models.`);
+	staleErrors.add(`Model "${reference}" not found. Cursor model IDs changed; reselect an exact model with --list-models.`);
 	return diagnostics.filter((diagnostic) => diagnostic.type !== "error" || !staleErrors.has(diagnostic.message));
 }
 
 function isCursorSelection(provider: string | undefined, model: string | undefined): boolean {
 	if (!model) return false;
-	if (provider?.trim().toLowerCase() === "cursor") return true;
+	const normalizedProvider = provider?.trim().toLowerCase();
+	if (normalizedProvider && normalizedProvider !== "cursor") return false;
+	if (normalizedProvider === "cursor") return true;
 	const slashIndex = model.indexOf("/");
-	return slashIndex > 0 && model.slice(0, slashIndex).trim().toLowerCase() === "cursor";
+	return (slashIndex > 0 && model.slice(0, slashIndex).trim().toLowerCase() === "cursor")
+		|| isLegacyBareCursorModelId(model);
 }
 
 function normalizeCursorReference(provider: string | undefined, model: string): string {
@@ -117,7 +122,7 @@ function normalizeCursorReference(provider: string | undefined, model: string): 
 	if (slashIndex > 0 && model.slice(0, slashIndex).trim().toLowerCase() === "cursor") {
 		return `cursor/${model.slice(slashIndex + 1)}`;
 	}
-	return provider?.trim().toLowerCase() === "cursor" ? `cursor/${model}` : model;
+	return provider?.trim().toLowerCase() === "cursor" || isLegacyBareCursorModelId(model) ? `cursor/${model}` : model;
 }
 
 function findExactCursorModel(

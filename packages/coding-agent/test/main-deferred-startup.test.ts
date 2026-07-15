@@ -72,6 +72,12 @@ describe("computeDeferExtensions", () => {
 		expect(computeDeferExtensions(baseInput({ model: "claude-sonnet" }))).toBe(false);
 	});
 
+	it("keeps strict Cursor model scopes on the synchronous discovery path", () => {
+		expect(computeDeferExtensions(baseInput({ models: ["cursor/missing-route"] }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ models: ["composer-2"] }))).toBe(false);
+		expect(computeDeferExtensions(baseInput({ models: ["claude-*"] }))).toBe(true);
+	});
+
 	it("keeps unstored prompt-required trust on the synchronous path but defers once a decision exists", () => {
 		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: null }))).toBe(false);
 		expect(computeDeferExtensions(baseInput({ shouldResolveProjectTrust: true, storedProjectTrust: true }))).toBe(true);
@@ -130,6 +136,16 @@ describe("computeStartupInputCaptureEnabled", () => {
 		} finally {
 			removeTempDir(providerInput.sessionCwd);
 			removeTempDir(modelInput.sessionCwd);
+		}
+	});
+
+	it("does not capture input when a strict Cursor scope requires synchronous discovery", () => {
+		const input = baseStartupCaptureInput();
+		input.parsed.models = ["cursor/missing-route"];
+		try {
+			expect(computeStartupInputCaptureEnabled(input)).toBe(false);
+		} finally {
+			removeTempDir(input.sessionCwd);
 		}
 	});
 });

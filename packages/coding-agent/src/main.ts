@@ -22,6 +22,7 @@ import { type AppMode, isPlainRuntimeMetadataCommand, isReadOnlyRuntimeMetadataC
 import { type EarlyInputCapture, startEarlyInputCapture } from "./main-early-input.ts";
 import { computeDeferExtensions, computeStartupInputCaptureEnabled, formatScopedModelList } from "./main-deferred-startup.ts";
 import { recoverCursorCliModelAfterExtensionStartup } from "./main-cursor-model-recovery.ts";
+import { modelScopeNeedsCursorDiscovery, recoverCursorModelScopeAfterExtensionStartup } from "./main-cursor-model-scope-recovery.ts";
 import { applyInheritedWorkflowSessionClassification, createSessionManager, promptForMissingSessionCwd, validateForkFlags, validateSessionIdFlags } from "./main-session.ts";
 import { buildSessionOptions } from "./main-session-options.ts";
 import { collectSettingsDiagnostics, drainProcessStdio, isTruthyEnvFlag, listModelsAfterExtensionStartup, readPipedStdin, reportDiagnostics } from "./main-stdio.ts";
@@ -29,14 +30,8 @@ import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
 import { normalizePath } from "./utils/paths.ts";
-
 export type { AppMode } from "./main-app-mode.ts"; export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
-
-export interface MainOptions {
-	extensionFactories?: ExtensionFactory[];
-	builtinPackagePaths?: string[];
-}
-
+export interface MainOptions { extensionFactories?: ExtensionFactory[]; builtinPackagePaths?: string[] }
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(getEnvValue(ENV_OFFLINE));
@@ -44,7 +39,6 @@ export async function main(args: string[], options?: MainOptions) {
 		setEnvValue(ENV_OFFLINE, "1");
 		setEnvValue(ENV_SKIP_VERSION_CHECK, "1");
 	}
-
 	if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
 		const exitCode = process.exitCode ?? 0;
 		await drainProcessStdio();
@@ -205,6 +199,7 @@ export async function main(args: string[], options?: MainOptions) {
 			unknownFlagCount: parsed.unknownFlags.size,
 			provider: parsed.provider,
 			model: parsed.model,
+			models: parsed.models,
 		});
 		if (sessionStartEvent === undefined) {
 			deferredExtensionLoad = deferExtensions;
@@ -295,7 +290,7 @@ export async function main(args: string[], options?: MainOptions) {
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
 		const scopedModels =
 			modelPatterns && modelPatterns.length > 0
-				? deferredExtensionLoad
+				? deferredExtensionLoad || modelScopeNeedsCursorDiscovery(modelPatterns)
 					? (await resolveModelScopeWithDiagnostics(modelPatterns, modelRegistry)).scopedModels
 					: await resolveModelScope(modelPatterns, modelRegistry)
 				: [];
@@ -396,7 +391,10 @@ export async function main(args: string[], options?: MainOptions) {
 		await listModelsAfterExtensionStartup(runtime, modelRegistry, searchPattern);
 		process.exit(0);
 	}
-	const startupDiagnostics = await recoverCursorCliModelAfterExtensionStartup(parsed, runtime, appMode);
+	const startupDiagnostics = [...await recoverCursorCliModelAfterExtensionStartup(parsed, runtime, appMode)];
+	const enabledModelPatterns = parsed.models ?? settingsManager.getEnabledModels();
+	const recoveredScope = !deferredExtensionLoad && enabledModelPatterns?.length ? await recoverCursorModelScopeAfterExtensionStartup({ patterns: enabledModelPatterns, modelRegistry, mode: appMode === "interactive" ? "tui" : appMode, selectInitialModel: parsed.model === undefined && sessionManager.buildSessionContext().messages.length === 0, session }) : undefined;
+	if (recoveredScope) startupDiagnostics.push(...recoveredScope.diagnostics);
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc") {

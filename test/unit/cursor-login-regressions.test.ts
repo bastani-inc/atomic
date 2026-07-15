@@ -9,6 +9,8 @@ import { CursorMockTransport } from "./cursor-test-helpers.js";
 
 const callbacks = (signal?: AbortSignal): OAuthLoginCallbacks => ({ onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined, signal });
 const nextTick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+const jwtForSubject = (subject: string, nonce: string): string =>
+	`header.${Buffer.from(JSON.stringify({ sub: subject, nonce })).toString("base64url")}.signature`;
 
 class TestCursorDiscoveryService extends CursorModelDiscoveryService {
 	readonly #discover: CursorModelDiscoveryService["discover"];
@@ -62,7 +64,6 @@ function firstModel(config: CursorProviderConfig): Model<Api> {
 		id: "test-exact-route", name: "Test Exact Route", api: config.api, baseUrl: config.baseUrl,
 		input: ["text"], reasoning: false, contextWindow: 200_000, maxTokens: 64_000,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-		compat: { cursorRouting: { "test-exact-route": { modelId: "test-exact-route", maxMode: false } } },
 	};
 	return { ...model, provider: "cursor" } as Model<Api>;
 }
@@ -75,35 +76,27 @@ async function drain(stream: AsyncIterable<object>): Promise<void> {
 	}
 }
 
-test("login rejects when another credential supersedes its catalog discovery", async () => {
-	const accessA = "login-access-a";
-	const accessB = "active-access-b";
+test("a cross-account stream cannot supersede login catalog discovery", async () => {
+	const accessA = jwtForSubject("account-a", "login");
+	const accessB = jwtForSubject("account-b", "stream");
 	const pending = new Map<string, { resolve(catalog: CursorModelCatalog): void; reject(error: Error): void }>();
 	const discovery = cursorDiscoveryService({
 		discover: (accessToken: string): Promise<CursorModelCatalog> =>
 			new Promise((resolve, reject) => pending.set(accessToken, { resolve, reject })),
 	});
-	const auth = cursorAuthService({
-		login: async () => ({ access: accessA, refresh: "refresh-a", expires: 123 }),
-	});
+	const auth = cursorAuthService({ login: async () => ({ access: accessA, refresh: "refresh-a", expires: 123 }) });
 	const { host, registrations } = makeHost();
 	const runtime = registerCursorProvider(host, {
-		authService: auth,
-		discoveryService: discovery,
-		transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
-		uuid: () => `request-${pending.size}`,
+		authService: auth, discoveryService: discovery,
+		transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }), uuid: () => `request-${pending.size}`,
 	});
-
 	const login = registrations[0]!.oauth.login(callbacks());
 	await nextTick();
 	await drain(registrations[0]!.streamSimple(firstModel(registrations[0]!), context, { apiKey: accessB }));
-	await nextTick();
-	pending.get(accessB)?.resolve({ source: "live", fetchedAt: 2, models: [{ id: "model-b", maxMode: false }] });
-	await nextTick();
-	pending.get(accessA)?.reject(new CursorModelDiscoveryError("CursorApiRejected", "superseded login catalog"));
-
-	await assert.rejects(login, /authentication succeeded, but authenticated model discovery failed/u);
-	assert.equal(registrations.at(-1)?.models.some((model) => model.id === "model-b"), true);
+	assert.equal(pending.has(accessB), false);
+	pending.get(accessA)?.resolve({ source: "live", fetchedAt: 2, models: [{ id: "model-a", maxMode: false }] });
+	await login;
+	assert.equal(registrations.at(-1)?.models.some((model) => model.id === "model-a"), true);
 	await runtime.dispose();
 });
 
@@ -167,7 +160,7 @@ test("caller cancellation fences a login-owned discovery that resolves late", as
 });
 
 test("login cancellation does not invalidate an existing same-credential refresh", async () => {
-	const accessToken = "shared-access";
+	const accessToken = jwtForSubject("shared-account", "token");
 	const pending: Array<{ signal?: AbortSignal; resolve(catalog: CursorModelCatalog): void; reject(error: Error): void }> = [];
 	const discovery = cursorDiscoveryService({
 		discover(_accessToken, _requestId, signal) {
@@ -183,8 +176,13 @@ test("login cancellation does not invalidate an existing same-credential refresh
 		authService: auth, discoveryService: discovery,
 		transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
 		uuid: () => `shared-${pending.length}`,
+		catalogCache: { load: () => null, save() {}, clear() {} },
+		now: () => 3,
+		resolveCurrentAccessToken: () => accessToken,
 	});
-	await drain(registrations[0]!.streamSimple(firstModel(registrations[0]!), context, { apiKey: accessToken }));
+	const selectedModel = firstModel(registrations[0]!);
+	assert.equal(selectedModel.compat, undefined, "positive execution must not carry caller-supplied Cursor routing");
+	const initialStream = drain(registrations[0]!.streamSimple(selectedModel, context, { apiKey: accessToken }));
 	await nextTick();
 	const controller = new AbortController();
 	const login = registrations[0]!.oauth.login(callbacks(controller.signal));
@@ -195,9 +193,10 @@ test("login cancellation does not invalidate an existing same-credential refresh
 		controller.abort();
 		await assert.rejects(login, /authenticated model discovery failed/u);
 		assert.equal(pending[0]?.signal?.aborted, false, "login cancellation must not abort the shared refresh");
-		pending[0]?.resolve({ source: "live", fetchedAt: 3, models: [{ id: "shared-model", maxMode: false }] });
+		pending[0]?.resolve({ source: "live", fetchedAt: 3, models: [{ id: "test-exact-route", maxMode: false }] });
+		await initialStream;
 		await nextTick();
-		assert.equal(registrations.at(-1)?.models.some((model) => model.id === "shared-model"), true);
+		assert.equal(registrations.at(-1)?.models.some((model) => model.id === "test-exact-route"), true);
 		assert.equal(runtime.getCatalogRefreshStatus().state, "fresh");
 	} finally {
 		controller.abort();

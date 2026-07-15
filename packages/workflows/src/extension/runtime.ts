@@ -38,7 +38,7 @@ import {
   type WorkflowIntercomDelivery,
   type WorkflowResultIntercomPort,
 } from "../intercom/result-intercom.js";
-import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
+import { preflightWorkflowModelRequests } from "./model-preflight.js";
 import { runDetached } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
@@ -379,10 +379,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     const parentSession = intercomParentSession(args);
     let warnings: readonly string[] = [];
     try {
-      warnings = await validateWorkflowModels({
-        requests: directModelRequests(args),
-        catalog: models,
-      });
+      warnings = await preflightWorkflowModelRequests(directModelRequests(args), models);
     } catch (error: unknown) {
       return withIntercomSummary({
         mode,

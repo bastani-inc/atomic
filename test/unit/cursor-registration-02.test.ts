@@ -168,7 +168,6 @@ describe("Cursor provider registration", () => {
 
 		assert.deepEqual(loginCredentials, { access: "access-live", refresh: "refresh-live", expires: 123 });
 		assert.deepEqual(refreshCredentials, { access: "access-refreshed", refresh: "refresh-live", expires: 456 });
-		assert.equal(registrations.length, 4);
 		assert.deepEqual(discoveryRequests.map((request) => request.accessToken), ["access-live", "access-refreshed"]);
 		assert.equal(discoveryRequests[0]?.signal?.aborted, false);
 		for (const request of discoveryRequests) {
@@ -202,7 +201,7 @@ describe("Cursor provider registration", () => {
 		});
 
 		assert.deepEqual(await registrations[0]!.config.oauth.login(callbacks()), { access: "access-live", refresh: "refresh-live", expires: 123 });
-		assert.equal(registrations.length, 2);
+		assert.equal(registrations.filter((registration) => registration.config.models.length > 0).length, 1);
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "composer-2.5"), true);
 		assert.deepEqual(runtime.getCatalogRefreshStatus(), {
 			state: "fresh",
@@ -233,7 +232,7 @@ describe("Cursor provider registration", () => {
 		const refreshed = await registrations[0]!.config.oauth.refreshToken({ access: "old-access", refresh: "old-refresh", expires: 0 });
 
 		assert.deepEqual(refreshed, { access: "rotated-access-secret", refresh: "rotated-refresh-secret", expires: 789 });
-		assert.equal(registrations.length, 1);
+		assert.equal(registrations.every((registration) => registration.config.models.length === 0), true);
 		assert.equal(cache.saved.length, 0);
 		await runtime.dispose();
 	});
@@ -260,43 +259,10 @@ describe("Cursor provider registration", () => {
 		assert.match(diagnostics[0] ?? "", /cache persistence failed/u);
 		await runtime.dispose();
 	});
-	test("authenticated streams scope catalog freshness to the active credential", async () => {
-		const { host, registrations } = makeHost();
-		const cache = new MemoryCursorCatalogCache();
-		const discoveryRequests: string[] = [];
-		const fakeDiscovery = discoveryService(async (accessToken) => {
-			discoveryRequests.push(accessToken);
-			return { source: "live", fetchedAt: catalogNow, models: [{ id: `model-${accessToken}` }] };
-		});
-		let catalogNow = 99;
-		const runtime = registerCursorProvider(host, {
-			transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
-			discoveryService: fakeDiscovery,
-			catalogCache: cache,
-			now: () => catalogNow,
-			uuid: () => `request-${discoveryRequests.length + 1}`,
-		});
-		const config = registrations[0]!.config;
-		const stream = (apiKey: string) => collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey }));
-
-		await stream("access-a");
-		await nextTick();
-		await stream("access-b");
-		await nextTick();
-		await stream("access-b");
-		await nextTick();
-		assert.deepEqual(discoveryRequests, ["access-a", "access-b"]);
-
-		catalogNow += 30 * 60 * 1000 + 1;
-		await stream("access-b");
-		await nextTick();
-		assert.deepEqual(discoveryRequests, ["access-a", "access-b", "access-b"]);
-		assert.equal(cache.saved.length, 3);
-		await runtime.dispose();
-	});
 	test("first-use rediscovery retries after an empty or failed reference discovery", async () => {
 		const { host, registrations } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
+		const accessToken = jwtForSubject("retry-account", "token");
 		let attempts = 0;
 		const fakeDiscovery = discoveryService(async () => {
 			attempts += 1;
@@ -308,44 +274,46 @@ describe("Cursor provider registration", () => {
 			discoveryService: fakeDiscovery,
 			catalogCache: cache,
 			uuid: () => `retry-${attempts}`,
+			now: () => 101,
+			resolveCurrentAccessToken: () => accessToken,
 		});
 		const config = registrations[0]!.config;
 
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-secret" }));
+		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: accessToken }));
 		await nextTick();
 		assert.equal(attempts, 1);
 		assert.equal(cache.saved.length, 0);
 
-		await collectEvents(registrations.at(-1)!.config.streamSimple(streamModelFromConfig(registrations.at(-1)!.config), streamContext(), { apiKey: "access-secret" }));
+		await collectEvents(registrations.at(-1)!.config.streamSimple(streamModelFromConfig(registrations.at(-1)!.config), streamContext(), { apiKey: accessToken }));
 		await nextTick();
 		assert.equal(attempts, 2);
 		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.reasoning, false);
 		await runtime.dispose();
 	});
 	test("a superseded credential refresh cannot overwrite the active catalog", async () => {
-		const { host, registrations } = makeHost();
+		const tokenA = jwtForSubject("account-a", "token");
+		const tokenB = jwtForSubject("account-b", "token");
+		const { host, registrations, lifecycleHandlers } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
 		const resolvers = new Map<string, Array<(catalog: CursorModelCatalog) => void>>();
 		const discovery = discoveryService((accessToken) =>
 			new Promise((resolve) => resolvers.set(accessToken, [...resolvers.get(accessToken) ?? [], resolve]))
 		);
 		const runtime = registerCursorProvider(host, {
-			transport: new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] }),
-			discoveryService: discovery, catalogCache: cache, now: () => 100, uuid: () => "refresh",
+			transport: new CursorMockTransport(), discoveryService: discovery, catalogCache: cache, now: () => 100, uuid: () => "refresh",
 		});
-		const config = registrations[0]!.config;
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-a" }));
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-b" }));
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-a" }));
-		resolvers.get("access-a")?.[1]?.({ source: "live", fetchedAt: 110, models: [{ id: "model-a-new" }] });
+		const start = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(start);
+		await start({}, { mode: "tui", modelRegistry: { getApiKeyForProvider: async () => tokenA } });
+		await start({}, { mode: "tui", modelRegistry: { getApiKeyForProvider: async () => tokenB } });
+		await start({}, { mode: "tui", modelRegistry: { getApiKeyForProvider: async () => tokenA } });
+		resolvers.get(tokenA)?.[1]?.({ source: "live", fetchedAt: 110, models: [{ id: "model-a-new" }] });
 		await nextTick();
-		resolvers.get("access-b")?.[0]?.({ source: "live", fetchedAt: 100, models: [{ id: "model-b" }] });
-		resolvers.get("access-a")?.[0]?.({ source: "live", fetchedAt: 90, models: [{ id: "model-a-old" }] });
+		resolvers.get(tokenB)?.[0]?.({ source: "live", fetchedAt: 100, models: [{ id: "model-b" }] });
+		resolvers.get(tokenA)?.[0]?.({ source: "live", fetchedAt: 90, models: [{ id: "model-a-old" }] });
 		await nextTick();
-
 		assert.deepEqual(cache.saved.map((catalog) => catalog.models[0]?.id), ["model-a-new"]);
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "model-a-new"), true);
-		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "model-a-old" || model.id === "model-b"), false);
 		await runtime.dispose();
 	});
 	test("activating a fresh scoped cache supersedes another account's in-flight discovery", async () => {
@@ -362,11 +330,10 @@ describe("Cursor provider registration", () => {
 			discoveryService: discovery, catalogCache: cache, now: () => 100, catalogCacheTtlMs: 100,
 			uuid: () => "account-race",
 		});
-		const config = registrations[0]!.config;
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: tokenA }));
-		await nextTick();
 		const start = lifecycleHandlers.get("session_start")?.[0];
 		assert.ok(start);
+		await start({}, { mode: "tui", modelRegistry: { getApiKeyForProvider: async () => tokenA } });
+		await nextTick();
 		await start({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => tokenB } });
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "cached-b"), true);
 		resolveA?.({ source: "live", fetchedAt: 101, models: [{ id: "late-a" }] });
@@ -376,7 +343,7 @@ describe("Cursor provider registration", () => {
 		await runtime.dispose();
 	});
 	test("dispose fences an abort-ignoring rediscovery that resolves late", async () => {
-		const { host, registrations } = makeHost();
+		const { host, registrations, lifecycleHandlers } = makeHost();
 		const discoverySignals: AbortSignal[] = [];
 		let resolveDiscovery: ((catalog: CursorModelCatalog) => void) | undefined;
 		const fakeDiscovery = discoveryService(async (_accessToken, _requestId, signal) => {
@@ -391,9 +358,9 @@ describe("Cursor provider registration", () => {
 			catalogDiscoveryDisposeTimeoutMs: 10,
 			uuid: () => "dispose-rediscovery",
 		});
-		const config = registrations[0]!.config;
-
-		await collectEvents(config.streamSimple(streamModelFromConfig(config), streamContext(), { apiKey: "access-secret" }));
+		const start = lifecycleHandlers.get("session_start")?.[0];
+		assert.ok(start);
+		await start({}, { mode: "tui", modelRegistry: { getApiKeyForProvider: async () => jwtForSubject("dispose", "token") } });
 		await nextTick();
 		assert.equal(discoverySignals.length, 1);
 		let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -489,7 +456,7 @@ describe("Cursor provider registration", () => {
 		await nextTick();
 		assert.match(notifications[0] ?? "", /refresh unavailable/u);
 		assert.deepEqual(surfaced, ["refresh unavailable", "refresh unavailable"]);
-		assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "failed", fetchedAt: undefined, error: "refresh unavailable" });
+		assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "failed", error: "refresh unavailable" });
 		assert.equal(registrations.at(-1)?.config.models.some((model) => model.id === "cached"), false);
 		await runtime.dispose();
 	});

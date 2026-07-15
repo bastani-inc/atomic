@@ -972,6 +972,18 @@ ctx.sessionManager.getLeafId()        // Current leaf entry ID
 
 Access to models and API keys.
 
+### ctx.discoverModelCatalog()
+
+Requests and awaits one session-scoped `model_catalog_discover` lifecycle pass so dynamic providers can register their authenticated models before resolution. Concurrent callers share the same in-flight emission; aborting one caller detaches only that wait and does not cancel discovery needed by other callers. The method rejects when the extension context is stale after session replacement or reload.
+
+```typescript
+await ctx.discoverModelCatalog?.({ signal: ctx.signal });
+const models = await ctx.modelRegistry.getAvailable();
+```
+
+Use this only before resolving an explicit dynamic-provider model. Ordinary extensions should read the registry directly rather than refreshing every provider unnecessarily.
+
+
 ### ctx.signal
 
 The current agent abort signal, or `undefined` when no agent turn is active.

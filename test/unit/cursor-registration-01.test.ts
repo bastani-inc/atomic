@@ -246,7 +246,7 @@ describe("Cursor provider registration", () => {
 		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
 		await runtime.dispose();
 	});
-	test("session_shutdown flushes pending stored-credential discovery to the live catalog cache", async () => {
+	test("session_shutdown fences pending stored-credential discovery from cache publication", async () => {
 		const { host, registrations, lifecycleHandlers } = makeHost();
 		const cache = new MemoryCursorCatalogCache();
 		let resolveDiscovery: ((catalog: CursorModelCatalog) => void) | undefined;
@@ -279,8 +279,8 @@ describe("Cursor provider registration", () => {
 		}, 0);
 		await shutdownHandler({}, { sessionManager: { getSessionId: () => "shutdown-session" } });
 
-		assert.equal(cache.saved.length, 1);
-		assert.equal(registrations.at(-1)?.config.models.find((model) => model.id === "composer-2.5")?.name, "Composer 2.5");
+		assert.equal(cache.saved.length, 0);
+		assert.deepEqual(registrations.at(-1)?.config.models, []);
 	});
 	test("session_shutdown still disposes runtime when session cleanup fails", async () => {
 		class ThrowingDiscardTransport extends CursorMockTransport {
@@ -334,7 +334,7 @@ describe("Cursor provider registration", () => {
 			},
 			/discard failed/u,
 		);
-		assert.equal(cache.saved.length, 1);
+		assert.equal(cache.saved.length, 0);
 		assert.equal(transport.disposeCalled, true);
 	});
 	test("session_start skips live model discovery without stored Cursor credentials", async () => {

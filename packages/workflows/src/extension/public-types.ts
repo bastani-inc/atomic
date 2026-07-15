@@ -76,6 +76,8 @@ export interface PiRuntimeModelRegistry {
 export interface PiModelContext {
   readonly model?: PiRuntimeModel;
   readonly modelRegistry?: PiRuntimeModelRegistry;
+  readonly signal?: AbortSignal;
+  discoverModelCatalog?(options?: { readonly signal?: AbortSignal }): Promise<void>;
 }
 
 export interface PiCommandContext extends PiModelContext {

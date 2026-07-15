@@ -45,6 +45,17 @@ class FakeStreamHandle implements CursorHttp2StreamHandle {
 	}
 }
 
+class NeverSettlingStreamHandle extends FakeStreamHandle {
+	override cancel(): Promise<void> {
+		this.cancelled = true;
+		return new Promise(() => {});
+	}
+	override close(): Promise<void> {
+		this.closed = true;
+		return new Promise(() => {});
+	}
+}
+
 class FakeHttp2Client implements CursorHttp2Client {
 	unaryRequests: Array<{ path: string; headers: Record<string, string>; body: Uint8Array }> = [];
 	streamRequests: Array<{ path: string; headers: Record<string, string> }> = [];
@@ -239,6 +250,23 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.deepEqual([...decodeCursorConnectFrames(client.streamHandle.writes[1] ?? new Uint8Array())[0]!.data], [7]);
 		assert.equal(client.streamHandle.cancelled, true);
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
+	});
+	test("releases transport bookkeeping synchronously before underlying cancel or close settles", async () => {
+		const cancelClient = new FakeHttp2Client();
+		cancelClient.streamHandle = new NeverSettlingStreamHandle([]);
+		const cancelTransport = new Http2CursorAgentTransport({ client: cancelClient, codec: new FakeCodec() });
+		const cancelling = await cancelTransport.run({ accessToken: "secret", requestId: "run-never-cancel", model, resolvedModelId: "composer-2", context });
+		void cancelling.cancel().catch(() => undefined);
+		assert.deepEqual(cancelTransport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 1, closedStreams: 1 });
+
+		const closeClient = new FakeHttp2Client();
+		closeClient.streamHandle = new NeverSettlingStreamHandle([]);
+		const closeTransport = new Http2CursorAgentTransport({ client: closeClient, codec: new FakeCodec() });
+		const closing = await closeTransport.run({ accessToken: "secret", requestId: "run-never-close", model, resolvedModelId: "composer-2", context });
+		void closing.close().catch(() => undefined);
+		assert.deepEqual(closeTransport.getLifecycleSnapshot(), { openStreams: 0, cancelledStreams: 0, closedStreams: 1 });
+		await cancelTransport.dispose();
+		await closeTransport.dispose();
 	});
 	test("classifies Connect end-stream errors", async () => {
 		const cases: Array<{ code: string; expected: string }> = [

@@ -6,7 +6,7 @@ InteractiveModeBase.prototype.runUserPromptTurn = async function(this: Interacti
     // Show the working spinner immediately on submit so there is no visible gap
     // while prompt preflight runs before the agent emits `agent_start`.
     this.showWorkingLoaderNow();
-    const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined;
+    const deferredStartupNeedsPromptGate = this.deferredStartupPending || this.deferredStartupPromise !== undefined || this.deferredStartupFatalError !== undefined;
     if (deferredStartupNeedsPromptGate) {
       this.deferLoadedResourcesDisclosureUntilAgentEnd = true;
     }

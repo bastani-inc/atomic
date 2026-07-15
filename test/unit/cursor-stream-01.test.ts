@@ -1,11 +1,10 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/pi-ai/compat";
-import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage, CursorToolResultMessage } from "../../packages/cursor/src/transport.js";
 import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
-import { collectEvents, collectEventsWithTimeout, context, deferred, model } from "./cursor-stream-helpers.js";
+import { collectEvents, collectEventsWithTimeout, context, deferred, model, TestCursorStreamAdapter as CursorStreamAdapter } from "./cursor-stream-helpers.js";
 
 describe("CursorStreamAdapter", () => {
 	test("uses the production UUID generator when no test UUID is injected", async () => {
@@ -44,10 +43,10 @@ describe("CursorStreamAdapter", () => {
 		assert.equal(transport.runs.length, 0);
 	});
 
-	test("rejects a Cursor model that lacks exact authenticated route metadata", async () => {
+	test("rejects a caller-selected route when the authority has no exact route", async () => {
 		const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
-		const adapter = new CursorStreamAdapter({ transport, uuid: () => "missing-route" });
-		const unroutedModel = { ...model(), compat: undefined };
+		const adapter = new CursorStreamAdapter({ transport, uuid: () => "missing-route", authorizedRoutes: [] });
+		const unroutedModel = model();
 
 		const events = await collectEventsWithTimeout(adapter.streamSimple(unroutedModel, context(), { apiKey: "access-secret" }));
 
@@ -72,7 +71,7 @@ describe("CursorStreamAdapter", () => {
 			],
 		});
 		const adapter = new CursorStreamAdapter({ transport, uuid: () => "run-1" });
-		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", reasoning: "high", sessionId: "session-tools" }));
+		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: "access-secret", sessionId: "session-tools" }));
 
 		assert.deepEqual(events.map((event) => event.type), [
 			"start",
@@ -96,7 +95,8 @@ describe("CursorStreamAdapter", () => {
 			assert.equal(done.message.usage.output, 5);
 			assert.equal(done.message.usage.totalTokens, 15);
 		}
-		assert.equal(transport.runs[0]?.request.resolvedModelId, "composer-2");
+		assert.equal(transport.runs[0]?.request.resolvedModelId, model().id);
+		assert.equal(transport.runs[0]?.request.maxMode, true);
 		assert.deepEqual(transport.getLifecycleSnapshot(), { openStreams: 1, cancelledStreams: 0, closedStreams: 0 });
 		await adapter.dispose();
 	});

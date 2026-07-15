@@ -23,7 +23,7 @@ export interface CursorCatalogCacheRecord {
 export interface CursorCatalogCache {
 	load(credentialScope?: string): CursorModelCatalog | null;
 	save(catalog: CursorModelCatalog, credentialScope?: string): void;
-	clear?(credentialScope?: string): void;
+	clear?(credentialScope?: string): void | Promise<void>;
 }
 
 export class FileCursorCatalogCache implements CursorCatalogCache {

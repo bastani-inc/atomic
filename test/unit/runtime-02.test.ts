@@ -231,6 +231,69 @@ describe("runtime.runDirect — workflow intercom", () => {
         assert.equal(activeStore.runs().length, 0);
     });
 
+	test("foreground direct strict Cursor discovery failures and cancellation create no Run or stage session", async () => {
+		for (const failure of [new Error("GetUsable failed"), new DOMException("cancelled", "AbortError")]) {
+			const activeStore = createStore();
+			let sessionCreates = 0;
+			let promptCalls = 0;
+			let discoveryCalls = 0;
+			const runtime = createExtensionRuntime({
+				store: activeStore,
+				adapters: {
+					agentSession: { async create() { sessionCreates += 1; return fakeStageSession(); } },
+					prompt: { async prompt() { promptCalls += 1; return "unexpected"; } },
+				},
+				models: {
+					async discoverModels() { discoveryCalls += 1; throw failure; },
+					async listModels() { return [{ provider: "openai", id: "fallback", fullId: "openai/fallback" }]; },
+					currentModel: "openai/fallback",
+				},
+			});
+
+			const result = await runtime.runDirect({
+				task: { name: "strict-cursor", task: "must not run", model: "cursor/missing-route", fallbackModels: ["openai/fallback"] },
+			});
+			assert.equal(result.status, "failed");
+			assert.equal(result.runId?.length, 36);
+			assert.match(result.error ?? "", /GetUsable failed|cancelled/u);
+			assert.equal(discoveryCalls, 1);
+			assert.equal(activeStore.runs().length, 0);
+			assert.equal(sessionCreates, 0);
+			assert.equal(promptCalls, 0);
+		}
+	});
+
+	test("foreground direct accepts one byte-exact discovered Cursor route and bypasses discovery for non-Cursor", async () => {
+		let discovered = false;
+		let discoveryCalls = 0;
+		let sessionCreates = 0;
+		const runtime = createExtensionRuntime({
+			adapters: {
+				agentSession: { async create() { sessionCreates += 1; return fakeStageSession(); } },
+			},
+			models: {
+				async discoverModels() { discoveryCalls += 1; discovered = true; },
+				async listModels() {
+					return [
+						{ provider: "cursor", id: "literal-route:high", fullId: "cursor/literal-route:high" },
+						{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
+					];
+				},
+			},
+		});
+		const cursorResult = await runtime.runDirect({ task: { name: "cursor", task: "run exact", model: "cursor/literal-route:high" } });
+		assert.equal(cursorResult.status, "completed");
+		assert.equal(discovered, true);
+		assert.equal(discoveryCalls > 0, true);
+		assert.equal(sessionCreates, 1);
+		const cursorDiscoveryCalls = discoveryCalls;
+
+		const nonCursorResult = await runtime.runDirect({ task: { name: "openai", task: "run other", model: "openai/gpt-5-mini" } });
+		assert.equal(nonCursorResult.status, "completed");
+		assert.equal(discoveryCalls, cursorDiscoveryCalls, "non-Cursor direct execution must not start Cursor discovery");
+		assert.equal(sessionCreates, 2);
+	});
+
     test("non-interactive async direct single task awaits a terminal completed result", async () => {
         const activeStore = createStore();
         const seenModes: Array<string | undefined> = [];

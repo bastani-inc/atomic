@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
+import { applyDeferredModelScope, DeferredCursorModelScopeError, ensureDeferredStartupComplete } from "../src/modes/interactive/interactive-deferred-startup.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 const claudeModel = {
@@ -56,6 +56,71 @@ describe("applyDeferredModelScope", () => {
 
 		expect(mode.session.setModel).toHaveBeenCalledWith(claudeModel);
 		expect(setThinkingLevel).not.toHaveBeenCalled();
+	});
+
+	it("fails closed on an unavailable strict Cursor scope before installing a scope or fallback model", async () => {
+		const defaultModel = { ...claudeModel, provider: "openai", id: "fallback-model" };
+		const setScopedModels = vi.fn();
+		const setModel = vi.fn();
+		let deferredStartupFatalError: Error | undefined;
+		const mode = {
+			options: { deferredModelScopePatterns: ["cursor/missing-route"] },
+			deferredStartupPending: true,
+			deferredStartupPromise: undefined,
+			deferredStartupFatalError,
+			completeDeferredStartup: vi.fn(async () => {}),
+			session: {
+				discoverExtensionModels: vi.fn(async () => {}),
+				modelRegistry: {
+					getAvailable: vi.fn(async () => [defaultModel]),
+					find: vi.fn(() => defaultModel),
+					hasConfiguredAuth: vi.fn(() => true),
+				},
+				setScopedModels,
+				setModel,
+			},
+			sessionManager: { buildSessionContext: () => ({ messages: [] }) },
+			settingsManager: { getDefaultProvider: () => "openai", getDefaultModel: () => "fallback-model" },
+			showError: vi.fn(),
+			showWarning: vi.fn(),
+		};
+
+		mode.completeDeferredStartup.mockImplementation(async () => applyDeferredModelScope(mode as never));
+		await expect(ensureDeferredStartupComplete(mode)).rejects.toBeInstanceOf(DeferredCursorModelScopeError);
+		expect(mode.deferredStartupFatalError).toBeInstanceOf(DeferredCursorModelScopeError);
+		await expect(ensureDeferredStartupComplete(mode)).rejects.toBe(mode.deferredStartupFatalError);
+
+		expect(mode.session.discoverExtensionModels).toHaveBeenCalledOnce();
+		expect(setScopedModels).not.toHaveBeenCalled();
+		expect(setModel).not.toHaveBeenCalled();
+	});
+
+	it("installs and selects an exact Cursor scope after deferred discovery", async () => {
+		const cursorModel = { ...claudeModel, provider: "cursor", id: "cursor-route:high" };
+		const setScopedModels = vi.fn();
+		const setModel = vi.fn();
+		const mode = {
+			options: { deferredModelScopePatterns: ["cursor/cursor-route:high"] },
+			session: {
+				discoverExtensionModels: vi.fn(async () => {}),
+				modelRegistry: {
+					getAvailable: vi.fn(async () => [cursorModel]),
+					find: vi.fn(),
+					hasConfiguredAuth: vi.fn(() => true),
+				},
+				setScopedModels,
+				setModel,
+			},
+			sessionManager: { buildSessionContext: () => ({ messages: [] }) },
+			settingsManager: { getDefaultProvider: vi.fn(), getDefaultModel: vi.fn() },
+			showError: vi.fn(),
+			showWarning: vi.fn(),
+		};
+
+		await applyDeferredModelScope(mode as never);
+
+		expect(setScopedModels).toHaveBeenCalledWith([{ model: cursorModel, thinkingLevel: undefined }]);
+		expect(setModel).toHaveBeenCalledWith(cursorModel);
 	});
 });
 

@@ -97,6 +97,7 @@ export interface WorkflowModelInfo {
 
 export interface WorkflowModelCatalogPort {
   listModels(): Promise<readonly WorkflowModelInfo[]>;
+  discoverModels?(signal?: AbortSignal): Promise<void>;
   readonly currentModel?: WorkflowModelValue;
   readonly preferredProvider?: string;
   recordWarning?: (warning: string) => void;

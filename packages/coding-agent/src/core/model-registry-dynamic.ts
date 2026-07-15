@@ -148,7 +148,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 
 	storeProviderRequestConfig(providerName, config);
 
-	if (config.models && config.models.length > 0) {
+	if (config.models !== undefined) {
 		models = models.filter((m) => m.provider !== providerName);
 
 		for (const modelDef of config.models) {
@@ -182,7 +182,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 			models.push(modelOverride ? applyModelOverride(model, modelOverride) : model);
 		}
 
-		if (config.oauth?.modifyModels) {
+		if (config.models.length > 0 && config.oauth?.modifyModels) {
 			const cred = authStorage.get(providerName);
 			if (cred?.type === "oauth") {
 				models = config.oauth.modifyModels(models, cred);

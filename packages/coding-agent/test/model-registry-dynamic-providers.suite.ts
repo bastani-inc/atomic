@@ -4,8 +4,6 @@ import { describe, expect, test } from "vitest";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
-import { describeModelRegistry } from "./model-registry-fixtures.ts";
-
 describeModelRegistry((context) => {
 	const {
 		providerConfig,
@@ -170,6 +168,31 @@ describeModelRegistry((context) => {
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
 			expect(() => registry.refresh()).not.toThrow();
 			expect(registry.find("demo-provider", "demo-model")).toBeDefined();
+		});
+
+		test("explicit empty dynamic catalogs remove models without removing provider integrations", () => {
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const oauth = {
+				name: "Dynamic Empty OAuth",
+				login: async () => ({ access: "access", refresh: "refresh", expires: Date.now() + 60_000 }),
+				refreshToken: async (credentials: { access: string; refresh: string; expires: number }) => credentials,
+				getApiKey: (credentials: { access: string }) => credentials.access,
+			};
+			const streamSimple = (): never => { throw new Error("dynamic-empty-stream"); };
+			registry.registerProvider("dynamic-empty", {
+				baseUrl: "https://provider.test/v1", api: "openai-completions", oauth, streamSimple,
+				models: [{
+					id: "route", name: "Route", reasoning: false, input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+				}],
+			});
+			expect(registry.find("dynamic-empty", "route")).toBeDefined();
+			registry.registerProvider("dynamic-empty", {
+				baseUrl: "https://provider.test/v1", api: "openai-completions", oauth, streamSimple, models: [],
+			});
+			expect(registry.find("dynamic-empty", "route")).toBeUndefined();
+			expect(getOAuthProvider("dynamic-empty")?.name).toBe("Dynamic Empty OAuth");
+			expect(() => getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext)).toThrow("dynamic-empty-stream");
 		});
 
 		test("unregisterProvider removes custom OAuth provider and restores built-in OAuth provider", () => {

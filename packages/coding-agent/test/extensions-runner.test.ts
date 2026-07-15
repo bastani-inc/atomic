@@ -8,3 +8,5 @@ import "./extensions-runner/tool-command-collection.suite.ts";
 import "./extensions-runner/context-error-renderer-flags.suite.ts";
 import "./extensions-runner/lifecycle-tool-result.suite.ts";
 import "./extensions-runner/provider-command-handlers.suite.ts";
+import "./extensions-runner/model-catalog-discovery.suite.ts";
+import "./extensions-runner/cursor-workflow-discovery.suite.ts";

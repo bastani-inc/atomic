@@ -3,6 +3,7 @@ import type { AppMode } from "./main-app-mode.ts";
 import type { ScopedModel } from "./core/model-resolver-types.ts";
 import type { ProjectTrustStore } from "./core/trust-manager.ts";
 import { hasProjectTrustInputs } from "./core/trust-manager.ts";
+import { modelScopeNeedsCursorDiscovery } from "./main-cursor-model-scope-recovery.ts";
 
 
 export interface ComputeDeferExtensionsInput {
@@ -19,12 +20,13 @@ export interface ComputeDeferExtensionsInput {
 	unknownFlagCount: number;
 	provider?: string;
 	model?: string;
+	models?: string[];
 }
 
 export interface ComputeStartupInputCaptureInput {
 	appMode: AppMode;
 	stdinIsTTY: boolean;
-	parsed: Pick<Args, "help" | "listModels" | "projectTrustOverride" | "systemPrompt" | "appendSystemPrompt" | "unknownFlags" | "provider" | "model" | "resume" | "session">;
+	parsed: Pick<Args, "help" | "listModels" | "projectTrustOverride" | "systemPrompt" | "appendSystemPrompt" | "unknownFlags" | "provider" | "model" | "models" | "resume" | "session">;
 	sessionCwd: string;
 	projectTrustStore: Pick<ProjectTrustStore, "get">;
 	resolvedExtensionPathCount: number;
@@ -49,6 +51,7 @@ export function computeStartupInputCaptureEnabled(input: ComputeStartupInputCapt
 		unknownFlagCount: input.parsed.unknownFlags.size,
 		provider: input.parsed.provider,
 		model: input.parsed.model,
+		models: input.parsed.models,
 	});
 }
 
@@ -65,6 +68,7 @@ export function computeDeferExtensions(input: ComputeDeferExtensionsInput): bool
 		!input.hasSystemPromptInput &&
 		input.provider === undefined &&
 		input.model === undefined &&
+		!(input.models && modelScopeNeedsCursorDiscovery(input.models)) &&
 		input.unknownFlagCount === 0
 	);
 }

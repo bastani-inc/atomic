@@ -1,11 +1,10 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Context } from "@earendil-works/pi-ai/compat";
-import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage, CursorToolResultMessage, CursorWriteOptions } from "../../packages/cursor/src/transport.js";
 import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
-import { collectEvents, collectEventsWithTimeout, context, deferred, model } from "./cursor-stream-helpers.js";
+import { collectEvents, collectEventsWithTimeout, context, deferred, model, TestCursorStreamAdapter as CursorStreamAdapter } from "./cursor-stream-helpers.js";
 
 describe("CursorStreamAdapter", () => {	test("batches adjacent Cursor tool calls into one paused turn", async () => {
 		const transport = new CursorMockTransport({ messages: [

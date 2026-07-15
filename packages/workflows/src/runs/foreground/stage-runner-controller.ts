@@ -228,6 +228,7 @@ export class StageSessionController {
         fallbackModels: this.effectiveStageOptions?.fallbackModels,
         fallbackThinkingLevels: this.effectiveStageOptions?.fallbackThinkingLevels,
         catalog: this.modelCatalog,
+        signal: this.opts.signal,
       });
     }
     return this.candidatesPromise;

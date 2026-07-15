@@ -264,6 +264,7 @@ export class InteractiveModeBase {
   deferredStartupPending = false;
 
   deferredStartupPromise: Promise<void> | undefined = undefined;
+  deferredStartupFatalError: Error | undefined = undefined;
 
 
   inputHandlerReadyRecorded = false;

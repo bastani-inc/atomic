@@ -4,6 +4,7 @@ export { CursorAuthError, CursorAuthService, CursorToken, createPkcePair, derive
 export { CursorModelDiscoveryError, CursorModelDiscoveryService } from "./src/models.js";
 export { FileCursorCatalogCache, getDefaultCursorCatalogCachePath, parseCursorCatalogCacheRecord, toCursorCatalogCacheRecord, type CursorCatalogCache } from "./src/catalog-cache.js";
 export { mapCursorCatalogToProviderModels, normalizeCursorUsableModels, type CursorModelCatalog, type CursorProviderModelDefinition, type CursorUsableModel } from "./src/model-mapper.js";
-export { CursorConversationStateStore } from "./src/conversation-state.js";
-export { CursorStreamAdapter, createCursorStreamAdapter } from "./src/stream.js";
+export { CursorConversationStateStore, type CursorConversationTurnHandle } from "./src/conversation-state.js";
+export { CursorStreamAdapter, createCursorStreamAdapter, type CursorStreamAdapterOptions } from "./src/stream.js";
+export type { CursorAuthorizedRoute, CursorExecutionAuthorityScheduler, CursorExecutionAuthorityTimer, CursorExecutionRouteAuthorizer } from "./src/execution-authority.js";
 export { Http2CursorAgentTransport } from "./src/transport.js";

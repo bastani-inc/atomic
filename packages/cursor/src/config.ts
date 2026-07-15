@@ -9,7 +9,6 @@ export const CURSOR_WEB_BASE_URL = "https://cursor.com";
 // the latest identity for every account/server and may require refresh.
 export const CURSOR_CLIENT_VERSION = "cli-2026.05.01-eea359f";
 export const CURSOR_CLIENT_TYPE = "cli";
-export const CURSOR_DEFAULT_MODEL_ID = "composer-2";
 export const CURSOR_AUTH_POLL_PATH = "/auth/poll";
 export const CURSOR_REFRESH_PATH = "/auth/exchange_user_api_key";
 export const CURSOR_AVAILABLE_MODELS_PATH = "/aiserver.v1.AiService/AvailableModels";

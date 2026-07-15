@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildModelCandidates,
   buildModelCandidatesFromCatalog,
+  validateWorkflowModels,
   WorkflowModelValidationError,
 } from "../../packages/workflows/src/runs/shared/model-fallback.js";
 import type { WorkflowModelInfo } from "../../packages/workflows/src/shared/types.js";
@@ -157,5 +158,90 @@ describe("Cursor workflow model resolution", () => {
         return true;
       },
     );
+  });
+
+  test("awaits Cursor discovery before reading the workflow catalog", async () => {
+    let discovered = false;
+    const [candidate] = await buildModelCandidatesFromCatalog({
+      primaryModel: "cursor/live-route",
+      catalog: {
+        discoverModels: async () => { discovered = true; },
+        listModels: async () => {
+          assert.equal(discovered, true);
+          return [{ provider: "cursor", id: "live-route", fullId: "cursor/live-route" }];
+        },
+      },
+    });
+    assert.equal(candidate?.id, "cursor/live-route");
+  });
+
+  test("does not delay non-Cursor workflows for Cursor discovery", async () => {
+    let discoveries = 0;
+    const [candidate] = await buildModelCandidatesFromCatalog({
+      primaryModel: "openai/gpt-5-mini",
+      catalog: {
+        discoverModels: async () => { discoveries += 1; },
+        listModels: async () => models,
+      },
+    });
+    assert.equal(candidate?.id, "openai/gpt-5-mini");
+    assert.equal(discoveries, 0);
+  });
+
+  test("Cursor discovery cancellation rejects before catalog lookup or fallback", async () => {
+    const controller = new AbortController();
+    let listed = false;
+    controller.abort(new Error("cancelled discovery"));
+    await assert.rejects(buildModelCandidatesFromCatalog({
+      primaryModel: "cursor/live-route", fallbackModels: ["openai/gpt-5-mini"], signal: controller.signal,
+      catalog: {
+        discoverModels: async (signal) => { throw signal?.reason ?? new Error("cancelled"); },
+        listModels: async () => { listed = true; return models; },
+      },
+    }), /cancelled discovery/u);
+    assert.equal(listed, false);
+  });
+
+  test("workflow preflight discovery failure stops validation before catalog and fallback", async () => {
+    let listed = false;
+    await assert.rejects(validateWorkflowModels({
+      requests: [{ model: "cursor/live-route", fallbackModels: ["openai/gpt-5-mini"] }],
+      catalog: {
+        currentModel: "openai/gpt-5-mini",
+        discoverModels: async () => { throw new Error("Cursor discovery failed"); },
+        listModels: async () => { listed = true; return models; },
+      },
+    }), /Cursor discovery failed/u);
+    assert.equal(listed, false);
+  });
+
+  test("bare legacy IDs reject cross-provider fallback unless currently returned by Cursor", async () => {
+    const otherComposer = { provider: "openai", id: "composer-2", fullId: "openai/composer-2" };
+    await assert.rejects(buildModelCandidatesFromCatalog({
+      primaryModel: "composer-2", fallbackModels: ["openai/gpt-5-mini"],
+      catalog: { currentModel: "openai/gpt-5-mini", listModels: async () => [...models, otherComposer] },
+    }), /cursor\/composer-2.*reselect/s);
+
+    const [current] = await buildModelCandidatesFromCatalog({
+      primaryModel: "composer-2",
+      catalog: {
+        discoverModels: async () => undefined,
+        listModels: async () => [...models, otherComposer, { provider: "cursor", id: "composer-2", fullId: "cursor/composer-2" }],
+      },
+    });
+    assert.equal(current?.id, "cursor/composer-2");
+  });
+
+  test("explicit non-Cursor qualification overrides bare legacy tombstones", async () => {
+    const [candidate] = await buildModelCandidatesFromCatalog({
+      primaryModel: "openai/composer-2",
+      catalog: {
+        listModels: async () => [
+          ...models,
+          { provider: "openai", id: "composer-2", fullId: "openai/composer-2" },
+        ],
+      },
+    });
+    assert.equal(candidate?.id, "openai/composer-2");
   });
 });

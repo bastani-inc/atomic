@@ -70,6 +70,8 @@ export interface ExtensionContext {
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
+	/** Await extension-backed dynamic model discovery. Concurrent callers share one emission. */
+	discoverModelCatalog?(options?: { readonly signal?: AbortSignal }): Promise<void>;
 	/** Abort the current agent operation */
 	abort(): void;
 	/** Whether there are queued messages waiting */

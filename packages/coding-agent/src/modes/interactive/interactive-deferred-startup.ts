@@ -1,21 +1,35 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveRestoredModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
+import { modelScopeNeedsCursorDiscovery } from "../../main-cursor-model-scope-recovery.ts";
+
+export class DeferredCursorModelScopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DeferredCursorModelScopeError";
+  }
+}
 
 export interface DeferredStartupMode {
     deferredStartupPending: boolean;
     deferredStartupPromise: Promise<void> | undefined;
+    deferredStartupFatalError?: Error;
     completeDeferredStartup(): Promise<void>;
   }
 
 export async function ensureDeferredStartupComplete(mode: DeferredStartupMode): Promise<void> {
+    if (mode.deferredStartupFatalError) throw mode.deferredStartupFatalError;
     if (!mode.deferredStartupPending && !mode.deferredStartupPromise) return;
     const startupPromise = mode.deferredStartupPromise ?? Promise.resolve().then(() => mode.completeDeferredStartup());
     mode.deferredStartupPromise = startupPromise;
     try {
       await startupPromise;
-    } catch {
+    } catch (error) {
       mode.deferredStartupPending = false;
+      if (error instanceof DeferredCursorModelScopeError) {
+        mode.deferredStartupFatalError = error;
+        throw error;
+      }
     } finally {
       if (mode.deferredStartupPromise === startupPromise && !mode.deferredStartupPending) {
         mode.deferredStartupPromise = undefined;
@@ -65,6 +79,11 @@ InteractiveModeBase.prototype.completeDeferredStartup = async function(this: Int
     } catch (error) {
       this.stopWorkingLoader();
       this.deferredStartupPending = false;
+      if (error instanceof DeferredCursorModelScopeError) {
+        this.deferredStartupFatalError = error;
+        this.showError(error.message);
+        throw error;
+      }
       this.showError(
         `Extension loading failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -78,10 +97,25 @@ export async function applyDeferredModelScope(mode: InteractiveModeBase): Promis
     if (!patterns || patterns.length === 0) {
       return;
     }
+    const strictCursorScope = modelScopeNeedsCursorDiscovery(patterns);
+    if (strictCursorScope) {
+      try {
+        await mode.session.discoverExtensionModels("tui");
+      } catch {
+        throw new DeferredCursorModelScopeError(
+          "Cursor model discovery failed. Refresh the catalog and reselect an exact model with --list-models.",
+        );
+      }
+    }
 
     const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, mode.session.modelRegistry);
+    const fatalDiagnostics = diagnostics.filter((diagnostic) => diagnostic.type === "error");
+    if (strictCursorScope && fatalDiagnostics.length > 0) {
+      throw new DeferredCursorModelScopeError(fatalDiagnostics.map((diagnostic) => diagnostic.message).join("\n"));
+    }
     for (const diagnostic of diagnostics) {
-      mode.showWarning(diagnostic.message);
+      if (diagnostic.type === "error") mode.showError(diagnostic.message);
+      else mode.showWarning(diagnostic.message);
     }
     mode.session.setScopedModels(scopedModels);
 

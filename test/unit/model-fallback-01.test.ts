@@ -176,11 +176,11 @@ describe("model fallback helpers", () => {
     );
   });
 
-  test("buildModelCandidateIds resolves bare ids through preferred provider", () => {
+  test("buildModelCandidateIds resolves a bare primary through preferred provider", () => {
     assert.deepEqual(
       buildModelCandidateIds({
         primaryModel: "claude-sonnet-4",
-        fallbackModels: ["gpt-5-mini"],
+        fallbackModels: ["openai/gpt-5-mini"],
         currentModel: "openai/gpt-5-mini",
         availableModels: models,
         preferredProvider: "github-copilot",

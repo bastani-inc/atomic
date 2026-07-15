@@ -58,6 +58,25 @@ export interface WorkflowExtensionRuntimeState {
   updateHostStageSessionDir(sessionManager: SessionManager | undefined): void;
 }
 
+export function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {
+  if (ctx?.modelRegistry === undefined && ctx?.model === undefined) return undefined;
+  return {
+    discoverModels: ctx.discoverModelCatalog === undefined
+      ? undefined
+      : (signal) => ctx.discoverModelCatalog?.({ signal: signal ?? ctx.signal }) ?? Promise.resolve(),
+    listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
+      const available = ctx.modelRegistry?.getAvailable() ?? (ctx.model === undefined ? [] : [ctx.model]);
+      return available.map((model) => ({
+        provider: String(model.provider), id: model.id, fullId: `${String(model.provider)}/${model.id}`,
+        model: model as NonNullable<CreateAgentSessionOptions["model"]>,
+      }));
+    },
+    ...(ctx.model !== undefined
+      ? { currentModel: ctx.model as NonNullable<CreateAgentSessionOptions["model"]>, preferredProvider: String(ctx.model.provider) }
+      : {}),
+  };
+}
+
 export function createWorkflowExtensionRuntimeState(
   pi: ExtensionAPI,
   adapters: StageAdapters,
@@ -160,26 +179,6 @@ export function createWorkflowExtensionRuntimeState(
     },
   };
 
-  function workflowModelCatalogFromContext(ctx?: PiModelContext): WorkflowModelCatalogPort | undefined {
-    if (ctx?.modelRegistry === undefined && ctx?.model === undefined) return undefined;
-    return {
-      listModels: async (): Promise<readonly WorkflowModelInfo[]> => {
-        const available = ctx.modelRegistry?.getAvailable() ?? (ctx.model === undefined ? [] : [ctx.model]);
-        return available.map((model) => ({
-          provider: String(model.provider),
-          id: model.id,
-          fullId: `${String(model.provider)}/${model.id}`,
-          model: model as NonNullable<CreateAgentSessionOptions["model"]>,
-        }));
-      },
-      ...(ctx.model !== undefined
-        ? {
-            currentModel: ctx.model as NonNullable<CreateAgentSessionOptions["model"]>,
-            preferredProvider: String(ctx.model.provider),
-          }
-        : {}),
-    };
-  }
 
   function runtimeForContext(ctx?: PiModelContext): ExtensionRuntime {
     const models = workflowModelCatalogFromContext(ctx);

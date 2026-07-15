@@ -15,6 +15,7 @@ import {
 	createExtensionContext,
 	type ExtensionCommandContextSource,
 } from "./runner-context.ts";
+import { ModelCatalogDiscoveryCoordinator } from "./model-catalog-discovery.ts";
 import {
 	runBeforeAgentStartHandlers,
 	runBeforeProviderRequestHandlers,
@@ -139,6 +140,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private readonly modelCatalogDiscovery = new ModelCatalogDiscoveryCoordinator();
 
 	constructor(
 		extensions: Extension[],
@@ -354,6 +356,14 @@ export class ExtensionRunner {
 		this.shutdownHandler();
 	}
 
+	discoverModelCatalog(options?: { readonly signal?: AbortSignal }): Promise<void> {
+		this.assertActive();
+		return this.modelCatalogDiscovery.discover(
+			async () => { await this.emit({ type: "model_catalog_discover" }); },
+			options?.signal,
+		);
+	}
+
 	createContext(): ExtensionContext {
 		return createExtensionContext(this.createContextSource());
 	}
@@ -376,6 +386,7 @@ export class ExtensionRunner {
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),
+			discoverModelCatalog: (options) => this.discoverModelCatalog(options),
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			shutdown: () => this.shutdownHandler(),

@@ -48,7 +48,6 @@ export type ParsedTurnStep = ParsedAssistantTextStep | ParsedToolCallStep;
 
 export interface ParsedTurn {
 	readonly userText: string;
-	readonly userImages: readonly ImageContent[];
 	readonly steps: ParsedTurnStep[];
 }
 
@@ -114,7 +113,7 @@ function buildConversationState(
 ): ConversationStateStructure {
 	const turnBlobIds: Uint8Array[] = [];
 	for (const turn of turns) {
-		const userMessage = createUserMessage(turn.userText, selectedContextBlob, turn.userImages);
+		const userMessage = createUserMessage(turn.userText, selectedContextBlob);
 		const userMessageBlobId = storeAsBlob(toBinary(UserMessageSchema, userMessage), blobStore);
 		const stepBlobIds = turn.steps.map((step) => storeAsBlob(buildTurnStepBytes(step), blobStore));
 		const agentTurn = create(AgentConversationTurnStructureSchema, {
@@ -205,22 +204,22 @@ function buildTurnStepBytes(step: ParsedTurnStep): Uint8Array {
 
 export function parseHistoricalTurns(messages: readonly CursorRunRequest["context"]["messages"][number][]): readonly ParsedTurn[] {
 	const turns: ParsedTurn[] = [];
-	let currentTurn: { userText: string; userImages: readonly ImageContent[]; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } | undefined;
-	const ensureTurn = (): { userText: string; userImages: readonly ImageContent[]; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } => {
-		currentTurn ??= { userText: "", userImages: [], steps: [], toolCallById: new Map() };
+	let currentTurn: { userText: string; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } | undefined;
+	const ensureTurn = (): { userText: string; steps: ParsedTurnStep[]; toolCallById: Map<string, ParsedToolCallStep> } => {
+		currentTurn ??= { userText: "", steps: [], toolCallById: new Map() };
 		return currentTurn;
 	};
 	const flushTurn = (): void => {
 		if (!currentTurn) return;
-		if (currentTurn.userText || currentTurn.userImages.length > 0 || currentTurn.steps.length > 0) {
-			turns.push({ userText: currentTurn.userText, userImages: currentTurn.userImages, steps: currentTurn.steps });
+		if (currentTurn.userText || currentTurn.steps.length > 0) {
+			turns.push({ userText: currentTurn.userText, steps: currentTurn.steps });
 		}
 		currentTurn = undefined;
 	};
 	for (const message of messages) {
 		if (message.role === "user") {
 			flushTurn();
-			currentTurn = { userText: textFromMessage(message), userImages: imagesFromUserMessage(message), steps: [], toolCallById: new Map() };
+			currentTurn = { userText: textFromMessage(message), steps: [], toolCallById: new Map() };
 		} else if (message.role === "assistant") {
 			const turn = ensureTurn();
 			for (const part of message.content) {
@@ -240,7 +239,7 @@ export function parseHistoricalTurns(messages: readonly CursorRunRequest["contex
 				turn.steps.push(step);
 				turn.toolCallById.set(step.toolCallId, step);
 			}
-			step.result = { content: message.content, isError: message.isError, fallbackText: rawToolResultText(message) };
+			step.result = { content: historicalToolResultContent(message), isError: message.isError, fallbackText: rawToolResultText(message) };
 		}
 	}
 	flushTurn();
@@ -271,6 +270,9 @@ export function extractCurrentActionImages(request: CursorRunRequest): readonly 
 function imagesFromUserMessage(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "user" }>): readonly ImageContent[] {
 	if (typeof message.content === "string") return [];
 	return message.content.filter((part): part is ImageContent => part.type === "image");
+}
+function historicalToolResultContent(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "toolResult" }>): readonly Extract<CursorToolResultContent, { readonly type: "text" }>[] {
+	return message.content.filter((part): part is Extract<CursorToolResultContent, { readonly type: "text" }> => part.type === "text");
 }
 
 function rawToolResultText(message: Extract<CursorRunRequest["context"]["messages"][number], { readonly role: "toolResult" }>): string {

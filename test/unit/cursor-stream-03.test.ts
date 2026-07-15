@@ -1,11 +1,10 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
-import { CursorStreamAdapter } from "../../packages/cursor/src/stream.js";
+import type { Context } from "@earendil-works/pi-ai/compat";
 import type { CursorAgentTransport, CursorRunRequest, CursorRunStream, CursorServerMessage } from "../../packages/cursor/src/transport.js";
 import { CursorMockRunStream, CursorMockTransport } from "./cursor-test-helpers.js";
 import type { CursorUsableModel } from "../../packages/cursor/src/model-mapper.js";
-import { collectEvents, context, deferred, model } from "./cursor-stream-helpers.js";
+import { collectEvents, context, deferred, model, testAuthorizedRoute, TestCursorStreamAdapter as CursorStreamAdapter } from "./cursor-stream-helpers.js";
 
 describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams without leaking credentials", async () => {
 		class IdleTransport implements CursorAgentTransport {
@@ -135,10 +134,27 @@ describe("CursorStreamAdapter", () => {	test("times out idle Cursor streams with
 		assert.equal(toolImageTerminal?.type, "error");
 		if (toolImageTerminal?.type === "error") assert.match(toolImageTerminal.error.errorMessage ?? "", /does not support image input/u);
 
+
+		const historicalImageContext: Context = {
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "prior image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 },
+				{ role: "assistant", content: [{ type: "text", text: "prior response" }], api: "cursor-agent", provider: "cursor", model: model().id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 },
+				{ role: "user", content: "continue with text", timestamp: 3 },
+			],
+		};
+		const historicalTransport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+		const historicalAdapter = new CursorStreamAdapter({ transport: historicalTransport, uuid: () => "run-historical-image" });
+		const historicalEvents = await collectEvents(historicalAdapter.streamSimple(model(), historicalImageContext, { apiKey: "access-secret" }));
+		assert.equal(historicalTransport.runs.length, 1);
+		assert.equal(historicalEvents.at(-1)?.type, "done");
+		await historicalAdapter.dispose();
 		const imageTransport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
-		const imageAdapter = new CursorStreamAdapter({ transport: imageTransport, uuid: () => "run-image" });
-		const imageModel = { ...model(), id: "claude-4.5-sonnet", input: ["text", "image"], compat: { cursorRouting: { "claude-4.5-sonnet": { modelId: "claude-4.5-sonnet" } } } } as Model<Api>;
-		const allowedEvents = await collectEvents(imageAdapter.streamSimple(imageModel, imageContext, { apiKey: "access-secret" }));
+		const imageAdapter = new CursorStreamAdapter({
+			transport: imageTransport,
+			uuid: () => "run-image",
+			authorizedRoutes: [testAuthorizedRoute({ supportsImages: true })],
+		});
+		const allowedEvents = await collectEvents(imageAdapter.streamSimple(model(), imageContext, { apiKey: "access-secret" }));
 		assert.equal(imageTransport.runs.length, 1);
 		assert.equal(allowedEvents.at(-1)?.type, "done");
 	});

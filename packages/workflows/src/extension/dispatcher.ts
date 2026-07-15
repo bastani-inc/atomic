@@ -25,6 +25,7 @@ import {
   type WorkflowRuntimeConfig,
   type WorkflowModelCatalogPort,
 } from "../shared/types.js";
+import { namedWorkflowModelRequests, preflightWorkflowModelRequests } from "./model-preflight.js";
 
 type WorkflowRunResult = Extract<WorkflowToolResult, { action: "run" }>;
 
@@ -155,6 +156,16 @@ export async function dispatch(
       // it here so the dispatch result names what's missing.
       try {
         resolveAndValidateInputs(def.inputs, inputs, `workflow "${def.name}"`);
+      } catch (err) {
+        return failedRunResult(
+          def.name,
+          "",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+
+      try {
+        await preflightWorkflowModelRequests(namedWorkflowModelRequests(args), opts.models);
       } catch (err) {
         return failedRunResult(
           def.name,

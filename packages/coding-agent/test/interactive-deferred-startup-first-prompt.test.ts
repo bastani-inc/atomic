@@ -10,10 +10,12 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
+import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
 
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
 	deferredStartupPromise?: Promise<void>;
+	deferredStartupFatalError?: Error;
 	deferLoadedResourcesDisclosureUntilAgentEnd: boolean;
 	pendingLoadedResourcesDisclosure: boolean;
 	session: { readonly isStreaming: boolean; prompt: (text: string) => Promise<void> };
@@ -31,7 +33,7 @@ type InteractiveModePrivate = {
 	runUserPromptTurn(this: PromptTurnHarness, userInput: string): Promise<void>;
 };
 
-const interactiveModePrototype = InteractiveMode.prototype as unknown as InteractiveModePrivate;
+const interactiveModePrototype = InteractiveMode.prototype as InteractiveModePrivate;
 
 function createCommandActions(): ExtensionCommandContextActions {
 	return {
@@ -154,5 +156,55 @@ describe("interactive deferred startup first prompt readiness", () => {
 		} finally {
 			session.dispose();
 		}
+	});
+
+	it("never prompts with a default model after real deferred Cursor scope resolution fails", async () => {
+		const prompt = vi.fn(async () => {});
+		const showError = vi.fn();
+		const discoverExtensionModels = vi.fn(async () => {});
+		const setScopedModels = vi.fn();
+		const setModel = vi.fn();
+		const defaultModel = getModel("anthropic", "claude-sonnet-4-5")!;
+		const scopeMode = {
+			options: { deferredModelScopePatterns: ["cursor/missing-route"] },
+			session: {
+				discoverExtensionModels,
+				modelRegistry: {
+					getAvailable: vi.fn(async () => [defaultModel]),
+					find: vi.fn(() => defaultModel),
+					hasConfiguredAuth: vi.fn(() => true),
+				},
+				setScopedModels,
+				setModel,
+			},
+			sessionManager: { buildSessionContext: () => ({ messages: [] }) },
+			settingsManager: { getDefaultProvider: () => "anthropic", getDefaultModel: () => defaultModel.id },
+			showError,
+			showWarning: vi.fn(),
+		};
+		const harness: PromptTurnHarness = {
+			deferredStartupPending: true,
+			deferredStartupPromise: undefined,
+			deferLoadedResourcesDisclosureUntilAgentEnd: false,
+			pendingLoadedResourcesDisclosure: false,
+			session: { isStreaming: false, prompt },
+			showWorkingLoaderNow: vi.fn(),
+			ensureDeferredStartupComplete: vi.fn(async () => applyDeferredModelScope(scopeMode as never)),
+			showLoadedResources: vi.fn(),
+			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(async () => {}),
+			discardDeferredRenderedUserInput: vi.fn(),
+			showError,
+			stopWorkingLoader: vi.fn(),
+			startupNoticesContainer: {},
+		};
+
+		await interactiveModePrototype.runUserPromptTurn.call(harness, "must not dispatch");
+
+		expect(discoverExtensionModels).toHaveBeenCalledOnce();
+		expect(setScopedModels).not.toHaveBeenCalled();
+		expect(setModel).not.toHaveBeenCalled();
+		expect(prompt).not.toHaveBeenCalled();
+		expect(showError).toHaveBeenCalledWith(expect.stringMatching(/cursor\/missing-route.*reselect/s));
+		expect(harness.discardDeferredRenderedUserInput).toHaveBeenCalledWith("must not dispatch");
 	});
 });

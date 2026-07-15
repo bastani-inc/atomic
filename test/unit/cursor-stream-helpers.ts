@@ -1,26 +1,56 @@
 import type { Api, AssistantMessageEvent, Context, Model } from "@earendil-works/pi-ai/compat";
+import type { CursorAuthorizedRoute, CursorExecutionRouteAuthorizer } from "../../packages/cursor/src/execution-authority.js";
+import type { CursorStreamAdapterOptions } from "../../packages/cursor/src/stream.js";
+import { CursorStreamAdapter as ProductionCursorStreamAdapter } from "../../packages/cursor/src/stream.js";
+
+export const TEST_CURSOR_MODEL_ID = "cursor-grok-4.5-high";
+const TEST_CURSOR_AUTHORITY_LEASE = Symbol("test-cursor-authority");
+const TEST_CURSOR_AUTHORITY_SIGNAL = new AbortController().signal;
+
+export function testAuthorizedRoute(overrides: Partial<CursorAuthorizedRoute> = {}): CursorAuthorizedRoute {
+	return {
+		modelId: TEST_CURSOR_MODEL_ID,
+		maxMode: true,
+		supportsImages: false,
+		authorityLease: TEST_CURSOR_AUTHORITY_LEASE,
+		authoritySignal: TEST_CURSOR_AUTHORITY_SIGNAL,
+		credentialScope: "test-cursor-scope",
+		catalogGeneration: 1,
+		assertCurrent() {},
+		...overrides,
+	};
+}
+
+interface TestCursorStreamAdapterOptions extends Omit<CursorStreamAdapterOptions, "executionAuthorizer"> {
+	readonly authorizedRoutes?: readonly CursorAuthorizedRoute[];
+}
+
+export class TestCursorStreamAdapter extends ProductionCursorStreamAdapter {
+	constructor(options: TestCursorStreamAdapterOptions) {
+		const { authorizedRoutes = [testAuthorizedRoute()], ...streamOptions } = options;
+		const routes = new Map(authorizedRoutes.map((route) => [route.modelId, route]));
+		const authorizer: CursorExecutionRouteAuthorizer = async (selected) => {
+			const route = routes.get(selected.id);
+			if (!route) throw new Error(`Cursor model ${selected.id} is not an exact route in the authenticated catalog.`);
+			return route;
+		};
+		super({ ...streamOptions, executionAuthorizer: authorizer });
+	}
+}
 
 export function model(): Model<Api> {
 	return {
-		id: "composer-2",
-		name: "Composer 2",
+		id: TEST_CURSOR_MODEL_ID,
+		name: "Cursor Grok 4.5 High",
 		api: "cursor-agent",
 		provider: "cursor",
 		baseUrl: "https://api2.cursor.sh",
-		reasoning: true,
-		thinkingLevelMap: { high: "composer-2-high", xhigh: "composer-2-max" },
+		reasoning: false,
 		input: ["text"],
 		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
-		compat: {
-			cursorRouting: {
-				"composer-2": { modelId: "composer-2" },
-				"composer-2-high": { modelId: "composer-2", parameters: [{ id: "reasoning", value: "high" }] },
-				"composer-2-max": { modelId: "composer-2", maxMode: true, parameters: [{ id: "reasoning", value: "max" }] },
-			},
-		},
-	} as Model<Api>;
+	};
 }
 
 export function context(): Context {
@@ -62,4 +92,3 @@ export async function collectEventsWithTimeout(stream: AsyncIterable<AssistantMe
 		if (timeout) clearTimeout(timeout);
 	}
 }
-

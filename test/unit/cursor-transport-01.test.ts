@@ -311,19 +311,19 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.match(image.path, /^\/atomic\/inline-images\/[a-f0-9]{16}-0\.png$/u);
 		assert.deepEqual({ mimeType: image.mimeType, case: image.dataOrBlobId.case, bytes: [...image.dataOrBlobId.value] }, { mimeType: "image/png", case: "data", bytes: [104, 105] });
 	});
-	test("protobuf codec preserves historical user images in rebuilt conversation state", () => {
+	test("protobuf codec omits historical user image bytes while preserving multi-turn text", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const requestId = "request-history-user-image";
-		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId, model, resolvedModelId: "claude-4.5-sonnet", context: { messages: [{ role: "user", content: [{ type: "text", text: "describe prior image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 }, { role: "user", content: "continue", timestamp: 2 }] } });
+		const encodedRun = codec.encodeRunRequest({ accessToken: "secret", requestId, model, resolvedModelId: "claude-4.5-sonnet", context: { messages: [{ role: "user", content: [{ type: "text", text: "describe prior image" }, { type: "image", data: "aGk=", mimeType: "image/png" }], timestamp: 1 }, { role: "assistant", content: [{ type: "text", text: "prior response" }], api: "cursor-agent", provider: "cursor", model: "composer-2", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: 2 }, { role: "user", content: "continue", timestamp: 3 }] } });
 		const turnBlobId = fromBinary(AgentClientMessageSchema, encodedRun).message.value.conversationState.turns[0];
 		assert.ok(turnBlobId instanceof Uint8Array);
 		const turn = fromBinary(ConversationTurnStructureSchema, readRunBlob(codec, requestId, turnBlobId)).turn;
 		assert.equal(turn.case, "agentConversationTurn");
 		const userMessage = fromBinary(UserMessageSchema, readRunBlob(codec, requestId, turn.value.userMessage, 92));
-		const [image] = userMessage.selectedContext.selectedImages;
 		assert.equal(userMessage.text, "describe prior image");
-		assert.equal(userMessage.selectedContext.selectedImages.length, 1);
-		assert.deepEqual({ mimeType: image.mimeType, case: image.dataOrBlobId.case, bytes: [...image.dataOrBlobId.value] }, { mimeType: "image/png", case: "data", bytes: [104, 105] });
+		assert.equal(userMessage.selectedContext.selectedImages.length, 0);
+		assert.equal(new TextDecoder().decode(encodedRun).includes("aGk="), false);
+		assert.equal(new TextDecoder().decode(encodedRun).includes("continue"), true);
 	});
 	test("protobuf codec rejects malformed base64 image data without leaking payloads", () => {
 		const bad = "not base64!!!";
@@ -337,9 +337,9 @@ describe("Cursor HTTP2 transport boundary", () => {
 			for (const snippet of snippets) assert.ok(error.message.includes(snippet), `${name}: ${error.message}`);
 		};
 		assertRejects("current user", () => runContext({ messages: [{ role: "user", content: [{ type: "text", text: "describe" }, { type: "image", data: bad, mimeType: "image/png" }], timestamp: 1 }] }), ["selected image", "image/png", "index 0"]);
-		assertRejects("historical user", () => runContext({ messages: [{ role: "user", content: [{ type: "text", text: "prior" }, { type: "image", data: bad, mimeType: "image/jpeg" }], timestamp: 1 }, { role: "user", content: "continue", timestamp: 2 }] }), ["selected image", "image/jpeg", "index 0"]);
+		assert.doesNotThrow(() => runContext({ messages: [{ role: "user", content: [{ type: "text", text: "prior" }, { type: "image", data: bad, mimeType: "image/jpeg" }], timestamp: 1 }, { role: "user", content: "continue", timestamp: 2 }] }));
 		assertRejects("active tool result", () => new CursorProtobufProtocolCodec().encodeToolResult({ toolCallId: "tool-1", toolName: "Read", text: "caption", content: [{ type: "text", text: "caption" }, { type: "image", data: bad, mimeType: "image/webp" }], isError: false, execId: "exec-1", execNumericId: 7 }), ["MCP image", "image/webp", "index 1"]);
-		assertRejects("historical tool result", () => runContext({ messages: [{ role: "user", content: "inspect", timestamp: 1 }, { role: "assistant", content: [{ type: "toolCall", id: "tool-image", name: "ReadImage", arguments: { path: "screen.png" } }], timestamp: 2 }, { role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [{ type: "text", text: "caption" }, { type: "image", data: bad, mimeType: "image/gif" }], isError: false, timestamp: 3 }, { role: "user", content: "continue", timestamp: 4 }] }), ["MCP image", "image/gif", "index 1"]);
+		assert.doesNotThrow(() => runContext({ messages: [{ role: "user", content: "inspect", timestamp: 1 }, { role: "assistant", content: [{ type: "toolCall", id: "tool-image", name: "ReadImage", arguments: { path: "screen.png" } }], timestamp: 2 }, { role: "toolResult", toolCallId: "tool-image", toolName: "ReadImage", content: [{ type: "text", text: "caption" }, { type: "image", data: bad, mimeType: "image/gif" }], isError: false, timestamp: 3 }, { role: "user", content: "continue", timestamp: 4 }] }));
 	});
 	test("protobuf codec uses stable conversation ids separately from request ids", () => {
 		const codec = new CursorProtobufProtocolCodec();
@@ -433,7 +433,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 		assert.equal(success.content[1].content.value.mimeType, "image/png");
 		assert.deepEqual([...success.content[1].content.value.data], [104, 105]);
 	});
-	test("protobuf codec preserves historical mixed text and image MCP tool result content", () => {
+	test("protobuf codec omits historical MCP images while preserving text tool continuity", () => {
 		const codec = new CursorProtobufProtocolCodec();
 		const requestId = "run-history-image";
 		const encoded = codec.encodeRunRequest({
@@ -450,8 +450,7 @@ describe("Cursor HTTP2 transport boundary", () => {
 				],
 			},
 		});
-		const decoded = fromBinary(AgentClientMessageSchema, encoded);
-		const runRequest = decoded.message.value;
+		const runRequest = fromBinary(AgentClientMessageSchema, encoded).message.value;
 		const turnBlobId = runRequest.conversationState.turns[0];
 		assert.ok(turnBlobId instanceof Uint8Array);
 		const turnStructure = fromBinary(ConversationTurnStructureSchema, readRunBlob(codec, requestId, turnBlobId));
@@ -464,12 +463,9 @@ describe("Cursor HTTP2 transport boundary", () => {
 		const mcpResult = step.message.value.tool.value.result;
 		assert.equal(mcpResult.result.case, "success");
 		const success = mcpResult.result.value;
-		assert.equal(success.content.length, 2);
+		assert.equal(success.content.length, 1);
 		assert.equal(success.content[0].content.case, "text");
 		assert.equal(success.content[0].content.value.text, "image caption");
-		assert.equal(success.content[1].content.case, "image");
-		assert.equal(success.content[1].content.value.mimeType, "image/png");
-		assert.deepEqual([...success.content[1].content.value.data], [104, 105]);
 	});
 	test("protobuf codec skips unknown fixed32 fields while decoding known messages", () => {
 		const codec = new CursorProtobufProtocolCodec();

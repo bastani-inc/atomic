@@ -3,12 +3,13 @@ import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import chalk from "chalk";
 import { minimatch } from "minimatch";
 import { isValidThinkingLevel } from "../cli/args.ts";
+import { classifyBareCursorModelReference } from "./legacy-cursor-model-ids.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { parseModelPattern } from "./model-resolver-patterns.ts";
 import type { ScopedModel } from "./model-resolver-types.ts";
 
 export interface ModelScopeDiagnostic {
-  type: "warning";
+  type: "warning" | "error";
   message: string;
 }
 
@@ -19,6 +20,19 @@ export interface ResolveModelScopeResult {
 
 function hasGlobCharacters(pattern: string): boolean {
   return pattern.includes("*") || pattern.includes("?") || pattern.includes("[");
+}
+
+function providerQualifiedCursorId(pattern: string): string | undefined {
+  const separator = pattern.indexOf("/");
+  if (separator <= 0 || pattern.slice(0, separator).toLowerCase() !== "cursor") return undefined;
+  return pattern.slice(separator + 1);
+}
+
+function cursorReselectionDiagnostic(reference: string): ModelScopeDiagnostic {
+  return {
+    type: "error",
+    message: `Model "${reference}" not found. Cursor model IDs changed; reselect an exact model with --list-models.`,
+  };
 }
 
 function parseGlobThinkingLevel(pattern: string): { globPattern: string; thinkingLevel?: ThinkingLevel } {
@@ -54,6 +68,33 @@ export async function resolveModelScopeWithDiagnostics(
   const scopedModels: ScopedModel[] = [];
   const diagnostics: ModelScopeDiagnostic[] = [];
   for (const pattern of patterns) {
+    const qualifiedCursorId = providerQualifiedCursorId(pattern);
+    if (qualifiedCursorId !== undefined) {
+      const current = availableModels.find(
+        (model) => model.provider.toLowerCase() === "cursor" && model.id === qualifiedCursorId,
+      );
+      if (current) {
+        if (!scopedModels.some((entry) => modelsAreEqual(entry.model, current))) {
+          scopedModels.push({ model: current });
+        }
+      } else {
+        diagnostics.push(cursorReselectionDiagnostic(pattern));
+      }
+      continue;
+    }
+
+    const cursorReference = classifyBareCursorModelReference(pattern, availableModels);
+    if (cursorReference === "current-cursor") {
+      const current = availableModels.find((model) => model.provider.toLowerCase() === "cursor" && model.id === pattern);
+      if (current && !scopedModels.some((entry) => modelsAreEqual(entry.model, current))) {
+        scopedModels.push({ model: current });
+      }
+      continue;
+    }
+    if (cursorReference === "legacy-cursor") {
+      diagnostics.push(cursorReselectionDiagnostic(`cursor/${pattern}`));
+      continue;
+    }
     if (hasGlobCharacters(pattern)) {
       const { globPattern, thinkingLevel } = parseGlobThinkingLevel(pattern);
       const matchingModels = availableModels.filter((model) => {
@@ -97,7 +138,8 @@ export async function resolveModelScopeWithDiagnostics(
 export async function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]> {
   const { scopedModels, diagnostics } = await resolveModelScopeWithDiagnostics(patterns, modelRegistry);
   for (const diagnostic of diagnostics) {
-    console.warn(chalk.yellow(`Warning: ${diagnostic.message}`));
+    const prefix = diagnostic.type === "error" ? "Error" : "Warning";
+    console.warn(chalk.yellow(`${prefix}: ${diagnostic.message}`));
   }
   return scopedModels;
 }

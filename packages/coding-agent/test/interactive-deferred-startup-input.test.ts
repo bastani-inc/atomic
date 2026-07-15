@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ensureDeferredStartupComplete, type DeferredStartupMode } from "../src/modes/interactive/interactive-deferred-startup.ts";
+import { DeferredCursorModelScopeError, ensureDeferredStartupComplete, type DeferredStartupMode } from "../src/modes/interactive/interactive-deferred-startup.ts";
 
 function createMode(): DeferredStartupMode & { starts: number } {
 	return {
@@ -53,5 +53,15 @@ describe("deferred startup input readiness", () => {
 
 		expect(mode.deferredStartupPending).toBe(false);
 		expect(mode.deferredStartupPromise).toBeUndefined();
+	});
+
+	it("keeps a strict Cursor scope failure fatal across later prompt gates", async () => {
+		const mode = createMode();
+		const fatal = new DeferredCursorModelScopeError("Reselect an exact Cursor model");
+		mode.deferredStartupPending = false;
+		mode.deferredStartupFatalError = fatal;
+
+		await expect(ensureDeferredStartupComplete(mode)).rejects.toBe(fatal);
+		expect(mode.starts).toBe(0);
 	});
 });
