@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Hardened repository release recovery so externally merged PRs require exact current identity, refs, SHA, checks, merge evidence, and retained branch state. Workflow-qualified Actions reruns use name plus workflow; empty-workflow external statuses and GitHub App checks infer `StatusContext` versus `CheckRun` from exact passing evidence, then group same-kind/name reruns so URL-changing pending attempts block without cross-kind collisions. Checks refresh after merge, tag recovery proves `verified merge → tag parent → current base`, protected dispatch coordination retains its lock through ambiguous acceptance visibility, and recovered success is bound to the exact integrity-job tag SHA.
+- Hardened repository release recovery so externally merged PRs require exact current identity, refs, SHA, checks, merge evidence, and retained branch state. Workflow-qualified Actions reruns use name plus workflow; empty-workflow external statuses and GitHub App checks infer `StatusContext` versus `CheckRun` from exact evidence. Linked reruns group by inferred kind/name across URL changes, while linkless rows conservatively inspect both external kinds and exclude nonempty-workflow Actions. Checks refresh after merge, tag recovery proves `verified merge → tag parent → current base`, protected dispatch coordination retains its lock through ambiguous acceptance visibility, and recovered success is bound to the exact integrity-job tag SHA.
 
 ## [0.9.9] - 2026-07-15
 

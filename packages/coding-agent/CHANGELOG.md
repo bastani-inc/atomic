@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Fixed the repository `publish-release` workflow to reconcile an exact release PR merged externally while required checks are pending. It preserves identity/refs/SHA; correlates workflow-qualified Actions reruns by name plus workflow; and infers empty-workflow required results as `StatusContext` or GitHub App `CheckRun` from exact passing evidence before grouping same-kind/name reruns, blocking URL-changing pending attempts without cross-kind optional collisions. It rechecks after merge and validates merge/branch evidence. Tag recovery proves `verified merge → tag parent → current base`; exhaustive history avoids GitHub's 1,000-result ceiling; protected coordination retains its lock through ambiguous dispatch visibility; and recovered success requires exact-SHA integrity evidence.
+- Fixed the repository `publish-release` workflow to reconcile an exact release PR merged externally while required checks are pending. It preserves identity/refs/SHA; correlates workflow-qualified Actions reruns by name plus workflow; and infers empty-workflow required results as `StatusContext` or GitHub App `CheckRun` from exact passing evidence. Linked reruns group by kind/name across URL changes; linkless rows conservatively inspect both external kinds while excluding nonempty-workflow Actions. It rechecks after merge and validates merge/branch evidence. Tag recovery proves `verified merge → tag parent → current base`; exhaustive history avoids GitHub's 1,000-result ceiling; protected coordination retains its lock through ambiguous dispatch visibility; and recovered success requires exact-SHA integrity evidence.
 
 ## [0.9.9] - 2026-07-15
 

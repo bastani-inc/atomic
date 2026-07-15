@@ -295,6 +295,53 @@ describe("publish-release PR reconciliation", () => {
     ]);
     assert.equal(externalSuccess.ok, true);
 
+    const optionalActionsPassing = await verify([
+      response(openPr),
+      response(requiredChecks),
+      response({
+        ...openPr,
+        statusCheckRollup: [
+          { context: "external-status", state: "SUCCESS" },
+          { name: "external-status", workflowName: "Optional Actions", status: "COMPLETED", conclusion: "SUCCESS" },
+        ],
+      }),
+    ]);
+    assert.equal(optionalActionsPassing.ok, true);
+
+    const crossKindRollups: readonly JsonValue[] = [
+      [
+        { context: "external-status", state: "SUCCESS" },
+        { __typename: "CheckRun", name: "external-status", workflowName: "", status: "IN_PROGRESS", conclusion: null },
+      ],
+      [
+        { __typename: "CheckRun", name: "external-status", workflowName: "", status: "COMPLETED", conclusion: "SUCCESS" },
+        { context: "external-status", state: "PENDING" },
+      ],
+    ];
+    for (const statusCheckRollup of crossKindRollups) {
+      const crossKindPending = await verify([
+        response(openPr),
+        response(requiredChecks),
+        response({ ...openPr, statusCheckRollup }),
+      ]);
+      assert.equal(crossKindPending.ok, false);
+      assert.match(crossKindPending.summary, /pending or failing rerun/u);
+    }
+
+    const ambiguousPassingKinds = await verify([
+      response(openPr),
+      response(requiredChecks),
+      response({
+        ...openPr,
+        statusCheckRollup: [
+          { context: "external-status", state: "SUCCESS" },
+          { __typename: "CheckRun", name: "external-status", workflowName: "", status: "COMPLETED", conclusion: "SUCCESS" },
+        ],
+      }),
+    ]);
+    assert.equal(ambiguousPassingKinds.ok, false);
+    assert.match(ambiguousPassingKinds.summary, /could not be tied to one exact rollup result kind/u);
+
     const externalPending = await verify([
       response(openPr),
       response(requiredChecks),
@@ -329,6 +376,14 @@ describe("publish-release PR reconciliation", () => {
         statusCheckRollup: [
           passingCheckRun,
           { __typename: "StatusContext", context: "Greptile Review", state: "FAILURE" },
+          {
+            __typename: "CheckRun",
+            name: "Greptile Review",
+            workflowName: "Optional Actions",
+            detailsUrl: "https://example.test/optional-actions",
+            status: "COMPLETED",
+            conclusion: "FAILURE",
+          },
         ],
       }),
     ]);
