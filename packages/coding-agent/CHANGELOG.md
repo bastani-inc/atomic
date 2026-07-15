@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-15
+
+### Breaking Changes
+
+- Replaced deletion-target context compaction with durable verbatim line compaction. Legacy `context_compaction` entries are now inert archival records, so content they previously hid may re-enter context when old sessions resume; start a new conversation or compact again to establish a new boundary.
+- Removed the deprecated `contextCompact()` SDK method, `context_compact` RPC command, and `context_compaction_start`/`context_compaction_end` events. Use `compact()` and `compaction_start`/`compaction_end`.
+- Changed extension compaction hooks: `session_before_compact` now accepts `cancel` or a complete non-empty `compactedText` override instead of `deletionRequest`; `session_compact` exposes `VerbatimCompactionResult` and the saved `compactionEntry`.
+
+### Added
+
+- Added one-pass contextual line-ranking compaction: Atomic asks the active session model at its active reasoning level, through the normal session stream/provider wrapper, for one whole-region compact `{"d":[[start,end],...]}` deletion plan, then safety-normalizes ranges and mechanically reconstructs verbatim text with cumulative `(filtered N lines)` markers.
+- Added strict pi-style compaction failure semantics: oversized prompts, provider/API errors or overflow, aborts, malformed JSON, and empty/unusable ranges fail without persistence or continuation and without semantic retries, chunking, critical replans, deterministic fallback, or deterministic target correction.
+- Added durable pi-style `CompactionEntry` boundaries discriminated by `details.strategy: "verbatim-lines"`, plus resumable custom-role boundary messages and a collapsible TUI card showing retained-line and token-reduction statistics.
+- Added `pi.sendMessages()` for atomic, array-ordered custom-message admission without waiting for the resulting model turn, allowing companion extensions to keep related preludes and terminal notices contiguous without globally serializing unrelated work.
+
+### Changed
+
+- Changed `compression_ratio` to explicitly represent the fraction of compactable lines to keep. `preserve_recent` is enforced client-side, widens the tail to a user-turn start, and always protects the final logical turn. Role headers are now ordinary ranked lines; only explicit protected spans are split out of model-selected deletion ranges.
+- Simplified resume reconstruction to load the persisted compacted string followed by original messages from `firstKeptEntryId`; no deletion filters, signed-thinking repair pass, or tool dependency repair is re-derived.
+- Retuned the one-pass compaction classifier's retention guidance to surgically thin long tool results, preserve compact diagnostic/code/state anchors, prune repeated retry and superseded bodies, and treat formatting, stack position, markers, and query matches as contextual rather than hard categories.
+- Updated the Pi runtime dependency set (`@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui`) from `^0.80.6` to `^0.80.7` across Atomic and its bundled packages, with matching Bun and npm lock metadata. This inherits the upstream provider authentication, session-affinity, reasoning replay, tool-choice, model-catalog, terminal input, and prompt-cache fixes from [Pi v0.80.7](https://github.com/earendil-works/pi/releases/tag/v0.80.7) while preserving versionless `0.0.0` workspace manifests.
+- Consolidated ten closed Dependabot updates into the Pi v0.80.7 branch: `linkedom` 0.18.13, npm `ignore` 7.0.6, `@typescript/native-preview` 7.0.0-dev.20260707.2, `typebox` 1.3.6, TypeScript 7.0.2, and the native dependency refreshes documented in `@bastani/atomic-natives`; regenerated the Bun, npm, and publish shrinkwrap dependency graphs without changing workspace package versions.
+- Added an Atomic `StringEnum` export that preserves Pi's Google-compatible enum schema while bridging Pi 0.80.7's TypeBox identity to the direct TypeBox 1.3.6 types; updated bundled extension examples and documentation to use the portable export, and updated TypeScript fixture configs for TypeScript 7's removal of `baseUrl`.
+
+### Fixed
+
+- Fixed resumed sessions resurrecting records hidden by earlier Verbatim Compaction entries after later compactions changed signed-thinking turn or tool-call/result dependencies. Persisted logical deletions are now an authoritative lower bound during every context rebuild: Atomic closes unsafe replay structures by adding transient omissions instead of restoring compacted calls/results, pairs each result with its concrete call occurrence so independent exchanges may reuse an opaque call ID, leaves unrelated retained history unchanged, and keeps the append-only session file intact.
+- Fixed successful manual and automatic compaction UI refreshes to render the compacted transcript with exactly one visible `✻ Context compacted` boundary, while aborted and failed compactions remain unchanged.
+- Fixed the bundled workflows `/workflow resume` experience to mix successful completed workflows into the existing globally newest-first, deduplicated picker with green completed styling, resolve full IDs and prefixes across live, durable, and completed targets, and reopen retained stage chats for follow-up without re-running workflow code or replaying side effects. Completed durable state is retained for authoritative inspection; rows need checkpoints and at least one strictly valid retained conversation, invalid per-stage transcript paths cannot open chat, repeated inspection refreshes changed authoritative chat handles, and selector mount failures close safely. ([#1532](https://github.com/bastani-inc/atomic/issues/1532))
+- Fixed workflow-owned transcripts leaking into normal `/resume`, `-r`, `-c`, and `--continue` history by requiring complete workflow ownership markers, persisting classification in initial fork headers, inheriting it across branches, and keeping malformed legacy markers and ordinary user forks visible.
+- Preserved accepted async-child Intercom chronology across lazily activated companion extensions by atomically admitting same-child ordinary messages before pause, completion, and failure notices; unrelated children remain independent and ask/reply behavior is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+- Fixed in-process workflow reload to atomically publish freshly rescanned project, user, legacy, configured, and package workflow resources across list/get/inputs/help/completion/invocation surfaces. Overlapping requests are serialized and coalesced, stale session generations cannot overwrite current state, fatal refresh failures retain the prior registry, and reload no longer blocks or changes workflows already in flight. `/workflow reload` and the workflow tool now include actionable per-resource diagnostics instead of reporting bare success when malformed or missing resources were skipped.
+
 ## [0.9.9-alpha.4] - 2026-07-15
 
 ### Fixed

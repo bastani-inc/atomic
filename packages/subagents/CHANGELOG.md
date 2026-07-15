@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the subagents extension peer dependencies with the `@earendil-works/pi-agent-core`, `pi-ai`, and `pi-tui` `^0.80.7` runtime set as part of the consolidated Pi v0.80.7 dependency update; no subagent source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+### Fixed
+
+- Fixed first-party subagent transcripts launched inside workflow stages to inherit complete workflow ownership metadata in foreground and background execution, while fork-context children also inherit classification through the branched JSONL header.
+- Preserved background async-child completion chronology with Intercom by emitting a terminal-ordering barrier and atomically batching claimed same-child messages before the completion notice, with a compatibility fallback for hosts without batched message admission.
+
 ## [0.9.9-alpha.4] - 2026-07-15
 
 ### Changed

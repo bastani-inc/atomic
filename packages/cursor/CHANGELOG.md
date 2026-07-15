@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Published the stable Atomic 0.9.9 release for the Cursor provider package with its `@earendil-works/pi-ai` dependency aligned to `^0.80.7`; no functional Cursor provider source changes were made after 0.9.8.
+
 ## [0.9.9-alpha.4] - 2026-07-15
 
 ### Changed
