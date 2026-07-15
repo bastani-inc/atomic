@@ -140,8 +140,11 @@ export function registerWorkflowLifecycleHandlers(
       // `/workflow kill`. Durable-progress workflows stay available through
       // `/workflow resume`; stage handles are disposed after being paused.
       quitAllRuns({ store, stageControlRegistry });
-      stageControlRegistry.clear();
     }
+    // Every host-session boundary invalidates detached lazy handles. Clearing
+    // synchronously marks pending session creation as disposed before it can
+    // attach to the replacement session and submit an already-queued prompt.
+    stageControlRegistry.clear();
     deps.storeWidgetRef.current?.();
     deps.storeWidgetRef.current = null;
     runtimeState.resetWorkflowDiscoveryForSession();

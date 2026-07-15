@@ -27,11 +27,17 @@ export interface PostMortemResolverDeps {
   readonly resolveDefaultStageSessionDir: () => string | undefined;
 }
 
-/** Persisted original/resolved cwd for a durable run, when still available. */
+/** Persisted original/resolved cwd for a durable run tree, when still available. */
 function resolveStageCwd(runId: string): string | undefined {
   try {
-    const handle = getDurableBackend().getWorkflow(runId);
-    return handle?.workflowCwd ?? handle?.invocationCwd ?? undefined;
+    const backend = getDurableBackend();
+    const owningHandle = backend.getWorkflow(runId);
+    const run = store.snapshot().runs.find((candidate) => candidate.id === runId);
+    const rootRunId = run?.rootRunId ?? owningHandle?.rootWorkflowId;
+    const cwdHandle = rootRunId === undefined
+      ? owningHandle
+      : backend.getWorkflow(rootRunId) ?? owningHandle;
+    return cwdHandle?.workflowCwd ?? cwdHandle?.invocationCwd ?? undefined;
   } catch {
     return undefined;
   }

@@ -12,8 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Fixed a session-boundary race in lazy post-mortem stage-chat attachment so clearing the stage-control registry while retained-session creation is pending disposes the newly created session and rejects the stale attachment instead of leaking an unowned SDK session.
-- Fixed explicit `/workflow attach <root-run> <nested-stage>` commands to resolve expanded child stages through their owning nested run, preserve that owner through overlay retargeting when sibling child runs reuse the same local stage ID, and retain post-mortem resolver failure reasons so invalid or unavailable sessions render a complete actionable `SESSION UNAVAILABLE` explanation—even at the supported 40-column minimum—instead of a misleading archived-transcript label.
+- Fixed session-boundary races in lazy post-mortem stage-chat attachment so every host session replacement or shutdown (`new`, `resume`, `fork`, `reload`, and `quit`) synchronously invalidates detached handles; a retained-session creation that finishes after the boundary is disposed and its already-submitted prompt is rejected instead of executing in the replacement session or leaking an unowned SDK session.
+- Fixed explicit `/workflow attach <root-run> <nested-stage>` commands to resolve expanded child stages through their owning nested run, preserve that owner through overlay retargeting when sibling child runs reuse the same local stage ID, and retain post-mortem resolver failure reasons so invalid or unavailable sessions render a complete actionable `SESSION UNAVAILABLE` explanation—even at the supported 40-column minimum—instead of a misleading archived-transcript label. Reopened nested terminal stages now restore cwd from their durable root workflow metadata (preferring the resolved workflow cwd, then the original invocation cwd) rather than silently falling back to the current review checkout.
 
 ## [0.9.9] - 2026-07-15
 
