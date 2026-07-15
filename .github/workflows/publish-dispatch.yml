@@ -1,0 +1,58 @@
+name: Publish Dispatch Coordinator
+run-name: Coordinate Publish ${{ inputs.tag }}
+
+on:
+    workflow_dispatch:
+        inputs:
+            tag:
+                description: "Release tag to dispatch exactly once"
+                required: true
+                type: string
+
+permissions:
+    actions: write
+    contents: read
+
+# GitHub owns this lock, so concurrent/resumed release workflows cannot both
+# pass an absence check and dispatch publish.yml for the same version.
+concurrency:
+    group: protected-publish-dispatch-${{ inputs.tag }}
+    cancel-in-progress: false
+
+jobs:
+    dispatch:
+        name: Reconcile and dispatch protected publish
+        runs-on: ubuntu-latest
+        env:
+            GH_TOKEN: ${{ github.token }}
+            RELEASE_TAG: ${{ inputs.tag }}
+        steps:
+            - name: Reconcile exhaustive history and dispatch once
+              shell: bash
+              run: |
+                  set -euo pipefail
+
+                  count_existing() {
+                    local pages
+                    until pages=$(gh api --method GET --paginate --slurp \
+                      "repos/${GITHUB_REPOSITORY}/actions/workflows/publish.yml/runs?per_page=100"); do
+                      echo "Publish history lookup failed; retaining the per-tag lock and retrying." >&2
+                      sleep 10
+                    done
+                    jq -r "[.[] | .workflow_runs[] | select(.path == \".github/workflows/publish.yml\" and .head_branch == \"main\" and .event == \"workflow_dispatch\" and .display_title == \"Publish ${RELEASE_TAG}\")] | length" <<<"$pages"
+                  }
+
+                  for attempt in 1 2 3 4 5 6; do
+                    if [[ "$(count_existing)" -gt 0 ]]; then
+                      echo "Protected Publish ${RELEASE_TAG} dispatch already exists; reusing it."
+                      exit 0
+                    fi
+                    if [[ "$attempt" -lt 6 ]]; then sleep 10; fi
+                  done
+
+                  gh workflow run publish.yml --ref main -f "tag=${RELEASE_TAG}"
+                  until [[ "$(count_existing)" -gt 0 ]]; do
+                    echo "Accepted Publish ${RELEASE_TAG} dispatch is not observable yet; retaining the per-tag lock."
+                    sleep 10
+                  done
+                  echo "Protected Publish ${RELEASE_TAG} dispatch is observable; releasing the per-tag lock."

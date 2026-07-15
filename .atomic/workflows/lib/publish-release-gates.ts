@@ -3,6 +3,7 @@ import {
   parseJsonCommand,
   runCommand,
   verifyPullRequestChecksJson,
+  verifyPullRequestChecksForHeadJson,
   verifyPullRequestMergedJson,
   verifyReleasePullRequestReferenceJson,
   type PublishWorkflowRunVerification,
@@ -14,10 +15,11 @@ import {
 import { waitForWorkflowRunSucceeded } from "./publish-release-run-wait.js";
 import { defaultSleep } from "./publish-release-helpers.js";
 
-type GateVerification =
+export type ReleasePrCheckGateVerification =
   | {
       readonly ok: true;
       readonly summary: string;
+      readonly disposition: "merge-required" | "already-merged";
     }
   | {
       readonly ok: false;
@@ -87,7 +89,7 @@ export function captureReleasePrReference(
     release.branch,
     baseRef,
     expectedHeadRefOid,
-    "OPEN",
+    ["OPEN", "MERGED"],
   );
   if (!referenceVerification.ok) {
     return {
@@ -135,7 +137,7 @@ export async function verifyReleasePrChecksPassed(
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
   options: CheckGateOptions = {},
-): Promise<GateVerification> {
+): Promise<ReleasePrCheckGateVerification> {
   const attempts = options.attempts ?? defaultCheckGateAttempts;
   const pollIntervalMs = options.pollIntervalMs ?? defaultCheckGatePollIntervalMs;
   const sleep = options.sleep ?? defaultSleep;
@@ -168,57 +170,51 @@ function verifyReleasePrChecksOnce(
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
   execute: (args: readonly string[]) => CommandResult,
-): GateVerification {
-  const prView = execute([
-    "gh",
-    "pr",
-    "view",
-    prReference.prUrl,
-    "--json",
-    "url,number,state,baseRefName,headRefName,headRefOid",
-  ]);
-
-  if (prView.exitCode !== 0) {
-    return { ok: false, summary: ["GitHub PR check preflight command failed.", commandSummary(prView)].join("\n\n") };
+): ReleasePrCheckGateVerification {
+  const prViewArgs = [
+    "gh", "pr", "view", prReference.prUrl, "--json",
+    "url,number,state,baseRefName,headRefName,headRefOid,mergedAt,mergeCommit,statusCheckRollup",
+  ] as const;
+  const preflight = execute(prViewArgs);
+  const parsedPreflight = parseJsonCommand(preflight, "GitHub PR check preflight returned invalid JSON.");
+  if (preflight.exitCode !== 0) {
+    return { ok: false, summary: ["GitHub PR check preflight command failed.", commandSummary(preflight)].join("\n\n") };
   }
+  if (!parsedPreflight.ok) return { ok: false, summary: parsedPreflight.summary };
 
-  const parsedPr = parseJsonCommand(prView, "GitHub PR check preflight returned invalid JSON.");
-  if (!parsedPr.ok) return { ok: false, summary: parsedPr.summary };
-
-  const refreshedReference = verifyReleasePullRequestReferenceJson(
-    parsedPr.value,
+  const capturedIdentity = { prUrl: prReference.prUrl, prNumber: prReference.prNumber };
+  const preflightReference = verifyReleasePullRequestReferenceJson(
+    parsedPreflight.value,
     release.branch,
     baseRef,
     prReference.headRefOid,
-    "OPEN",
+    ["OPEN", "MERGED"],
+    capturedIdentity,
   );
-  if (!refreshedReference.ok) {
-    return { ok: false, summary: [refreshedReference.summary, commandSummary(prView)].join("\n\n") };
+  if (!preflightReference.ok) {
+    return { ok: false, summary: [preflightReference.summary, commandSummary(preflight)].join("\n\n") };
+  }
+  if (prReference.state === "MERGED" && preflightReference.state !== "MERGED") {
+    return { ok: false, summary: "GitHub PR state regressed from captured MERGED state before required-check verification." };
   }
 
   const checks = execute([
-    "gh",
-    "pr",
-    "checks",
-    prReference.prUrl,
-    "--required",
-    "--json",
+    "gh", "pr", "checks", prReference.prUrl, "--required", "--json",
     "name,state,bucket,link,workflow,description",
   ]);
-
   const parsedChecks = parseJsonCommand(checks, "GitHub PR required checks returned invalid JSON.");
-  if (checks.exitCode !== 0 && checks.exitCode !== 8) {
-    return { ok: false, summary: ["GitHub PR required checks command failed.", commandSummary(checks)].join("\n\n") };
+  if (checks.exitCode === 8) {
+    return {
+      ok: false,
+      pending: true,
+      summary: ["GitHub PR required checks are still pending.", commandSummary(checks)].join("\n\n"),
+    };
   }
   if (!parsedChecks.ok) {
-    if (checks.exitCode === 8) {
-      return {
-        ok: false,
-        pending: true,
-        summary: ["GitHub PR required checks are still pending.", commandSummary(checks)].join("\n\n"),
-      };
-    }
-    return { ok: false, summary: parsedChecks.summary };
+    return {
+      ok: false,
+      summary: ["GitHub PR required checks command failed or returned invalid JSON.", parsedChecks.summary].join("\n\n"),
+    };
   }
 
   const checkVerification = verifyPullRequestChecksJson(parsedChecks.value);
@@ -226,29 +222,93 @@ function verifyReleasePrChecksOnce(
     return {
       ok: false,
       pending: checkVerification.pending,
-      summary: [checkVerification.summary, commandSummary(prView), commandSummary(checks)].join("\n\n"),
+      summary: [checkVerification.summary, commandSummary(preflight), commandSummary(checks)].join("\n\n"),
+    };
+  }
+  if (checks.exitCode !== 0) {
+    return { ok: false, summary: ["GitHub PR required checks command failed.", commandSummary(checks)].join("\n\n") };
+  }
+
+  const postflight = execute(prViewArgs);
+  if (postflight.exitCode !== 0) {
+    return { ok: false, summary: ["GitHub PR check postflight command failed.", commandSummary(postflight)].join("\n\n") };
+  }
+  const parsedPostflight = parseJsonCommand(postflight, "GitHub PR check postflight returned invalid JSON.");
+  if (!parsedPostflight.ok) return { ok: false, summary: parsedPostflight.summary };
+  const postflightReference = verifyReleasePullRequestReferenceJson(
+    parsedPostflight.value,
+    release.branch,
+    baseRef,
+    prReference.headRefOid,
+    ["OPEN", "MERGED"],
+    capturedIdentity,
+  );
+  if (!postflightReference.ok) {
+    return { ok: false, summary: [postflightReference.summary, commandSummary(postflight)].join("\n\n") };
+  }
+  const exactHeadChecks = verifyPullRequestChecksForHeadJson(parsedChecks.value, parsedPostflight.value);
+  if (!exactHeadChecks.ok) {
+    return { ok: false, summary: [exactHeadChecks.summary, commandSummary(postflight), commandSummary(checks)].join("\n\n") };
+  }
+  if (preflightReference.state === "MERGED" && postflightReference.state !== "MERGED") {
+    return { ok: false, summary: "GitHub PR state regressed from MERGED during required-check verification." };
+  }
+
+  const summaries = [
+    exactHeadChecks.summary,
+    checkVerification.summary,
+    preflightReference.summary,
+    postflightReference.summary,
+    commandSummary(preflight),
+    commandSummary(checks),
+    commandSummary(postflight),
+  ];
+  if (postflightReference.state === "OPEN") {
+    return { ok: true, disposition: "merge-required", summary: summaries.join("\n\n") };
+  }
+
+  const merged = verifyPullRequestMergedJson(
+    parsedPostflight.value,
+    release.branch,
+    baseRef,
+    prReference.headRefOid,
+    capturedIdentity,
+  );
+  if (!merged.ok) return { ok: false, summary: [merged.summary, ...summaries].join("\n\n") };
+
+  const branch = execute(["git", "ls-remote", "--heads", "origin", release.branch]);
+  const remoteHeadOid = branch.stdout.split(/\s+/u)[0] ?? "";
+  if (branch.exitCode !== 0 || remoteHeadOid !== prReference.headRefOid) {
+    return {
+      ok: false,
+      summary: [
+        "Remote release branch retention is not verified at the captured head SHA.",
+        `expectedHeadRefOid: ${prReference.headRefOid}`,
+        `remoteHeadOid: ${remoteHeadOid || "missing"}`,
+        commandSummary(branch),
+      ].join("\n\n"),
     };
   }
 
   return {
     ok: true,
-    summary: [checkVerification.summary, refreshedReference.summary, commandSummary(prView), commandSummary(checks)].join("\n\n"),
+    disposition: "already-merged",
+    summary: [merged.summary, "Remote release branch is retained at the captured head SHA.", ...summaries, commandSummary(branch)].join("\n\n"),
   };
 }
 
 export function verifyReleasePrMerged(
   release: ValidatedRelease,
-  prSelector: string,
-  expectedHeadRefOid: string | undefined,
+  prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
 ): PullRequestMergeVerification {
   const prView = runCommand([
     "gh",
     "pr",
     "view",
-    prSelector,
+    prReference.prUrl,
     "--json",
-    "state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url",
+    "state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url,number",
   ]);
 
   if (prView.exitCode !== 0) {
@@ -261,7 +321,13 @@ export function verifyReleasePrMerged(
   const parsed = parseJsonCommand(prView, "GitHub PR merge verification returned invalid JSON.");
   if (!parsed.ok) return { ok: false, summary: parsed.summary };
 
-  const mergeVerification = verifyPullRequestMergedJson(parsed.value, release.branch, baseRef, expectedHeadRefOid);
+  const mergeVerification = verifyPullRequestMergedJson(
+    parsed.value,
+    release.branch,
+    baseRef,
+    prReference.headRefOid,
+    { prUrl: prReference.prUrl, prNumber: prReference.prNumber },
+  );
   if (!mergeVerification.ok) {
     return {
       ok: false,
@@ -271,13 +337,16 @@ export function verifyReleasePrMerged(
   }
 
   const branchCheck = runCommand(["git", "ls-remote", "--heads", "origin", release.branch]);
-  if (branchCheck.exitCode !== 0 || branchCheck.stdout.length === 0) {
+  const remoteHeadOid = branchCheck.stdout.split(/\s+/u)[0] ?? "";
+  if (branchCheck.exitCode !== 0 || remoteHeadOid !== prReference.headRefOid) {
     return {
       ok: false,
       prUrl: mergeVerification.prUrl,
       summary: [
         "Remote release branch retention verification failed.",
-        "The PR is merged, but the release branch was not found on origin.",
+        "The PR is merged, but the release branch was not retained at the captured head SHA.",
+        `expectedHeadRefOid: ${prReference.headRefOid}`,
+        `remoteHeadOid: ${remoteHeadOid || "missing"}`,
         commandSummary(prView),
         commandSummary(branchCheck),
       ].join("\n\n"),
@@ -290,21 +359,19 @@ export function verifyReleasePrMerged(
     prUrl: mergeVerification.prUrl,
     summary: [
       mergeVerification.summary,
-      "Remote release branch is retained on origin.",
+      "Remote release branch is retained at the captured head SHA on origin.",
       commandSummary(prView),
       commandSummary(branchCheck),
     ].join("\n\n"),
   };
 }
 
-export function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid: string, baseRef: string): MainReadyVerification {
+export function verifyMainReadyForTag(_release: ValidatedRelease, mergeCommitOid: string, baseRef: string): MainReadyVerification {
   const branch = runCommand(["git", "branch", "--show-current"]);
   const head = runCommand(["git", "rev-parse", "HEAD"]);
   const originMain = runCommand(["git", "rev-parse", `origin/${baseRef}`]);
   const status = runCommand(["git", "status", "--short"]);
   const mergeBase = runCommand(["git", "merge-base", "--is-ancestor", mergeCommitOid, "HEAD"]);
-  const localTag = runCommand(["git", "rev-parse", "--verify", `refs/tags/${release.version}`]);
-  const remoteTag = runCommand(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const failures: string[] = [];
 
   if (branch.exitCode !== 0 || branch.stdout !== baseRef) failures.push(`current branch was ${branch.stdout || "missing"}, expected ${baseRef}`);
@@ -315,48 +382,65 @@ export function verifyMainReadyForTag(release: ValidatedRelease, mergeCommitOid:
   }
   if (status.exitCode !== 0 || status.stdout.length > 0) failures.push("worktree is not clean before tagging");
   if (mergeBase.exitCode !== 0) failures.push(`merge commit ${mergeCommitOid} is not an ancestor of local ${baseRef} HEAD`);
-  if (localTag.exitCode === 0) failures.push(`local tag ${release.version} already exists`);
-  if (remoteTag.exitCode !== 0) failures.push(`remote tag lookup for ${release.version} failed`);
-  if (remoteTag.stdout.length > 0) failures.push(`remote tag ${release.version} already exists`);
 
   const summary = [
-    failures.length === 0 ? `${baseRef} is ready for release tagging.` : `${baseRef} is not ready for release tagging.`,
+    failures.length === 0 ? `${baseRef} is ready for release tag reconciliation.` : `${baseRef} is not ready for release tag reconciliation.`,
     failures.length === 0 ? undefined : failures.map((failure) => `- ${failure}`).join("\n"),
     commandSummary(branch),
     commandSummary(head),
     commandSummary(originMain),
     commandSummary(status),
     commandSummary(mergeBase),
-    commandSummary(localTag),
-    commandSummary(remoteTag),
   ].filter((line): line is string => line !== undefined).join("\n\n");
 
   if (failures.length > 0 || head.stdout.length === 0) return { ok: false, summary };
   return { ok: true, summary, mainOid: head.stdout };
 }
 
-export function verifyReleaseTagPublished(release: ValidatedRelease, expectedParentOid: string): TagPublicationVerification {
-  // The tag does not point at a commit on the base branch. cut-release.ts stamps
-  // the real version onto a throwaway "Release" commit whose parent is the verified
-  // base HEAD, then tags that commit. Verify: (1) local + remote tag resolve to the
-  // same release commit, (2) its parent is the verified base commit, and (3) the
-  // tagged @bastani/atomic manifest carries the target version (proving the stamp).
-  const localTag = runCommand(["git", "rev-parse", `${release.version}^{commit}`]);
+export type TagPublicationOptions = {
+  readonly allowIntegratedParent?: boolean;
+  readonly requiredAncestorOid?: string;
+  readonly execute?: (args: readonly string[]) => CommandResult;
+};
+
+export function verifyReleaseTagPublished(
+  release: ValidatedRelease,
+  expectedParentOid: string,
+  options: TagPublicationOptions = {},
+): TagPublicationVerification {
+  // cut-release.ts tags a throwaway version-stamped commit. A newly-created
+  // tag must parent the verified base tip exactly; recovery may also reuse a
+  // prior tag whose parent is already integrated into the now-advanced base.
+  const execute = options.execute ?? runCommand;
+  const localTag = execute(["git", "rev-parse", `${release.version}^{commit}`]);
   const releaseCommitOid = localTag.stdout;
-  const tagParent = runCommand(["git", "rev-parse", `${release.version}^{commit}^`]);
-  const taggedManifest = runCommand(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
-  const remoteTag = runCommand(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
+  const tagParent = execute(["git", "rev-parse", `${release.version}^{commit}^`]);
+  const integratedParent = options.allowIntegratedParent === true
+    ? execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, expectedParentOid])
+    : undefined;
+  const containsRequiredAncestor = options.requiredAncestorOid === undefined
+    ? undefined
+    : execute(["git", "merge-base", "--is-ancestor", options.requiredAncestorOid, tagParent.stdout]);
+  const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const remoteTag = execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const remoteTagTargetOid = remoteTag.stdout.split(/\s+/u)[0] ?? "";
   const failures: string[] = [];
 
   if (localTag.exitCode !== 0 || releaseCommitOid.length === 0) {
     failures.push("local release tag commit could not be resolved");
   }
-  if (tagParent.exitCode !== 0 || tagParent.stdout !== expectedParentOid) {
-    failures.push(`release commit parent was ${tagParent.stdout || "missing"}, expected the verified base commit ${expectedParentOid}`);
+  if (tagParent.exitCode !== 0 || tagParent.stdout.length === 0) {
+    failures.push("release commit parent could not be resolved");
+  } else if (options.allowIntegratedParent === true && integratedParent?.exitCode !== 0) {
+    failures.push(`release commit parent ${tagParent.stdout} is not integrated into verified base ${expectedParentOid}`);
+  } else if (options.allowIntegratedParent !== true && tagParent.stdout !== expectedParentOid) {
+    failures.push(`release commit parent was ${tagParent.stdout}, expected the verified base commit ${expectedParentOid}`);
   }
 
   let stampedVersion: string | undefined;
+  if (containsRequiredAncestor?.exitCode !== 0) {
+    failures.push(`required commit ${options.requiredAncestorOid} is not an ancestor of release parent ${tagParent.stdout || "missing"}`);
+  }
   if (taggedManifest.exitCode === 0) {
     try {
       stampedVersion = (JSON.parse(taggedManifest.stdout) as { version?: string }).version;
@@ -382,6 +466,8 @@ export function verifyReleaseTagPublished(release: ValidatedRelease, expectedPar
     commandSummary(localTag),
     commandSummary(tagParent),
     commandSummary(remoteTag),
+    integratedParent === undefined ? undefined : commandSummary(integratedParent),
+    containsRequiredAncestor === undefined ? undefined : commandSummary(containsRequiredAncestor),
   ].filter((line): line is string => line !== undefined).join("\n\n");
 
   if (failures.length > 0 || releaseCommitOid.length === 0) return { ok: false, summary };
@@ -391,10 +477,13 @@ export function verifyReleaseTagPublished(release: ValidatedRelease, expectedPar
 export function verifyPublishWorkflowSucceeded(
   release: ValidatedRelease,
   expectedHeadSha: string,
+  expectedRunId?: number,
 ): Promise<PublishWorkflowRunVerification> {
   return waitForWorkflowRunSucceeded(expectedHeadSha, {
     workflowFile: "publish.yml",
     expectedHeadBranch: release.version,
+    expectedRunId,
+    listAttempts: 12,
   });
 }
 

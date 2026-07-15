@@ -16,6 +16,7 @@ type Sleep = (durationMs: number) => Promise<void>;
 type WaitOptions = {
   readonly workflowFile: string;
   readonly expectedHeadBranch: string;
+  readonly expectedRunId?: number;
   readonly runCommand?: RunCommand;
   readonly sleep?: Sleep;
   readonly listAttempts?: number;
@@ -65,7 +66,6 @@ function verifyRunIdentityJson(
   value: JsonValue,
   expectedRunId: number,
   expectedHeadBranch: string,
-  _expectedHeadSha: string,
 ): RunIdentity {
   if (!isJsonObject(value)) return { ok: false, summary: "GitHub Actions run response was not a JSON object." };
 
@@ -76,12 +76,16 @@ function verifyRunIdentityJson(
   const runUrl = stringField(value, "url");
   const headSha = stringField(value, "headSha");
   const displayTitle = stringField(value, "displayTitle");
+  const headBranch = stringField(value, "headBranch");
+  const workflowName = stringField(value, "workflowName");
   const failures: string[] = [];
 
   if (runId === undefined) failures.push("databaseId was missing or invalid");
   if (runId !== undefined && runId !== expectedRunId) failures.push(`databaseId was ${runId}, expected ${expectedRunId}`);
   if (displayTitle !== `Publish ${expectedHeadBranch}`) failures.push(`displayTitle was ${displayTitle ?? "missing"}, expected Publish ${expectedHeadBranch}`);
   if (event !== "workflow_dispatch") failures.push(`event was ${event ?? "missing"}, expected workflow_dispatch`);
+  if (headBranch !== "main") failures.push(`headBranch was ${headBranch ?? "missing"}, expected main`);
+  if (workflowName !== "Publish") failures.push(`workflowName was ${workflowName ?? "missing"}, expected Publish`);
   if (status === undefined) failures.push("status was missing");
 
   if (failures.length > 0 || runId === undefined || status === undefined) {
@@ -116,6 +120,34 @@ function buildRunViewCommand(runId: number): readonly string[] {
   return ["gh", "run", "view", String(runId), "--json", runJsonFields];
 }
 
+function buildRunJobsCommand(runId: number): readonly string[] {
+  return ["gh", "run", "view", String(runId), "--json", "jobs"];
+}
+
+function releaseIntegrityJobId(value: JsonValue): number | undefined {
+  if (!isJsonObject(value) || !Array.isArray(value.jobs)) return undefined;
+  const matches = value.jobs.filter((job) => isJsonObject(job)
+    && stringField(job, "name") === "Verify release integrity"
+    && stringField(job, "status") === "completed"
+    && stringField(job, "conclusion") === "success");
+  if (matches.length !== 1 || !isJsonObject(matches[0])) return undefined;
+  return positiveIntegerField(matches[0], "databaseId");
+}
+
+function buildIntegrityLogCommand(runId: number, jobId: number): readonly string[] {
+  return ["gh", "run", "view", String(runId), "--job", String(jobId), "--log"];
+}
+
+function verifyIntegrityLog(log: CommandResult, expectedReleaseSha: string): string | undefined {
+  if (log.exitCode !== 0) return "Protected release-integrity job log command failed.";
+  const matches = [...log.stdout.matchAll(/Release integrity verified: ([0-9a-f]{40}) is deterministic output/gu)];
+  const resolved = new Set(matches.map((match) => match[1]));
+  if (resolved.size !== 1 || !resolved.has(expectedReleaseSha)) {
+    return `Protected release-integrity evidence did not bind the run to expected release SHA ${expectedReleaseSha}.`;
+  }
+  return undefined;
+}
+
 export async function waitForWorkflowRunSucceeded(
   expectedHeadSha: string,
   options: WaitOptions,
@@ -128,21 +160,30 @@ export async function waitForWorkflowRunSucceeded(
   let runList: CommandResult | undefined;
   let selectedRun: ReturnType<typeof selectPublishWorkflowRunJson> | undefined;
 
-  for (let attempt = 1; attempt <= listAttempts; attempt += 1) {
-    runList = execute(buildRunListCommand(options.workflowFile));
-    if (runList.exitCode !== 0) {
-      return { ok: false, summary: ["GitHub Actions publish run lookup command failed.", commandSummary(runList)].join("\n\n") };
+  if (options.expectedRunId !== undefined) {
+    selectedRun = {
+      ok: true,
+      summary: `GitHub Actions publish run ${options.expectedRunId} was pinned by exhaustive reconciliation.`,
+      runId: options.expectedRunId,
+      status: "pinned",
+    };
+  } else {
+    for (let attempt = 1; attempt <= listAttempts; attempt += 1) {
+      runList = execute(buildRunListCommand(options.workflowFile));
+      if (runList.exitCode !== 0) {
+        return { ok: false, summary: ["GitHub Actions publish run lookup command failed.", commandSummary(runList)].join("\n\n") };
+      }
+
+      const parsedList = parseJsonCommand(runList, "GitHub Actions publish run lookup returned invalid JSON.");
+      if (!parsedList.ok) return { ok: false, summary: parsedList.summary };
+
+      selectedRun = selectPublishWorkflowRunJson(parsedList.value, options.expectedHeadBranch);
+      if (selectedRun.ok) break;
+      if (attempt < listAttempts) await sleep(pollIntervalMs);
     }
-
-    const parsedList = parseJsonCommand(runList, "GitHub Actions publish run lookup returned invalid JSON.");
-    if (!parsedList.ok) return { ok: false, summary: parsedList.summary };
-
-    selectedRun = selectPublishWorkflowRunJson(parsedList.value, options.expectedHeadBranch);
-    if (selectedRun.ok) break;
-    if (attempt < listAttempts) await sleep(pollIntervalMs);
   }
 
-  if (runList === undefined || selectedRun === undefined || !selectedRun.ok) {
+  if (selectedRun === undefined || !selectedRun.ok) {
     return {
       ok: false,
       summary: [selectedRun?.summary ?? "GitHub Actions publish run lookup did not execute.", runList === undefined ? undefined : commandSummary(runList)]
@@ -150,6 +191,9 @@ export async function waitForWorkflowRunSucceeded(
         .join("\n\n"),
     };
   }
+  const lookupSummary = runList === undefined
+    ? selectedRun.summary
+    : commandSummary(runList);
 
   let lastRunView: CommandResult | undefined;
   let lastPendingSummary = selectedRun.summary;
@@ -172,13 +216,13 @@ export async function waitForWorkflowRunSucceeded(
     const parsedView = parseJsonCommand(lastRunView, "GitHub Actions publish run verification returned invalid JSON.");
     if (!parsedView.ok) return { ok: false, runId: selectedRun.runId, runUrl: selectedRun.runUrl, summary: parsedView.summary };
 
-    const identity = verifyRunIdentityJson(parsedView.value, selectedRun.runId, options.expectedHeadBranch, expectedHeadSha);
+    const identity = verifyRunIdentityJson(parsedView.value, selectedRun.runId, options.expectedHeadBranch);
     if (!identity.ok) {
       return {
         ok: false,
         runId: identity.runId ?? selectedRun.runId,
         runUrl: identity.runUrl ?? selectedRun.runUrl,
-        summary: [identity.summary, commandSummary(runList), commandSummary(lastRunView)].join("\n\n"),
+        summary: [identity.summary, lookupSummary, commandSummary(lastRunView)].join("\n\n"),
       };
     }
 
@@ -199,14 +243,30 @@ export async function waitForWorkflowRunSucceeded(
       break;
     }
 
-    const publishVerification = verifyPublishWorkflowRunJson(parsedView.value, options.expectedHeadBranch, expectedHeadSha);
+    const publishVerification = verifyPublishWorkflowRunJson(parsedView.value, options.expectedHeadBranch);
     if (!publishVerification.ok) {
       return {
         ok: false,
         runId: publishVerification.runId ?? selectedRun.runId,
         runUrl: publishVerification.runUrl ?? selectedRun.runUrl,
-        summary: [publishVerification.summary, commandSummary(runList), commandSummary(lastRunView)].join("\n\n"),
+        summary: [publishVerification.summary, lookupSummary, commandSummary(lastRunView)].join("\n\n"),
       };
+    }
+
+    const runJobs = execute(buildRunJobsCommand(selectedRun.runId));
+    if (runJobs.exitCode !== 0) {
+      return { ok: false, runId: selectedRun.runId, runUrl: selectedRun.runUrl, summary: ["GitHub Actions job lookup failed.", commandSummary(runJobs)].join("\n\n") };
+    }
+    const parsedJobs = parseJsonCommand(runJobs, "GitHub Actions job lookup returned invalid JSON.");
+    if (!parsedJobs.ok) return { ok: false, runId: selectedRun.runId, runUrl: selectedRun.runUrl, summary: parsedJobs.summary };
+    const integrityJobId = releaseIntegrityJobId(parsedJobs.value);
+    if (integrityJobId === undefined) {
+      return { ok: false, runId: selectedRun.runId, runUrl: selectedRun.runUrl, summary: ["Successful protected release-integrity job was not uniquely identified.", commandSummary(runJobs)].join("\n\n") };
+    }
+    const integrityLog = execute(buildIntegrityLogCommand(selectedRun.runId, integrityJobId));
+    const integrityFailure = verifyIntegrityLog(integrityLog, expectedHeadSha);
+    if (integrityFailure !== undefined) {
+      return { ok: false, runId: selectedRun.runId, runUrl: selectedRun.runUrl, summary: [integrityFailure, commandSummary(integrityLog)].join("\n\n") };
     }
 
     return {
@@ -216,7 +276,7 @@ export async function waitForWorkflowRunSucceeded(
       status: publishVerification.status,
       conclusion: publishVerification.conclusion,
       headSha: publishVerification.headSha,
-      summary: [publishVerification.summary, commandSummary(runList), commandSummary(lastRunView)].join("\n\n"),
+      summary: [publishVerification.summary, lookupSummary, commandSummary(lastRunView), commandSummary(runJobs), commandSummary(integrityLog)].join("\n\n"),
     };
   }
 
@@ -230,7 +290,7 @@ export async function waitForWorkflowRunSucceeded(
       `attempts: ${viewAttempts}`,
       `pollIntervalMs: ${pollIntervalMs}`,
       lastPendingSummary,
-      commandSummary(runList),
+      lookupSummary,
       lastRunView === undefined ? undefined : commandSummary(lastRunView),
     ].filter((line): line is string => line !== undefined).join("\n\n"),
   };

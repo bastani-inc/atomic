@@ -121,20 +121,20 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Publishing is intentionally dispatch-only so GitHub loads the trusted workflow from protected `main`: after pushing the tag, run `gh workflow run publish.yml --ref main -f tag=<version>`. The integrity job accepts only a deterministic release commit whose parent is already integrated into `main`, then publishes with npm OIDC provenance and creates the GitHub Release.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Publishing is intentionally dispatch-only so GitHub loads trusted workflows from protected `main`: after pushing the tag, run `gh workflow run publish-dispatch.yml --ref main -f tag=<version>`. The protected per-tag coordinator serializes and reconciles requests before it dispatches `publish.yml --ref main`; do not dispatch `publish.yml` directly. The integrity job accepts only a deterministic release commit whose parent is already integrated into `main`, then publishes with npm OIDC provenance and creates the GitHub Release.
 
 Cut and dispatch a release with:
 
 ```sh
 bun run scripts/cut-release.ts 0.8.31 --base main --push
-gh workflow run publish.yml --ref main -f tag=0.8.31
+gh workflow run publish-dispatch.yml --ref main -f tag=0.8.31
 ```
 
 `main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree. Pushing the tag alone does **not** publish it.
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. It opens a CHANGELOG-only PR to `main`, stamps and pushes the deterministic off-`main` release tag, dispatches the protected `publish.yml` definition with `--ref main`, and monitors that run. The release-integrity gate requires the tag commit's parent to be integrated into `main`; do not use the legacy `base_ref` maintenance-branch or `from_ref` ephemeral-release inputs, because non-`main` parents are rejected before publishing.
+If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. It opens a CHANGELOG-only PR to `main`, stamps and pushes the deterministic off-`main` release tag, dispatches the protected `publish-dispatch.yml` coordinator with `--ref main`, and monitors the exact `publish.yml` run selected or created by that coordinator. The release-integrity gate requires the tag commit's parent to be integrated into `main`; do not use the legacy `base_ref` maintenance-branch or `from_ref` ephemeral-release inputs, because non-`main` parents are rejected before publishing.
 
 ## Docs
 
