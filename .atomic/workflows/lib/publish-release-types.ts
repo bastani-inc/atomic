@@ -1,5 +1,6 @@
 export type ReleaseKind = "release" | "prerelease";
 export type ReleaseStatus = "completed" | "blocked" | "failed";
+export type ReleasePrState = "OPEN" | "MERGED";
 
 export type ValidatedRelease = {
   readonly kind: ReleaseKind;
@@ -33,8 +34,8 @@ export type PullRequestReferenceVerification =
       readonly summary: string;
       readonly prUrl: string;
       readonly prNumber: number;
-      readonly headRefOid?: string;
-      readonly state?: string;
+      readonly headRefOid: string;
+      readonly state: ReleasePrState;
     }
   | {
       readonly ok: false;

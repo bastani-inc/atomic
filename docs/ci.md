@@ -139,7 +139,7 @@ The release shrinkwrap is prepared before the tag is published. Internal Atomic 
 ### Publish Flow
 
 ```text
-gh workflow run publish.yml --ref main -f tag=0.8.0
+gh workflow run publish-dispatch.yml --ref main -f tag=0.8.0
        │
        ├─ Smoke Linux binary
        │    · build linux-x64
@@ -306,6 +306,6 @@ The meaningful pre-publish checks are split between required PR/main validation 
 
     Omit `--push` to inspect the tag locally first (`git show 0.8.0`, `git log --oneline -1 0.8.0`), then `git push origin 0.8.0`. `main` is never advanced.
 
-4. Dispatch the protected `publish.yml` workflow with the pushed tag (`gh workflow run publish.yml --ref main -f tag=0.8.0`). Confirm it pins one verified commit SHA across every job, runs docs/Mintlify and all release-specific gates, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` with npm OIDC provenance, and creates the GitHub Release.
+4. Dispatch the protected per-tag coordinator with the pushed tag (`gh workflow run publish-dispatch.yml --ref main -f tag=0.8.0`). The coordinator serializes concurrent requests, exhaustively checks whether an exact protected-main `Publish 0.8.0` run already exists, and invokes `publish.yml --ref main` only when absent. Do not dispatch `publish.yml` directly. Confirm the selected/created publish run pins one verified commit SHA across every job, runs docs/Mintlify and all release-specific gates, cross-compiles binaries, publishes `@bastani/atomic-natives` and `@bastani/atomic` with npm OIDC provenance, and creates the GitHub Release.
 
-For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow. Its final publish gate polls the matching `publish.yml` run until GitHub reports a terminal conclusion, so a long-running `in_progress` publish run is not treated as a release failure.
+For prereleases, substitute `0.8.0-alpha.1`. To run the fully guarded automation (release-notes PR + cut-release + publish monitoring) instead of these manual steps, use the `publish-release` Atomic workflow. Its final publish gate polls the matching `publish.yml` run until GitHub reports a terminal conclusion and proves the protected integrity job verified the exact expected tag SHA.
