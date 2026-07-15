@@ -42,7 +42,7 @@ export function topLevelExpandedSnapshots() {
 }
 
 
-export function allStageConflictMessage(action: "pause" | "interrupt" | "kill"): string {
+export function allStageConflictMessage(action: "pause" | "interrupt" | "quit"): string {
   return `Cannot ${action} --all with a stageId; omit stageId or target a single run.`;
 }
 

@@ -1,4 +1,3 @@
-import type { WorkflowPersistencePort } from "../shared/types.js";
 import { store } from "../shared/store.js";
 import type { RunSnapshot } from "../shared/store-types.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
@@ -18,7 +17,6 @@ import { overlaySurfaceFromContext } from "./workflow-targets.js";
 export interface WorkflowRunControlDeps {
   pi: ExtensionAPI;
   overlay: GraphOverlayPort;
-  getPersistence: () => WorkflowPersistencePort | undefined;
   runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
   ensureWorkflowResourcesLoaded: () => Promise<void> | void;
 }

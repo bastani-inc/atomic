@@ -1,9 +1,9 @@
 /**
- * Status / kill / resume helpers for retained workflow runs and live controls.
+ * Status, internal cancellation, and resume helpers for retained workflow runs.
  *
  * These helpers operate against the singleton store and are consumed by:
- *   - The `workflow` tool execute handler (action: "status" | "kill" | "resume")
- *   - The /workflow slash command
+ *   - Workflow inspection/resume surfaces
+ *   - Internal lifecycle cancellation
  *
  * cross-ref: spec §5.5, §8.1 Phase D
  */
@@ -19,6 +19,7 @@ import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
+import { getDurableBackend } from "../../durable/factory.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -204,22 +205,15 @@ export function killAllRuns(opts?: {
 // ---------------------------------------------------------------------------
 
 /**
- * Reopen a run for display, and resume any paused live work along the way.
+ * Reopen a run for display, awaiting every live stage-control resume before
+ * recording the corresponding store and durable transitions.
  *
- * Behaviour matrix:
- *   - non-paused run (running / ended / completed / failed / killed):
- *     returns a deep-copy snapshot, `resumed` is empty. Used by the
- *     existing slash-command path to re-summon the graph overlay.
- *   - paused run with a live `WorkflowRunControlHandle` in the
- *     stage-control registry: clears the paused state, resumes every
- *     currently-paused stage (or only `stageId` when supplied), and
- *     returns the resumed stage snapshots alongside the deep-copy.
- *
- * Returns ok:false "not_found" when the runId is unknown to the store.
- * Read-only against cancellation/persistence/job tracker; mutates the
- * store only when paused stages were actually resumed.
+ * Non-paused and terminal runs still return a read-only snapshot. Rejected
+ * control acknowledgements reject this operation and leave unacknowledged
+ * stages paused; callers surface that failure through their existing message
+ * shapes.
  */
-export function resumeRun(
+export async function resumeRun(
   runId: string,
   opts?: {
     store?: Store;
@@ -229,51 +223,61 @@ export function resumeRun(
     /** Optional resume message forwarded to each resumed stage. */
     message?: string;
   },
-): ResumeResult {
+): Promise<ResumeResult> {
   const activeStore = opts?.store ?? defaultStore;
   const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
   const runs = activeStore.runs();
-  const run = runs.find((r) => r.id === runId);
+  const run = runs.find((candidate) => candidate.id === runId);
 
-  if (!run) {
-    return { ok: false, runId, reason: "not_found" };
-  }
+  if (!run) return { ok: false, runId, reason: "not_found" };
 
   const resumed: StageSnapshot[] = [];
   const controlRunIds = opts?.stageId ? [runId] : expandedControlRunIds(activeStore, runId);
   const hasPausedState = controlRunIds.some((controlRunId) => {
     const controlRun = runs.find((candidate) => candidate.id === controlRunId);
-    return controlRun?.status === "paused" || (controlRun?.stages.some((s) => s.status === "paused") ?? false);
+    return controlRun?.status === "paused" || (controlRun?.stages.some((stage) => stage.status === "paused") ?? false);
   });
   if (hasPausedState) {
     const handles = opts?.stageId
       ? [registry.get(runId, opts.stageId)].filter(
-          (h): h is NonNullable<typeof h> => h !== undefined,
+          (handle): handle is NonNullable<typeof handle> => handle !== undefined && handle.status === "paused",
         ).map((handle) => ({ controlRunId: runId, handle }))
       : controlRunIds.flatMap((controlRunId) =>
           registry.run(controlRunId).pausedStages().map((handle) => ({ controlRunId, handle })),
         );
-    // Fire-and-forget the resume promise — the executor will mark each
-    // stage running once `__resume()` settles. The snapshot returned
-    // below reflects the *current* paused state; subscribers see the
-    // transition through the usual store notify path.
+    const resumedRunIds = new Set<string>();
     for (const { controlRunId, handle } of handles) {
       if (handle.status !== "paused") continue;
-      void handle.resume(opts?.message);
-      const controlRun = runs.find((candidate) => candidate.id === controlRunId);
-      const stageSnap = controlRun?.stages.find((s) => s.id === handle.stageId);
-      if (stageSnap) resumed.push(stageSnap);
-      activeStore.recordRunResumed(controlRunId);
+      await handle.resume(opts?.message);
+      activeStore.recordStageResumed(controlRunId, handle.stageId);
+      resumedRunIds.add(controlRunId);
+      const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
+      const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
+      if (stage !== undefined) resumed.push(structuredClone(stage));
     }
-    if (!opts?.stageId || resumed.length > 0) {
+    for (const controlRunId of resumedRunIds) {
+      const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
+      const stillPaused = controlRun?.stages.some(
+        (stage) => stage.status === "paused" || stage.status === "blocked",
+      ) ?? false;
+      if (!stillPaused) activeStore.recordRunResumed(controlRunId);
+    }
+    const currentRoot = activeStore.runs().find((candidate) => candidate.id === runId);
+    const rootHasPausedStage = currentRoot?.stages.some(
+      (stage) => stage.status === "paused" || stage.status === "blocked",
+    ) ?? false;
+    if (!rootHasPausedStage && (resumed.length > 0 || currentRoot?.status === "paused")) {
       activeStore.recordRunResumed(runId);
+    }
+    if (activeStore.runs().find((candidate) => candidate.id === runId)?.status === "running") {
+      markDurableResumed(runId);
     }
   }
 
-  // Return a deep copy of the snapshot for safe consumption
-  const snapshot = structuredClone(run);
+  const current = activeStore.runs().find((candidate) => candidate.id === runId) ?? run;
+  const snapshot = structuredClone(current);
   const resumedCopy = structuredClone(resumed);
-  if (run.status === "killed" || run.resumable === false) {
+  if (current.status === "killed" || current.resumable === false) {
     return {
       ok: true,
       runId,
@@ -284,10 +288,10 @@ export function resumeRun(
     };
   }
   if (
-    run.endedAt === undefined &&
-    run.resumable === true &&
-    run.failureRecoverability === "recoverable" &&
-    run.failedStageId !== undefined
+    current.endedAt === undefined &&
+    current.resumable === true &&
+    current.failureRecoverability === "recoverable" &&
+    current.failedStageId !== undefined
   ) {
     return {
       ok: true,
@@ -295,7 +299,7 @@ export function resumeRun(
       snapshot,
       resumed: resumedCopy,
       mode: resumedCopy.length > 0 ? "paused" : "snapshot",
-      message: `Workflow is blocked on a recoverable ${run.failureCode ?? run.failureKind ?? "workflow"} failure at stage ${run.failedStageId}; retry/resume after the issue clears.`,
+      message: `Workflow is blocked on a recoverable ${current.failureCode ?? current.failureKind ?? "workflow"} failure at stage ${current.failedStageId}; retry/resume after the issue clears.`,
     };
   }
   return {
@@ -307,26 +311,20 @@ export function resumeRun(
   };
 }
 
+function markDurableResumed(runId: string): void {
+  try {
+    const backend = getDurableBackend();
+    if (backend.getWorkflow(runId) !== undefined) backend.setWorkflowStatus(runId, "running");
+  } catch {
+    // Custom durability is best-effort; acknowledged local control state wins.
+  }
+}
+
 // ---------------------------------------------------------------------------
 // pauseRun
 // ---------------------------------------------------------------------------
 
-/**
- * Pause a run or a specific stage within a run.
- *
- *  - With no `stageId`: every currently-running stage with a live handle
- *    in the stage-control registry is paused. If at least one stage is
- *    paused, the run is marked `paused` in the store.
- *  - With `stageId`: only that stage is paused. The run is marked paused
- *    only when *every* still-active stage in the run is paused after the
- *    operation.
- *
- * Refuses runs that are already terminal (completed / failed / killed)
- * with `reason: "already_ended"`. Refuses runs with no pausable stage
- * handles in the registry with `reason: "no_active_stages"`. Refuses a
- * stage-scoped pause when no matching handle exists with
- * `reason: "stage_not_found"`.
- */
+/** Pause a run only after its live stage controls acknowledge the request. */
 function expandedControlRunIds(activeStore: Store, runId: string): string[] {
   const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
   const ids = new Set<string>([runId]);
@@ -334,7 +332,7 @@ function expandedControlRunIds(activeStore: Store, runId: string): string[] {
   return [...ids];
 }
 
-export function pauseRun(
+export async function pauseRun(
   runId: string,
   opts?: {
     store?: Store;
@@ -342,34 +340,30 @@ export function pauseRun(
     /** Pause only this stage. */
     stageId?: string;
   },
-): PauseResult {
+): Promise<PauseResult> {
   const activeStore = opts?.store ?? defaultStore;
   const registry = opts?.stageControlRegistry ?? defaultStageControlRegistry;
-  const runs = activeStore.runs();
-  const run = runs.find((r) => r.id === runId);
+  const run = activeStore.runs().find((candidate) => candidate.id === runId);
 
-  if (!run) {
-    return { ok: false, runId, reason: "not_found" };
-  }
-  if (run.endedAt !== undefined) {
-    return { ok: false, runId, reason: "already_ended" };
-  }
+  if (!run) return { ok: false, runId, reason: "not_found" };
+  if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 
   if (opts?.stageId !== undefined) {
     const handle = registry.get(runId, opts.stageId);
-    if (!handle) {
-      return { ok: false, runId, reason: "stage_not_found" };
-    }
+    if (!handle) return { ok: false, runId, reason: "stage_not_found" };
     if (handle.status !== "running" && handle.status !== "pending") {
       return { ok: false, runId, reason: "no_active_stages" };
     }
-    void handle.pause();
-    const stageSnap = run.stages.find((s) => s.id === opts.stageId);
-    const paused: StageSnapshot[] = stageSnap ? [structuredClone(stageSnap)] : [];
-    // Only mark the whole run paused when every active stage is paused.
-    const stillActive = run.stages.some(
-      (s) => s.status === "running" && s.id !== opts.stageId,
-    );
+    await handle.pause();
+    activeStore.recordStagePaused(runId, opts.stageId);
+    const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
+    const stage = currentRun?.stages.find((candidate) => candidate.id === opts.stageId);
+    const paused = stage === undefined ? [] : [structuredClone(stage)];
+    const stillActive = currentRun?.stages.some(
+      (candidate) =>
+        candidate.id !== opts.stageId &&
+        (candidate.status === "running" || candidate.status === "pending"),
+    ) ?? false;
     if (!stillActive) activeStore.recordRunPaused(runId);
     return { ok: true, runId, paused };
   }
@@ -377,66 +371,63 @@ export function pauseRun(
   const controlRunIds = expandedControlRunIds(activeStore, runId);
   const handles = controlRunIds.flatMap((controlRunId) =>
     registry.run(controlRunId).stages().filter(
-      (h) => h.status === "running" || h.status === "pending",
+      (handle) => handle.status === "running" || handle.status === "pending",
     ).map((handle) => ({ controlRunId, handle })),
   );
-  if (handles.length === 0) {
-    return { ok: false, runId, reason: "no_active_stages" };
-  }
-  const pausedSnaps: StageSnapshot[] = [];
+  if (handles.length === 0) return { ok: false, runId, reason: "no_active_stages" };
+
+  const paused: StageSnapshot[] = [];
+  const pausedRunIds = new Set<string>();
   for (const { controlRunId, handle } of handles) {
-    void handle.pause();
+    await handle.pause();
+    activeStore.recordStagePaused(controlRunId, handle.stageId);
+    pausedRunIds.add(controlRunId);
     const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
-    const stageSnap = controlRun?.stages.find((s) => s.id === handle.stageId);
-    if (stageSnap) pausedSnaps.push(structuredClone(stageSnap));
-    activeStore.recordRunPaused(controlRunId);
+    const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
+    if (stage !== undefined) paused.push(structuredClone(stage));
   }
+  for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
   activeStore.recordRunPaused(runId);
-  return { ok: true, runId, paused: pausedSnaps };
+  return { ok: true, runId, paused };
 }
 
-export function pauseAllRuns(opts?: {
+export async function pauseAllRuns(opts?: {
   store?: Store;
   stageControlRegistry?: StageControlRegistry;
-}): PauseResult[] {
+}): Promise<PauseResult[]> {
   const activeStore = opts?.store ?? defaultStore;
-  const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => r.endedAt === undefined);
-  return inFlight.map((r) =>
-    pauseRun(r.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry }),
-  );
+  const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
+  return Promise.all(inFlight.map((run) =>
+    pauseRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })
+  ));
 }
-
 
 // ---------------------------------------------------------------------------
 // interruptRun
 // ---------------------------------------------------------------------------
 
-/**
- * Interrupt a run in a resumable way by pausing live stage handles when
- * available. This never aborts the workflow controller and
- * never removes the run from status/history.
- */
-export function interruptRun(
+/** Interrupt a run in a resumable way without destructive cancellation. */
+export async function interruptRun(
   runId: string,
   opts?: {
     store?: Store;
     stageControlRegistry?: StageControlRegistry;
     stageId?: string;
   },
-): InterruptRunResult {
+): Promise<InterruptRunResult> {
   return pauseRun(runId, opts);
 }
 
 /** Interrupt all in-flight runs without removing them from history/status. */
-export function interruptAllRuns(opts?: {
+export async function interruptAllRuns(opts?: {
   store?: Store;
   stageControlRegistry?: StageControlRegistry;
-}): InterruptRunResult[] {
+}): Promise<InterruptRunResult[]> {
   const activeStore = opts?.store ?? defaultStore;
-  const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((r) => r.endedAt === undefined);
-  return inFlight.map((r) =>
-    interruptRun(r.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry }),
-  );
+  const inFlight = topLevelWorkflowRuns(activeStore.runs()).filter((run) => run.endedAt === undefined);
+  return Promise.all(inFlight.map((run) =>
+    interruptRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })
+  ));
 }
 
 // ---------------------------------------------------------------------------

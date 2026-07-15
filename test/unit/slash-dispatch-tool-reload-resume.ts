@@ -73,7 +73,6 @@ describe("tool run-control actions", () => {
         return makeExecuteWorkflowTool(
             runtime,
             () => undefined,
-            () => undefined,
         );
     }
 
@@ -97,7 +96,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -130,7 +128,6 @@ describe("tool run-control actions", () => {
         let reloads = 0;
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             async () => {
                 reloads += 1;
             },
@@ -228,7 +225,6 @@ describe("tool run-control actions", () => {
         const handler = makeExecuteWorkflowTool(
             runtime,
             () => undefined,
-            () => undefined,
         );
 
         const result = await handler(
@@ -252,7 +248,6 @@ describe("tool run-control actions", () => {
         let reloads = 0;
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => {
                 reloads += 1;
             },
@@ -282,7 +277,6 @@ describe("tool run-control actions", () => {
         const runtime = createExtensionRuntime({ registry });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             async () => {
                 throw new Error("bad workflow config");
             },
@@ -309,11 +303,11 @@ describe("tool run-control actions", () => {
         const handler = makeToolHandler();
 
         const result = await handler(
-            { action: "kill", runId: "ambiguous-run" },
+            { action: "quit", runId: "ambiguous-run" },
             {} as never,
         );
 
-        assert.equal(result.action, "kill");
+        assert.equal(result.action, "quit");
         const r = result as { action: string; status: string; message: string };
         assert.equal(r.status, "noop");
         assert.match(r.message, /Ambiguous run prefix/);

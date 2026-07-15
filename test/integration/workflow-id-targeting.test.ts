@@ -42,7 +42,7 @@ test("displayed Workflow run and stage ID prefixes are actionable through the pu
   assert.ok(stageId);
 
   const runtime = createExtensionRuntime({ registry: createRegistry([]) });
-  const execute = makeExecuteWorkflowTool(runtime, () => undefined, () => undefined);
+  const execute = makeExecuteWorkflowTool(runtime, () => undefined);
   const listed = await execute({ action: "status" }, {} as never);
   const rendered = renderResult(listed, { plain: true });
   const runMatch = rendered.match(new RegExp(`\\b(${completed.runId.slice(0, 6)})\\b`));

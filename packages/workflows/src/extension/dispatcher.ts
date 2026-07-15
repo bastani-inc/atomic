@@ -220,7 +220,7 @@ export async function dispatch(
     }
 
     default:
-      // status/kill/resume are not routed here; unknown actions are bugs.
+      // Status and run-control actions are not routed here; unknown actions are bugs.
       throw new Error(`WorkflowDispatcher: unknown action "${action}"`);
   }
 }

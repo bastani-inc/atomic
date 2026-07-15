@@ -41,7 +41,7 @@ const WORKFLOW_ADMIN_COMPLETIONS: AutocompleteItem[] = [
 	{ value: "list ", label: "list", description: "List registered workflows" },
 	{ value: "status ", label: "status", description: "List current-session active and retained terminal runs" },
 	{ value: "interrupt ", label: "interrupt", description: "Interrupt a run" },
-	{ value: "kill ", label: "kill", description: "Kill and retain a run" },
+	{ value: "quit ", label: "quit", description: "Quit a run and keep it resumable" },
 	{ value: "pause ", label: "pause", description: "Pause a run or stage" },
 	{ value: "resume ", label: "resume", description: "Re-open overlay for a run" },
 	{ value: "inputs ", label: "inputs", description: "Show a workflow's input schema" },
@@ -122,12 +122,16 @@ export function getBundledWorkflowArgumentCompletions(argumentPrefix: string): A
 		return completeWorkflowToken(argumentPrefix, [...WORKFLOW_ADMIN_COMPLETIONS, ...workflowItems]);
 	}
 	if (subcommand === "inputs") return completeWorkflowToken(argumentPrefix, workflowItems);
-	if (subcommand === "interrupt" || subcommand === "kill") {
-		const verb = subcommand === "kill" ? "Kill and retain" : "Interrupt";
+	if (subcommand === "interrupt") {
 		return completeWorkflowToken(argumentPrefix, [
-			{ value: "--all ", label: "--all", description: `${verb} all in-flight runs` },
+			{ value: "--all ", label: "--all", description: "Interrupt all in-flight runs" },
 			{ value: "--yes ", label: "--yes", description: "Skip confirmation" },
 			{ value: "-y ", label: "-y", description: "Skip confirmation" },
+		]);
+	}
+	if (subcommand === "quit") {
+		return completeWorkflowToken(argumentPrefix, [
+			{ value: "--all ", label: "--all", description: "Quit and keep all in-flight runs resumable" },
 		]);
 	}
 	if (!subcommand) return completeWorkflowToken(argumentPrefix, [...WORKFLOW_ADMIN_COMPLETIONS, ...workflowItems]);
@@ -195,7 +199,7 @@ export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 export const BUNDLED_EXTENSION_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{
 		name: "workflow",
-		description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
+		description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|quit|pause|resume|inputs|reload] [args]",
 		getArgumentCompletions: getBundledWorkflowArgumentCompletions,
 	},
 	{ name: "run", description: "Run a subagent directly: /run agent[output=file] [task] [--bg] [--fork]" },

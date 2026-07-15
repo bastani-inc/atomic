@@ -44,7 +44,6 @@ function commandDeps(runtime: ExtensionRuntime, opened: string[]): WorkflowRunCo
   return {
     pi: {},
     overlay: { open: (runId) => { if (runId) opened.push(runId); }, toggle: () => undefined, close: () => undefined },
-    getPersistence: () => undefined,
     runtimeForContext: () => runtime,
     ensureWorkflowResourcesLoaded: () => undefined,
   };

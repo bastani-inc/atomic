@@ -132,17 +132,17 @@ export const WorkflowParametersSchema = Type.Object({
     Type.Literal("send"),
     Type.Literal("pause"),
     Type.Literal("interrupt"),
-    Type.Literal("kill"),
+    Type.Literal("quit"),
     Type.Literal("resume"),
     Type.Literal("reload"),
   ], {
-    description: "Workflow action: run/list/get/inputs/status, inspect stage metadata, send messages or prompt answers, pause/resume/interrupt/kill runs, or reload workflow resources. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
+    description: "Workflow action: run/list/get/inputs/status, inspect stage metadata, send messages or prompt answers, pause/resume/interrupt/quit runs, or reload workflow resources. For transcript inspection, prefer status/stages/stage first to get sessionFile/transcriptPath, quote the exact path without rewriting separators (Windows backslashes are valid), then search it with rg/grep and read small ranges; transcript is path-only by default when sessionFile/transcriptPath exists, explicit tail/limit returns bounded previews, and missing transcript paths fall back to a small preview.",
   })),
   runId: Type.Optional(Type.String({
-    description: "Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/kill. Use '--all' or all:true for supported bulk run-control actions.",
+    description: "Run identifier or unique prefix for status/stages/stage/transcript/send/pause/resume/interrupt/quit. Use '--all' or all:true for supported bulk run-control actions.",
   })),
   all: Type.Optional(Type.Boolean({
-    description: "Apply supported run-control actions (pause/interrupt/kill) to all in-flight runs instead of one run; cannot be combined with stageId.",
+    description: "Apply supported run-control actions (pause/interrupt/quit) to all in-flight runs instead of one run; cannot be combined with stageId.",
   })),
   stageId: Type.Optional(Type.String({
     description: "Stage id, unique prefix, or stage name for stage-scoped inspection, transcript, send, pause, or resume.",

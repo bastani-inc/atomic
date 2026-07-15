@@ -21,7 +21,6 @@ import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bast
 import { WorkflowAttachPane } from "./workflow-attach-pane.js";
 import { WORKFLOW_STATUS_KEY } from "./workflow-status.js";
 import { deriveGraphThemeFromPiTheme } from "./graph-theme.js";
-import { quitRun as defaultQuitRun } from "../runs/background/quit.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
@@ -141,11 +140,6 @@ export interface BuildGraphOverlayAdapterOpts {
   resolvePostMortemHandle?: (runId: string, stageId: string) => PostMortemHandleResolution;
   /** Broker used to route stage-local custom UI into attached stage chats. */
   stageUiBroker?: StageUiBroker;
-  /**
-   * Quit hook used by graph-mode `q`. This is intentionally distinct from
-   * `/workflow kill`: panel quit leaves durable-progress runs resumable.
-   */
-  onQuitRun?: (runId: string) => void;
   /** Optional clock injection for deterministic attach-pane transition tests. */
   now?: () => number;
   /** Terminal output seam used to test raw overlay control sequences. */
@@ -170,9 +164,6 @@ export function buildGraphOverlayAdapter(
   const updateMouseScrollTracking = (enabled: boolean): void => {
     setMouseScrollTracking(enabled, terminalOutput);
   };
-  const quitRun = buildOpts.onQuitRun ?? ((id: string): void => {
-    defaultQuitRun(id, { store, stageControlRegistry: registry });
-  });
   let currentView: WorkflowAttachPane | null = null;
   // pi-tui returns an OverlayHandle via `options.onHandle`. We hold onto
   // it so toggle() can flip `setHidden` rather than remounting the
@@ -245,7 +236,7 @@ export function buildGraphOverlayAdapter(
   }
 
   /**
-   * Non-destructive close path used by graph-mode `Ctrl+D` / `h`. Goes
+   * Non-destructive return path used by graph-mode `Ctrl+D` / `q` / `h`. Goes
    * through Pi/pi public primitives in priority order:
    *   1. `OverlayHandle.setHidden(true)` when the host exposed an
    *      overlay handle via `options.onHandle`. Keeps the overlay
@@ -256,9 +247,8 @@ export function buildGraphOverlayAdapter(
    *      component, hides the overlay if present, restores focus to
    *      the editor, and resolves the custom() promise.
    *
-   * Critically: this never touches `killRun`, `cancellationRegistry`,
-   * or any run-cancellation surface — the backing workflow keeps
-   * running and can be re-attached.
+   * This is UI-only: the backing workflow keeps running unchanged and the
+   * same mounted overlay can be reopened later.
    */
   function hideMounted(): void {
     updateMouseScrollTracking(false);
@@ -383,7 +373,6 @@ export function buildGraphOverlayAdapter(
         uiStatus,
         onClose: finish,
         onHide: hideMounted,
-        onQuit: quitRun,
         initialAttachStageId: stageId,
         initialAttachRunId: stageRunId,
         piTui: tui,

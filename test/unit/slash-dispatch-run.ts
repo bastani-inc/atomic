@@ -102,7 +102,7 @@ describe("slash /workflow <name> dispatch", () => {
                 "list",
                 "status",
                 "interrupt",
-                "kill",
+                "quit",
                 "resume",
                 "inputs",
             ]);
@@ -178,7 +178,7 @@ describe("slash /workflow <name> dispatch", () => {
             "list",
             "status",
             "interrupt",
-            "kill",
+            "quit",
             "resume",
             "inputs",
         ]);

@@ -51,6 +51,8 @@ describe("MockExtensionAPI — tool registration", () => {
     for (const token of EXPECTED_WORKFLOW_DESCRIPTION_TOKENS) {
       assert.ok(description.includes(token), `description mentions ${token}`);
     }
+    assert.match(description, /quit/);
+    assert.doesNotMatch(description, /kill/);
   });
 
   test("README workflow tool description stays in sync", () => {
@@ -103,9 +105,10 @@ describe("MockExtensionAPI — tool registration", () => {
     const actionSchema = params.properties.action;
     // TypeBox Optional(Union([...])) wraps in anyOf
     const raw = JSON.stringify(actionSchema);
-    for (const literal of ["run", "list", "get", "status", "interrupt", "kill", "resume", "inputs"]) {
+    for (const literal of ["run", "list", "get", "status", "interrupt", "quit", "resume", "inputs"]) {
       assert.ok(raw.includes(literal));
     }
+    assert.ok(!raw.includes("kill"));
     assert.ok(!raw.includes("doctor"));
   });
 
@@ -244,7 +247,7 @@ describe("MockExtensionAPI — tool registration", () => {
         },
       },
     });
-    const executeWorkflowTool = makeExecuteWorkflowTool(runtime, () => undefined, () => undefined);
+    const executeWorkflowTool = makeExecuteWorkflowTool(runtime, () => undefined);
 
     const started = await executeWorkflowTool({
       task: { name: "blocking-scout", task: "wait for interrupt" },
@@ -421,11 +424,11 @@ describe("MockExtensionAPI — tool registration", () => {
     assert.ok(r.message.includes("Run not found"));
   });
 
-  test("tool execute returns kill result for canonical action='kill'", async () => {
+  test("tool execute returns quit result for canonical action='quit'", async () => {
     const execute = mock.tools[0]!.opts.execute;
-    const result = await runTool(execute, { runId: "run-123", action: "kill" });
-    assert.equal(result.action, "kill");
-    const r = result as { action: "kill"; runId: string; status: string; message: string };
+    const result = await runTool(execute, { runId: "run-123", action: "quit" });
+    assert.equal(result.action, "quit");
+    const r = result as { action: "quit"; runId: string; status: string; message: string };
     assert.equal(r.runId, "run-123");
     assert.equal(r.status, "noop");
     assert.ok(r.message.includes("Run not found"));

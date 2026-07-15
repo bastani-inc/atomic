@@ -72,9 +72,10 @@ describe("MockExtensionAPI — slash command registration", () => {
     const cmd = getCommand(mock.commands, "workflow")!;
     const completions = (await cmd.options.getArgumentCompletions?.("")) ?? [];
     const labels = completions.map((c) => c.label);
-    for (const sub of ["list", "status", "connect", "interrupt", "kill", "resume", "inputs"]) {
+    for (const sub of ["list", "status", "connect", "interrupt", "quit", "resume", "inputs"]) {
       assert.ok(labels.includes(sub));
     }
+    assert.equal(labels.includes("kill"), false);
     assert.equal(labels.includes("session"), false);
   });
 
@@ -96,8 +97,9 @@ describe("MockExtensionAPI — slash command registration", () => {
     const interrupt = (await cmd.options.getArgumentCompletions?.("interrupt -")) ?? [];
     assert.ok(interrupt.some((c) => c.value === "interrupt -y "));
 
-    const kill = (await cmd.options.getArgumentCompletions?.("kill -")) ?? [];
-    assert.ok(kill.some((c) => c.value === "kill -y "));
+    const quit = (await cmd.options.getArgumentCompletions?.("quit -")) ?? [];
+    assert.ok(quit.some((c) => c.value === "quit --all "));
+    assert.equal(quit.some((c) => c.label === "-y" || c.label === "--yes"), false);
   });
 
   test("/workflow getArgumentCompletions covers workflow run inputs and flags", async () => {
@@ -211,8 +213,8 @@ describe("renderCall — all action branches", () => {
     assert.ok(renderCall({ runId: "run-1", action: "interrupt" }).includes("run-1"));
   });
 
-  test("action='kill' includes runId", () => {
-    assert.ok(renderCall({ runId: "run-kill", action: "kill" }).includes("run-kill"));
+  test("action='quit' includes runId", () => {
+    assert.ok(renderCall({ runId: "run-quit", action: "quit" }).includes("run-quit"));
   });
 
   test("action='resume' includes runId", () => {
@@ -312,7 +314,7 @@ describe("renderResult — all action branches", () => {
         truncated: false,
       },
       { action: "interrupt", runId: "run-abcdef", status: "paused", message: "A very long interrupt response message." },
-      { action: "kill", runId: "run-abcdef", status: "killed", message: "A very long kill response message." },
+      { action: "quit", runId: "run-abcdef", status: "paused", message: "A very long resumable quit response message." },
       { action: "resume", runId: "run-abcdef", status: "ok", message: "A very long resume response message." },
     ];
 
@@ -438,15 +440,15 @@ describe("renderResult — all action branches", () => {
     assert.ok(out.includes("Interrupt not yet implemented"));
   });
 
-  test("action='kill' shows message", () => {
+  test("action='quit' shows resumable message", () => {
     const out = renderResult({
-      action: "kill",
-      runId: "r-kill",
-      status: "killed",
-      message: "Killed and retained for inspection",
+      action: "quit",
+      runId: "r-quit",
+      status: "paused",
+      message: "Workflow quit and can be resumed",
     });
-    assert.ok(out.includes("r-kill"));
-    assert.ok(out.includes("Killed and retained for inspection"));
+    assert.ok(out.includes("r-quit"));
+    assert.ok(out.includes("Workflow quit and can be resumed"));
   });
 
   test("action='resume' shows message", () => {

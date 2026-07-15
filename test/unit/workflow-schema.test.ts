@@ -92,6 +92,21 @@ describe("WorkflowParametersSchema stage options", () => {
     }), true);
   });
 
+  test("exposes resumable quit and rejects removed kill action", () => {
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      action: "quit",
+      runId: "abc123",
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      action: "quit",
+      all: true,
+    }), true);
+    assert.equal(Value.Check(WorkflowParametersSchema, {
+      action: "kill",
+      runId: "abc123",
+    }), false);
+  });
+
   test("exposes descriptions for agent-facing action fields", () => {
     const properties = (WorkflowParametersSchema as unknown as {
       properties: Record<string, { description?: string }>;

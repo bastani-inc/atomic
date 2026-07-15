@@ -198,8 +198,12 @@ export class StageSessionController {
     if (this.pauseRequest) return;
     const deferred = Promise.withResolvers<{ message?: string }>();
     void deferred.promise.catch(() => {});
-    this.pauseRequest = { deferred };
-    await this.session?.abort();
+    const request = { deferred };
+    this.pauseRequest = request;
+    try { await this.session?.abort(); } catch (error) {
+      if (this.pauseRequest === request) { this.pauseRequest = null; deferred.reject(error); }
+      throw error;
+    }
   }
 
   resume(message?: string): void {
@@ -210,16 +214,13 @@ export class StageSessionController {
   }
 
   isPaused(): boolean { return this.pauseRequest !== null; }
-
   sessionMeta(): { sessionId: string | undefined; sessionFile: string | undefined } {
     return { sessionId: this.session?.sessionId, sessionFile: this.session?.sessionFile };
   }
 
   agentSession(): AgentSession | undefined { return asAgentSession(this.session); }
 
-  pendingMessageCount(): number {
-    return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0;
-  }
+  pendingMessageCount(): number { return typeof this.session?.pendingMessageCount === "number" ? this.session.pendingMessageCount : 0; }
 
   private bindAbortSignal(): void {
     const { signal } = this.opts;

@@ -103,7 +103,7 @@ The git wipe commit message: `chore: clean-slate wipe before v1 rewrite (Spec 1 
 - [ ] **Single default export** — `function (pi: ExtensionAPI)` — that registers the `workflow` tool, the slash command surface, message renderers, and lifecycle handlers.
 - [ ] **Named exports** for the authoring API — `defineWorkflow`, `createRegistry`, types — usable from any TypeScript file that `import`s the package.
 - [ ] **`workflow` tool** with `{name, inputs}` parameters and live `renderCall`/`renderResult` slots that show in-flight DAG state.
-- [ ] **Slash commands**: `/workflow [name] [args]`, `/workflow:<name>`, `/workflow list/status/kill/resume/inputs`, `/workflows-doctor`.
+- [ ] **Slash commands**: `/workflow [name] [args]`, `/workflow:<name>`, `/workflow list/status/quit/resume/inputs`, `/workflows-doctor`.
 - [ ] **Above-editor progress widget** via `ctx.ui.setWidget` while runs are in-flight.
 - [ ] **On-demand overlay** via `ctx.ui.custom({overlay: true})` showing the full DAG with keyboard navigation.
 - [ ] **Per-event inline rendering** in the chat scroll via `pi.registerMessageRenderer` (run banner, stage chips, stage progress, stage results, run summary).
@@ -167,7 +167,7 @@ The two extensions are deliberately isomorphic. This is the design principle.
 | Single tool registered          | `subagent` (multi-action via discriminator)                           | `workflow` (`name` + `inputs` params)                                                            |
 | Authoring artifact              | Agent markdown + YAML frontmatter (e.g. `scout.md`)                   | TypeScript file with `export default defineWorkflow(...).compile()`                              |
 | Discovery roots                 | `~/.pi/agent/agents/`, `.pi/agents/`, package's own bundled `agents/` | `~/.pi/agent/workflows/`, `.pi/workflows/`, package's own bundled `workflows/`                   |
-| Slash commands                  | `/run`, `/chain`, `/parallel`, `/run-chain`, `/subagents-doctor`      | `/workflow`, `/workflow:<name>`, `/workflow list/kill/status/resume/inputs`, `/workflows-doctor` |
+| Slash commands                  | `/run`, `/chain`, `/parallel`, `/run-chain`, `/subagents-doctor`      | `/workflow`, `/workflow:<name>`, `/workflow list/quit/status/resume/inputs`, `/workflows-doctor` |
 | Clarify UI                      | Built-in chain clarify UI                                             | `ctx.ui.custom({overlay:true})` preview before run                                               |
 | Background / detached execution | `async: true` / `--bg`                                                | `detach: true` / `--detach`                                                                      |
 | Recursion guard                 | `PI_SUBAGENT_MAX_DEPTH` env (default 2)                               | `PI_WORKFLOW_MAX_DEPTH` env (default 4)                                                          |
@@ -215,7 +215,7 @@ packages/pi-workflows/
 │   │                                #   cross-ref: pi-subagents src/agents/identity.ts
 │   │
 │   ├── slash/                       # All `/workflow*` slash commands. (Mirrors pi-subagents src/slash/.)
-│   │   ├── slash-commands.ts        # /workflow, /workflow:<name>, /workflow list/kill/status/resume/inputs, /workflows-doctor
+│   │   ├── slash-commands.ts        # /workflow, /workflow:<name>, /workflow list/quit/status/resume/inputs, /workflows-doctor
 │   │   │                            #   cross-ref: pi-subagents src/slash/slash-commands.ts
 │   │   ├── slash-bridge.ts          # Bridges slash params → tool execute() path.
 │   │   │                            #   cross-ref: pi-subagents src/slash/slash-bridge.ts
@@ -423,7 +423,7 @@ pi.registerTool({
                 Type.Literal("run"),
                 Type.Literal("list"),
                 Type.Literal("status"),
-                Type.Literal("kill"),
+                Type.Literal("quit"),
                 Type.Literal("resume"),
                 Type.Literal("inputs"),
             ]),
@@ -439,7 +439,7 @@ pi.registerTool({
 });
 ```
 
-The tool uses pi-subagents' multi-action-via-discriminator pattern: one tool registration covers run/list/status/kill/resume/inputs. `renderResult` honors `opts.isPartial` to stream live progress (`context.state.runId`, `context.state.stages`, `context.invalidate()`).
+The tool uses pi-subagents' multi-action-via-discriminator pattern: one tool registration covers run/list/status/quit/resume/inputs. `renderResult` honors `opts.isPartial` to stream live progress (`context.state.runId`, `context.state.stages`, `context.invalidate()`).
 
 ### 5.3 Slash commands
 
@@ -450,8 +450,8 @@ The tool uses pi-subagents' multi-action-via-discriminator pattern: one tool reg
 | `/workflow:<name>`         | Shorthand for `/workflow <name>`.                                                                                         |
 | `/workflow list`           | Lists workflows in an overlay (registry inspection).                                                                      |
 | `/workflow status`         | Lists in-flight runs in an overlay.                                                                                       |
-| `/workflow kill <runId>`   | Aborts a run (`AbortController.abort()`).                                                                                 |
-| `/workflow kill --all`     | Aborts every in-flight run.                                                                                               |
+| `/workflow quit <runId>`   | Gracefully pauses a run and keeps it resumable.                                                                                 |
+| `/workflow quit --all`     | Gracefully pauses every controllable in-flight run and reports any failures.                                                                                               |
 | `/workflow resume <runId>` | Re-opens the overlay for a specific run.                                                                                  |
 | `/workflow inputs <name>`  | Shows a workflow's input schema in an overlay.                                                                            |
 | `/workflows-doctor`        | Read-only diagnostics: loaded workflows, available siblings (pi-subagents/pi-mcp-adapter/pi-intercom), config validation. |
@@ -856,7 +856,7 @@ Each phase is a working commit; `pi install <local-path>` against the user's pi 
 - **Phase A — Skeleton**: Create `packages/pi-workflows/` with `package.json`, `tsconfig.json`, `bunfig.toml`. Add minimal root `package.json` + `bunfig.toml` + `tsconfig.json` declaring the workspace. `src/extension/index.ts` empty default export, `src/workflows/define-workflow.ts` + `src/workflows/registry.ts` (authoring API only, no extension behavior yet). Publishable as a no-op package that exports types. Tests: unit only.
 - **Phase B — Tool + commands**: Register `workflow` tool with stub `execute`, register `/workflow` slash command, register CLI flag. Inline renderers via `pi.registerMessageRenderer`. Tests: integration via `MockExtensionAPI`.
 - **Phase C — Executor**: `src/executor.ts` + `GraphFrontierTracker` re-derivation. Single-stage workflows work end-to-end against installed pi. Tests: e2e for a trivial workflow that runs one `ctx.stage().prompt()`.
-- **Phase D — Persistence + restore**: `pi.appendEntry` for run/stage events; restore on `session_start`. `/workflow status`, `/workflow kill`, `/workflow resume` slash commands.
+- **Phase D — Persistence + restore**: `pi.appendEntry` for run/stage events; restore on `session_start`. `/workflow status`, `/workflow quit`, `/workflow resume` slash commands.
 - **Phase E — Live UI**: Above-editor widget, `tool_execution_*` event subscriptions, working spinner/title messages.
 - **Phase F — Overlay**: `ctx.ui.custom({overlay: true})` DAG visualization. Keyboard nav. Status filter modes.
 - **Phase G — Sibling integrations**: `src/integrations/{subagents,mcp,intercom}.ts`. Verify each peer dep against the user's installed pi.

@@ -1,5 +1,5 @@
 import { inspectRun } from "../runs/background/status.js";
-import type { WorkflowExecutionPolicy, WorkflowPersistencePort } from "../shared/types.js";
+import type { WorkflowExecutionPolicy } from "../shared/types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { PiExecuteContext, WorkflowToolArgs } from "./public-types.js";
@@ -14,7 +14,7 @@ import {
 } from "./workflow-tool-helpers.js";
 import {
   workflowInterruptAction,
-  workflowKillAction,
+  workflowQuitAction,
   workflowPauseAction,
   workflowReloadAction,
   workflowResumeAction,
@@ -36,7 +36,6 @@ import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 
 export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
-  getPersistence: () => WorkflowPersistencePort | undefined,
   reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void,
   ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
   sendDeps: WorkflowSendDeps = {},
@@ -121,8 +120,8 @@ export function makeExecuteWorkflowTool(
         return workflowPauseAction(args);
       case "reload":
         return workflowReloadAction(args, { reloadWorkflowResources });
-      case "kill":
-        return workflowKillAction(args, { getPersistence });
+      case "quit":
+        return workflowQuitAction(args);
       case "interrupt":
         return workflowInterruptAction(args);
       case "resume":

@@ -238,7 +238,7 @@ export interface WorkflowToolArgs extends StageOptions {
     | "send"
     | "pause"
     | "interrupt"
-    | "kill"
+    | "quit"
     | "resume"
     | "reload"
     | "inputs";

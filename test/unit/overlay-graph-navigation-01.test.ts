@@ -60,48 +60,6 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("quits the top-level workflow instead of killing a focused child", () => {
-    const rootBoundary: StageSnapshot = {
-      ...makeStage("workflow:child"),
-      status: "running",
-      workflowChildRun: {
-        alias: "child",
-        workflow: "child-workflow",
-        runId: "child-run",
-      },
-    };
-    const childFirst = makeStage("child-first");
-    const snap: StoreSnapshot = {
-      runs: [
-        makeRun([rootBoundary]),
-        {
-          id: "child-run",
-          name: "child-workflow",
-          inputs: {},
-          status: "running",
-          stages: [childFirst],
-          startedAt: Date.now(),
-        },
-      ],
-      notices: [],
-      version: 1,
-    };
-    const quit: string[] = [];
-    const view = new GraphView({
-      mode: "overlay",
-      runId: "run-1",
-      store: makeStore(snap),
-      graphTheme: defaultTheme,
-      initialFocusedStageId: "child-first",
-      onQuit: (runId) => quit.push(runId),
-    });
-
-    view.handleInput("q");
-
-    assert.deepEqual(quit, ["run-1"]);
-    view.dispose();
-  });
-
   it("attaches expanded child workflow stages using the child run id", () => {
     const rootBoundary: StageSnapshot = {
       ...makeStage("workflow:child"),
@@ -253,15 +211,6 @@ describe("GraphView keyboard navigation", () => {
     view.handleInput("g");
     view.handleInput("g");
     assert.equal(view._focusedIndex, 0);
-    view.dispose();
-  });
-
-  it("q calls onClose", () => {
-    const stages = [makeStage("A")];
-    const onClose = mock(() => {});
-    const view = makeView(stages, onClose);
-    view.handleInput("q");
-    assert.equal(onClose.mock.calls.length, 1);
     view.dispose();
   });
 

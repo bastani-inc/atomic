@@ -108,7 +108,7 @@ export interface ExtensionRuntime extends DurableResumeRuntime {
 
   /**
    * Dispatch a `list`, `inputs`, or `run` action.
-   * For `status`, `kill`, and `resume` use the runs/background/status module directly.
+   * Status and run-control actions use the dedicated control modules directly.
    */
   dispatch(args: WorkflowToolArgs, options?: RuntimeDispatchOptions): Promise<WorkflowToolResult>;
 

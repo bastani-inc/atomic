@@ -18,8 +18,8 @@
  *   - F2 shortcut registration in extension factory calls
  *     overlay.open(activeRunId).
  *   - /workflow resume + /workflow attach + /workflow pause routing.
- *   - Graph-mode Ctrl+D / `h` never kills the run.
- *   - `q` kills and retains the active run for inspection (regression gate).
+ *   - Graph-mode Ctrl+D / `h` never changes the run lifecycle.
+ *   - `q` returns to main chat without cancelling or pausing the active run.
  */
 
 import { InteractiveMode } from "../../packages/coding-agent/src/modes/interactive/interactive-mode.ts";

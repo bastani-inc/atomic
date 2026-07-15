@@ -316,6 +316,7 @@ export function registerTestStageHandle(
     runId: string,
     stageId: string,
     status: StageControlHandle["status"] = "running",
+    controls: Partial<Pick<StageControlHandle, "pause" | "resume">> = {},
 ): void {
     const handle: StageControlHandle = {
         runId,
@@ -330,8 +331,8 @@ export function registerTestStageHandle(
         async prompt(): Promise<void> {},
         async steer(): Promise<void> {},
         async followUp(): Promise<void> {},
-        async pause(): Promise<void> {},
-        async resume(): Promise<void> {},
+        pause: controls.pause ?? (async () => {}),
+        resume: controls.resume ?? (async () => {}),
         subscribe: () => () => {},
     };
     stageControlRegistry.register(handle);

@@ -129,17 +129,30 @@ export function registerWorkflowLifecycleHandlers(
   });
 
   installCompactionHook(pi, store);
-  pi.on("session_shutdown", (event) => {
+  pi.on("session_shutdown", async (event) => {
     const reason = typeof event === "object" && event !== null && "reason" in event
       ? (event as { readonly reason?: string }).reason
       : undefined;
     deps.intercomControlRef.current?.();
     deps.intercomControlRef.current = null;
     if (reason === "quit") {
-      // CLI/orchestrator quit is a resumable process boundary, not explicit
-      // `/workflow kill`. Durable-progress workflows stay available through
+      // CLI/orchestrator quit is a resumable process boundary, not destructive
+      // cancellation. Durable-progress workflows stay available through
       // `/workflow resume`; stage handles are disposed after being paused.
-      quitAllRuns({ store, stageControlRegistry });
+      try {
+        const results = await quitAllRuns({ store, stageControlRegistry });
+        const failures = results.filter((result) => !result.ok);
+        if (failures.length > 0) {
+          console.error(
+            "atomic-workflows: session shutdown could not gracefully quit every run:",
+            failures.map((result) =>
+              `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`
+            ).join(", "),
+          );
+        }
+      } finally {
+        stageControlRegistry.clear();
+      }
     }
     // Every host-session boundary invalidates detached lazy handles. Clearing
     // synchronously marks pending session creation as disposed before it can

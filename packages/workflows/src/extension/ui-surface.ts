@@ -274,8 +274,7 @@ export interface PiUISurface {
 
 /**
  * Runtime surface that includes the optional UI dialog surface.
- * Used by command/overlay code (slash command kill confirm, graph overlay
- * mount, picker overlays) to interact with `pi.ui.custom`, `pi.ui.confirm`,
+ * Used by command/overlay code (graph mounts and picker overlays) to interact with `pi.ui.custom`, `pi.ui.confirm`,
  * etc. Workflow-level HIL routing — `ctx.ui.input/confirm/select/editor`
  * inside a workflow body — stays in the store-backed background adapter.
  * In-stage `ask_user_question` uses this surface to bind the live pi UI into

@@ -55,7 +55,6 @@ export abstract class GraphViewState {
   protected store: Store;
   protected graphTheme: GraphTheme;
   protected onClose?: () => void;
-  protected onQuit?: (runId: string) => void;
   protected onHide?: () => void;
   protected onPromptResolve?: (runId: string, promptId: string, response: unknown) => void;
   protected onStageAttach?: (runId: string, stageId: string) => void;
@@ -95,7 +94,6 @@ export abstract class GraphViewState {
     this.store = opts.store;
     this.graphTheme = opts.graphTheme;
     this.onClose = opts.onClose;
-    this.onQuit = opts.onQuit;
     this.onHide = opts.onHide;
     this.onPromptResolve = opts.onPromptResolve;
     this.onStageAttach = opts.onStageAttach;

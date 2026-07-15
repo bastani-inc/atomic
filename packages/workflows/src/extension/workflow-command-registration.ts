@@ -59,7 +59,7 @@ export function registerWorkflowSlashCommand(
     pi,
     "workflow",
     {
-      description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|kill|pause|resume|inputs|reload] [args]",
+      description: "Run or inspect Atomic workflows. Usage: /workflow <name> [key=value…] | /workflow [list|status|connect|attach|interrupt|quit|pause|resume|inputs|reload] [args]",
       handler: (args, ctx) => workflowSlashHandler(args, ctx, pi, deps),
       getArgumentCompletions: (partial: string): PiArgumentCompletionResult | Promise<PiArgumentCompletionResult> => {
         const buildCompletions = (): PiArgumentCompletionResult => workflowArgumentCompletions(partial, deps.runtimeProxy);
@@ -154,8 +154,12 @@ async function workflowSlashHandler(
     }
     return;
   }
-  if (subcommand === "interrupt" || subcommand === "kill") {
+  if (subcommand === "interrupt") {
     await handleRunControlCommand(subcommand, withImplicitYesFlag(parts.slice(1)), ctx, reporter, deps.runControl);
+    return;
+  }
+  if (subcommand === "quit") {
+    await handleRunControlCommand(subcommand, parts.slice(1), ctx, reporter, deps.runControl);
     return;
   }
   if (subcommand === "inputs") {

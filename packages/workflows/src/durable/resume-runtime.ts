@@ -212,7 +212,7 @@ function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["
     reason: "not_resumable",
     message: `Workflow "${name}" (${workflowId.slice(0, 8)}) is already running${
       here ? " in this session" : " in another session"
-    }. Attach with \`/workflow connect ${workflowId.slice(0, 8)}\`, or if that session has ended, clear it with \`/workflow kill ${workflowId.slice(0, 8)}\` and re-run.`,
+    }. See agents working and chat with or steer each stage using \`/workflow connect ${workflowId.slice(0, 8)}\`; use \`/workflow quit ${workflowId.slice(0, 8)}\` to pause the run for later resume.`,
   };
 }
 

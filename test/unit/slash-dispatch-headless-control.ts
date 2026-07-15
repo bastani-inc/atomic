@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import {
     installSlashDispatchTestHooks,
     assert,
@@ -43,6 +43,8 @@ import {
     runFactory,
     writeWorkflowFixture,
 } from "./slash-dispatch-utils.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type {
     ExtensionAPI,
     PiArgumentCompletion,
@@ -65,6 +67,9 @@ import type {
 } from "./slash-dispatch-utils.js";
 
 installSlashDispatchTestHooks();
+
+beforeEach(() => setDurableBackend(new InMemoryDurableBackend()));
+afterEach(() => setDurableBackend(undefined));
 
 describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", () => {
     async function registerWorkflowCommand(): Promise<{
@@ -210,11 +215,11 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         };
     }
 
-    test.serial("/workflow kill <missing> rejects visibly in headless mode", async () => {
+    test.serial("/workflow quit <missing> rejects visibly in headless mode", async () => {
         const { handler } = await registerWorkflowCommand();
 
         await assertRejectsHeadlessCommand(
-            () => handler("kill definitely-missing", headlessNoOpCtx()),
+            () => handler("quit definitely-missing", headlessNoOpCtx()),
             /Run not found: definitely-missing/,
         );
     });
@@ -222,7 +227,7 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
     test.serial.each([
         ["reload", "reload", /Reloaded workflow resources\./],
         ["interrupt", "interrupt", /interrupted and can be resumed/],
-        ["kill", "kill", /killed and retained for inspection/],
+        ["quit", "quit", /quit.*resume|resume.*quit/i],
         ["pause", "pause", /Paused 1 stage\(s\)/],
         ["resume", "resume", /Resumed 1 stage\(s\)/],
     ])(
@@ -294,21 +299,18 @@ describe("/workflow command in non-interactive (-p) mode (#1156 regressions)", (
         assert.match(content, /Interrupted 1 run\(s\)\./);
     });
 
-    test.serial("/workflow kill --all emits displayable success output in headless mode", async () => {
+    test.serial("/workflow quit --all emits displayable resumable success output in headless mode", async () => {
         const { handler, sent } = await registerWorkflowCommand();
-        store.recordRunStart(
-            makeInflightRun(`headless-kill-all-${Date.now()}`),
-        );
+        const runId = `headless-quit-all-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
 
-        await handler("kill --all", headlessNoOpCtx());
+        await handler("quit --all", headlessNoOpCtx());
 
         const content = commandOutputMessages(sent)
             .map((message) => message.content ?? "")
             .join("\n");
-        assert.match(
-            content,
-            /Killed and retained 1 run\(s\) for inspection\./,
-        );
+        assert.match(content, /quit.*resume|resume.*quit/i);
     });
 
     test.serial("issue #1156: headless terminal workflow failure throws a command-visible error", async () => {

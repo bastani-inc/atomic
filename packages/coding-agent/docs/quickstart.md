@@ -123,16 +123,16 @@ For an autonomous one-off job that materially benefits from a durable goal ledge
 
 ### Monitor and steer a run
 
-Named workflow runs execute in the background. After launch you get a run id; use it to inspect, attach, pause, or resume.
+Named workflow runs execute in the background. After launch you get a run id; use it to inspect, connect, pause, quit, or resume.
 
 ```text
 /workflow status <run-id>         # inspect one run's progress
 /workflow status                  # list this session's active and terminal runs
-/workflow connect <run-id>        # watch, attach to stages, or steer (F2 also opens latest)
+/workflow connect <run-id>        # see agents working; chat with or steer each stage (F2 also opens latest)
 /workflow attach <run-id> <stage> # chat with one stage
 /workflow interrupt <run-id>      # pause resumably
 /workflow resume <run-id> "go"    # send a steer message and resume
-/workflow kill <run-id>           # abort and retain for inspection
+/workflow quit <run-id>           # pause gracefully and keep the run resumable
 ```
 
 Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them.

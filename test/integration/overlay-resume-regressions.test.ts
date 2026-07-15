@@ -40,7 +40,6 @@ describe("/workflow resume — durable regression coverage", () => {
     }, {
       pi: buildMockPi().pi,
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
-      getPersistence: () => undefined,
       runtimeForContext: () => runtime,
       ensureWorkflowResourcesLoaded: () => undefined,
     });
@@ -80,7 +79,6 @@ describe("/workflow resume — durable regression coverage", () => {
     }, {
       pi: buildMockPi().pi,
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
-      getPersistence: () => undefined,
       runtimeForContext: () => runtime,
       ensureWorkflowResourcesLoaded: () => undefined,
     });
@@ -118,7 +116,6 @@ describe("/workflow resume — durable regression coverage", () => {
     }, {
       pi: buildMockPi().pi,
       overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
-      getPersistence: () => undefined,
       runtimeForContext: () => runtime,
       ensureWorkflowResourcesLoaded: () => undefined,
     });

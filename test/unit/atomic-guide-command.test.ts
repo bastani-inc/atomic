@@ -52,6 +52,7 @@ describe("/atomic guide command", () => {
     assert.match(example, /author a custom TypeScript workflow inline from the starter patterns/);
     assert.match(workflows, /Default to workflows for non-trivial work and requests with inherent structure plus a verifiable objective/);
     assert.match(workflows, /classify-and-act routing, dynamic fan-out and synthesis, adversarial verification/);
+    assert.match(workflows, /\/workflow quit <run-id>/);
 
     for (const regressionPolicy of [
       "Multiple steps, files, tests, validation, or parallelism alone do not require a workflow",

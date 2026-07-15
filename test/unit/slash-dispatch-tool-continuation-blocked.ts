@@ -73,7 +73,6 @@ describe("tool run-control actions", () => {
         return makeExecuteWorkflowTool(
             runtime,
             () => undefined,
-            () => undefined,
         );
     }
 
@@ -97,7 +96,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -228,7 +226,6 @@ describe("tool run-control actions", () => {
         });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
 
@@ -389,7 +386,6 @@ describe("tool run-control actions", () => {
         });
         const handler = makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
 

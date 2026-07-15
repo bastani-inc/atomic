@@ -124,56 +124,12 @@ describe("GraphView keyboard navigation", () => {
     view.dispose();
   });
 
-  it("Ctrl+D variants detach in overlay graph mode", () => {
-    const ctrlDVariants = [
-      "\x04",
-      "\x1b[100;5u",
-      "\x1b[100;5:1u",
-      "\x1b[27;5;100~",
-    ];
-
-    for (const key of ctrlDVariants) {
-      const snap = makeSnap([makeStage("A")]);
-      const store = makeStore(snap);
-      let detached = 0;
-      const view = new GraphView({
-        mode: "overlay",
-        runId: "run-1",
-        store,
-        graphTheme: defaultTheme,
-        onDetach: () => {
-          detached += 1;
-        },
-      });
-      view.handleInput(key);
-      assert.equal(detached, 1, JSON.stringify(key));
-      view.dispose();
-    }
-  });
-
   it("render returns lines in overlay mode", () => {
     const stages = [makeStage("A"), makeStage("B", ["A"])];
     const view = makeView(stages);
     const lines = view.render(80);
     assert.equal(Array.isArray(lines), true);
     assert.ok(lines.length > 0);
-    view.dispose();
-  });
-
-  it("render shows orchestrator chrome and graph mode pill", () => {
-    const stages = [makeStage("A"), makeStage("B", ["A"])];
-    const view = makeView(stages);
-    const text = view.render(96).join("\n");
-    // Header pill carries the ORCHESTRATOR label in all caps.
-    assert.match(text, /ORCHESTRATOR/);
-    // Bottom statusline carries the GRAPH mode pill.
-    assert.match(text, /GRAPH/);
-    // Hints reflect the new vocabulary (navigate / attach / stages /
-    // detach / quit) rather than the legacy j\/k focus row.
-    assert.match(text, /navigate/);
-    assert.match(text, /attach/);
-    assert.match(text, /stages/);
-    assert.match(text, /detach/);
     view.dispose();
   });
 

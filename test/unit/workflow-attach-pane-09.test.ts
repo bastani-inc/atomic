@@ -230,37 +230,26 @@ function assertNextGraphEnterAttaches(
 }
 
 describe("WorkflowAttachPane", () => {
-    test("q quit delegates to onQuit (resumable) and closes without killing", () => {
+    test("q returns the graph pane to main chat without a workflow-control callback", () => {
         const store = createStore();
         setupRun(store, "run-1", [{ id: "stage-a", name: "A" }]);
-        let quitRunId: string | undefined;
-        let killRunId: string | undefined;
-        let closed = 0;
+        let hidden = 0;
+        const before = structuredClone(store.runs().find((run) => run.id === "run-1"));
         const pane = new WorkflowAttachPane({
             store,
             graphTheme: deriveGraphTheme({}),
             runId: "run-1",
-            onQuit: (runId) => {
-                quitRunId = runId;
+            onHide: () => {
+                hidden += 1;
             },
-            onKill: (runId) => {
-                killRunId = runId;
-                store.removeRun(runId);
-            },
-            onClose: () => {
-                closed += 1;
-            },
+            onClose: () => {},
             getViewportRows: () => 36,
         });
 
         pane.handleInput("q");
 
-        // `q` is a resumable quit/detach, not an authoritative kill. The run is
-        // left in place so `/workflow resume` can restore it; only
-        // `/workflow kill` removes a run as non-resumable.
-        assert.equal(quitRunId, "run-1");
-        assert.equal(killRunId, undefined);
-        assert.equal(closed, 1);
+        assert.equal(hidden, 1);
+        assert.deepEqual(store.runs().find((run) => run.id === "run-1"), before);
         assert.equal(pane._mode, "graph");
         pane.dispose();
     });

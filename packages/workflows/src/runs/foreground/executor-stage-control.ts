@@ -85,18 +85,18 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async pause() {
       runtime.throwIfStageMutationBlocked();
       const statusBeforePause = runtime.stageSnapshot.status;
+      if (statusBeforePause === "pending" || statusBeforePause === "running" || runtime.innerCtx.isStreaming) {
+        await runtime.innerCtx.__requestPause();
+      }
       const changed = runtime.activeStore.recordStagePaused(runtime.runId, runtime.stageId);
       if (changed) {
         runtime.scheduler.ensureReleaseBarrier(runtime.stageId);
         await runtime.scheduler.cascadePauseFrom(runtime.stageId);
         const run = runtime.activeStore.runs().find((candidate) => candidate.id === runtime.runId);
         const stillActive = run?.stages.some(
-          (s) => s.status === "running" && s.id !== runtime.stageId,
+          (stage) => stage.status === "running" && stage.id !== runtime.stageId,
         ) ?? false;
         if (!stillActive) runtime.activeStore.recordRunPaused(runtime.runId);
-      }
-      if (statusBeforePause === "pending" || statusBeforePause === "running" || runtime.innerCtx.isStreaming) {
-        await runtime.innerCtx.__requestPause();
       }
     },
     async resume(message?: string) {
@@ -109,13 +109,15 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       const queuedResumeContinuation = wasPausedBeforeResume && shouldContinueInterruptedTurn;
       if (queuedResumeContinuation) runtime.state.resumeContinuationPending = true;
       try {
+        await runtime.innerCtx.__resume(message);
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
         if (changed) {
           runtime.scheduler.releaseStageBarrier(runtime.stageId);
           await runtime.scheduler.cascadeResumeFrom(runtime.stageId);
+          // Preserve manual per-stage semantics: once this acknowledged
+          // resume succeeds, the run is active even if sibling stages remain paused.
           runtime.activeStore.recordRunResumed(runtime.runId);
         }
-        await runtime.innerCtx.__resume(message);
       } catch (err) {
         if (queuedResumeContinuation) runtime.state.resumeContinuationPending = previousResumeContinuationPending;
         throw err;

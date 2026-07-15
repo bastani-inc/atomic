@@ -28,6 +28,10 @@ interface MouseWheelDelta {
 export abstract class GraphViewInputController extends GraphViewRenderer {
   /** Returns true if consumed. */
   handleInput(data: string): boolean {
+    if (this._isReturnToMainChatInput(data)) {
+      this._returnToMainChat();
+      return true;
+    }
     if (this.switcherOpen) {
       return this._handleSwitcherInput(data);
     }
@@ -52,7 +56,16 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
   }
 
   private _isNonTextGraphControlBeforePrompt(data: string): boolean {
-    return this._mouseWheelDelta(data) !== null || matchesKey(data, Key.ctrl("d"));
+    return this._mouseWheelDelta(data) !== null;
+  }
+
+  private _isReturnToMainChatInput(data: string): boolean {
+    return matchesKey(data, Key.ctrl("d")) || matchesKey(data, "q");
+  }
+
+  private _returnToMainChat(): void {
+    if (this.onDetach) this.onDetach();
+    else this.onHide?.();
   }
 
   private _handlePromptInput(data: string): boolean {
@@ -136,27 +149,6 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     }
     if (matchesKey(data, Key.enter)) {
       this._activateFocusedNode();
-      return true;
-    }
-    // `ctrl+d` detaches the whole popup (host hides the overlay). This
-    // is the graph-mode counterpart of the in-chat back affordance.
-    if (matchesKey(data, Key.ctrl("d"))) {
-      if (this.onDetach) {
-        this.onDetach();
-      } else if (this.onHide) {
-        this.onHide();
-      }
-      return true;
-    }
-    // `q` quits/detaches the orchestrator view without authoritatively
-    // killing the workflow. The workflow remains resumable via
-    // `/workflow resume`; use `/workflow kill` for non-resumable disposal.
-    if (matchesKey(data, "q")) {
-      const run = this._getCurrentRun();
-      if (run && run.endedAt === undefined && this.onQuit) {
-        this.onQuit(run.id);
-      }
-      this.onClose?.();
       return true;
     }
     if (matchesKey(data, "h") && this.onHide) {

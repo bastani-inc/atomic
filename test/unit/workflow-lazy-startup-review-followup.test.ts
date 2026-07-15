@@ -207,7 +207,6 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     const deps: WorkflowRunControlDeps = {
       pi: {} as never,
       overlay: { open: (id) => { if (id) opened.push(id); }, toggle: () => undefined, close: () => undefined },
-      getPersistence: () => undefined,
       runtimeForContext: () => runtime,
       ensureWorkflowResourcesLoaded: () => { ensureCalls += 1; },
     };
@@ -236,7 +235,6 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     };
     const handler = makeExecuteWorkflowTool(
       runtimeForCurrentRegistry,
-      () => undefined,
       () => undefined,
       async () => {
         ensureCalls += 1;
@@ -272,7 +270,6 @@ describe("workflow lazy-startup review follow-up fixes", () => {
     };
     const handler = makeExecuteWorkflowTool(
       runtimeForCurrentRegistry,
-      () => undefined,
       () => undefined,
       async () => {
         ensureCalls += 1;

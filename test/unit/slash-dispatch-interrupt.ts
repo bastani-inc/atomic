@@ -18,6 +18,7 @@ import {
     WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
     WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
     LIFECYCLE_NOTICE_CUSTOM_TYPE,
+    cancellationRegistry,
     stageControlRegistry,
     stageUiBroker,
     buildStagePromptAdapter,
@@ -66,77 +67,32 @@ import type {
 
 installSlashDispatchTestHooks();
 
-describe("/workflow interrupt chat command", () => {
+describe("/workflow run-control chat commands", () => {
     test.serial.each([["completed"], ["failed"], ["killed"]] as const)(
-        "top-level /workflow kill <id> reports %s runs as already ended and retained",
+        "top-level /workflow quit <id> leaves %s terminal runs unchanged",
         async (status) => {
-            const runId = `slash-kill-${status}-${Date.now()}`;
+            const runId = `slash-quit-${status}-${Date.now()}`;
             recordTerminalRun(runId, status);
 
             const { workflowCmd } = await registerWorkflowCommand();
             const msgs: string[] = [];
-            let confirmCalls = 0;
             const ctx: PiCommandContext = {
                 ui: {
                     notify: (message: string) => {
                         msgs.push(message);
                     },
-                    confirm: async () => {
-                        confirmCalls++;
-                        return true;
-                    },
                 },
             };
 
-            await workflowCmd.options.handler(`kill ${runId}`, ctx);
+            await workflowCmd.options.handler(`quit ${runId}`, ctx);
 
             const joined = msgs.join("\n");
-            assert.equal(confirmCalls, 0);
             assert.match(joined, /already ended/i);
-            assert.match(joined, /retained/i);
             assert.doesNotMatch(joined, /Run not found/);
-            assert.equal(
-                store.runs().find((r) => r.id === runId)?.status,
-                status,
-            );
+            assert.equal(store.runs().find((r) => r.id === runId)?.status, status);
         },
     );
 
-    test.serial("picker kill on a terminal row is a no-op", async () => {
-        const runId = `picker-kill-ended-${Date.now()}`;
-        recordTerminalRun(runId, "completed");
-
-        const { workflowCmd } = await registerWorkflowCommand();
-        const msgs: string[] = [];
-        const customFn: PiCustomOverlayFunction = (factoryArg, options) => {
-            const tui: PiCustomOverlayFactoryTui = {
-                requestRender: () => undefined,
-            };
-            const component = factoryArg(tui, {}, {}, () => undefined);
-            if (component instanceof Promise)
-                throw new Error("expected sync factory");
-            if (options.overlay) {
-                (component as PiCustomComponent).handleInput?.("y");
-            } else {
-                (component as PiCustomComponent).render(80);
-                (component as PiCustomComponent).handleInput?.("x");
-                (component as PiCustomComponent).handleInput?.("\x1b");
-            }
-            return undefined;
-        };
-        const ctx: PiCommandContext = {
-            ui: {
-                notify: (message: string) => {
-                    msgs.push(message);
-                },
-                custom: customFn,
-            },
-        };
-
-        await workflowCmd.options.handler("connect", ctx);
-
-        assert.deepEqual(msgs, []);
-    });
 
     test.serial("/workflow connect no-custom-UI fallback includes older retained terminal runs", async () => {
         const oldEndedAt = Date.now() - 2 * 60 * 60 * 1000;
@@ -174,9 +130,12 @@ describe("/workflow interrupt chat command", () => {
         assert.match(joined, /Picker requires an interactive UI surface/);
     });
 
-    test.serial("top-level /workflow kill <id> kills and retains run without requiring confirmation", async () => {
-        const runId = `kill-chat-${Date.now()}`;
+    test.serial("top-level /workflow quit <id> pauses and preserves resumability without confirmation", async () => {
+        const runId = `quit-chat-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
+        const controller = new AbortController();
+        cancellationRegistry.register(runId, controller);
 
         const { pi, commands, sent } = buildMockPi();
         addFactoryStubs(pi);
@@ -200,23 +159,109 @@ describe("/workflow interrupt chat command", () => {
             },
         };
 
-        await workflowCmd.options.handler(`kill ${runId}`, ctx);
+        await workflowCmd.options.handler(`quit ${runId}`, ctx);
 
         const run = store.runs().find((r) => r.id === runId);
         assert.equal(confirmCalls, 0);
-        assert.equal(run?.status, "killed");
+        assert.equal(run?.status, "paused");
+        assert.equal(run?.endedAt, undefined);
+        assert.equal(run?.exitReason, "quit");
+        assert.equal(run?.resumable, true);
+        assert.equal(controller.signal.aborted, false);
+        assert.equal(msgs.some((message) => /quit.*resume|resume.*quit/i.test(message)), true);
         assert.equal(
-            msgs.some((m) => m.includes("killed and retained for inspection")),
-            true,
-        );
-        assert.equal(
-            sent.some(
-                (m) =>
-                    (m.details as { kind?: string } | undefined)?.kind ===
-                    "killed",
+            sent.some((message) =>
+                (message.details as { kind?: string } | undefined)?.kind === "killed"
             ),
-            true,
+            false,
         );
+    });
+
+    test.serial("top-level /workflow quit without a controllable stage reports that the run remains active", async () => {
+        const runId = `quit-no-control-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        const { workflowCmd } = await registerWorkflowCommand();
+        const { ctx, messages } = buildCtx();
+
+        await workflowCmd.options.handler(`quit ${runId}`, ctx);
+
+        assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+        assert.match(messages.join("\n"), /no controllable stages.*remains active/i);
+        assert.doesNotMatch(messages.join("\n"), /Run not found/i);
+    });
+
+    test.serial("top-level /workflow quit --all reports mixed no-controller failures", async () => {
+        const controllable = `quit-slash-mixed-ok-${Date.now()}`;
+        const noController = `quit-slash-mixed-no-controller-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(controllable));
+        store.recordRunStart(makeInflightRun(noController));
+        registerTestStageHandle(controllable, "quit-stage");
+        const { workflowCmd } = await registerWorkflowCommand();
+        const { ctx, messages } = buildCtx();
+
+        await workflowCmd.options.handler("quit --all", ctx);
+
+        const output = messages.join("\n");
+        assert.match(output, /Quit 1 run\(s\)/);
+        assert.match(output, new RegExp(noController));
+        assert.match(output, /no_active_stages|no controllable stages/i);
+        assert.equal(store.runs().find((run) => run.id === controllable)?.status, "paused");
+        assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+    });
+
+    test.serial.each([
+        ["-y <id>", "-y"],
+        ["--yes <id>", "--yes"],
+        ["<id> -y", "-y"],
+        ["<id> --yes", "--yes"],
+        ["--all -y", "-y"],
+        ["--all --yes", "--yes"],
+        ["-y --all", "-y"],
+        ["--yes --all", "--yes"],
+    ])("top-level /workflow quit %s rejects yes compatibility as an ordinary unsupported target", async (argsTemplate, unsupportedToken) => {
+        const runId = `quit-unsupported-confirmation-${unsupportedToken}-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
+        const { workflowCmd } = await registerWorkflowCommand();
+        const { ctx, messages } = buildCtx();
+
+        await workflowCmd.options.handler(`quit ${argsTemplate.replace("<id>", runId)}`, ctx);
+
+        const run = store.runs().find((candidate) => candidate.id === runId);
+        assert.equal(run?.status, "running");
+        assert.equal(run?.exitReason, undefined);
+        assert.match(messages.join("\n"), new RegExp(`Run not found: ${unsupportedToken}`));
+    });
+
+    test.serial("top-level /workflow quit without an id defaults to the active run", async () => {
+        const runId = `quit-active-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
+        const { workflowCmd } = await registerWorkflowCommand();
+        const { ctx, messages } = buildCtx();
+
+        await workflowCmd.options.handler("quit", ctx);
+
+        const run = store.runs().find((candidate) => candidate.id === runId);
+        assert.equal(run?.status, "paused");
+        assert.equal(run?.endedAt, undefined);
+        assert.equal(run?.resumable, true);
+        assert.equal(messages.some((message) => /resume/i.test(message)), true);
+    });
+
+    test.serial("removed /workflow kill is not a compatibility alias for quit", async () => {
+        const runId = `removed-kill-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        const { workflowCmd } = await registerWorkflowCommand();
+        const { ctx, messages } = buildCtx();
+
+        await workflowCmd.options.handler(`kill ${runId}`, ctx);
+
+        const run = store.runs().find((candidate) => candidate.id === runId);
+        assert.equal(run?.status, "running");
+        assert.equal(run?.endedAt, undefined);
+        assert.equal(run?.exitReason, undefined);
+        assert.equal(messages.some((message) => /killed and retained/i.test(message)), false);
     });
 
     test.serial("top-level /workflow interrupt defaults to the active run", async () => {

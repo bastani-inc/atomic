@@ -18,6 +18,7 @@ import {
     WORKFLOW_STAGE_SUBAGENT_GUARD_ENV,
     WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE,
     LIFECYCLE_NOTICE_CUSTOM_TYPE,
+    cancellationRegistry,
     stageControlRegistry,
     stageUiBroker,
     buildStagePromptAdapter,
@@ -63,6 +64,7 @@ import type {
     StageSessionRuntime,
     StageControlHandle,
 } from "./slash-dispatch-utils.js";
+import { resumeRun } from "../../packages/workflows/src/runs/background/status.js";
 
 installSlashDispatchTestHooks();
 
@@ -72,7 +74,6 @@ describe("tool run-control actions", () => {
         const runtime = createExtensionRuntime({ registry });
         return makeExecuteWorkflowTool(
             runtime,
-            () => undefined,
             () => undefined,
         );
     }
@@ -97,7 +98,6 @@ describe("tool run-control actions", () => {
         return {
             handler: makeExecuteWorkflowTool(
                 runtime,
-                () => undefined,
                 () => undefined,
             ),
             wasDispatched: () => dispatched,
@@ -143,73 +143,147 @@ describe("tool run-control actions", () => {
         assert.doesNotMatch(textContent, /^send:\s{2,}noop/);
     });
 
-    test.serial("makeExecuteWorkflowTool kill without runId defaults to the active run", async () => {
-        const runId = `kill-tool-active-${Date.now()}`;
+    test.serial("makeExecuteWorkflowTool quit without runId pauses the active run resumably", async () => {
+        const runId = `quit-tool-active-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
+        const controller = new AbortController();
+        cancellationRegistry.register(runId, controller);
         const handler = makeToolHandler();
 
-        const result = await handler({ action: "kill" }, {} as never);
+        const result = await handler({ action: "quit" }, {} as never);
 
-        assert.equal(result.action, "kill");
-        const r = result as { action: string; status: string; runId: string };
-        assert.equal(r.status, "killed");
+        assert.equal(result.action, "quit");
+        const r = result as { action: string; status: string; runId: string; message: string };
+        assert.equal(r.status, "paused");
         assert.equal(r.runId, runId);
-        assert.equal(
-            store.runs().find((run) => run.id === runId)?.status,
-            "killed",
-        );
+        assert.match(r.message, /resume/i);
+        const paused = store.runs().find((run) => run.id === runId);
+        assert.equal(paused?.status, "paused");
+        assert.equal(paused?.endedAt, undefined);
+        assert.equal(paused?.exitReason, "quit");
+        assert.equal(paused?.resumable, true);
+        assert.equal(controller.signal.aborted, false);
+
+        const resumed = await resumeRun(runId);
+        assert.equal(resumed.ok, true);
+        assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
     });
 
-    test.serial("makeExecuteWorkflowTool kill supports unique run id prefixes", async () => {
-        const runId = `kill-tool-prefix-${Date.now()}`;
+    test.serial("makeExecuteWorkflowTool quit reports a live run with no controllable stage as unchanged", async () => {
+        const runId = `quit-tool-no-control-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
+        const result = await makeToolHandler()({ action: "quit", runId }, {} as never);
+
+        assert.equal(result.action, "quit");
+        const quit = result as { status: string; message: string };
+        assert.equal(quit.status, "noop");
+        assert.match(quit.message, /no controllable stages.*remains active/i);
+        assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+    });
+
+    test.serial("makeExecuteWorkflowTool quit supports unique run id prefixes", async () => {
+        const runId = `quit-tool-prefix-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage");
         const handler = makeToolHandler();
 
         const result = await handler(
-            { action: "kill", runId: runId.slice(0, 12) },
+            { action: "quit", runId: runId.slice(0, 12) },
             {} as never,
         );
 
-        assert.equal(result.action, "kill");
+        assert.equal(result.action, "quit");
         const r = result as { action: string; status: string; runId: string };
-        assert.equal(r.status, "killed");
+        assert.equal(r.status, "paused");
         assert.equal(r.runId, runId);
-        assert.equal(
-            store.runs().find((run) => run.id === runId)?.status,
-            "killed",
-        );
+        assert.equal(store.runs().find((run) => run.id === runId)?.resumable, true);
     });
 
-    test.serial("makeExecuteWorkflowTool kill supports all:true", async () => {
-        const r1 = `kill-tool-all-1-${Date.now()}`;
-        const r2 = `kill-tool-all-2-${Date.now()}`;
-        const ended = `kill-tool-all-ended-${Date.now()}`;
+    test.serial("makeExecuteWorkflowTool quit supports all:true without ending runs", async () => {
+        const r1 = `quit-tool-all-1-${Date.now()}`;
+        const r2 = `quit-tool-all-2-${Date.now()}`;
+        const ended = `quit-tool-all-ended-${Date.now()}`;
         store.recordRunStart(makeInflightRun(r1));
         store.recordRunStart(makeInflightRun(r2));
+        registerTestStageHandle(r1, "quit-stage");
+        registerTestStageHandle(r2, "quit-stage");
         store.recordRunStart(makeInflightRun(ended));
         store.recordRunEnd(ended, "completed");
         const handler = makeToolHandler();
 
         const result = await handler(
-            { action: "kill", all: true },
+            { action: "quit", all: true },
             {} as never,
         );
 
-        assert.equal(result.action, "kill");
+        assert.equal(result.action, "quit");
         const r = result as { action: string; status: string };
-        assert.equal(r.status, "killed");
-        assert.equal(
-            store.runs().find((run) => run.id === r1)?.status,
-            "killed",
-        );
-        assert.equal(
-            store.runs().find((run) => run.id === r2)?.status,
-            "killed",
-        );
-        assert.equal(
-            store.runs().find((run) => run.id === ended)?.status,
-            "completed",
-        );
+        assert.equal(r.status, "paused");
+        for (const runId of [r1, r2]) {
+            const run = store.runs().find((candidate) => candidate.id === runId);
+            assert.equal(run?.status, "paused");
+            assert.equal(run?.endedAt, undefined);
+            assert.equal(run?.exitReason, "quit");
+            assert.equal(run?.resumable, true);
+        }
+        assert.equal(store.runs().find((run) => run.id === ended)?.status, "completed");
+    });
+
+    test.serial("makeExecuteWorkflowTool quit all reports mixed no-controller failure instead of clean success", async () => {
+        const controllable = `quit-tool-mixed-ok-${Date.now()}`;
+        const noController = `quit-tool-mixed-no-controller-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(controllable));
+        store.recordRunStart(makeInflightRun(noController));
+        registerTestStageHandle(controllable, "quit-stage");
+        const controller = new AbortController();
+        cancellationRegistry.register(controllable, controller);
+
+        const result = await makeToolHandler()({ action: "quit", all: true }, {} as never);
+
+        assert.equal(result.action, "quit");
+        const quit = result as { status: string; message: string };
+        assert.equal(quit.status, "noop");
+        assert.match(quit.message, /Quit 1 run\(s\)/);
+        assert.match(quit.message, new RegExp(noController));
+        assert.match(quit.message, /no_active_stages|no controllable stages/i);
+        assert.equal(store.runs().find((run) => run.id === controllable)?.status, "paused");
+        assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
+        assert.equal(controller.signal.aborted, false);
+    });
+
+    test.serial("makeExecuteWorkflowTool quit all reports rejected pause details", async () => {
+        const runId = `quit-tool-rejected-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        registerTestStageHandle(runId, "quit-stage", "running", {
+            pause: async () => { throw new Error("tool pause rejected"); },
+        });
+
+        const result = await makeToolHandler()({ action: "quit", all: true }, {} as never);
+
+        assert.equal(result.action, "quit");
+        const quit = result as { status: string; message: string };
+        assert.equal(quit.status, "noop");
+        assert.match(quit.message, new RegExp(runId));
+        assert.match(quit.message, /pause_failed.*tool pause rejected/);
+        assert.equal(store.runs().find((run) => run.id === runId)?.status, "running");
+    });
+
+    test.serial("makeExecuteWorkflowTool rejected resume returns noop and keeps the run paused", async () => {
+        const runId = `resume-tool-rejected-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
+        store.recordRunPaused(runId);
+        registerTestStageHandle(runId, "resume-stage", "paused", {
+            resume: async () => { throw new Error("tool resume rejected"); },
+        });
+
+        const result = await makeToolHandler()({ action: "resume", runId }, {} as never);
+
+        assert.equal(result.action, "resume");
+        const resume = result as { status: string; message: string };
+        assert.equal(resume.status, "noop");
+        assert.match(resume.message, /tool resume rejected/);
+        assert.equal(store.runs().find((run) => run.id === runId)?.status, "paused");
     });
 
     test.serial("makeExecuteWorkflowTool pause all reports noop when no runs are in flight", async () => {

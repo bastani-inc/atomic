@@ -263,7 +263,6 @@ describe("workflow lazy-startup continuation fixes", () => {
     const handler = makeExecuteWorkflowTool(
       runtime,
       () => undefined,
-      () => undefined,
       async () => {
         ensureCalls += 1;
         throw new Error("discovery failed");
@@ -287,7 +286,6 @@ describe("workflow lazy-startup continuation fixes", () => {
     const runtime = createExtensionRuntime({ registry: createRegistry([]), store });
     const handler = makeExecuteWorkflowTool(
       runtime,
-      () => undefined,
       () => undefined,
       async () => {
         ensureCalls += 1;
@@ -364,7 +362,6 @@ describe("workflow lazy-startup continuation fixes", () => {
     let ensureCalls = 0;
     const handler = makeExecuteWorkflowTool(
       () => runtime,
-      () => undefined,
       () => undefined,
       async () => {
         ensureCalls += 1;

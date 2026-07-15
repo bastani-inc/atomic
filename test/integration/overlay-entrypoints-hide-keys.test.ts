@@ -130,8 +130,8 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     assert.equal(run!.endedAt, undefined);
   });
 
-  test("`q` on a real custom mount quits and retains the active run as resumable", () => {
-    const runId = `q-quit-${Date.now()}`;
+  test("`q` on a real custom mount returns to main chat without mutating the run", () => {
+    const runId = `q-return-${Date.now()}`;
     const store = createStore();
     store.recordRunStart({
       id: runId,
@@ -143,9 +143,9 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
     });
 
     let capturedComponent: PiCustomComponent | undefined;
+    const overlay = buildOverlayHandle();
     const customFn: PiCustomOverlayFunction = (factoryArg, options) => {
-      const { handle } = buildOverlayHandle();
-      options.onHandle?.(handle);
+      options.onHandle?.(overlay.handle);
       const tui: PiCustomOverlayFactoryTui = {
         requestRender: () => undefined,
       };
@@ -157,15 +157,14 @@ describe("buildGraphOverlayAdapter — Ctrl+D / h non-destructive hide", () => {
 
     const adapter = buildGraphOverlayAdapter({ ui: { custom: customFn } }, store);
     adapter.open(runId);
+    const before = structuredClone(store.runs().find((r) => r.id === runId));
 
     capturedComponent!.handleInput!("q");
 
-    const run = store.runs().find((r) => r.id === runId);
-    assert.ok(run, "`q` must retain the run in live history/status for inspection");
-    assert.equal(run.status, "paused");
-    assert.equal(run.exitReason, "quit");
-    assert.equal(run.resumable, true);
-    assert.equal(run.endedAt, undefined);
+    assert.deepEqual(overlay.state.setHiddenCalls, [true]);
+    assert.equal(overlay.state.unfocusCalls, 1);
+    assert.equal(overlay.state.focused, false);
+    assert.deepEqual(store.runs().find((r) => r.id === runId), before);
   });
 });
 

@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Unified workflow **post-mortem stage chat** across every inspection surface. Any eligible terminal agent stage with a valid retained session now reopens as an interactive follow-up conversation — not only completed-workflow inspection (#1758), but also generic `/workflow attach` / `/workflow connect`, restored/replayed durable snapshots after a process restart, and `workflow({ action: "send" })`. A shared runtime resolver (`ensurePostMortemStageHandle`) validates the retained session is an existing, readable, context-bearing Atomic transcript, then lazily reopens it through a detached, single-flight stage-control handle keyed by the real `{ runId, stageId }` (including nested/expanded child stages). Follow-up turns are appended in place to the retained session and the agent keeps its ordinary tools, while run/stage status, results, timings, checkpoints, replay metadata, and graph topology remain immutable — post-mortem chat can never resume, retry, rewind, pause, or re-dispatch workflow execution. Explicit `workflow send` delivery modes `resume` and `steer` on a completed post-mortem stage return a structured `noop` with follow-up guidance and do not append the supplied text. Stages without a valid retained agent session (prompt/HIL and boundary/summary nodes, skipped nodes, non-terminal handle-less stages, and missing/malformed/deleted session files) keep the existing read-only transcript, and recoverably failed stages retain their execution-resume semantics. `workflow send` now revives such a stage on a registry miss and delivers the message as a conversational follow-up instead of reporting `No live handle for stage.` ([#1811](https://github.com/bastani-inc/atomic/issues/1811))
 
+- Added resumable `/workflow quit [run-id|--all]` and `workflow({ action: "quit" })` controls, preserving exact run-id, unique-prefix, active-run default, bulk, terminal, and ambiguity handling.
+
+### Changed
+
+- Changed graph-overlay `q` and Ctrl+D to return to main chat without mutating workflow lifecycle state, including when a legacy prompt card or stage switcher is open; graph guidance now labels `q` as `return to main chat`.
+- Reworded workflow-start guidance around actionable `/workflow connect <run-id>` commands so users know they can see agents working and chat with or steer each stage.
+
 ### Fixed
 
 - Fixed session-boundary races in lazy post-mortem stage-chat attachment so every host session replacement or shutdown (`new`, `resume`, `fork`, `reload`, and `quit`) synchronously invalidates detached handles; a retained-session creation that finishes after the boundary is disposed and its already-submitted prompt is rejected instead of executing in the replacement session or leaking an unowned SDK session.
@@ -18,6 +25,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed workflow stage-chat compaction to show one reason-aware animated spinner for manual, automatic-threshold, and overflow compaction, retain the normal expandable `✻ Context compacted` boundary when the live session snapshot is temporarily unavailable, and contain `/compact` cancellation or planner/provider rejection after its authoritative `compaction_end` event so the CLI and stage remain usable.
 - Fixed workflow stage finalization to atomically close the AgentSession notification-admission boundary before publishing terminal snapshots. Already-admitted Intercom and async completion turns are drained and reflected in the terminal result, while late detached traffic cannot mutate/reopen the stage and is routed externally. The boundary does not wait for producers that are still running and preserves deliberate post-completion `sendUserMessage` and post-mortem chat.
 - Fixed live in-process workflow resume so quitting a chain stage mid-turn and resuming without a message re-drives the interrupted stage with the continuation prompt before result harvesting, preventing partial assistant text from being durably checkpointed or handed to downstream `{previous}` stages while preserving explicit-message and cross-process durable resume behavior. ([#1829](https://github.com/bastani-inc/atomic/issues/1829))
+- Made graceful quit wait for live stage pause acknowledgement before persisting resumable state, report runs with no controllable stage as still active, propagate rejected pauses instead of claiming success, and reconcile session-restored running snapshots with authoritative paused durability so `/workflow resume` legally redispatches them.
+- Made bulk quit settle every run and report per-run failures, made pause/resume state follow asynchronous control acknowledgements, synchronized successful resume back to durable state, and shared paused/orphaned-running durable shadow recovery across slash and workflow-tool resume.
+
+### Removed
+
+- Removed public workflow `kill` slash/tool actions, completions, picker shortcuts, confirmations, renderers, and help/docs while retaining internal cancellation machinery used by engine and session lifecycle paths.
 
 ## [0.9.9] - 2026-07-15
 

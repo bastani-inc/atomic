@@ -163,7 +163,7 @@ describe("workflow-first execution routing", () => {
       "Named workflow launches are already detached",
       "direct `task`, `tasks`, and `chain` launches must set top-level `async: true`",
       "This applies only to launches, not inspection or control calls",
-      "`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `kill`",
+      "`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`",
       "only when the user explicitly requests it or it is technically required",
       "tell the user before launching it",
     ]) {

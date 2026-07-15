@@ -15,7 +15,7 @@ Loop or stop-condition phrasing is an especially strong workflow signal: `do X u
 - **Parallel branches** - Run independent research, review, or implementation branches concurrently
 - **Context handoffs** - Pass summaries, artifacts, files, and schema-backed structured results between stages
 - **Human input** - Pause for `ctx.ui.input`, `confirm`, `select`, `editor`, or custom TUI widget decisions during a run
-- **Resumable control** - Interrupt, pause, resume, attach to, or kill workflow runs
+- **Resumable control** - Interrupt, pause, quit, resume, or connect to workflow runs
 - **Artifacts** - Save large outputs to files instead of pushing everything through model context
 - **Verification and gates** - Preserve evidence, run checks, and stop for human approval where reliability matters
 - **Model fallback chains** - Retry important stages on fallback models when providers fail
@@ -409,7 +409,7 @@ Named runs go to the background. Common controls:
 /workflow attach <run-id> <stage>      # chat with a single stage
 /workflow interrupt <run-id>           # pause resumably
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
-/workflow kill <run-id>                # abort and retain for inspection
+/workflow quit <run-id>                # pause gracefully and keep the run resumable
 ```
 
 When a paused stage is resumed, whether or not the resume includes a message, Atomic first lets the stage answer any non-empty resume message and then (if the stage has not already finalized) injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` into the same stage session before normal stage completion/readiness handling. This re-drives an interrupted no-message resume before result harvesting, keeps interrupted work moving without asking you to type a continuation prompt, and prevents stages that already finished their scoped work from overstepping.
@@ -444,7 +444,7 @@ If inline work drifts past roughly ten exploratory tool calls without an artifac
 
 | User goal | Use |
 |-----------|-----|
-| Run, inspect, attach to, pause, interrupt, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
+| Run, inspect, connect to, pause, interrupt, quit, resume, or check status for an existing workflow | `/workflow ...` or `workflow({ action: ... })` |
 | Run an autonomous job that materially benefits from a durable goal ledger, bounded worker turns, named validation, and reviewer-gated completion | `/workflow goal objective="..."` so Atomic captures receipts, gates completion through reviewers, stops as `complete`, `blocked`, or `needs_human`, and can optionally run a final PR handoff with `create_pr=true` after approval |
 | Run an autonomous job that materially benefits from a durable research-first pipeline, delegated implementation, and iterative review | `/workflow ralph prompt="..."` so Atomic can transform the prompt into a research question, research the codebase first, delegate implementation through sub-agents, review, and iterate; prompt text alone does not opt in to PR creation, so add `create_pr=true` only when you want the final `pull-request` stage and `pr_report` |
 | Create or edit reusable automation | a TypeScript workflow definition exported from `workflow({...})` |
@@ -685,7 +685,7 @@ Some requests are not one task but a queue of them: "address all open issues", "
 
 **Independent items → many small runs, not one big one.** Spawn one workflow run per item (typically `goal` with the item's text as the objective and acceptance criteria, `create_pr=true` for per-item PRs), each in its own `git_worktree_dir`, running in the background. One run per item buys what a monolith cannot:
 
-- **Isolation:** a hard item that stalls or fails does not poison the remaining ones; each run resumes, retries, or gets killed independently.
+- **Isolation:** a hard item that stalls or fails does not poison the remaining ones; each run resumes, retries, or can be stopped independently.
 - **Clean contexts:** every item starts with full attention on its own objective instead of inheriting twenty finished tickets of transcript.
 - **Independent evidence:** per-item reviewer gates, receipts, and PRs that a human can merge or reject one at a time.
 - **Real parallelism:** runs proceed concurrently, bounded by however many you choose to have in flight at once (worktrees prevent filesystem collisions).
@@ -943,10 +943,10 @@ The workflow tool action surface is:
 - discovery: `list`, `get`, `inputs`
 - execution: named `run`, plus direct one-off `task`, `tasks`, and `chain` modes
 - inspection: `status`, `stages`, `stage`, `transcript`
-- messaging and run control: `send`, `pause`, `interrupt`, `kill`, `resume`
+- messaging and run control: `send`, `pause`, `interrupt`, `quit`, `resume`
 - rediscovery: `reload`
 
-From interactive chat, model-launched workflows run in the background so the parent chat stays available. Named workflow launches already detach automatically; direct `task`, `tasks`, and `chain` launches must pass top-level `async: true`. This rule applies only to launches, not inspection or control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `kill`). A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
+From interactive chat, model-launched workflows run in the background so the parent chat stays available. Named workflow launches already detach automatically; direct `task`, `tasks`, and `chain` launches must pass top-level `async: true`. This rule applies only to launches, not inspection or control calls (`status`, `stages`, `stage`, `transcript`, `send`, `pause`, `resume`, `interrupt`, `quit`). A model may launch in the foreground only when the user explicitly requests it or foreground execution is technically required, and it must tell the user before launching.
 
 Run a named workflow with inputs:
 
@@ -987,12 +987,12 @@ In non-interactive (`-p`, `--print`, or `--mode json`) sessions, named workflow 
 /workflow status [run-id]
 /workflow status --all
 /workflow interrupt <run-id|--all>
-/workflow kill <run-id|--all>
+/workflow quit <run-id|--all>
 /workflow resume <run-id> [stage-id-or-name] [message]
 /workflow reload
 ```
 
-Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events; these gestures remain scoped to the graph instead of leaking into the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Live `subagent` tool calls in stage chats use the same single, parallel, and chain progress widgets as main chat, including after exiting and re-attaching to an in-flight stage; press Ctrl+O (the `app.tools.expand` binding) to expand live detail for every child, including current tool activity and artifact paths. If an async/background subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors the async summary so the background run remains visible; hide the graph with `h`/Ctrl+D or reconnect later to return to the full below-editor async widget. Press `ctrl+t` inside an attached stage chat to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore transcript or prompt scrolling. Archived read-only stage transcripts expose the same footer and copy-mode status, so their text can also be selected and copied; `esc` closes the transcript and `ctrl+d` returns to the graph. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `kill` only when the run should be terminated; killed runs are retained in live history/status for read-only inspection. Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process. `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
+Use `connect` for the workflow graph. Use `attach` when you want a chat pane for a specific stage. While the workflow graph is active, vertical wheel/trackpad gestures pan it up and down, and horizontal gestures pan wide graphs left and right when the terminal exposes horizontal wheel events; these gestures remain scoped to the graph instead of leaking into the main chat or terminal scrollback. Attached stage chats capture mouse/trackpad wheel events by default so scrolling stays inside the active stage transcript or prompt instead of falling through to terminal/main-chat scrollback. Live `subagent` tool calls in stage chats use the same single, parallel, and chain progress widgets as main chat, including after exiting and re-attaching to an in-flight stage; press Ctrl+O (the `app.tools.expand` binding) to expand live detail for every child, including current tool activity and artifact paths. If an async/background subagent is running while the fullscreen workflow graph is open, the graph statusline mirrors the async summary so the background run remains visible; return to main chat with `q`/Ctrl+D, hide the graph with `h`, or reconnect later to return to the full below-editor async widget. Press `ctrl+t` inside an attached stage chat to toggle **copy mode**: copy mode disables workflow-chat mouse reporting so normal terminal/tmux text selection can work; press `ctrl+t` again to leave copy mode and restore transcript or prompt scrolling. Archived read-only stage transcripts expose the same footer and copy-mode status, so their text can also be selected and copied; `esc` closes the transcript and `ctrl+d` returns to the graph. While copy mode is on, wheel/trackpad gestures are handled by the terminal/tmux and may scroll terminal scrollback, so leave copy mode before using the wheel again. Use `interrupt`, `pause`, and `resume` for resumable live work; `resume` on a non-paused run reopens the saved snapshot or overlay. Use `quit` to pause a live run gracefully while preserving it for `/workflow resume`. Use `/workflow reload` after adding, editing, installing, or removing workflow resources or package manifest workflow entries and you want Atomic to rediscover them in-process. `/workflow status` lists all retained active and terminal top-level runs by default; implementation-owned nested child runs are flattened into their parent workflow rather than listed separately. `/workflow status --all` is retained as a compatibility alias.
 
 <p align="center"><img src="images/workflow-graph.png" alt="Workflow Graph Viewer" width="600" /></p>
 
@@ -1027,8 +1027,8 @@ workflow({ action: "interrupt", all: true })
 workflow({ action: "resume", runId: "<id-or-prefix>" })
 workflow({ action: "resume", runId: "<id-or-prefix>", stageId: "review", message: "continue" })
 
-workflow({ action: "kill", runId: "<id-or-prefix>" })
-workflow({ action: "kill", all: true })
+workflow({ action: "quit", runId: "<id-or-prefix>" })
+workflow({ action: "quit", all: true })
 
 workflow({ action: "reload", reason: "added team workflow" })
 ```
@@ -1042,11 +1042,11 @@ Control behavior:
 - `transcript` is reference-first with a small preview by default: it returns metadata, transcript paths, and up to 5 recent entries. For targeted lookup, quote the exact `sessionFile`/`transcriptPath` value without changing platform separators (preserve Windows backslashes), search it with `rg` or `grep`, then read only small surrounding ranges. Text results include JSON-escaped `sessionFileJson`/`transcriptPathJson` lines for copy-safe path literals. Pass explicit `tail` or `limit` to override the 5-entry preview; `tail` overrides `limit`; `includeToolOutput` includes captured snapshot tool output in snapshot transcript results.
 - `send` delivery modes are `auto`, `answer`, `prompt`, `steer`, `followUp`, and `resume`. Prompt answers can include `promptId` and can carry answer content in `response`, `text`, or `message`; structured UI prompts usually prefer `response`. Follow-up messaging to completed or failed stages reuses the retained `sessionFile` when available so the conversation resumes from the archived stage transcript instead of starting empty; if no session metadata was retained, Atomic refuses the follow-up rather than silently resetting. Explicit `delivery: "resume"` or `delivery: "steer"` against a completed post-mortem stage returns a structured `noop` with guidance to use `followUp` or `prompt`; it never appends the supplied text or mutates workflow execution. Arbitrary `ctx.ui.custom<T>` widget prompts require the interactive workflow graph and return a clear unsupported message when targeted through `send`.
 - `delivery: "auto"` first answers a pending prompt, then resumes paused work, then steers a streaming stage, then queues a follow-up.
-- `pause`, `interrupt`, and `kill` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped controls can target a visible nested child stage from the expanded graph; Atomic routes the operation to the owning nested run internally.
+- `pause`, `interrupt`, and `quit` can target one top-level run or `all: true`; `stageId` cannot be combined with `all: true`. Stage-scoped `pause` and `interrupt` controls can target a visible nested child stage from the expanded graph; `quit` remains run-level. Atomic routes stage controls to the owning nested run internally.
 - `interrupt` is resumable: it pauses live work when pausable stages exist and keeps the run in live history/status.
 - `pause` is useful for pausing a live run or a single live stage without treating it as a destructive abort.
 - `resume` can target a stage with `stageId`; the target may be a stage id, unique prefix, or stage name. `message` is forwarded to paused work. For a live interrupted stage, Atomic automatically injects `Continue where you left off. If you believe you are finished with your original task (or a redefined task if the user told you), stop.` after any non-empty resume-message answer—or immediately after a no-message resume—before normal readiness-gate completion when the stage has not already finalized, including when the resume-answer turn used `ask_user_question`.
-- `kill` aborts in-flight work, marks the run `killed`, and retains it in live history/status for inspection.
+- `quit` gracefully pauses in-flight work, marks the run resumable, and leaves it available to `/workflow resume`.
 - `reload` refreshes discovered workflow resources in-process; the optional `reason` is echoed in the result.
 
 Use slash commands for graph connect and stage attach because those are interactive TUI surfaces. When a run needs user input or attention, surface that to the user instead of polling silently.
@@ -1069,9 +1069,9 @@ Atomic workflows support **cross-session resumability** via a durable workflow b
 
 **Privacy and retention.** File and DBOS durability persist workflow inputs, completed `ctx.tool` outputs, answered `ctx.ui` responses, stage outputs, and stage-session paths as plaintext durable state so replay can skip completed work. Treat `~/.atomic/workflow-durable` and the configured DBOS database as sensitive. To opt out of cross-session checkpoint persistence for a session, start Atomic with `ATOMIC_WORKFLOW_DURABLE=0` (also accepts `false`, `off`, `memory`, or `in-memory`); workflows then use process-local in-memory durability and cannot be resumed after the process exits.
 
-The default file backend retains running or paused workflows with a durable checkpoint or pending prompt, failed or blocked workflows unless explicitly marked `resumable: false`, and successful completed workflows with checkpoint progress. Completed state remains available so `/workflow resume` can reconstruct an immutable final graph, remap durable source parent references to the newly reconstructed stage ids, and reopen retained stage transcripts without dispatching the workflow. Current checkpoints carrying topology preserve named and direct `task` / `tasks` / `chain` graphs, including parallel branch and merge edges. Older compatible checkpoints that predate topology metadata remain inspectable, but Atomic labels their graph nodes `topology unavailable` and draws no inferred edges rather than presenting every node as a known root or guessing dependencies from timestamps. Cancelled and explicitly non-resumable failed/blocked files are removed. Retained files contain the plaintext durable data described above; use `/workflow kill <id>` before completion when you want to cancel and remove a durable run, or delete the corresponding `workflow-<encoded-id>.json` file under `~/.atomic/workflow-durable` when you intentionally want to discard retained completed or abandoned state outside Atomic.
+The default file backend retains running or paused workflows with a durable checkpoint or pending prompt, failed or blocked workflows unless explicitly marked `resumable: false`, and successful completed workflows with checkpoint progress. Completed state remains available so `/workflow resume` can reconstruct an immutable final graph, remap durable source parent references to the newly reconstructed stage ids, and reopen retained stage transcripts without dispatching the workflow. Current checkpoints carrying topology preserve named and direct `task` / `tasks` / `chain` graphs, including parallel branch and merge edges. Older compatible checkpoints that predate topology metadata remain inspectable, but Atomic labels their graph nodes `topology unavailable` and draws no inferred edges rather than presenting every node as a known root or guessing dependencies from timestamps. Cancelled and explicitly non-resumable failed/blocked files are removed. Retained files contain the plaintext durable data described above; delete the corresponding `workflow-<encoded-id>.json` file under `~/.atomic/workflow-durable` when you intentionally want to discard retained completed or abandoned state outside Atomic.
 
-**Resume after editing a workflow.** Replay identity is based on workflow id plus each `ctx.*` call's stable content hash and ordinal. Editing a workflow between quit/crash and resume can intentionally invalidate or shift checkpoints: changed prompts/arguments/stage names re-run, and inserted/reordered `ctx.*` calls may not match old ordinal checkpoints. Prefer finishing or killing old durable runs before deploying reordered workflow definitions; otherwise treat resume as best-effort from compatible checkpoint identities.
+**Resume after editing a workflow.** Replay identity is based on workflow id plus each `ctx.*` call's stable content hash and ordinal. Editing a workflow between quit/crash and resume can intentionally invalidate or shift checkpoints: changed prompts/arguments/stage names re-run, and inserted/reordered `ctx.*` calls may not match old ordinal checkpoints. Prefer finishing old durable runs or deliberately deleting their retained durable records before deploying reordered workflow definitions; otherwise treat resume as best-effort from compatible checkpoint identities.
 
 ### `ctx.tool` — durable cached tool execution
 
@@ -1123,7 +1123,7 @@ Explicit full IDs take precedence, while prefixes resolve across top-level live,
 
 | Scenario | Behavior |
 | --- | --- |
-| **Workflow killed/cancelled** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
+| **Internally cancelled workflow** | Marked `cancelled` in durable state and excluded from `/workflow resume` discovery. Start a new workflow run if you intentionally want to retry cancelled work. |
 | **Stage failure (recoverable)** | Workflow marked `failed` or `blocked` and remains resumable by default. `/workflow resume <id>` continues from the last completed checkpoint unless durable metadata explicitly sets `resumable: false`. |
 | **Stage failure (non-recoverable)** | Workflow marked `failed` or `blocked` with `resumable: false`, so it is excluded from resume discovery. |
 | **Process crash** | Workflow remains `running` in durable state. On next session start, it appears in resume discovery when it has a durable checkpoint or pending prompt. Resume re-executes from the last completed checkpoint. |
@@ -1342,7 +1342,7 @@ if (!decision.approved) {
 }
 ```
 
-When the stage session is idle, `sendUserMessage()` starts the next user turn immediately and waits for that turn to finish under the normal workflow stage guard: it observes the stage concurrency limiter, workflow abort/kill signals, MCP scoping, readiness gates, and session metadata capture. If `sendUserMessage()` is the first live call on a `ctx.stage(...)` handle, Atomic records the stage as a normal running/completed graph node. If it is called after a prior `prompt()`/`complete()` has already completed the stage, the follow-on turn still uses abort/kill and concurrency protection while reusing the completed stage session.
+When the stage session is idle, `sendUserMessage()` starts the next user turn immediately and waits for that turn to finish under the normal workflow stage guard: it observes the stage concurrency limiter, workflow abort/cancellation signals, MCP scoping, readiness gates, and session metadata capture. If `sendUserMessage()` is the first live call on a `ctx.stage(...)` handle, Atomic records the stage as a normal running/completed graph node. If it is called after a prior `prompt()`/`complete()` has already completed the stage, the follow-on turn still uses internal abort/cancellation and concurrency protection while reusing the completed stage session.
 
 The `content` argument mirrors the Atomic SDK and accepts either a string or text/image content blocks such as `[{ type: "text", text: "Describe this" }, { type: "image", data: "...", mimeType: "image/png" }]` when the underlying stage session supports native user-message delivery. Non-native fallback adapters only support string content and reject text/image block arrays instead of stringifying them. Idle non-native fallback delivery sends the follow-on string to the already-selected session directly, so workflow model fallback retries are not re-run for that injected turn. When the stage is already streaming, the message is queued as a follow-up by default; pass `{ deliverAs: "steer" }` to steer the active turn instead, or `{ deliverAs: "followUp" }` to be explicit. `deliverAs` only affects streaming delivery and is a no-op for idle sessions. Follow-on turns preserve the stage's `mcp.allow` / `mcp.deny` scope for the injected user turn, just like the original `prompt()`. The older `stage.steer(text)` and `stage.followUp(text)` methods are still available for queueing while a turn is active, but they do not start a new idle turn.
 
@@ -1376,7 +1376,7 @@ export default workflow({
 });
 ```
 
-`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and external run-control keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. Missing required outputs are allowed only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; external `kill`, `pause`, and `interrupt` keep their existing behavior.
+`ctx.exit()` accepts `status: "completed" | "skipped" | "cancelled" | "blocked"`; it never accepts `"failed"` or `"killed"` because thrown errors and internal destructive cancellation keep those meanings. `status` defaults to `"completed"`. `reason` is persisted and shown in status surfaces, including the default `/workflow status` list and `/workflow status <runId>` detail, so do not put secrets in it. `outputs` may contain a partial subset of declared outputs; provided keys still must be declared in the workflow's `outputs` object, match their TypeBox schema, and be JSON-serializable. Missing required outputs are allowed only on the `ctx.exit(...)` path. Exited runs are terminal and not resumable; public `pause`, `interrupt`, and `quit`, plus internal destructive cancellation, keep their distinct existing behavior.
 
 The first selected `ctx.exit({ outputs })` snapshots its output payload synchronously by value before JavaScript `finally` blocks or cleanup callbacks can mutate the caller-owned object. The snapshot preserves undeclared keys and invalid values until post-cleanup validation, so deleting an undeclared key or changing an invalid value after `ctx.exit(...)` does not change the terminal validation result. If reading `status`, `reason`, or `outputs` options, or enumerating/copying the output snapshot itself, throws, Atomic still selects the exit signal, runs workflow-exit cleanup when feasible, and then records a terminal non-resumable authoring failure (`resumable: false`) if no external terminal control won first.
 
@@ -1384,7 +1384,7 @@ After the first `ctx.exit(...)` wins, the executor treats that exit as a level-t
 
 Continuation replay also observes the exit gate. Replayed `ctx.stage(...).prompt(...)`, replayed `complete(...)`, graph-backed prompt-node replay, and completed child-boundary replay re-check for a selected exit after their replay microtask and before writing a current-run completed stage end. If `ctx.exit(...)` wins that gap, the pending replay finalizer is skipped/suppressed with the workflow-exit reason instead of creating a misleading completed stage in the resumed run.
 
-The store is the terminal authority for all run-end races. `ctx.exit(...)` starts cleanup before validating exit outputs, and an external `/workflow kill` can still win the terminal `recordRunEnd` write while that cleanup is pending. When that happens, the SDK `RunResult`, `onRunEnd` callback, live store, and persisted `workflow.run.end` entries all report the canonical `killed` state; the losing `ctx.exit` status or validation failure is not returned and does not append a second run-end entry.
+The store is the terminal authority for all run-end races. `ctx.exit(...)` starts cleanup before validating exit outputs, and an internal destructive cancellation can still win the terminal `recordRunEnd` write while that cleanup is pending. When that happens, the SDK `RunResult`, `onRunEnd` callback, live store, and persisted `workflow.run.end` entries all report the canonical `killed` state; the losing `ctx.exit` status or validation failure is not returned and does not append a second run-end entry.
 
 Control-signal probing is fail-closed. When the executor inspects an arbitrary thrown value or abort reason for internal workflow-exit markers, parent-exit markers, aggregate `errors`, `cause`, `reason`, or `scope`, throwing or inaccessible accessors are treated as “no signal for that branch.” The run then continues through ordinary failure finalization, or the ordinary killed path for external abort reasons, instead of letting author-defined getters escape the executor catch path or be misclassified as `ctx.exit(...)`.
 
@@ -1716,13 +1716,13 @@ export default workflow({
 
 Passing a workflow definition directly to `ctx.workflow(...)` uses the child workflow's normalized name for replay metadata and default boundary labels (`shared-research` for the user-defined example above, or builtin names such as `deep-research-codebase`, `goal`, and `ralph`).
 
-`ctx.workflow(workflowDefinition)` starts a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default. User-facing status and graph views flatten that child into the parent run, so composition behaves like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported workflows appear in one expanded graph. The nested run id remains available internally for routing attach/pause/interrupt/resume/kill to the correct live stage, but it is not shown as a separate top-level `/workflow status` entry. The returned child result has:
+`ctx.workflow(workflowDefinition)` starts a nested workflow behind a parent boundary stage named `workflow:<workflow-name>` by default. User-facing status and graph views flatten that child into the parent run, so composition behaves like inlining the child workflow code: child stages, HIL prompt nodes, and deeper imported workflows appear in one expanded graph. The nested run id remains available internally for routing attach/pause/interrupt/resume to the correct live stage, but it is not shown as a separate top-level `/workflow status` entry. The returned child result has:
 
 | Field | Meaning |
 |---|---|
 | `workflow` | Normalized child workflow name. |
 | `runId` | Nested child run id. |
-| `status` | `completed`, or `skipped` / `cancelled` / `blocked` when the child intentionally ended with `ctx.exit(...)`. Failed or externally killed children make the parent child call fail. |
+| `status` | `completed`, or `skipped` / `cancelled` / `blocked` when the child intentionally ended with `ctx.exit(...)`. Failed or internally cancelled children make the parent child call fail. |
 | `exited` | `false` for normal child completion; `true` when the child used `ctx.exit(...)` (including `ctx.exit({ status: "completed" })`). |
 | `outputs` | Full declared child outputs when `exited === false`; partial declared child outputs when `exited === true`. |
 | `exitReason` | Optional child `ctx.exit({ reason })` text, present only on the `exited === true` branch. |
@@ -1857,7 +1857,7 @@ For each `.atomic/workflows/*.ts` (or workflow-package) file:
 6. Move `.worktreeFromInputs(binding)` to a `worktreeFromInputs: binding,` property (same binding shape, unchanged).
 7. Move the `.run(fn)` callback to a `run: fn,` property; the body stays byte-for-byte the same.
 8. Delete the trailing `.compile()`, close the object with `})`, and keep `export default`.
-9. Run `/workflow reload` (or restart Atomic) and `/workflow list` to confirm the file loads. Because `ctx` and its primitives are unchanged, stage behavior, graph layout, resume/kill, and human-input prompts are unaffected.
+9. Run `/workflow reload` (or restart Atomic) and `/workflow list` to confirm the file loads. Because `ctx` and its primitives are unchanged, stage behavior, graph layout, resume/quit, and human-input prompts are unaffected.
 
 ### Gotchas
 
@@ -1869,7 +1869,7 @@ For each `.atomic/workflows/*.ts` (or workflow-package) file:
 - **The imperative `runWorkflow` runner is gone.** It is now a `never` placeholder that throws on access; use the exported `run(def, inputs)` helper or a registry for programmatic execution.
 - **Keep `outputs` inline for the strictest type checking.** The old builder enforced no-extra-output keys through a `NoExtraOutputs` generic on `.run(fn)`; the object form re-creates that check for inline `outputs` maps, but cannot recover output keys when a schema map is widened or built up before being passed to `workflow({ ... })`. Keep the `outputs` literal inline so the declared-key check stays exact.
 
-Everything else — stage primitives, `ctx.inputs` typing, runtime validation, DAG inference, MCP scoping, resume/kill, worktree binding, model fallback, and the `/workflow` tool contract — is unchanged.
+Everything else — stage primitives, `ctx.inputs` typing, runtime validation, DAG inference, MCP scoping, resume/quit, worktree binding, model fallback, and the `/workflow` tool contract — is unchanged.
 
 ## Workflow Primitives
 
@@ -2013,7 +2013,7 @@ The budget applies only to the candidate that carries the token; other primary a
 `@bastani/workflows` is an Atomic package extension. It registers:
 
 - `/workflow <name> key=value ...` for interactive named runs
-- `/workflow connect|attach|pause|interrupt|resume|status|inputs|reload` for live control, inspection, and rediscovery
+- `/workflow connect|attach|pause|interrupt|quit|resume|status|inputs|reload` for live control, inspection, and rediscovery
 - the `workflow` tool for agent-initiated orchestration and direct one-off runs
 Workflow definition files must export definitions produced by `workflow({...})`. Keep non-workflow runtime helpers (widget factories, shared utilities) in a subdirectory the discovery scan ignores, such as `.atomic/workflows/lib/` — see [Workflow Locations](#workflow-locations). The former imperative object-form runner is not part of the public SDK, and authored workflow files cannot import `runWorkflow` from `@bastani/workflows`.
 
@@ -2282,7 +2282,7 @@ Good workflows are information-flow systems, not just prompt sequences. Keep sta
 - Do not rely on undeclared child outputs; returning a key that is not declared in `outputs` fails the run. Declare every child-workflow field you expose in `outputs` — including `result` — and return values matching those schemas from `run`.
 - Do not expect to select or rename child outputs at the call site; parent workflows receive the child's declared output contract as `child.outputs` after checking `child.exited === false`, and a partial declared-output map when `child.exited === true`.
 - Do not expect named workflow runs to block the chat turn; they are background tasks.
-- Do not call `kill` when the user asks to interrupt or pause resumably.
+- Use `interrupt` or `pause` when the user asks to pause specific live work resumably; use `quit` for a graceful run-level process boundary.
 - Keep stage names readable because they appear in workflow status and UI.
 - Do not ask a stage to reason from workflow or stage names that are only orchestration labels. Model stages see their local prompt/artifacts/tools; describe the action to perform and the evidence to use (`review the current code delta`, `create/update the review request`) instead of relying on labels such as `the create-PR workflow stage`, `this Goal run`, or `the Ralph reviewer`.
 - Do not write stage prompts that depend on hidden workflow-wide awareness; make each model stage locally scoped and self-described.
@@ -2688,7 +2688,7 @@ Synthesize the current findings into: root cause, proposed fix, files likely inv
 
 ---
 
-#### Pause, kill, or rerun
+#### Pause, stop, or rerun
 
 **Signal:** A run is stale, duplicated, superseded, or based on outdated assumptions.
 
@@ -2914,7 +2914,7 @@ Synthesize findings first: root cause, affected path, proposed fix, and validati
 | Accepting unverified summaries | Ask for changed files, commands run, results, and remaining risks. |
 | Mixing investigation and implementation too early | Ask for root cause and proposed fix before code changes. |
 | Ignoring blocked stages | Answer directly with one decision and any constraints. |
-| Continuing stale runs | Pause, kill, or rerun with updated context. |
+| Continuing stale runs | Pause, stop, or rerun with updated context. |
 | Reading every log | Inspect status, then stages, then only relevant details. |
 | Publishing without gates | Require release validation and explicit stop conditions. |
 

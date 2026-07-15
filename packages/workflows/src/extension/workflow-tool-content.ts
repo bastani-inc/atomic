@@ -10,7 +10,7 @@ function stringifyWorkflowToolResult(result: WorkflowToolResult): string {
 
 function compactWorkflowToolMessage(
   result: Extract<WorkflowToolResult, {
-    action: "send" | "pause" | "reload" | "interrupt" | "kill" | "resume";
+    action: "send" | "pause" | "reload" | "interrupt" | "quit" | "resume";
   }>,
 ): string {
   if (result.action === "reload") {
@@ -135,7 +135,7 @@ export function renderWorkflowToolContent(
     case "pause":
     case "reload":
     case "interrupt":
-    case "kill":
+    case "quit":
     case "resume":
       return compactWorkflowToolMessage(result);
     case "list":

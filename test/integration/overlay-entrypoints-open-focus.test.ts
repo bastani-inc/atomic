@@ -111,8 +111,8 @@ describe("buildGraphOverlayAdapter — open with pi.ui.custom", () => {
     const adapter = buildGraphOverlayAdapter({ ui }, store);
 
     adapter.open("run-abc");
-    // `q` on an empty store completes without throwing — the input is
-    // accepted by the GraphView even when there is no live run to kill.
+    // `q` on an empty store completes without throwing — the GraphView
+    // accepts return-to-main-chat input even when there is no live run.
     assert.doesNotThrow(() => calls[0]!.component.handleInput?.("q"));
   });
 

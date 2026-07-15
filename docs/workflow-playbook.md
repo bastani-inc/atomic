@@ -392,7 +392,7 @@ Synthesize the current findings into: root cause, proposed fix, files likely inv
 
 ---
 
-### Pause, kill, or rerun
+### Pause, quit, or rerun
 
 **Signal:** A run is stale, duplicated, superseded, or based on outdated assumptions.
 
@@ -618,7 +618,7 @@ Synthesize findings first: root cause, affected path, proposed fix, and validati
 | Accepting unverified summaries | Ask for changed files, commands run, results, and remaining risks. |
 | Mixing investigation and implementation too early | Ask for root cause and proposed fix before code changes. |
 | Ignoring blocked stages | Answer directly with one decision and any constraints. |
-| Continuing stale runs | Pause, kill, or rerun with updated context. |
+| Continuing stale runs | Pause, quit, or rerun with updated context. |
 | Reading every log | Inspect status, then stages, then only relevant details. |
 | Publishing without gates | Require release validation and explicit stop conditions. |
 
