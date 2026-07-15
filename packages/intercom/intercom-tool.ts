@@ -13,11 +13,12 @@ import {
   toError,
 } from "./intercom-utils.js";
 import type { ReplyTracker } from "./reply-tracker.ts";
+import { resolveSessionTargetId } from "./session-target.js";
 
 interface IntercomToolDeps {
   ensureConnected(reason: "tool"): Promise<IntercomClient>;
   syncPresenceIdentity(sessionId: string): void;
-  resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+  resolveSessionTarget?(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
   confirmSend: boolean;
   /**
    * Atomically reserve the single reply-waiter slot. Returns a structured
@@ -31,7 +32,8 @@ interface IntercomToolDeps {
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, resolveSessionTarget, beginReplyWait, replyTracker, hasReplyWaiter } = deps;
+  const { ensureConnected, syncPresenceIdentity, beginReplyWait, replyTracker, hasReplyWaiter } = deps;
+  const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
@@ -129,7 +131,7 @@ Usage:
             };
           }
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (sendTo === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -214,7 +216,7 @@ Usage:
           let wait: ReplyWait | null = null;
 
           try {
-            const sendTo = await resolveSessionTarget(connectedClient, to) ?? to;
+            const sendTo = await resolveTarget(connectedClient, to) ?? to;
             if (_signal?.aborted) {
               return {
                 content: [{ type: "text", text: "Cancelled" }],

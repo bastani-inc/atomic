@@ -1,5 +1,6 @@
 import type net from "node:net";
 import type { Attachment, BrokerMessage, Message, SessionInfo } from "../types.js";
+import { resolveSessionTarget, sessionTargetFailureReason } from "../session-target.js";
 import { DeliveredMessageCache } from "./delivered-message-cache.js";
 import { buildMessageSendSignature } from "./send-signature.js";
 
@@ -30,13 +31,6 @@ function isMessage(value: unknown): value is Message {
   const content = message.content as Record<string, unknown>;
   if (typeof content.text !== "string") return false;
   return content.attachments === undefined || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
-}
-
-function findSessions(sessions: Map<string, BrokerConnectedSession>, nameOrId: string): BrokerConnectedSession[] {
-  const byId = sessions.get(nameOrId);
-  if (byId) return [byId];
-  const lowerName = nameOrId.toLowerCase();
-  return Array.from(sessions.values()).filter((session) => session.info.name?.toLowerCase() === lowerName);
 }
 
 /** Validate and route one wire-level send request. */
@@ -81,26 +75,34 @@ export function handleBrokerSend(
     return;
   }
 
-  const targets = findSessions(sessions, clientMessage.to);
-  if (targets.length === 1) {
+  const resolution = resolveSessionTarget(
+    Array.from(sessions.values(), (session) => session.info),
+    clientMessage.to,
+  );
+  if (resolution.kind === "resolved") {
+    const target = sessions.get(resolution.session.id);
     const fromSession = currentId ? sessions.get(currentId) : undefined;
     if (!fromSession) {
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
       return;
     }
-    write(targets[0].socket, { type: "message", from: fromSession.info, message });
+    if (!target) {
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+      return;
+    }
+    if (target.info.id === fromSession.info.id) {
+      write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
+      return;
+    }
+    write(target.socket, { type: "message", from: fromSession.info, message });
     deliveredMessages.record(message.id, signature);
     write(socket, { type: "delivered", messageId: message.id, attemptId });
     return;
   }
-  if (targets.length > 1) {
-    write(socket, {
-      type: "delivery_failed",
-      messageId: message.id,
-      attemptId,
-      reason: `Multiple sessions named \"${clientMessage.to}\" are connected. Use the session ID instead.`,
-    });
-    return;
-  }
-  write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Session not found" });
+  write(socket, {
+    type: "delivery_failed",
+    messageId: message.id,
+    attemptId,
+    reason: sessionTargetFailureReason(clientMessage.to, resolution),
+  });
 }

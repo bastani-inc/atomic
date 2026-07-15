@@ -17,6 +17,7 @@ import { routeIncomingReply } from "./reply-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
+import { resolveSessionTargetId } from "./session-target.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -368,19 +369,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     reconnectPromiseGeneration = generationAtStart;
     return nextReconnectPromise;
   }
-  async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null> {
-    const sessions = await activeClient.listSessions();
-    const byId = sessions.find(s => s.id === nameOrId);
-    if (byId) {
-      return byId.id;
-    }
-    const lowerName = nameOrId.toLowerCase();
-    const byName = sessions.filter(s => s.name?.toLowerCase() === lowerName);
-    if (byName.length > 1) {
-      throw new Error(`Multiple sessions named "${nameOrId}" are connected. Use the session ID instead.`);
-    }
-    return byName[0]?.id ?? null;
-  }
   registerSubagentRelay(pi, {
     runtimeGeneration: () => runtimeGeneration,
     runtimeStarted: () => runtimeStarted,
@@ -389,7 +377,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     currentSessionTargetMatches,
     sendIncomingMessage,
     ensureConnected,
-    resolveSessionTarget,
+    resolveSessionTarget: resolveSessionTargetId,
   });
 
   registerIntercomLifecycle(pi, {
@@ -431,14 +419,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     childOrchestratorMetadata,
     ensureConnected,
     syncPresenceIdentity,
-    resolveSessionTarget,
+    resolveSessionTarget: resolveSessionTargetId,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomTool(pi, {
     ensureConnected,
     syncPresenceIdentity,
-    resolveSessionTarget,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
     replyTracker,

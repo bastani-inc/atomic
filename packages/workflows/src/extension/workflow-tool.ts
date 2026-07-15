@@ -25,7 +25,12 @@ import {
   workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
 import { workflowSendAction } from "./workflow-tool-send.js";
-import { isWorkflowStageToolContext, topLevelExpandedSnapshots } from "./workflow-targets.js";
+import {
+  ambiguousRunMessage,
+  isWorkflowStageToolContext,
+  resolveRunIdPrefix,
+  topLevelExpandedSnapshots,
+} from "./workflow-targets.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 
 export function makeExecuteWorkflowTool(
@@ -84,7 +89,18 @@ export function makeExecuteWorkflowTool(
       case "status": {
         const target = args.runId;
         if (target !== undefined) {
-          const result = inspectRun(target);
+          const resolved = resolveRunIdPrefix(target);
+          if (resolved.kind === "ambiguous") {
+            return {
+              action: "statusDetail",
+              runId: target,
+              error: ambiguousRunMessage(target, resolved.matches),
+            };
+          }
+          if (resolved.kind === "not_found") {
+            return { action: "statusDetail", runId: target, error: `run not found: ${target}` };
+          }
+          const result = inspectRun(resolved.runId);
           return result.ok
             ? { action: "statusDetail", runId: result.runId, detail: result.detail }
             : { action: "statusDetail", runId: target, error: `run not found: ${target}` };

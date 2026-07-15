@@ -78,3 +78,55 @@ test("broker wire send keeps absent attemptId compatibility but rejects malforme
   assert.match(malformed?.reason ?? "", /attemptId/);
   assert.equal(writes.filter((entry) => entry.socket === recipient && entry.message.type === "message").length, 1, "malformed attemptId must not downgrade and forward");
 });
+
+test("broker routes the session ID exactly as displayed by intercom list", () => {
+  const sender = {} as net.Socket;
+  const recipient = {} as net.Socket;
+  const recipientId = "aa56071e-1111-4222-8333-123456789abc";
+  const sessions = new Map<string, BrokerConnectedSession>([
+    ["sender", session("sender", "sender", sender)],
+    [recipientId, session(recipientId, "recipient", recipient)],
+  ]);
+  const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+  handleBrokerSend(
+    sender,
+    { type: "send", to: recipientId.slice(0, 8), message: message("displayed-id") },
+    "sender",
+    sessions,
+    new DeliveredMessageCache(),
+    (socket, value) => writes.push({ socket, message: value }),
+  );
+
+  assert.equal(
+    writes.some((entry) => entry.socket === recipient && entry.message.type === "message"),
+    true,
+  );
+  assert.equal(
+    writes.some((entry) => entry.socket === sender && entry.message.type === "delivered"),
+    true,
+  );
+});
+
+test("broker never routes a short session ID back to its sender", () => {
+  const sender = {} as net.Socket;
+  const senderId = "aa56071e-1111-4222-8333-123456789abc";
+  const sessions = new Map<string, BrokerConnectedSession>([
+    [senderId, session(senderId, "sender", sender)],
+  ]);
+  const writes: Array<{ socket: net.Socket; message: BrokerMessage }> = [];
+
+  handleBrokerSend(
+    sender,
+    { type: "send", to: senderId.slice(0, 8), message: message("self-target") },
+    senderId,
+    sessions,
+    new DeliveredMessageCache(),
+    (socket, value) => writes.push({ socket, message: value }),
+  );
+
+  assert.equal(writes.some((entry) => entry.message.type === "message"), false);
+  const failure = writes.find((entry) => entry.message.type === "delivery_failed")?.message;
+  assert.equal(failure?.type, "delivery_failed");
+  assert.match(failure?.reason ?? "", /current session/i);
+});

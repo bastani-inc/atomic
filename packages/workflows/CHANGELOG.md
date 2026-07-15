@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- Made `workflow({ action: "status", runId })` apply the same exact-or-unique-prefix contract as the other run actions. A prefix shared by multiple retained runs now returns the standard ambiguity diagnostic instead of silently inspecting the first match, so abbreviated run IDs printed by status surfaces remain safe and actionable.
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed
