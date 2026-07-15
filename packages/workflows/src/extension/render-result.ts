@@ -24,6 +24,7 @@ import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
 import { renderRoundedBox } from "../tui/chat-surface.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Result variants
@@ -202,6 +203,13 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, width, "…");
 }
 
+function noticeBodyLines(message: string, width?: number): string[] {
+  return message.split(/\r?\n/).flatMap((line) => {
+    if (line.length === 0 || width === undefined || width <= 0) return [line];
+    return wrapTextWithAnsi(line, width);
+  }).map((line) => ` ${line} `);
+}
+
 function renderNotice(
   title: string,
   message: string,
@@ -213,7 +221,7 @@ function renderNotice(
   const contentWidth = width && width > 0 ? Math.max(1, width - 4) : undefined;
   return renderRoundedBox({
     title,
-    bodyLines: [` ${fitLine(message, contentWidth)} `],
+    bodyLines: noticeBodyLines(message, contentWidth),
     theme,
     width,
   });
