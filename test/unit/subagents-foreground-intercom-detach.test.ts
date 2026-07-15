@@ -64,7 +64,7 @@ const timer = setInterval(() => {
       const metadata = JSON.parse(fs.readFileSync(actual.artifactPaths.metadataPath, "utf8")) as { exitCode: number; modelAttempts: Array<{ exitCode: number }> };
       assert.equal(metadata.exitCode, 0);
       assert.equal(metadata.modelAttempts.at(-1)?.exitCode, 0);
-    });
+    }, { idleMs: 4000, wallMs: 4000 });
   });
   test("a broker-routed handoff detaches the exact child even before tool-start observation", async () => {
     await withFakeCliEvent(successEvent("eventual result"), 100, async (dir) => {

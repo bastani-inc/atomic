@@ -68,16 +68,13 @@ export function formatWorkflowReloadReport(report: WorkflowReloadReport, reason?
       : "Workflow reload was superseded by a newer session; no stale resources were applied.";
   if (report.diagnostics.length === 0) return headline;
 
-  const maxVisible = 8;
-  const lines = report.diagnostics.slice(0, maxVisible).map((diagnostic) =>
+  const lines = report.diagnostics.map((diagnostic) =>
     `- [${diagnostic.level} ${diagnostic.code}] ${diagnostic.source ?? `workflow ${diagnostic.phase}`}: ${diagnostic.message}`
   );
-  const remaining = report.diagnostics.length - lines.length;
   return [
     headline,
     `Workflow discovery diagnostics (${report.diagnostics.length}): some resources were skipped or need attention.`,
     ...lines,
-    ...(remaining > 0 ? [`- … ${remaining} more`] : []),
   ].join("\n");
 }
 export function formatStartupDiagnostics(

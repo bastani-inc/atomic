@@ -288,10 +288,12 @@ export async function handleRunControlCommand(
     } else if (action === "resume") {
       const backend = getDurableBackend();
       const exactBeforePreparation = store.runs().find((run) => run.id === target);
+      const exactHasPausedState = exactBeforePreparation?.status === "paused"
+        || (exactBeforePreparation?.stages.some((stage) => stage.status === "paused") ?? false);
       const exactIsActivelyRunning = exactBeforePreparation !== undefined
         && exactBeforePreparation.endedAt === undefined
         && exactBeforePreparation.status === "running"
-        && !exactBeforePreparation.stages.some((stage) => stage.status === "paused")
+        && !exactHasPausedState
         && exactBeforePreparation.exitReason !== "quit";
       if (exactIsActivelyRunning) {
         fail(`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`);
@@ -300,7 +302,8 @@ export async function handleRunControlCommand(
       let durable: readonly ResumableWorkflowEntry[] = [];
       let preparationError: string | undefined;
       const needsDurablePreparation = exactBeforePreparation === undefined
-        || !backend.isWorkflowLoadable(exactBeforePreparation.id);
+        || (!backend.isWorkflowLoadable(exactBeforePreparation.id)
+          && (!exactHasPausedState || backend.hydrateResumableWorkflows !== undefined));
       if (needsDurablePreparation) {
         await ensureWorkflowResourcesVisible();
         const runtime = deps.runtimeForContext(ctx);

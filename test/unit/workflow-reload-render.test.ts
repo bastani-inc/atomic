@@ -30,3 +30,27 @@ test("reload result rendering wraps multiline diagnostics without losing actiona
   assert.match(rendered, /IMPORT_FAILED/);
   assert.match(rendered, /module exploded while importing/);
 });
+
+test("explicit reload reports and renders every diagnostic beyond the former display cap", () => {
+  const diagnostics: WorkflowReloadReport["diagnostics"] = Array.from({ length: 9 }, (_, index) => ({
+    phase: "discovery" as const,
+    level: "error" as const,
+    code: "IMPORT_FAILED" as const,
+    source: `/workflows/malformed-${index + 1}.ts`,
+    message: `malformed workflow ${index + 1}`,
+  }));
+  const report: WorkflowReloadReport = {
+    outcome: "applied",
+    generation: 3,
+    workflowCount: 7,
+    coalescedRequests: 1,
+    diagnostics,
+  };
+  const message = formatWorkflowReloadReport(report);
+  const result: WorkflowToolResult = { action: "reload", status: "ok", message, ...report };
+  const rendered = renderResult(result, { width: 80, plain: true });
+
+  assert.match(message, /malformed-9\.ts: malformed workflow 9/);
+  assert.doesNotMatch(message, /… 1 more/);
+  assert.match(rendered, /malformed-9\.ts: malformed workflow 9/);
+});
