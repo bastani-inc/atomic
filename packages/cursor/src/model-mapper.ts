@@ -23,6 +23,8 @@ export type CursorModelInput = ["text"] | ["text", "image"];
 export interface CursorModelRouting {
 	readonly modelId: string;
 	readonly maxMode: boolean;
+	readonly supportsImages: boolean;
+	readonly catalogOccurrence: number;
 }
 
 export interface CursorProviderModelDefinition {
@@ -50,28 +52,13 @@ export interface CursorProviderModelDefinition {
 const ESTIMATED_CONTEXT_WINDOW = 200_000;
 const ESTIMATED_MAX_TOKENS = 64_000;
 
-/**
- * Filters the authoritative GetUsableModels response without rewriting routes.
- * Whitespace-only ids are discarded and byte-for-byte duplicate ids are last-wins.
- */
+/** Returns a mutable sequence copy without rewriting authoritative GetUsable rows. */
 export function normalizeCursorUsableModels(models: readonly CursorUsableModel[]): CursorUsableModel[] {
-	const byId = new Map<string, CursorUsableModel>();
-	for (const model of models) {
-		if (model.id.trim().length === 0) continue;
-		byId.set(model.id, {
-			id: model.id,
-			...(nonEmpty(model.displayName) ? { displayName: model.displayName } : {}),
-			...(nonEmpty(model.displayNameShort) ? { displayNameShort: model.displayNameShort } : {}),
-			...(nonEmpty(model.displayModelId) ? { displayModelId: model.displayModelId } : {}),
-			maxMode: model.maxMode === true,
-			...(model.supportsImages === true ? { supportsImages: true as const } : {}),
-		});
-	}
-	return [...byId.values()];
+	return models.slice();
 }
 
 export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): CursorProviderModelDefinition[] {
-	return normalizeCursorUsableModels(catalog.models).map((model) => {
+	return normalizeCursorUsableModels(catalog.models).map((model, catalogOccurrence) => {
 		const metadataProvenance = {
 			catalog: "live" as const,
 			capabilities: model.supportsImages === true
@@ -82,7 +69,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 		};
 		return {
 			id: model.id,
-			name: model.displayName || model.displayNameShort || model.displayModelId || model.id,
+			name: model.displayName ?? model.displayNameShort ?? model.displayModelId ?? model.id,
 			api: CURSOR_API,
 			baseUrl: CURSOR_API_BASE_URL,
 			reasoning: false,
@@ -92,13 +79,16 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			maxTokens: ESTIMATED_MAX_TOKENS,
 			metadataProvenance,
 			compat: {
-				cursorRouting: { [model.id]: { modelId: model.id, maxMode: model.maxMode } },
+				cursorRouting: {
+					[model.id]: {
+						modelId: model.id,
+						maxMode: model.maxMode,
+						supportsImages: model.supportsImages === true,
+						catalogOccurrence,
+					},
+				},
 				cursorMetadataProvenance: metadataProvenance,
 			},
 		};
 	});
-}
-
-function nonEmpty(value: string | undefined): value is string {
-	return typeof value === "string" && value.trim().length > 0;
 }

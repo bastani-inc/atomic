@@ -181,14 +181,10 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 
 function decodeGetUsableModelsBody(data: Uint8Array): readonly CursorUsableModel[] {
 	const decoded = fromBinary(GetUsableModelsResponseSchema, data);
-	return decoded.models.flatMap((model) => {
-		const normalized = modelDetailsToCursorUsableModel(model);
-		return normalized ? [normalized] : [];
-	});
+	return decoded.models.map(modelDetailsToCursorUsableModel);
 }
 
-function modelDetailsToCursorUsableModel(model: ModelDetails): CursorUsableModel | undefined {
-	if (model.modelId.trim().length === 0) return undefined;
+function modelDetailsToCursorUsableModel(model: ModelDetails): CursorUsableModel {
 	return {
 		id: model.modelId,
 		...(model.displayName ? { displayName: model.displayName } : {}),

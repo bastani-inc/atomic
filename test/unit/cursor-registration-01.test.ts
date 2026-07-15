@@ -460,6 +460,23 @@ describe("Cursor provider registration", () => {
 				credentialScope: scope,
 				models: [{ id: " save-valid ", displayName: "Save Valid", maxMode: false }],
 			});
+
+			const preservedRows = [
+				{ id: "", displayName: "", maxMode: false },
+				{ id: "   ", displayNameShort: "  ", maxMode: true },
+				{ id: "duplicate", displayName: "first", maxMode: false },
+				{ id: "duplicate", displayName: "second", displayModelId: "", maxMode: true, supportsImages: true as const },
+			] as const;
+			const preservedRecord = toCursorCatalogCacheRecord({
+				source: "live",
+				fetchedAt: 90,
+				models: preservedRows,
+			}, scope);
+			assert.deepEqual(preservedRecord?.models, preservedRows);
+			const preservedCatalog = parseCursorCatalogCacheRecord(preservedRecord, scope);
+			assert.deepEqual(preservedCatalog?.models, preservedRows);
+			assert.equal(Object.hasOwn(preservedCatalog?.models[0] ?? {}, "displayName"), true);
+			assert.equal(Object.hasOwn(preservedCatalog?.models[0] ?? {}, "displayNameShort"), false);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

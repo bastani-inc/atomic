@@ -95,6 +95,7 @@ function realRegistryHost(): {
 						cost: { ...model.cost },
 						contextWindow: model.contextWindow,
 						maxTokens: model.maxTokens,
+						compat: model.compat as Model<Api>["compat"],
 					})),
 				});
 				registrations.push(config);
@@ -241,6 +242,37 @@ test("same-account rotation uses the current route and current Max metadata", as
 	assert.equal(transport.runs[0]?.request.maxMode, false);
 	assert.equal(transport.runs[0]?.request.resolvedModelId, "same-route");
 	assert.equal(discovery.calls, 2);
+	await runtime.dispose();
+});
+
+test("provider registration retains duplicate rows and executes the selected occurrence metadata", async () => {
+	const access = token("duplicate-account", "one");
+	const discovery = new QueueDiscoveryService([{
+		source: "live",
+		fetchedAt: 1,
+		models: [
+			{ id: "duplicate-route", displayName: "First", maxMode: false },
+			{ id: "duplicate-route", displayName: "Second", maxMode: true, supportsImages: true },
+		],
+	}]);
+	const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
+	const testHost = realRegistryHost();
+	const runtime = registerCursorProvider(testHost.value, {
+		authService: new QueueAuthService([access]), discoveryService: discovery, transport, now: () => 2,
+	});
+	await login(testHost.registrations[0]!);
+	const config = testHost.registrations.at(-1)!;
+	assert.deepEqual(config.models.map((entry) => [entry.id, entry.name]), [
+		["duplicate-route", "First"], ["duplicate-route", "Second"],
+	]);
+	const registryRows = testHost.registry.getAll().filter((entry) => entry.provider === "cursor");
+	assert.deepEqual(registryRows.map((entry) => entry.name), ["First", "Second"]);
+	assert.equal(testHost.registry.find("cursor", "duplicate-route"), registryRows[0]);
+	await collectEvents(config.streamSimple(registryRows[0]!, context, { apiKey: access }));
+	await collectEvents(config.streamSimple(registryRows[1]!, context, { apiKey: access }));
+	assert.deepEqual(transport.runs.map((run) => [run.request.resolvedModelId, run.request.maxMode]), [
+		["duplicate-route", false], ["duplicate-route", true],
+	]);
 	await runtime.dispose();
 });
 

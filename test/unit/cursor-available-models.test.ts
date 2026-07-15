@@ -145,9 +145,10 @@ describe("Cursor split catalog discovery", () => {
 	test("GetUsable transport calls only AgentService and Available transport calls only AiService", async () => {
 		const client = new UnaryClient({
 			[GET_USABLE_PATH]: getUsableBody([
+				{ id: "", displayName: "", maxMode: false },
+				{ id: "   ", displayName: "  ", maxMode: true },
 				{ id: "cursor-grok-4.5-high", maxMode: true },
-				{ id: "cursor-grok-4.5-low", maxMode: false },
-				{ id: " whitespace-route ", maxMode: true },
+				{ id: "cursor-grok-4.5-high", displayName: "Duplicate", maxMode: false },
 			]),
 			[AVAILABLE_PATH]: availableParent({ id: "cursor-grok-4.5-high", supportsImages: true }),
 		});
@@ -155,9 +156,10 @@ describe("Cursor split catalog discovery", () => {
 		const usable = await transport.getUsableModels("secret", "usable");
 		assert.deepEqual(client.paths, [GET_USABLE_PATH]);
 		assert.deepEqual(usable, [
+			{ id: "", maxMode: false },
+			{ id: "   ", displayName: "  ", maxMode: true },
 			{ id: "cursor-grok-4.5-high", maxMode: true },
-			{ id: "cursor-grok-4.5-low", maxMode: false },
-			{ id: " whitespace-route ", maxMode: true },
+			{ id: "cursor-grok-4.5-high", displayName: "Duplicate", maxMode: false },
 		]);
 
 		const available = await transport.getAvailableModels("secret", "available");
@@ -181,7 +183,7 @@ describe("Cursor split catalog discovery", () => {
 		}]);
 	});
 
-	test("GetUsable alone fixes byte-for-byte route identity, display, Max, and exact duplicate handling", async () => {
+	test("GetUsable alone fixes byte-for-byte route identity, row order, display, Max, and duplicate occurrences", async () => {
 		const transport = new DiscoveryTransport([
 			{ id: " route-high ", displayName: "Old", maxMode: false },
 			{ id: "route-high", displayName: "Route High", maxMode: true },
@@ -194,8 +196,9 @@ describe("Cursor split catalog discovery", () => {
 		const catalog = await new CursorModelDiscoveryService({ transport, now: () => 42 }).discover("same-account-token", "request");
 
 		assert.deepEqual(catalog.models, [
-			{ id: " route-high ", displayName: "Whitespace Route", maxMode: true },
+			{ id: " route-high ", displayName: "Old", maxMode: false },
 			{ id: "route-high", displayName: "Route High", maxMode: true, supportsImages: true },
+			{ id: " route-high ", displayName: "Whitespace Route", maxMode: true },
 			{ id: "route-low", displayName: "Route Low", maxMode: false },
 		]);
 		assert.deepEqual(transport.calls, [
@@ -204,26 +207,45 @@ describe("Cursor split catalog discovery", () => {
 		]);
 	});
 
-	test("only a unique exact parent with explicit true enables images", async () => {
+	test("image support requires nonempty exact evidence with every matching parent explicitly true", async () => {
 		const transport = new DiscoveryTransport([
-			{ id: "unique", maxMode: false },
-			{ id: "explicit-false", maxMode: false },
-			{ id: "missing", maxMode: false },
-			{ id: "ambiguous", maxMode: false },
+			{ id: "one-true", maxMode: false },
+			{ id: "duplicate-true", maxMode: false },
+			{ id: "distinct-true", maxMode: false },
+			{ id: "true-false", maxMode: false },
+			{ id: "true-missing", maxMode: false },
+			{ id: "all-missing", maxMode: false },
+			{ id: "multi-field", maxMode: false },
+			{ id: "duplicate-usable", displayName: "first", maxMode: false },
+			{ id: "duplicate-usable", displayName: "second", maxMode: true },
 			{ id: "gpt-family-name-is-not-evidence", maxMode: false },
 		], [
-			{ id: "unique", variantIds: ["unique"], supportsImages: true },
-			{ id: "explicit-false", variantIds: [], supportsImages: false },
-			{ id: "parent-a", variantIds: ["ambiguous"], supportsImages: true },
-			{ id: "parent-b", serverModelName: "ambiguous", variantIds: [], supportsImages: true },
+			{ id: "one-true", variantIds: [], supportsImages: true },
+			{ id: "duplicate-true", variantIds: [], supportsImages: true },
+			{ id: "duplicate-true", variantIds: [], supportsImages: true },
+			{ id: "parent-a", variantIds: ["distinct-true"], supportsImages: true },
+			{ serverModelName: "distinct-true", variantIds: [], supportsImages: true },
+			{ id: "true-false", variantIds: [], supportsImages: true },
+			{ serverModelName: "true-false", variantIds: [], supportsImages: false },
+			{ id: "true-missing", variantIds: [], supportsImages: true },
+			{ serverModelName: "true-missing", variantIds: [] },
+			{ id: "all-missing", variantIds: [] },
+			{ id: "multi-field", serverModelName: "multi-field", variantIds: ["multi-field"], supportsImages: true },
+			{ id: "duplicate-usable", variantIds: [], supportsImages: true },
+			{ id: "available-only", variantIds: [], supportsImages: true },
 		]);
 		const catalog = await new CursorModelDiscoveryService({ transport }).discover("account", "request");
-		assert.deepEqual(catalog.models.map((model) => [model.id, model.supportsImages === true]), [
-			["unique", true],
-			["explicit-false", false],
-			["missing", false],
-			["ambiguous", false],
-			["gpt-family-name-is-not-evidence", false],
+		assert.deepEqual(catalog.models.map((model) => [model.id, model.displayName, model.supportsImages === true]), [
+			["one-true", undefined, true],
+			["duplicate-true", undefined, true],
+			["distinct-true", undefined, true],
+			["true-false", undefined, false],
+			["true-missing", undefined, false],
+			["all-missing", undefined, false],
+			["multi-field", undefined, true],
+			["duplicate-usable", "first", true],
+			["duplicate-usable", "second", true],
+			["gpt-family-name-is-not-evidence", undefined, false],
 		]);
 	});
 

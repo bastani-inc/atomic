@@ -2,7 +2,7 @@ import { randomUUID, scryptSync } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { normalizeCursorUsableModels, type CursorModelCatalog, type CursorUsableModel } from "./model-mapper.js";
+import type { CursorModelCatalog, CursorUsableModel } from "./model-mapper.js";
 
 export const CURSOR_CATALOG_CACHE_VERSION = 3;
 export const CURSOR_CATALOG_CACHE_FILENAME = "cursor-model-catalog.json";
@@ -119,22 +119,32 @@ export function parseCursorCatalogCacheRecord(value: unknown, expectedCredential
 		if (!model) return null;
 		models.push(model);
 	}
-	const normalized = normalizeCursorUsableModels(models);
-	return normalized.length > 0 ? { source: "live", fetchedAt: value.fetchedAt, credentialScope, models: normalized } : null;
+	return models.length > 0 ? { source: "live", fetchedAt: value.fetchedAt, credentialScope, models } : null;
 }
 
 export function toCursorCatalogCacheRecord(catalog: CursorModelCatalog, credentialScope?: string): CursorCatalogCacheRecord | null {
 	if (catalog.source !== "live" || !credentialScope || !parseCredentialScope(credentialScope)) return null;
 	if (catalog.credentialScope && catalog.credentialScope !== credentialScope) return null;
 	if (!Number.isFinite(catalog.fetchedAt) || catalog.fetchedAt < 0) return null;
-	const models = normalizeCursorUsableModels(catalog.models);
+	const models = catalog.models.map(toCachedCursorModel);
 	return models.length > 0 ? { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, credentialScope, models } : null;
+}
+
+function toCachedCursorModel(model: CursorUsableModel): CursorUsableModel {
+	return {
+		id: model.id,
+		...(model.displayName !== undefined ? { displayName: model.displayName } : {}),
+		...(model.displayNameShort !== undefined ? { displayNameShort: model.displayNameShort } : {}),
+		...(model.displayModelId !== undefined ? { displayModelId: model.displayModelId } : {}),
+		maxMode: model.maxMode,
+		...(model.supportsImages === true ? { supportsImages: true } : {}),
+	};
 }
 
 function parseCachedCursorModel(value: unknown): CursorUsableModel | null {
 	if (!isRecord(value) || hasUnexpectedKeys(value, CACHE_MODEL_KEYS)) return null;
-	const id = exactNonEmptyString(value.id);
-	if (!id || typeof value.maxMode !== "boolean") return null;
+	const id = exactString(value.id);
+	if (id === undefined || typeof value.maxMode !== "boolean") return null;
 	const displayName = optionalString(value.displayName);
 	const displayNameShort = optionalString(value.displayNameShort);
 	const displayModelId = optionalString(value.displayModelId);
@@ -142,9 +152,9 @@ function parseCachedCursorModel(value: unknown): CursorUsableModel | null {
 	if (value.supportsImages !== undefined && value.supportsImages !== true) return null;
 	return {
 		id,
-		...(displayName ? { displayName } : {}),
-		...(displayNameShort ? { displayNameShort } : {}),
-		...(displayModelId ? { displayModelId } : {}),
+		...(displayName !== undefined ? { displayName } : {}),
+		...(displayNameShort !== undefined ? { displayNameShort } : {}),
+		...(displayModelId !== undefined ? { displayModelId } : {}),
 		maxMode: value.maxMode,
 		...(value.supportsImages === true ? { supportsImages: true } : {}),
 	};
@@ -160,10 +170,10 @@ function getDefaultAtomicAgentDir(): string {
 function readEnv(name: string): string | undefined { const value = process.env[name]?.trim(); return value || undefined }
 function expandTilde(path: string): string { return path === "~" ? homedir() : path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : resolve(path) }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value) }
-function exactNonEmptyString(value: unknown): string | undefined { return typeof value === "string" && value.trim().length > 0 ? value : undefined }
+function exactString(value: unknown): string | undefined { return typeof value === "string" ? value : undefined }
 function optionalString(value: unknown): string | null | undefined {
 	if (value === undefined) return undefined;
-	return typeof value === "string" && value.trim().length > 0 ? value : null;
+	return typeof value === "string" ? value : null;
 }
 function parseCredentialScope(value: unknown): string | undefined {
 	return typeof value === "string" && /^account-[A-Za-z0-9_-]{43}$/u.test(value) ? value : undefined;

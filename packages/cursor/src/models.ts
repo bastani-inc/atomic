@@ -104,7 +104,7 @@ export function enrichCursorModelsWithImages(
 	availableModels.forEach((model, parentIndex) => {
 		const identities = new Set<string>();
 		for (const candidate of [model.id, model.serverModelName, ...model.variantIds]) {
-			if (candidate !== undefined && candidate.trim().length > 0) identities.add(candidate);
+			if (candidate !== undefined) identities.add(candidate);
 		}
 		for (const identity of identities) {
 			const parents = parentsByIdentity.get(identity) ?? new Set<number>();
@@ -112,21 +112,16 @@ export function enrichCursorModelsWithImages(
 			parentsByIdentity.set(identity, parents);
 		}
 	});
-	return normalizeCursorUsableModels(usableModels).map((model) => {
+	return usableModels.map((model) => {
 		const parents = parentsByIdentity.get(model.id);
-		if (!parents || parents.size !== 1) return withoutImageSupport(model);
-		const parentIndex = parents.values().next().value;
-		if (parentIndex === undefined || availableModels[parentIndex]?.supportsImages !== true) return withoutImageSupport(model);
-		return { ...model, supportsImages: true };
+		if (!parents || parents.size === 0) return withoutImageSupport(model);
+		const allSupportImages = [...parents].every((parentIndex) => availableModels[parentIndex]?.supportsImages === true);
+		return allSupportImages ? { ...model, supportsImages: true } : withoutImageSupport(model);
 	});
 }
 
 function withoutImageSupport(model: CursorUsableModel): CursorUsableModel {
-	return {
-		id: model.id,
-		...(model.displayName ? { displayName: model.displayName } : {}),
-		...(model.displayNameShort ? { displayNameShort: model.displayNameShort } : {}),
-		...(model.displayModelId ? { displayModelId: model.displayModelId } : {}),
-		maxMode: model.maxMode,
-	};
+	const { supportsImages, ...withoutImages } = model;
+	void supportsImages;
+	return withoutImages;
 }

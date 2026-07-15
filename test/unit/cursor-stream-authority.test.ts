@@ -97,6 +97,18 @@ function liveAuthorityHarness(): {
 	};
 }
 
+function occurrenceModel(id: string, catalogOccurrence: number, maxMode: boolean, supportsImages: boolean): Model<Api> {
+	return {
+		...model(),
+		id,
+		name: id,
+		input: supportsImages ? ["text", "image"] : ["text"],
+		compat: {
+			cursorRouting: { [id]: { modelId: id, maxMode, supportsImages, catalogOccurrence } },
+		},
+	} as Model<Api>;
+}
+
 test("message reader rejects a message when abort becomes visible after the race winner", async () => {
 	const messages = (async function* () {
 		yield { type: "textDelta", text: "must stay buffered" } as const;
@@ -139,6 +151,43 @@ test("execution authority actively expires and clears identity-fenced lease time
 	scheduler.fire();
 	assert.equal(second.authoritySignal.aborted, true);
 	assert.throws(() => second.assertCurrent(), /TTL-valid|expired|changed/u);
+	authority.close();
+});
+
+test("execution authority preserves blank and duplicate occurrences and follows the selected current model object", async () => {
+	const accessToken = token("occurrence-account");
+	const scope = deriveCursorCredentialScope(accessToken);
+	if (!scope) throw new Error("Expected occurrence credential scope");
+	const authority = new CursorExecutionAuthority({ now: () => 100, ttlMs: 10 });
+	const runtime: CursorExecutionAuthorityRuntime = {
+		isActive: () => true,
+		activeCredentialScope: () => scope,
+		now: () => 100,
+		ttlMs: 10,
+		discover: () => undefined,
+	};
+	authority.publish({
+		source: "live",
+		fetchedAt: 100,
+		models: [
+			{ id: "", maxMode: false },
+			{ id: "   ", maxMode: true },
+			{ id: "duplicate", maxMode: false },
+			{ id: "duplicate", maxMode: true, supportsImages: true },
+		],
+	}, scope, 1);
+
+	assert.equal((await authority.authorize(occurrenceModel("", 0, false, false), accessToken, undefined, runtime)).modelId, "");
+	assert.equal((await authority.authorize(occurrenceModel("   ", 1, true, false), accessToken, undefined, runtime)).maxMode, true);
+	const firstDuplicate = await authority.authorize(occurrenceModel("duplicate", 2, false, false), accessToken, undefined, runtime);
+	const laterDuplicate = await authority.authorize(occurrenceModel("duplicate", 3, true, true), accessToken, undefined, runtime);
+	assert.deepEqual([firstDuplicate.maxMode, firstDuplicate.supportsImages], [false, false]);
+	assert.deepEqual([laterDuplicate.maxMode, laterDuplicate.supportsImages], [true, true]);
+
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: "duplicate", maxMode: false }] }, scope, 2);
+	assert.equal(firstDuplicate.authoritySignal.aborted, true);
+	const refreshed = await authority.authorize(occurrenceModel("duplicate", 3, true, true), accessToken, undefined, runtime);
+	assert.deepEqual([refreshed.maxMode, refreshed.supportsImages], [false, false]);
 	authority.close();
 });
 

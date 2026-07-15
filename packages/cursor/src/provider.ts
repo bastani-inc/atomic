@@ -27,8 +27,9 @@ import {
 	type CursorProviderModelDefinition,
 } from "./model-mapper.js";
 import { CursorStreamAdapter } from "./stream.js";
-import { waitForCatalogDiscoveryTasks, waitForCursorExecutionCatalog, waitForCursorLoginCatalog } from "./provider-waits.js";
+import { waitForCatalogDiscoveryTasks, waitForCursorLoginCatalog } from "./provider-waits.js";
 import { discoverStoredCursorCredential } from "./provider-credential-discovery.js";
+import { activateCursorExecutionCredential } from "./provider-execution-credential.js";
 import { Http2CursorAgentTransport, type CursorAgentTransport } from "./transport.js";
 
 const DEFAULT_CATALOG_DISCOVERY_DISPOSE_TIMEOUT_MS = 1_000;
@@ -129,7 +130,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	let catalogRefreshGeneration = 0;
 	let lastCatalogGeneration: number | undefined;
 	let resolveCurrentAccessToken = options.resolveCurrentAccessToken;
-	let storedCredentialDiscoveryGeneration = 0;
+	let credentialResolverEpoch = 0;
 	let authenticatedCredentialScope: string | undefined;
 	let catalogRefreshStatus: CursorCatalogRefreshStatus = { state: "idle" };
 	const catalogDiscoveryInFlightTokens = new Map<string, { readonly generation: number; readonly task: Promise<boolean>; readonly controller: AbortController }>();
@@ -167,6 +168,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 				name: CURSOR_LOGIN_NAME,
 				async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 					const credentials = await authService.login(callbacks);
+					credentialResolverEpoch += 1;
 					const preexistingTask = catalogDiscoveryInFlightTokens.get(credentials.access)?.task;
 					const task = scheduleTrackedCatalogDiscovery(credentials.access, true);
 					const ownsTask = task !== undefined && task !== preexistingTask;
@@ -184,6 +186,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 				},
 				async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
 					const refreshed = await authService.refreshToken(credentials);
+					credentialResolverEpoch += 1;
 					authenticatedCredentialScope = deriveCursorCredentialScope(refreshed.access);
 					scheduleTrackedCatalogDiscovery(refreshed.access, true);
 					return refreshed;
@@ -365,39 +368,6 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		catalogRefreshStatus = { state: "failed", error: "Cursor model discovery was cancelled." };
 	};
 
-	const selectedCredentialScope = async (): Promise<string | undefined> => {
-		const resolver = resolveCurrentAccessToken;
-		if (!resolver) return authenticatedCredentialScope;
-		try {
-			const token = await resolver();
-			return token ? deriveCursorCredentialScope(token) : undefined;
-		} catch {
-			return undefined;
-		}
-	};
-	const activateCurrentExecutionCredential = async (
-		accessToken: string,
-		credentialScope: string,
-		signal?: AbortSignal,
-	): Promise<boolean> => {
-		if (await selectedCredentialScope() !== credentialScope) return false;
-		const task = scheduleTrackedCatalogDiscovery(accessToken);
-		const waitSignal = signal
-			? AbortSignal.any([signal, executionActivationController.signal])
-			: executionActivationController.signal;
-		if (task && !await waitForCursorExecutionCatalog(task, waitSignal)) return false;
-		if (await selectedCredentialScope() !== credentialScope) return false;
-		return lastCatalogCredentialScope === credentialScope;
-	};
-	const authorizeExecution = (model: Model<Api>, accessToken: string, signal?: AbortSignal) =>
-		executionAuthority.authorize(model, accessToken, signal, {
-			isActive: () => !disposing && !disposed,
-			activeCredentialScope: () => lastCatalogCredentialScope,
-			now,
-			ttlMs: catalogCacheTtlMs,
-			discover: (token) => scheduleTrackedCatalogDiscovery(token),
-			activateCurrentCredential: activateCurrentExecutionCredential,
-		});
 
 	const reportPrintCatalogWarning = (context: CursorProviderContext | undefined): void => {
 		const message = catalogRefreshStatus.error ?? "Cursor model catalog refresh failed; retained the previous catalog.";
@@ -409,6 +379,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 
 	const invalidateMissingCredential = (message: string): Error => {
 		const error = new Error(message);
+		credentialResolverEpoch += 1;
 		catalogRefreshGeneration += 1;
 		for (const controller of catalogDiscoveryAbortControllers) controller.abort();
 		const hadCatalogState = lastCatalogFetchedAt !== undefined
@@ -423,11 +394,31 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		options.onCatalogRefreshError?.(error);
 		return error;
 	};
+	const activateCurrentExecutionCredential = (accessToken: string, credentialScope: string, signal?: AbortSignal) =>
+		activateCursorExecutionCredential(accessToken, credentialScope, signal, {
+			currentEpoch: () => credentialResolverEpoch,
+			inactive: () => disposing || disposed,
+			currentResolver: () => resolveCurrentAccessToken,
+			authenticatedCredentialScope: () => authenticatedCredentialScope,
+			scheduleDiscovery: (token) => scheduleTrackedCatalogDiscovery(token),
+			activeCredentialScope: () => lastCatalogCredentialScope,
+			invalidateCredential: (message) => { invalidateMissingCredential(message); },
+			activationSignal: executionActivationController.signal,
+		});
+	const authorizeExecution = (model: Model<Api>, accessToken: string, signal?: AbortSignal) =>
+		executionAuthority.authorize(model, accessToken, signal, {
+			isActive: () => !disposing && !disposed,
+			activeCredentialScope: () => lastCatalogCredentialScope,
+			now,
+			ttlMs: catalogCacheTtlMs,
+			discover: (token) => scheduleTrackedCatalogDiscovery(token),
+			activateCurrentCredential: activateCurrentExecutionCredential,
+		});
 
 	const discoverCatalogFromStoredCredentials = (event?: unknown, context?: CursorProviderContext): Promise<void> => {
-		const generation = ++storedCredentialDiscoveryGeneration;
+		const generation = ++credentialResolverEpoch;
 		return discoverStoredCursorCredential(event, context, {
-			inactive: () => disposing || disposed || generation !== storedCredentialDiscoveryGeneration,
+			inactive: () => disposing || disposed || generation !== credentialResolverEpoch,
 			useContextResolver: (resolver) => { resolveCurrentAccessToken = resolver; },
 			resolveAccessToken: () => resolveCurrentAccessToken?.(), invalidateCredential: invalidateMissingCredential,
 			scheduleDiscovery: (accessToken) => scheduleTrackedCatalogDiscovery(accessToken),
@@ -442,9 +433,10 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	};
 
 	const disposeRuntime = async (): Promise<void> => {
-		executionActivationController.abort(new Error("Cursor provider is disposing."));
 		if (disposePromise) return disposePromise;
 		disposing = true;
+		credentialResolverEpoch += 1;
+		executionActivationController.abort(new Error("Cursor provider is disposing."));
 		executionAuthority.close();
 		registerCatalog([]);
 		lastCatalogFetchedAt = undefined;

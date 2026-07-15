@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { deriveCursorCredentialScope } from "./catalog-cache.js";
 import { CURSOR_API, CURSOR_PROVIDER_ID } from "./config.js";
-import type { CursorModelCatalog } from "./model-mapper.js";
+import type { CursorModelCatalog, CursorModelRouting } from "./model-mapper.js";
 
 export interface CursorAuthorizedRoute {
 	readonly modelId: string;
@@ -25,6 +25,7 @@ interface CursorExecutionAuthorityRoute {
 	readonly modelId: string;
 	readonly maxMode: boolean;
 	readonly supportsImages: boolean;
+	readonly catalogOccurrence: number;
 }
 
 export interface CursorExecutionAuthorityTimer {
@@ -70,7 +71,7 @@ interface CursorExecutionAuthoritySnapshot {
 	readonly expiresAt: number;
 	readonly lease: symbol;
 	readonly controller: AbortController;
-	readonly routes: ReadonlyMap<string, CursorExecutionAuthorityRoute>;
+	readonly routes: ReadonlyMap<string, readonly CursorExecutionAuthorityRoute[]>;
 	expiryTimer?: CursorExecutionAuthorityTimer;
 }
 
@@ -102,15 +103,17 @@ export class CursorExecutionAuthority {
 	publish(catalog: CursorModelCatalog, credentialScope: string, generation: number): void {
 		if (this.#closed) return;
 		this.invalidateSnapshot(new Error("Cursor model catalog authority changed; retry with the current exact route."));
-		const routes = new Map<string, CursorExecutionAuthorityRoute>();
-		for (const model of catalog.models) {
-			if (model.id.trim().length === 0) continue;
-			routes.set(model.id, {
+		const routes = new Map<string, CursorExecutionAuthorityRoute[]>();
+		catalog.models.forEach((model, catalogOccurrence) => {
+			const occurrences = routes.get(model.id) ?? [];
+			occurrences.push({
 				modelId: model.id,
-				maxMode: model.maxMode === true,
+				maxMode: model.maxMode,
 				supportsImages: model.supportsImages === true,
+				catalogOccurrence,
 			});
-		}
+			routes.set(model.id, occurrences);
+		});
 		const snapshot: CursorExecutionAuthoritySnapshot = {
 			credentialScope,
 			generation,
@@ -149,12 +152,12 @@ export class CursorExecutionAuthority {
 		if (activeScope !== credentialScope) {
 			throw new Error("Cursor host credentials changed before the selected account catalog became active. Refresh and reselect a model.");
 		}
-		let route = this.resolve(credentialScope, model.id, runtime);
+		let route = this.resolve(credentialScope, model, runtime);
 		if (route) return route;
 		const task = runtime.discover(accessToken);
 		if (task) await waitForDiscovery(task, signal, this.#closeController.signal);
 		if (!runtime.isActive() || this.#closed) throw disposedError();
-		route = this.resolve(credentialScope, model.id, runtime);
+		route = this.resolve(credentialScope, model, runtime);
 		if (!route) throw new Error(`Cursor model ${model.id} is not an exact route in the current authenticated catalog. Refresh and reselect a model.`);
 		return route;
 	}
@@ -171,10 +174,17 @@ export class CursorExecutionAuthority {
 		this.#closeController.abort(error);
 	}
 
-	private resolve(scope: string, modelId: string, runtime: CursorExecutionAuthorityRuntime): CursorAuthorizedRoute | undefined {
+	private resolve(scope: string, model: Model<Api>, runtime: CursorExecutionAuthorityRuntime): CursorAuthorizedRoute | undefined {
 		const snapshot = this.#snapshot;
 		if (!snapshot || snapshot.credentialScope !== scope) return undefined;
-		const route = snapshot.routes.get(modelId);
+		const occurrences = snapshot.routes.get(model.id);
+		if (!occurrences || occurrences.length === 0) return undefined;
+		const selected = selectedCursorRouting(model);
+		const route = selected
+			? occurrences.find((candidate) => candidate.catalogOccurrence === selected.catalogOccurrence && routeMatches(candidate, selected))
+				?? occurrences.find((candidate) => routeMatches(candidate, selected))
+				?? occurrences[0]
+			: occurrences[0];
 		if (!route) return undefined;
 		const authorization: CursorAuthorizedRoute = {
 			...route,
@@ -182,13 +192,13 @@ export class CursorExecutionAuthority {
 			authoritySignal: snapshot.controller.signal,
 			credentialScope: snapshot.credentialScope,
 			catalogGeneration: snapshot.generation,
-			assertCurrent: () => this.assertCurrent(snapshot, modelId, runtime),
+			assertCurrent: () => this.assertCurrent(snapshot, route, runtime),
 		};
 		authorization.assertCurrent();
 		return authorization;
 	}
 
-	private assertCurrent(snapshot: CursorExecutionAuthoritySnapshot, modelId: string, runtime: CursorExecutionAuthorityRuntime): void {
+	private assertCurrent(snapshot: CursorExecutionAuthoritySnapshot, route: CursorExecutionAuthorityRoute, runtime: CursorExecutionAuthorityRuntime): void {
 		if (this.#closed || !runtime.isActive()) throw disposedError();
 		if (runtime.activeCredentialScope() !== snapshot.credentialScope) {
 			throw new Error("Cursor credentials no longer match the active model catalog. Refresh and reselect a model.");
@@ -197,8 +207,9 @@ export class CursorExecutionAuthority {
 			throw new Error("Cursor model catalog authority changed; retry with the current exact route.");
 		}
 		const currentTime = this.#now();
-		if (currentTime < snapshot.fetchedAt || currentTime >= snapshot.expiresAt || !snapshot.routes.has(modelId)) {
-			throw new Error(`Cursor model ${modelId} is not an exact TTL-valid route in the current authenticated catalog. Refresh and reselect a model.`);
+		const currentOccurrences = snapshot.routes.get(route.modelId);
+		if (currentTime < snapshot.fetchedAt || currentTime >= snapshot.expiresAt || !currentOccurrences?.includes(route)) {
+			throw new Error(`Cursor model ${route.modelId} is not an exact TTL-valid route in the current authenticated catalog. Refresh and reselect a model.`);
 		}
 	}
 
@@ -229,6 +240,22 @@ export class CursorExecutionAuthority {
 		}
 		if (!snapshot.controller.signal.aborted) snapshot.controller.abort(reason);
 	}
+}
+
+interface CursorSelectedModelCompat {
+	readonly cursorRouting?: Readonly<Record<string, CursorModelRouting>>;
+}
+
+function selectedCursorRouting(model: Model<Api>): CursorModelRouting | undefined {
+	const compat = model.compat as CursorSelectedModelCompat | undefined;
+	const selected = compat?.cursorRouting?.[model.id];
+	return selected?.modelId === model.id ? selected : undefined;
+}
+
+function routeMatches(route: CursorExecutionAuthorityRoute, selected: CursorModelRouting): boolean {
+	return route.modelId === selected.modelId
+		&& route.maxMode === selected.maxMode
+		&& route.supportsImages === selected.supportsImages;
 }
 
 function disposedError(): Error {
