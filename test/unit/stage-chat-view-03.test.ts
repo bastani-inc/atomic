@@ -11,7 +11,7 @@ import {
     flush,
     stripAnsi,
     expectRightAlignedReturnHint,
-    COMPACT_RETURN_HINT_TEXT,
+    RETURN_HINT_TEXT,
     makePendingPrompt,
     type AgentSession,
     type Component,
@@ -416,7 +416,7 @@ describe("StageChatView", () => {
         await flush();
 
         // Both the prior transcript and the question render together, with the
-        // return-to-orchestrator hint inside the custom UI's bottom-right corner.
+        // return-to-graph hint inside the custom UI's bottom-right corner.
         const renderedLines = view.render(80).map(stripAnsi);
         const rendered = renderedLines.join("\n");
         assert.match(rendered, /EARLIER-HISTORY-MARKER/);
@@ -428,7 +428,7 @@ describe("StageChatView", () => {
         assert.equal(hintIndex, questionIndex);
         assert.match(renderedLines[hintIndex] ?? "", /^│/);
         assert.ok(
-            (renderedLines[hintIndex] ?? "").endsWith(`  ${COMPACT_RETURN_HINT_TEXT}  │`),
+            (renderedLines[hintIndex] ?? "").endsWith(`  ${RETURN_HINT_TEXT}  │`),
             "expected return/copy-mode hint inside the custom UI border",
         );
         assert.doesNotMatch(renderedLines[hintIndex] ?? "", /^╰/);

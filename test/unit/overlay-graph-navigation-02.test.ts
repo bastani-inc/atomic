@@ -127,9 +127,12 @@ describe("GraphView keyboard navigation", () => {
   it("render returns lines in overlay mode", () => {
     const stages = [makeStage("A"), makeStage("B", ["A"])];
     const view = makeView(stages);
-    const lines = view.render(80);
+    const lines = view.render(120);
     assert.equal(Array.isArray(lines), true);
     assert.ok(lines.length > 0);
+    const text = visibleText(lines);
+    assert.match(text, /↵ open/);
+    assert.doesNotMatch(text, /↵ attach/);
     view.dispose();
   });
 

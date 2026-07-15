@@ -289,6 +289,9 @@ describe("GraphView keyboard navigation", () => {
     });
 
     view.handleInput("/");
+    const switcherText = visibleText(view.render(96));
+    assert.match(switcherText, /↵ open/);
+    assert.doesNotMatch(switcherText, /↵ attach/);
     // ArrowDown to select index 1 (stage B), then Enter should open
     // B's chat directly instead of leaving the user on the graph node.
     view.handleInput("\x1b[B");

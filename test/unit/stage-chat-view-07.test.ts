@@ -255,7 +255,7 @@ describe("StageChatView", () => {
         const hintIndex = expectRightAlignedReturnHint(lines, 120);
         assert.match(
             lines[hintIndex] ?? "",
-            /\(openai-codex\) gpt-5\.5 high .*ctrl\+x leave stage chat · return to graph/,
+            /\(openai-codex\) gpt-5\.5 high .*ctrl\+x return to graph/,
         );
         assert.notEqual(lines[hintIndex]?.trim(), RETURN_HINT_TEXT);
         view.dispose();

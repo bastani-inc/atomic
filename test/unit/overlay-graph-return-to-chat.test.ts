@@ -151,7 +151,7 @@ describe("GraphView return to main chat", () => {
     assert.match(text, /ORCHESTRATOR/);
     assert.match(text, /GRAPH/);
     assert.match(text, /navigate/);
-    assert.match(text, /attach/);
+    assert.match(text, /↵ open/);
     assert.match(text, /stages/);
     assert.match(text, /ctrl\+x\s+leave graph\s+·\s+return to main chat/i);
     assert.doesNotMatch(text, /ctrl\+d|q\s+(?:quit|detach|return)/i);

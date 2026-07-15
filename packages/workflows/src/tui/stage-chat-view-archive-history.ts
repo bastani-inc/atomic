@@ -176,7 +176,7 @@ export function renderPausedBody(
   const callout: string[] = [];
   callout.push(blankLine(width));
   callout.push(
-    ...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", "enter resumes · ctrl+x leave stage chat · return to graph"),
+    ...bannerLines(ctx, width, "warning", "❚❚", "PAUSED", "enter resumes · ctrl+x return to graph"),
   );
   callout.push(
     ...new Text(
@@ -218,8 +218,7 @@ export function renderBlockedBody(
   );
   lines.push(
     ...new Text(
-      paint("ctrl+x", t.accent, { bold: true }) +
-        paint(" leave stage chat · return to graph", t.textMuted),
+      paint("ctrl+x", t.accent, { bold: true }) + paint(" return to graph", t.textMuted),
       2,
       0,
     ).render(width),

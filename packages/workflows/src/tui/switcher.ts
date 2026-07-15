@@ -4,7 +4,7 @@
  * Visual contract (DESIGN.md §5 Picker Rows):
  *  - Rounded box, `borderActive` border, `backgroundPanel` interior.
  *  - Header row: leading "stages" caption (dim) + right-aligned key·label
- *    hint (`↑↓ select · ↵ attach · esc close`) in dim.
+ *    hint (`↑↓ select · ↵ open · esc close`) in dim.
  *  - Default row: `paddingLeft: 1`, `paddingRight: 2`, icon + name, status
  *    glyph coloured.
  *  - Selected row: accent pill (blue bg + surface0 fg + bold). Focus is
@@ -36,8 +36,8 @@ export function filterStages(
   return stages.filter((s) => s.name.toLowerCase().includes(q));
 }
 
-const HINT = "↑↓ select · ↵ attach · esc close";
-const COMPACT_HINT = "↵ attach · esc close";
+const HINT = "↑↓ select · ↵ open · esc close";
+const COMPACT_HINT = "↵ open · esc close";
 
 /** Pad a visible string (ANSI-safe) to exactly `width` cells. */
 function padVisible(s: string, width: number): string {
@@ -94,7 +94,7 @@ export function renderSwitcher(
   // Top border
   lines.push(`${border}╭${"─".repeat(innerWidth)}╮${RESET}`);
 
-  // Header row: "  STAGES  query   …   ↑↓ select · ↵ attach · esc close "
+  // Header row: "  STAGES  query   …   ↑↓ select · ↵ open · esc close "
   const leftLabelText = "  STAGES";
   const hint = innerWidth >= 44 ? HINT : COMPACT_HINT;
   const queryBudget = Math.max(

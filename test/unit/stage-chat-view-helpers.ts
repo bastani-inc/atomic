@@ -245,8 +245,8 @@ export const CTRL_X_VARIANTS = [
     "\x1b[27;5;120~",
 ];
 
-export const RETURN_HINT_TEXT = "ctrl+x leave stage chat · return to graph · ctrl+t copy mode off";
-export const COMPACT_RETURN_HINT_TEXT = "ctrl+x stage chat→graph · ctrl+t off";
+export const RETURN_HINT_TEXT = "ctrl+x return to graph · ctrl+t copy mode off";
+export const COMPACT_RETURN_HINT_TEXT = "ctrl+x graph · ctrl+t off";
 
 export function expectRightAlignedReturnHint(
     lines: readonly string[],

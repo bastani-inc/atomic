@@ -132,18 +132,18 @@ function mergeOrchestratorReturnHintIntoLine(
 ): string {
   const copyModeState = ctx.mouseScrollCaptureEnabled ? "off" : "on";
   const fullHint = {
-    plain: `ctrl+x leave stage chat · return to graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
+    plain: `ctrl+x return to graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} copy mode ${copyModeState}`,
     styled:
       paint("ctrl+x", ctx.theme.text, { bold: true }) +
-      paint(" leave stage chat · return to graph · ", ctx.theme.textMuted) +
+      paint(" return to graph · ", ctx.theme.textMuted) +
       paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
       paint(` copy mode ${copyModeState}`, ctx.theme.textMuted),
   };
   const compactHint = {
-    plain: `ctrl+x stage chat→graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
+    plain: `ctrl+x graph · ${STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL} ${copyModeState}`,
     styled:
       paint("ctrl+x", ctx.theme.text, { bold: true }) +
-      paint(" stage chat→graph · ", ctx.theme.textMuted) +
+      paint(" graph · ", ctx.theme.textMuted) +
       paint(STAGE_CHAT_MOUSE_SCROLL_TOGGLE_LABEL, ctx.theme.text, { bold: true }) +
       paint(` ${copyModeState}`, ctx.theme.textMuted),
   };

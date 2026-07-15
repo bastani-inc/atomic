@@ -136,16 +136,16 @@ describe("StageChatView", () => {
         const offFooter = offLines.find((line) => line.includes("copy mode off"));
         assert.equal(
             offFooter,
-            "esc to close" + " ".repeat(20) +
-                "ctrl+x leave stage chat · return to graph · ctrl+t copy mode off",
+            "esc to close" + " ".repeat(39) +
+                "ctrl+x return to graph · ctrl+t copy mode off",
         );
         assert.equal(offLines.filter((line) => line.includes("esc to close")).length, 1);
-        assert.match(offLines.join("\n"), /ctrl\+x leave stage chat · return to graph/);
+        assert.match(offLines.join("\n"), /ctrl\+x return to graph/);
         const narrowFooter = view
             .render(40)
             .map(stripAnsi)
             .find((line) => line.includes("ctrl+t off"));
-        assert.equal(narrowFooter, "esc ctrl+x stage chat→graph · ctrl+t off");
+        assert.equal(narrowFooter, "esc to close   ctrl+x graph · ctrl+t off");
         assert.equal(narrowFooter?.length, 40);
 
         assert.equal(view.wantsMouseScrollTracking(), true);
@@ -157,8 +157,8 @@ describe("StageChatView", () => {
             .find((line) => line.includes("copy mode on"));
         assert.equal(
             onFooter,
-            "esc to close" + " ".repeat(21) +
-                "ctrl+x leave stage chat · return to graph · ctrl+t copy mode on",
+            "esc to close" + " ".repeat(40) +
+                "ctrl+x return to graph · ctrl+t copy mode on",
         );
         assert.equal(renderRequests, 1);
 
