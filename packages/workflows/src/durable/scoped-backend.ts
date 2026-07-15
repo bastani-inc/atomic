@@ -112,8 +112,22 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
     return undefined;
   }
 
+  getLoadableWorkflow(_workflowId: string): undefined {
+    return undefined;
+  }
+
   setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number, _resumable?: boolean): void {
     // No-op: child status is reflected via the root workflow boundary.
+  }
+
+  transitionWorkflowStatus(
+    _workflowId: string,
+    _expectedStatuses: readonly DurableWorkflowStatus[],
+    _status: DurableWorkflowStatus,
+    _pendingPrompts?: number,
+    _resumable?: boolean,
+  ): boolean {
+    return false;
   }
 
   adjustPendingPrompts(_workflowId: string, delta: number): void {

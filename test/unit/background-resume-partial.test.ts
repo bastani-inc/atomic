@@ -457,4 +457,43 @@ describe("multi-stage resume acknowledgement coherence", () => {
     assert.equal(result.ok, true);
     if (result.ok) assert.deepEqual(result.resumed.map((stage) => stage.id), ["stage-a", "stage-b"]);
   });
+  test("fulfilled resume that completes before reconciliation returns terminal progress", async () => {
+    const runId = "resume-ack-completes";
+    const { store, backend, registry } = seedPausedRun(runId, ["awaiting-answer"]);
+    const state: ResumeHandleState = { status: "paused", calls: 0 };
+    registerProductionShapedHandle({
+      runId,
+      stageId: "awaiting-answer",
+      state,
+      store,
+      registry,
+      resume: async () => {
+        await Promise.resolve();
+        state.status = "completed";
+        const stage = store.runs().find((run) => run.id === runId)?.stages[0];
+        assert.notEqual(stage, undefined);
+        store.recordStageEnd(runId, {
+          ...stage!,
+          status: "completed",
+          endedAt: 3,
+          durationMs: 2,
+          result: "held-answer",
+        });
+        store.recordRunEnd(runId, "completed", { answer: "held-answer" });
+        backend.setWorkflowStatus(runId, "completed");
+      },
+    });
+
+    const result = await resumeRun(runId, { store, stageControlRegistry: registry });
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.snapshot.status, "completed");
+    assert.equal(result.snapshot.stages[0]?.status, "completed");
+    assert.deepEqual(result.resumed, []);
+    assert.equal(result.mode, "snapshot");
+    assert.match(result.message ?? "", /completed/i);
+    assert.equal(backend.getWorkflow(runId)?.status, "completed");
+  });
+
 });

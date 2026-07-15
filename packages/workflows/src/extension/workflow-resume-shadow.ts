@@ -1,4 +1,5 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
+import { getLoadableDurableWorkflow } from "../durable/workflow-status-transition.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { jobTracker, type JobTracker } from "../runs/background/job-tracker.js";
@@ -25,7 +26,7 @@ export function classifyDurableResumeShadow(
   deps: DurableResumeShadowDeps = {},
 ): DurableResumeShadowClassification {
   const backend = deps.backend ?? getDurableBackend();
-  const handle = backend.getWorkflow(run.id);
+  const handle = getLoadableDurableWorkflow(backend, run.id);
   if (handle?.status !== "paused" && handle?.status !== "running") return "not_shadow";
   const jobs = deps.jobs ?? jobTracker;
   if (jobs.has(run.id)) return "not_shadow";
@@ -34,7 +35,7 @@ export function classifyDurableResumeShadow(
   const controlRunIds = new Set<string>([run.id]);
   for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
   if ([...controlRunIds].some((runId) => controls.run(runId).stages().length > 0)) return "not_shadow";
-  if (!backend.isWorkflowLoadable(run.id) || !isDurableWorkflowResumable(handle)) return "ineligible";
+  if (!isDurableWorkflowResumable(handle)) return "ineligible";
   if (run.status !== "paused" || run.exitReason !== "quit" || run.resumable !== true) {
     store.recordRunPaused(run.id, undefined, { exitReason: "quit", resumable: true });
   }

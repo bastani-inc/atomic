@@ -29,6 +29,10 @@ import {
   type WorkflowReloadReport,
 } from "./workflow-reload-report.js";
 import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
+import {
+  workflowHasPausedStages,
+  workflowHasPausedState,
+} from "../runs/background/workflow-lifecycle-aggregate.js";
 
 export interface WorkflowControlActionDeps {
   reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
@@ -124,14 +128,15 @@ export async function workflowReloadAction(
 }
 
 function bulkQuitFailureMessage(
-  quitCount: number,
-  failures: readonly { readonly runId: string; readonly reason: string; readonly message?: string }[],
+  results: Awaited<ReturnType<typeof quitAllRuns>>,
 ): string {
-  const succeeded = quitCount > 0 ? `Quit ${quitCount} run(s); ` : "";
-  const failed = failures.map((failure) =>
-    `${failure.runId}: ${failure.reason}${failure.message ? ` (${failure.message})` : ""}`
+  const successes = results.filter((result) => result.ok).length;
+  const failures = results.length - successes;
+  const outcomes = results.map((result) => result.ok
+    ? `${result.runId}: quit`
+    : `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`
   ).join(", ");
-  return `${succeeded}failed to quit ${failures.length} run(s): ${failed}.`;
+  return `${successes > 0 ? `Quit ${successes} run(s); ` : ""}failed to quit ${failures} run(s); outcomes: ${outcomes}.`;
 }
 
 export async function workflowQuitAction(args: WorkflowToolArgs): Promise<WorkflowToolResult> {
@@ -142,14 +147,15 @@ export async function workflowQuitAction(args: WorkflowToolArgs): Promise<Workfl
       return { action, runId: "--all", status: "noop", message: allStageConflictMessage("quit") };
     }
     const results = await quitAllRuns();
-    const quitCount = results.filter((result) => result.ok).length;
+    const successes = results.filter((result) => result.ok);
+    const quitCount = successes.length;
     const failures = results.filter((result) => !result.ok);
     return {
       action,
       runId: "--all",
-      status: failures.length > 0 ? "noop" : quitCount > 0 ? "paused" : "noop",
+      status: failures.length > 0 ? (quitCount > 0 ? "partial" : "noop") : quitCount > 0 ? "paused" : "noop",
       message: failures.length > 0
-        ? bulkQuitFailureMessage(quitCount, failures)
+        ? bulkQuitFailureMessage(results)
         : quitCount > 0
           ? `Quit ${quitCount} run(s); resume with /workflow resume.`
           : "No in-flight runs to quit.",
@@ -287,8 +293,8 @@ export async function workflowResumeAction(
   const stageRunId = stage.runId ?? target.runId;
   const run = store.runs().find((candidate) => candidate.id === stageRunId);
   const hadPausedRunState = run?.status === "paused";
-  const hadPausedStageState = run?.stages.some((candidate) => candidate.status === "paused") ?? false;
-  const isPaused = hadPausedRunState || hadPausedStageState;
+  const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
+  const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
   const isResumableContinuation = run !== undefined && !isPaused && (
     (run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) ||
     (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable")
@@ -312,12 +318,15 @@ export async function workflowResumeAction(
     const result = await resumeRun(stageRunId, { stageId: stage.stageId, message: args.message });
     if (result.ok) {
       const runLevelResumed = hadPausedRunState && !hadPausedStageState && stage.stageId === undefined && result.snapshot.status === "running";
+      const noPausedProgress = isPaused && result.resumed.length === 0
+        && result.message === undefined && !runLevelResumed;
       const message = result.message ?? (isPaused
         ? result.resumed.length === 0
           ? runLevelResumed ? `Resumed run ${result.runId.slice(0, 8)}.` : `No paused stages on run ${result.runId.slice(0, 8)}.`
           : `Resumed ${result.resumed.length} stage(s) on run ${result.runId.slice(0, 8)}${args.message ? ` with message: "${args.message}"` : ""}.`
         : `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
-      return { action: "resume", runId: result.runId, status: result.mode === "partial" ? "partial" : "ok", message };
+      const status = result.mode === "partial" ? "partial" : noPausedProgress ? "noop" : "ok";
+      return { action: "resume", runId: result.runId, status, message };
     }
     return { action: "resume", runId: stageRunId, status: "noop", message: `Run not found: ${stageRunId}` };
   } catch (error) {

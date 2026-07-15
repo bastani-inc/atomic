@@ -20,6 +20,7 @@ import {
 } from "./workflow-targets.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
 import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import {
   handleDurableResume,
   prepareWorkflowResumeCatalog,
@@ -128,13 +129,17 @@ export async function handleRunControlCommand(
         }
       }
       const results = action === "quit" ? await quitAllRuns() : await interruptAllRuns();
-      const changed = results.filter((result) => result.ok).length;
+      const successes = results.filter((result) => result.ok);
+      const changed = successes.length;
       const failures = results.filter((result) => !result.ok);
       if (action === "quit" && failures.length > 0) {
-        const failed = failures.map((result) =>
-          `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`
+        const outcomes = results.map((result) => result.ok
+          ? `${result.runId}: quit`
+          : `${result.runId}: ${result.reason}${"message" in result ? ` (${result.message})` : ""}`
         ).join(", ");
-        fail(`${changed > 0 ? `Quit ${changed} run(s); ` : ""}failed to quit ${failures.length} run(s): ${failed}.`);
+        const message = `${changed > 0 ? `Quit ${changed} run(s); ` : ""}failed to quit ${failures.length} run(s); outcomes: ${outcomes}.`;
+        if (changed > 0) print(message);
+        else fail(message);
       } else if (changed > 0) {
         print(action === "quit"
           ? `Quit ${changed} run(s); resume with /workflow resume.`
@@ -415,8 +420,8 @@ export async function handleRunControlCommand(
     }
     const run = store.runs().find((r) => r.id === stageRunId);
     const hadPausedRunState = run?.status === "paused";
-    const hadPausedStageState = run?.stages.some((s) => s.status === "paused") ?? false;
-    const isPaused = hadPausedRunState || hadPausedStageState;
+    const hadPausedStageState = run !== undefined && workflowHasPausedStages(store, stageRunId);
+    const isPaused = run !== undefined && workflowHasPausedState(store, stageRunId);
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
     const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
     if (isActivelyRunning && action === "resume" && !hasPendingDurableResumeTransition(stageRunId)) {
@@ -450,6 +455,10 @@ export async function handleRunControlCommand(
       fail(result.message ?? ("Partially resumed " + result.runId + "."));
       return true;
     }
+    if (result.snapshot.endedAt !== undefined && result.message !== undefined) {
+      print(result.message);
+      return true;
+    }
     if (!isPaused) {
       if (policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
       print(result.message ?? `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
@@ -458,7 +467,9 @@ export async function handleRunControlCommand(
     if (!message && stageId && policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
     if (result.resumed.length === 0) {
       const runLevelResumed = hadPausedRunState && !hadPausedStageState && stageId === undefined && result.snapshot.status === "running";
-      runLevelResumed ? print(`Resumed run ${stageRunId.slice(0, 8)}.`) : fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`);
+      if (result.message !== undefined) print(result.message);
+      else if (runLevelResumed) print(`Resumed run ${stageRunId.slice(0, 8)}.`);
+      else fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`);
     } else {
       print(`Resumed ${result.resumed.length} stage(s) on run ${stageRunId.slice(0, 8)}${message ? ` with message: "${message}"` : ""}.`);
     }

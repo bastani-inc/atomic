@@ -20,7 +20,8 @@ import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
-import { settleResumeAcknowledgements } from "./resume-acknowledgements.js";
+import { resumeAcknowledgementMessage, settleResumeAcknowledgements, waitForResumeReconciliation } from "./resume-acknowledgements.js";
+import { aggregateWorkflowRootRunId, expandedControlRunIds, workflowHasPausedStages } from "./workflow-lifecycle-aggregate.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -62,7 +63,6 @@ export type PauseResult =
     };
 
 export type InterruptRunResult = PauseResult;
-
 /**
  * Per-run detail returned by {@link inspectRun}. A read-only view over the
  * store snapshot suitable for the "  RUN" detail surface — same data the
@@ -229,8 +229,10 @@ export async function resumeRun(
   if (!run) return { ok: false, runId, reason: "not_found" };
 
   const resumed: StageSnapshot[] = [];
+  const aggregateRootRunId = aggregateWorkflowRootRunId(activeStore, runId);
   let partialFailureMessage: string | undefined;
   let durabilityFailure: string | undefined;
+  let acknowledgedTargets = 0;
   const controlRunIds = opts?.stageId ? [runId] : expandedControlRunIds(activeStore, runId);
   const hasPausedState = controlRunIds.some((controlRunId) => {
     const controlRun = runs.find((candidate) => candidate.id === controlRunId);
@@ -245,15 +247,17 @@ export async function resumeRun(
           registry.run(controlRunId).pausedStages().map((handle) => ({ controlRunId, handle })),
         );
     const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
+    acknowledgedTargets = acknowledgements.acknowledged;
     resumed.push(...acknowledgements.resumed);
-    const currentRoot = activeStore.runs().find((candidate) => candidate.id === runId);
-    const rootHasPausedStage = currentRoot?.stages.some(
-      (stage) => stage.status === "paused" || stage.status === "blocked",
-    ) ?? false;
+    const currentRun = activeStore.runs().find((candidate) => candidate.id === runId);
+    const hasPausedDescendant = workflowHasPausedStages(activeStore, runId);
     if (acknowledgements.acknowledged > 0 || (
       handles.length === 0 && acknowledgements.failures.length === 0 &&
-      !rootHasPausedStage && currentRoot?.status === "paused"
-    )) activeStore.recordRunResumed(runId);
+      !hasPausedDescendant && currentRun?.status === "paused"
+    )) {
+      activeStore.recordRunResumed(runId);
+      if (aggregateRootRunId !== runId) activeStore.recordRunResumed(aggregateRootRunId);
+    }
     const reconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
     if (acknowledgements.failures.length > 0) {
       const failureMessage = "Failed to resume workflow stages: " + acknowledgements.failures.join("; ");
@@ -267,10 +271,15 @@ export async function resumeRun(
     }
   }
 
-  const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
+  await waitForResumeReconciliation(acknowledgedTargets);
+
+  const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === aggregateRootRunId);
   if (locallyReconciledRoot?.endedAt === undefined && locallyReconciledRoot?.status === "running") {
     try {
-      await markDurableResumed(runId);
+      const transition = await markDurableResumed(aggregateRootRunId);
+      if (transition === "refused") {
+        durabilityFailure = "authoritative durable workflow " + aggregateRootRunId + " refused the running transition";
+      }
     } catch (error) {
       durabilityFailure = error instanceof Error ? error.message : String(error);
     }
@@ -320,27 +329,21 @@ export async function resumeRun(
       message: `Workflow is blocked on a recoverable ${current.failureCode ?? current.failureKind ?? "workflow"} failure at stage ${current.failedStageId}; retry/resume after the issue clears.`,
     };
   }
+  const acknowledgementMessage = resumeAcknowledgementMessage(
+    acknowledgedTargets, resumedCopy.length, runId, current,
+  );
   return {
     ok: true,
     runId,
     snapshot,
     resumed: resumedCopy,
     mode: resumedCopy.length > 0 ? "paused" : "snapshot",
+    ...(acknowledgementMessage !== undefined ? { message: acknowledgementMessage } : {}),
   };
 }
 
-// ---------------------------------------------------------------------------
 // pauseRun
-// ---------------------------------------------------------------------------
-
 /** Pause a run only after its live stage controls acknowledge the request. */
-function expandedControlRunIds(activeStore: Store, runId: string): string[] {
-  const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
-  const ids = new Set<string>([runId]);
-  for (const stage of graph.stages) ids.add(stage.workflowGraphTarget.runId);
-  return [...ids];
-}
-
 export async function pauseRun(
   runId: string,
   opts?: {
@@ -410,7 +413,6 @@ export async function pauseAllRuns(opts?: {
     pauseRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })
   ));
 }
-
 // ---------------------------------------------------------------------------
 // interruptRun
 // ---------------------------------------------------------------------------
@@ -438,7 +440,6 @@ export async function interruptAllRuns(opts?: {
     interruptRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })
   ));
 }
-
 // ---------------------------------------------------------------------------
 // inspectRun
 // ---------------------------------------------------------------------------

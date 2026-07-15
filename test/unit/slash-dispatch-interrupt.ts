@@ -197,13 +197,17 @@ describe("/workflow run-control chat commands", () => {
         store.recordRunStart(makeInflightRun(noController));
         registerTestStageHandle(controllable, "quit-stage");
         const { workflowCmd } = await registerWorkflowCommand();
-        const { ctx, messages } = buildCtx();
+        const messages: string[] = [];
+        const levels: string[] = [];
+        const ctx = { ui: { notify(message: string, level: string) { messages.push(message); levels.push(level); } } };
 
         await workflowCmd.options.handler("quit --all", ctx);
 
         const output = messages.join("\n");
         assert.match(output, /Quit 1 run\(s\)/);
+        assert.ok(output.indexOf(controllable) < output.indexOf(noController));
         assert.match(output, new RegExp(noController));
+        assert.deepEqual(levels, ["info"]);
         assert.match(output, /no_active_stages|no controllable stages/i);
         assert.equal(store.runs().find((run) => run.id === controllable)?.status, "paused");
         assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");

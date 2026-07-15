@@ -2,6 +2,7 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DbosStepRecord } from "./dbos-backend.js";
 import { classifyDurableFormatVersion, DURABLE_FORMAT_VERSION } from "./format-version.js";
 import type { DurableCheckpointEntry, DurableWorkflowStatus } from "./types.js";
+import { isAbsorbingDurableStatus } from "./workflow-status-transition.js";
 
 const METADATA_STEP_PREFIX = "__atomic_metadata";
 
@@ -32,6 +33,7 @@ export function encodeMetadata(entry: DurableCheckpointEntry): WorkflowSerializa
       status: entry.status,
       completedCheckpoints: entry.completedCheckpoints,
       pendingPrompts: entry.pendingPrompts,
+      ...(entry.promptReservationEpoch !== undefined ? { promptReservationEpoch: entry.promptReservationEpoch } : {}),
       ...(entry.label !== undefined ? { label: entry.label } : {}),
       ...(entry.rootWorkflowId !== undefined ? { rootWorkflowId: entry.rootWorkflowId } : {}),
       ...(entry.resumable !== undefined ? { resumable: entry.resumable } : {}),
@@ -48,8 +50,20 @@ export function classifyLatestMetadata(records: readonly DbosStepRecord[], workf
   const metadata = records.filter((record) => isMetadataStep(record.stepName));
   if (metadata.length === 0) return { kind: "unavailable" };
   const latest = metadata.reduce((selected, record) => metadataTimestamp(record) >= metadataTimestamp(selected) ? record : selected);
-  if (typeof latest.output !== "object" || latest.output === null || Array.isArray(latest.output)) return { kind: "unknown" };
-  const raw = latest.output as Record<string, WorkflowSerializableValue>;
+  const latestClassification = classifyMetadataRecord(latest, workflowId);
+  if (latestClassification.kind !== "current") return latestClassification;
+  const terminals = metadata.map((record) => ({ record, classified: classifyMetadataRecord(record, workflowId) }))
+    .filter((candidate): candidate is { record: DbosStepRecord; classified: { kind: "current"; entry: DurableCheckpointEntry } } =>
+      candidate.classified.kind === "current"
+      && isAbsorbingDurableStatus(candidate.classified.entry.status, candidate.classified.entry.resumable));
+  if (terminals.length === 0) return latestClassification;
+  return terminals.reduce((selected, candidate) =>
+    metadataTimestamp(candidate.record) >= metadataTimestamp(selected.record) ? candidate : selected).classified;
+}
+
+function classifyMetadataRecord(record: DbosStepRecord, workflowId: string): DbosMetadataCompatibility {
+  if (typeof record.output !== "object" || record.output === null || Array.isArray(record.output)) return { kind: "unknown" };
+  const raw = record.output as Record<string, WorkflowSerializableValue>;
   if (raw["__atomicDurableMetadata"] !== true) return { kind: "unknown" };
   const compatibility = classifyDurableFormatVersion(raw["version"]);
   if (compatibility !== "current") return { kind: compatibility };
@@ -81,6 +95,7 @@ function parseDurableCheckpointEntry(
     || !isDurableWorkflowStatus(entry.status)
     || typeof entry.completedCheckpoints !== "number"
     || typeof entry.pendingPrompts !== "number"
+    || (entry.promptReservationEpoch !== undefined && typeof entry.promptReservationEpoch !== "string")
     || typeof entry.ts !== "number"
     || (entry.label !== undefined && typeof entry.label !== "string")
     || (entry.rootWorkflowId !== undefined && typeof entry.rootWorkflowId !== "string")

@@ -10,6 +10,10 @@ import {
   type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
 import { getDurableBackend } from "../../durable/factory.js";
+import {
+  getLoadableDurableWorkflow,
+  transitionDurableWorkflowStatus,
+} from "../../durable/workflow-status-transition.js";
 
 export type QuitRunResult = PauseResult;
 type QuitAllRunResult = QuitRunResult | {
@@ -63,10 +67,15 @@ export async function quitRun(
       pauseFailures.push(`${target.controlRunId}/${target.handle.stageId}: ${message}`);
       return;
     }
-    pausedRunIds.add(target.controlRunId);
     const controlRun = activeStore.runs().find((candidate) => candidate.id === target.controlRunId);
-    const stage = controlRun?.stages.find((candidate) => candidate.id === target.handle.stageId);
-    if (stage !== undefined) paused.push(structuredClone(stage));
+    if (controlRun?.endedAt !== undefined) return;
+    activeStore.recordStagePaused(target.controlRunId, target.handle.stageId);
+    const stage = activeStore.runs().find((candidate) => candidate.id === target.controlRunId)
+      ?.stages.find((candidate) => candidate.id === target.handle.stageId);
+    if (stage?.status === "paused") {
+      pausedRunIds.add(target.controlRunId);
+      paused.push(structuredClone(stage));
+    }
   });
   if (pauseFailures.length > 0) {
     throw new Error(`Failed to pause workflow stages: ${pauseFailures.join("; ")}`);
@@ -80,9 +89,10 @@ export async function quitRun(
   const current = activeStore.runs().find((candidate) => candidate.id === runId);
   if (current === undefined) return { ok: false, runId, reason: "not_found" };
   if (current.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
+  const durableTransition = await markDurableQuit(runId);
+  if (durableTransition === "refused") return { ok: false, runId, reason: "already_ended" };
   for (const pausedRunId of pausedRunIds) activeStore.recordRunPaused(pausedRunId);
   activeStore.recordRunPaused(runId, undefined, { exitReason: "quit", resumable: true });
-  markDurableQuit(runId);
   return { ok: true, runId, paused };
 }
 
@@ -104,15 +114,19 @@ function controllableHandles(
   );
 }
 
-function markDurableQuit(runId: string): void {
+async function markDurableQuit(runId: string): Promise<"transitioned" | "not_needed" | "refused"> {
   try {
     const backend = getDurableBackend();
-    if (backend.getWorkflow(runId) !== undefined) {
-      backend.setWorkflowStatus(runId, "paused", undefined, true);
-    }
+    if (getLoadableDurableWorkflow(backend, runId) === undefined) return "not_needed";
+    const transitioned = await transitionDurableWorkflowStatus(
+      backend, runId, ["running", "paused"], "paused", undefined, true,
+    );
+    if (!transitioned) return "refused";
+    await backend.flush?.();
+    return "transitioned";
   } catch {
-    // Durable status is best-effort for custom backends; the store snapshot
-    // remains the authoritative local resumability signal.
+    // Durable status remains best-effort for custom backends.
+    return "not_needed";
   }
 }
 

@@ -1,5 +1,6 @@
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DbosStepRecord } from "./dbos-backend.js";
+import type { DurableCheckpointEntry } from "./types.js";
 import { promptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
 
 const RESERVATION_PREFIX = "__atomic_prompt_reservation";
@@ -20,10 +21,11 @@ export interface DbosPromptReservationState {
   readonly consumedTokens: Set<string>;
   anonymousLegacyBalance: number;
   readonly baseline: number;
+  readonly epoch?: string;
   hasEvents: boolean;
 }
 
-export function emptyDbosPromptReservationState(baseline = 0): DbosPromptReservationState {
+export function emptyDbosPromptReservationState(baseline = 0, epoch?: string): DbosPromptReservationState {
   const normalized = Math.max(0, Math.trunc(baseline));
   return {
     active: new Map(),
@@ -33,6 +35,7 @@ export function emptyDbosPromptReservationState(baseline = 0): DbosPromptReserva
     consumedTokens: new Set(),
     anonymousLegacyBalance: normalized,
     baseline: normalized,
+    ...(epoch !== undefined ? { epoch } : {}),
     hasEvents: false,
   };
 }
@@ -41,8 +44,10 @@ export function promptReservationStepName(
   reservationId: string,
   generation: number,
   operation: "reserve" | "release",
+  epoch?: string,
 ): string {
-  return `${RESERVATION_PREFIX}:${operation}:${reservationId}:${generation}`;
+  const legacyName = `${RESERVATION_PREFIX}:${operation}:${reservationId}:${generation}`;
+  return epoch === undefined ? legacyName : `${legacyName}:${epoch}`;
 }
 
 export function promptDeltaStepName(): string {
@@ -55,15 +60,17 @@ export function encodePromptReservationEvent(input: {
   readonly operation: "reserve" | "release";
   readonly tokenId: string;
   readonly claimedLegacy: boolean;
+  readonly epoch?: string;
 }): WorkflowSerializableValue {
   return {
     __atomicPromptReservation: true,
-    version: 3,
+    version: input.epoch === undefined ? 3 : 4,
     reservationId: input.reservationId,
     generation: input.generation,
     operation: input.operation,
     tokenId: input.tokenId,
     claimedLegacy: input.claimedLegacy,
+    ...(input.epoch !== undefined ? { epoch: input.epoch } : {}),
   };
 }
 
@@ -82,7 +89,8 @@ interface ParsedReservation {
   readonly operation: "reserve" | "release";
   readonly tokenId?: string;
   readonly claimedLegacy: boolean;
-  readonly version: 1 | 2 | 3;
+  readonly version: 1 | 2 | 3 | 4;
+  readonly epoch?: string;
 }
 
 interface ReservationGeneration {
@@ -90,18 +98,20 @@ interface ReservationGeneration {
   claimedLegacy: boolean;
   reserved: boolean;
   released: boolean;
-  version: 1 | 2 | 3;
+  version: 1 | 2 | 3 | 4;
 }
 
 export function classifyDbosPromptReservationState(
   records: readonly DbosStepRecord[],
   baseline = 0,
+  epoch?: string,
 ): DbosPromptReservationState {
-  const state = emptyDbosPromptReservationState(baseline);
+  const state = emptyDbosPromptReservationState(baseline, epoch);
   const generations = new Map<string, Map<number, ReservationGeneration>>();
   const deltas: number[] = [];
   for (const record of records) {
     if (record.stepName.startsWith(`${DELTA_PREFIX}:`)) {
+      if (epoch !== undefined) continue;
       const delta = parseDelta(record.output);
       if (delta !== undefined) {
         deltas.push(delta);
@@ -111,7 +121,7 @@ export function classifyDbosPromptReservationState(
     }
     if (!record.stepName.startsWith(`${RESERVATION_PREFIX}:`)) continue;
     const event = parseReservation(record.output);
-    if (event === undefined) continue;
+    if (event === undefined || event.epoch !== epoch) continue;
     state.hasEvents = true;
     let byGeneration = generations.get(event.reservationId);
     if (byGeneration === undefined) {
@@ -126,7 +136,7 @@ export function classifyDbosPromptReservationState(
     };
     entry.claimedLegacy ||= event.claimedLegacy;
     entry.tokenId ??= event.tokenId;
-    entry.version = Math.max(entry.version, event.version) as 1 | 2 | 3;
+    entry.version = Math.max(entry.version, event.version) as 1 | 2 | 3 | 4;
     if (event.operation === "reserve") entry.reserved = true;
     else entry.released = true;
     byGeneration.set(event.generation, entry);
@@ -195,6 +205,13 @@ function parseReservation(output: WorkflowSerializableValue): ParsedReservation 
     || typeof output["reservationId"] !== "string" || typeof output["generation"] !== "number"
     || !Number.isInteger(output["generation"]) || output["generation"] < 1
     || (output["operation"] !== "reserve" && output["operation"] !== "release")) return undefined;
+  if (output["version"] === 4 && typeof output["tokenId"] === "string"
+    && typeof output["claimedLegacy"] === "boolean" && typeof output["epoch"] === "string") {
+    return {
+      reservationId: output["reservationId"], generation: output["generation"], operation: output["operation"],
+      tokenId: output["tokenId"], claimedLegacy: output["claimedLegacy"], version: 4, epoch: output["epoch"],
+    };
+  }
   if (output["version"] === 3 && typeof output["tokenId"] === "string"
     && typeof output["claimedLegacy"] === "boolean") {
     return {
@@ -241,18 +258,40 @@ export class DbosPromptReservationTracker {
 
   constructor(private readonly host: DbosPromptReservationHost) {}
 
-  register(workflowId: string, pending: number): void {
-    this.baselines.set(workflowId, pending);
-    this.states.set(workflowId, emptyDbosPromptReservationState(pending));
+  registerWorkflow(workflowId: string, pending: number | undefined, existingPending: number): number {
+    if (pending === undefined) return this.register(workflowId, existingPending);
+    return this.states.has(workflowId)
+      ? this.setBaseline(workflowId, pending)
+      : this.register(workflowId, pending);
   }
 
-  setBaseline(workflowId: string, pending: number): void { this.register(workflowId, pending); }
+  register(workflowId: string, pending: number): number {
+    const existing = this.states.get(workflowId);
+    if (existing !== undefined) return pendingPrompts(existing);
+    this.baselines.set(workflowId, pending);
+    this.states.set(workflowId, emptyDbosPromptReservationState(pending));
+    return Math.max(0, Math.trunc(pending));
+  }
+
+  setBaseline(workflowId: string, pending: number): number {
+    const normalized = Math.max(0, Math.trunc(pending));
+    this.baselines.set(workflowId, normalized);
+    this.states.set(workflowId, emptyDbosPromptReservationState(normalized, crypto.randomUUID()));
+    return normalized;
+  }
   delete(workflowId: string): void { this.baselines.delete(workflowId); this.states.delete(workflowId); }
   clear(): void { this.baselines.clear(); this.states.clear(); }
-  metadataPendingPrompts(workflowId: string, fallback: number): number { return this.baselines.get(workflowId) ?? fallback; }
+  metadataEntry(workflowId: string, entry: DurableCheckpointEntry): DurableCheckpointEntry {
+    const epoch = this.states.get(workflowId)?.epoch;
+    return {
+      ...entry,
+      pendingPrompts: this.baselines.get(workflowId) ?? entry.pendingPrompts,
+      ...(epoch !== undefined ? { promptReservationEpoch: epoch } : {}),
+    };
+  }
 
-  hydrate(workflowId: string, baseline: number, records: readonly DbosStepRecord[]): number {
-    const state = classifyDbosPromptReservationState(records, baseline);
+  hydrate(workflowId: string, baseline: number, records: readonly DbosStepRecord[], epoch?: string): number {
+    const state = classifyDbosPromptReservationState(records, baseline, epoch);
     this.baselines.set(workflowId, baseline);
     this.states.set(workflowId, state);
     return pendingPrompts(state);
@@ -288,11 +327,12 @@ export class DbosPromptReservationTracker {
     if (current !== undefined) return tokenFor(reservationId, current);
     const generation = (state.maxGeneration.get(reservationId) ?? 0) + 1;
     const claimedLegacy = !state.releasedGeneration.has(reservationId) && state.anonymousLegacyBalance > 0;
-    const tokenId = `prompt:${encodeURIComponent(reservationId)}:${generation}`;
+    const epochPrefix = state.epoch === undefined ? "" : `${state.epoch}:`;
+    const tokenId = `prompt:${epochPrefix}${encodeURIComponent(reservationId)}:${generation}`;
     const reservation = { generation, tokenId, claimedLegacy };
     applyReserve(state, reservationId, reservation);
     this.syncPending(workflowId, state);
-    this.persistReservation(workflowId, reservationId, reservation, "reserve");
+    this.persistReservation(workflowId, state, reservationId, reservation, "reserve");
     return tokenFor(reservationId, reservation);
   }
 
@@ -310,7 +350,7 @@ export class DbosPromptReservationTracker {
     const reservationId = `__scalar:${id}`;
     const reservation = { generation: 1, tokenId: `scalar:${id}`, claimedLegacy: false };
     applyReserve(state, reservationId, reservation);
-    this.persistReservation(workflowId, reservationId, reservation, "reserve");
+    this.persistReservation(workflowId, state, reservationId, reservation, "reserve");
   }
 
   private releaseUnownedToken(workflowId: string, state: DbosPromptReservationState, tokenId: string): void {
@@ -320,7 +360,7 @@ export class DbosPromptReservationTracker {
     state.releasedGeneration.set(reservationId, 1);
     consumeToken(state, tokenId);
     state.hasEvents = true;
-    this.persistReservation(workflowId, reservationId, reservation, "release");
+    this.persistReservation(workflowId, state, reservationId, reservation, "release");
   }
 
   private releaseAnonymous(workflowId: string, state: DbosPromptReservationState): void {
@@ -331,7 +371,7 @@ export class DbosPromptReservationTracker {
     state.anonymousLegacyBalance = Math.max(0, state.anonymousLegacyBalance - 1);
     state.consumedTokens.add(reservation.tokenId);
     state.hasEvents = true;
-    this.persistReservation(workflowId, reservationId, reservation, "release");
+    this.persistReservation(workflowId, state, reservationId, reservation, "release");
   }
 
   private releaseGeneration(
@@ -341,7 +381,7 @@ export class DbosPromptReservationTracker {
     reservation: DbosActivePromptReservation,
   ): void {
     applyRelease(state, reservationId, reservation);
-    this.persistReservation(workflowId, reservationId, reservation, "release");
+    this.persistReservation(workflowId, state, reservationId, reservation, "release");
   }
 
   private state(workflowId: string): DbosPromptReservationState {
@@ -360,14 +400,15 @@ export class DbosPromptReservationTracker {
 
   private persistReservation(
     workflowId: string,
+    state: DbosPromptReservationState,
     reservationId: string,
     reservation: DbosActivePromptReservation,
     operation: "reserve" | "release",
   ): void {
     this.host.persist(
       workflowId,
-      promptReservationStepName(reservationId, reservation.generation, operation),
-      encodePromptReservationEvent({ reservationId, operation, ...reservation }),
+      promptReservationStepName(reservationId, reservation.generation, operation, state.epoch),
+      encodePromptReservationEvent({ reservationId, operation, ...reservation, ...(state.epoch !== undefined ? { epoch: state.epoch } : {}) }),
     );
   }
 }

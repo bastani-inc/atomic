@@ -110,9 +110,22 @@ export interface DurableWorkflowBackend {
 
   /** Get the top-level workflow handle, or `undefined` if not registered. */
   getWorkflow(workflowId: string): DurableWorkflowHandle | undefined;
+  /**
+   * Return one authoritative loadable handle snapshot. Persistent backends use
+   * this narrow seam to refresh once and classify from that same generation.
+   */
+  getLoadableWorkflow?(workflowId: string): DurableWorkflowHandle | undefined;
 
   /** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
+  /** Atomically update status only when the authoritative status is expected. */
+  transitionWorkflowStatus?(
+    workflowId: string,
+    expectedStatuses: readonly DurableWorkflowStatus[],
+    status: DurableWorkflowStatus,
+    pendingPrompts?: number,
+    resumable?: boolean,
+  ): boolean | Promise<boolean>;
   /** Atomically adjust unresolved UI prompt count, clamped at zero. */
   adjustPendingPrompts?(workflowId: string, delta: number): void;
 
@@ -319,6 +332,13 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     if (!rec) return;
     rec.handle = { ...rec.handle, status, updatedAt: Date.now(), ...(pendingPrompts !== undefined ? { pendingPrompts } : {}), ...(resumable !== undefined ? { resumable } : {}) };
     if (pendingPrompts !== undefined) this.promptReservations.delete(workflowId);
+  }
+
+  transitionWorkflowStatus(workflowId: string, expected: readonly DurableWorkflowStatus[], status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): boolean {
+    const current = this.workflows.get(workflowId)?.handle.status;
+    if (current === undefined || !expected.includes(current)) return false;
+    this.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
+    return true;
   }
 
   adjustPendingPrompts(workflowId: string, delta: number): void {

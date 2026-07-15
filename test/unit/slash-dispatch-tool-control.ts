@@ -243,13 +243,31 @@ describe("tool run-control actions", () => {
 
         assert.equal(result.action, "quit");
         const quit = result as { status: string; message: string };
-        assert.equal(quit.status, "noop");
+        assert.equal(quit.status, "partial");
+        assert.deepEqual(Object.keys(result).sort(), ["action", "message", "runId", "status"]);
         assert.match(quit.message, /Quit 1 run\(s\)/);
+        assert.ok(quit.message.indexOf(controllable) < quit.message.indexOf(noController));
         assert.match(quit.message, new RegExp(noController));
         assert.match(quit.message, /no_active_stages|no controllable stages/i);
         assert.equal(store.runs().find((run) => run.id === controllable)?.status, "paused");
         assert.equal(store.runs().find((run) => run.id === noController)?.status, "running");
         assert.equal(controller.signal.aborted, false);
+    });
+
+    test.serial("makeExecuteWorkflowTool mixed quit preserves requested order when failure comes first", async () => {
+        const noController = `quit-tool-order-failure-${Date.now()}`;
+        const controllable = `quit-tool-order-success-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(noController));
+        store.recordRunStart(makeInflightRun(controllable));
+        registerTestStageHandle(controllable, "quit-stage");
+
+        const result = await makeToolHandler()({ action: "quit", all: true }, {} as never);
+
+        assert.equal(result.action, "quit");
+        const quit = result as { status: string; message: string };
+        assert.equal(quit.status, "partial");
+        assert.ok(quit.message.indexOf(noController) < quit.message.indexOf(controllable));
+        assert.match(quit.message, /failed to quit 1 run\(s\)/);
     });
 
     test.serial("makeExecuteWorkflowTool quit all reports rejected pause details", async () => {

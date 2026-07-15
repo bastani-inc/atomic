@@ -177,6 +177,8 @@ export interface DurableCheckpointEntry {
   readonly status: DurableWorkflowStatus;
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;
+  /** DBOS prompt-ledger generation; omitted for pre-generation metadata. */
+  readonly promptReservationEpoch?: string;
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;

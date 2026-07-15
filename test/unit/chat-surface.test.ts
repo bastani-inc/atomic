@@ -230,7 +230,7 @@ describe("renderHintRows", () => {
     const theme = deriveGraphTheme({});
     const out = renderHintRows(
       [
-        { command: "/workflow connect 0391c9c1", hint: "watch, attach & steer" },
+        { command: "/workflow connect 0391c9c1", hint: "see agents working · chat with and steer each stage" },
         { command: "/workflow status", hint: "list retained runs" },
       ],
       theme,

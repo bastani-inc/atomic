@@ -46,6 +46,7 @@ export async function settleResumeAcknowledgements(
     attempted.map(({ handle }) => handle.resume(message)),
   );
   const resumed: StageSnapshot[] = [];
+  let acknowledged = 0;
   const failures: string[] = [];
   const lateFailures: string[] = [];
   const resumedRunIds = new Set<string>();
@@ -55,6 +56,7 @@ export async function settleResumeAcknowledgements(
     const controlVisiblyRunning = target.handle.status === "running"
       || target.handle.status === "pending"
       || target.handle.status === "awaiting_input";
+    if (result.status === "fulfilled" || controlVisiblyRunning) acknowledged += 1;
     if ((result.status === "fulfilled" || controlVisiblyRunning) && controlRun?.endedAt === undefined) {
       const stage = targetStage(store, target);
       if (stage?.status === "paused" || stage?.status === "blocked") {
@@ -74,5 +76,22 @@ export async function settleResumeAcknowledgements(
     else if (controlRun?.endedAt === undefined && targetIsActuallyPaused(store, target)) failures.push(qualified);
   });
   for (const controlRunId of resumedRunIds) store.recordRunResumed(controlRunId);
-  return { resumed, acknowledged: resumed.length, failures, lateFailures };
+  return { resumed, acknowledged, failures, lateFailures };
+}
+
+/** Let immediate prompt/root finalizers settle before public resume reconciliation. */
+export async function waitForResumeReconciliation(acknowledged: number): Promise<void> {
+  if (acknowledged > 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
+/** Existing optional message channel for a fulfilled zero-stage or terminal acknowledgement. */
+export function resumeAcknowledgementMessage(
+  acknowledged: number,
+  resumed: number,
+  runId: string,
+  current: { readonly status: string; readonly endedAt?: number },
+): string | undefined {
+  if (acknowledged === 0 || (current.endedAt === undefined && resumed > 0)) return undefined;
+  return `Resume acknowledged; workflow ${runId} ${current.endedAt !== undefined
+    ? `reached terminal status ${current.status}` : "can continue"}.`;
 }
