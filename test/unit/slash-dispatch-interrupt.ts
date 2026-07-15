@@ -288,8 +288,8 @@ describe("/workflow interrupt chat command", () => {
         );
     });
 
-    test.serial("top-level /workflow reload is skipped while workflows are in flight", async () => {
-        const runId = `reload-slash-blocked-${Date.now()}`;
+    test.serial("top-level /workflow reload stays available while workflows are in flight", async () => {
+        const runId = `reload-slash-inflight-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
 
         const { pi, commands } = buildMockPi();
@@ -305,15 +305,12 @@ describe("/workflow interrupt chat command", () => {
         await workflowCmd.options.handler("reload", ctx);
 
         assert.equal(
-            messages.some((message) => message.includes("still in flight")),
-            true,
-        );
-        assert.equal(
             messages.some((message) =>
                 message.includes("Reloaded workflow resources"),
             ),
-            false,
+            true,
         );
+        assert.equal(store.runs().find((run) => run.id === runId)?.endedAt, undefined);
     });
 
     test.serial("top-level /workflow reload reports reload failures", async () => {
@@ -334,7 +331,7 @@ describe("/workflow interrupt chat command", () => {
 
         assert.equal(
             messages.some((message) =>
-                message.includes("Reload failed: package loader unavailable"),
+                message.includes("current registry was retained: package loader unavailable"),
             ),
             true,
         );

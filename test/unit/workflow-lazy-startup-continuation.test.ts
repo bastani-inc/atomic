@@ -387,10 +387,13 @@ describe("workflow lazy-startup continuation fixes", () => {
       await sessionStart({}, { ui: { notify: () => undefined } });
       await waitForRefresh(0);
       await sessionStart({}, { ui: { notify: () => undefined } });
-      await waitForRefresh(1);
 
-      assert.equal(refreshCalls, 2);
+      // The permanent reload coordinator serializes generations. Release the
+      // stale pass before waiting for the new session's trailing pass to start.
+      assert.equal(refreshCalls, 1);
       resolvers[0]?.([{ path: oldPath, enabled: true }]);
+      await waitForRefresh(1);
+      assert.equal(refreshCalls, 2);
       resolvers[1]?.([{ path: newPath, enabled: true }]);
 
       const workflowCmd = commands.find((command) => command.name === "workflow");

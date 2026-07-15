@@ -36,7 +36,11 @@ import {
 } from "./hil-answer-notifications.js";
 import type { ExtensionAPI, PiModelContext } from "./public-types.js";
 import { makeMcpPort, makePersistencePort } from "./workflow-ports.js";
-import { inFlightRunCount, reloadBlockedMessage, WorkflowReloadBlockedError } from "./workflow-targets.js";
+import { createWorkflowReloadCoordinator } from "./workflow-reload-coordinator.js";
+import {
+  workflowReloadDiagnostics,
+  type WorkflowReloadReport,
+} from "./workflow-reload-report.js";
 
 export interface WorkflowExtensionRuntimeState {
   persistenceRef: { current: WorkflowPersistencePort | undefined };
@@ -49,8 +53,8 @@ export interface WorkflowExtensionRuntimeState {
   runtimeForContext(ctx?: PiModelContext): ExtensionRuntime;
   resetWorkflowDiscoveryForSession(): void;
   ensureWorkflowConfigLoaded(): Promise<void>;
-  ensureWorkflowResourcesLoaded(options?: { allowInFlight?: boolean }): Promise<void>;
-  reloadWorkflowResources(options?: { allowInFlight?: boolean }): Promise<void>;
+  ensureWorkflowResourcesLoaded(): Promise<void>;
+  reloadWorkflowResources(): Promise<WorkflowReloadReport>;
   startWorkflowDiscoveryWarmup(onSettled?: () => void): void;
   runWithLifecycleSuppressedForPolicy<T>(policy: WorkflowExecutionPolicy, fn: () => Promise<T>): Promise<T>;
   setNotificationsActive(active: boolean): void;
@@ -198,10 +202,9 @@ export function createWorkflowExtensionRuntimeState(
     });
   }
 
-  let workflowReloadQueue: Promise<void> = Promise.resolve();
-
-  let lazyDiscoveryPromise: Promise<void> | null = null;
+  let lazyDiscoveryPromise: Promise<WorkflowReloadReport> | null = null;
   let workflowDiscoveryGeneration = 0;
+  let activeResourceGeneration = 0;
   function deferToMacrotask(): Promise<void> {
     return new Promise((resolve) => setImmediate(resolve));
   }
@@ -245,7 +248,6 @@ export function createWorkflowExtensionRuntimeState(
     workflowDiscoveryGeneration += 1;
     discoveryRef.current = null;
     lazyDiscoveryPromise = null;
-    workflowReloadQueue = Promise.resolve();
     rebuildRuntime(startupDiscovery.registry);
   }
 
@@ -257,13 +259,32 @@ export function createWorkflowExtensionRuntimeState(
     rebuildRuntime();
   }
 
-  function queueWorkflowResourceReload(options: { allowInFlight?: boolean } | undefined, generation: number): Promise<void> {
-    const reload = workflowReloadQueue.then(() => reloadWorkflowResourcesNow(options, generation));
-    workflowReloadQueue = reload.catch(() => {});
-    return reload;
+  function supersededReloadReport(
+    coalescedRequests: number,
+    configResult?: ConfigLoadResult,
+    result?: DiscoveryResult,
+  ): WorkflowReloadReport {
+    return {
+      outcome: "superseded",
+      generation: activeResourceGeneration,
+      workflowCount: runtimeRef.current.registry.names().length,
+      coalescedRequests,
+      diagnostics: workflowReloadDiagnostics(configResult?.diagnostics ?? [], result?.errors ?? []),
+    };
   }
 
-  function trackLazyDiscovery(pending: Promise<void>): Promise<void> {
+  function failedReloadReport(error: unknown, coalescedRequests: number): WorkflowReloadReport {
+    return {
+      outcome: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      generation: activeResourceGeneration,
+      workflowCount: runtimeRef.current.registry.names().length,
+      coalescedRequests,
+      diagnostics: [],
+    };
+  }
+
+  function trackLazyDiscovery(pending: Promise<WorkflowReloadReport>): Promise<WorkflowReloadReport> {
     lazyDiscoveryPromise = pending;
     void pending.finally(() => {
       if (lazyDiscoveryPromise === pending) lazyDiscoveryPromise = null;
@@ -271,49 +292,70 @@ export function createWorkflowExtensionRuntimeState(
     return pending;
   }
 
-  function reloadWorkflowResources(options?: { allowInFlight?: boolean }): Promise<void> {
-    const generation = workflowDiscoveryGeneration;
-    return trackLazyDiscovery(queueWorkflowResourceReload(options, generation));
+  function reloadWorkflowResources(): Promise<WorkflowReloadReport> {
+    return trackLazyDiscovery(reloadCoordinator.request(workflowDiscoveryGeneration));
   }
   async function loadPackageWorkflowPaths(): Promise<string[]> {
     const packageResources = (await pi.refreshWorkflowResources?.()) ?? pi.getWorkflowResources?.() ?? [];
     return packageResources.filter((resource) => resource.enabled !== false).map((resource) => resource.path);
   }
-  async function reloadWorkflowResourcesNow(options: { allowInFlight?: boolean } | undefined, generation: number): Promise<void> {
-    const activeRuns = inFlightRunCount();
-    if (options?.allowInFlight !== true && activeRuns > 0) {
-      throw new WorkflowReloadBlockedError(reloadBlockedMessage(activeRuns));
-    }
-    if (options?.allowInFlight === true && activeRuns > 0 && process.env.ATOMIC_WORKFLOW_DEBUG === "1") {
-      console.warn(`Workflow reload bypassed in-flight guard with ${activeRuns} active run(s).`);
+  async function reloadWorkflowResourcesNow(
+    discoveryGeneration: number,
+    coalescedRequests: number,
+  ): Promise<WorkflowReloadReport> {
+    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+      return supersededReloadReport(coalescedRequests);
     }
     const configResult = await loadWorkflowConfig();
-    if (!isWorkflowDiscoveryCurrent(generation)) return;
-    applyWorkflowConfig(configResult);
+    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+      return supersededReloadReport(coalescedRequests, configResult);
+    }
     const hasGlobal = configResult.globalConfig != null;
     const hasProject = configResult.projectConfig != null;
     const discoveryConfig = hasGlobal || hasProject
       ? toScopedDiscoveryConfig(configResult.globalConfig ?? null, configResult.projectConfig ?? null, { projectRoot: process.cwd() })
       : undefined;
     const packageWorkflowPaths = await loadPackageWorkflowPaths();
-    if (!isWorkflowDiscoveryCurrent(generation)) return;
+    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+      return supersededReloadReport(coalescedRequests, configResult);
+    }
     const result = await discoverWorkflows({ config: discoveryConfig, packageWorkflowPaths });
-    if (!isWorkflowDiscoveryCurrent(generation)) return;
+    if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) {
+      return supersededReloadReport(coalescedRequests, configResult, result);
+    }
+
+    // Commit config, diagnostics, and the replacement runtime synchronously,
+    // after every fallible/awaited discovery step has completed.
+    applyWorkflowConfig(configResult);
     discoveryRef.current = result;
     rebuildRuntime(result.registry);
+    activeResourceGeneration += 1;
+    return {
+      outcome: "applied",
+      generation: activeResourceGeneration,
+      workflowCount: result.registry.names().length,
+      coalescedRequests,
+      diagnostics: workflowReloadDiagnostics(configResult.diagnostics, result.errors),
+    };
   }
 
-  async function ensureWorkflowResourcesLoaded(options?: { allowInFlight?: boolean }): Promise<void> {
+  const reloadCoordinator = createWorkflowReloadCoordinator(async (discoveryGeneration, coalescedRequests) => {
+    try {
+      return await reloadWorkflowResourcesNow(discoveryGeneration, coalescedRequests);
+    } catch (error) {
+      return failedReloadReport(error, coalescedRequests);
+    }
+  });
+
+  async function ensureWorkflowResourcesLoaded(): Promise<void> {
     while (!pi.disableAsyncDiscovery && discoveryRef.current === null) {
-      const generation = workflowDiscoveryGeneration;
-      const pending = lazyDiscoveryPromise ?? trackLazyDiscovery(
-        queueWorkflowResourceReload({ allowInFlight: options?.allowInFlight ?? true }, generation),
-      );
-      await pending;
-      if (!isWorkflowDiscoveryCurrent(generation)) continue;
-      if (discoveryRef.current === null) {
-        lazyDiscoveryPromise = null;
-      }
+      const discoveryGeneration = workflowDiscoveryGeneration;
+      const pending = lazyDiscoveryPromise
+        ?? trackLazyDiscovery(reloadCoordinator.request(discoveryGeneration));
+      const report = await pending;
+      if (report.outcome === "failed") throw new Error(report.error);
+      if (!isWorkflowDiscoveryCurrent(discoveryGeneration)) continue;
+      if (discoveryRef.current === null) lazyDiscoveryPromise = null;
     }
   }
 
@@ -321,10 +363,14 @@ export function createWorkflowExtensionRuntimeState(
     if (pi.disableAsyncDiscovery || discoveryRef.current !== null || lazyDiscoveryPromise !== null) return;
     const notificationStart = notificationGeneration;
     const discoveryStart = workflowDiscoveryGeneration;
-    const pending = (async () => {
+    const pending = (async (): Promise<WorkflowReloadReport> => {
       await deferToMacrotask();
-      if (!isWorkflowDiscoveryCurrent(discoveryStart)) return;
-      await queueWorkflowResourceReload({ allowInFlight: true }, discoveryStart);
+      if (!isWorkflowDiscoveryCurrent(discoveryStart)) {
+        return supersededReloadReport(1);
+      }
+      const report = await reloadCoordinator.request(discoveryStart);
+      if (report.outcome === "failed") throw new Error(report.error);
+      return report;
     })();
     lazyDiscoveryPromise = pending;
     const isCurrentWarmup = (): boolean => lazyDiscoveryPromise === pending

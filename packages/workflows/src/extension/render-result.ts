@@ -16,6 +16,7 @@ import type { WorkflowDetails } from "../shared/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { renderStatusList } from "../tui/status-list.js";
+import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { renderRunDetail } from "../tui/run-detail.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
@@ -138,7 +139,7 @@ type TranscriptResult = {
 };
 type SendResult = { action: "send"; runId: string; stageId: string; delivery: string; status: "ok" | "noop"; message: string };
 type PauseResult = { action: "pause"; runId: string; status: string; message: string };
-type ReloadResult = { action: "reload"; status: "ok" | "noop"; message: string };
+type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
 type KillResult = { action: "kill"; runId: string; status: string; message: string };
 type ResumeResult = { action: "resume"; runId: string; status: string; message: string };

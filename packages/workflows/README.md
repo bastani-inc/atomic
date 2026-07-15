@@ -29,6 +29,8 @@ Adding workflow files under `.atomic/workflows/` (project scope) or `~/.atomic/a
 }
 ```
 
+After Atomic is running, use `/workflow reload` or the workflow tool's `reload` action to rescan all workflow sources in process. Additions, edits, renames, deletions, config changes, and package-resource changes become visible immediately to list/get/inputs/help/completion/invocation surfaces. Reload requests are serialized/coalesced and publish a complete replacement registry; an in-flight workflow keeps its original definition while later calls use the new registry. Fatal refresh failures retain the prior registry, and skipped malformed or missing resources are reported with actionable diagnostics while valid siblings remain available.
+
 ### Workflow lifecycle notifications
 
 Workflow lifecycle notices are enabled by default. They send steer prompts into the main chat/model context when a run completes, fails, or ends blocked. Awaiting-input prompts are tracked for dedupe/restore, but they do not wake the main chat agent. Configure lifecycle tracking in the same extension config file:

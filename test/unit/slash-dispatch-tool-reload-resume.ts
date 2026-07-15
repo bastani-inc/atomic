@@ -246,7 +246,7 @@ describe("tool run-control actions", () => {
         assert.equal(reload.message, "Reloaded workflow resources.");
     });
 
-    test.serial("makeExecuteWorkflowTool reload is skipped while workflows are in flight", async () => {
+    test.serial("makeExecuteWorkflowTool reload stays available while workflows are in flight", async () => {
         const registry = createRegistry([]);
         const runtime = createExtensionRuntime({ registry });
         let reloads = 0;
@@ -257,7 +257,8 @@ describe("tool run-control actions", () => {
                 reloads += 1;
             },
         );
-        store.recordRunStart(makeInflightRun(`reload-blocked-${Date.now()}`));
+        const runId = `reload-inflight-${Date.now()}`;
+        store.recordRunStart(makeInflightRun(runId));
 
         const result = await handler(
             { action: "reload", reason: "test" },
@@ -270,9 +271,10 @@ describe("tool run-control actions", () => {
             status: string;
             message: string;
         };
-        assert.equal(reload.status, "noop");
-        assert.match(reload.message, /still in flight/);
-        assert.equal(reloads, 0);
+        assert.equal(reload.status, "ok");
+        assert.match(reload.message, /Reloaded workflow resources/);
+        assert.equal(reloads, 1);
+        assert.equal(store.runs().find((run) => run.id === runId)?.endedAt, undefined);
     });
 
     test.serial("makeExecuteWorkflowTool reload surfaces callback failures as noop", async () => {

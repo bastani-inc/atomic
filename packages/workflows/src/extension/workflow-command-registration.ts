@@ -23,22 +23,25 @@ import {
   type WorkflowCommandHandler,
   type WorkflowCommandOutputDetails,
 } from "./workflow-command-utils.js";
-import { emitTerminalRunDetailSurface, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import {
+  emitTerminalRunDetailSurface,
+  formatWorkflowReloadReport,
+  formatWorkflowResourceLoadWarning,
+} from "./workflow-command-surfaces.js";
 import { handleRunControlCommand, type WorkflowRunControlDeps } from "./workflow-run-control-command.js";
 import { workflowPolicyFromContext } from "./workflow-policy.js";
 import {
-  inFlightRunCount,
-  reloadBlockedMessage,
   reloadFailureMessage,
   resolveRunIdPrefix,
   overlaySurfaceFromContext,
 } from "./workflow-targets.js";
+import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 
 export interface WorkflowSlashCommandDeps {
   runtimeProxy: ExtensionRuntime;
   runtimeForContext: (ctx?: PiCommandContext) => ExtensionRuntime;
   overlay: GraphOverlayPort;
-  reloadWorkflowResources: () => Promise<void> | void;
+  reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
   ensureWorkflowResourcesLoaded: () => Promise<void> | void;
   runWithLifecycleSuppressedForPolicy: <T>(
     policy: WorkflowExecutionPolicy,
@@ -141,11 +144,11 @@ async function workflowSlashHandler(
     return;
   }
   if (subcommand === "reload") {
-    const activeRuns = inFlightRunCount();
-    if (activeRuns > 0) return fail(reloadBlockedMessage(activeRuns));
     try {
-      await deps.reloadWorkflowResources();
-      print("Reloaded workflow resources.");
+      const report = normalizeWorkflowReloadReport(await deps.reloadWorkflowResources());
+      const message = formatWorkflowReloadReport(report);
+      if (report.outcome === "applied") print(message);
+      else fail(message);
     } catch (error) {
       fail(reloadFailureMessage(error));
     }
