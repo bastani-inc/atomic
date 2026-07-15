@@ -73,6 +73,11 @@ describe("/workflow resume <runId> — active run is refused", () => {
         const openCalls: Array<{ overlay: boolean }> = [];
         const { pi, commands } = buildMockPi();
         addFactoryStubs(pi);
+        let refreshCalls = 0;
+        pi.refreshWorkflowResources = async () => {
+            refreshCalls += 1;
+            return [];
+        };
         const customFn: PiCustomOverlayFunction = (
             _factoryArg,
             options: PiCustomOverlayOptions,
@@ -107,6 +112,7 @@ describe("/workflow resume <runId> — active run is refused", () => {
         const joined = msgs.join("\n");
         assert.match(joined, /already running/);
         assert.match(joined, /\/workflow connect/);
+        assert.equal(refreshCalls, 0, "exact active runs must bypass durable preparation and discovery");
     });
 
     test.serial("active run resume output does NOT include 'still active — no resume needed'", async () => {

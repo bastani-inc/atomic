@@ -288,6 +288,15 @@ export async function handleRunControlCommand(
     } else if (action === "resume") {
       const backend = getDurableBackend();
       const exactBeforePreparation = store.runs().find((run) => run.id === target);
+      const exactIsActivelyRunning = exactBeforePreparation !== undefined
+        && exactBeforePreparation.endedAt === undefined
+        && exactBeforePreparation.status === "running"
+        && !exactBeforePreparation.stages.some((stage) => stage.status === "paused")
+        && exactBeforePreparation.exitReason !== "quit";
+      if (exactIsActivelyRunning) {
+        fail(`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`);
+        return true;
+      }
       let durable: readonly ResumableWorkflowEntry[] = [];
       let preparationError: string | undefined;
       const needsDurablePreparation = exactBeforePreparation === undefined

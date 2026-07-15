@@ -372,7 +372,8 @@ describe("workflow reload rediscovery matrix", () => {
     const promptResult = new Promise<string>((resolve) => { releasePrompt = resolve; });
     const harness = createHarness({
       createAgentSession: async () => ({
-        session: fakeSession(async () => {
+        session: fakeSession(async (text) => {
+          if (text.endsWith(":resume")) return `resumed:${text}`;
           markPromptStarted();
           return promptResult;
         }),
@@ -381,8 +382,8 @@ describe("workflow reload rediscovery matrix", () => {
     const durableBackend = new InMemoryDurableBackend();
     durableBackend.registerWorkflow({
       workflowId: "durable-reload-retained",
-      name: "durable retained",
-      inputs: {},
+      name: "reload-inflight",
+      inputs: { message: "resume" },
       createdAt: 1,
       status: "paused",
       completedCheckpoints: 1,
@@ -390,12 +391,19 @@ describe("workflow reload rediscovery matrix", () => {
     setDurableBackend(durableBackend);
     const durableBefore = structuredClone(durableBackend.listResumableWorkflows());
     await harness.execute({ action: "reload" });
+    assert.deepEqual(durableBackend.listResumableWorkflows(), durableBefore);
+    const resumeMessageStart = harness.messages.length;
+    await harness.commands.get("workflow")?.handler?.("resume durable-reload-retained", {
+      hasUI: false,
+      ui: { notify: () => undefined },
+    });
+    assert.match(harness.messages.slice(resumeMessageStart).join("\n"), /Resuming durable workflow[\s\S]*checkpoints will be replayed/);
     const running = harness.execute({ action: "run", workflow: "reload-inflight", inputs: { message: "value" } });
     await promptStarted;
     await writeWorkflow(workflowPath, { name: "reload-inflight", description: "new metadata", prompt: "new prompt" });
     const reloaded = reloadResult(await harness.execute({ action: "reload" }));
     assert.equal(reloaded.status, "ok");
-    assert.deepEqual(durableBackend.listResumableWorkflows(), durableBefore);
+    assert.equal(durableBackend.isWorkflowLoadable("durable-reload-retained"), true);
     const current = await harness.execute({ action: "get", workflow: "reload-inflight" });
     assert.equal(current.action, "get");
     assert.equal(current.details?.output?.description, "new metadata");

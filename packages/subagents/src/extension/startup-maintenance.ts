@@ -39,6 +39,7 @@ export function createSubagentStartupMaintenance(
     resultsDir: string;
     artifactCleanupDays: number;
     resultTtlMs: number;
+    scheduleMacrotask?: (task: () => void) => () => void;
   },
 ): SubagentStartupMaintenance {
   const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
@@ -49,7 +50,7 @@ export function createSubagentStartupMaintenance(
   );
   const cancelTasks = new Set<() => void>();
   const schedule = (task: () => void): void => {
-    const cancel = scheduleMacrotask(() => {
+    const cancel = (options.scheduleMacrotask ?? scheduleMacrotask)(() => {
       cancelTasks.delete(cancel);
       task();
     });

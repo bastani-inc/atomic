@@ -38,31 +38,37 @@ function pi(): ExtensionAPI {
   } as unknown as ExtensionAPI;
 }
 
-function nextImmediate(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("subagent startup maintenance", () => {
-  test("watcher startup is scheduled on a macrotask instead of running synchronously", async () => {
+  test("watcher startup is scheduled on a macrotask instead of running synchronously", () => {
     const root = mkdtempSync(join(tmpdir(), "atomic-subagent-maintenance-"));
     roots.push(root);
     const state = makeState();
+    const scheduled: Array<() => void> = [];
     const maintenance = createSubagentStartupMaintenance(pi(), state, {
       resultsDir: root,
       artifactCleanupDays: 1,
       resultTtlMs: 1000,
+      scheduleMacrotask: (task) => {
+        scheduled.push(task);
+        return () => undefined;
+      },
     });
 
-    maintenance.startResultWatcherDeferred();
+    try {
+      maintenance.startResultWatcherDeferred();
 
-    assert.equal(state.watcher, null, "watcher should not start during extension registration/session_start");
-    await nextImmediate();
-    assert.notEqual(state.watcher, null, "watcher should start after a macrotask yield");
-    maintenance.stop();
+      assert.equal(state.watcher, null, "watcher should not start during extension registration/session_start");
+      assert.equal(scheduled.length, 1);
+      scheduled[0]!();
+      assert.notEqual(state.watcher, null, "watcher should start when the deferred task runs");
+    } finally {
+      maintenance.stop();
+    }
     assert.equal(state.watcher, null);
   });
 });
