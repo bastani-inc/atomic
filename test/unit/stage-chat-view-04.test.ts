@@ -15,7 +15,7 @@ import {
 } from "./stage-chat-view-helpers.js";
 
 describe("StageChatView", () => {
-    test("forwards question keys (incl. ESC) to the custom UI but keeps scroll keys for the transcript", async () => {
+    test("custom UI owns printable q before conflicting tool actions and keeps scroll keys for transcript", async () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const broker = new StageUiBroker(store);
@@ -39,7 +39,7 @@ describe("StageChatView", () => {
                 terminal: { rows: 32, columns: 80 },
             } as unknown as TUI,
             piTheme: {},
-            piKeybindings: makeFakeKeybindings(),
+            piKeybindings: makeFakeKeybindings({ "app.tools.expand": ["q"] }),
             stageUiBroker: broker,
         });
 

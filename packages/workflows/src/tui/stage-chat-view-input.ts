@@ -45,7 +45,6 @@ export function handleStageChatInput(
     ctx.requestRender?.();
     return true;
   }
-  if (handleToolsExpandInput(ctx, data)) return true;
   if (ctx.mountedCustomUi) {
     return handleMountedCustomUiInput(ctx, data);
   }
@@ -59,6 +58,7 @@ export function handleStageChatInput(
     handlePromptInput(ctx, data);
     return true;
   }
+  if (handleToolsExpandInput(ctx, data)) return true;
   if (readOnlyPromptArchive && handlePromptScrollInput(ctx, data, true)) {
     return true;
   }

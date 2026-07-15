@@ -117,6 +117,39 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
+    test("printable prompt input owns q before a conflicting tools-expand action", async () => {
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a");
+        const prompt = makePendingPrompt();
+        assert.equal(store.recordStagePendingPrompt("run-1", "stage-a", prompt), true);
+        const pending = store.awaitStagePendingPrompt("run-1", "stage-a", prompt.id);
+        const { handle } = makeHandle();
+        let expanded = false;
+        let toggleCalls = 0;
+        const view = new StageChatView({
+            store,
+            graphTheme: deriveGraphTheme({}),
+            runId: "run-1",
+            stageId: "stage-a",
+            workflowName: "test-wf",
+            handle,
+            onDetach: () => {},
+            onClose: () => {},
+            piKeybindings: makeFakeKeybindings({ "app.tools.expand": ["q"] }),
+            getToolsExpanded: () => expanded,
+            setToolsExpanded: (next) => {
+                expanded = next;
+                toggleCalls += 1;
+            },
+        });
+
+        assert.equal(view.handleInput("q"), true);
+        assert.equal(expanded, false);
+        assert.equal(toggleCalls, 0);
+        view.handleInput("\r");
+        assert.equal(await pending, "q");
+        view.dispose();
+    });
 
     test("renders and resolves a structured stage pending prompt locally", async () => {
         const store = createStore();
