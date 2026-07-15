@@ -127,6 +127,11 @@ export function createExtensionAPI(
       runtime.sendMessage(message, options);
     },
 
+    sendMessages(messages, options): void {
+      runtime.assertActive();
+      runtime.sendMessages(messages, options);
+    },
+
     sendUserMessage(content, options): void {
       runtime.assertActive();
       runtime.sendUserMessage(content, options);

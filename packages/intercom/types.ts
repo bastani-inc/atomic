@@ -14,6 +14,11 @@ export interface Message {
   timestamp: number;
   replyTo?: string;
   expectsReply?: boolean;
+  source?: {
+    subagentRunId: string;
+    subagentAgent?: string;
+    subagentIndex?: number;
+  };
   content: {
     text: string;
     attachments?: Attachment[];

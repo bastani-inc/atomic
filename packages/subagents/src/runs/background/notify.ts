@@ -3,14 +3,17 @@
  */
 
 import type { ExtensionAPI } from "@bastani/atomic";
+import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
 import { buildCompletionKey, hasSeenWithTtl, recordSeen } from "./completion-dedupe.ts";
 import type { CompletionNotificationEnvelope } from "./completion-notification.ts";
-import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
+import { SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT } from "../../shared/types.ts";
 
 interface ChainStepResult {
 	agent: string;
 	output: string;
 	success: boolean;
+	intercomTarget?: string;
+	index?: number;
 }
 
 export interface SubagentNotifyDetails {
@@ -25,6 +28,8 @@ export interface SubagentNotifyDetails {
 
 interface SubagentResult {
 	id: string | null;
+	runId?: string;
+	notificationId?: string;
 	agent: string | null;
 	success: boolean;
 	summary: string;
@@ -39,6 +44,13 @@ interface SubagentResult {
 	results?: ChainStepResult[];
 	taskIndex?: number;
 	totalTasks?: number;
+}
+
+interface TerminalPreludeMessage {
+	customType: string;
+	content: string;
+	display: boolean;
+	details?: unknown;
 }
 
 interface NotifyRegistration {
@@ -87,6 +99,30 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const seen = getNotifySeen(pi);
 	const ttlMs = 10 * 60 * 1000;
 
+	const emitTerminalOrderingBarrier = (result: SubagentResult, dispatch?: (prefix: TerminalPreludeMessage[]) => void): void => {
+		const runId = result.runId ?? result.id;
+		if (!runId) return;
+		const resultTargets = result.results?.map((child, arrayIndex) =>
+			child.intercomTarget?.trim() || resolveSubagentIntercomTarget(runId, child.agent, child.index ?? arrayIndex)) ?? [];
+		const sourceSessionTargets = resultTargets.length > 0
+			? resultTargets
+			: result.agent ? [resolveSubagentIntercomTarget(runId, result.agent, 0)] : [];
+		if (sourceSessionTargets.length === 0) return;
+		const terminalId = result.notificationId?.startsWith("completion-notify-")
+			? result.notificationId.slice("completion-notify-".length)
+			: result.notificationId;
+		const payload = {
+			runId,
+			...(terminalId ? { terminalId } : {}),
+			terminalAt: Number.isFinite(result.timestamp) ? result.timestamp : Date.now(),
+			source: "background-notify" as const,
+			sourceSessionTargets,
+			...(dispatch ? { dispatch } : {}),
+		};
+		pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+		const globalHandler = (globalThis as Record<string, unknown>).__atomicTerminalOrderingBarrierHandler;
+		if (typeof globalHandler === "function") (globalHandler as (value: unknown) => void)(payload);
+	};
 	let registration: NotifyRegistration;
 	const handleComplete = (data: unknown) => {
 		if (registry.get(pi) !== registration) return;
@@ -130,15 +166,23 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			.filter((line) => line !== undefined)
 			.join("\n");
 
+		const terminalMessage = {
+			customType: "subagent-notify",
+			content,
+			display: true,
+		};
 		try {
-			pi.sendMessage(
-				{
-					customType: "subagent-notify",
-					content,
-					display: true,
-				},
-				{ triggerTurn: true },
-			);
+			let dispatched = false;
+			emitTerminalOrderingBarrier(result, (prefix) => {
+				if (typeof pi.sendMessages === "function") {
+					pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true });
+				} else {
+					for (const message of prefix) pi.sendMessage(message, { deliverAs: "steer" });
+					pi.sendMessage(terminalMessage, { triggerTurn: true });
+				}
+				dispatched = true;
+			});
+			if (!dispatched) pi.sendMessage(terminalMessage, { triggerTurn: true });
 			recordSeen(seen, key, Date.now());
 			result.acknowledge?.(true);
 		} catch (error) {

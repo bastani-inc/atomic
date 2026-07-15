@@ -122,6 +122,8 @@ export type {
 	ResourcesDiscoverResult,
 	SendMessageHandler,
 	SendMessageOptions,
+	SendMessagesHandler,
+	SendMessagesOptions,
 	SendUserMessageHandler,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,

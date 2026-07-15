@@ -47,6 +47,7 @@ function fixture() {
 		registerMessageRenderer() {},
 		appendEntry(type: string, data: { error?: string }) { entries.push({ type, data }); },
 		sendMessage(message: { customType?: string }) { inboundMessages.push(message); },
+		sendMessages(messages: Array<{ customType?: string }>) { inboundMessages.push(...messages); },
 		getSessionName: () => undefined,
 		events: {
 			on(name: string, handler: (payload: unknown) => void) {

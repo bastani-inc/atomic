@@ -267,4 +267,28 @@ describe("broker foreground delivery handshake", () => {
     assert.equal(await handoff.deliver({ ...base, generation: 2 }), "delivered");
     assert.equal(surfaced, 2);
   });
+
+  test("duplicate delivered messages release provisional idle-queue ownership", async () => {
+    const { emitter, handoff } = fixture();
+    emitter.on(INTERCOM_DETACH_REQUEST_EVENT, (request: object) => {
+      emitter.emit(INTERCOM_DETACH_RESPONSE_EVENT, { ...request, accepted: true });
+    });
+    let queued = true;
+    const deliver = () => handleForegroundInboundDelivery({
+      handoff,
+      from: from("a", "child-a"),
+      message: message("stable-message", false),
+      generation: 1,
+      surface: () => { queued = false; },
+      isCurrent: () => true,
+      onUnclaimed: () => {},
+      onDelivered: () => { queued = false; },
+    } as never);
+
+    await deliver();
+    assert.equal(queued, false);
+    queued = true;
+    await deliver();
+    assert.equal(queued, false, "a broker resend must not remain in the idle queue");
+  });
 });

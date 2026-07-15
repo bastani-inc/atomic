@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `pi.sendMessages()` for atomic, array-ordered custom-message admission without waiting for the resulting model turn, allowing companion extensions to keep related preludes and terminal notices contiguous without globally serializing unrelated work.
+
+### Fixed
+
+- Preserved accepted async-child Intercom chronology across lazily activated companion extensions by atomically admitting same-child ordinary messages before pause, completion, and failure notices; unrelated children remain independent and ask/reply behavior is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed

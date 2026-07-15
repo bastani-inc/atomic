@@ -6,6 +6,7 @@ import type { Attachment, Message, SessionInfo } from "./types.ts";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 export const SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT = "subagent:result-intercom-delivery";
+export const SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT = "subagent:terminal-ordering-barrier";
 export const INBOUND_FLUSH_DELAY_MS = 200;
 export const INBOUND_IDLE_RETRY_MS = 500;
 export const DEFAULT_UNNAMED_SESSION_ALIAS_PREFIX = "subagent-chat";
@@ -360,6 +361,35 @@ export function parseSubagentIntercomPayload(payload: unknown): { to: string; me
   }
   const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
   return { to: record.to, message: record.message, ...(requestId ? { requestId } : {}) };
+}
+function subagentTargetPart(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
+}
+
+function resolveSubagentSourceTarget(runId: string, agent: string, index: number): string {
+  return `subagent-${subagentTargetPart(agent)}-${subagentTargetPart(runId)}-${index + 1}`;
+}
+
+export function parseSubagentResultBarrier(payload: unknown): { runId: string; terminalId?: string; sourceSessionTargets: string[] } | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.runId !== "string" || !Array.isArray(record.children)) return null;
+  const runId = record.runId;
+  const requestId = typeof record.requestId === "string" ? record.requestId : undefined;
+  const terminalId = requestId?.startsWith("completion-") ? requestId.slice("completion-".length) : requestId;
+  const sourceSessionTargets = record.children.flatMap((child, arrayIndex) => {
+    if (!child || typeof child !== "object" || Array.isArray(child)) return [];
+    const childRecord = child as Record<string, unknown>;
+    const target = typeof childRecord.intercomTarget === "string" ? childRecord.intercomTarget.trim() : "";
+    if (target) return [target];
+    if (typeof childRecord.agent !== "string") return [];
+    const index = typeof childRecord.index === "number" && Number.isInteger(childRecord.index) && childRecord.index >= 0
+      ? childRecord.index : arrayIndex;
+    return [resolveSubagentSourceTarget(runId, childRecord.agent, index)];
+  });
+  return sourceSessionTargets.length > 0
+    ? { runId, ...(terminalId ? { terminalId } : {}), sourceSessionTargets }
+    : null;
 }
 export function resolveIntercomPresenceName(sessionName: string | undefined, sessionId: string): string {
   const trimmedName = sessionName?.trim();

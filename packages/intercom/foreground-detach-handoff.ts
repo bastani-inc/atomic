@@ -130,7 +130,9 @@ export async function handleForegroundInboundDelivery(input: {
   surface: () => void;
   isCurrent: () => boolean;
   onUnclaimed: () => void;
+  onDelivered?: () => void;
 }): Promise<void> {
   const disposition = await input.handoff.deliver(input);
-  if (disposition === "unclaimed" && input.isCurrent()) input.onUnclaimed();
+  if (disposition === "delivered") input.onDelivered?.();
+  else if (disposition === "unclaimed" && input.isCurrent()) input.onUnclaimed();
 }

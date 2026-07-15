@@ -4,6 +4,10 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserved per-child chronology between busy-parent Intercom messages and terminal async subagent notifications: paused, completed, and failed paths now claim pre-terminal ordinary messages from the exact child session/run in FIFO order and atomically admit the prelude plus terminal notice through the custom-message batch API. A process-local bridge complements extension-bus delivery for lazily activated companions; terminal identity deduplicates both paths even when the successful terminal dispatch has an empty prelude, while failed dispatches remain retryable and distinct resumed-run lifecycle terminals remain independent. Idle flushes use the same ordered batch admission, unrelated children remain independent, and ask/reply correlation is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+
 ## [0.9.9-alpha.2] - 2026-07-14
 
 ### Changed

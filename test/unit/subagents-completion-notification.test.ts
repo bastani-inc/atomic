@@ -31,3 +31,37 @@ test("local completion acknowledgement retries failures and dedupes successful r
   assert.equal(harness.sends(), 2, "the duplicate request is acknowledged without another message");
   unregister();
 });
+
+test("queued child messages drain before a direct terminal notification", () => {
+  const listeners = new Map<string, Set<(data: unknown) => void>>();
+  const pendingIdle = ["Ready…"];
+  const delivered: string[] = [];
+  const events = {
+    on(event: string, handler: (data: unknown) => void) {
+      const set = listeners.get(event) ?? new Set();
+      set.add(handler);
+      listeners.set(event, set);
+      return () => set.delete(handler);
+    },
+    emit(event: string, payload: unknown) {
+      for (const handler of listeners.get(event) ?? []) handler(payload);
+    },
+  };
+  events.on("subagent:terminal-ordering-barrier", () => {
+    delivered.push(...pendingIdle.splice(0));
+  });
+  const pi = {
+    events,
+    sendMessage(message: { customType: string }) { delivered.push(message.customType); },
+  };
+  registerSubagentNotify(pi as never);
+
+  events.emit("subagent:async-complete", {
+    id: "ordering-run", runId: "ordering-run", agent: "worker",
+    success: false, state: "paused", summary: "Paused after interrupt.", timestamp: 2,
+    results: [{ agent: "worker", intercomTarget: "subagent-worker-ordering-run-1" }],
+  });
+  delivered.push(...pendingIdle.splice(0));
+
+  assert.deepEqual(delivered, ["Ready…", "subagent-notify"]);
+});

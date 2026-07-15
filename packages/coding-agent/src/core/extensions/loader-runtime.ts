@@ -19,6 +19,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 
   const runtime: ExtensionRuntime = {
     sendMessage: notInitialized,
+    sendMessages: notInitialized,
     sendUserMessage: notInitialized,
     appendEntry: notInitialized,
     setSessionName: notInitialized,

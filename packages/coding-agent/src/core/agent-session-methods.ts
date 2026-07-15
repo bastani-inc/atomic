@@ -37,7 +37,7 @@ import type {
 	SessionStats,
 	ToolDefinitionEntry,
 } from "./agent-session-types.ts";
-import type { SendMessageOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 
 export interface VerbatimCompactionApplyOptions {
 	resolvePlannerAuth: () => Promise<{ apiKey: string; headers?: Record<string, string> } | undefined>;
@@ -149,6 +149,10 @@ export interface AgentSessionMethodSurface {
 	sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: SendMessageOptions,
+	): Promise<void>;
+	sendCustomMessages<T = unknown>(
+		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+		options?: SendMessagesOptions,
 	): Promise<void>;
 	_appendCustomMessage<T>(message: CustomMessage<T>): void;
 	_enqueueInterruptCustomMessage<T>(message: CustomMessage<T>, options?: SendMessageOptions): Promise<void>;

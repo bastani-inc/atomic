@@ -15,6 +15,8 @@ import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
 import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { InboundIdleQueue } from "./inbound-idle-queue.js";
+import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -48,7 +50,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterSlot();
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
-  const pendingIdleMessages: InboundMessageEntry[] = [];
+  const pendingIdleMessages = new InboundIdleQueue();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void {
     replyWaiters.rejectCurrent(error);
@@ -137,25 +139,39 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp", generation = runtimeGeneration): void {
+  function buildIncomingCustomMessage(entry: InboundMessageEntry) {
+    const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
+    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
+    return {
+      customType: "intercom_message" as const,
+      content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
+      display: true as const,
+      details: entry,
+    };
+  }
+  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration): void {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
     if (delivery === "trigger") {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
-    const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
-    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
-    pi.sendMessage(
-      {
-        customType: "intercom_message",
-        content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
-        display: true,
-        details: entry,
-      },
-      delivery === "trigger" ? { triggerTurn: true } : { deliverAs: "followUp" },
-    );
+    const options = delivery === "trigger"
+      ? { triggerTurn: true } as const
+      : delivery === "followUp" ? { deliverAs: "followUp" } as const : undefined;
+    pi.sendMessage(buildIncomingCustomMessage(entry), options);
   }
+  registerTerminalOrderingBarrier(pi, {
+    queue: pendingIdleMessages,
+    toMessage: buildIncomingCustomMessage,
+    // A prelude is admitted synchronously when idle, or FIFO-queued when busy.
+    // The following terminal trigger therefore sees it in context first without
+    // waiting for a separate ordinary-message model turn to complete.
+    deliver: (entry) => sendIncomingMessage(entry, "prelude"),
+    onDrain: () => {
+      if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
+    },
+  });
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
     if (!getLiveContext()) {
       return;
@@ -168,7 +184,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     }, delayMs);
   }
   function flushIdleMessages(generation = runtimeGeneration): void {
-    if (pendingIdleMessages.length === 0) {
+    if (pendingIdleMessages.size === 0) {
       return;
     }
     const ctx = getLiveContext(runtimeContext, generation);
@@ -187,10 +203,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
 
-    const entries = pendingIdleMessages.splice(0, pendingIdleMessages.length);
-    entries.forEach((entry, index) => {
-      sendIncomingMessage(entry, index === 0 ? "trigger" : "followUp");
-    });
+    const entries = pendingIdleMessages.drain();
+    const first = entries[0];
+    if (first) replyTracker.queueTurnContext({ from: first.from, message: first.message, receivedAt: Date.now() });
+    const messages = entries.map(buildIncomingCustomMessage);
+    if (typeof pi.sendMessages === "function") pi.sendMessages(messages, { triggerTurn: true });
+    else messages.forEach((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }));
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
@@ -231,19 +249,24 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           }
           return;
         }
+        // Establish queue ownership before probing asynchronously. If a terminal
+        // barrier wins the race, the later foreground callback cannot redeliver.
+        pendingIdleMessages.enqueue(entry);
         await handleForegroundInboundDelivery({
           handoff: foregroundDetachHandoff,
           from,
           message,
           generation: messageGeneration,
-          surface: () => sendIncomingMessage(entry, "trigger", messageGeneration),
+          surface: () => {
+            if (pendingIdleMessages.remove(entry)) sendIncomingMessage(entry, "trigger", messageGeneration);
+          },
           isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
           onUnclaimed: () => {
             // No exact foreground owner acknowledged the target. Preserve the
             // established background/cross-session behavior by waiting for idle.
-            pendingIdleMessages.push(entry);
-            scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+            if (pendingIdleMessages.has(entry)) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
           },
+          onDelivered: () => { pendingIdleMessages.remove(entry); },
         });
         return;
       }

@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@bastani/atomic";
 import type { IntercomClient } from "./broker/client.ts";
 import type { IntercomConfig } from "./config.ts";
-import { buildPresenceIdentity, type InboundMessageEntry } from "./intercom-utils.js";
+import { buildPresenceIdentity } from "./intercom-utils.js";
+import type { InboundIdleQueue } from "./inbound-idle-queue.js";
 import type { ReplyTracker } from "./reply-tracker.ts";
 
 interface LifecycleDeps {
@@ -23,7 +24,7 @@ interface LifecycleDeps {
   getLiveContext(ctx?: ExtensionContext | null, generation?: number): ExtensionContext | null;
   rejectReplyWaiter(error: Error): void;
   replyTracker: ReplyTracker;
-  pendingIdleMessages: InboundMessageEntry[];
+  pendingIdleMessages: InboundIdleQueue;
   clearInboundFlushTimer(): void;
   scheduleInboundFlush(delayMs?: number): void;
   syncPresenceStatus(): void;
@@ -43,7 +44,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.clearReconnectTimer();
     deps.rejectReplyWaiter(new Error(reason));
     deps.replyTracker.reset();
-    deps.pendingIdleMessages.length = 0;
+    deps.pendingIdleMessages.clear();
     deps.clearInboundFlushTimer();
     deps.setAgentRunning(false);
     deps.activeTools.clear();
@@ -89,7 +90,9 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
   pi.on("turn_end", () => {
     if (!deps.getLiveContext()) return;
     deps.replyTracker.endTurn();
-    deps.scheduleInboundFlush(0);
+    // Preserve the normal grace period so a same-tick terminal barrier can
+    // claim accepted child messages before idle delivery releases ownership.
+    deps.scheduleInboundFlush();
   });
   pi.on("agent_start", () => {
     if (!deps.getLiveContext()) return;
@@ -112,7 +115,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.setAgentRunning(false);
     deps.activeTools.clear();
     deps.syncPresenceStatus();
-    deps.scheduleInboundFlush(0);
+    deps.scheduleInboundFlush();
   });
   pi.on("turn_start", (_event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;

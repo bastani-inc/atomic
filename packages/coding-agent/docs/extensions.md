@@ -1401,6 +1401,19 @@ pi.sendMessage({
 - `excludeFromContext: true` - Render and persist the custom message without adding it to LLM context. With no `deliverAs`, this remains display-only even while the agent is streaming.
 - `interruptAbortMessage` - Optional text used to replace generic abort results (for example `Operation aborted`) when `deliverAs: "interrupt"` aborts an active turn.
 
+### pi.sendMessages(messages, options?)
+
+Atomically admit a batch of custom messages in array order. Admission is indivisible, but the resulting model turn remains asynchronous; use this when a prelude and terminal notice must stay contiguous without globally serializing other extension work.
+
+```typescript
+pi.sendMessages([
+  { customType: "worker-update", content: "Ready", display: true },
+  { customType: "worker-terminal", content: "Completed", display: true },
+], { triggerTurn: true });
+```
+
+The batch supports `triggerTurn`, `excludeFromContext`, and `deliverAs: "steer" | "followUp" | "nextTurn"`. Interrupt delivery remains a single-message operation.
+
 ### pi.sendUserMessage(content, options?)
 
 Send a user message to the agent. Unlike `sendMessage()` which sends custom messages, this sends an actual user message that appears as if typed by the user. Always triggers a turn.

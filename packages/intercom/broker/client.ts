@@ -5,6 +5,7 @@ import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
 import type { SessionInfo, Message, Attachment } from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
+import { readSubagentMessageSource } from "../source-ownership.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 
@@ -453,6 +454,7 @@ export class IntercomClient extends EventEmitter {
       timestamp: Date.now(),
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      source: readSubagentMessageSource(),
       content: { text: options.text, attachments: options.attachments },
     };
     try {

@@ -162,6 +162,15 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 					});
 				});
 			},
+			sendMessages: (messages, options) => {
+				this.sendCustomMessages(messages, options).catch((err) => {
+					runner.emitError({
+						extensionPath: "<runtime>",
+						event: "send_messages",
+						error: err instanceof Error ? err.message : String(err),
+					});
+				});
+			},
 			sendUserMessage: (content, options) => {
 				this.sendUserMessage(content, options).catch((err) => {
 					runner.emitError({

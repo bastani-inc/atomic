@@ -13,7 +13,7 @@ import type {
 	ExtensionContext,
 	ReplacedSessionContext,
 } from "./context-types.ts";
-import type { MessageRenderer, SendMessageOptions } from "./message-types.ts";
+import type { MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type { ToolDefinition, ToolInfo } from "./tool-types.ts";
 
@@ -42,6 +42,11 @@ type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
+) => void;
+
+export type SendMessagesHandler = <T = unknown>(
+	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+	options?: SendMessagesOptions,
 ) => void;
 
 export type SendUserMessageHandler = (
@@ -101,6 +106,7 @@ export interface ExtensionRuntimeState {
  */
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
+	sendMessages: SendMessagesHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;

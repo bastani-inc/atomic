@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
 import type { CustomMessage } from "./messages.ts";
-import type { SendMessageOptions } from "./extensions/index.ts";
+import type { SendMessageOptions, SendMessagesOptions } from "./extensions/index.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { customMessageExcludesContext, drainAgentMessageQueue, normalizeInterruptAbortMessage, type AgentQueueAccess, type DrainedAgentQueues, type InterruptQueueHold } from "./agent-session-types.ts";
 
@@ -99,6 +99,36 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 		await this._runAgentPrompt(appMessage);
 	} else {
 		this._appendCustomMessage(appMessage);
+	}
+}
+
+/** Atomically admits a custom-message batch in array order. */
+export async function sendCustomMessages<T = unknown>(this: AgentSession,
+	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+	options?: SendMessagesOptions,
+): Promise<void> {
+	const timestamp = Date.now();
+	const appMessages = messages.map((message) => ({
+		role: "custom" as const,
+		customType: message.customType,
+		content: message.content ?? [],
+		display: message.display,
+		details: message.details,
+		timestamp,
+		...(options?.excludeFromContext === true ? { excludeFromContext: true } : {}),
+	} satisfies CustomMessage<T>));
+	if (appMessages.length === 0) return;
+	if (options?.deliverAs === "nextTurn") {
+		this._pendingNextTurnMessages.push(...appMessages);
+	} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
+		for (const message of appMessages) this._appendCustomMessage(message);
+	} else if (this.isStreaming) {
+		const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
+		for (const message of appMessages) this._queueAgentMessage(message, delivery);
+	} else if (options?.triggerTurn) {
+		await this._runAgentPrompt(appMessages);
+	} else {
+		for (const message of appMessages) this._appendCustomMessage(message);
 	}
 }
 
@@ -296,6 +326,7 @@ export const agentSessionMessageQueueMethods = {
 	_queueFollowUp,
 	_throwIfExtensionCommand,
 	sendCustomMessage,
+	sendCustomMessages,
 	_appendCustomMessage,
 	_enqueueInterruptCustomMessage,
 	_sendInterruptCustomMessageNow,

@@ -5,6 +5,7 @@ import {
   PendingSendRegistry,
 } from "../../packages/intercom/broker/pending-send-registry.js";
 import { IntercomClient } from "../../packages/intercom/broker/client.js";
+import { buildSubagentMessageSource } from "../../packages/intercom/source-ownership.js";
 
 const signature = (to = "session-a", text = "hello") => buildSendSignature(to, { text });
 
@@ -274,5 +275,14 @@ describe("IntercomClient.send", () => {
     const pending = client.send("recipient", { text: "hello", messageId: "stable-failure" });
     fail(0, true);
     assert.deepEqual(await pending, { id: "stable-failure", delivered: false, reason: "legacy failure" });
+  });
+
+  test("builds exact subagent run ownership for broker messages", () => {
+    assert.deepEqual(buildSubagentMessageSource(" run-source ", "worker", "2"), {
+      subagentRunId: "run-source",
+      subagentAgent: "worker",
+      subagentIndex: 2,
+    });
+    assert.equal(buildSubagentMessageSource(undefined, "worker", "2"), undefined);
   });
 });

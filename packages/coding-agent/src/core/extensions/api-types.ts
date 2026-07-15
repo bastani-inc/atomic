@@ -45,7 +45,7 @@ import type {
 	ToolResultEventResult,
 	UserBashEventResult,
 } from "./event-results.ts";
-import type { MessageRenderer, SendMessageOptions } from "./message-types.ts";
+import type { MessageRenderer, SendMessageOptions, SendMessagesOptions } from "./message-types.ts";
 import type { ProviderConfig } from "./provider-types.ts";
 import type {
 	ResourcesDiscoverEvent,
@@ -183,6 +183,12 @@ export interface ExtensionAPI {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: SendMessageOptions,
+	): void;
+
+	/** Atomically admit custom messages in array order without waiting for the resulting turn. */
+	sendMessages<T = unknown>(
+		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
+		options?: SendMessagesOptions,
 	): void;
 
 	/**
