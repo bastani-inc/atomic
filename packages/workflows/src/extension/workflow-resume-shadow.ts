@@ -1,5 +1,6 @@
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import { getDurableBackend } from "../durable/factory.js";
+import { isDurableWorkflowResumable } from "../durable/resume-eligibility.js";
 import { jobTracker, type JobTracker } from "../runs/background/job-tracker.js";
 import {
   stageControlRegistry,
@@ -15,30 +16,39 @@ interface DurableResumeShadowDeps {
   readonly stageControls?: StageControlRegistry;
 }
 
+export type DurableResumeShadowClassification = "eligible" | "ineligible" | "not_shadow";
+
+/** Classify restored metadata without manufacturing progress the durable backend rejects. */
+export function classifyDurableResumeShadow(
+  run: RunSnapshot,
+  store: Store,
+  deps: DurableResumeShadowDeps = {},
+): DurableResumeShadowClassification {
+  const backend = deps.backend ?? getDurableBackend();
+  const handle = backend.getWorkflow(run.id);
+  if (handle?.status !== "paused" && handle?.status !== "running") return "not_shadow";
+  const jobs = deps.jobs ?? jobTracker;
+  if (jobs.has(run.id)) return "not_shadow";
+  const controls = deps.stageControls ?? stageControlRegistry;
+  const graph = expandWorkflowGraph(store.snapshot(), run.id);
+  const controlRunIds = new Set<string>([run.id]);
+  for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
+  if ([...controlRunIds].some((runId) => controls.run(runId).stages().length > 0)) return "not_shadow";
+  if (!backend.isWorkflowLoadable(run.id) || !isDurableWorkflowResumable(handle)) return "ineligible";
+  if (run.status !== "paused" || run.exitReason !== "quit" || run.resumable !== true) {
+    store.recordRunPaused(run.id, undefined, { exitReason: "quit", resumable: true });
+  }
+  return "eligible";
+}
+
 /**
  * Reconcile a session-restored snapshot with an authoritative resumable
- * durable handle. Durable `paused` is an explicit graceful stop; durable
- * `running` without any local work is an orphan left by a stopped process.
- * A tracked background job or live stage control always wins and prevents
- * shadow classification.
+ * durable handle. Live jobs/controls win; zero-progress orphans remain intact.
  */
 export function reconcileDurableResumeShadow(
   run: RunSnapshot,
   store: Store,
   deps: DurableResumeShadowDeps = {},
 ): boolean {
-  const backend = deps.backend ?? getDurableBackend();
-  const durableStatus = backend.getWorkflow(run.id)?.status;
-  if (durableStatus !== "paused" && durableStatus !== "running") return false;
-  const jobs = deps.jobs ?? jobTracker;
-  if (jobs.has(run.id)) return false;
-  const controls = deps.stageControls ?? stageControlRegistry;
-  const graph = expandWorkflowGraph(store.snapshot(), run.id);
-  const controlRunIds = new Set<string>([run.id]);
-  for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
-  if ([...controlRunIds].some((runId) => controls.run(runId).stages().length > 0)) return false;
-  if (run.status !== "paused" || run.exitReason !== "quit" || run.resumable !== true) {
-    store.recordRunPaused(run.id, undefined, { exitReason: "quit", resumable: true });
-  }
-  return true;
+  return classifyDurableResumeShadow(run, store, deps) === "eligible";
 }

@@ -1,3 +1,4 @@
+import { hasPendingDurableResumeTransition } from "../runs/background/durable-resume-transition.js";
 import { interruptAllRuns, interruptRun, pauseRun, resumeRun } from "../runs/background/status.js";
 import { quitAllRuns, quitRun } from "../runs/background/quit.js";
 import { getDurableBackend } from "../durable/factory.js";
@@ -18,7 +19,7 @@ import {
   resolveStageTarget,
 } from "./workflow-targets.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
-import { reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
 import {
   handleDurableResume,
   prepareWorkflowResumeCatalog,
@@ -266,12 +267,20 @@ export async function handleRunControlCommand(
             const continuation = deps.runtimeForContext(ctx).resumeFailedRun(resolved.runId, undefined, { policy });
             continuation.ok ? print(continuation.message) : fail(continuation.message);
           } else {
-            const result = await resumeRun(resolved.runId, {});
-            if (result.ok && !isPaused && result.mode === "snapshot" && run?.exitReason === "quit") {
-              return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+            try {
+              const result = await resumeRun(resolved.runId, {});
+              if (result.ok && !isPaused && result.mode === "snapshot" && run?.exitReason === "quit") {
+                return await handleDurableResume(resolved.runId, ctx, reporter, deps);
+              }
+              if (result.ok && result.mode === "partial") {
+                fail(result.message ?? ("Partially resumed " + result.runId + "."));
+              } else {
+                if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
+                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
+              }
+            } catch (error) {
+              fail(`Failed to resume run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`);
             }
-            if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-            result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
           }
         }
         return true;
@@ -281,9 +290,18 @@ export async function handleRunControlCommand(
       runId = picked.runId;
     } else if (action === "resume") {
       const backend = getDurableBackend();
-      const exactBeforePreparation = store.runs().find((run) => run.id === target);
-      const exactIsDurableResumeShadow = exactBeforePreparation !== undefined &&
-        reconcileDurableResumeShadow(exactBeforePreparation, store, { backend });
+      const localResolution = resolveRunIdPrefix(target);
+      const exactBeforePreparation = localResolution.kind === "exact"
+        ? store.runs().find((run) => run.id === localResolution.runId)
+        : undefined;
+      const shadow = exactBeforePreparation === undefined
+        ? "not_shadow"
+        : classifyDurableResumeShadow(exactBeforePreparation, store, { backend });
+      if (shadow === "ineligible") {
+        fail(`Workflow ${exactBeforePreparation!.id} has no durable checkpoint or pending prompt progress and is not resumable.`);
+        return true;
+      }
+      const exactIsDurableResumeShadow = shadow === "eligible";
       const exactHasPausedState = exactBeforePreparation?.status === "paused" ||
         (exactBeforePreparation?.stages.some((stage) => stage.status === "paused") ?? false);
       const exactIsActivelyRunning = exactBeforePreparation !== undefined &&
@@ -401,7 +419,7 @@ export async function handleRunControlCommand(
     const isPaused = hadPausedRunState || hadPausedStageState;
     const isResumableContinuation = run !== undefined && !isPaused && ((run.status === "failed" && run.endedAt !== undefined && run.resumable !== false) || (run.endedAt === undefined && run.resumable === true && run.failureRecoverability === "recoverable"));
     const isActivelyRunning = run !== undefined && run.endedAt === undefined && run.status === "running" && !isPaused && run.exitReason !== "quit";
-    if (isActivelyRunning && action === "resume") {
+    if (isActivelyRunning && action === "resume" && !hasPendingDurableResumeTransition(stageRunId)) {
       fail(`Workflow ${stageRunId.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${stageRunId.slice(0, 8)}\` instead of resuming.`);
       return true;
     }
@@ -426,6 +444,10 @@ export async function handleRunControlCommand(
     }
     if (!result.ok) {
       fail(`Run not found: ${stageRunId.slice(0, 8)}`);
+      return true;
+    }
+    if (result.mode === "partial") {
+      fail(result.message ?? ("Partially resumed " + result.runId + "."));
       return true;
     }
     if (!isPaused) {

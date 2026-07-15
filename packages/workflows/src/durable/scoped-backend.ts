@@ -22,7 +22,8 @@
 
 import type { DurableCheckpoint, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import type { DurableWorkflowBackend, WorkflowRegistrationInput } from "./backend.js";
+import { adjustDurablePendingPrompts, type DurableWorkflowBackend, type WorkflowRegistrationInput } from "./backend.js";
+import { claimDurablePromptToken, durablePromptScope, releaseDurablePrompt, reserveDurablePrompt, type PromptReservationToken } from "./prompt-reservations.js";
 
 /**
  * Durable scope for a child workflow run.
@@ -97,7 +98,7 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
   listCheckpoints(_workflowId: string): readonly DurableCheckpoint[] {
     const all = this.inner.listCheckpoints(this.scope.rootWorkflowId);
-    const prefix = `${this.scope.scopePrefix}:`;
+    const prefix = `${this.effectivePromptScope().scope}:`;
     // Checkpoints are stored with their scope prefix already embedded in their
     // ids (see remap()). Filter by the stored id directly — NOT by re-prefixing
     // — so sibling scopes (e.g. "workflow:child:1") are excluded when the
@@ -113,6 +114,26 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
   setWorkflowStatus(_workflowId: string, _status: DurableWorkflowStatus, _pendingPrompts?: number, _resumable?: boolean): void {
     // No-op: child status is reflected via the root workflow boundary.
+  }
+
+  adjustPendingPrompts(_workflowId: string, delta: number): void {
+    adjustDurablePendingPrompts(this.inner, this.scope.rootWorkflowId, delta);
+  }
+
+  promptReservationScope(_workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
+    return this.effectivePromptScope();
+  }
+
+  pendingPromptToken(_workflowId: string, reservationId: string): PromptReservationToken | undefined {
+    return claimDurablePromptToken(this.inner, this.scope.rootWorkflowId, reservationId);
+  }
+
+  reservePendingPrompt(_workflowId: string, reservationId: string): PromptReservationToken {
+    return reserveDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId);
+  }
+
+  releasePendingPrompt(_workflowId: string, reservationId: string, token: PromptReservationToken): void {
+    releaseDurablePrompt(this.inner, this.scope.rootWorkflowId, reservationId, token);
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -145,6 +166,17 @@ export class ScopedDurableBackend implements DurableWorkflowBackend {
 
   hydrateResumableWorkflows(): Promise<void> {
     return Promise.resolve();
+  }
+
+  private effectivePromptScope(): { readonly rootWorkflowId: string; readonly scope: string } {
+    const parent = durablePromptScope(this.inner, this.scope.rootWorkflowId);
+    const scope = parent.scope === "root"
+      ? this.scope.scopePrefix
+      : `${parent.scope}:${this.scope.scopePrefix}`;
+    return {
+      rootWorkflowId: parent.rootWorkflowId,
+      scope,
+    };
   }
 
   private scopeKey(key: string): string {

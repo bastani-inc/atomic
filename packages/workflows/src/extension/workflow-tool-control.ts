@@ -28,7 +28,7 @@ import {
   normalizeWorkflowReloadReport,
   type WorkflowReloadReport,
 } from "./workflow-reload-report.js";
-import { reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
+import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 
 export interface WorkflowControlActionDeps {
   reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
@@ -43,6 +43,20 @@ function controlFailure(action: "pause" | "interrupt" | "quit" | "resume", runId
     runId,
     status: "noop",
     message: `Failed to ${action} run ${runId}: ${error instanceof Error ? error.message : String(error)}`,
+  };
+}
+
+function resumeControlFailure(runId: string, error: unknown): WorkflowToolResult {
+  const run = store.runs().find((candidate) => candidate.id === runId);
+  const visiblyRunning = run?.status === "running" || run?.stages.some(
+    (stage) => stage.status === "running" || stage.status === "pending" || stage.status === "awaiting_input",
+  ) === true;
+  const detail = error instanceof Error ? error.message : String(error);
+  return {
+    action: "resume",
+    runId,
+    status: visiblyRunning ? "partial" : "noop",
+    message: `Failed to resume run ${runId}: ${detail}`,
   };
 }
 
@@ -245,8 +259,15 @@ export async function workflowResumeAction(
   if (target.kind === "not_found") return { action: "resume", runId: target.target, status: "noop", message: target.message };
   const backend = getDurableBackend();
   const exact = store.runs().find((run) => run.id === target.runId);
-  if (exact !== undefined && reconcileDurableResumeShadow(exact, store, { backend })) {
-    return resumeDurableShadow(target.runId, deps);
+  const shadow = exact === undefined ? "not_shadow" : classifyDurableResumeShadow(exact, store, { backend });
+  if (shadow === "eligible") return resumeDurableShadow(target.runId, deps);
+  if (shadow === "ineligible") {
+    return {
+      action: "resume",
+      runId: target.runId,
+      status: "noop",
+      message: "Workflow " + target.runId + " has no durable checkpoint or pending prompt progress and is not resumable.",
+    };
   }
   if (!backend.isWorkflowLoadable(target.runId)) {
     try {
@@ -296,10 +317,10 @@ export async function workflowResumeAction(
           ? runLevelResumed ? `Resumed run ${result.runId.slice(0, 8)}.` : `No paused stages on run ${result.runId.slice(0, 8)}.`
           : `Resumed ${result.resumed.length} stage(s) on run ${result.runId.slice(0, 8)}${args.message ? ` with message: "${args.message}"` : ""}.`
         : `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
-      return { action: "resume", runId: result.runId, status: "ok", message };
+      return { action: "resume", runId: result.runId, status: result.mode === "partial" ? "partial" : "ok", message };
     }
     return { action: "resume", runId: stageRunId, status: "noop", message: `Run not found: ${stageRunId}` };
   } catch (error) {
-    return controlFailure("resume", stageRunId, error);
+    return resumeControlFailure(stageRunId, error);
   }
 }

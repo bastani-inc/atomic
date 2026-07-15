@@ -286,6 +286,7 @@ export function createStageStoreMethods(context: StoreContext): StageStoreMethod
     recordStageResumed(runId: string, stageId: string, resumedAt?: number): boolean {
       const run = context.findRun(runId);
       if (!run) return false;
+      if (TERMINAL_STATUSES.has(run.status)) return false;
       const stage = context.findStage(run, stageId);
       if (!stage) return false;
       if (stage.status !== "paused" && stage.status !== "blocked") return false;

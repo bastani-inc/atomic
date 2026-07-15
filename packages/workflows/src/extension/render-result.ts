@@ -339,8 +339,18 @@ export function renderResult(result: WorkflowToolResult, opts?: RenderResultOpts
         return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.status} — ${r.error}`, opts, themed);
       }
       if (r.details) {
+        if (r.details.status === "accepted" && r.name && r.runId) {
+          return renderDispatchConfirm({
+            workflowName: r.name,
+            runId: r.runId,
+            inputs: opts?.runInputs ?? {},
+            theme: themed ? deriveGraphTheme({}) : undefined,
+            width: opts?.width,
+          });
+        }
         const label = r.name ? ` (${r.name})` : "";
-        return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.details.mode} ${r.details.status}`, opts, themed);
+        const guidance = r.details.message === undefined ? "" : ` — ${r.details.message}`;
+        return renderNotice("WORKFLOW RUN", `${r.runId}${label}: ${r.details.mode} ${r.details.status}${guidance}`, opts, themed);
       }
       if (r.status === "completed" || r.status === "skipped" || r.status === "cancelled" || r.status === "blocked" || r.status === "killed") {
         const label = r.name ? ` (${r.name})` : "";

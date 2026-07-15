@@ -27,9 +27,12 @@ export function buildExitGatedUiContext(input: BuildExitGatedUiContextInput): Wo
     : input.opts.executionMode === "non_interactive" && input.opts.ui === undefined
       ? makeHeadlessUnavailableUIContext()
       : normalizeUIContext(input.opts.ui);
-  // Wrap the resolved base UI with durable caching when deps are supplied.
-  // The durable wrapper is transparent when no cached response exists.
-  const durableBase = input.durableUi !== undefined ? wrapUiWithDurable(base, input.durableUi) : base;
+  // Prompt-node continuation owns replay so its stage remains observable;
+  // durable response replay is for non-node UI and fresh redispatches.
+  const promptNodeReplay = input.opts.usePromptNodesForUi === true && input.opts.continuation !== undefined;
+  const durableBase = input.durableUi !== undefined && !promptNodeReplay
+    ? wrapUiWithDurable(base, input.durableUi)
+    : base;
   return {
     async input(promptText: string): Promise<string> {
       input.throwIfWorkflowExitSelected();

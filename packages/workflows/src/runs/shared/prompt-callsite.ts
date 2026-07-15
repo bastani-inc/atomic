@@ -5,7 +5,6 @@
  * selected frame is hashed by the executor and never persisted in raw form.
  */
 
-import { relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface PromptCallsiteFrame {
@@ -37,12 +36,10 @@ export function normalizeStackPath(framePath: string): string {
     }
   }
 
+  // Keep the normalized module/file identity absolute. Relativizing against
+  // mutable process.cwd() makes the same persisted workflow callsite hash
+  // differently when a later process starts from another directory.
   normalized = normalizeSlashes(normalized).replace(/^\/([A-Za-z]:\/)/, "$1");
-
-  const cwd = normalizeSlashes(process.cwd());
-  if (normalized.startsWith(`${cwd}/`)) {
-    normalized = normalizeSlashes(relative(process.cwd(), normalized));
-  }
 
   return normalized;
 }
@@ -61,6 +58,7 @@ const CURRENT_WORKFLOW_RUNTIME_ROOT = currentModuleRuntimeRoot();
 
 export function isWorkflowRuntimeFrame(normalizedPath: string): boolean {
   const path = normalizeSlashes(normalizedPath);
+  if (path.startsWith("packages/workflows/src/")) return true;
   if (CURRENT_WORKFLOW_RUNTIME_ROOT !== undefined && path.startsWith(CURRENT_WORKFLOW_RUNTIME_ROOT)) {
     return true;
   }

@@ -268,6 +268,8 @@ export interface WorkflowDetails extends WorkflowSerializableObject {
   readonly controlEvents?: readonly WorkflowControlEvent[];
   readonly intercom?: WorkflowIntercomSummary;
   readonly warnings?: readonly string[];
+  /** Actionable user guidance for accepted background execution. */
+  readonly message?: string;
   readonly error?: string;
   /** True when the run reached its terminal status through ctx.exit(). */
   readonly exited?: boolean;

@@ -6,7 +6,12 @@ import type { WorkflowSerializableObject as DurableInputs } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend, type WorkflowRegistrationInput } from "./backend.js";
 import { encodeCheckpoint, classifyCheckpointPayload } from "./dbos-envelope.js";
 import { classifyLatestMetadata, encodeMetadata, isMetadataStep, metadataStepName } from "./dbos-metadata.js";
+import { inactivePromptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
 import { DBOS_DELETION_STEP, classifyDbosDeletionTombstone, encodeDbosDeletionTombstone } from "./dbos-tombstone.js";
+import {
+  DbosPromptReservationTracker,
+  isDbosPromptStateStep,
+} from "./dbos-prompt-reservations.js";
 
 // ---------------------------------------------------------------------------
 // SDK abstraction
@@ -161,7 +166,11 @@ function createRealDbosHandle(
       return records;
     },
     async recordStepOutput(workflowId, stepName, output) {
-      await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName) })(workflowId, stepName, output);
+      try {
+        await dbos.startWorkflow(checkpointWorkflow, { workflowID: checkpointId(workflowId, stepName) })(workflowId, stepName, output);
+      } catch (err) {
+        if (!isDbosDuplicateWorkflowError(err)) throw err;
+      }
     },
     async deleteWorkflowData(workflowId) {
       const prefix = `${workflowId}:checkpoint:`;
@@ -221,17 +230,26 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   private readonly incompatible = new Set<string>();
   private readonly compatible = new Set<string>();
   private readonly locallyRegistered = new Set<string>();
+  private readonly promptReservations: DbosPromptReservationTracker;
   private writeQueue: Promise<void> = Promise.resolve();
   private writeErrors: Error[] = [];
 
   constructor(sdk: DbosSdkHandle) {
     this.sdk = sdk;
+    this.promptReservations = new DbosPromptReservationTracker({
+      pendingPrompts: (workflowId) => this.mem.getWorkflow(workflowId)?.pendingPrompts ?? 0,
+      adjustPendingPrompts: (workflowId, delta) => this.mem.adjustPendingPrompts(workflowId, delta),
+      persist: (workflowId, stepName, output) => {
+        this.enqueueWrite(() => this.sdk.recordStepOutput(workflowId, stepName, output));
+      },
+    });
   }
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
     this.incompatible.delete(handle.workflowId);
     this.compatible.add(handle.workflowId);
     this.locallyRegistered.add(handle.workflowId);
+    this.promptReservations.register(handle.workflowId, handle.pendingPrompts ?? 0);
     this.mem.registerWorkflow(handle);
     this.enqueueWrite(async () => {
       await this.sdk.startWorkflow(handle.workflowId, handle.name, handle.inputs);
@@ -273,6 +291,9 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
 
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void {
     if (!this.isWorkflowLoadable(workflowId)) return;
+    if (pendingPrompts !== undefined) {
+      this.promptReservations.setBaseline(workflowId, pendingPrompts);
+    }
     this.mem.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
     this.enqueueWrite(async () => {
       if (!this.isWorkflowLoadable(workflowId)) return;
@@ -280,6 +301,28 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
       else if (status === "running") await this.sdk.resumeWorkflow(workflowId);
       await this.writeMetadata(workflowId);
     });
+  }
+
+  adjustPendingPrompts(workflowId: string, delta: number): void {
+    if (!this.isWorkflowLoadable(workflowId)) return;
+    this.promptReservations.adjust(workflowId, delta);
+  }
+
+  promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
+    return { rootWorkflowId: workflowId, scope: "root" };
+  }
+
+  pendingPromptToken(workflowId: string, reservationId: string): PromptReservationToken | undefined {
+    return this.isWorkflowLoadable(workflowId) ? this.promptReservations.token(workflowId, reservationId) : undefined;
+  }
+
+  reservePendingPrompt(workflowId: string, reservationId: string): PromptReservationToken {
+    if (!this.isWorkflowLoadable(workflowId)) return inactivePromptReservationToken(reservationId);
+    return this.promptReservations.reserve(workflowId, reservationId);
+  }
+
+  releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void {
+    if (this.isWorkflowLoadable(workflowId)) this.promptReservations.release(workflowId, reservationId, token);
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -294,6 +337,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     this.compatible.delete(workflowId);
     this.locallyRegistered.delete(workflowId);
     this.hydrated.delete(workflowId);
+    this.promptReservations.delete(workflowId);
     await this.mem.deleteWorkflow(workflowId);
     await this.enqueueWrite(async () => {
       await this.sdk.deleteWorkflowData(workflowId);
@@ -310,6 +354,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     this.incompatible.clear();
     this.compatible.clear();
     this.locallyRegistered.clear();
+    this.promptReservations.clear();
     this.writeQueue = Promise.resolve();
     this.writeErrors = [];
   }
@@ -355,7 +400,8 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     }
     const checkpoints: DurableCheckpoint[] = [];
     for (const record of records) {
-      if (isMetadataStep(record.stepName) || record.stepName === DBOS_DELETION_STEP) continue;
+      if (isMetadataStep(record.stepName) || isDbosPromptStateStep(record.stepName)
+        || record.stepName === DBOS_DELETION_STEP) continue;
       const classified = classifyCheckpointPayload(info.workflowId, record.stepName, record.output);
       if (classified.kind === "legacy") {
         await this.cleanupLegacyWorkflow(info.workflowId);
@@ -372,6 +418,15 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     this.compatible.add(info.workflowId);
     this.applyMetadata(info.workflowId, metadata.entry);
     checkpoints.forEach((checkpoint) => this.mem.recordCheckpoint(checkpoint));
+    const current = this.mem.getWorkflow(info.workflowId);
+    if (current !== undefined) {
+      const pendingPrompts = this.promptReservations.hydrate(
+        info.workflowId,
+        metadata.entry.pendingPrompts,
+        records,
+      );
+      this.mem.setWorkflowStatus(info.workflowId, current.status, pendingPrompts, current.resumable);
+    }
     this.hydrated.add(info.workflowId);
   }
 
@@ -389,6 +444,7 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     this.incompatible.add(workflowId);
     this.compatible.delete(workflowId);
     this.hydrated.delete(workflowId);
+    this.promptReservations.delete(workflowId);
     await this.mem.deleteWorkflow(workflowId);
   }
 
@@ -405,7 +461,11 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
   private async writeMetadata(workflowId: string): Promise<void> {
     const entry = this.mem.toCacheEntry(workflowId);
     if (entry === undefined) return;
-    await this.sdk.recordStepOutput(workflowId, metadataStepName(entry.ts), encodeMetadata(entry));
+    const metadata = {
+      ...entry,
+      pendingPrompts: this.promptReservations.metadataPendingPrompts(workflowId, entry.pendingPrompts),
+    };
+    await this.sdk.recordStepOutput(workflowId, metadataStepName(entry.ts), encodeMetadata(metadata));
   }
 
   private applyMetadata(workflowId: string, entry: import("./types.js").DurableCheckpointEntry): void {

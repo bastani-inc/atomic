@@ -199,6 +199,37 @@ describe("runtime.runDirect — workflow intercom", () => {
         );
     });
 
+    test("async direct task, tasks, and chain accepted results render connect guidance", async () => {
+        const activeStore = createStore();
+        const runtime = createExtensionRuntime({ store: activeStore, adapters: noopAdapters });
+        const launches = [
+            { task: { name: "single", task: "inspect single" } },
+            { tasks: [{ name: "alpha", task: "inspect alpha" }, { name: "beta", task: "inspect beta" }] },
+            { chain: [{ name: "first", task: "inspect first" }, { name: "second", task: "inspect second" }] },
+        ];
+
+        for (const launch of launches) {
+            const accepted = await runtime.runDirect({ async: true, ...launch });
+            assert.equal(accepted.status, "accepted");
+            assert.ok(accepted.runId);
+            assert.match(accepted.message ?? "", new RegExp(`/workflow connect ${accepted.runId}`));
+            assert.match(accepted.message ?? "", /see agents working/i);
+            assert.match(accepted.message ?? "", /chat with and steer each stage/i);
+            const rendered = renderResult({
+                action: "run",
+                name: `direct-${accepted.mode}`,
+                runId: accepted.runId,
+                status: accepted.status,
+                details: accepted,
+                stages: [],
+            }, { plain: true, width: 120 });
+            assert.match(rendered, new RegExp(`/workflow connect ${accepted.runId.slice(0, 8)}`));
+            assert.match(rendered, /see agents working/i);
+            assert.match(rendered, /chat with and steer each stage/i);
+            await waitForRunEnded(activeStore, accepted.runId);
+        }
+    });
+
     test("async direct invalid fallback models fail before background spawn", async () => {
         const activeStore = createStore();
         const runtime = createExtensionRuntime({

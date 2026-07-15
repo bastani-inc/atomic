@@ -25,6 +25,7 @@ import type { WorkflowSerializableValue } from "../shared/types.js";
 import { createHash } from "node:crypto";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { DURABLE_FORMAT_VERSION } from "./format-version.js";
+import { inactivePromptReservationToken, PromptReservationState, type PromptReservationToken } from "./prompt-reservation-state.js";
 import type {
   DurableCheckpoint,
   DurableCheckpointEntry,
@@ -112,6 +113,8 @@ export interface DurableWorkflowBackend {
 
   /** Update workflow status (running/paused/completed/failed/cancelled/blocked). */
   setWorkflowStatus(workflowId: string, status: DurableWorkflowStatus, pendingPrompts?: number, resumable?: boolean): void;
+  /** Atomically adjust unresolved UI prompt count, clamped at zero. */
+  adjustPendingPrompts?(workflowId: string, delta: number): void;
 
   /**
    * List resumable root workflows: running/paused runs with progress and
@@ -146,6 +149,26 @@ export interface DurableWorkflowBackend {
    * process. Implementations that do not need async hydration omit this.
    */
   hydrateResumableWorkflows?(): Promise<void>;
+}
+
+/** Compatibility helper for custom backends predating atomic prompt deltas. */
+export function adjustDurablePendingPrompts(
+  backend: DurableWorkflowBackend,
+  workflowId: string,
+  delta: number,
+): void {
+  if (backend.adjustPendingPrompts !== undefined) {
+    backend.adjustPendingPrompts(workflowId, delta);
+    return;
+  }
+  const handle = backend.getWorkflow(workflowId);
+  if (handle === undefined) return;
+  backend.setWorkflowStatus(
+    workflowId,
+    handle.status,
+    Math.max(0, handle.pendingPrompts + delta),
+    handle.resumable,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +223,7 @@ function checkpointKey(c: DurableCheckpoint): string {
 export class InMemoryDurableBackend implements DurableWorkflowBackend {
   public readonly persistent = false;
   private readonly workflows = new Map<string, InMemoryWorkflowRecord>();
+  private readonly promptReservations = new Map<string, PromptReservationState>();
   private readonly deletedWorkflowIds = new Set<string>();
 
   registerWorkflow(handle: WorkflowRegistrationInput): void {
@@ -228,6 +252,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     };
     if (existing) existing.handle = full;
     else this.workflows.set(handle.workflowId, { handle: full, checkpoints: new Map(), toolByHash: new Map(), uiByHash: new Map(), stageOutputByReplayKey: new Map(), stageSessionByReplayKey: new Map() });
+    if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
   }
 
   recordCheckpoint(checkpoint: DurableCheckpoint): void {
@@ -293,6 +318,56 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     const rec = this.workflows.get(workflowId);
     if (!rec) return;
     rec.handle = { ...rec.handle, status, updatedAt: Date.now(), ...(pendingPrompts !== undefined ? { pendingPrompts } : {}), ...(resumable !== undefined ? { resumable } : {}) };
+    if (pendingPrompts !== undefined) this.promptReservations.delete(workflowId);
+  }
+
+  adjustPendingPrompts(workflowId: string, delta: number): void {
+    const state = this.promptState(workflowId);
+    if (state === undefined) return;
+    state.adjust(delta);
+    this.setPromptCount(workflowId, state.pendingPrompts);
+  }
+
+  promptReservationScope(workflowId: string): { readonly rootWorkflowId: string; readonly scope: string } {
+    return { rootWorkflowId: workflowId, scope: "root" };
+  }
+
+  pendingPromptToken(workflowId: string, reservationId: string): PromptReservationToken | undefined {
+    const state = this.promptState(workflowId);
+    const token = state?.claim(reservationId);
+    if (state !== undefined && token !== undefined) this.setPromptCount(workflowId, state.pendingPrompts);
+    return token;
+  }
+
+  reservePendingPrompt(workflowId: string, reservationId: string): PromptReservationToken {
+    const state = this.promptState(workflowId);
+    if (state === undefined) return inactivePromptReservationToken(reservationId);
+    const token = state.reserve(reservationId);
+    this.setPromptCount(workflowId, state.pendingPrompts);
+    return token;
+  }
+
+  releasePendingPrompt(workflowId: string, reservationId: string, token: PromptReservationToken): void {
+    const state = this.promptState(workflowId);
+    if (state === undefined) return;
+    state.release(reservationId, token);
+    this.setPromptCount(workflowId, state.pendingPrompts);
+  }
+
+  private promptState(workflowId: string): PromptReservationState | undefined {
+    const rec = this.workflows.get(workflowId);
+    if (rec === undefined) return undefined;
+    let state = this.promptReservations.get(workflowId);
+    if (state === undefined) {
+      state = new PromptReservationState(rec.handle.pendingPrompts);
+      this.promptReservations.set(workflowId, state);
+    }
+    return state;
+  }
+
+  private setPromptCount(workflowId: string, pendingPrompts: number): void {
+    const rec = this.workflows.get(workflowId);
+    if (rec !== undefined) rec.handle = { ...rec.handle, pendingPrompts, updatedAt: Date.now() };
   }
 
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
@@ -333,6 +408,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   async deleteWorkflow(workflowId: string): Promise<void> {
     this.workflows.delete(workflowId);
+    this.promptReservations.delete(workflowId);
     this.deletedWorkflowIds.add(workflowId);
   }
 
@@ -342,6 +418,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
 
   reset(): void {
     this.workflows.clear();
+    this.promptReservations.clear();
     this.deletedWorkflowIds.clear();
   }
 

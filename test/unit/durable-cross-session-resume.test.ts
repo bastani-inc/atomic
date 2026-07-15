@@ -14,16 +14,43 @@
  * resumed by a separate new session."
  */
 import { describe, test, beforeEach, afterEach } from "bun:test";
+import { Type } from "typebox";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
+import { ScopedDurableBackend } from "../../packages/workflows/src/durable/scoped-backend.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
+import { wrapUiWithDurable } from "../../packages/workflows/src/durable/ui-primitive.js";
+import type { WorkflowUIContext } from "../../packages/workflows/src/shared/authoring-contract-ui.js";
 import { listResumableFromBackend, formatResumableWorkflowList } from "../../packages/workflows/src/durable/resume-catalog.js";
+import { resumeDurableWorkflow } from "../../packages/workflows/src/durable/resume-runtime.js";
+import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
+import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { createStore } from "../../packages/workflows/src/shared/store.js";
+import { createCancellationRegistry } from "../../packages/workflows/src/runs/background/cancellation-registry.js";
 
 const WORKFLOW_ID = "wf-cross-session-001";
+
+async function openScopedContinuePrompt(ui: WorkflowUIContext): Promise<string> {
+  return ui.input("Nested continue?");
+}
+
+async function openContinuePrompt(ui: WorkflowUIContext): Promise<string> {
+  return ui.input("Continue?");
+}
+
+function uiWithInput(input: (prompt: string) => Promise<string>): WorkflowUIContext {
+  return {
+    input,
+    async confirm() { throw new Error("unused confirm"); },
+    async select<T extends string>(): Promise<T> { throw new Error("unused select"); },
+    async editor() { throw new Error("unused editor"); },
+    async custom<T>(): Promise<T> { throw new Error("unused custom"); },
+  };
+}
 
 describe("Cross-session durable workflow resume (integration)", () => {
   let tmpDir: string;
@@ -91,6 +118,117 @@ describe("Cross-session durable workflow resume (integration)", () => {
       assert.equal(result, "processed-result");
       assert.equal(sideEffectCount, 0); // side effect was NOT repeated
     });
+  });
+
+  test("fresh backend discovers and resumes an unresolved prompt with the original workflow id", async () => {
+    const backendA = new FileDurableBackend(stateFile);
+    backendA.registerWorkflow({
+      workflowId: WORKFLOW_ID,
+      name: "prompt-first-workflow",
+      inputs: {},
+      createdAt: Date.now(),
+      status: "running",
+      resumable: true,
+    });
+    const unresolved = Promise.withResolvers<string>();
+    const baseA = uiWithInput(() => unresolved.promise);
+    const uiA = wrapUiWithDurable(baseA, {
+      workflowId: WORKFLOW_ID,
+      backend: backendA,
+      nextCheckpointId: createCheckpointIdGenerator(),
+    });
+    void openContinuePrompt(uiA);
+    await Promise.resolve();
+    assert.equal(backendA.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
+
+    const backendB = new FileDurableBackend(stateFile);
+    assert.deepEqual(
+      listResumableFromBackend(backendB).map((entry) => entry.workflowId),
+      [WORKFLOW_ID],
+    );
+    const resumedDefinition = workflow({
+      name: "prompt-first-workflow",
+      description: "",
+      inputs: {},
+      outputs: { answer: Type.String() },
+      run: async (ctx) => ({ answer: await openContinuePrompt(ctx.ui) }),
+    });
+    const resumedStore = createStore();
+    const resumed = resumeDurableWorkflow(WORKFLOW_ID, {
+      registry: createRegistry().register(resumedDefinition),
+      baseRunOpts: {
+        store: resumedStore,
+        cancellation: createCancellationRegistry(),
+      },
+      durableBackend: backendB,
+    });
+    assert.equal(resumed.ok, true);
+    if (!resumed.ok) return;
+    assert.equal(resumed.workflowId, WORKFLOW_ID);
+    assert.equal(resumed.runId, WORKFLOW_ID);
+
+    const deadline = Date.now() + 1_000;
+    let answered = false;
+    while (Date.now() < deadline && !answered) {
+      const runSnapshot = resumedStore.runs().find((run) => run.id === WORKFLOW_ID);
+      const stage = runSnapshot?.stages.find((candidate) => candidate.pendingPrompt !== undefined);
+      if (stage?.pendingPrompt !== undefined) {
+        answered = resumedStore.resolveStagePendingPrompt(
+          WORKFLOW_ID,
+          stage.id,
+          stage.pendingPrompt.id,
+          "resumed-answer",
+        );
+      } else await Bun.sleep(5);
+    }
+    assert.equal(answered, true);
+    while (Date.now() < deadline) {
+      const status = resumedStore.runs().find((run) => run.id === WORKFLOW_ID)?.status;
+      if (status === "completed") break;
+      await Bun.sleep(5);
+    }
+    assert.equal(resumedStore.runs().find((run) => run.id === WORKFLOW_ID)?.status, "completed");
+    assert.equal(backendB.getWorkflow(WORKFLOW_ID)?.workflowId, WORKFLOW_ID);
+    assert.equal(backendB.getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
+    assert.equal(backendB.getWorkflow(WORKFLOW_ID)?.status, "completed");
+    assert.equal(backendB.listCheckpoints(WORKFLOW_ID).length, 1);
+  });
+
+  test("fresh scoped child reuses its root prompt reservation", async () => {
+    const backendA = new FileDurableBackend(stateFile);
+    backendA.registerWorkflow({
+      workflowId: WORKFLOW_ID,
+      name: "nested-prompt-workflow",
+      inputs: {},
+      createdAt: 1,
+      status: "running",
+    });
+    const scope = { rootWorkflowId: WORKFLOW_ID, scopePrefix: "workflow:child:1" };
+    const scopedA = new ScopedDurableBackend(backendA, scope);
+    const firstAnswer = Promise.withResolvers<string>();
+    const firstPrompt = wrapUiWithDurable(uiWithInput(() => firstAnswer.promise), {
+      workflowId: "child-session-a",
+      backend: scopedA,
+      nextCheckpointId: createCheckpointIdGenerator(),
+    });
+    void openScopedContinuePrompt(firstPrompt);
+    await Promise.resolve();
+    assert.equal(new FileDurableBackend(stateFile).getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
+
+    const backendB = new FileDurableBackend(stateFile);
+    const scopedB = new ScopedDurableBackend(backendB, scope);
+    const resumedAnswer = Promise.withResolvers<string>();
+    const resumedPrompt = wrapUiWithDurable(uiWithInput(() => resumedAnswer.promise), {
+      workflowId: "child-session-b",
+      backend: scopedB,
+      nextCheckpointId: createCheckpointIdGenerator(),
+    });
+    const pending = openScopedContinuePrompt(resumedPrompt);
+    await Promise.resolve();
+    assert.equal(new FileDurableBackend(stateFile).getWorkflow(WORKFLOW_ID)?.pendingPrompts, 1);
+    resumedAnswer.resolve("continued");
+    assert.equal(await pending, "continued");
+    assert.equal(new FileDurableBackend(stateFile).getWorkflow(WORKFLOW_ID)?.pendingPrompts, 0);
   });
 
   test("resume after failed stage — workflow is resumable", () => {

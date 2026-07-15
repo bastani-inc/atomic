@@ -54,6 +54,32 @@ function seedRestoredShadow(
   );
 }
 
+function seedZeroProgressRestoredOrphan(
+  backend: InMemoryDurableBackend,
+  workflowId: string,
+  status: Extract<DurableWorkflowStatus, "paused" | "running">,
+): void {
+  backend.registerWorkflow({
+    workflowId,
+    name: "restored-workflow",
+    inputs: {},
+    createdAt: 1,
+    status,
+    resumable: true,
+  });
+  restoreOnSessionStart(
+    {
+      getEntries: () => [{
+        id: `run-start:${workflowId}`,
+        type: "workflow.run.start",
+        payload: { runId: workflowId, name: "restored-workflow", inputs: {}, ts: 1 },
+      }],
+    },
+    { resumeInFlight: "auto", persistRuns: true },
+    store,
+  );
+}
+
 function resumableRuntime(releaseResumedStage: Promise<void>) {
   const definition = workflow({
     name: "restored-workflow",
@@ -135,7 +161,7 @@ describe("gracefully quit durable workflow session restore", () => {
 
       await handleRunControlCommand(
         "resume",
-        [workflowId],
+        [workflowId.slice(0, 12)],
         { hasUI: false, ui: { notify: () => undefined } },
         { info: (message) => info.push(message), error: (message) => errors.push(message) },
         {
@@ -227,6 +253,65 @@ describe("gracefully quit durable workflow session restore", () => {
         stageControls: controls,
       }), false);
       assert.equal(localStore.runs().find((candidate) => candidate.id === workflowId)?.status, "running");
+    },
+  );
+
+  test.serial.each(["paused", "running"] as const)(
+    "zero-progress durable %s orphan stays unmodified and tool resume is a noop",
+    async (durableStatus) => {
+      const workflowId = `zero-tool-${durableStatus}`;
+      const backend = new InMemoryDurableBackend();
+      setDurableBackend(backend);
+      seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
+      const before = structuredClone(store.runs().find((run) => run.id === workflowId));
+      assert.ok(before);
+      assert.equal(reconcileDurableResumeShadow(before, store, { backend }), false);
+
+      const release = Promise.withResolvers<void>();
+      const execute = makeExecuteWorkflowTool(resumableRuntime(release.promise), () => undefined, () => undefined);
+      const result = await execute({ action: "resume", runId: workflowId.slice(0, 12) }, {} as never);
+
+      assert.equal(result.action, "resume");
+      assert.equal(result.runId, workflowId);
+      assert.equal(result.status, "noop");
+      assert.match(result.message, /not resumable|no durable progress/i);
+      assert.deepEqual(store.runs().find((run) => run.id === workflowId), before);
+      assert.equal(backend.getWorkflow(workflowId)?.status, durableStatus);
+      assert.equal(jobTracker.has(workflowId), false);
+    },
+  );
+
+  test.serial.each(["paused", "running"] as const)(
+    "zero-progress durable %s orphan stays unmodified through slash resume",
+    async (durableStatus) => {
+      const workflowId = `zero-slash-${durableStatus}`;
+      const backend = new InMemoryDurableBackend();
+      setDurableBackend(backend);
+      seedZeroProgressRestoredOrphan(backend, workflowId, durableStatus);
+      const before = structuredClone(store.runs().find((run) => run.id === workflowId));
+      assert.ok(before);
+      const release = Promise.withResolvers<void>();
+      const info: string[] = [];
+      const errors: string[] = [];
+
+      await handleRunControlCommand(
+        "resume",
+        [workflowId.slice(0, 12)],
+        { hasUI: false, ui: { notify: () => undefined } },
+        { info: (message) => info.push(message), error: (message) => errors.push(message) },
+        {
+          pi: {},
+          overlay: { open: () => undefined, toggle: () => undefined, close: () => undefined },
+          runtimeForContext: () => resumableRuntime(release.promise),
+          ensureWorkflowResourcesLoaded: () => undefined,
+        },
+      );
+
+      assert.deepEqual(info, []);
+      assert.match(errors.join("\n"), /not resumable|no durable progress/i);
+      assert.deepEqual(store.runs().find((run) => run.id === workflowId), before);
+      assert.equal(backend.getWorkflow(workflowId)?.status, durableStatus);
+      assert.equal(jobTracker.has(workflowId), false);
     },
   );
 });

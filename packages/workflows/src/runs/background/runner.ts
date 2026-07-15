@@ -60,6 +60,10 @@ export interface DetachedRunOpts
 // Helper — build accepted result object
 // ---------------------------------------------------------------------------
 
+export function workflowConnectGuidance(runId: string): string {
+  return `Run /workflow connect ${runId} to see agents working and chat with and steer each stage.`;
+}
+
 export function buildDetachedAccepted(
   name: string,
   runId: string,
@@ -69,7 +73,7 @@ export function buildDetachedAccepted(
     name,
     runId,
     status: "running",
-    message: `Workflow "${name}" started in background (runId: ${runId}).`,
+    message: `Workflow "${name}" started in background (runId: ${runId}). ${workflowConnectGuidance(runId)}`,
     stages: [],
   };
 }

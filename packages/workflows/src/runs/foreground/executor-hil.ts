@@ -10,6 +10,7 @@ import type {
 } from "../../shared/types.js";
 import type { PendingPrompt, CustomPromptIdentitySource } from "../../shared/store-types.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
+import { currentPromptCallerStack } from "../../shared/prompt-callsite-context.js";
 
 export type PrimitivePromptDescriptor =
   | { readonly kind: "input"; readonly message: string; readonly initial?: string }
@@ -83,7 +84,7 @@ export function promptReplayKey(descriptor: PromptDescriptor): string {
 }
 
 function promptCallsiteHash(): string {
-  const frame = selectPromptCallsiteFrame(new Error().stack ?? "") ?? "unknown";
+  const frame = selectPromptCallsiteFrame(currentPromptCallerStack() ?? new Error().stack ?? "") ?? "unknown";
   return stableHash(frame);
 }
 

@@ -19,8 +19,8 @@ import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
 import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
-import { getDurableBackend } from "../../durable/factory.js";
-
+import { markDurableResumed } from "./durable-resume-transition.js";
+import { settleResumeAcknowledgements } from "./resume-acknowledgements.js";
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ export type ResumeResult =
       runId: string;
       snapshot: RunSnapshot;
       resumed: readonly StageSnapshot[];
-      mode?: "snapshot" | "paused" | "not_resumable";
+      mode?: "snapshot" | "paused" | "partial" | "not_resumable";
       message?: string;
     }
   | { ok: false; runId: string; reason: "not_found" };
@@ -99,7 +99,6 @@ export interface RunDetail {
 export type InspectRunResult =
   | { ok: true; runId: string; detail: RunDetail }
   | { ok: false; runId: string; reason: "not_found" };
-
 // ---------------------------------------------------------------------------
 // statusRuns
 // ---------------------------------------------------------------------------
@@ -123,7 +122,6 @@ export function statusRuns(opts?: { all?: boolean; store?: Store }): RunStatusEn
     stageCount: expandWorkflowGraph(snapshot, run.id).stages.length,
   }));
 }
-
 // ---------------------------------------------------------------------------
 // killRun
 // ---------------------------------------------------------------------------
@@ -199,7 +197,6 @@ export function killAllRuns(opts?: {
     killRun(r.id, { store: activeStore, cancellation: opts?.cancellation, persistence: opts?.persistence }),
   );
 }
-
 // ---------------------------------------------------------------------------
 // resumeRun
 // ---------------------------------------------------------------------------
@@ -208,10 +205,10 @@ export function killAllRuns(opts?: {
  * Reopen a run for display, awaiting every live stage-control resume before
  * recording the corresponding store and durable transitions.
  *
- * Non-paused and terminal runs still return a read-only snapshot. Rejected
- * control acknowledgements reject this operation and leave unacknowledged
- * stages paused; callers surface that failure through their existing message
- * shapes.
+ * Non-paused and terminal runs still return a read-only snapshot. Every
+ * paused control is attempted. An all-failed acknowledgement set rejects;
+ * partial success returns the actual running/paused split with qualified
+ * failures so callers never misreport externally visible progress as a no-op.
  */
 export async function resumeRun(
   runId: string,
@@ -232,6 +229,8 @@ export async function resumeRun(
   if (!run) return { ok: false, runId, reason: "not_found" };
 
   const resumed: StageSnapshot[] = [];
+  let partialFailureMessage: string | undefined;
+  let durabilityFailure: string | undefined;
   const controlRunIds = opts?.stageId ? [runId] : expandedControlRunIds(activeStore, runId);
   const hasPausedState = controlRunIds.some((controlRunId) => {
     const controlRun = runs.find((candidate) => candidate.id === controlRunId);
@@ -245,38 +244,57 @@ export async function resumeRun(
       : controlRunIds.flatMap((controlRunId) =>
           registry.run(controlRunId).pausedStages().map((handle) => ({ controlRunId, handle })),
         );
-    const resumedRunIds = new Set<string>();
-    for (const { controlRunId, handle } of handles) {
-      if (handle.status !== "paused") continue;
-      await handle.resume(opts?.message);
-      activeStore.recordStageResumed(controlRunId, handle.stageId);
-      resumedRunIds.add(controlRunId);
-      const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
-      const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
-      if (stage !== undefined) resumed.push(structuredClone(stage));
-    }
-    for (const controlRunId of resumedRunIds) {
-      const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
-      const stillPaused = controlRun?.stages.some(
-        (stage) => stage.status === "paused" || stage.status === "blocked",
-      ) ?? false;
-      if (!stillPaused) activeStore.recordRunResumed(controlRunId);
-    }
+    const acknowledgements = await settleResumeAcknowledgements(activeStore, handles, opts?.message);
+    resumed.push(...acknowledgements.resumed);
     const currentRoot = activeStore.runs().find((candidate) => candidate.id === runId);
     const rootHasPausedStage = currentRoot?.stages.some(
       (stage) => stage.status === "paused" || stage.status === "blocked",
     ) ?? false;
-    if (!rootHasPausedStage && (resumed.length > 0 || currentRoot?.status === "paused")) {
-      activeStore.recordRunResumed(runId);
+    if (acknowledgements.acknowledged > 0 || (
+      handles.length === 0 && acknowledgements.failures.length === 0 &&
+      !rootHasPausedStage && currentRoot?.status === "paused"
+    )) activeStore.recordRunResumed(runId);
+    const reconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
+    if (acknowledgements.failures.length > 0) {
+      const failureMessage = "Failed to resume workflow stages: " + acknowledgements.failures.join("; ");
+      if (reconciledRoot?.status !== "running") throw new Error(failureMessage);
+      partialFailureMessage = "Partially resumed " + runId + ": " + resumed.length
+        + " stage(s) running; " + failureMessage + ". Failed paused stages remain resumable.";
+    } else if (acknowledgements.lateFailures.length > 0) {
+      partialFailureMessage = "Resumed " + resumed.length + " stage(s) on " + runId
+        + "; acknowledgements reported after visible resume: " + acknowledgements.lateFailures.join("; ")
+        + ". Running stages are not retryable.";
     }
-    if (activeStore.runs().find((candidate) => candidate.id === runId)?.status === "running") {
-      markDurableResumed(runId);
+  }
+
+  const locallyReconciledRoot = activeStore.runs().find((candidate) => candidate.id === runId);
+  if (locallyReconciledRoot?.endedAt === undefined && locallyReconciledRoot?.status === "running") {
+    try {
+      await markDurableResumed(runId);
+    } catch (error) {
+      durabilityFailure = error instanceof Error ? error.message : String(error);
     }
+  }
+  if (durabilityFailure !== undefined) {
+    const durableMessage = "Durable resume transition failed after visible local resume: " + durabilityFailure + ".";
+    partialFailureMessage = partialFailureMessage === undefined
+      ? durableMessage
+      : partialFailureMessage + " " + durableMessage;
   }
 
   const current = activeStore.runs().find((candidate) => candidate.id === runId) ?? run;
   const snapshot = structuredClone(current);
   const resumedCopy = structuredClone(resumed);
+  if (partialFailureMessage !== undefined) {
+    return {
+      ok: true,
+      runId,
+      snapshot,
+      resumed: resumedCopy,
+      mode: "partial",
+      message: partialFailureMessage,
+    };
+  }
   if (current.status === "killed" || current.resumable === false) {
     return {
       ok: true,
@@ -309,15 +327,6 @@ export async function resumeRun(
     resumed: resumedCopy,
     mode: resumedCopy.length > 0 ? "paused" : "snapshot",
   };
-}
-
-function markDurableResumed(runId: string): void {
-  try {
-    const backend = getDurableBackend();
-    if (backend.getWorkflow(runId) !== undefined) backend.setWorkflowStatus(runId, "running");
-  } catch {
-    // Custom durability is best-effort; acknowledged local control state wins.
-  }
 }
 
 // ---------------------------------------------------------------------------

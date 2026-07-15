@@ -7,10 +7,15 @@ import {
   type DurableWorkflowHandle,
 } from "./types.js";
 import { classifyDurableFormatVersion, DURABLE_FORMAT_VERSION } from "./format-version.js";
+import { mergePromptReservationSnapshots, type PromptReservationSnapshot } from "./prompt-reservation-state.js";
 
 export interface FileDurableRecord {
   readonly handle: DurableWorkflowHandle;
   readonly checkpoints: readonly DurableCheckpoint[];
+  /** Legacy active prompt identities written before generation tombstones. */
+  readonly promptReservations?: readonly string[];
+  /** Identity-owned active tokens, released generations, and consumed-token tombstones. */
+  readonly promptReservationState?: PromptReservationSnapshot;
 }
 
 export interface FileDurableState {
@@ -59,7 +64,11 @@ function isFileDurableRecord(value: unknown): value is FileDurableRecord {
   if (!isObject(value)) return false;
   const handle = value["handle"];
   const checkpoints = value["checkpoints"];
-  if (!isHandle(handle) || !Array.isArray(checkpoints)) return false;
+  const promptReservations = value["promptReservations"];
+  const promptReservationState = value["promptReservationState"];
+  if (!isHandle(handle) || !Array.isArray(checkpoints)
+    || (promptReservations !== undefined && !isStringArray(promptReservations))
+    || (promptReservationState !== undefined && !isPromptReservationSnapshot(promptReservationState))) return false;
   return checkpoints.every((checkpoint) => isCheckpoint(checkpoint) && checkpoint.workflowId === handle.workflowId);
 }
 
@@ -106,6 +115,20 @@ function isStageTopology(value: unknown): value is DurableStageTopology {
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
+
+function isPromptReservationSnapshot(value: unknown): value is PromptReservationSnapshot {
+  if (!isObject(value) || !Array.isArray(value["active"]) || !Array.isArray(value["released"])
+    || !isStringArray(value["anonymousTokenIds"]) || !isStringArray(value["consumedTokenIds"])) return false;
+  return value["active"].every((entry) => isPromptReservationEntry(entry, true))
+    && value["released"].every((entry) => isPromptReservationEntry(entry, false));
+}
+
+function isPromptReservationEntry(value: unknown, tokenRequired: boolean): boolean {
+  return isObject(value) && typeof value["reservationId"] === "string"
+    && typeof value["generation"] === "number" && Number.isInteger(value["generation"]) && value["generation"] > 0
+    && (tokenRequired ? typeof value["tokenId"] === "string" : value["tokenId"] === undefined);
+}
+
 function isStatus(value: unknown): boolean {
   return value === "running" || value === "paused" || value === "completed"
     || value === "failed" || value === "cancelled" || value === "blocked";
@@ -132,4 +155,52 @@ function optionalString(value: Record<string, unknown>, key: string): boolean {
 
 function optionalBoolean(value: Record<string, unknown>, key: string): boolean {
   return value[key] === undefined || typeof value[key] === "boolean";
+}
+
+/** Merge persisted records without reviving released prompt generations or consumed tokens. */
+export function mergeFileDurableRecords(
+  first: readonly FileDurableRecord[],
+  second: readonly FileDurableRecord[],
+): readonly FileDurableRecord[] {
+  const merged = new Map<string, {
+    handle: DurableWorkflowHandle;
+    checkpoints: Map<string, DurableCheckpoint>;
+    promptReservationState?: PromptReservationSnapshot;
+  }>();
+  for (const record of [...first, ...second]) {
+    const existing = merged.get(record.handle.workflowId);
+    const handle = existing === undefined || record.handle.updatedAt >= existing.handle.updatedAt
+      ? record.handle
+      : existing.handle;
+    const checkpoints = existing?.checkpoints ?? new Map<string, DurableCheckpoint>();
+    for (const checkpoint of record.checkpoints) {
+      checkpoints.set(`${checkpoint.kind}:${checkpoint.checkpointId}`, checkpoint);
+    }
+    const currentState = record.promptReservationState ?? legacyPromptReservationState(record);
+    const promptReservationState = mergePromptReservationSnapshots(
+      existing?.promptReservationState, currentState, handle.pendingPrompts,
+    );
+    merged.set(record.handle.workflowId, {
+      handle,
+      checkpoints,
+      ...(promptReservationState !== undefined ? { promptReservationState } : {}),
+    });
+  }
+  return [...merged.values()].map((record) => ({
+    handle: record.handle,
+    checkpoints: [...record.checkpoints.values()],
+    ...(record.promptReservationState !== undefined ? { promptReservationState: record.promptReservationState } : {}),
+  }));
+}
+
+function legacyPromptReservationState(record: FileDurableRecord): PromptReservationSnapshot | undefined {
+  if (record.promptReservations === undefined) return undefined;
+  return {
+    active: record.promptReservations.map((reservationId) => ({
+      reservationId, generation: 1, tokenId: `reservation:${encodeURIComponent(reservationId)}:1`,
+    })),
+    released: [],
+    anonymousTokenIds: [],
+    consumedTokenIds: [],
+  };
 }

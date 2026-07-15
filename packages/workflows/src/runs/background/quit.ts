@@ -41,28 +41,42 @@ export async function quitRun(
   if (!run) return { ok: false, runId, reason: "not_found" };
   if (run.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
 
+  const graph = expandWorkflowGraph(activeStore.snapshot(), runId);
   const handles = controllableHandles(activeStore, registry, runId);
-  if (handles.length === 0) return { ok: false, runId, reason: "no_active_stages" };
+  const promptStages = graph.stages.filter((stage) =>
+    stage.pendingPrompt !== undefined || stage.inputRequest !== undefined || stage.status === "awaiting_input"
+  );
+  const hasPausedState = run.status === "paused" || graph.stages.some((stage) => stage.status === "paused");
+  if (handles.length === 0 && promptStages.length === 0 && !hasPausedState) {
+    return { ok: false, runId, reason: "no_active_stages" };
+  }
 
   const paused: StageSnapshot[] = [];
   const pausedRunIds = new Set<string>();
+  const pausable = handles.filter(({ handle }) => handle.status !== "paused");
+  const settled = await Promise.allSettled(pausable.map(({ handle }) => handle.pause()));
   const pauseFailures: string[] = [];
-  for (const { controlRunId, handle } of handles) {
-    try {
-      await handle.pause();
-      pausedRunIds.add(controlRunId);
-      const controlRun = activeStore.runs().find((candidate) => candidate.id === controlRunId);
-      const stage = controlRun?.stages.find((candidate) => candidate.id === handle.stageId);
-      if (stage !== undefined) paused.push(structuredClone(stage));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      pauseFailures.push(`${controlRunId}/${handle.stageId}: ${message}`);
+  settled.forEach((result, index) => {
+    const target = pausable[index]!;
+    if (result.status === "rejected") {
+      const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      pauseFailures.push(`${target.controlRunId}/${target.handle.stageId}: ${message}`);
+      return;
     }
-  }
+    pausedRunIds.add(target.controlRunId);
+    const controlRun = activeStore.runs().find((candidate) => candidate.id === target.controlRunId);
+    const stage = controlRun?.stages.find((candidate) => candidate.id === target.handle.stageId);
+    if (stage !== undefined) paused.push(structuredClone(stage));
+  });
   if (pauseFailures.length > 0) {
     throw new Error(`Failed to pause workflow stages: ${pauseFailures.join("; ")}`);
   }
 
+  for (const promptStage of promptStages) {
+    const target = promptStage.workflowGraphTarget;
+    activeStore.recordStagePaused(target.runId, target.stageId);
+    pausedRunIds.add(target.runId);
+  }
   const current = activeStore.runs().find((candidate) => candidate.id === runId);
   if (current === undefined) return { ok: false, runId, reason: "not_found" };
   if (current.endedAt !== undefined) return { ok: false, runId, reason: "already_ended" };
@@ -82,7 +96,10 @@ function controllableHandles(
   for (const stage of graph.stages) controlRunIds.add(stage.workflowGraphTarget.runId);
   return [...controlRunIds].flatMap((controlRunId) =>
     registry.run(controlRunId).stages()
-      .filter((handle) => handle.status === "running" || handle.status === "pending")
+      .filter((handle) =>
+        handle.status === "running" || handle.status === "pending" ||
+        handle.status === "awaiting_input" || handle.status === "paused"
+      )
       .map((handle) => ({ controlRunId, handle })),
   );
 }

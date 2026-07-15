@@ -45,7 +45,6 @@ import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backe
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-
 function nextEventLoopTurn(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -365,6 +364,7 @@ export async function run<
         runId,
         activeStore,
         opts,
+        stageControlRegistry: stageRegistry,
         tracker,
         replayIndex,
         signal: ownController.signal,

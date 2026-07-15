@@ -39,7 +39,7 @@ import {
   type WorkflowResultIntercomPort,
 } from "../intercom/result-intercom.js";
 import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
-import { runDetached } from "../runs/background/runner.js";
+import { runDetached, workflowConnectGuidance } from "../runs/background/runner.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
@@ -416,6 +416,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       runId,
       status: "accepted",
       progress: { completed: 0, total: directProgressTotal(args) },
+      message: workflowConnectGuidance(runId),
       ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
     }, delivery, parentSession);
   }
