@@ -387,5 +387,65 @@ describe("graceful workflow quit acknowledgement", () => {
     finishSecondPrompt.resolve();
     assert.equal((await execution).status, "completed");
   });
+  test("durable transition failure propagates instead of claiming a resumable pause", async () => {
+    class TransitionFailingBackend extends InMemoryDurableBackend {
+      override transitionWorkflowStatus(): boolean {
+        throw new Error("durable transition write failed");
+      }
+    }
+    const backend = new TransitionFailingBackend();
+    setDurableBackend(backend);
+    const store = createStore();
+    const registry = createStageControlRegistry();
+    const runId = "quit-durable-transition-fails";
+    let status: StageControlStatus = "running";
+    store.recordRunStart({ id: runId, name: "durable", inputs: {}, status: "running", stages: [], startedAt: 1 });
+    store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
+    backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
+    registry.register(stageHandle({
+      runId,
+      stageId: "stage-1",
+      status: () => status,
+      pause: async () => { status = "paused"; },
+    }));
+
+    const failure = await quitRun(runId, { store, stageControlRegistry: registry })
+      .then((result) => result, (error: unknown) => error);
+
+    assert.match(failure instanceof Error ? failure.message : String(failure), /durable transition write failed/);
+    const run = store.runs().find((candidate) => candidate.id === runId);
+    assert.notEqual(run?.exitReason, "quit");
+    assert.notEqual(run?.resumable, true);
+    assert.equal(backend.getWorkflow(runId)?.status, "running");
+  });
+
+  test("durable flush failure propagates instead of claiming a resumable pause", async () => {
+    class FlushFailingBackend extends InMemoryDurableBackend {
+      async flush(): Promise<void> { throw new Error("durable flush failed"); }
+    }
+    const backend = new FlushFailingBackend();
+    setDurableBackend(backend);
+    const store = createStore();
+    const registry = createStageControlRegistry();
+    const runId = "quit-durable-flush-fails";
+    let status: StageControlStatus = "running";
+    store.recordRunStart({ id: runId, name: "durable", inputs: {}, status: "running", stages: [], startedAt: 1 });
+    store.recordStageStart(runId, { id: "stage-1", name: "stage", status: "running", parentIds: [], toolEvents: [] });
+    backend.registerWorkflow({ workflowId: runId, name: "durable", inputs: {}, createdAt: 1, status: "running" });
+    registry.register(stageHandle({
+      runId,
+      stageId: "stage-1",
+      status: () => status,
+      pause: async () => { status = "paused"; },
+    }));
+
+    const failure = await quitRun(runId, { store, stageControlRegistry: registry })
+      .then((result) => result, (error: unknown) => error);
+
+    assert.match(failure instanceof Error ? failure.message : String(failure), /durable flush failed/);
+    const run = store.runs().find((candidate) => candidate.id === runId);
+    assert.notEqual(run?.exitReason, "quit");
+    assert.notEqual(run?.resumable, true);
+  });
 
 });

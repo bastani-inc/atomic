@@ -10,6 +10,7 @@ import {
   type StageControlRegistry,
 } from "../foreground/stage-control-registry.js";
 import { getDurableBackend } from "../../durable/factory.js";
+import type { DurableWorkflowBackend } from "../../durable/backend.js";
 import {
   getLoadableDurableWorkflow,
   transitionDurableWorkflowStatus,
@@ -115,18 +116,31 @@ function controllableHandles(
 }
 
 async function markDurableQuit(runId: string): Promise<"transitioned" | "not_needed" | "refused"> {
+  const backend = discoverDurableQuitBackend(runId);
+  if (backend === undefined) return "not_needed";
+  // The workflow is durably tracked, so a failure to persist the paused
+  // transition or flush it must surface. Swallowing it here would let quitRun
+  // record a resumable pause that no future process could actually resume from.
+  const transitioned = await transitionDurableWorkflowStatus(
+    backend, runId, ["running", "paused"], "paused", undefined, true,
+  );
+  if (!transitioned) return "refused";
+  await backend.flush?.();
+  return "transitioned";
+}
+
+/**
+ * Resolve the durable backend only when `runId` is durably tracked. Discovery
+ * stays best-effort for custom backends that throw on unsupported inspection;
+ * the persistence writes performed after a positive match are intentionally
+ * left to propagate so genuine durable failures are not masked.
+ */
+function discoverDurableQuitBackend(runId: string): DurableWorkflowBackend | undefined {
   try {
     const backend = getDurableBackend();
-    if (getLoadableDurableWorkflow(backend, runId) === undefined) return "not_needed";
-    const transitioned = await transitionDurableWorkflowStatus(
-      backend, runId, ["running", "paused"], "paused", undefined, true,
-    );
-    if (!transitioned) return "refused";
-    await backend.flush?.();
-    return "transitioned";
+    return getLoadableDurableWorkflow(backend, runId) === undefined ? undefined : backend;
   } catch {
-    // Durable status remains best-effort for custom backends.
-    return "not_needed";
+    return undefined;
   }
 }
 
