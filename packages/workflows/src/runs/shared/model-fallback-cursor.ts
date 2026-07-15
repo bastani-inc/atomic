@@ -1,5 +1,5 @@
 import { isLegacyBareCursorModelId } from "@bastani/atomic";
-import type { WorkflowModelValue } from "../../shared/types.js";
+import type { WorkflowModelCatalogPort, WorkflowModelValue } from "../../shared/types.js";
 
 export interface ExplicitCursorReference {
   readonly fullId: string;
@@ -28,4 +28,17 @@ export function hasStrictCursorReference(input: {
   return explicitCursorModelObject(input.primaryModel)
     || (typeof input.primaryModel === "string" && strictCursorStringReference(input.primaryModel))
     || (input.fallbackModels?.some(strictCursorStringReference) ?? false);
+}
+
+const AUTHENTICATED_CURSOR_DISCOVERY_UNAVAILABLE =
+  "workflows: authenticated Cursor model discovery is unavailable";
+
+export async function requireAuthenticatedCursorDiscovery(
+  catalog: WorkflowModelCatalogPort | undefined,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (catalog?.discoverModels === undefined) {
+    throw new Error(AUTHENTICATED_CURSOR_DISCOVERY_UNAVAILABLE);
+  }
+  await catalog.discoverModels(signal);
 }

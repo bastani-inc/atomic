@@ -16,25 +16,28 @@ function staleCursorModel(): Model<Api> {
   } as Model<Api>;
 }
 
-test("stale Cursor model objects fail before stage session creation, prompt, or fallback", async () => {
+test("missing authenticated discovery rejects a stale exact Cursor object before catalog, session, or prompt", async () => {
   let createCalls = 0;
   let promptCalls = 0;
+  let listCalls = 0;
+  const stale = staleCursorModel();
   const ctx = createStageContext(makeOpts({
     adapters: { agentSession: { async create() {
       createCalls += 1;
       return makeMockSession({ async prompt() { promptCalls += 1; } }).session;
     } } },
-    stageOptions: { model: staleCursorModel(), fallbackModels: ["openai/fallback"] },
+    stageOptions: { model: stale, fallbackModels: ["openai/fallback"] },
     models: {
       currentModel: "anthropic/current",
-      listModels: async () => [
-        { provider: "openai", id: "fallback", fullId: "openai/fallback" },
-        { provider: "anthropic", id: "current", fullId: "anthropic/current" },
-      ],
+      listModels: async () => {
+        listCalls += 1;
+        return [{ provider: "cursor", id: stale.id, fullId: `cursor/${stale.id}`, model: stale }];
+      },
     },
   })) as InternalStageContext;
 
-  await assert.rejects(() => ctx.prompt("must not run"), /cursor\/old-synthetic-high.*reselect/s);
+  await assert.rejects(() => ctx.prompt("must not run"), /authenticated Cursor model discovery is unavailable/u);
+  assert.equal(listCalls, 0);
   assert.equal(createCalls, 0);
   assert.equal(promptCalls, 0);
   assert.equal(ctx.__modelFallbackMeta().attemptedModels, undefined);

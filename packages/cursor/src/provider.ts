@@ -129,6 +129,7 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 	let catalogRefreshGeneration = 0;
 	let lastCatalogGeneration: number | undefined;
 	let resolveCurrentAccessToken = options.resolveCurrentAccessToken;
+	let storedCredentialDiscoveryGeneration = 0;
 	let authenticatedCredentialScope: string | undefined;
 	let catalogRefreshStatus: CursorCatalogRefreshStatus = { state: "idle" };
 	const catalogDiscoveryInFlightTokens = new Map<string, { readonly generation: number; readonly task: Promise<boolean>; readonly controller: AbortController }>();
@@ -423,16 +424,17 @@ export function registerCursorProvider(pi: CursorProviderHost, options: CursorPr
 		return error;
 	};
 
-	const discoverCatalogFromStoredCredentials = (event?: unknown, context?: CursorProviderContext): Promise<void> =>
-		discoverStoredCursorCredential(event, context, {
-			inactive: () => disposing || disposed,
+	const discoverCatalogFromStoredCredentials = (event?: unknown, context?: CursorProviderContext): Promise<void> => {
+		const generation = ++storedCredentialDiscoveryGeneration;
+		return discoverStoredCursorCredential(event, context, {
+			inactive: () => disposing || disposed || generation !== storedCredentialDiscoveryGeneration,
 			useContextResolver: (resolver) => { resolveCurrentAccessToken = resolver; },
-			resolveAccessToken: () => resolveCurrentAccessToken?.(),
-			invalidateCredential: invalidateMissingCredential,
+			resolveAccessToken: () => resolveCurrentAccessToken?.(), invalidateCredential: invalidateMissingCredential,
 			scheduleDiscovery: (accessToken) => scheduleTrackedCatalogDiscovery(accessToken),
 			refreshError: () => catalogRefreshStatus.error,
 			reportPrintWarning: (providerContext) => reportPrintCatalogWarning(providerContext),
 		});
+	};
 
 	const cleanupCurrentSession = async (_event?: unknown, context?: CursorProviderContext): Promise<void> => {
 		const sessionId = context?.sessionManager?.getSessionId?.();

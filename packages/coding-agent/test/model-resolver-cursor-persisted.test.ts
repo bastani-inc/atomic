@@ -86,4 +86,13 @@ describe("persisted Cursor model recovery", () => {
       defaultModelId: "default-exact",
     })).toEqual({ kind: "session", id: "session-exact" });
   });
+
+  test("a restored non-Cursor session identity suppresses a Cursor settings default", () => {
+    expect(selectDeferredCursorModelReference({
+      explicitModel: undefined,
+      sessionModel: { provider: "anthropic", modelId: "restored-session" },
+      defaultProvider: "cursor",
+      defaultModelId: "default-exact",
+    })).toBeUndefined();
+  });
 });

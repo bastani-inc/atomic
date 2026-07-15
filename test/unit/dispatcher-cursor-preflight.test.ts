@@ -29,23 +29,33 @@ function modelCatalog(options: {
 }
 
 describe("named Cursor workflow preflight", () => {
-	test("strict failure creates no Run, job, or workflow body", async () => {
+	test("missing authenticated discovery rejects a stale exact route before Run, catalog, job, or body", async () => {
 		const deps = freshDeps();
 		let bodyCalls = 0;
+		let listCalls = 0;
 		const definition = workflow({
 			name: "cursor-preflight-failure", description: "", inputs: {}, outputs: {},
 			run: async () => { bodyCalls += 1; return {}; },
 		}) as WorkflowDefinition;
 		const result = await dispatch(
-			{ action: "run", workflow: definition.name, model: "cursor/missing-route", fallbackModels: ["openai/default-model"] },
-			{ registry: createRegistry([definition]), ...deps, models: modelCatalog() },
+			{ action: "run", workflow: definition.name, model: "cursor/stale-exact", fallbackModels: ["openai/default-model"] },
+			{
+				registry: createRegistry([definition]), ...deps,
+				models: {
+					listModels: async () => {
+						listCalls += 1;
+						return [{ provider: "cursor", id: "stale-exact", fullId: "cursor/stale-exact" }];
+					},
+				},
+			},
 		);
 		assert.equal(result.action, "run");
 		if (result.action === "run") {
 			assert.equal(result.status, "failed");
 			assert.equal(result.runId, "");
-			assert.match(result.error ?? "", /cursor\/missing-route.*reselect/su);
+			assert.match(result.error ?? "", /authenticated Cursor model discovery is unavailable/u);
 		}
+		assert.equal(listCalls, 0);
 		assert.equal(bodyCalls, 0);
 		assert.equal(deps.store.runs().length, 0);
 		assert.equal(deps.jobs.runIds().length, 0);

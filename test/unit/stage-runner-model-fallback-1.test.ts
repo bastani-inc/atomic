@@ -45,6 +45,7 @@ describe("createStageContext — model fallback", () => {
     });
 
     test("stale explicit Cursor route fails before stage session creation or fallback", async () => {
+        let discoveryCalls = 0;
         let createCalls = 0;
         let promptCalls = 0;
         const ctx = createStageContext(
@@ -65,6 +66,7 @@ describe("createStageContext — model fallback", () => {
                 },
                 models: {
                     currentModel: "anthropic/current",
+                    discoverModels: async () => { discoveryCalls += 1; },
                     listModels: async () => [
                         { provider: "openai", id: "fallback", fullId: "openai/fallback" },
                         { provider: "anthropic", id: "current", fullId: "anthropic/current" },
@@ -74,6 +76,7 @@ describe("createStageContext — model fallback", () => {
         ) as InternalStageContext;
 
         await assert.rejects(() => ctx.prompt("must not run"), /cursor\/grok-4\.5-high.*reselect/s);
+        assert.equal(discoveryCalls, 1);
         assert.equal(createCalls, 0);
         assert.equal(promptCalls, 0);
         assert.equal(ctx.__modelFallbackMeta().attemptedModels, undefined);

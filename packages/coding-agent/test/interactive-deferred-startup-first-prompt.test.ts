@@ -158,6 +158,81 @@ describe("interactive deferred startup first prompt readiness", () => {
 		}
 	});
 
+	it("retries an exact settings-only Cursor default after real deferred extension loading before the first prompt", async () => {
+		const exactId = "cursor-route:high (1m)/exact";
+		const order: string[] = [];
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		settingsManager.setDefaultModelAndProvider("cursor", exactId);
+		const sessionManager = SessionManager.inMemory();
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			extensionFactories: [(pi) => {
+				pi.on("model_catalog_discover", () => {
+					order.push("discovery");
+					pi.registerProvider("cursor", {
+						baseUrl: "https://api2.cursor.sh",
+						apiKey: "cursor-test-key",
+						api: "cursor-agent",
+						models: [{
+							id: exactId, name: "Exact Cursor Route", reasoning: false, input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 200_000, maxTokens: 64_000,
+						}],
+					});
+				});
+			}],
+		});
+		await resourceLoader.reload({ deferExtensions: true, deferResources: true });
+		const { session, modelFallbackMessage } = await createAgentSession({
+			cwd: tempDir, agentDir, settingsManager, sessionManager, resourceLoader,
+		});
+		try {
+			expect(session.model?.provider).not.toBe("cursor");
+			expect(session.model?.id).not.toBe(exactId);
+			expect(modelFallbackMessage).toContain(`cursor/${exactId}`);
+			const showWarning = vi.fn();
+			const retryMode = { options: { modelFallbackMessage }, session, sessionManager, settingsManager, showWarning };
+			const harness: PromptTurnHarness = {
+				deferredStartupPending: true,
+				deferredStartupPromise: undefined,
+				deferLoadedResourcesDisclosureUntilAgentEnd: false,
+				pendingLoadedResourcesDisclosure: false,
+				session: {
+					get isStreaming() { return session.isStreaming; },
+					prompt: vi.fn(async () => {
+						order.push("prompt");
+						expect(session.model?.provider).toBe("cursor");
+						expect(session.model?.id).toBe(exactId);
+					}),
+				},
+				showWorkingLoaderNow: vi.fn(() => order.push("spinner")),
+				ensureDeferredStartupComplete: vi.fn(async () => {
+					order.push("reload");
+					await session.bindExtensions({ commandContextActions: createCommandActions() });
+					await session.reload({ reason: "startup" });
+					await InteractiveMode.prototype.retryDeferredModelRestore.call(retryMode as never);
+					harness.deferredStartupPending = false;
+				}),
+				showLoadedResources: vi.fn(),
+				maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(async () => {}),
+				discardDeferredRenderedUserInput: vi.fn(),
+				showError: vi.fn(),
+				stopWorkingLoader: vi.fn(),
+				startupNoticesContainer: {},
+			};
+
+			await interactiveModePrototype.runUserPromptTurn.call(harness, "use exact default");
+
+			expect(order).toEqual(["spinner", "reload", "discovery", "prompt"]);
+			expect(showWarning).not.toHaveBeenCalled();
+			expect(harness.showError).not.toHaveBeenCalled();
+		} finally {
+			session.dispose();
+		}
+	});
+
 	it("never prompts with a default model after real deferred Cursor scope resolution fails", async () => {
 		const prompt = vi.fn(async () => {});
 		const showError = vi.fn();

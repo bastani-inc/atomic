@@ -31,11 +31,13 @@ export async function discoverStoredCursorCredential(
 	try {
 		accessToken = await dependencies.resolveAccessToken();
 	} catch {
+		if (dependencies.inactive()) return;
 		const error = dependencies.invalidateCredential("Cursor credential lookup failed. Log in again and reselect an exact model with --list-models.");
 		context?.ui?.notify(error.message, "error");
 		if (shouldAwait) throw error;
 		return;
 	}
+	if (dependencies.inactive()) return;
 	if (!accessToken) {
 		const error = dependencies.invalidateCredential("Cursor is not authenticated. Log in again and reselect an exact model with --list-models.");
 		context?.ui?.notify(error.message, "error");
@@ -43,18 +45,21 @@ export async function discoverStoredCursorCredential(
 		return;
 	}
 	const task = dependencies.scheduleDiscovery(accessToken);
+	if (dependencies.inactive()) return;
 	if (!task) {
 		if (context?.mode === "print" && dependencies.refreshError()) dependencies.reportPrintWarning(context);
 		return;
 	}
 	if (!shouldAwait) {
 		void task.then((success) => {
+			if (dependencies.inactive()) return;
 			const refreshError = dependencies.refreshError();
 			if (!success || refreshError) context?.ui?.notify(`Cursor model refresh warning: ${refreshError ?? "retained the previous catalog"}`, "warning");
 		});
 		return;
 	}
 	const success = await task;
+	if (dependencies.inactive()) return;
 	if (success && !dependencies.refreshError()) return;
 	dependencies.reportPrintWarning(context);
 }

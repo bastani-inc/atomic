@@ -2,6 +2,7 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { modelsAreEqual } from "@earendil-works/pi-ai/compat";
 import { type Container, recordTimeSinceReset, resolveModelScopeWithDiagnostics, resolveRestoredModelReference, setRegisteredThemes } from "./interactive-mode-deps.ts";
 import { modelScopeNeedsCursorDiscovery } from "../../main-cursor-model-scope-recovery.ts";
+import { recoverDeferredCursorModel, selectDeferredCursorModelReference } from "../../core/model-resolver-cursor-persisted.ts";
 
 export class DeferredCursorModelScopeError extends Error {
   constructor(message: string) {
@@ -153,6 +154,23 @@ InteractiveModeBase.prototype.retryDeferredModelRestore = async function(this: I
     }
     const savedModel = this.sessionManager.buildSessionContext().model;
     if (!savedModel && this.session.model && this.session.modelRegistry.hasConfiguredAuth(this.session.model)) {
+      return;
+    }
+    const deferredCursorReference = selectDeferredCursorModelReference({
+      explicitModel: undefined,
+      sessionModel: savedModel ?? undefined,
+      defaultProvider: this.settingsManager.getDefaultProvider(),
+      defaultModelId: this.settingsManager.getDefaultModel(),
+    });
+    if (deferredCursorReference) {
+      const recoveryMessage = await recoverDeferredCursorModel({
+        reference: deferredCursorReference,
+        session: this.session,
+        modelRegistry: this.session.modelRegistry,
+        mode: "tui",
+      });
+      if (!recoveryMessage) return;
+      this.showWarning(recoveryMessage, targetContainer);
       return;
     }
     if (savedModel) {

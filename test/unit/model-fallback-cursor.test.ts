@@ -30,6 +30,7 @@ describe("Cursor workflow model resolution", () => {
         fallbackModels: ["openai/gpt-5-mini"],
         catalog: {
           currentModel: "anthropic/claude-sonnet-4",
+          discoverModels: async () => undefined,
           listModels: async () => models,
         },
       }),
@@ -49,6 +50,7 @@ describe("Cursor workflow model resolution", () => {
         fallbackModels: ["openai/gpt-5-mini"],
         catalog: {
           currentModel: "openai/gpt-5-mini",
+          discoverModels: async () => undefined,
           listModels: async () => { throw new Error("registry unavailable"); },
         },
       }),
@@ -127,14 +129,22 @@ describe("Cursor workflow model resolution", () => {
     await assert.rejects(buildModelCandidatesFromCatalog({
       primaryModel: model("cursor", "old-synthetic-high"),
       fallbackModels: ["openai/gpt-5-mini"],
-      catalog: { currentModel: "anthropic/claude-sonnet-4", listModels: async () => models },
+      catalog: {
+        currentModel: "anthropic/claude-sonnet-4",
+        discoverModels: async () => undefined,
+        listModels: async () => models,
+      },
     }), /cursor\/old-synthetic-high.*reselect/s);
   });
 
   test("Cursor model objects propagate catalog failure without current-model fallback", async () => {
     await assert.rejects(buildModelCandidatesFromCatalog({
       primaryModel: model("cursor", "cursor-grok-4.5-high"),
-      catalog: { currentModel: "anthropic/claude-sonnet-4", listModels: async () => { throw new Error("catalog failed"); } },
+      catalog: {
+        currentModel: "anthropic/claude-sonnet-4",
+        discoverModels: async () => undefined,
+        listModels: async () => { throw new Error("catalog failed"); },
+      },
     }), /catalog failed/);
   });
 
@@ -175,6 +185,24 @@ describe("Cursor workflow model resolution", () => {
     assert.equal(candidate?.id, "cursor/live-route");
   });
 
+
+  test("strict Cursor APIs reject a stale exact list when authenticated discovery is absent", async () => {
+    let listed = 0;
+    const staleModels = [{ provider: "cursor", id: "stale-exact", fullId: "cursor/stale-exact" }];
+    for (const invoke of [
+      () => buildModelCandidatesFromCatalog({
+        primaryModel: "cursor/stale-exact",
+        catalog: { listModels: async () => { listed += 1; return staleModels; } },
+      }),
+      () => validateWorkflowModels({
+        requests: [{ model: "cursor/stale-exact" }],
+        catalog: { listModels: async () => { listed += 1; return staleModels; } },
+      }),
+    ]) {
+      await assert.rejects(invoke, /authenticated Cursor model discovery is unavailable/u);
+      assert.equal(listed, 0);
+    }
+  });
   test("does not delay non-Cursor workflows for Cursor discovery", async () => {
     let discoveries = 0;
     const [candidate] = await buildModelCandidatesFromCatalog({
@@ -219,7 +247,11 @@ describe("Cursor workflow model resolution", () => {
     const otherComposer = { provider: "openai", id: "composer-2", fullId: "openai/composer-2" };
     await assert.rejects(buildModelCandidatesFromCatalog({
       primaryModel: "composer-2", fallbackModels: ["openai/gpt-5-mini"],
-      catalog: { currentModel: "openai/gpt-5-mini", listModels: async () => [...models, otherComposer] },
+      catalog: {
+        currentModel: "openai/gpt-5-mini",
+        discoverModels: async () => undefined,
+        listModels: async () => [...models, otherComposer],
+      },
     }), /cursor\/composer-2.*reselect/s);
 
     const [current] = await buildModelCandidatesFromCatalog({

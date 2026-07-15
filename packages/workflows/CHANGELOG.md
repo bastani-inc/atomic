@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Changed workflow model validation so explicit Cursor strings and `Model` objects must match the authenticated exact live catalog before stage session creation. Stale Cursor references now fail with reselection guidance without trying configured/current/provider/model fallbacks, matching objects are replaced by the live catalog row, generic non-Cursor fallback behavior remains unchanged, and builtins no longer hard-code account-specific Cursor routes ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
 - Awaited the shared `model_catalog_discover` lifecycle before reading the registry for explicit Cursor strings, objects, and rejection-only bare historical direct IDs. Named `workflow({ action: "run" })` launches now perform the same preflight before creating a Run/store/stage entry; concurrent launches share discovery, cancellation or unavailable tombstones create no Run and cannot fall through, and non-Cursor launches are not delayed ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
 
+### Fixed
+
+- Required the authenticated Cursor discovery capability itself before either strict workflow preflight or stage candidate resolution reads `listModels()`. A list-only catalog can no longer validate a stale exact Cursor row, and rejection occurs before Run, job, workflow body, stage session, prompt, or transport side effects; non-Cursor list-only catalogs remain unchanged ([#1702](https://github.com/bastani-inc/atomic/issues/1702)).
+
 ## [0.9.9-alpha.3] - 2026-07-14
 
 ### Fixed

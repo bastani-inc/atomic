@@ -10,6 +10,7 @@ import {
   explicitCursorModelObject,
   hasStrictCursorReference,
   parseExplicitCursorReference,
+  requireAuthenticatedCursorDiscovery,
   strictCursorStringReference,
 } from "./model-fallback-cursor.js";
 
@@ -411,6 +412,7 @@ export async function buildModelCandidatesFromCatalog(input: {
   const strictCursorReference = hasStrictCursorReference(input);
   if (!hasExplicitModel) return [];
 
+  if (strictCursorReference) await requireAuthenticatedCursorDiscovery(input.catalog, input.signal);
   if (input.catalog === undefined) {
     return buildModelCandidates({
       primaryModel: input.primaryModel,
@@ -420,7 +422,6 @@ export async function buildModelCandidatesFromCatalog(input: {
   }
 
   try {
-    if (strictCursorReference) await input.catalog.discoverModels?.(input.signal);
     const availableModels = await input.catalog.listModels();
     return buildModelCandidates({
       primaryModel: input.primaryModel,
@@ -463,9 +464,9 @@ export async function validateWorkflowModels(input: {
 
   const failures: ModelResolutionFailure[] = [];
   let availableModels: readonly WorkflowModelInfo[] | undefined;
+  if (strictCursorReference) await requireAuthenticatedCursorDiscovery(input.catalog, input.signal);
   if (input.catalog !== undefined) {
     try {
-      if (strictCursorReference) await input.catalog.discoverModels?.(input.signal);
       availableModels = await input.catalog.listModels();
     } catch (err) {
       if (strictCursorReference || input.catalog.currentModel === undefined) throw err;

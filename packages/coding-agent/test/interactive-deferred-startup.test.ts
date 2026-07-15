@@ -159,6 +159,7 @@ describe("retryDeferredModelRestore", () => {
 					model: { provider: exactModel.provider, modelId: exactModel.id },
 				}),
 			},
+			settingsManager: { getDefaultProvider: vi.fn(), getDefaultModel: vi.fn() },
 			session: {
 				model: sameProviderTemplate,
 				modelRegistry: {

@@ -1,4 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import type { ExtensionMode } from "./extensions/index.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 
 export interface DeferredCursorModelReference {
@@ -7,7 +8,7 @@ export interface DeferredCursorModelReference {
 }
 
 interface CursorDiscoverySession {
-  discoverExtensionModels(mode: "print"): Promise<void>;
+  discoverExtensionModels(mode: ExtensionMode): Promise<void>;
   setModel(model: Model<Api>): Promise<void>;
 }
 
@@ -18,8 +19,10 @@ export function selectDeferredCursorModelReference(input: {
   readonly defaultModelId: string | undefined;
 }): DeferredCursorModelReference | undefined {
   if (input.explicitModel) return undefined;
-  if (input.sessionModel?.provider.toLowerCase() === "cursor") {
-    return { kind: "session", id: input.sessionModel.modelId };
+  if (input.sessionModel) {
+    return input.sessionModel.provider.toLowerCase() === "cursor"
+      ? { kind: "session", id: input.sessionModel.modelId }
+      : undefined;
   }
   if (input.defaultProvider?.toLowerCase() === "cursor" && input.defaultModelId) {
     return { kind: "default", id: input.defaultModelId };
@@ -31,9 +34,10 @@ export async function recoverDeferredCursorModel(input: {
   readonly reference: DeferredCursorModelReference;
   readonly session: CursorDiscoverySession;
   readonly modelRegistry: ModelRegistry;
+  readonly mode?: ExtensionMode;
 }): Promise<string | undefined> {
   try {
-    await input.session.discoverExtensionModels("print");
+    await input.session.discoverExtensionModels(input.mode ?? "print");
   } catch {
     return cursorReselectionMessage(input.reference);
   }
