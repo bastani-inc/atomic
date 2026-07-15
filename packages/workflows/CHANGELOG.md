@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Unified workflow **post-mortem stage chat** across every inspection surface. Any eligible terminal agent stage with a valid retained session now reopens as an interactive follow-up conversation — not only completed-workflow inspection (#1758), but also generic `/workflow attach` / `/workflow connect`, restored/replayed durable snapshots after a process restart, and `workflow({ action: "send" })`. A shared runtime resolver (`ensurePostMortemStageHandle`) validates the retained session is an existing, readable, context-bearing Atomic transcript, then lazily reopens it through a detached, single-flight stage-control handle keyed by the real `{ runId, stageId }` (including nested/expanded child stages). Follow-up turns are appended in place to the retained session and the agent keeps its ordinary tools, while run/stage status, results, timings, checkpoints, replay metadata, and graph topology remain immutable — post-mortem chat can never resume, retry, rewind, pause, or re-dispatch workflow execution. Explicit `workflow send` delivery modes `resume` and `steer` on a completed post-mortem stage return a structured `noop` with follow-up guidance and do not append the supplied text. Stages without a valid retained agent session (prompt/HIL and boundary/summary nodes, skipped nodes, non-terminal handle-less stages, and missing/malformed/deleted session files) keep the existing read-only transcript, and recoverably failed stages retain their execution-resume semantics. `workflow send` now revives such a stage on a registry miss and delivers the message as a conversational follow-up instead of reporting `No live handle for stage.` ([#1811](https://github.com/bastani-inc/atomic/issues/1811))
+
+### Fixed
+
+- Fixed session-boundary races in lazy post-mortem stage-chat attachment so every host session replacement or shutdown (`new`, `resume`, `fork`, `reload`, and `quit`) synchronously invalidates detached handles; a retained-session creation that finishes after the boundary is disposed and its already-submitted prompt is rejected instead of executing in the replacement session or leaking an unowned SDK session.
+- Fixed explicit `/workflow attach <root-run> <nested-stage>` commands to resolve expanded child stages through their owning nested run, preserve that owner through overlay retargeting when sibling child runs reuse the same local stage ID, and retain post-mortem resolver failure reasons so invalid or unavailable sessions render a complete actionable `SESSION UNAVAILABLE` explanation—even at the supported 40-column minimum—instead of a misleading archived-transcript label. Reopened nested terminal stages now restore cwd from their durable root workflow metadata (preferring the resolved workflow cwd, then the original invocation cwd) rather than silently falling back to the current review checkout.
+
 ## [0.9.9] - 2026-07-15
 
 ### Changed

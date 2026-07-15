@@ -45,6 +45,7 @@ export function initializeStageChatView(
   ctx.stageId = opts.stageId;
   ctx.workflowName = opts.workflowName;
   ctx.handle = opts.handle;
+  ctx.postMortemUnavailableReason = opts.postMortemUnavailableReason;
   ctx.onDetach = opts.onDetach;
   ctx.onClose = opts.onClose;
   ctx.requestRender = opts.requestRender;

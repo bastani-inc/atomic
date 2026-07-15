@@ -49,6 +49,8 @@ test("publish replaces full-suite reruns with release integrity and preserves re
   assert.match(workflow, /name: Reconfirm release tag is immutable[\s\S]*current_sha[\s\S]*VERIFIED_SHA/);
 });
 
+// This process-heavy contract invokes the verifier twice through temporary Git
+// worktrees; native Windows Git can exceed Bun's 5s default test timeout.
 test("release verifier accepts generated release and rejects an extra forged file", async () => {
   const tag = "0.9.7-alpha.1";
   const integrityWorktrees = async () => (await $`git worktree list --porcelain`.cwd(root).text())
@@ -85,4 +87,4 @@ test("release verifier accepts generated release and rejects an extra forged fil
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }
-});
+}, 30_000);

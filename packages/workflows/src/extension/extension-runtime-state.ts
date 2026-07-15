@@ -60,6 +60,8 @@ export interface WorkflowExtensionRuntimeState {
   setNotificationsActive(active: boolean): void;
   setIntercomParentSession(session: string | null): void;
   updateHostStageSessionDir(sessionManager: SessionManager | undefined): void;
+  /** Current default stage session directory, when the host set a non-default one. */
+  resolveDefaultStageSessionDir(): string | undefined;
 }
 
 export function createWorkflowExtensionRuntimeState(
@@ -442,5 +444,6 @@ export function createWorkflowExtensionRuntimeState(
         hostStageSessionDir.current = undefined;
       }
     },
+    resolveDefaultStageSessionDir,
   };
 }

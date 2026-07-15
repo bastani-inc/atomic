@@ -226,8 +226,14 @@ describe("/workflow resume completed target", () => {
     });
   }
 
-  test("keeps exact full live ids on the existing paused resume path", async () => {
+  test("keeps exact full live ids on the existing paused resume path without listing completed durable runs", async () => {
     const backend = new InMemoryDurableBackend();
+    let completedCatalogReads = 0;
+    const listCompletedWorkflows = backend.listCompletedWorkflows.bind(backend);
+    backend.listCompletedWorkflows = () => {
+      completedCatalogReads += 1;
+      return listCompletedWorkflows();
+    };
     setDurableBackend(backend);
     registerCompleted(backend, "exact-live-other-completed");
     store.recordRunStart({ id: "exact-live", name: "live-flow", inputs: {}, status: "paused", stages: [], startedAt: 1, resumable: true });
@@ -238,6 +244,7 @@ describe("/workflow resume completed target", () => {
     assert.equal(result.errors.length, 0);
     assert.equal(store.runs().find((run) => run.id === "exact-live")?.status, "running");
     assert.match(result.messages.join("\n"), /Resumed run exact-li/);
+    assert.equal(completedCatalogReads, 0, "an exact live run must bypass durable completed-catalog enumeration");
   });
 
   test("keeps recoverable failed and active-running explicit behavior unchanged", async () => {

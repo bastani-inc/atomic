@@ -15,6 +15,8 @@ import { createWorkflowExtensionRuntimeState } from "./extension-runtime-state.j
 import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
+import { createPostMortemHandleResolver, postMortemDepsForRun } from "./postmortem-deps.js";
+import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
 import { installInputInterceptor, type WorkflowCommandHandler } from "./workflow-command-utils.js";
@@ -34,8 +36,10 @@ function registerWorkflowMessageRenderers(pi: ExtensionAPI): void {
 
 function buildWorkflowOverlay(
   pi: ExtensionAPI,
+  resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
 ): GraphOverlayPort {
   return buildGraphOverlayAdapter(pi, store, {
+    resolvePostMortemHandle,
     onQuitRun: (runId) => {
       quitRun(runId, { store });
       pi.ui?.notify?.(`Workflow quit; resume with /workflow resume.`, "info");
@@ -77,7 +81,11 @@ function registerIntercomControl(
 function factory(pi: ExtensionAPI): void {
   const adapters = buildRuntimeAdapters(pi);
   const runtimeState = createWorkflowExtensionRuntimeState(pi, adapters);
-  const overlay = buildWorkflowOverlay(pi);
+  const postMortemResolverDeps = {
+    adapters,
+    resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
+  };
+  const overlay = buildWorkflowOverlay(pi, createPostMortemHandleResolver(postMortemResolverDeps));
   const workflowCommands = new Map<string, WorkflowCommandHandler>();
   const storeWidgetRef: { current: (() => void) | null } = { current: null };
   const intercomControlRef: { current: (() => void) | null } = { current: null };
@@ -86,6 +94,7 @@ function factory(pi: ExtensionAPI): void {
     () => runtimeState.persistenceRef.current,
     runtimeState.reloadWorkflowResources,
     runtimeState.ensureWorkflowResourcesLoaded,
+    { resolvePostMortemDeps: (runId) => postMortemDepsForRun(runId, postMortemResolverDeps) },
   );
 
   registerWorkflowTool(pi, executeWorkflowTool, runtimeState.runWithLifecycleSuppressedForPolicy);

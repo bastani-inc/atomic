@@ -268,6 +268,80 @@ describe("/workflow resume <runId> — exact live fast path", () => {
     });
 });
 
+describe("/workflow attach <rootRunId> <nestedStageId>", () => {
+    test.serial("routes an explicit nested stage through the root graph overlay", async () => {
+        let overlayOpens = 0;
+        let attachedOwner: string | undefined;
+        const notifications: string[] = [];
+        const { pi, commands } = buildMockPi();
+        addFactoryStubs(pi);
+        pi.ui = {
+            notify: (message: string) => { notifications.push(message); },
+            setWidget: () => {},
+            custom: (factory) => {
+                overlayOpens += 1;
+                const component = factory({ requestRender: () => {}, terminal: { rows: 32, columns: 96 } }, {}, {}, () => {});
+                attachedOwner = store.runs().find((run) => run.stages.some((stage) => stage.id === "review" && stage.attached === true))?.id;
+                component.dispose?.();
+                return undefined;
+            },
+        };
+        const factoryModule = await import("../../packages/workflows/src/extension/index.js");
+        factoryModule.default(pi);
+        const handler = commands.find((command) => command.name === "workflow")!.options.handler;
+
+        const rootRunId = `attach-root-${Date.now()}`;
+        const childOneRunId = `attach-child-one-${Date.now()}`;
+        const childTwoRunId = `attach-child-two-${Date.now()}`;
+        const nestedStageId = "review";
+        const boundary = (id: string, childRunId: string) => ({
+            id,
+            name: id,
+            status: "completed" as const,
+            parentIds: [],
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+            toolEvents: [],
+            workflowChild: {
+                alias: id,
+                workflow: "child-workflow",
+                runId: childRunId,
+                status: "completed" as const,
+                outputs: {},
+            },
+        });
+        store.recordRunStart({
+            ...makeInflightRun(rootRunId),
+            stages: [boundary("child-one", childOneRunId), boundary("child-two", childTwoRunId)],
+        });
+        for (const childRunId of [childOneRunId, childTwoRunId]) {
+            store.recordRunStart({
+                ...makeInflightRun(childRunId),
+                parentRunId: rootRunId,
+                rootRunId,
+                stages: [{
+                    id: nestedStageId,
+                    name: "review",
+                    status: "completed",
+                    parentIds: [],
+                    startedAt: Date.now(),
+                    endedAt: Date.now(),
+                    toolEvents: [],
+                    sessionFile: `/tmp/${childRunId}.jsonl`,
+                }],
+            });
+        }
+
+        await handler(`attach ${rootRunId} ${childTwoRunId}:${nestedStageId}`, { hasUI: true, ui: pi.ui });
+
+        assert.equal(overlayOpens, 1);
+        assert.equal(attachedOwner, childTwoRunId);
+        const content = notifications.join("\n");
+        assert.match(content, /Attached to .* stage review/);
+        assert.doesNotMatch(content, /Stage not found/);
+    });
+});
+
 // ---------------------------------------------------------------------------
 // resume regression: tool action "resume" against active run returns status:"ok"
 // ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ import type { StageContext, StageExecutionMeta, StageOptions, StageSendUserMessa
 import { buildModelCandidatesFromCatalog, errorMessage, isRetryableModelFailure, workflowModelId, type WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
 import { WorkflowPromptModelFailure, lastAssistantTextFromSession, latestTerminalAssistantFailureSince } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
-import { asAgentSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
+import { asAgentSession, attachCreatedStageSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
@@ -310,7 +310,7 @@ export class StageSessionController {
           { ...this.meta, stageOptions },
         )
       : missingAdapter(consumer);
-    return this.attachSession(created);
+    return attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) => this.attachSession(result));
   }
 
   private attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {

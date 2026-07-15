@@ -6,6 +6,7 @@ import type {
 } from "@bastani/atomic";
 import type { EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
+import type { PostMortemUnavailableReason } from "../runs/foreground/postmortem-stage-chat.js";
 import type { Store } from "../shared/store.js";
 import type {
   MountedStageCustomUi,
@@ -37,6 +38,8 @@ export interface StageChatViewOpts {
    * inspect-only (settled stage with no live handle).
    */
   handle?: StageControlHandle;
+  /** Why a retained terminal stage could not be reopened for follow-up chat. */
+  postMortemUnavailableReason?: PostMortemUnavailableReason;
   /** Called when the user presses Ctrl+D (back to graph). */
   onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   /** Called when the user presses Escape (close the whole popup). */
@@ -127,6 +130,7 @@ export interface StageChatViewContext {
   stageId: string;
   workflowName: string;
   handle: StageControlHandle | undefined;
+  postMortemUnavailableReason: PostMortemUnavailableReason | undefined;
   onDetach: (reason?: StageChatDetachReason, metadata?: StageChatDetachMetadata) => void;
   onClose: () => void;
   requestRender: (() => void) | undefined;

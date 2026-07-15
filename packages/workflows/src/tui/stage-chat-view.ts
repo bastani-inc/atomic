@@ -74,6 +74,7 @@ export class StageChatView implements Component, Focusable {
   private stageId!: StageChatViewContext["stageId"];
   private workflowName!: StageChatViewContext["workflowName"];
   private handle!: StageChatViewContext["handle"];
+  private postMortemUnavailableReason!: StageChatViewContext["postMortemUnavailableReason"];
   private onDetach!: StageChatViewContext["onDetach"];
   private onClose!: StageChatViewContext["onClose"];
   private requestRender!: StageChatViewContext["requestRender"];
@@ -208,6 +209,7 @@ export class StageChatView implements Component, Focusable {
     void this.stageId;
     void this.workflowName;
     void this.handle;
+    void this.postMortemUnavailableReason;
     void this.onDetach;
     void this.onClose;
     void this.requestRender;

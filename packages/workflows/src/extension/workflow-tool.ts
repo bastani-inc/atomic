@@ -24,7 +24,7 @@ import {
   workflowStagesResult,
   workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
-import { workflowSendAction } from "./workflow-tool-send.js";
+import { workflowSendAction, type WorkflowSendDeps } from "./workflow-tool-send.js";
 import {
   ambiguousRunMessage,
   isWorkflowStageToolContext,
@@ -39,6 +39,7 @@ export function makeExecuteWorkflowTool(
   getPersistence: () => WorkflowPersistencePort | undefined,
   reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void,
   ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
+  sendDeps: WorkflowSendDeps = {},
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
   return async function executeWorkflowTool(
     args: WorkflowToolArgs,
@@ -115,7 +116,7 @@ export function makeExecuteWorkflowTool(
       case "transcript":
         return workflowTranscriptResult(args);
       case "send":
-        return workflowSendAction(args);
+        return workflowSendAction(args, sendDeps);
       case "pause":
         return workflowPauseAction(args);
       case "reload":

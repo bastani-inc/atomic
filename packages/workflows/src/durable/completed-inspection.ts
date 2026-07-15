@@ -1,9 +1,9 @@
 import type { Store } from "../shared/store.js";
-import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
-import { createStageContext, type StageAdapters } from "../runs/foreground/stage-runner.js";
+import type { RunSnapshot } from "../shared/store-types.js";
+import type { StageAdapters } from "../runs/foreground/stage-runner.js";
+import { createPostMortemStageHandle } from "../runs/foreground/postmortem-stage-chat.js";
 import {
   stageControlRegistry as defaultStageControlRegistry,
-  type AgentSessionEventListener,
   type StageControlHandle,
   type StageControlRegistry,
 } from "../runs/foreground/stage-control-registry.js";
@@ -117,7 +117,7 @@ function registerCompletedChatHandles(
     } else if (existing !== undefined) {
       disposeCompletedChatHandle(existing);
     }
-    const handle = createCompletedChatHandle(snapshot, stage, stage.sessionFile, deps.adapters, deps.cwd, deps.defaultSessionDir);
+    const handle = createPostMortemStageHandle(snapshot.id, stage, stage.sessionFile, deps.adapters, deps.cwd, deps.defaultSessionDir);
     const unregister = registry.register(handle);
     registrations.set(key, { handle, unregister });
     registry.detachControl(snapshot.id, stage.id, handle);
@@ -142,72 +142,4 @@ function disposeCompletedChatHandle(handle: StageControlHandle): void {
   void Promise.resolve(handle.dispose?.()).catch((error: Error) => {
     console.warn("atomic-workflows: completed chat handle dispose failed", error);
   });
-}
-
-function createCompletedChatHandle(
-  run: RunSnapshot,
-  stage: StageSnapshot,
-  sessionFile: string,
-  adapters: StageAdapters,
-  cwd: string | undefined,
-  defaultSessionDir: string | undefined,
-): StageControlHandle {
-  const context = createStageContext({
-    runId: run.id,
-    stageId: stage.id,
-    stageName: stage.name,
-    adapters,
-    stageOptions: {
-      resumeFromSessionFile: sessionFile,
-      ...(cwd !== undefined ? { cwd } : {}),
-    },
-    ...(defaultSessionDir !== undefined ? { defaultSessionDir } : {}),
-  });
-  let disposed = false;
-  const ensureAttached = async (): Promise<void> => {
-    if (disposed) throw new Error(`Completed stage chat "${stage.name}" is closed.`);
-    if (context.__sessionMeta().sessionFile === undefined) {
-      await context.__ensureSessionFromFile(sessionFile);
-    }
-  };
-  return {
-    runId: run.id,
-    stageId: stage.id,
-    stageName: stage.name,
-    status: "completed",
-    get sessionId() { return context.__sessionMeta().sessionId ?? stage.sessionId; },
-    get sessionFile() { return context.__sessionMeta().sessionFile ?? sessionFile; },
-    get isStreaming() { return context.isStreaming; },
-    get isDisposed() { return disposed; },
-    get messages() { return context.messages; },
-    get agentSession() { return context.__agentSession(); },
-    async ensureAttached() { await ensureAttached(); },
-    async prompt(text: string) {
-      await ensureAttached();
-      await context.prompt(text);
-    },
-    async steer(text: string) {
-      await ensureAttached();
-      await context.steer(text);
-    },
-    async followUp(text: string) {
-      await ensureAttached();
-      await context.followUp(text);
-    },
-    async pause() {
-      throw new Error("Completed workflow snapshots cannot be paused or resumed.");
-    },
-    async resume(message?: string) {
-      if (message !== undefined && message.trim().length > 0) {
-        await ensureAttached();
-        await context.prompt(message);
-      }
-    },
-    subscribe(listener: AgentSessionEventListener) { return context.subscribe(listener); },
-    async dispose() {
-      if (disposed) return;
-      disposed = true;
-      await context.__dispose();
-    },
-  };
 }

@@ -4,10 +4,13 @@ import type { Store } from "../shared/store.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
 import type { GraphTheme } from "./graph-theme.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import type { EnsurePostMortemStageHandleResult } from "../runs/foreground/postmortem-stage-chat.js";
 
 export interface AttachUiStatusSurface {
   setStatus?: (key: string, value: string | undefined) => void;
 }
+
+export type PostMortemHandleResolution = EnsurePostMortemStageHandleResult | undefined;
 
 export interface WorkflowAttachPaneOpts {
   store: Store;
@@ -18,6 +21,15 @@ export interface WorkflowAttachPaneOpts {
    * the user attaches to a node. Defaults to the singleton registry.
    */
   stageControlRegistry?: StageControlRegistry;
+  /**
+   * Resolver that revives an interactive post-mortem chat handle for an
+   * eligible terminal agent stage that has a valid retained session but no
+   * process-local handle (generic attach/connect, restored/replayed durable
+   * snapshots). Unavailable results retain their reason so the pane can render
+   * a truthful actionable read-only fallback. Called only after a live
+   * `stageControlRegistry.get()` miss.
+   */
+  resolvePostMortemHandle?: (runId: string, stageId: string) => PostMortemHandleResolution;
   /** Broker used to route stage-local custom UI such as ask_user_question into attached chats. */
   stageUiBroker?: StageUiBroker;
   /**
@@ -53,6 +65,8 @@ export interface WorkflowAttachPaneOpts {
    * directly on the node's chat.
    */
   initialAttachStageId?: string;
+  /** Owning nested run for `initialAttachStageId`; omitted stages resolve through the root graph. */
+  initialAttachRunId?: string;
   /**
    * Optional accessor returning the current terminal row count. Threaded
    * into both `GraphView` and `StageChatView` so the overlay renders a

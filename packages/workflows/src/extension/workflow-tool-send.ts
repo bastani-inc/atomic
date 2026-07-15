@@ -1,4 +1,9 @@
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
+import {
+  ensurePostMortemStageHandle,
+  type PostMortemStageChatDeps,
+} from "../runs/foreground/postmortem-stage-chat.js";
+import type { StageControlHandle } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
 import { stageUiBroker } from "../shared/stage-ui-broker.js";
 import {
@@ -13,6 +18,14 @@ import {
   resolveToolRunTarget,
   resolveToolStageTarget,
 } from "./workflow-targets.js";
+
+/**
+ * Optional dependencies enabling `workflow send` to revive an eligible terminal
+ * agent stage as a post-mortem chat when no process-local handle exists.
+ */
+export interface WorkflowSendDeps {
+  readonly resolvePostMortemDeps?: (runId: string) => PostMortemStageChatDeps;
+}
 
 function hasPayloadProperty(args: WorkflowToolArgs): boolean {
   return args.text !== undefined || args.response !== undefined || args.message !== undefined;
@@ -52,7 +65,10 @@ function workflowSendResult(
   return { action: "send", runId, stageId, delivery, status, message };
 }
 
-export async function workflowSendAction(args: WorkflowToolArgs): Promise<WorkflowSendToolResult> {
+export async function workflowSendAction(
+  args: WorkflowToolArgs,
+  deps: WorkflowSendDeps = {},
+): Promise<WorkflowSendToolResult> {
   const target = resolveToolRunTarget(args, "No active run to message.");
   const requestedDelivery = args.delivery ?? "auto";
   if (target.kind === "all") {
@@ -143,15 +159,34 @@ export async function workflowSendAction(args: WorkflowToolArgs): Promise<Workfl
   if (text === undefined) {
     return workflowSendResult(stageRunId, stage.stageId, requestedDelivery, "noop", "Send requires text, response, or message.");
   }
-  const handle = stageControlRegistry.get(stageRunId, stage.stageId);
+  let handle: StageControlHandle | undefined = stageControlRegistry.get(stageRunId, stage.stageId);
+  if (handle === undefined && deps.resolvePostMortemDeps !== undefined && snapshot !== undefined) {
+    const revived = ensurePostMortemStageHandle(stageRunId, snapshot, deps.resolvePostMortemDeps(stageRunId));
+    if (revived.ok) handle = revived.handle;
+  }
   if (handle === undefined) {
     return workflowSendResult(stageRunId, stage.stageId, requestedDelivery, "noop", "No live handle for stage.");
   }
+  // A completed post-mortem handle is not live execution: its handle-level
+  // resume()/pause() reject by contract. Return a structured noop with guidance
+  // instead of letting that rejection cross the tool boundary. Failed handles
+  // remain eligible for their existing recoverable execution-resume semantics.
+  const isTerminalPostMortemStage = handle.status === "completed";
   if (requestedDelivery === "resume" || (requestedDelivery === "auto" && handle.status === "paused")) {
+    if (isTerminalPostMortemStage) {
+      return workflowSendResult(stageRunId, stage.stageId, "resume", "noop", "Cannot resume a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
+    }
     await handle.resume(text);
     return workflowSendResult(stageRunId, stage.stageId, "resume", "ok", "Resumed stage with message.");
   }
-  if (requestedDelivery === "steer" || (requestedDelivery === "auto" && handle.isStreaming)) {
+  if (requestedDelivery === "steer") {
+    if (isTerminalPostMortemStage) {
+      return workflowSendResult(stageRunId, stage.stageId, "steer", "noop", "Cannot steer a terminal post-mortem stage; use delivery \"followUp\" or \"prompt\" to continue its retained conversation.");
+    }
+    await handle.steer(text);
+    return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
+  }
+  if (requestedDelivery === "auto" && handle.isStreaming && !isTerminalPostMortemStage) {
     await handle.steer(text);
     return workflowSendResult(stageRunId, stage.stageId, "steer", "ok", "Steered live stage.");
   }

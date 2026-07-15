@@ -29,15 +29,6 @@ import {
 
 export type { WorkflowRunControlDeps } from "./workflow-durable-resume-command.js";
 
-function resolveAttachStageId(runId: string, stageTarget: string | undefined): string | undefined | false {
-  if (!stageTarget) return undefined;
-  const run = store.runs().find((r) => r.id === runId);
-  if (!run) return undefined;
-  const exact = run.stages.find((s) => s.id === stageTarget);
-  const prefix = exact ?? run.stages.find((s) => s.id.startsWith(stageTarget));
-  const byName = prefix ?? run.stages.find((s) => s.name === stageTarget);
-  return byName?.id ?? false;
-}
 
 
 export async function handleRunControlCommand(
@@ -353,13 +344,15 @@ export async function handleRunControlCommand(
       runId = resolved.runId;
     }
     if (action === "attach") {
-      const stageId = resolveAttachStageId(runId, stageTarget);
-      if (stageId === false) {
-        fail(`Stage not found in run ${runId.slice(0, 8)}: ${stageTarget}`);
+      const resolvedStage = resolveStageTarget(runId, stageTarget);
+      if (!resolvedStage.ok) {
+        fail(resolvedStage.message);
         return true;
       }
+      const stageId = resolvedStage.stageId;
+      const stageRunId = resolvedStage.runId ?? runId;
       if (failHeadlessAttachCommand("attach", runId, stageId)) return true;
-      if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
+      if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
       print(stageId ? `Attached to ${runId.slice(0, 8)} stage ${stageId.slice(0, 8)}. ctrl+d return to graph · esc close.` : `Attached to ${runId.slice(0, 8)}. ↵ chat · ctrl+d detach.`);
       return true;
     }
@@ -376,7 +369,7 @@ export async function handleRunControlCommand(
         fail(result.reason === "not_found" ? `Run not found: ${stageRunId.slice(0, 8)}` : result.reason === "already_ended" ? `Run ${stageRunId.slice(0, 8)} already ended.` : result.reason === "no_active_stages" ? `No pausable stages on run ${stageRunId.slice(0, 8)}.` : `Stage not found: ${stageTarget ?? "(unknown)"}`);
         return true;
       }
-      if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
+      if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
       print(result.paused.length === 0 ? `No stages were paused on run ${stageRunId.slice(0, 8)}.` : `Paused ${result.paused.length} stage(s) on run ${stageRunId.slice(0, 8)}: ${result.paused.map((s) => s.name).join(", ")}`);
       return true;
     }
@@ -412,7 +405,7 @@ export async function handleRunControlCommand(
       print(result.message ?? `Snapshot available: run ${result.runId} (${result.snapshot.name}) — status: ${result.snapshot.status}, stages: ${result.snapshot.stages.length}`);
       return true;
     }
-    if (!message && stageId && policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId);
+    if (!message && stageId && policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
     if (result.resumed.length === 0) {
       const runLevelResumed = hadPausedRunState && !hadPausedStageState && stageId === undefined && result.snapshot.status === "running";
       runLevelResumed ? print(`Resumed run ${stageRunId.slice(0, 8)}.`) : fail(`No paused stages on run ${stageRunId.slice(0, 8)}.`);

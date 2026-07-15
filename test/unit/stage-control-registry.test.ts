@@ -247,5 +247,47 @@ describe("stageControlRegistry — resume fan-out", () => {
         const stages = r.run("run-1").pausedStages();
         assert.equal(stages.length, 1);
         assert.equal(stages[0]!.stageId, "b");
+  });
+});
+
+describe("stageControlRegistry — getOrCreateDetached", () => {
+    test("creates a detached handle excluded from run-level control", () => {
+        const r = createStageControlRegistry();
+        let creates = 0;
+        const handle = r.getOrCreateDetached("run-1", "a", () => {
+            creates += 1;
+            return makeHandle("run-1", "a", { status: "completed" });
+        });
+        assert.equal(creates, 1);
+        assert.equal(r.get("run-1", "a"), handle);
+        assert.deepEqual(r.run("run-1").stages(), []);
+    });
+
+    test("reuses an existing non-disposed handle without re-invoking the factory", () => {
+        const r = createStageControlRegistry();
+        let creates = 0;
+        const factory = (): StageControlHandle => {
+            creates += 1;
+            return makeHandle("run-1", "a", { status: "completed" });
+        };
+        const first = r.getOrCreateDetached("run-1", "a", factory);
+        const second = r.getOrCreateDetached("run-1", "a", factory);
+        assert.equal(creates, 1);
+        assert.equal(first, second);
+    });
+
+    test("replaces and disposes a disposed handle", () => {
+        const r = createStageControlRegistry();
+        let disposed = false;
+        const stale: StageControlHandle = {
+            ...makeHandle("run-1", "a", { status: "completed" }),
+            get isDisposed() { return true; },
+            dispose() { disposed = true; },
+        };
+        r.register(stale);
+        const fresh = r.getOrCreateDetached("run-1", "a", () => makeHandle("run-1", "a", { status: "completed" }));
+        assert.notEqual(fresh, stale);
+        assert.equal(disposed, true);
+        assert.equal(r.get("run-1", "a"), fresh);
     });
 });

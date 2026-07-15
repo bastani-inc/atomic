@@ -25,6 +25,7 @@ import { quitRun as defaultQuitRun } from "../runs/background/quit.js";
 import { stageControlRegistry as defaultStageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import type { StageUiBroker } from "../shared/stage-ui-broker.js";
+import type { PostMortemHandleResolution } from "./workflow-attach-pane-types.js";
 import type {
   PiCustomComponent,
   PiCustomOverlayFactoryTui,
@@ -64,12 +65,12 @@ export interface OverlayPiSurface {
  * `toggle(runId)`— show if hidden, hide if visible, create if absent.
  * `close()`      — permanently dismiss.
  *
- * Optional `stageId` (on `open`) opens directly on the stage-chat
- * surface for that node — used by `/workflow attach <runId> <stageId>`
+ * Optional `stageId` and owning `stageRunId` (on `open`) open directly on
+ * that exact stage-chat node — used by `/workflow attach <runId> <stageId>`
  * and the picker overlay's connect-to-stage flow.
  */
 export interface GraphOverlayPort {
-  open(runId: string | null, surface?: OverlayPiSurface, stageId?: string): void;
+  open(runId: string | null, surface?: OverlayPiSurface, stageId?: string, stageRunId?: string): void;
   toggle(runId: string | null, surface?: OverlayPiSurface): void;
   close(): void;
 }
@@ -130,6 +131,14 @@ export interface BuildGraphOverlayAdapterOpts {
    * Defaults to the singleton registry registered alongside the store.
    */
   stageControlRegistry?: StageControlRegistry;
+  /**
+   * Resolver that revives a post-mortem chat handle for an eligible terminal
+   * agent stage with a valid retained session but no process-local handle.
+   * Threaded into every `WorkflowAttachPane` so generic attach/connect and
+   * restored/replayed durable snapshots open as interactive follow-up chats;
+   * unavailable results provide the pane's actionable read-only reason.
+   */
+  resolvePostMortemHandle?: (runId: string, stageId: string) => PostMortemHandleResolution;
   /** Broker used to route stage-local custom UI into attached stage chats. */
   stageUiBroker?: StageUiBroker;
   /**
@@ -149,6 +158,7 @@ export function buildGraphOverlayAdapter(
   buildOpts: BuildGraphOverlayAdapterOpts = {},
 ): GraphOverlayPort {
   const registry = buildOpts.stageControlRegistry ?? defaultStageControlRegistry;
+  const resolvePostMortemHandle = buildOpts.resolvePostMortemHandle;
   const stageUiBroker = buildOpts.stageUiBroker;
   const terminalOutput = buildOpts.terminalOutput ?? {
     platform: process.platform,
@@ -305,13 +315,14 @@ export function buildGraphOverlayAdapter(
     runId: string | null,
     surface?: OverlayPiSurface,
     stageId?: string,
+    stageRunId?: string,
   ): void {
     const ui = surface?.ui ?? pi.ui;
     observeHostCustomUi(ui);
 
     // Already mounted but hidden — flip visibility without remounting.
     if (mounted && currentHandle?.isHidden()) {
-      currentView?.retarget(runId, stageId);
+      currentView?.retarget(runId, stageId, stageRunId);
       currentView?.setVisible(true);
       updateTerminalAutowrap(true);
       updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
@@ -320,7 +331,7 @@ export function buildGraphOverlayAdapter(
       return;
     }
     if (mounted) {
-      currentView?.retarget(runId, stageId);
+      currentView?.retarget(runId, stageId, stageRunId);
       updateTerminalAutowrap(true);
       updateMouseScrollTracking(currentView?.wantsMouseScrollTracking() ?? true);
       // Restore keyboard focus to the visible overlay after retargeting.
@@ -367,12 +378,14 @@ export function buildGraphOverlayAdapter(
         graphTheme: deriveGraphThemeFromPiTheme(theme),
         runId,
         stageControlRegistry: registry,
+        resolvePostMortemHandle,
         stageUiBroker,
         uiStatus,
         onClose: finish,
         onHide: hideMounted,
         onQuit: quitRun,
         initialAttachStageId: stageId,
+        initialAttachRunId: stageRunId,
         piTui: tui,
         piTheme: theme,
         piKeybindings: keybindings,
