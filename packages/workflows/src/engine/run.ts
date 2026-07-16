@@ -1,3 +1,4 @@
+import { nextEventLoopTurn, runWorkflowDefinitionCallback } from "./workflow-activity.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 import type { WorkflowDefinition, WorkflowInputValues, WorkflowOutputValues, WorkflowRunContext } from "../shared/types.js";
 import type { WorkflowFailure } from "../shared/workflow-failures.js";
@@ -45,9 +46,6 @@ import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backe
 import { finalizeDurableTerminalStatus } from "./run-durable-finalize.js";
 import { createDurableStageSessionRecorder } from "./run-durable-stage-session.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
-function nextEventLoopTurn(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
-}
 
 type WorkflowRunInputArgument = Parameters<typeof resolveAndValidateInputs>[1];
 
@@ -410,7 +408,7 @@ export async function run<
       durableBackend.registerWorkflow({ ...durableRootWorkflowRegistration, ...workflowInvocationMetadata(inputRuntimeDefaults, workflowInvocationCwd, gitWorktreeSetupCache) });
     }
 
-    const rawResult = await def.run(ctx);
+    const rawResult = await runWorkflowDefinitionCallback(def.name, runId, () => def.run(ctx));
     if (ownController.signal.aborted) {
       const selectedExit = findWorkflowExitSignal(ownController.signal.reason, exitScope);
       if (selectedExit !== undefined) return await finalizers.finalizeWorkflowExit(selectedExit);

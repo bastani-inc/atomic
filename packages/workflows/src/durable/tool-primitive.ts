@@ -15,6 +15,7 @@
  * typescript code and cache the result for DBOS."
  */
 
+import { runCallback } from "@bastani/atomic";
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
 import { durableHash } from "./backend.js";
@@ -85,7 +86,15 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
     if (cached !== undefined) return cached as T;
 
     // Execute (with optional retries).
-    const result = await executeWithRetries(fn, options, input.throwIfCancelled, input.signal);
+    const result = await executeWithRetries(
+      () => runCallback(
+        { kind: "workflow.ctx_tool", name, runId: input.workflowId },
+        fn,
+      ),
+      options,
+      input.throwIfCancelled,
+      input.signal,
+    );
 
     // Re-check cancellation after the tool function resolves but BEFORE the
     // side-effect result is durably checkpointed/returned. A side effect that
