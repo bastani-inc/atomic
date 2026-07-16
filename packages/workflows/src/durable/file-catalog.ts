@@ -63,6 +63,7 @@ export class FileDurableCatalog {
   private readonly catalogDir: string;
   private readonly rebuildMarker: string;
   private readonly rebuildLockPath: string;
+  private readonly publishLockPath: string;
   private database: Database | undefined;
   private rebuilding = false;
   private rebuildPromise: Promise<DurableWorkflowCatalogEntries> | undefined;
@@ -74,6 +75,7 @@ export class FileDurableCatalog {
     this.databasePath = join(this.catalogDir, CATALOG_FILE_NAME);
     this.rebuildMarker = join(this.catalogDir, REBUILD_MARKER_NAME);
     this.rebuildLockPath = join(this.catalogDir, "catalog-rebuild");
+    this.publishLockPath = join(this.catalogDir, "catalog-publish");
   }
 
   async prepare(scan: () => Promise<readonly FileCatalogSource[]>): Promise<DurableWorkflowCatalogEntries> {
@@ -117,8 +119,7 @@ export class FileDurableCatalog {
       this.pendingMutations.set(workflowId, null);
       return;
     }
-    if (this.noteConcurrentRebuild()) return;
-    this.advisoryWrite((database) => {
+    this.coordinatedWrite((database) => {
       database.query<never, [string]>("INSERT OR REPLACE INTO dirty_runs (workflow_id) VALUES (?)").run(workflowId);
     });
   }
@@ -129,12 +130,10 @@ export class FileDurableCatalog {
       this.pendingMutations.set(workflowId, source);
       return;
     }
-    if (this.noteConcurrentRebuild()) return;
-    this.advisoryWrite((database) => {
+    this.coordinatedWrite((database) => {
       const update = database.transaction(() => {
         this.upsert(database, source);
         database.query<never, [string]>("DELETE FROM dirty_runs WHERE workflow_id = ?").run(workflowId);
-        this.writeDirectorySignature(database);
       });
       update();
     });
@@ -145,12 +144,10 @@ export class FileDurableCatalog {
       this.pendingMutations.set(workflowId, null);
       return;
     }
-    if (this.noteConcurrentRebuild()) return;
-    this.advisoryWrite((database) => {
+    this.coordinatedWrite((database) => {
       const update = database.transaction(() => {
         database.query<never, [string]>("DELETE FROM runs WHERE workflow_id = ?").run(workflowId);
         database.query<never, [string]>("DELETE FROM dirty_runs WHERE workflow_id = ?").run(workflowId);
-        this.writeDirectorySignature(database);
       });
       update();
     });
@@ -176,15 +173,21 @@ export class FileDurableCatalog {
       this.rebuilding = true;
       try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          rmSync(this.rebuildMarker, { force: true });
-          const directoryBefore = this.directorySignature();
+          const directoryBefore = await withDurableFileLockAsync(this.publishLockPath, () => {
+            rmSync(this.rebuildMarker, { force: true });
+            return this.directorySignature();
+          });
           const sources = await scan();
-          const unstable = directoryBefore !== this.directorySignature()
-            || existsSync(this.rebuildMarker);
-          if (unstable && attempt === 0) continue;
-          return this.publishRebuild(sources, !unstable);
+          const published = await withDurableFileLockAsync(this.publishLockPath, () => {
+            const directoryAfter = this.directorySignature();
+            const unstable = directoryBefore !== directoryAfter || existsSync(this.rebuildMarker);
+            if (unstable && attempt === 0) return undefined;
+            return this.publishRebuild(sources, !unstable, directoryAfter);
+          });
+          if (published !== undefined) return published;
         }
-        return this.publishRebuild([], false);
+        return withDurableFileLockAsync(this.publishLockPath, () =>
+          this.publishRebuild([], false, this.directorySignature()));
       } finally {
         this.rebuilding = false;
       }
@@ -195,27 +198,34 @@ export class FileDurableCatalog {
     scan: () => readonly FileCatalogSource[],
   ): DurableWorkflowCatalogEntries {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      rmSync(this.rebuildMarker, { force: true });
-      const directoryBefore = this.directorySignature();
+      const directoryBefore = withDurableFileLock(this.publishLockPath, () => {
+        rmSync(this.rebuildMarker, { force: true });
+        return this.directorySignature();
+      });
       const sources = scan();
-      const unstable = directoryBefore !== this.directorySignature()
-        || existsSync(this.rebuildMarker);
-      if (unstable && attempt === 0) continue;
-      return this.publishRebuild(sources, !unstable);
+      const published = withDurableFileLock(this.publishLockPath, () => {
+        const directoryAfter = this.directorySignature();
+        const unstable = directoryBefore !== directoryAfter || existsSync(this.rebuildMarker);
+        if (unstable && attempt === 0) return undefined;
+        return this.publishRebuild(sources, !unstable, directoryAfter);
+      });
+      if (published !== undefined) return published;
     }
-    return this.publishRebuild([], false);
+    return withDurableFileLock(this.publishLockPath, () =>
+      this.publishRebuild([], false, this.directorySignature()));
   }
 
   private publishRebuild(
     sources: readonly FileCatalogSource[],
     complete: boolean,
+    directorySignature: string,
   ): DurableWorkflowCatalogEntries {
     if (this.catalogInvalid) this.closeAndRemoveDatabase();
     try {
-      return this.writeRebuild(this.openDatabase(), sources, complete);
+      return this.writeRebuild(this.openDatabase(), sources, complete, directorySignature);
     } catch {
       this.closeAndRemoveDatabase();
-      return this.writeRebuild(this.openDatabase(), sources, complete);
+      return this.writeRebuild(this.openDatabase(), sources, complete, directorySignature);
     }
   }
 
@@ -223,6 +233,7 @@ export class FileDurableCatalog {
     database: Database,
     sources: readonly FileCatalogSource[],
     complete: boolean,
+    directorySignature: string,
   ): DurableWorkflowCatalogEntries {
     const rebuild = database.transaction(() => {
       database.run("DELETE FROM runs");
@@ -237,13 +248,12 @@ export class FileDurableCatalog {
       }
       this.setMeta(database, "schema_version", String(CATALOG_SCHEMA_VERSION));
       this.setMeta(database, "complete", complete ? "1" : "0");
-      this.writeDirectorySignature(database);
+      this.setMeta(database, "directory_mtime_ms", directorySignature);
     });
     rebuild();
     this.pendingMutations.clear();
     this.catalogInvalid = false;
-    if (complete) rmSync(this.rebuildMarker, { force: true });
-    else this.writeRebuildMarker();
+    if (!complete) this.writeRebuildMarker();
     return this.readEntries();
   }
 
@@ -362,6 +372,17 @@ export class FileDurableCatalog {
     }
   }
 
+  private coordinatedWrite(operation: (database: Database) => void): void {
+    try {
+      withDurableFileLock(this.publishLockPath, () => {
+        if (this.noteConcurrentRebuild()) return;
+        this.advisoryWrite(operation);
+      });
+    } catch {
+      this.writeRebuildMarker();
+    }
+  }
+
   private noteConcurrentRebuild(): boolean {
     if (!existsSync(`${this.rebuildLockPath}.lock`)) return false;
     this.writeRebuildMarker();
@@ -383,10 +404,6 @@ export class FileDurableCatalog {
     database.query<never, [string, string]>(
       "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     ).run(key, value);
-  }
-
-  private writeDirectorySignature(database: Database): void {
-    this.setMeta(database, "directory_mtime_ms", this.directorySignature());
   }
 
   private directorySignature(): string {

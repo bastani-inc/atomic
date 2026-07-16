@@ -20,10 +20,10 @@ import {
 } from "./backend.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { mergeFileDurableRecords, readDurableFileState, type FileDurableRecord, type FileDurableState } from "./file-state.js";
-import { currentState, emptyState } from "./file-backend-state.js";
+import { currentState, emptyState, isPrunableTerminalStatus, stateMatchesWorkflowId } from "./file-backend-state.js";
 export { defaultDurableStateDir, durableStateFileFor } from "./file-backend-state.js";
 import { enqueueDurableFileWrite, withDurableFileLock, withDurableFileLockAsync, writeDurableFileState } from "./file-lock.js";
-import { readDurableFileStateCached } from "./file-backend-cache.js";
+import { invalidateDurableFileStateCache, readDurableFileStateCached } from "./file-backend-cache.js";
 import {
   adjustFilePrompts,
   claimFilePrompt,
@@ -332,6 +332,29 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     this.ensureLoaded();
     this.assertWritable();
     return withDurableFileLock(this.filePath, () => this.deleteStoredWorkflow(workflowId, true));
+  }
+
+  removeWorkflowFileIfPrunableTerminal(workflowId: string): boolean {
+    this.ensureLoaded();
+    this.assertWritable();
+    return withDurableFileLock(this.filePath, () => {
+      const result = readDurableFileState(this.filePath);
+      if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
+        throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
+      }
+      if (result.kind !== "current" || !stateMatchesWorkflowId(result.state, workflowId)) return false;
+      const deleted = new Set(result.state.deletedWorkflowIds);
+      const current = result.state.workflows.find((record) =>
+        record.handle.workflowId === workflowId && !deleted.has(workflowId));
+      if (current === undefined
+        || !isPrunableTerminalStatus(current.handle.status, current.handle.resumable)) return false;
+      rmSync(this.filePath, { force: true });
+      invalidateDurableFileStateCache(this.filePath);
+      this.unknownState = false;
+      this.suppressedAll = false;
+      this.replaceMirror(emptyState());
+      return true;
+    });
   }
 
   private deleteStoredWorkflow(workflowId: string, requireInactive: boolean): DurableInactiveDeleteResult {

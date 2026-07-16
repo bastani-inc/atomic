@@ -2,13 +2,15 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  FileDurableBackend,
   WorkflowFileDurableBackend,
   durableStateFileFor,
 } from "../../packages/workflows/src/durable/file-backend.js";
+import { FileDurableCatalog, type FileCatalogSource } from "../../packages/workflows/src/durable/file-catalog.js";
 import { resolveCompletedWorkflow } from "../../packages/workflows/src/durable/completed-catalog.js";
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { createExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
@@ -67,6 +69,46 @@ function writePausedState(workflowId: string, createdAt: number): void {
   }));
 }
 
+function pausedCatalogSource(workflowId: string, createdAt: number): FileCatalogSource {
+  const stateFile = durableStateFileFor(durableDir, workflowId);
+  const stats = statSync(stateFile);
+  return {
+    record: {
+      handle: {
+        workflowId,
+        name: `flow-${workflowId}`,
+        inputs: {},
+        createdAt,
+        updatedAt: createdAt + 1,
+        status: "paused",
+        completedCheckpoints: 1,
+        pendingPrompts: 0,
+      },
+      checkpoints: [{
+        kind: "tool",
+        workflowId,
+        checkpointId: "tool:1",
+        name: "seed",
+        argsHash: `hash-${workflowId}`,
+        output: "done",
+        completedAt: createdAt + 1,
+      }],
+    },
+    stateFile,
+    stateMtimeMs: stats.mtimeMs,
+    stateSize: stats.size,
+    completedOpenable: false,
+  };
+}
+
+function waitForFile(filePath: string, timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(filePath) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  return existsSync(filePath);
+}
+
 describe("durable workflow catalog index", () => {
   test("builds a missing persistent index from authoritative durable files", async () => {
     const writer = new WorkflowFileDurableBackend(durableDir);
@@ -106,6 +148,22 @@ describe("durable workflow catalog index", () => {
 
     const healed = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
     assert.deepEqual(healed.resumable.map((entry) => entry.workflowId), ["corrupt-index"]);
+  });
+
+  test("does not let an incremental write bless an unrelated external deletion", async () => {
+    const initial = new WorkflowFileDurableBackend(durableDir);
+    registerPaused(initial, "externally-deleted", 10);
+    registerPaused(initial, "incremental", 20);
+    await initial.prepareWorkflowCatalog();
+    await Bun.sleep(10);
+
+    rmSync(durableStateFileFor(durableDir, "externally-deleted"));
+    const incremental = new WorkflowFileDurableBackend(durableDir);
+    incremental.setWorkflowStatus("incremental", "failed", 0, true);
+
+    const reconciled = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
+    assert.equal(reconciled.resumable.some((entry) => entry.workflowId === "externally-deleted"), false);
+    assert.equal(reconciled.resumable.find((entry) => entry.workflowId === "incremental")?.status, "failed");
   });
 
   test("self-heals a stale catalog after an external durable file appears", async () => {
@@ -214,6 +272,28 @@ describe("durable workflow catalog index", () => {
     assert.equal(backend.getWorkflow("completed-lazy")?.status, "completed");
   });
 
+  test("preserves a resumed running workflow when terminal pruning loses the race", () => {
+    const workflowId = "terminal-resume-race";
+    const stateFile = durableStateFileFor(durableDir, workflowId);
+    const terminalizer = new FileDurableBackend(stateFile, workflowId);
+    terminalizer.registerWorkflow({
+      workflowId,
+      name: "terminal-resume",
+      inputs: {},
+      createdAt: 1,
+      status: "running",
+    });
+    terminalizer.setWorkflowStatus(workflowId, "cancelled");
+
+    const resumer = new FileDurableBackend(stateFile, workflowId);
+    assert.equal(resumer.transitionWorkflowStatus(workflowId, ["cancelled"], "running"), true);
+    assert.equal(terminalizer.removeWorkflowFileIfPrunableTerminal(workflowId), false);
+
+    const authoritative = new FileDurableBackend(stateFile, workflowId).getLoadableWorkflow(workflowId);
+    assert.equal(authoritative?.status, "running");
+    assert.equal(existsSync(stateFile), true);
+  });
+
   test("preserves a mutation that lands during a yielding index rebuild", async () => {
     for (let index = 0; index < 600; index += 1) {
       writePausedState(`race-${String(index).padStart(3, "0")}`, index + 1);
@@ -227,6 +307,39 @@ describe("durable workflow catalog index", () => {
     const fresh = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
     assert.equal(rebuilt.resumable.find((entry) => entry.workflowId === "race-000")?.status, "failed");
     assert.equal(fresh.resumable.find((entry) => entry.workflowId === "race-000")?.status, "failed");
+  });
+
+  test("does not consume a cross-process mutation marker written during rebuild publication", async () => {
+    const workflowId = "publish-race";
+    writePausedState(workflowId, 1);
+    const source = pausedCatalogSource(workflowId, 1);
+    const startedFile = join(durableDir, "writer-started");
+    const doneFile = join(durableDir, "writer-done");
+    let writerExited: Promise<number> | undefined;
+    const sources = [source];
+    sources[Symbol.iterator] = function* () {
+      const child = Bun.spawn([
+        process.execPath,
+        join(import.meta.dir, "fixtures", "durable-catalog-race-writer.ts"),
+        durableDir,
+        workflowId,
+        startedFile,
+        doneFile,
+      ], { stdout: "ignore", stderr: "inherit" });
+      writerExited = child.exited;
+      assert.equal(waitForFile(startedFile, 2_000), true);
+      waitForFile(doneFile, 500);
+      yield source;
+      return undefined;
+    };
+
+    const staleRebuild = new FileDurableCatalog(durableDir);
+    await staleRebuild.prepare(async () => sources);
+    assert.ok(writerExited !== undefined);
+    assert.equal(await writerExited, 0);
+
+    const reconciled = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
+    assert.equal(reconciled.resumable.find((entry) => entry.workflowId === workflowId)?.status, "failed");
   });
 
   test("uses shared indexed metadata without per-row authoritative hydration", async () => {

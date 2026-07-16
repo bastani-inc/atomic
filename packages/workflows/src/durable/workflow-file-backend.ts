@@ -57,9 +57,9 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     const backend = this.backendFor(workflowId);
     backend.setWorkflowStatus(workflowId, status, pendingPrompts, resumable);
     if (isPrunableTerminalStatus(status, resumable)
-      && backend.isWorkflowLoadable(workflowId)
-      && backend.getWorkflow(workflowId) !== undefined) {
-      this.removeWorkflowFile(workflowId);
+      && backend.removeWorkflowFileIfPrunableTerminal(workflowId)) {
+      this.fileBackends.delete(durableStateFileFor(this.dir, workflowId));
+      this.catalog.remove(workflowId);
       return;
     }
     this.syncCatalog(workflowId);
@@ -235,10 +235,6 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     };
   }
 
-  private removeWorkflowFile(workflowId: string): void {
-    this.removeStateFile(durableStateFileFor(this.dir, workflowId));
-    this.catalog.remove(workflowId);
-  }
 
   private removeStateFile(filePath: string): void {
     this.fileBackends.delete(filePath);
