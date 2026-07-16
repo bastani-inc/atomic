@@ -26,6 +26,11 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private remoteScopedModels: Array<{ model: Model<Api>; thinkingLevel?: AgentSession["thinkingLevel"] }> = [];
 	private pendingDiagnostics: ActivityWatchdogDiagnostic[] = [];
 	private lastDiagnostic: ActivityWatchdogDiagnostic | undefined;
+	private autoCompactionEnabled = true;
+	private autoRetryEnabled = true;
+	private remoteSessionName: string | undefined;
+	private remoteSessionFile: string | undefined;
+	private restartPromise: Promise<void> | undefined;
 
 	constructor(
 		localRuntime: AgentSessionRuntime,
@@ -62,9 +67,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		session.agent.state.thinkingLevel = state.thinkingLevel;
 		session.agent.steeringMode = state.steeringMode;
 		session.agent.followUpMode = state.followUpMode;
-		session.setAutoCompactionEnabled(state.autoCompactionEnabled);
+		this.autoCompactionEnabled = state.autoCompactionEnabled;
+		this.remoteSessionName = state.sessionName;
+		this.remoteSessionFile = state.sessionFile;
 		this.streaming = state.isStreaming;
 		this.compacting = state.isCompacting;
+		if (state.sessionFile && session.sessionFile !== state.sessionFile) await super.switchSession(state.sessionFile);
+		this.refreshSessionView();
+		this.engineCallbackActive = false;
 	}
 
 	onDiagnostic(listener: (diagnostic: ActivityWatchdogDiagnostic) => void): () => void {
@@ -90,12 +100,20 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	waitUntilBound(): Promise<void> { return this.client.waitForInteractiveEngineBound(); }
+	getEnginePid(): number | undefined { return this.client.getEnginePid(); }
+	getEngineGeneration(): number { return this.client.getGeneration(); }
+	isRecovering(): boolean { return this.restartPromise !== undefined; }
+	async synchronize(): Promise<void> {
+		const state = await this.client.getState();
+		this.remoteSessionFile = state.sessionFile;
+		this.remoteSessionName = state.sessionName;
+	}
 
 	setEngineCallbackActive(active: boolean): void { this.engineCallbackActive = active; }
 
 	interruptBlockedCallback(): boolean {
 		if (!this.engineCallbackActive) return false;
-		void this.session.abort();
+		this.dispatchBestEffort("interrupt", this.session.abort());
 		return true;
 	}
 
@@ -103,8 +121,8 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		handler: (request: RpcExtensionUIRequest) => Promise<RpcExtensionUIResponse | undefined>,
 	): () => void {
 		return this.client.onExtensionUIRequest((request) => {
-			void handler(request).then((response) => {
-				if (response) this.client.respondExtensionUI(response);
+			void handler(request).then(async (response) => {
+				if (response) await this.client.respondExtensionUI(response);
 			}).catch((error: Error) => {
 				this.emitDiagnostic({
 					activity: undefined,
@@ -118,7 +136,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 
 	emitDiagnostic(diagnostic: ActivityWatchdogDiagnostic): void {
 		this.lastDiagnostic = diagnostic;
-		if (diagnostic.activity) this.engineCallbackActive = true;
+		this.engineCallbackActive = true;
 		if (this.diagnosticListeners.size === 0) this.pendingDiagnostics.push(diagnostic);
 		for (const listener of this.diagnosticListeners) listener(diagnostic);
 	}
@@ -137,7 +155,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (result.cancelled) return result;
 		const state = await this.client.getState();
 		if (state.sessionFile) await super.switchSession(state.sessionFile);
-		else await super.newSession(options);
+		else this.resetUnpersistedSessionView();
 		await this.initializeFromEngine();
 		return result;
 	}
@@ -181,21 +199,15 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private patchSession(session: AgentSession): void {
 		if (this.patchedSessions.has(session)) return;
 		this.patchedSessions.add(session);
-		const localSetModel = session.setModel.bind(session);
-		const localSetThinkingLevel = session.setThinkingLevel.bind(session);
-		const localCycleThinkingLevel = session.cycleThinkingLevel.bind(session);
-		const localSetContextWindow = session.setContextWindow.bind(session);
-		const localSetSteeringMode = session.setSteeringMode.bind(session);
-		const localSetFollowUpMode = session.setFollowUpMode.bind(session);
 		this.patchSessionManager(session.sessionManager);
-		const localSetAutoCompaction = session.setAutoCompactionEnabled.bind(session);
-		const localSetAutoRetry = session.setAutoRetryEnabled.bind(session);
-		const localReload = session.reload.bind(session);
-		const localSetSessionName = session.setSessionName.bind(session);
 		Object.defineProperties(session, {
 			isStreaming: { configurable: true, get: () => this.streaming },
 			isCompacting: { configurable: true, get: () => this.compacting },
 			isBashRunning: { configurable: true, get: () => this.bashRunning },
+			sessionName: { configurable: true, get: () => this.remoteSessionName },
+			sessionFile: { configurable: true, get: () => this.remoteSessionFile },
+			autoCompactionEnabled: { configurable: true, get: () => this.autoCompactionEnabled },
+			autoRetryEnabled: { configurable: true, get: () => this.autoRetryEnabled },
 			subscribe: {
 				configurable: true,
 				value: (listener: (event: AgentSessionEvent) => void) => this.client.onEvent(listener),
@@ -209,28 +221,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			},
 			steer: { configurable: true, value: (text: string) => this.client.steer(text) },
 			followUp: { configurable: true, value: (text: string) => this.client.followUp(text) },
-			abort: {
-				configurable: true,
-				value: async () => {
-					const cooperativeAbort = this.client.abort().then(
-						() => true,
-						() => false,
-					);
-					if (await Promise.race([cooperativeAbort, Bun.sleep(250).then(() => false)])) return;
-					await this.client.stop();
-					this.engineCallbackActive = false;
-					this.streaming = false;
-					const activity = this.lastDiagnostic?.activity;
-					const label = activity ? `${activity.kind} ${activity.name}` : "engine callback";
-					const diagnostic: ActivityWatchdogDiagnostic = {
-						activity,
-						elapsedMs: this.lastDiagnostic?.elapsedMs ?? 0,
-						level: "unresponsive",
-						message: `Engine terminated; ${label} result unknown; inspect side effects before retrying`,
-					};
-					for (const listener of this.diagnosticListeners) listener(diagnostic);
-				},
-			},
+			abort: { configurable: true, value: () => this.abortAndRecover() },
 			executeBash: {
 				configurable: true,
 				value: async (
@@ -251,10 +242,10 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				},
 			},
 			recordBashResult: { configurable: true, value: () => {} },
-			abortBash: { configurable: true, value: () => void this.client.abortBash() },
+			abortBash: { configurable: true, value: () => this.dispatchBestEffort("abort bash", this.client.abortBash()) },
 			compact: { configurable: true, value: () => this.client.compact() },
-			abortCompaction: { configurable: true, value: () => void this.client.requestInternal<void>({ type: "abort_compaction" }) },
-			abortRetry: { configurable: true, value: () => void this.client.abortRetry() },
+			abortCompaction: { configurable: true, value: () => this.dispatchBestEffort("abort compaction", this.client.requestInternal<void>({ type: "abort_compaction" })) },
+			abortRetry: { configurable: true, value: () => this.dispatchBestEffort("abort retry", this.client.abortRetry()) },
 			navigateTree: {
 				configurable: true,
 				value: async (targetId: string, options?: Parameters<AgentSession["navigateTree"]>[1]) =>
@@ -266,14 +257,14 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 				configurable: true,
 				value: async () => {
 					await this.client.requestInternal<void>({ type: "reload" });
-					await localReload();
+					await this.initializeFromEngine();
 				},
 			},
 			setSessionName: {
 				configurable: true,
 				value: (name: string) => {
-					localSetSessionName(name);
-					void this.client.setSessionName(name);
+					this.remoteSessionName = name;
+					this.dispatchBestEffort("set session name", this.client.setSessionName(name).then(() => this.refreshSessionView()));
 				},
 			},
 			getSteeringMessages: { configurable: true, value: () => [...this.steeringMessages] },
@@ -284,22 +275,22 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const queued = { steering: [...this.steeringMessages], followUp: [...this.followUpMessages] };
 					this.steeringMessages = [];
 					this.followUpMessages = [];
-					void this.client.requestInternal({ type: "clear_queue" });
+					this.dispatchBestEffort("clear queue", this.client.requestInternal({ type: "clear_queue" }));
 					return queued;
 				},
 			},
 			setModel: {
 				configurable: true,
 				value: async (model: Model<Api>) => {
-					await this.client.setModel(model.provider, model.id);
-					await localSetModel(model);
+					const selected = await this.client.setModel(model.provider, model.id);
+					session.agent.state.model = session.modelRegistry.find(selected.provider, selected.id) ?? model;
 				},
 			},
 			setThinkingLevel: {
 				configurable: true,
 				value: (level: AgentSession["thinkingLevel"]) => {
-					localSetThinkingLevel(level);
-					void this.client.setThinkingLevel(level);
+					session.agent.state.thinkingLevel = level;
+					this.dispatchBestEffort("set thinking level", this.client.setThinkingLevel(level));
 				},
 			},
 			cycleModel: {
@@ -308,64 +299,117 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 					const result = await this.client.cycleModel(direction);
 					if (!result) return undefined;
 					const model = session.modelRegistry.find(result.model.provider, result.model.id) ?? result.model;
-					if (session.modelRegistry.find(model.provider, model.id)) await localSetModel(model);
-					else session.agent.state.model = model;
-					localSetThinkingLevel(result.thinkingLevel);
+					session.agent.state.model = model;
+					session.agent.state.thinkingLevel = result.thinkingLevel;
 					return { ...result, model };
 				},
 			},
 			cycleThinkingLevel: {
 				configurable: true,
 				value: () => {
-					const level = localCycleThinkingLevel();
-					if (level) void this.client.setThinkingLevel(level);
+					const levels = session.getAvailableThinkingLevels();
+					if (levels.length <= 1) return undefined;
+					const current = levels.indexOf(session.thinkingLevel);
+					const level = levels[(current + 1) % levels.length]!;
+					session.agent.state.thinkingLevel = level;
+					this.dispatchBestEffort("cycle thinking level", this.client.setThinkingLevel(level));
 					return level;
 				},
 			},
 			setContextWindow: {
 				configurable: true,
-				value: (tokens: number, options?: { persistDefault?: boolean }) => {
-					localSetContextWindow(tokens, options);
-					void this.client.setContextWindow(tokens);
+				value: (tokens: number) => {
+					if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: tokens };
+					this.dispatchBestEffort("set context window", this.client.setContextWindow(tokens));
 				},
 			},
 			setSteeringMode: {
 				configurable: true,
 				value: (mode: "all" | "one-at-a-time") => {
-					localSetSteeringMode(mode);
-					void this.client.setSteeringMode(mode);
+					session.agent.steeringMode = mode;
+					this.dispatchBestEffort("set steering mode", this.client.setSteeringMode(mode));
 				},
 			},
 			setFollowUpMode: {
 				configurable: true,
 				value: (mode: "all" | "one-at-a-time") => {
-					localSetFollowUpMode(mode);
-					void this.client.setFollowUpMode(mode);
+					session.agent.followUpMode = mode;
+					this.dispatchBestEffort("set follow-up mode", this.client.setFollowUpMode(mode));
 				},
 			},
 			setAutoCompactionEnabled: {
 				configurable: true,
 				value: (enabled: boolean) => {
-					localSetAutoCompaction(enabled);
-					void this.client.setAutoCompaction(enabled);
+					this.autoCompactionEnabled = enabled;
+					this.dispatchBestEffort("set auto compaction", this.client.setAutoCompaction(enabled));
 				},
 			},
 			setAutoRetryEnabled: {
 				configurable: true,
 				value: (enabled: boolean) => {
-					localSetAutoRetry(enabled);
-					void this.client.setAutoRetry(enabled);
+					this.autoRetryEnabled = enabled;
+					this.dispatchBestEffort("set auto retry", this.client.setAutoRetry(enabled));
 				},
 			},
 		});
+	}
+
+	private async abortAndRecover(): Promise<void> {
+		if (this.restartPromise) return this.restartPromise;
+		const cooperativeAbort = this.client.abort().then(() => true, () => false);
+		if (await Promise.race([cooperativeAbort, Bun.sleep(250).then(() => false)])) {
+			this.engineCallbackActive = false;
+			return;
+		}
+		const activity = this.lastDiagnostic?.activity;
+		const label = activity ? `${activity.kind} ${activity.name}` : "engine callback";
+		const diagnostic: ActivityWatchdogDiagnostic = {
+			activity,
+			elapsedMs: this.lastDiagnostic?.elapsedMs ?? 0,
+			level: "unresponsive",
+			message: `Engine terminated; ${label} result unknown; inspect side effects before retrying`,
+		};
+		this.streaming = false;
+		this.compacting = false;
+		this.engineCallbackActive = false;
+		for (const listener of this.diagnosticListeners) listener(diagnostic);
+		this.restartPromise = (async () => {
+			await this.client.restart(this.remoteSessionFile);
+			await this.initializeFromEngine();
+		})().catch((error: Error) => {
+			this.emitDiagnostic({ ...diagnostic, message: `${diagnostic.message}; engine restart failed: ${error.message}` });
+		}).finally(() => { this.restartPromise = undefined; });
+		await this.restartPromise;
+	}
+
+	private dispatchBestEffort(label: string, operation: Promise<unknown>): void {
+		void operation.catch((error: Error) => {
+			if (this.restartPromise) return;
+			this.emitDiagnostic({
+				activity: undefined,
+				elapsedMs: 0,
+				level: "unresponsive",
+				message: `Interactive engine ${label} failed: ${error.message}`,
+			});
+		});
+	}
+
+	private resetUnpersistedSessionView(): void {
+		const session = super.session;
+		const manager = SessionManager.create(session.sessionManager.getCwd(), session.sessionManager.getSessionDir());
+		Object.defineProperty(session, "sessionManager", { configurable: true, value: manager });
+		this.patchSessionManager(manager);
+		session.agent.state.messages = [];
 	}
 
 	private patchSessionManager(manager: SessionManager): void {
 		Object.defineProperty(manager, "appendLabelChange", {
 			configurable: true,
 			value: (entryId: string, label?: string) => {
-				void this.client.requestInternal<void>({ type: "set_label", entryId, label })
-					.then(() => this.refreshSessionView());
+				this.dispatchBestEffort(
+					"set label",
+					this.client.requestInternal<void>({ type: "set_label", entryId, label }).then(() => this.refreshSessionView()),
+				);
 			},
 		});
 	}
@@ -404,6 +448,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	}
 
 	private observeEvent(event: RpcEvent): void {
+		const session = super.session;
 		switch (event.type) {
 			case "agent_start":
 				this.streaming = true;
@@ -421,6 +466,18 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			case "queue_update":
 				this.steeringMessages = [...event.steering];
 				this.followUpMessages = [...event.followUp];
+				break;
+			case "model_changed":
+				session.agent.state.model = event.model;
+				break;
+			case "thinking_level_changed":
+				session.agent.state.thinkingLevel = event.level;
+				break;
+			case "context_window_changed":
+				if (session.agent.state.model) session.agent.state.model = { ...session.agent.state.model, contextWindow: event.contextWindow };
+				break;
+			case "session_info_changed":
+				this.remoteSessionName = event.name;
 				break;
 		}
 	}

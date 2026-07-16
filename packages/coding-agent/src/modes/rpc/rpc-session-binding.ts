@@ -2,6 +2,7 @@ import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
@@ -10,6 +11,7 @@ interface RpcSessionBindingOptions {
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	customUi?: EngineCustomUiService;
+	renderService?: EngineRenderService;
 	requestShutdown: () => void;
 }
 
@@ -21,14 +23,16 @@ export class RpcSessionBinding {
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
 	private readonly customUi: EngineCustomUiService | undefined;
+	private readonly renderService: EngineRenderService | undefined;
 	private readonly requestShutdown: () => void;
 
-	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi }: RpcSessionBindingOptions) {
+	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService }: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
 		this.requestShutdown = requestShutdown;
 		this.customUi = customUi;
+		this.renderService = renderService;
 		this.session = runtimeHost.session;
 	}
 
@@ -39,6 +43,7 @@ export class RpcSessionBinding {
 	async rebindSession(): Promise<void> {
 		this.session = this.runtimeHost.session;
 		const session = this.session;
+		this.renderService?.bindSession(session);
 
 		await session.bindExtensions({
 			uiContext: createRpcExtensionUIContext({

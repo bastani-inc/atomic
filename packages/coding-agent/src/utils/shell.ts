@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { spawn, spawnSync } from "child_process";
+import { Worker } from "node:worker_threads";
 import { getBinDir } from "../config.ts";
 
 export interface ShellConfig {
@@ -169,6 +170,54 @@ export function sanitizeBinaryOutput(str: string): string {
 		.join("");
 }
 
+interface DetachedChildGuardian {
+	postMessage(message: { action: "track" | "untrack"; pid: number }): void;
+	terminate(): Promise<number>;
+	unref(): void;
+}
+
+let detachedChildGuardian: DetachedChildGuardian | undefined;
+
+const PARENT_GUARDIAN_SOURCE = String.raw`
+const { parentPort, workerData } = require("node:worker_threads");
+const { spawn } = require("node:child_process");
+const { existsSync } = require("node:fs");
+const tracked = new Set();
+parentPort.on("message", ({ action, pid }) => {
+  if (action === "track") tracked.add(pid);
+  else tracked.delete(pid);
+});
+function killTree(pid) {
+  if (process.platform === "win32") {
+    try { spawn("taskkill", ["/F", "/T", "/PID", String(pid)], { stdio: "ignore", detached: true }); } catch {}
+    return;
+  }
+  try { process.kill(-pid, "SIGKILL"); }
+  catch { try { process.kill(pid, "SIGKILL"); } catch {} }
+}
+const timer = setInterval(() => {
+  let parentAlive = true;
+  try { process.kill(workerData.parentPid, 0); } catch { parentAlive = false; }
+  if (parentAlive && (!workerData.stopFile || !existsSync(workerData.stopFile))) return;
+  for (const pid of tracked) killTree(pid);
+  killTree(process.pid);
+}, 50);
+timer.unref?.();
+`;
+
+export function startParentProcessGuardian(parentPid: number, stopFile?: string): () => Promise<void> {
+	if (detachedChildGuardian) return async () => {};
+	const guardian = new Worker(PARENT_GUARDIAN_SOURCE, { eval: true, workerData: { parentPid, stopFile } });
+	detachedChildGuardian = guardian;
+	for (const pid of trackedDetachedChildPids) guardian.postMessage({ action: "track", pid });
+	guardian.unref();
+	return async () => {
+		if (detachedChildGuardian !== guardian) return;
+		detachedChildGuardian = undefined;
+		await guardian.terminate();
+	};
+}
+
 /**
  * Detached child processes must be tracked so they can be killed on parent
  * shutdown signals (SIGHUP/SIGTERM).
@@ -177,15 +226,18 @@ const trackedDetachedChildPids = new Set<number>();
 
 export function trackDetachedChildPid(pid: number): void {
 	trackedDetachedChildPids.add(pid);
+	detachedChildGuardian?.postMessage({ action: "track", pid });
 }
 
 export function untrackDetachedChildPid(pid: number): void {
 	trackedDetachedChildPids.delete(pid);
+	detachedChildGuardian?.postMessage({ action: "untrack", pid });
 }
 
 export function killTrackedDetachedChildren(): void {
 	for (const pid of trackedDetachedChildPids) {
 		killProcessTree(pid);
+		detachedChildGuardian?.postMessage({ action: "untrack", pid });
 	}
 	trackedDetachedChildPids.clear();
 }

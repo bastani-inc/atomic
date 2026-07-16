@@ -9,7 +9,6 @@ import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { AuthStorage } from "./core/auth-storage.ts";
 import { getBuiltinPackagePaths } from "./core/builtin-packages.ts";
 import { configureHttpDispatcher } from "./core/http-dispatcher.ts";
-import type { ExtensionFactory } from "./core/extensions/types.ts";
 import { resolveModelScope, resolveModelScopeWithDiagnostics } from "./core/model-resolver.ts";
 import { restoreStdout, takeOverStdout, writeRawStdout } from "./core/output-guard.ts";
 import { resolveProjectTrusted } from "./core/project-trust.ts";
@@ -30,14 +29,10 @@ import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts"
 import { startInteractiveEngineLiveness } from "./modes/interactive-engine/engine-child-liveness.ts";
 import { createRuntimeForMode } from "./modes/interactive-engine/create-isolated-runtime.ts";
 import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.ts";
+import type { MainOptions } from "./main-types.ts";
 import { normalizePath } from "./utils/paths.ts";
-
 export type { AppMode } from "./main-app-mode.ts"; export { resolveExcludedToolsForAppMode } from "./main-app-mode.ts";
-
-export interface MainOptions {
-	extensionFactories?: ExtensionFactory[];
-	builtinPackagePaths?: string[];
-}
+export type { MainOptions } from "./main-types.ts";
 
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
@@ -90,7 +85,9 @@ export async function main(args: string[], options?: MainOptions) {
 		console.log(`Exported to: ${result}`);
 		process.exit(0);
 	}
-	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	let appMode = options?.internalInteractiveHarness?.forceInteractive
+		? "interactive"
+		: resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
 	const isolateInteractiveHost = appMode === "interactive" && !isPlainRuntimeMetadataCommand(parsed) && process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD !== "1";
 	const shouldTakeOverStdout = appMode !== "interactive";
 	const shouldRestoreStdoutForMetadata = isPlainRuntimeMetadataCommand(parsed);
@@ -399,7 +396,7 @@ export async function main(args: string[], options?: MainOptions) {
 
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
-	if (appMode !== "rpc") {
+	if (appMode !== "rpc" && !options?.internalInteractiveHarness) {
 		stdinContent = await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
@@ -463,7 +460,9 @@ export async function main(args: string[], options?: MainOptions) {
 			startupInputCapture: startupEarlyInputCapture,
 			deferredModelScopePatterns: deferredExtensionLoad ? (parsed.models ?? settingsManager.getEnabledModels()) : undefined,
 			deferredModelScopePreserveThinking: parsed.thinking !== undefined,
+			terminal: options?.internalInteractiveHarness?.terminal,
 		});
+		options?.internalInteractiveHarness?.onMode?.(interactiveMode);
 		if (startupBenchmark) {
 			await interactiveMode.init();
 			time("interactiveMode.init");

@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -166,16 +167,24 @@ export function createRpcExtensionUIContext({
 		},
 
 		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only support string arrays in RPC mode - factory functions are ignored
-			if (content === undefined || Array.isArray(content)) {
+			if (content === undefined) {
+				customUi?.setWidget(key, undefined, options?.placement);
 				emitExtensionUIRequest(output, {
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content as string[] | undefined,
-					widgetPlacement: options?.placement,
+					method: "setWidget", widgetKey: key, widgetLines: undefined, widgetPlacement: options?.placement,
 				});
+				return;
 			}
-			else warnUnsupported("component-factory widgets");
+			if (Array.isArray(content)) {
+				emitExtensionUIRequest(output, {
+					method: "setWidget", widgetKey: key, widgetLines: content as string[], widgetPlacement: options?.placement,
+				});
+				return;
+			}
+			if (customUi && typeof content === "function") {
+				customUi.setWidget(key, content as (tui: TUI, theme: Theme) => Component & { dispose?(): void }, options?.placement);
+				return;
+			}
+			warnUnsupported("component-factory widgets");
 		},
 
 		setFooter(): void { warnUnsupported("ctx.ui.setFooter"); },

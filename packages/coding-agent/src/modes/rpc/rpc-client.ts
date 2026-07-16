@@ -1,34 +1,33 @@
 
 import type { ChildProcess } from "node:child_process";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
-import type { SessionStats } from "../../core/agent-session.ts";
-import type { BashResult } from "../../core/bash-executor.ts";
-import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
-import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { ImageContent } from "@earendil-works/pi-ai/compat";
+import { BoundedWriter } from "./bounded-writer.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { serializeInteractiveEngineFrame, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
+import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
 import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
-import type {
-	RpcCommand,
-	RpcContextWindowInfo,
-	RpcExtensionUIRequest,
-	RpcExtensionUIResponse,
-	RpcEvent,
-	RpcResponse,
-	RpcSessionState,
-	RpcSlashCommand,
-} from "./rpc-types.ts";
+import type { RpcCommand, RpcExtensionUIRequest, RpcExtensionUIResponse, RpcEvent, RpcResponse } from "./rpc-types.ts";
+export type { ModelInfo, RpcCommandBody } from "./rpc-client-api.ts";
 export type { RpcContextWindowInfo, RpcEvent } from "./rpc-types.ts";
 
 
-type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
+function restartArgs(args: readonly string[] | undefined, sessionFile: string | undefined): string[] {
+	const result: string[] = [];
+	for (let index = 0; index < (args?.length ?? 0); index += 1) {
+		const value = args![index]!;
+		if (value === "--no-session") continue;
+		if (value === "--session") { index += 1; continue; }
+		result.push(value);
+	}
+	result.push(sessionFile ? "--session" : "--no-session");
+	if (sessionFile) result.push(sessionFile);
+	return result;
+}
 
-export type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
 	cliPath?: string;
@@ -46,17 +45,11 @@ export interface RpcClientOptions {
 	};
 }
 
-export interface ModelInfo {
-	provider: string;
-	id: string;
-	contextWindow: number;
-	reasoning: boolean;
-}
 
 export type RpcEventListener = (event: RpcEvent) => void;
 
 
-export class RpcClient {
+export class RpcClient extends RpcClientApi {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
@@ -64,6 +57,7 @@ export class RpcClient {
 	private pendingExtensionUIRequests: RpcExtensionUIRequest[] = [];
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
 	private pendingEngineMessages: InteractiveEngineMessage[] = [];
+	private pendingEngineMessageBytes = 0;
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -71,10 +65,15 @@ export class RpcClient {
 	private exitError: Error | null = null;
 	private engineMonitor: InteractiveEngineMonitor | undefined;
 	private eventBuffer: RpcEventBuffer | undefined;
+	private stdinWriter: BoundedWriter | undefined;
+	private generation = 0;
+	private readonly activeActivityIds = new Set<string>();
+	private enginePid: number | undefined;
 
 	declare private options: RpcClientOptions;
 
 	constructor(options: RpcClientOptions = {}) {
+		super();
 		this.options = options;
 	}
 
@@ -99,7 +98,11 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
+		const generation = ++this.generation;
 		this.exitError = null;
+		this.stderr = "";
+		this.activeActivityIds.clear();
+		this.enginePid = undefined;
 		this.engineMonitor = this.options.interactiveEngine
 			? new InteractiveEngineMonitor(
 					this.options.interactiveEngine.onDiagnostic,
@@ -117,38 +120,61 @@ export class RpcClient {
 			interactiveEngine: this.engineMonitor !== undefined,
 		});
 		this.process = childProcess;
+		this.stdinWriter = new BoundedWriter(childProcess.stdin!, {
+			maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
+			maxQueuedBytes: 2 * INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
+		});
 
 		childProcess.once("exit", (code, signal) => {
+			if (generation !== this.generation) return;
 			const error = this.createProcessExitError(code, signal);
 			this.exitError = error;
+			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
+			this.activeActivityIds.clear();
+			this.options.interactiveEngine?.onActivityChange?.(false);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.once("error", (error) => {
+			if (generation !== this.generation) return;
 			this.exitError = error;
+			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.stdin?.on("error", (error) => {
+			if (generation !== this.generation) return;
 			this.exitError = error;
+			this.stdinWriter?.close(error);
 			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.stderr?.on("data", (data) => {
-			this.stderr += data.toString();
+			if (generation !== this.generation) return;
+			const next = this.stderr + data.toString();
+			this.stderr = Buffer.byteLength(next, "utf8") <= 256 * 1024
+				? next
+				: `${Buffer.from(next).subarray(-256 * 1024).toString("utf8")}\n[stderr truncated]`;
 			process.stderr.write(data);
 		});
-		this.stopReadingStdout = attachJsonlLineReader(childProcess.stdout!, (line) => {
-			this.handleLine(line);
-		}, createInteractiveJsonlOptions(
+		const readerOptions = createInteractiveJsonlOptions(
 			this.engineMonitor !== undefined,
 			this.options.interactiveEngine?.onDiagnostic,
-		));
+		);
+		this.stopReadingStdout = attachJsonlLineReader(childProcess.stdout!, (line) => {
+			if (generation === this.generation) this.handleLine(line);
+		}, {
+			...readerOptions,
+			onOversizedLine: () => {
+				readerOptions.onOversizedLine?.();
+				if (generation === this.generation) this.failTransport(new Error("Interactive engine emitted an oversized RPC frame"));
+			},
+		});
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
-		else await new Promise((resolve) => setTimeout(resolve, 100));
+		else await Bun.sleep(100);
 
-		if (this.process.exitCode !== null) {
-			throw new Error(`Agent process exited immediately with code ${this.process.exitCode}. Stderr: ${this.stderr}`);
+		if (generation !== this.generation || this.process?.exitCode !== null) {
+			throw new Error(`Agent process exited immediately. Stderr: ${this.stderr}`);
 		}
 	}
 
@@ -158,14 +184,18 @@ export class RpcClient {
 		const terminateTree = this.engineMonitor !== undefined;
 		this.stopReadingStdout?.();
 		this.engineMonitor?.stop();
+		this.stdinWriter?.close(new Error("Agent process stopped"));
 		this.engineMonitor = undefined;
 		this.stopReadingStdout = null;
-		await terminateRpcClientProcess(child, terminateTree);
-
+		this.stdinWriter = undefined;
 		this.process = null;
+		this.generation += 1;
+		await terminateRpcClientProcess(child, terminateTree);
 		this.rejectPendingRequests(new Error("Agent process stopped"));
 		this.eventBuffer?.dispose();
 		this.eventBuffer = undefined;
+		this.activeActivityIds.clear();
+		this.options.interactiveEngine?.onActivityChange?.(false);
 	}
 
 	/** Subscribe to agent events. */
@@ -188,15 +218,14 @@ export class RpcClient {
 		};
 	}
 
-	respondExtensionUI(response: RpcExtensionUIResponse): void {
-		const stdin = this.process?.stdin;
-		if (!stdin?.writable) throw new Error("Interactive engine stdin is not writable");
-		stdin.write(serializeJsonLine(response));
+	async respondExtensionUI(response: RpcExtensionUIResponse): Promise<void> {
+		await this.requireWriter().write(serializeJsonLine(response));
 	}
 
 	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		this.engineMessageListeners.push(listener);
 		for (const message of this.pendingEngineMessages.splice(0)) listener(message);
+		this.pendingEngineMessageBytes = 0;
 		return () => {
 			const index = this.engineMessageListeners.indexOf(listener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
@@ -204,189 +233,34 @@ export class RpcClient {
 	}
 
 	sendInteractiveEngineCommand(command: InteractiveEngineCommand): void {
-		const stdin = this.process?.stdin;
-		if (stdin?.writable) stdin.write(serializeInteractiveEngineFrame(command));
+		const writer = this.stdinWriter;
+		if (!writer) return;
+		const frame = serializeInteractiveEngineFrame(command);
+		if (command.type === "engine_custom_render" || command.type === "engine_tool_render" || command.type === "engine_message_render") {
+			writer.offerLatest(`render:${command.componentId}`, frame);
+			return;
+		}
+		this.bestEffort(writer.write(frame), `engine command ${command.type}`);
 	}
 	waitForInteractiveEngineBound(): Promise<void> { return this.engineMonitor?.waitUntilBound() ?? Promise.resolve(); }
+	getEnginePid(): number | undefined { return this.enginePid; }
+	getGeneration(): number { return this.generation; }
+
+	async restart(sessionFile: string | undefined): Promise<void> {
+		await this.stop();
+		this.options = { ...this.options, args: restartArgs(this.options.args, sessionFile) };
+		await this.start();
+		await this.waitForInteractiveEngineBound();
+	}
 
 	async requestInternal<T>(command: RpcCommandBody): Promise<T> {
-		return this.getData<T>(await this.send(command));
+		return this.data<T>(await this.request(command));
 	}
 	getStderr(): string {
 		return this.stderr;
 	}
 
 
-	/**
-	 * Send a prompt to the agent.
-	 * Returns immediately after sending; use onEvent() to receive streaming events.
-	 * Use waitForIdle() to wait for completion.
-	 */
-	async prompt(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): Promise<void> {
-		await this.send({ type: "prompt", message, images, streamingBehavior });
-	}
-
-	/** Queue a steering message to interrupt the agent mid-run. */
-	async steer(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "steer", message, images });
-	}
-
-	/** Queue a follow-up message to be processed after the agent finishes. */
-	async followUp(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "follow_up", message, images });
-	}
-
-	/** Abort current operation. */
-	async abort(): Promise<void> {
-		await this.send({ type: "abort" });
-	}
-
-	/**
-	 * Start a new session, optionally with parent tracking.
-	 * @param parentSession - Optional parent session path for lineage tracking
-	 * @returns Object with `cancelled: true` if an extension cancelled the new session
-	 */
-	async newSession(parentSession?: string): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "new_session", parentSession });
-		return this.getData(response);
-	}
-
-	/** Get current session state. */
-	async getState(): Promise<RpcSessionState> {
-		const response = await this.send({ type: "get_state" });
-		return this.getData(response);
-	}
-
-	/** Set model by provider and ID. */
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		const response = await this.send({ type: "set_model", provider, modelId });
-		return this.getData(response);
-	}
-	/** Cycle to next model. */
-	async cycleModel(direction?: "forward" | "backward"): Promise<{
-		model: Model<Api>;
-		thinkingLevel: ThinkingLevel;
-		isScoped: boolean;
-	} | null> {
-		const response = await this.send({ type: "cycle_model", direction });
-		return this.getData(response);
-	}
-
-	/** Get list of available models. */
-	async getAvailableModels(): Promise<ModelInfo[]> {
-		const response = await this.send({ type: "get_available_models" });
-		return this.getData<{ models: ModelInfo[] }>(response).models;
-	}
-
-	/** Set thinking level. */
-	async setThinkingLevel(level: ThinkingLevel): Promise<void> {
-		await this.send({ type: "set_thinking_level", level });
-	}
-
-	/** Cycle thinking level. */
-	async cycleThinkingLevel(): Promise<{ level: ThinkingLevel } | null> {
-		const response = await this.send({ type: "cycle_thinking_level" });
-		return this.getData(response);
-	}
-
-	/**
-	 * Set the active context-window token budget for the current model.
-	 * This is a runtime selection and does not persist context-window defaults.
-	 */
-	async setContextWindow(contextWindow: number | string): Promise<void> {
-		const response = await this.send({ type: "set_context_window", contextWindow });
-		this.assertSuccess(response);
-	}
-
-	/** Get selectable context-window token budgets for the current model. */
-	async getAvailableContextWindows(): Promise<RpcContextWindowInfo> {
-		const response = await this.send({ type: "get_available_context_windows" });
-		return this.getData(response);
-	}
-
-	/** Set steering mode. */
-	async setSteeringMode(mode: "all" | "one-at-a-time"): Promise<void> {
-		await this.send({ type: "set_steering_mode", mode });
-	}
-
-	/** Set follow-up mode. */
-	async setFollowUpMode(mode: "all" | "one-at-a-time"): Promise<void> {
-		await this.send({ type: "set_follow_up_mode", mode });
-	}
-
-	/** Compact session context with verbatim line-range compaction. */
-	async compact(): Promise<VerbatimCompactionResult> {
-		const response = await this.send({ type: "compact" });
-		return this.getData(response);
-	}
-
-	async setAutoCompaction(enabled: boolean): Promise<void> {
-		await this.send({ type: "set_auto_compaction", enabled });
-	}
-	async setAutoRetry(enabled: boolean): Promise<void> {
-		await this.send({ type: "set_auto_retry", enabled });
-	}
-	async abortRetry(): Promise<void> {
-		await this.send({ type: "abort_retry" });
-	}
-	async bash(command: string): Promise<BashResult> {
-		const response = await this.send({ type: "bash", command });
-		return this.getData(response);
-	}
-	async abortBash(): Promise<void> {
-		await this.send({ type: "abort_bash" });
-	}
-	async getSessionStats(): Promise<SessionStats> {
-		const response = await this.send({ type: "get_session_stats" });
-		return this.getData(response);
-	}
-	async exportHtml(outputPath?: string): Promise<{ path: string }> {
-		const response = await this.send({ type: "export_html", outputPath });
-		return this.getData(response);
-	}
-	async switchSession(sessionPath: string): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "switch_session", sessionPath });
-		return this.getData(response);
-	}
-	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
-		const response = await this.send({ type: "fork", entryId });
-		return this.getData(response);
-	}
-	async clone(): Promise<{ cancelled: boolean }> {
-		const response = await this.send({ type: "clone" });
-		return this.getData(response);
-	}
-	async getForkMessages(): Promise<Array<{ entryId: string; text: string }>> {
-		const response = await this.send({ type: "get_fork_messages" });
-		return this.getData<{ messages: Array<{ entryId: string; text: string }> }>(response).messages;
-	}
-
-	/** Session entries in append order, optionally only those after the `since` entry id. */
-	async getEntries(since?: string): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
-		const response = await this.send({ type: "get_entries", since });
-		return this.getData<{ entries: SessionEntry[]; leafId: string | null }>(response);
-	}
-
-	/** The session entry tree. */
-	async getTree(): Promise<{ tree: SessionTreeNode[]; leafId: string | null }> {
-		const response = await this.send({ type: "get_tree" });
-		return this.getData<{ tree: SessionTreeNode[]; leafId: string | null }>(response);
-	}
-	async getLastAssistantText(): Promise<string | null> {
-		const response = await this.send({ type: "get_last_assistant_text" });
-		return this.getData<{ text: string | null }>(response).text;
-	}
-	async setSessionName(name: string): Promise<void> {
-		await this.send({ type: "set_session_name", name });
-	}
-	async getMessages(): Promise<AgentMessage[]> {
-		const response = await this.send({ type: "get_messages" });
-		return this.getData<{ messages: AgentMessage[] }>(response).messages;
-	}
-	async getCommands(): Promise<RpcSlashCommand[]> {
-		const response = await this.send({ type: "get_commands" });
-		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
-	}
 	waitForIdle(timeout = 60000): Promise<void> {
 		return waitForRpcIdle(this, timeout);
 	}
@@ -401,7 +275,7 @@ export class RpcClient {
 	private handleLine(line: string): void {
 		if (this.engineMonitor?.handleLine(line)) return;
 		try {
-			const data = JSON.parse(line);
+			const data = JSON.parse(line) as { type?: string; id?: string };
 			if (data.type === "extension_ui_request") {
 				const request = data as RpcExtensionUIRequest;
 				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(request);
@@ -418,6 +292,7 @@ export class RpcClient {
 			if (this.eventBuffer) this.eventBuffer.enqueue(event);
 			else this.emitEvent(event);
 		} catch {
+			if (this.engineMonitor) this.failTransport(new Error("Interactive engine emitted malformed JSONL"));
 		}
 	}
 	private emitEvent(event: RpcEvent): void {
@@ -425,8 +300,15 @@ export class RpcClient {
 	}
 	private emitInteractiveEngineMessage(message: InteractiveEngineMessage): void {
 		if (this.engineMessageListeners.length === 0 && message.type.startsWith("engine_custom_")) {
-			if (this.pendingEngineMessages.length === 256) this.pendingEngineMessages.shift();
-			this.pendingEngineMessages.push(message);
+			const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
+			while (this.pendingEngineMessages.length > 0 && this.pendingEngineMessageBytes + bytes > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
+				const removed = this.pendingEngineMessages.shift()!;
+				this.pendingEngineMessageBytes -= Buffer.byteLength(JSON.stringify(removed), "utf8");
+			}
+			if (bytes <= INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
+				this.pendingEngineMessages.push(message);
+				this.pendingEngineMessageBytes += bytes;
+			}
 		}
 		for (const listener of this.engineMessageListeners) listener(message);
 	}
@@ -434,65 +316,77 @@ export class RpcClient {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
 	}
 	private observeInteractiveEngineMessage(message: InteractiveEngineMessage): void {
-		if (message.type === "engine_activity_started") this.options.interactiveEngine?.onActivityChange?.(true);
-		else if (message.type === "engine_activity_finished") this.options.interactiveEngine?.onActivityChange?.(false);
+		if (message.type === "engine_ready") this.enginePid = message.pid;
+		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
+		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
+		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);
 		this.emitInteractiveEngineMessage(message);
 	}
 	private rejectPendingRequests(error: Error): void {
-		for (const { reject } of this.pendingRequests.values()) {
-			reject(error);
-		}
+		for (const { reject } of this.pendingRequests.values()) reject(error);
 		this.pendingRequests.clear();
 	}
-	private async send(command: RpcCommandBody): Promise<RpcResponse> {
+	private failTransport(error: Error): void {
+		this.exitError = error;
+		this.stdinWriter?.close(error);
+		this.engineMonitor?.fail(error);
+		this.rejectPendingRequests(error);
+		this.options.interactiveEngine?.onDiagnostic({
+			activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message,
+		});
+	}
+	private requireWriter(): BoundedWriter {
+		if (!this.stdinWriter) throw new Error("Agent process stdin is not writable");
+		return this.stdinWriter;
+	}
+	private bestEffort(operation: Promise<void>, label: string): void {
+		void operation.catch((error: Error) => {
+			if (!this.process || this.exitError) return;
+			this.options.interactiveEngine?.onDiagnostic({
+				activity: undefined, elapsedMs: 0, level: "unresponsive",
+				message: `Interactive engine ${label} failed: ${error.message}`,
+			});
+		});
+	}
+	protected async request(command: RpcCommandBody): Promise<RpcResponse> {
 		const childProcess = this.process;
-		const stdin = childProcess?.stdin;
-		if (!childProcess || !stdin) {
-			throw new Error("Client not started");
-		}
-		if (this.exitError) {
-			throw this.exitError;
-		}
+		if (!childProcess) throw new Error("Client not started");
+		if (this.exitError) throw this.exitError;
 		if (childProcess.exitCode !== null) {
 			const error = this.createProcessExitError(childProcess.exitCode, childProcess.signalCode);
 			this.exitError = error;
 			throw error;
 		}
-		if (stdin.destroyed || !stdin.writable) {
-			throw new Error("Agent process stdin is not writable");
-		}
 		const id = `req_${++this.requestId}`;
 		const fullCommand = { ...command, id } as RpcCommand;
-		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.pendingRequests.delete(id);
-				reject(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30000);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let rejectResponse!: (error: Error) => void;
+		const response = new Promise<RpcResponse>((resolve, reject) => {
+			rejectResponse = reject;
 			this.pendingRequests.set(id, {
-				resolve: (response) => {
-					clearTimeout(timeout);
-					resolve(response);
-				},
-				reject: (error) => {
-					clearTimeout(timeout);
-					reject(error);
-				},
+				resolve: (value) => { if (timeout) clearTimeout(timeout); resolve(value); },
+				reject: (error) => { if (timeout) clearTimeout(timeout); reject(error); },
 			});
-			try {
-				stdin.write(serializeJsonLine(fullCommand));
-			} catch (error) {
-				this.pendingRequests.delete(id);
-				clearTimeout(timeout);
-				reject(error instanceof Error ? error : new Error(String(error)));
-			}
 		});
+		try {
+			await this.requireWriter().write(serializeJsonLine(fullCommand));
+		} catch (error) {
+			this.pendingRequests.delete(id);
+			rejectResponse(error instanceof Error ? error : new Error(String(error)));
+			return response;
+		}
+		if (this.pendingRequests.has(id)) {
+			timeout = setTimeout(() => {
+				this.pendingRequests.delete(id);
+				rejectResponse(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
+			}, 30_000);
+		}
+		return response;
 	}
 	private assertSuccess(response: RpcResponse): void {
-		if (!response.success) {
-			throw new Error(response.error);
-		}
+		if (!response.success) throw new Error(response.error);
 	}
-	private getData<T>(response: RpcResponse): T {
+	protected data<T>(response: RpcResponse): T {
 		this.assertSuccess(response);
 		const successResponse = response as Extract<RpcResponse, { success: true; data: unknown }>;
 		return successResponse.data as T;

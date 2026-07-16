@@ -5,7 +5,7 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";
 import { theme } from "../interactive/theme/theme.ts";
 import {
-	INTERACTIVE_ENGINE_MAX_FRAME_CHARS,
+	INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
 	isJsonValue,
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineMessage,
@@ -28,6 +28,7 @@ interface ActiveComponent {
 	overlay: boolean;
 	terminal: RemoteTerminal;
 	tui: TUI;
+	widgetKey?: string;
 }
 
 class RemoteTerminal implements Terminal {
@@ -67,23 +68,61 @@ function jsonResult(value: object | boolean | null | number | string | undefined
 }
 
 function boundedLines(lines: string[]): string[] {
-	let remaining = INTERACTIVE_ENGINE_MAX_FRAME_CHARS - 512;
+	let remaining = INTERACTIVE_ENGINE_MAX_FRAME_BYTES - 512;
 	const bounded: string[] = [];
 	for (const line of lines) {
 		if (remaining <= 0) break;
-		const next = line.length <= remaining ? line : line.slice(0, remaining);
+		const bytes = Buffer.from(line, "utf8");
+		const next = bytes.length <= remaining ? line : bytes.subarray(0, remaining).toString("utf8");
 		bounded.push(next);
-		remaining -= next.length;
+		remaining -= Buffer.byteLength(next, "utf8");
 	}
 	return bounded;
 }
 
 export class EngineCustomUiService {
+	private readonly widgetIds = new Map<string, string>();
 	private readonly active = new Map<string, ActiveComponent>();
 	private nextId = 0;
 	private readonly write: (line: string) => void;
 	private readonly stateListeners = new Set<(state: { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean }) => void>();
 
+
+	setWidget(
+		key: string,
+		factory: ((tui: TUI, theme: Theme) => Component & { dispose?(): void }) | undefined,
+		placement?: "aboveEditor" | "belowEditor",
+	): void {
+		const previous = this.widgetIds.get(key);
+		if (previous) this.disposeComponent(previous, false);
+		if (!factory) return;
+		const componentId = `remote_widget_${++this.nextId}`;
+		this.widgetIds.set(key, componentId);
+		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
+		const tui = new TUI(terminal);
+		void runCallback(
+			{ kind: "renderer", name: `widget:${key}` },
+			() => factory(tui, theme),
+		).then((component) => {
+			if (this.widgetIds.get(key) !== componentId) {
+				component.dispose?.();
+				return;
+			}
+			tui.addChild(component);
+			this.active.set(componentId, {
+				component,
+				resolve: () => {},
+				overlay: false,
+				terminal,
+				tui,
+				widgetKey: key,
+			});
+			this.send({ type: "engine_custom_open", componentId, overlay: false, widgetKey: key, widgetPlacement: placement });
+		}).catch((error: Error) => {
+			if (this.widgetIds.get(key) === componentId) this.widgetIds.delete(key);
+			this.send({ type: "engine_custom_frame", componentId, requestId: 0, lines: [`Widget ${key} failed: ${error.message}`] });
+		});
+	}
 	constructor(write: (line: string) => void) { this.write = write; }
 
 	async custom<T>(
@@ -142,7 +181,7 @@ export class EngineCustomUiService {
 		}
 	}
 	getHostCustomUiState(): { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean } {
-		const depth = [...this.active.values()].filter((record) => !record.overlay).length;
+		const depth = [...this.active.values()].filter((record) => !record.overlay && !record.widgetKey).length;
 		return { blockingInlineCustomUiDepth: depth, blockingInlineCustomUiActive: depth > 0 };
 	}
 
@@ -163,6 +202,7 @@ export class EngineCustomUiService {
 	handleLine(line: string): boolean {
 		const command = parseInteractiveEngineCommand(line);
 		if (!command) return false;
+		if (!command.type.startsWith("engine_custom_")) return false;
 		const record = this.active.get(command.componentId);
 		if (!record) return true;
 		switch (command.type) {
@@ -200,13 +240,16 @@ export class EngineCustomUiService {
 	dispose(): void {
 		for (const componentId of [...this.active.keys()]) this.disposeComponent(componentId, true);
 	}
-
 	private disposeComponent(componentId: string, resolve: boolean): void {
 		const record = this.active.get(componentId);
 		if (!record) return;
 		this.active.delete(componentId);
 		record.component.dispose?.();
 		record.tui.stop();
+		if (record.widgetKey) {
+			if (this.widgetIds.get(record.widgetKey) === componentId) this.widgetIds.delete(record.widgetKey);
+			this.send({ type: "engine_custom_close", componentId });
+		}
 		this.notifyState();
 		if (resolve) record.resolve(undefined);
 	}

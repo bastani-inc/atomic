@@ -8,6 +8,7 @@ interface MountedRemoteComponent {
 	done: (result: JsonValue | undefined) => void;
 	engineDone: boolean;
 	handle?: OverlayHandle;
+	widgetKey?: string;
 }
 
 class RemoteComponent implements Component {
@@ -87,14 +88,20 @@ export class RemoteComponentController {
 
 	dispose(): void {
 		this.unsubscribe();
-		for (const record of this.mounted.values()) record.component.dispose();
+		for (const record of this.mounted.values()) {
+			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
+			record.component.dispose();
+		}
 		this.mounted.clear();
 	}
 
 	private handleMessage(message: InteractiveEngineMessage): void {
 		switch (message.type) {
 			case "engine_custom_open":
-				this.open(message.componentId, message.overlay, message.deferInlineCustomUiFocus, message.overlayOptions);
+				this.open(message.componentId, message.overlay, message.deferInlineCustomUiFocus, message.overlayOptions, message.widgetKey, message.widgetPlacement);
+				break;
+			case "engine_custom_close":
+				this.close(message.componentId);
 				break;
 			case "engine_custom_frame":
 				this.mounted.get(message.componentId)?.component.applyFrame(message.requestId, message.lines);
@@ -121,8 +128,20 @@ export class RemoteComponentController {
 		overlay: boolean,
 		deferInlineCustomUiFocus: boolean | undefined,
 		options: SerializableOverlayOptions | undefined,
+		widgetKey?: string,
+		widgetPlacement?: "aboveEditor" | "belowEditor",
 	): void {
 		if (this.mounted.has(componentId)) return;
+		if (widgetKey) {
+			let rows = 24;
+			const component = new RemoteComponent(componentId, this.runtime, () => this.ui.requestRender(), () => rows);
+			this.mounted.set(componentId, { component, done: () => {}, engineDone: false, widgetKey });
+			this.ui.setWidget(widgetKey, (tui) => {
+				rows = tui.terminal.rows;
+				return component;
+			}, { placement: widgetPlacement });
+			return;
+		}
 		let mounted: MountedRemoteComponent | undefined;
 		void this.ui.custom<JsonValue | undefined>(
 			(tui, _theme, _keybindings, done) => {
@@ -137,9 +156,7 @@ export class RemoteComponentController {
 				overlay,
 				deferInlineCustomUiFocus,
 				overlayOptions: overlayOptions(options),
-				onHandle: (handle) => {
-					if (mounted) mounted.handle = handle;
-				},
+				onHandle: (handle) => { if (mounted) mounted.handle = handle; },
 			},
 		).catch(() => undefined).finally(() => {
 			const record = this.mounted.get(componentId);
@@ -147,6 +164,14 @@ export class RemoteComponentController {
 			this.mounted.delete(componentId);
 			if (!record.engineDone) record.component.dispose();
 		});
+	}
+
+	private close(componentId: string): void {
+		const record = this.mounted.get(componentId);
+		if (!record) return;
+		this.mounted.delete(componentId);
+		if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
+		record.component.dispose();
 	}
 
 	private control(componentId: string, action: "focus" | "hide" | "show" | "unfocus"): void {

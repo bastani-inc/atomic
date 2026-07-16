@@ -7,6 +7,7 @@ import { type AssistantMessage, type AutocompleteProvider, type EditorComponent,
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
+import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -194,7 +195,7 @@ export class InteractiveModeBase {
 
 
   // Tool execution tracking: toolCallId -> component
-  pendingTools = new Map<string, ToolExecutionComponent>();
+  pendingTools = new Map<string, ToolExecutionComponent | RemoteToolExecutionComponent>();
 
 
 
@@ -398,7 +399,7 @@ export class InteractiveModeBase {
     });
     this.version = VERSION;
     this.ui = new TUI(
-      new ProcessTerminal(),
+      options.terminal ?? new ProcessTerminal(),
       this.settingsManager.getShowHardwareCursor(),
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
@@ -449,9 +450,15 @@ export class InteractiveModeBase {
     attachInteractiveEngineHost(
       runtimeHost,
       this.createExtensionUIContext(),
-      (diagnostic) => diagnostic.level === "unresponsive"
-        ? this.showError(diagnostic.message)
-        : this.showWarning(diagnostic.message),
+		(diagnostic) => {
+			if (diagnostic.message.startsWith("Engine terminated;")) {
+				this.stopWorkingLoader();
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+			}
+			if (diagnostic.level === "unresponsive") this.showError(diagnostic.message);
+			else this.showWarning(diagnostic.message);
+		},
       (handler) => { this.defaultEditor.onExtensionShortcut = handler; },
     );
   }

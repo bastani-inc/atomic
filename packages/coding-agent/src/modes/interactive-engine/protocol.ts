@@ -1,7 +1,7 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
 
 export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
-export const INTERACTIVE_ENGINE_MAX_FRAME_CHARS = 1_048_576;
+export const INTERACTIVE_ENGINE_MAX_FRAME_BYTES = 1_048_576;
 
 export interface JsonObject {
 	[key: string]: JsonValue;
@@ -29,16 +29,19 @@ export type InteractiveEngineMessage =
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
-	| { type: "engine_custom_open"; componentId: string; overlay: boolean; deferInlineCustomUiFocus?: boolean; overlayOptions?: SerializableOverlayOptions }
+	| { type: "engine_custom_open"; componentId: string; overlay: boolean; deferInlineCustomUiFocus?: boolean; overlayOptions?: SerializableOverlayOptions; widgetKey?: string; widgetPlacement?: "aboveEditor" | "belowEditor" }
+	| { type: "engine_custom_close"; componentId: string }
 	| { type: "engine_custom_frame"; componentId: string; requestId: number; lines: string[] }
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
 	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" };
-
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
 	| { type: "engine_custom_input"; componentId: string; data: string }
-	| { type: "engine_custom_dispose"; componentId: string };
+	| { type: "engine_custom_dispose"; componentId: string }
+	| { type: "engine_tool_render"; componentId: string; requestId: number; width: number; toolName: string; toolCallId: string; args: JsonValue; result?: JsonObject; executionStarted: boolean; argsComplete: boolean; isPartial: boolean; expanded: boolean; showImages: boolean; imageWidthCells: number }
+	| { type: "engine_message_render"; componentId: string; requestId: number; width: number; message: JsonObject; expanded: boolean }
+	| { type: "engine_render_dispose"; componentId: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook", "renderer", "tool.execute", "tool.prepare", "workflow.ctx_tool",
@@ -65,7 +68,7 @@ function isCallbackActivity(value: JsonValue): value is JsonObject & CallbackAct
 }
 
 function parseJsonObject(line: string): JsonObject | undefined {
-	if (line.length > INTERACTIVE_ENGINE_MAX_FRAME_CHARS) return undefined;
+	if (Buffer.byteLength(line, "utf8") > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) return undefined;
 	let value: JsonValue;
 	try {
 		value = JSON.parse(line) as JsonValue;
@@ -82,35 +85,29 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_ready":
 			return value.protocolVersion === INTERACTIVE_ENGINE_PROTOCOL_VERSION && typeof value.pid === "number"
 				? { type: value.type, protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: value.pid } : undefined;
-		case "engine_bound":
-			return { type: value.type };
-		case "engine_heartbeat":
-			return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
-		case "engine_activity_started":
-			return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
-		case "engine_activity_finished":
-			return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;
+		case "engine_bound": return { type: value.type };
+		case "engine_heartbeat": return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
+		case "engine_activity_started": return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
+		case "engine_activity_finished": return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;
 		case "engine_custom_open":
 			return typeof value.componentId === "string" && typeof value.overlay === "boolean"
 				? { type: value.type, componentId: value.componentId, overlay: value.overlay,
 					deferInlineCustomUiFocus: value.deferInlineCustomUiFocus === true,
-					overlayOptions: isJsonObject(value.overlayOptions) ? value.overlayOptions as SerializableOverlayOptions : undefined }
+					overlayOptions: isJsonObject(value.overlayOptions) ? value.overlayOptions as SerializableOverlayOptions : undefined,
+					widgetKey: typeof value.widgetKey === "string" ? value.widgetKey : undefined,
+					widgetPlacement: value.widgetPlacement === "belowEditor" ? "belowEditor" : value.widgetPlacement === "aboveEditor" ? "aboveEditor" : undefined }
 				: undefined;
+		case "engine_custom_close": return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
 		case "engine_custom_frame":
 			return typeof value.componentId === "string" && typeof value.requestId === "number" &&
-				Array.isArray(value.lines) && value.lines.every((line) => typeof line === "string")
+				Array.isArray(value.lines) && value.lines.every((entry) => typeof entry === "string")
 				? { type: value.type, componentId: value.componentId, requestId: value.requestId, lines: value.lines } : undefined;
-		case "engine_custom_invalidate":
-			return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
-		case "engine_custom_done":
-			return typeof value.componentId === "string"
-				? { type: value.type, componentId: value.componentId, result: value.result } : undefined;
+		case "engine_custom_invalidate": return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
+		case "engine_custom_done": return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId, result: value.result } : undefined;
 		case "engine_custom_control":
 			return typeof value.componentId === "string" && ["focus", "hide", "show", "unfocus"].includes(String(value.action))
-				? { type: value.type, componentId: value.componentId,
-					action: value.action as "focus" | "hide" | "show" | "unfocus" } : undefined;
-		default:
-			return undefined;
+				? { type: value.type, componentId: value.componentId, action: value.action as "focus" | "hide" | "show" | "unfocus" } : undefined;
+		default: return undefined;
 	}
 }
 
@@ -120,15 +117,29 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	if (value.type === "engine_custom_render" && typeof value.requestId === "number" && typeof value.width === "number" && typeof value.rows === "number") {
 		return { type: value.type, componentId: value.componentId, requestId: value.requestId, width: value.width, rows: value.rows };
 	}
-	if (value.type === "engine_custom_input" && typeof value.data === "string") {
-		return { type: value.type, componentId: value.componentId, data: value.data };
+	if (value.type === "engine_custom_input" && typeof value.data === "string") return { type: value.type, componentId: value.componentId, data: value.data };
+	if (value.type === "engine_custom_dispose" || value.type === "engine_render_dispose") return { type: value.type, componentId: value.componentId };
+	if (value.type === "engine_tool_render" && typeof value.requestId === "number" && typeof value.width === "number" &&
+		typeof value.toolName === "string" && typeof value.toolCallId === "string" && typeof value.executionStarted === "boolean" &&
+		typeof value.argsComplete === "boolean" && typeof value.isPartial === "boolean" && typeof value.expanded === "boolean" &&
+		typeof value.showImages === "boolean" && typeof value.imageWidthCells === "number") {
+		return { type: value.type, componentId: value.componentId, requestId: value.requestId, width: value.width,
+			toolName: value.toolName, toolCallId: value.toolCallId, args: value.args, result: isJsonObject(value.result) ? value.result : undefined,
+			executionStarted: value.executionStarted, argsComplete: value.argsComplete, isPartial: value.isPartial,
+			expanded: value.expanded, showImages: value.showImages, imageWidthCells: value.imageWidthCells };
 	}
-	return value.type === "engine_custom_dispose" ? { type: value.type, componentId: value.componentId } : undefined;
+	if (value.type === "engine_message_render" && typeof value.requestId === "number" && typeof value.width === "number" &&
+		isJsonObject(value.message) && typeof value.expanded === "boolean") {
+		return { type: value.type, componentId: value.componentId, requestId: value.requestId, width: value.width, message: value.message, expanded: value.expanded };
+	}
+	return undefined;
 }
 
 export function serializeInteractiveEngineFrame(message: InteractiveEngineMessage | InteractiveEngineCommand): string {
 	const line = JSON.stringify(message);
-	if (line.length > INTERACTIVE_ENGINE_MAX_FRAME_CHARS) throw new Error("Interactive engine frame exceeds 1 MiB");
+	if (Buffer.byteLength(line, "utf8") > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) {
+		throw new Error("Interactive engine frame exceeds 1 MiB");
+	}
 	return `${line}\n`;
 }
 

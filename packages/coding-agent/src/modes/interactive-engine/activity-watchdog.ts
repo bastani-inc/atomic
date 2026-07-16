@@ -30,7 +30,7 @@ export class ActivityWatchdog {
 	private readonly onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void;
 	private readonly thresholds: ActivityWatchdogThresholds;
 	private lastHeartbeatAt: number;
-	private activity: CallbackActivity | undefined;
+	private readonly activities = new Map<string, CallbackActivity>();
 	private timer: ReturnType<typeof setInterval> | undefined;
 	private emittedBlocking = false;
 	private emittedUnresponsive = false;
@@ -49,9 +49,9 @@ export class ActivityWatchdog {
 	}
 
 	stop(): void {
-		if (!this.timer) return;
-		clearInterval(this.timer);
+		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
+		this.activities.clear();
 	}
 
 	heartbeat(): void {
@@ -61,11 +61,12 @@ export class ActivityWatchdog {
 	}
 
 	activityStarted(activity: CallbackActivity): void {
-		this.activity = activity;
+		this.activities.delete(activity.id);
+		this.activities.set(activity.id, activity);
 	}
 
 	activityFinished(activityId: string): void {
-		if (this.activity?.id === activityId) this.activity = undefined;
+		this.activities.delete(activityId);
 	}
 
 	private inspect(): void {
@@ -82,10 +83,11 @@ export class ActivityWatchdog {
 	}
 
 	private emit(level: ActivityWatchdogDiagnostic["level"], elapsedMs: number): void {
-		const label = this.activity ? `${this.activity.kind} ${this.activity.name}` : "unknown callback";
+		const activity = [...this.activities.values()].at(-1);
+		const label = activity ? `${activity.kind} ${activity.name}` : "unknown callback";
 		const suffix = level === "unresponsive" ? "Esc interrupt · Ctrl+C terminate" : "the TUI remains responsive";
 		this.onDiagnostic({
-			activity: this.activity,
+			activity,
 			elapsedMs,
 			level,
 			message: `Engine callback ${label} has not yielded for ${Math.round(elapsedMs)} ms; ${suffix}`,
