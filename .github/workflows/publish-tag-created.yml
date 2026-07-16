@@ -1,10 +1,15 @@
 name: Publish tag created
 run-name: Publish tag signal ${{ github.ref_name }}
 
-# This workflow is deliberately unprivileged because a create event can select
-# the workflow definition at the created tag. Its completed run is only a
-# signal; publish.yml is selected separately from the protected default branch
-# and revalidates every release input.
+# A create event evaluates this workflow's YAML from the created tag, so the
+# contents of this file at any tag are untrusted and its `permissions`/checkout
+# shape is NOT an enforceable security boundary. As checked into the default
+# branch the listener is deliberately minimal: it requests no permissions and
+# performs no checkout. That minimal shape only limits the blast radius of the
+# committed definition; it is not what makes publishing safe. The security
+# boundary is the protected default-branch publish.yml selected via
+# workflow_run, plus the npm-publish environment and npm trusted-publisher
+# controls, which revalidate every release input. This run is only a signal.
 on:
     create:
 

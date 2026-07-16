@@ -643,6 +643,16 @@ jobs:
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
+            - name: Reconfirm release tag before @bastani/atomic-natives publish
+              if: steps.native_registry.outputs.exists != 'true'
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+                  VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
+              # Re-resolve the remote tag and prove it still equals the verified
+              # SHA immediately before this irreversible npm publish.
+              run: bun scripts/reconfirm-release-tag.ts
+
             - name: Publish Atomic native packages to npm
               if: steps.native_registry.outputs.exists != 'true'
               working-directory: packages/natives
@@ -677,6 +687,16 @@ jobs:
                       throw new Error("npm pack output is missing npm-shrinkwrap.json");
                     }
                   '
+
+            - name: Reconfirm release tag before @bastani/atomic publish
+              if: steps.registry.outputs.exists != 'true'
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+                  VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
+              # Re-resolve the remote tag and prove it still equals the verified
+              # SHA immediately before this irreversible npm publish.
+              run: bun scripts/reconfirm-release-tag.ts
 
             - name: Publish to npm
               if: steps.registry.outputs.exists != 'true'
@@ -722,13 +742,10 @@ jobs:
               env:
                   RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
                   VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
-              run: |
-                  set -euo pipefail
-                  current_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
-                  [[ "$current_sha" == "$VERIFIED_SHA" ]] || {
-                    echo "Release tag $RELEASE_TAG moved from verified $VERIFIED_SHA to ${current_sha:-missing}; refusing release creation." >&2
-                    exit 1
-                  }
+              # Same helper as the pre-publish reconfirms: re-resolve the remote
+              # tag and refuse GitHub Release creation if it moved from the
+              # verified SHA.
+              run: bun scripts/reconfirm-release-tag.ts
 
             - name: Create GitHub Release with binaries
               uses: softprops/action-gh-release@v3
