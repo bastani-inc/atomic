@@ -16,8 +16,11 @@ export class WorkflowStageAdmissionBoundary {
 	private readonly seen = new Set<string>();
 	private readonly pending = new Set<Promise<void>>();
 	private closePromise: Promise<void> | undefined;
+	private readonly drainAdmittedWork: () => Promise<void>;
 
-	constructor(private readonly drainAdmittedWork: () => Promise<void> = async () => {}) {}
+	constructor(drainAdmittedWork: () => Promise<void> = async () => {}) {
+		this.drainAdmittedWork = drainAdmittedWork;
+	}
 
 	admit(
 		key: string | undefined,
