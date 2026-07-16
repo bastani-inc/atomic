@@ -17,6 +17,7 @@ import { Type } from "typebox";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
 import { createInMemoryBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 interface SentMessage {

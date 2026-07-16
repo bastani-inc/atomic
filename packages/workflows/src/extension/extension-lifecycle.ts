@@ -153,11 +153,11 @@ export function registerWorkflowLifecycleHandlers(
       } finally {
         stageControlRegistry.clear();
       }
+    } else {
+      // Every non-quit host-session boundary invalidates detached lazy handles
+      // synchronously, before they can attach to the replacement session.
+      stageControlRegistry.clear();
     }
-    // Every host-session boundary invalidates detached lazy handles. Clearing
-    // synchronously marks pending session creation as disposed before it can
-    // attach to the replacement session and submit an already-queued prompt.
-    stageControlRegistry.clear();
     deps.storeWidgetRef.current?.();
     deps.storeWidgetRef.current = null;
     runtimeState.resetWorkflowDiscoveryForSession();

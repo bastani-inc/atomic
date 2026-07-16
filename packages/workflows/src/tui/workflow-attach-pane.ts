@@ -1,22 +1,11 @@
 /**
- * WorkflowAttachPane — outer in-place attach shell.
+ * In-place shell that swaps one `pi.ui.custom` overlay between the workflow
+ * graph and a stage chat without remounting the outer popup. Enter attaches
+ * the focused graph node; Ctrl+X returns to the graph with focus preserved,
+ * including for paused stages.
  *
- * Wraps a single `pi.ui.custom` overlay popup whose interior swaps between the orchestrator `GraphView` and a stage-scoped
- * `StageChatView`. Pressing Enter on a graph node attaches the popup
- * to that node's chat; Ctrl+X in chat mode swaps back to graph mode
- * with the same node still focused (see ui/attach-mockup.html), including
- * paused stage chats.
- *
- * The shell never remounts the overlay — it only flips a `mode` field and re-renders, so the popup stays in pi-tui's overlay layer
- * across attach/detach cycles. This matches the mockup contract
- * (`only the popup interior swapped — outer chrome is unchanged`).
- *
- * cross-ref:
- *  - src/tui/overlay-adapter.ts (host mount glue)
- *  - src/tui/graph-view.ts (graph mode Component)
- *  - src/tui/stage-chat-view.ts (chat mode Component)
- *  - src/runs/foreground/stage-control-registry.ts (live handles)
- *
+ * Related host and view wiring lives in `overlay-adapter.ts`, `graph-view.ts`,
+ * `stage-chat-view.ts`, and `stage-control-registry.ts`.
  */
 import type { Component, EditorComponent, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { ChatMessageRenderOptions, ReadonlyFooterDataProvider } from "@bastani/atomic";
@@ -185,8 +174,8 @@ export class WorkflowAttachPane implements Component {
       stageId,
       workflowName: this._workflowName(runId),
       handle,
-      postMortemUnavailableReason,
       initialComposerDraft: this.composerDrafts.get(runId, stageId),
+      postMortemUnavailableReason,
       onDetach: (reason, metadata) => this._detachFromStage(reason, metadata),
       onClose: this.onClose,
       requestRender: this.hostRequestRender,

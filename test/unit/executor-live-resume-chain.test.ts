@@ -97,11 +97,11 @@ describe("executor — live chain resume", () => {
     });
 
     while (stage1PromptCalls.length === 0) await new Promise<void>((resolve) => setTimeout(resolve, 1));
-    const quit = quitRun(RUN_ID, { store, stageControlRegistry: registry });
+    const quit = await quitRun(RUN_ID, { store, stageControlRegistry: registry });
     assert.equal(quit.ok, true);
     await pauseAcknowledged.promise;
 
-    const resumed = resumeRun(RUN_ID, { store, stageControlRegistry: registry });
+    const resumed = await resumeRun(RUN_ID, { store, stageControlRegistry: registry });
     assert.equal(resumed.ok, true);
 
     const result = await runPromise;

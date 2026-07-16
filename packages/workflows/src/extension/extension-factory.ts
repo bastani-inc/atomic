@@ -37,9 +37,7 @@ function buildWorkflowOverlay(
   pi: ExtensionAPI,
   resolvePostMortemHandle: (runId: string, stageId: string) => PostMortemHandleResolution,
 ): GraphOverlayPort {
-  return buildGraphOverlayAdapter(pi, store, {
-    resolvePostMortemHandle,
-  });
+  return buildGraphOverlayAdapter(pi, store, { resolvePostMortemHandle });
 }
 
 function registerWorkflowShortcut(pi: ExtensionAPI, overlay: GraphOverlayPort): void {

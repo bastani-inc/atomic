@@ -20,14 +20,8 @@ import {
   resolveToolStageTarget,
   stageFailureMessage,
 } from "./workflow-targets.js";
-import {
-  formatWorkflowReloadReport,
-  formatWorkflowResourceLoadWarning,
-} from "./workflow-command-surfaces.js";
-import {
-  normalizeWorkflowReloadReport,
-  type WorkflowReloadReport,
-} from "./workflow-reload-report.js";
+import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 import { classifyDurableResumeShadow } from "./workflow-resume-shadow.js";
 import {
   workflowHasPausedStages,
@@ -103,7 +97,6 @@ export async function workflowReloadAction(
   args: WorkflowToolArgs,
   deps: Pick<WorkflowControlActionDeps, "reloadWorkflowResources">,
 ): Promise<WorkflowToolResult> {
-
   try {
     const report = normalizeWorkflowReloadReport(await deps.reloadWorkflowResources());
     return {

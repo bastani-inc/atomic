@@ -296,45 +296,47 @@ export async function handleRunControlCommand(
     } else if (action === "resume") {
       const backend = getDurableBackend();
       const localResolution = resolveRunIdPrefix(target);
-      const exactBeforePreparation = localResolution.kind === "exact"
+      const localBeforePreparation = localResolution.kind === "exact"
         ? store.runs().find((run) => run.id === localResolution.runId)
         : undefined;
-      const shadow = exactBeforePreparation === undefined
+      const exactBeforePreparation = localBeforePreparation?.id === target
+        ? localBeforePreparation
+        : undefined;
+      const shadow = localBeforePreparation === undefined
         ? "not_shadow"
-        : classifyDurableResumeShadow(exactBeforePreparation, store, { backend });
+        : classifyDurableResumeShadow(localBeforePreparation, store, { backend });
       if (shadow === "ineligible") {
-        fail(`Workflow ${exactBeforePreparation!.id} has no durable checkpoint or pending prompt progress and is not resumable.`);
+        fail("Workflow " + localBeforePreparation!.id + " has no durable checkpoint or pending prompt progress and is not resumable.");
         return true;
       }
-      const exactIsDurableResumeShadow = shadow === "eligible";
-      const exactHasPausedState = exactBeforePreparation?.status === "paused" ||
-        (exactBeforePreparation?.stages.some((stage) => stage.status === "paused") ?? false);
-      const exactIsActivelyRunning = exactBeforePreparation !== undefined &&
-        !exactIsDurableResumeShadow &&
-        exactBeforePreparation.endedAt === undefined &&
-        exactBeforePreparation.status === "running" &&
-        !exactHasPausedState &&
-        exactBeforePreparation.exitReason !== "quit";
+      const exactHasPausedState = exactBeforePreparation !== undefined
+        && workflowHasPausedState(store, exactBeforePreparation.id);
+      const exactIsActivelyRunning = exactBeforePreparation !== undefined
+        && exactBeforePreparation.endedAt === undefined
+        && exactBeforePreparation.status === "running"
+        && !exactHasPausedState
+        && exactBeforePreparation.exitReason !== "quit"
+        && !hasPendingDurableResumeTransition(exactBeforePreparation.id);
       if (exactIsActivelyRunning) {
         fail(`Workflow ${exactBeforePreparation.id.slice(0, 8)} is already running in this session. Attach with \`/workflow connect ${exactBeforePreparation.id.slice(0, 8)}\` instead of resuming.`);
         return true;
       }
-      if (exactBeforePreparation !== undefined &&
-        exactBeforePreparation.parentRunId === undefined &&
-        exactHasPausedState &&
-        !exactIsDurableResumeShadow &&
-        backend.isWorkflowLoadable(exactBeforePreparation.id)) {
+      if (exactBeforePreparation !== undefined
+        && exactBeforePreparation.parentRunId === undefined
+        && exactHasPausedState
+        && shadow === "not_shadow"
+        && backend.isWorkflowLoadable(exactBeforePreparation.id)) {
         // Exact top-level live state is authoritative. Avoid scanning the
         // potentially large completed catalog while preserving the established
         // top-level target namespace and live-over-durable precedence.
         runId = exactBeforePreparation.id;
       } else {
+        const localIsDurableResumeShadow = shadow === "eligible";
         let durable: readonly ResumableWorkflowEntry[] = [];
         let preparationError: string | undefined;
-        const needsDurablePreparation = exactBeforePreparation === undefined ||
-          exactIsDurableResumeShadow ||
-          (!backend.isWorkflowLoadable(exactBeforePreparation.id) &&
-            (!exactHasPausedState || backend.hydrateResumableWorkflows !== undefined));
+        const needsDurablePreparation = localBeforePreparation === undefined
+          || localIsDurableResumeShadow
+          || !backend.isWorkflowLoadable(localBeforePreparation.id);
         if (needsDurablePreparation) {
           await ensureWorkflowResourcesVisible();
           const runtime = deps.runtimeForContext(ctx);
@@ -348,12 +350,7 @@ export async function handleRunControlCommand(
           backend.isWorkflowLoadable(run.id) &&
           !reconcileDurableResumeShadow(run, store, { backend })
         );
-        const combined = resolveWorkflowResumeTarget(
-          target,
-          loadableRuns,
-          durable,
-          backend.listCompletedWorkflows(),
-        );
+        const combined = resolveWorkflowResumeTarget(target, loadableRuns, durable, backend.listCompletedWorkflows());
         if (combined.kind === "ambiguous") {
           fail(`Ambiguous workflow prefix "${target}" matches: ${combined.matches.map((match) => `${match.name} (${match.workflowId.slice(0, 8)})`).join(", ")}`);
           return true;
@@ -409,9 +406,7 @@ export async function handleRunControlCommand(
           fail(result.reason === "not_found" ? `Run not found: ${stageRunId.slice(0, 8)}` : result.reason === "already_ended" ? `Run ${stageRunId.slice(0, 8)} already ended.` : result.reason === "no_active_stages" ? `No pausable stages on run ${stageRunId.slice(0, 8)}.` : `Stage not found: ${stageTarget ?? "(unknown)"}`);
           return true;
         }
-        if (policy.allowInputPicker) {
-          deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
-        }
+        if (policy.allowInputPicker) deps.overlay.open(runId, overlaySurfaceFromContext(ctx), stageId, stageRunId);
         print(result.paused.length === 0 ? `No stages were paused on run ${stageRunId.slice(0, 8)}.` : `Paused ${result.paused.length} stage(s) on run ${stageRunId.slice(0, 8)}: ${result.paused.map((stage) => stage.name).join(", ")}`);
       } catch (error) {
         fail(`Failed to pause run ${stageRunId}: ${error instanceof Error ? error.message : String(error)}`);

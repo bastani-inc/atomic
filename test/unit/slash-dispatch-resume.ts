@@ -196,7 +196,9 @@ describe("/workflow resume <runId> — exact live fast path", () => {
             name: "durable-duplicate",
             inputs: {},
             createdAt: 1,
-            status: "completed",
+            // Keep the duplicate nonterminal: terminal durable generations are
+            // authoritative and must not be revived by a local live snapshot.
+            status: "paused",
             completedCheckpoints: 1,
         });
         store.recordRunStart({

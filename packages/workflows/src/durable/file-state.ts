@@ -95,7 +95,7 @@ function isCheckpoint(value: unknown): value is DurableCheckpoint {
 
 function withoutInvalidTopology(record: FileDurableRecord): FileDurableRecord {
   return {
-    handle: record.handle,
+    ...record,
     checkpoints: record.checkpoints.map((checkpoint) => {
       if (checkpoint.kind !== "stage" || checkpoint.topology === undefined || isStageTopology(checkpoint.topology)) {
         return checkpoint;
