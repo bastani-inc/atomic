@@ -29,6 +29,9 @@ interface AsyncJobTrackerOptions {
 
 const ACTIVE_HYDRATION_STATES: Array<AsyncRunSummary["state"]> = ["queued", "running"];
 
+/** Only eagerly hydrate runs touched within the last 7 days; older runs stay on-demand. */
+const ACTIVE_HYDRATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 function cwdMatches(summaryCwd: string | undefined, currentCwd: string | undefined): boolean {
 	return Boolean(summaryCwd && currentCwd && path.resolve(summaryCwd) === path.resolve(currentCwd));
 }
@@ -92,6 +95,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	handleComplete: (data: unknown) => void;
 	resetJobs: (ctx?: ExtensionContext) => void;
 	hydrateActiveJobs: (ctx?: ExtensionContext) => void;
+	hydrateActiveJobsDeferred: (ctx?: ExtensionContext) => void;
 } {
 	const completionRetentionMs = options.completionRetentionMs ?? 10000;
 	const pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS;
@@ -304,6 +308,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				resultsDir,
 				kill: options.kill,
 				now: options.now,
+				maxAgeMs: ACTIVE_HYDRATION_MAX_AGE_MS,
 			});
 		} catch (error) {
 			console.error(`Failed to hydrate active async jobs from '${asyncDirRoot}':`, error);
@@ -398,5 +403,19 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (ctx?.hasUI) state.lastUiContext = ctx;
 	};
 
-	return { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs };
+	// Hydration scans the async run root synchronously; deferring it off the
+	// session_start hot path keeps startup latency independent of run history.
+	let pendingDeferredHydration: ReturnType<typeof setTimeout> | null = null;
+	const hydrateActiveJobsDeferred = (ctx?: ExtensionContext) => {
+		if (ctx?.hasUI) state.lastUiContext = ctx;
+		if (pendingDeferredHydration !== null) clearTimeout(pendingDeferredHydration);
+		const timer = setTimeout(() => {
+			pendingDeferredHydration = null;
+			hydrateActiveJobs(ctx);
+		}, 0);
+		timer.unref?.();
+		pendingDeferredHydration = timer;
+	};
+
+	return { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs, hydrateActiveJobsDeferred };
 }

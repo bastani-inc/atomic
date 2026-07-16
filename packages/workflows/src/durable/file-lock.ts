@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, sta
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 import type { FileDurableState } from "./file-state.js";
+import { invalidateDurableFileStateCache } from "./file-backend-cache.js";
 
 interface LockOwner {
   readonly pid: number;
@@ -21,6 +22,7 @@ export function writeDurableFileState(filePath: string, state: FileDurableState)
   chmodBestEffort(tmp, 0o600);
   renameSync(tmp, filePath);
   chmodBestEffort(filePath, 0o600);
+  invalidateDurableFileStateCache(filePath);
 }
 
 export function withDurableFileLock<T>(filePath: string, fn: () => T): T {
@@ -51,6 +53,59 @@ export function withDurableFileLock<T>(filePath: string, fn: () => T): T {
   } finally {
     rmSync(lockDir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Async variant of {@link withDurableFileLock}: identical ownership, stale-lock
+ * reclamation, and timeout semantics, but contention waits with an event-loop
+ * friendly `setTimeout` sleep instead of pinning the main thread in
+ * `Atomics.wait` (which could stall the TUI for up to the full 5 s deadline).
+ */
+export async function withDurableFileLockAsync<T>(filePath: string, fn: () => T | Promise<T>): Promise<T> {
+  const dir = dirname(filePath);
+  ensureSecureDir(dir);
+  const lockDir = `${filePath}.lock`;
+  const deadline = Date.now() + 5000;
+  while (true) {
+    try {
+      mkdirSync(lockDir, { mode: 0o700 });
+      try {
+        chmodBestEffort(lockDir, 0o700);
+        writeLockOwner(lockDir);
+      } catch (ownerErr) {
+        rmSync(lockDir, { recursive: true, force: true });
+        throw ownerErr;
+      }
+      break;
+    } catch (err) {
+      if (errorCode(err) !== "EEXIST") throw err;
+      if (tryReclaimStaleLock(lockDir, STALE_LOCK_MS)) continue;
+      if (Date.now() > deadline) throw new Error(`Timed out acquiring durable workflow state lock: ${lockDir}`);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+}
+
+const durableWriteQueues = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialize async durable writers per state file inside this process so
+ * checkpoint order is preserved without spinning on the lock directory.
+ */
+export function enqueueDurableFileWrite<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+  const previous = durableWriteQueues.get(filePath) ?? Promise.resolve();
+  const run = previous.then(task, task);
+  const settled = run.then(() => undefined, () => undefined);
+  durableWriteQueues.set(filePath, settled);
+  void settled.finally(() => {
+    if (durableWriteQueues.get(filePath) === settled) durableWriteQueues.delete(filePath);
+  });
+  return run;
 }
 
 function tryReclaimStaleLock(lockDir: string, staleMs: number): boolean {

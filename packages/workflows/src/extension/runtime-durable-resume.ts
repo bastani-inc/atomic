@@ -5,6 +5,7 @@ import type { Store } from "../shared/store.js";
 import type { WorkflowRegistry } from "../workflows/registry.js";
 import {
   prepareRuntimeDurableResumable,
+  prepareTargetedDurableResumable,
   purgeSuppressedWorkflowRuns,
   resumeDurableWorkflow as resumeDurableWorkflowAdapter,
   type ResumeDurableDeps,
@@ -29,6 +30,14 @@ export interface DurableResumeRuntime {
   prepareDurableResumable(
     workflowIdOrPrefix?: string,
     sessionDir?: string,
+  ): Promise<readonly ResumableWorkflowEntry[]>;
+  /**
+   * Targeted preparation for known workflow ids: reads only those workflows'
+   * durable state (O(ids)) instead of enumerating the entire durable
+   * directory. Optional so lightweight test doubles remain assignable.
+   */
+  prepareDurableResumableForIds?(
+    workflowIds: readonly string[],
   ): Promise<readonly ResumableWorkflowEntry[]>;
   prepareCompletedDurable?(): Promise<readonly ResumableWorkflowEntry[]>;
   openCompletedDurableWorkflow?(
@@ -91,6 +100,16 @@ export function createDurableResumeRuntime(
           workflowIdOrPrefix,
           sessionDir,
         );
+        return preparedCatalog;
+      } finally {
+        purgeSuppressedWorkflowRuns(backend, deps.store);
+      }
+    },
+    async prepareDurableResumableForIds(workflowIds) {
+      await deps.ensureReady();
+      const backend = getDurableBackend();
+      try {
+        preparedCatalog = await prepareTargetedDurableResumable(backend, workflowIds);
         return preparedCatalog;
       } finally {
         purgeSuppressedWorkflowRuns(backend, deps.store);

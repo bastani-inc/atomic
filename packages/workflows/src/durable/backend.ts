@@ -468,6 +468,11 @@ function isCompletedHandle(handle: DurableWorkflowHandle): boolean {
   return handle.status === "completed" && hasResumeProgress(handle);
 }
 
+/** Convert a durable workflow handle into a resume-catalog entry. */
+export function resumableEntryFromHandle(handle: DurableWorkflowHandle): ResumableWorkflowEntry {
+  return toResumableEntry(handle);
+}
+
 function toResumableEntry(handle: DurableWorkflowHandle): ResumableWorkflowEntry {
   return {
     workflowId: handle.workflowId,

@@ -11,14 +11,16 @@
  * cross-ref: issue #1498 — durable fallback when DBOS/Postgres is unavailable.
  */
 
-import { readdirSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import type { DurableCheckpoint, DurableWorkflowStatus } from "./types.js";
 import { InMemoryDurableBackend, type DurableWorkflowBackend } from "./backend.js";
 import type { PromptReservationToken } from "./prompt-reservation-state.js";
 import { mergeFileDurableRecords, readDurableFileState, type FileDurableRecord, type FileDurableState } from "./file-state.js";
-import { currentState, durableStateFileFor, emptyState, isPrunableTerminalStatus, stateMatchesWorkflowId, workflowIdFromStateFile } from "./file-backend-state.js";
+import { currentState, durableStateFileFor, emptyState, isPrunableTerminalStatus, stateMatchesWorkflowId } from "./file-backend-state.js";
 export { defaultDurableStateDir, durableStateFileFor } from "./file-backend-state.js";
-import { withDurableFileLock, writeDurableFileState } from "./file-lock.js";
+import { enqueueDurableFileWrite, withDurableFileLock, withDurableFileLockAsync, writeDurableFileState } from "./file-lock.js";
+import { invalidateDurableFileStateCache, readDurableFileStateCached } from "./file-backend-cache.js";
+import { durableLockDirs, durableStateFiles, readAllDurableRecords } from "./file-backend-scan.js";
 import {
   adjustFilePrompts,
   claimFilePrompt,
@@ -51,7 +53,7 @@ export class FileDurableBackend implements DurableWorkflowBackend {
   }
   private ensureLoaded(): void {
     if (this.loaded) return;
-    let result = readDurableFileState(this.filePath);
+    let result = readDurableFileStateCached(this.filePath);
     if (result.kind === "legacy" && this.expectedWorkflowId !== undefined
       && (result.workflowIds.length === 0 || result.workflowIds.some((id) => id !== this.expectedWorkflowId))) {
       this.unknownState = true;
@@ -105,32 +107,41 @@ export class FileDurableBackend implements DurableWorkflowBackend {
     ) => T,
   ): T {
     this.assertWritable();
-    return withDurableFileLock(this.filePath, () => {
-      const result = readDurableFileState(this.filePath);
-      if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
-        this.unknownState = true;
-        this.suppressedAll = true;
-        this.mem.reset();
-        throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
-      }
-      const records = result.kind === "current" ? result.state.workflows : [];
-      const deleted = new Set(
-        result.kind === "current" ? result.state.deletedWorkflowIds
-          : result.kind === "legacy" ? result.workflowIds
-            : [],
-      );
-      const latest = new InMemoryDurableBackend();
-      latest.importAll(records.filter((record) => !deleted.has(record.handle.workflowId)));
-      const reservations = promptReservationsFrom(records);
-      const value = mutate(latest, reservations, deleted);
-      const state = currentState(withPromptReservations(latest.exportAll(), reservations), deleted);
-      this.writeState(this.filePath, state);
-      this.replaceMirror(state);
-      return value;
-    });
+    return withDurableFileLock(this.filePath, () => this.mutateLocked(mutate));
+  }
+
+  /** Read-merge-write body. The caller must hold the durable file lock. */
+  private mutateLocked<T>(
+    mutate: (
+      latest: InMemoryDurableBackend,
+      reservations: FilePromptReservations,
+      deleted: Set<string>,
+    ) => T,
+  ): T {
+    const result = readDurableFileState(this.filePath);
+    if (result.kind === "unknown" || (result.kind === "current" && !this.matchesExpectedId(result.state))) {
+      this.unknownState = true;
+      this.suppressedAll = true;
+      this.mem.reset();
+      throw new Error(`Cannot overwrite unknown durable workflow state format: ${this.filePath}`);
+    }
+    const records = result.kind === "current" ? result.state.workflows : [];
+    const deleted = new Set(
+      result.kind === "current" ? result.state.deletedWorkflowIds
+        : result.kind === "legacy" ? result.workflowIds
+          : [],
+    );
+    const latest = new InMemoryDurableBackend();
+    latest.importAll(records.filter((record) => !deleted.has(record.handle.workflowId)));
+    const reservations = promptReservationsFrom(records);
+    const value = mutate(latest, reservations, deleted);
+    const state = currentState(withPromptReservations(latest.exportAll(), reservations), deleted);
+    this.writeState(this.filePath, state);
+    this.replaceMirror(state);
+    return value;
   }
   private refreshCompatibilityFromDisk(): void {
-    const result = readDurableFileState(this.filePath);
+    const result = readDurableFileStateCached(this.filePath);
     if (result.kind === "current" && this.matchesExpectedId(result.state)) {
       this.unknownState = false;
       this.suppressedAll = false;
@@ -155,24 +166,27 @@ export class FileDurableBackend implements DurableWorkflowBackend {
   }
   private refreshReplayState(): readonly FileDurableRecord[] {
     this.ensureLoaded();
-    return withDurableFileLock(this.filePath, () => {
-      const result = readDurableFileState(this.filePath);
-      if (result.kind === "current" && this.matchesExpectedId(result.state)) {
-        this.unknownState = false; this.suppressedAll = false;
-        this.replaceMirror(result.state);
-        return result.state.workflows;
-      }
-      if (result.kind === "missing") {
-        this.unknownState = false; this.suppressedAll = false;
-        this.replaceMirror(emptyState());
-      } else {
-        this.unknownState = true; this.suppressedAll = true;
-        this.mem.reset();
-      }
-      return [];
-    });
+    // Lock-free read: writes are atomic tmp-file + rename, so readers always
+    // see one consistent snapshot without spinning on the lock directory.
+    const result = readDurableFileStateCached(this.filePath);
+    if (result.kind === "current" && this.matchesExpectedId(result.state)) {
+      this.unknownState = false; this.suppressedAll = false;
+      this.replaceMirror(result.state);
+      return result.state.workflows;
+    }
+    if (result.kind === "missing") {
+      this.unknownState = false; this.suppressedAll = false;
+      this.replaceMirror(emptyState());
+    } else {
+      this.unknownState = true; this.suppressedAll = true;
+      this.mem.reset();
+    }
+    return [];
   }
+  /** Skip mirror rebuilds when the cached state object is already applied. */
+  private lastMirroredState: FileDurableState | undefined;
   private replaceMirror(state: FileDurableState): void {
+    if (this.lastMirroredState === state) return; this.lastMirroredState = state;
     this.mem.reset();
     this.deletedWorkflowIds.clear();
     state.deletedWorkflowIds.forEach((id) => this.deletedWorkflowIds.add(id));
@@ -198,6 +212,19 @@ export class FileDurableBackend implements DurableWorkflowBackend {
   recordCheckpoint(checkpoint: DurableCheckpoint): void {
     this.ensureLoaded();
     this.mutateFreshState((latest) => latest.recordCheckpoint(checkpoint));
+  }
+
+  /**
+   * Async checkpoint persistence: serialized per state file in-process and
+   * guarded by the event-loop-friendly async lock (no main-thread spinning).
+   */
+  async recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+    this.ensureLoaded();
+    this.assertWritable();
+    await enqueueDurableFileWrite(this.filePath, () =>
+      withDurableFileLockAsync(this.filePath, () => {
+        this.mutateLocked((latest) => latest.recordCheckpoint(checkpoint));
+      }));
   }
 
   getToolOutput(workflowId: string, argsHash: string) {
@@ -322,6 +349,7 @@ export class FileDurableBackend implements DurableWorkflowBackend {
   }
 
   reset(): void {
+    this.lastMirroredState = undefined;
     this.mem.reset();
     this.unknownState = false;
     this.suppressedAll = false;
@@ -344,6 +372,9 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   }
 
   recordCheckpoint(checkpoint: DurableCheckpoint): void { this.backendFor(checkpoint.workflowId).recordCheckpoint(checkpoint); }
+  recordCheckpointAsync(checkpoint: DurableCheckpoint): Promise<void> {
+    return this.backendFor(checkpoint.workflowId).recordCheckpointAsync(checkpoint);
+  }
   getToolOutput(workflowId: string, argsHash: string) { return this.backendFor(workflowId).getToolOutput(workflowId, argsHash); }
   getUiResponse(workflowId: string, promptHash: string) { return this.backendFor(workflowId).getUiResponse(workflowId, promptHash); }
   getStageOutput(workflowId: string, replayKey: string) { return this.backendFor(workflowId).getStageOutput(workflowId, replayKey); }
@@ -405,7 +436,7 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
 
   isWorkflowLoadable(workflowId: string): boolean {
     const filePath = durableStateFileFor(this.dir, workflowId);
-    const ownState = readDurableFileState(filePath);
+    const ownState = readDurableFileStateCached(filePath);
     if (ownState.kind === "current" && stateMatchesWorkflowId(ownState.state, workflowId)) {
       const loadable = this.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
       if (loadable) this.suppressedIds.delete(workflowId);
@@ -421,62 +452,40 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
   reset(): void {
     this.fileBackends.clear();
     this.suppressedIds.clear();
-    for (const filePath of this.stateFiles()) this.removeStateFile(filePath);
-    for (const lockPath of this.lockDirs()) rmSync(lockPath, { recursive: true, force: true });
+    for (const filePath of durableStateFiles(this.dir)) this.removeStateFile(filePath);
+    for (const lockPath of durableLockDirs(this.dir)) rmSync(lockPath, { recursive: true, force: true });
   }
 
   private backendFor(workflowId: string): FileDurableBackend {
     return this.backendForFile(durableStateFileFor(this.dir, workflowId), workflowId);
   }
 
+  /** Bound retained per-file backends; evicted ones are rebuilt from disk. */
+  private static readonly MAX_RETAINED_FILE_BACKENDS = 128;
+
   private backendForFile(filePath: string, expectedWorkflowId: string): FileDurableBackend {
     const existing = this.fileBackends.get(filePath);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) {
+      // Refresh LRU recency so active workflows are never evicted.
+      this.fileBackends.delete(filePath);
+      this.fileBackends.set(filePath, existing);
+      return existing;
+    }
     const backend = new FileDurableBackend(filePath, expectedWorkflowId);
     this.fileBackends.set(filePath, backend);
+    if (this.fileBackends.size > WorkflowFileDurableBackend.MAX_RETAINED_FILE_BACKENDS) {
+      const oldest = this.fileBackends.keys().next().value;
+      if (oldest !== undefined) this.fileBackends.delete(oldest);
+    }
     return backend;
   }
 
-  private stateFiles(): readonly string[] {
-    try {
-      return readdirSync(this.dir, { withFileTypes: true })
-        .filter((entry) => entry.isFile() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json"))
-        .map((entry) => `${this.dir}/${entry.name}`);
-    } catch { return []; }
-  }
-
-  private lockDirs(): readonly string[] {
-    try {
-      return readdirSync(this.dir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && entry.name.startsWith("workflow-") && entry.name.endsWith(".json.lock"))
-        .map((entry) => `${this.dir}/${entry.name}`);
-    } catch { return []; }
-  }
 
   private readAllRecords(): readonly FileDurableRecord[] {
-    return this.stateFiles().flatMap((filePath) => {
-      const workflowId = workflowIdFromStateFile(this.dir, filePath);
-      if (workflowId === undefined) return [];
-      const result = readDurableFileState(filePath);
-      const embeddedIds = result.kind === "current"
-        ? [...result.state.workflows.map((record) => record.handle.workflowId), ...result.state.deletedWorkflowIds]
-        : result.kind === "legacy" ? result.workflowIds : [];
-      const mismatched = embeddedIds.filter((id) => id !== workflowId);
-      if (mismatched.length > 0) {
-        this.suppressedIds.add(workflowId);
-        mismatched.forEach((id) => this.suppressedIds.add(id));
-        this.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
-        return [];
-      }
-      const backend = this.backendForFile(filePath, workflowId);
-      if (!backend.isWorkflowLoadable(workflowId)) {
-        this.suppressedIds.add(workflowId);
-        return [];
-      }
-      this.suppressedIds.delete(workflowId);
-      const current = readDurableFileState(filePath);
-      if (current.kind !== "current" || !stateMatchesWorkflowId(current.state, workflowId)) return [];
-      return current.state.workflows.filter((record) => !current.state.deletedWorkflowIds.includes(record.handle.workflowId));
+    return readAllDurableRecords({
+      dir: this.dir,
+      suppressedIds: this.suppressedIds,
+      backendForFile: (filePath, workflowId) => this.backendForFile(filePath, workflowId),
     });
   }
 
@@ -486,5 +495,6 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     this.fileBackends.delete(filePath);
     rmSync(filePath, { force: true });
     rmSync(`${filePath}.lock`, { recursive: true, force: true });
+    invalidateDurableFileStateCache(filePath);
   }
 }

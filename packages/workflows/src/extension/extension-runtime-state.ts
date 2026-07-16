@@ -154,6 +154,11 @@ export function createWorkflowExtensionRuntimeState(
     resumeDurableWorkflow(workflowIdOrPrefix, options) { return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options); },
     listDurableResumable(sessionDir) { return runtimeRef.current.listDurableResumable(sessionDir); },
     prepareDurableResumable(workflowIdOrPrefix, sessionDir) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix, sessionDir); },
+    prepareDurableResumableForIds(workflowIds) {
+      const targeted = runtimeRef.current.prepareDurableResumableForIds;
+      if (targeted !== undefined) return targeted.call(runtimeRef.current, workflowIds);
+      return runtimeRef.current.prepareDurableResumable();
+    },
     prepareCompletedDurable() {
       return runtimeRef.current.prepareCompletedDurable?.() ?? Promise.resolve([]);
     },

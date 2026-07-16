@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Debounced durable stage-session timing checkpoints into 30-second buckets. Duration-only progress no longer forces a full durable state read-merge-rewrite on every prompt/steer event; session identity changes (session id/file/start) still persist immediately, so cross-process resume continues from the same retained session with at most a 30-second loss of accumulated timing precision.
+
+### Fixed
+
+- Fixed a severe session-startup hang when `~/.atomic/workflow-durable` holds a large workflow history. `session_start` (and mid-run durable resume-shadow checks) now resolve only the workflow ids referenced by the current session via targeted per-workflow state reads instead of enumerating and parsing the entire durable directory — startup cost is now independent of total workflow history (measured: a seeded 5,000-run directory took ~155 ms on the old full-scan path vs ~0.4 ms on the targeted path; real-world directories with 100k+ runs previously stalled startup for 7–24 s).
+- Made `/workflow resume` dramatically cheaper on large histories: durable state files are now parsed through a stat-gated cache keyed by `(path, mtime, size)` so unchanged files are never re-read or re-parsed (the previous listing flow read every file up to 4 times per pass), replay lookups read lock-free against atomic rename snapshots instead of spinning on the lock directory, the per-command catalog is built once and reused instead of re-enumerating the directory per phase, and session-transcript scans cache extracted checkpoint rows per file with a fast pre-filter that skips JSON-parsing unrelated transcript lines.
+- Fixed TUI freezes at workflow stage transitions: the file durable backend now implements `recordCheckpointAsync`, so `ctx.tool`/`ctx.ui`/`ctx.stage` checkpoint writes serialize through an in-process per-file queue and an event-loop-friendly async file lock (25 ms `setTimeout` retries) instead of pinning the main thread in an `Atomics.wait` spin for up to 5 seconds under lock contention.
+- Bounded per-file backend and parse-cache retention (LRU) so listing a large durable directory no longer pins every parsed workflow state in memory for the life of the process.
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Added

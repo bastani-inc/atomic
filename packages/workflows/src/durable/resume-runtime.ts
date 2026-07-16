@@ -29,7 +29,7 @@ import type { RunOpts } from "../runs/foreground/executor-types.js";
 import { runDetached, type DetachedAccepted } from "../runs/background/runner.js";
 import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js";
 import { getDurableBackend } from "./factory.js";
-import type { DurableWorkflowBackend } from "./backend.js";
+import { resumableEntryFromHandle, type DurableWorkflowBackend } from "./backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
@@ -265,6 +265,37 @@ export function purgeSuppressedWorkflowRuns(backend: DurableWorkflowBackend, sto
     if (store.removeRun(run.id)) removed.push(run.id);
   }
   return removed;
+}
+
+/**
+ * Targeted durable preparation: resolve ONLY the given workflow ids by reading
+ * their per-workflow state files (O(ids)), never enumerating the durable
+ * directory or scanning session transcripts. Used by `session_start` and
+ * mid-run resume-shadow paths, which always know the concrete ids they need.
+ *
+ * cross-ref: startup performance — a full `~/.atomic/workflow-durable` scan on
+ * every session start scaled with total workflow history (seconds to minutes),
+ * not with the current session.
+ */
+export async function prepareTargetedDurableResumable(
+  backend: DurableWorkflowBackend,
+  workflowIds: readonly string[],
+): Promise<readonly ResumableWorkflowEntry[]> {
+  const entries: ResumableWorkflowEntry[] = [];
+  const seen = new Set<string>();
+  for (const workflowId of workflowIds) {
+    if (seen.has(workflowId)) continue;
+    seen.add(workflowId);
+    if (backend.hydrateWorkflow !== undefined) {
+      await backend.hydrateWorkflow(workflowId);
+    }
+    const handle = backend.getLoadableWorkflow !== undefined
+      ? backend.getLoadableWorkflow(workflowId)
+      : backend.isWorkflowLoadable(workflowId) ? backend.getWorkflow(workflowId) : undefined;
+    if (handle === undefined || !isDurableWorkflowResumable(handle)) continue;
+    entries.push(resumableEntryFromHandle(handle));
+  }
+  return entries;
 }
 
 export async function prepareRuntimeDurableResumable(

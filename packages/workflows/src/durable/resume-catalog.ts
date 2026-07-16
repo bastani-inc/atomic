@@ -15,7 +15,7 @@
  * resumable workflow sessions, analogous to the /resume session selector."
  */
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DurableCheckpointEntry, DurableWorkflowStatus, ResumableWorkflowEntry } from "./types.js";
 import type { DurableWorkflowBackend } from "./backend.js";
@@ -57,17 +57,52 @@ export function scanResumableWorkflows(sessionDir: string): readonly ResumableWo
   return [...entries.values()].filter(isDurableWorkflowResumable).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+interface TranscriptScanCacheEntry {
+  readonly mtimeMs: number;
+  readonly size: number;
+  readonly entries: readonly DurableCheckpointEntry[];
+}
+
+/**
+ * Stat-gated per-transcript cache: resume flows scan the same session files
+ * repeatedly within one process, and transcripts are append-mostly, so
+ * `(mtimeMs, size)` safely gates re-reads. Bounded so huge session dirs
+ * cannot pin unbounded parse results in heap.
+ */
+const transcriptScanCache = new Map<string, TranscriptScanCacheEntry>();
+const MAX_TRANSCRIPT_CACHE_ENTRIES = 4096;
+
 function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpointEntry[] {
+  let mtimeMs: number;
+  let size: number;
+  try {
+    const stat = statSync(filePath);
+    mtimeMs = stat.mtimeMs;
+    size = stat.size;
+  } catch {
+    transcriptScanCache.delete(filePath);
+    return [];
+  }
+  const cached = transcriptScanCache.get(filePath);
+  if (cached !== undefined && cached.mtimeMs === mtimeMs && cached.size === size) {
+    transcriptScanCache.delete(filePath);
+    transcriptScanCache.set(filePath, cached);
+    return cached.entries;
+  }
   let content: string;
   try {
     content = readFileSync(filePath, "utf-8");
   } catch {
+    transcriptScanCache.delete(filePath);
     return [];
   }
   const results: DurableCheckpointEntry[] = [];
   for (const line of content.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    // Cheap substring pre-filter: skip JSON.parse for the overwhelming
+    // majority of transcript lines that cannot be durable checkpoint rows.
+    if (!trimmed.includes("workflow.durable.checkpoint")) continue;
     try {
       const parsed = JSON.parse(trimmed) as Record<string, unknown>;
       const rawEntry = durablePayloadFromJsonlEntry(parsed);
@@ -78,6 +113,12 @@ function readDurableEntriesFromFile(filePath: string): readonly DurableCheckpoin
     } catch {
       // Skip malformed lines.
     }
+  }
+  transcriptScanCache.delete(filePath);
+  transcriptScanCache.set(filePath, { mtimeMs, size, entries: results });
+  if (transcriptScanCache.size > MAX_TRANSCRIPT_CACHE_ENTRIES) {
+    const oldest = transcriptScanCache.keys().next().value;
+    if (oldest !== undefined) transcriptScanCache.delete(oldest);
   }
   return results;
 }

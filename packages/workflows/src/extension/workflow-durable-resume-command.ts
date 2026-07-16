@@ -77,7 +77,9 @@ export async function handleDurableResume(
       target,
       [],
       catalog.resumable,
-      getDurableBackend().listCompletedWorkflows(),
+      // Reuse the catalog prepared above instead of re-enumerating the durable
+      // directory a second time for the same command invocation.
+      catalog.completed,
     );
     if (resolved.kind === "ambiguous") {
       fail(`Ambiguous workflow prefix "${target}" matches: ${formatMatches(resolved.matches)}`);

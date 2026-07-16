@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed session startup stalling on background-job hydration when the subagents run directory has accumulated many historical runs. Active-job hydration is now deferred off the `session_start` hot path and only eagerly reconciles runs touched within the last 7 days (older runs are skipped with two `stat` calls instead of a full per-run status read and reconciliation), so the jobs widget populates moments after startup without blocking first input.
+
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Fixed

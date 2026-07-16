@@ -94,7 +94,7 @@ describe("publish-release PR reconciliation", () => {
     assert.match(source, /Merge task skipped: the exact captured release PR was already externally merged/u);
     assert.match(source, /await ctx\.tool\(\s*"capture-source-head"/u);
     assert.doesNotMatch(source, /ctx\.tool\(\s*"verify-release-pr-merged"/u);
-    assert.match(source, /const mergeVerification = verifyReleasePrMerged/u);
+    assert.match(source, /const mergeVerification = await verifyReleasePrMerged/u);
     assert.match(source, /gh pr merge \$\{prReference\.prUrl\} --match-head-commit/u);
     assert.doesNotMatch(source, /ctx\.tool\(\s*"verify-release-pr-checks-passed"/u);
     assert.match(source, /const ciVerification = await verifyReleasePrChecksPassed/u);

@@ -197,7 +197,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		registrationFailureCleanups.push(() => maintenance.stop());
 		maintenance.startResultWatcherDeferred();
 		maintenance.primeExistingResultsDeferred();
-		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 		const executor = createSubagentExecutor({
 			pi,
 			state,
@@ -422,7 +422,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
 			if (!ctx.hasUI) return;
 			state.lastUiContext = ctx;
-			hydrateActiveJobs(ctx);
+			hydrateActiveJobsDeferred(ctx);
 			if (state.asyncJobs.size > 0) ensurePoller();
 		});
 		const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
@@ -435,7 +435,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
 			resetJobs(ctx);
-			hydrateActiveJobs(ctx);
+			hydrateActiveJobsDeferred(ctx);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			maintenance.primeExistingResultsDeferred();
 		};

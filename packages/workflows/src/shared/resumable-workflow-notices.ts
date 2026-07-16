@@ -13,12 +13,8 @@ function recordOrUndefined(value: unknown): Record<string, WorkflowSerializableV
     : undefined;
 }
 
-/** Return authoritative resumable workflow references cached in a session. */
-export function findResumableWorkflowNotices(
-  entries: readonly unknown[],
-  authoritativeCatalog: readonly ResumableWorkflowEntry[],
-): ResumableWorkflowNotice[] {
-  const authoritativeById = new Map(authoritativeCatalog.map((entry) => [entry.workflowId, entry]));
+/** Collect all workflow ids referenced by durable-checkpoint session entries. */
+export function collectSessionWorkflowIds(entries: readonly unknown[]): Set<string> {
   const sessionWorkflowIds = new Set<string>();
   for (const value of entries) {
     const entry = recordOrUndefined(value);
@@ -31,6 +27,16 @@ export function findResumableWorkflowNotices(
     const workflowId = payload?.["workflowId"];
     if (typeof workflowId === "string") sessionWorkflowIds.add(workflowId);
   }
+  return sessionWorkflowIds;
+}
+
+/** Return authoritative resumable workflow references cached in a session. */
+export function findResumableWorkflowNotices(
+  entries: readonly unknown[],
+  authoritativeCatalog: readonly ResumableWorkflowEntry[],
+): ResumableWorkflowNotice[] {
+  const authoritativeById = new Map(authoritativeCatalog.map((entry) => [entry.workflowId, entry]));
+  const sessionWorkflowIds = collectSessionWorkflowIds(entries);
 
   const notices: ResumableWorkflowNotice[] = [];
   for (const workflowId of sessionWorkflowIds) {

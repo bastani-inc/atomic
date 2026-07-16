@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed startup changelog and first-run onboarding notices being gated behind the deferred extension reload — and, when a prompt was typed immediately at launch, behind the entire first agent turn. They now render right after the input handler is ready (milliseconds after first paint), matching pi's behavior; the RESOURCES disclosure still waits for the actual extension load it reports on.
+- Reduced deferred extension-load stalls by yielding to the event loop between extension loads only when the current turn has actually run long (≥16 ms) instead of unconditionally — the previous unconditional yields cost a full macrotask turn (~100 ms each while the TUI is live) per bundled extension (~0.5 s of the deferred load).
+
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Added

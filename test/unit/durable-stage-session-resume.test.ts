@@ -93,19 +93,23 @@ describe("durable stage session resume", () => {
     assert.equal(backend.listResumableWorkflows().length, 1);
   });
 
-  test("refreshes accumulated active duration for repeated checkpoints of one session", async () => {
+  test("refreshes accumulated active duration across debounce buckets of one session", async () => {
     const replayKey = "stage:analyze:1";
     const stage = makeStage({ replayKey, sessionId: "sid-1", sessionFile: "/tmp/stage.jsonl" });
 
     assert.equal(await recordStageSessionCheckpoint(deps(1400), stage), true);
-    assert.equal(await recordStageSessionCheckpoint(deps(1750), stage), true);
+    // Duration-only changes inside one 30 s bucket are debounced: they no
+    // longer force a durable read-merge-rewrite on every prompt/steer event.
     assert.equal(await recordStageSessionCheckpoint(deps(1750), stage), false);
+    // Crossing the bucket boundary refreshes the accumulated duration.
+    assert.equal(await recordStageSessionCheckpoint(deps(32_000), stage), true);
+    assert.equal(await recordStageSessionCheckpoint(deps(32_000), stage), false);
 
     assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), {
       sessionId: "sid-1",
       sessionFile: "/tmp/stage.jsonl",
       startedAt: 1000,
-      durationMs: 750,
+      durationMs: 31_000,
     });
     assert.equal(backend.listCheckpoints(WORKFLOW_ID).length, 2);
   });
@@ -338,7 +342,9 @@ describe("durable stage session resume", () => {
     const replayKey = "stage:analyze:1";
     let clock = 1300;
     spyOn(Date, "now").mockImplementation(() => clock);
-    const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl" });
+    // startedAt straddles a 30 s debounce bucket boundary between the two
+    // checkpoints so the second (latest) duration is durably refreshed.
+    const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl", startedAt: -28_839 });
     await recordStageSessionCheckpoint(deps(1111), active);
     await recordStageSessionCheckpoint(deps(1222), active);
 
@@ -359,7 +365,7 @@ describe("durable stage session resume", () => {
 
     const activeHydration = stageCheckpointWithOutput(backend, WORKFLOW_ID, replayKey);
     assert.deepEqual(activeHydration?.output, { answer: "done" });
-    assert.equal(activeHydration?.durationMs, 222);
+    assert.equal(activeHydration?.durationMs, 30_061);
 
     clock = 1400;
     await recordStageCheckpoint(deps(), makeStage({
