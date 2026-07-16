@@ -1,6 +1,6 @@
 import type { AgentSession, AgentSessionEvent } from "../../../core/agent-session.ts";
 import {
-  VERBATIM_COMPACTION_PROMPT_VERSION,
+  VERBATIM_COMPACTION_FORMAT_FULL,
   VERBATIM_COMPACTION_STRATEGY,
   type VerbatimCompactionDetails,
   type VerbatimCompactionResult,
@@ -50,7 +50,7 @@ function isCompleteCompactionResult(result: VerbatimCompactionResult): boolean {
     typeof result.tokensBefore === "number" &&
     result.stats !== undefined &&
     result.parameters !== undefined &&
-    result.promptVersion === VERBATIM_COMPACTION_PROMPT_VERSION &&
+    result.promptVersion >= 3 &&
     (result.rung === "planned" || result.rung === "extension")
   );
 }
@@ -62,6 +62,7 @@ function boundaryMessageFromResult(
   const details = {
     strategy: VERBATIM_COMPACTION_STRATEGY,
     promptVersion: result.promptVersion,
+    ...(result.format === VERBATIM_COMPACTION_FORMAT_FULL ? { format: VERBATIM_COMPACTION_FORMAT_FULL } : {}),
     parameters: result.parameters,
     stats: result.stats,
     rung: result.rung,

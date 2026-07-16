@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createBranchSummaryMessage, createCustomMessage, createVerbatimCompactionMessage, normalizeMessageContent } from "./messages.ts";
 import { normalizeDerivedSessionEntries } from "./session-entry-normalization.ts";
+import { VERBATIM_COMPACTION_FORMAT_FULL } from "./compaction/compaction-types.js";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { CompactionEntry, FileEntry, SessionContext, SessionEntry, SessionTreeNode } from "./session-manager-types.ts";
 
@@ -103,12 +104,17 @@ export function buildSessionContext(
 
 	const boundaryIndex = path.findIndex((entry) => entry.id === boundary.id);
 	messages.push(createVerbatimCompactionMessage(boundary.summary, boundary.tokensBefore, boundary.timestamp, boundary.details));
-	const firstKeptIndex = path.findIndex(
-		(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
-	);
-	if (firstKeptIndex >= 0) {
-		for (let i = firstKeptIndex; i < boundaryIndex; i++) appendMessage(path[i]);
+	if (boundary.details?.format !== VERBATIM_COMPACTION_FORMAT_FULL) {
+		// Legacy hybrid: replay the structured kept tail from firstKeptEntryId.
+		const firstKeptIndex = path.findIndex(
+			(entry, index) => index < boundaryIndex && entry.id === boundary.firstKeptEntryId,
+		);
+		if (firstKeptIndex >= 0) {
+			for (let i = firstKeptIndex; i < boundaryIndex; i++) appendMessage(path[i]);
+		}
 	}
+	// v2 full-collapse (and every boundary): the compacted string plus only the
+	// entries appended strictly after the boundary. No pre-boundary tail for v2.
 	for (let i = boundaryIndex + 1; i < path.length; i++) appendMessage(path[i]);
 
 	return { messages, thinkingLevel, contextWindow, model };

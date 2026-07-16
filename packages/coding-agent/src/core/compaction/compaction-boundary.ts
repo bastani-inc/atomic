@@ -14,7 +14,7 @@ import {
 } from "./compaction-types.js";
 import { createNumberedRegion, serializeConversationForCompaction } from "./transcript-serialization.js";
 
-interface VisibleEntry {
+export interface VisibleEntry {
 	entry: SessionEntry;
 	index: number;
 	message: AgentMessage;
@@ -28,7 +28,12 @@ export function getKeptTailTokenEstimate(preparation: VerbatimCompactionPreparat
 		?? Math.max(0, preparation.tokensBefore - preparation.region.tokenEstimate);
 }
 
-function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
+/** Record the protected-tail token estimate for a preparation (0 for full-collapse). */
+export function setKeptTailTokenEstimate(preparation: VerbatimCompactionPreparation, tokens: number): void {
+	keptTailTokensByPreparation.set(preparation, tokens);
+}
+
+export function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") return entry.message;
 	if (entry.type === "custom_message") {
 		return createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp, entry.excludeFromContext);
@@ -39,13 +44,13 @@ function messageFromEntry(entry: SessionEntry): AgentMessage | undefined {
 	return undefined;
 }
 
-function activeBoundary(entry: SessionEntry): entry is CompactionEntry<VerbatimCompactionDetails> {
+export function activeBoundary(entry: SessionEntry): entry is CompactionEntry<VerbatimCompactionDetails> {
 	if (entry.type !== "compaction") return false;
 	const details = (entry as CompactionEntry<{ strategy?: string }>).details;
 	return details?.strategy === VERBATIM_COMPACTION_STRATEGY;
 }
 
-function visibleEntries(entries: SessionEntry[], start = 0): VisibleEntry[] {
+export function visibleEntries(entries: SessionEntry[], start = 0): VisibleEntry[] {
 	const visible: VisibleEntry[] = [];
 	for (let index = start; index < entries.length; index++) {
 		const entry = entries[index];
@@ -74,7 +79,7 @@ export function autoDetectCompactionQuery(entries: readonly SessionEntry[]): str
 	return COMPACTION_AUTO_QUERY;
 }
 
-function latestActiveBoundary(entries: SessionEntry[]): { entry: CompactionEntry<VerbatimCompactionDetails>; index: number } | undefined {
+export function latestActiveBoundary(entries: SessionEntry[]): { entry: CompactionEntry<VerbatimCompactionDetails>; index: number } | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
 		if (activeBoundary(entry)) return { entry, index };

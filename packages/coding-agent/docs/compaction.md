@@ -52,6 +52,12 @@ Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines
 
 Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
 
+### Full-context collapse (v2)
+
+New compaction boundaries use the additive **full-collapse** format (`details.format: "full-collapse"`, `promptVersion: 4`). Instead of a compacted string plus a replayed structured tail, the entire current context — the prior compacted string, if any, plus every context-visible message since it — is serialized into one region and collapsed into a single verbatim string. The model returns the retained transcript lines directly; the host accepts the result only when it is an ordered, byte-identical subsequence of the serialized source that retains every protected line and deletes at least one useful line. Rewrites, reordering, duplicated lines, or a dropped protected line are rejected, and the persisted string is always host-reconstructed with canonical `(filtered N lines)` markers rather than the raw model text.
+
+There is no structural protection for user turns, assistant roles, tool calls, or call/result pairing beyond the final `preserve_recent` messages; every other serialized line is ordinary deletable content, and there is no user-turn `selectCut` widening. Because the whole context collapses into text, repeated compaction within one user turn keeps working: each run folds the previous string plus everything appended after it into a new boundary. Legacy boundaries (without `details.format`) keep their previous string-plus-kept-tail behavior unchanged.
+
 ## Parameters
 
 The effective parameters appear in extension events and successful results:
@@ -59,10 +65,10 @@ The effective parameters appear in extension events and successful results:
 | Parameter | Default | Meaning |
 |---|---:|---|
 | `compression_ratio` | `0.5` | Fraction of compactable **lines to keep**, not a token ratio |
-| `preserve_recent` | `2` | Number of recent context-visible messages protected client-side; the cut widens backward to a user-turn start |
+| `preserve_recent` | `2` | Number of trailing context-visible messages retained byte-identically inside the compacted string; no user-turn widening for new full-collapse writes |
 | `query` | Last visible user message | Relevance focus for deciding which older lines to retain |
 
-`preserve_recent` never leaves an assistant message or tool result at the start of the kept tail. Even when it is `0`, Atomic keeps the final logical turn. If `query` is absent, Atomic derives it from the last visible user message.
+For v2 full-collapse, `preserve_recent` designates exactly the last N context-visible messages, which are protected as byte-identical lines inside the single compacted string; the region is never widened to a user-turn start. When it is `0`, no lines are protected. If `query` is absent, Atomic derives it from the last visible user message.
 
 Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`:
 
@@ -91,6 +97,8 @@ The in-flight/final logical turn is outside the compactable region. Cancellation
 ## One-pass planning and failure behavior
 
 Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
+
+For v2 full-collapse compaction the request returns the retained transcript **as a string** rather than deletion records: the model reproduces the numbered region verbatim, deleting only low-value lines, and the host validates the returned text as an ordered byte-identical subsequence that retains every protected line before mechanically rebuilding the canonical markers. (Reusing the provider's already-cached conversation prefix for this request is a separate optimization tracked independently; today the collapse request is sent on its own.)
 
 The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
 
@@ -141,11 +149,12 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
   "parentId": "m9",
   "timestamp": "2026-07-13T10:00:00.000Z",
   "summary": "[User]: fix the failing test\n(filtered 42 lines)\n[Assistant]: Fixed.",
-  "firstKeptEntryId": "m7",
+  "firstKeptEntryId": "m9",
   "tokensBefore": 51234,
   "details": {
     "strategy": "verbatim-lines",
-    "promptVersion": 3,
+    "promptVersion": 4,
+    "format": "full-collapse",
     "rung": "planned",
     "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the failing test"},
     "stats": {"linesBefore": 812, "linesDeleted": 417, "linesKept": 395, "rangeCount": 63, "tokensBefore": 51234, "tokensAfter": 24980, "percentReduction": 51.2}
@@ -153,7 +162,7 @@ A successful run appends the existing pi-style `type:"compaction"` entry shape:
 }
 ```
 
-A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`, followed by the original messages beginning at `firstKeptEntryId`. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
+A `compaction` entry is active only when `details.strategy === "verbatim-lines"`. On rebuild, Atomic emits a visible custom-role boundary message containing the durable `summary`. For v2 full-collapse entries (`details.format === "full-collapse"`) the boundary is followed only by the entries appended strictly after it — no pre-boundary tail is replayed, and `firstKeptEntryId` is a self-anchor (the boundary's parent leaf) that reconstruction ignores. Legacy entries (no `details.format`) still replay the original messages beginning at `firstKeptEntryId`. The boundary is converted to a user-role provider message and shown in the TUI as a collapsible compaction card.
 
 Resume does not rerun planning or re-derive deletions: the exact compacted string is already in JSONL. Legacy `context_compaction` logical-deletion records and old `compaction` summary records without the discriminator are inert archival data. Their historical omissions are not reapplied when an old session resumes.
 

@@ -91,7 +91,7 @@ describe("verbatim compaction extension hooks", () => {
 	])("does not persist a compaction entry after one %s planner response", async (_label, response) => {
 		const faux = createFauxStreamFn([response]);
 		create(extension(() => undefined), faux.streamFn);
-		await expect(session.compact()).rejects.toThrow(/Compaction range planning/);
+		await expect(session.compact()).rejects.toThrow(/Compact(ed output|ion range planning)/);
 		expect(faux.state.callCount).toBe(1);
 		expect(session.sessionManager.getEntries().some((entry) => entry.type === "compaction")).toBe(false);
 	});

@@ -1,7 +1,13 @@
 import type { CompactionSettings } from "./compaction.js";
 
-export const VERBATIM_COMPACTION_PROMPT_VERSION = 3 as const;
+export const VERBATIM_COMPACTION_PROMPT_VERSION = 4 as const;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
+/**
+ * Discriminates the additive v2 "full-collapse" persisted format. Present only on
+ * boundaries written by the full-context collapse path; absent on legacy hybrid
+ * (`firstKeptEntryId` kept-tail) boundaries.
+ */
+export const VERBATIM_COMPACTION_FORMAT_FULL = "full-collapse" as const;
 
 export const DEFAULT_COMPRESSION_RATIO = 0.5;
 export const DEFAULT_PRESERVE_RECENT = 2;
@@ -60,7 +66,10 @@ export interface VerbatimCompactionStats {
 
 export interface VerbatimCompactionDetails {
 	strategy: typeof VERBATIM_COMPACTION_STRATEGY;
-	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
+	/** 3 = legacy hybrid, 4 = full-collapse. Relaxed to `number` so both coexist. */
+	promptVersion: number;
+	/** Present only on v2 full-collapse boundaries; absent => legacy hybrid. */
+	format?: typeof VERBATIM_COMPACTION_FORMAT_FULL;
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
 	rung: "planned" | "extension";
@@ -77,13 +86,28 @@ export interface VerbatimCompactionPreparation {
 	settings: CompactionSettings;
 }
 
+/**
+ * Preparation for a v2 full-collapse boundary. Structurally a
+ * `VerbatimCompactionPreparation` (so the `session_before_compact` extension
+ * surface is unchanged) with the collapse discriminator and the count of
+ * mandatory verbatim trailing messages. `keptTailMessageCount` is always 0 and
+ * `firstKeptEntryId` is a self-anchor (the boundary's parent leaf), ignored on
+ * reconstruction.
+ */
+export interface FullCollapsePreparation extends VerbatimCompactionPreparation {
+	format: typeof VERBATIM_COMPACTION_FORMAT_FULL;
+	protectedMessageCount: number;
+}
+
 export interface VerbatimCompactionResult {
 	compactedText: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
 	stats: VerbatimCompactionStats;
 	parameters: VerbatimCompactionParameters;
-	promptVersion: typeof VERBATIM_COMPACTION_PROMPT_VERSION;
+	promptVersion: number;
+	/** Present only on v2 full-collapse results; absent => legacy hybrid. */
+	format?: typeof VERBATIM_COMPACTION_FORMAT_FULL;
 	rung: VerbatimCompactionDetails["rung"];
 	backupPath?: string;
 }

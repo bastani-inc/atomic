@@ -1,9 +1,10 @@
 import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { planFullCollapse } from "./collapse-planner.js";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
 import { planDeletedLineRanges } from "./range-planner.js";
-import type { CompactedTranscript, VerbatimCompactionPreparation } from "./compaction-types.js";
+import type { CompactedTranscript, FullCollapsePreparation, VerbatimCompactionPreparation } from "./compaction-types.js";
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
@@ -64,4 +65,50 @@ export async function runVerbatimCompaction(
 		reconstructCompactedTranscript(preparation.region, validateDeletedRanges(raw, preparation.region)),
 		preparation,
 	);
+}
+
+/** Re-base a full-collapse transcript's stats onto the whole prior context (no kept tail). */
+function withFullCollapseStats(
+	result: CompactedTranscript,
+	preparation: FullCollapsePreparation,
+): CompactionRungResult {
+	const tokensAfter = result.stats.tokensAfter;
+	const percentReduction = preparation.tokensBefore === 0
+		? 0
+		: Math.round((1 - tokensAfter / preparation.tokensBefore) * 1000) / 10;
+	return {
+		...result,
+		rung: "planned",
+		stats: { ...result.stats, tokensBefore: preparation.tokensBefore, tokensAfter, percentReduction },
+	};
+}
+
+/**
+ * Execute one whole-context v2 collapse: the model returns a compacted string
+ * that the host validates as an ordered byte-identical subsequence, then rebuilds
+ * mechanically with canonical elision markers.
+ */
+export async function runFullCollapseCompaction(
+	preparation: FullCollapsePreparation,
+	model: Model<Api>,
+	apiKey: string,
+	headers: Record<string, string> | undefined,
+	signal: AbortSignal | undefined,
+	thinkingLevel: ThinkingLevel | undefined,
+	options: CompactionPlanOptions,
+): Promise<CompactionRungResult> {
+	if (signal?.aborted) throw new Error("Compaction cancelled");
+	const validated = await planFullCollapse(
+		preparation.region,
+		preparation.parameters,
+		model,
+		{ apiKey, headers },
+		signal,
+		thinkingLevel,
+		preparation.settings.reserveTokens,
+		targetKeepLines(preparation),
+		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath },
+	);
+	if (signal?.aborted) throw new Error("Compaction cancelled");
+	return withFullCollapseStats(reconstructCompactedTranscript(preparation.region, validated), preparation);
 }

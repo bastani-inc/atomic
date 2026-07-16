@@ -236,7 +236,7 @@ Emitted when the user selects a supported context-window size for the active mod
 
 ### CompactionEntry
 
-Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. `firstKeptEntryId` points to the first ordinary message retained after the boundary.
+Created by `/compact`, RPC `compact`, and automatic compaction. The `summary` field contains the mechanically reconstructed verbatim transcript string, not generated summary prose. New boundaries use the additive **full-collapse** format (`details.format: "full-collapse"`, `promptVersion: 4`), where the whole current context collapses into the string; for those, `firstKeptEntryId` is a self-anchor (the boundary's parent leaf) and reconstruction replays only entries appended after the boundary. Legacy boundaries omit `details.format` and `firstKeptEntryId` points to the first ordinary message retained after the boundary.
 
 An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 
@@ -244,7 +244,7 @@ An entry is active only when `details.strategy` is exactly `"verbatim-lines"`:
 {"type":"compaction","id":"c1","parentId":"m9","timestamp":"2026-07-13T10:00:00.000Z","summary":"[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.","firstKeptEntryId":"m7","tokensBefore":51234,"details":{"strategy":"verbatim-lines","promptVersion":2,"rung":"standard","parameters":{"compression_ratio":0.5,"preserve_recent":2,"query":"fix the test"},"stats":{"linesBefore":812,"linesDeleted":417,"linesKept":395,"rangeCount":63,"tokensBefore":51234,"tokensAfter":24980,"percentReduction":51.2}}}
 ```
 
-On rebuild, Atomic emits the durable `summary` as a synthesized visible custom message, then emits original entries beginning at `firstKeptEntryId`. This exact string survives resume without rerunning a planner. `details.rung` is `"standard"`, `"critical"`, `"deterministic"`, or `"extension"`; `details.backupPath` is optional.
+On rebuild, Atomic emits the durable `summary` as a synthesized visible custom message. For full-collapse entries it then emits only entries appended strictly after the boundary (no pre-boundary tail). Legacy entries emit original entries beginning at `firstKeptEntryId`. This exact string survives resume without rerunning a planner. `details.rung` is `"planned"` or `"extension"` (older sessions may carry `"standard"`, `"critical"`, or `"deterministic"`); `details.backupPath` is optional.
 
 Historical `compaction` records without `details.strategy: "verbatim-lines"` are retired summary-compaction records. They remain parseable and visible to audit/export tools but are inert in active LLM context.
 
@@ -332,8 +332,9 @@ Entries form a tree:
 `buildSessionContext()` walks the active branch from root to leaf and replays model, thinking-level, and context-window changes. It selects the latest `compaction` entry whose `details.strategy` is `"verbatim-lines"`.
 
 - With no active boundary, normal message, custom-message, and branch-summary entries are emitted verbatim.
-- With a boundary, Atomic emits its durable string as a custom-role `customType:"compaction"` message, then original messages from `firstKeptEntryId` onward, including messages appended after the boundary.
-- If a corrupt/foreign boundary's `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
+- With a full-collapse boundary (`details.format === "full-collapse"`), Atomic emits its durable string as a custom-role `customType:"compaction"` message, then only the entries appended strictly after the boundary. No pre-boundary tail is replayed and `firstKeptEntryId` is ignored.
+- With a legacy boundary (no `details.format`), Atomic emits the durable string, then original messages from `firstKeptEntryId` onward, including messages appended after the boundary.
+- If a legacy boundary's `firstKeptEntryId` is absent, Atomic emits the boundary followed by post-boundary messages rather than resurrecting all older content.
 - Legacy `context_compaction` entries and non-verbatim `compaction` entries are skipped as inert archival records.
 ## Parsing Example
 

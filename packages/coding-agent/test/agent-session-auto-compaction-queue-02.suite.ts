@@ -24,6 +24,7 @@ const compactionMocks = vi.hoisted(() => ({
 vi.mock("../src/core/compaction/index.js", () => ({
 	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
+	VERBATIM_COMPACTION_FORMAT_FULL: "full-collapse",
 	calculateContextTokens: (usage: {
 		input: number;
 		output: number;
@@ -33,6 +34,7 @@ vi.mock("../src/core/compaction/index.js", () => ({
 	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
+	runFullCollapseCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: (
 		messages: Array<{
 			role: string;
@@ -56,6 +58,13 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		firstKeptEntryId: entries[0].id,
 		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
+	prepareFullCollapseBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		format: "full-collapse", firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 0, protectedMessageCount: 0, tokensBefore: 100,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
 	}) : undefined,

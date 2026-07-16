@@ -158,4 +158,59 @@ describe("verbatim compaction persistence and resume", () => {
 		manager.appendMessage(userMsg("hello"));
 		expect(() => manager.appendCompaction("text", "missing", 1, details())).toThrow("Entry missing not found");
 	});
+
+	function fullDetails(): VerbatimCompactionDetails {
+		return { ...details("planned"), promptVersion: 4, format: "full-collapse" };
+	}
+
+	it("reconstructs a v2 full-collapse boundary as the string plus post-boundary entries only", () => {
+		const before = messageEntry("m1", null, "folded user");
+		const anchor = messageEntry("m2", "m1", "folded assistant");
+		const boundary: SessionEntry = {
+			type: "compaction", id: "c1", parentId: "m2", timestamp: "2026-01-01T00:00:02.000Z",
+			summary: "[User]: folded user\n(filtered 4 lines)", firstKeptEntryId: "m2", tokensBefore: 100, details: fullDetails(),
+		};
+		const after = messageEntry("m3", "c1", "after boundary");
+		const messages = buildSessionContext([before, anchor, boundary, after]).messages;
+		// v2: no kept tail is replayed even though firstKeptEntryId ("m2") is on the path.
+		expect(messages).toHaveLength(2);
+		const serialized = JSON.stringify(convertToLlm(messages));
+		expect(serialized).toContain("[User]: folded user");
+		expect(serialized).not.toContain("folded assistant");
+		expect(serialized).toContain("after boundary");
+	});
+
+	it("keeps legacy (format-absent) boundaries replaying their kept tail", () => {
+		const root = messageEntry("m1", null, "kept root");
+		const legacy: SessionEntry = {
+			type: "compaction", id: "c1", parentId: "m1", timestamp: "2026-01-01T00:00:01.000Z",
+			summary: "[User]: durable", firstKeptEntryId: "m1", tokensBefore: 20, details: details(),
+		};
+		const after = messageEntry("m2", "c1", "after legacy");
+		const serialized = JSON.stringify(buildSessionContext([root, legacy, after]).messages);
+		// Legacy hybrid still replays the structured kept tail from firstKeptEntryId.
+		expect(serialized).toContain("kept root");
+		expect(serialized).toContain("after legacy");
+	});
+
+	it("navigates branches through and around a v2 boundary and resumes byte-identically", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-full-collapse-branch-"));
+		tempDirs.push(cwd);
+		const manager = SessionManager.create(cwd, cwd);
+		manager.appendMessage(userMsg("origin user"));
+		const anchor = manager.appendMessage(assistantMsg("origin answer"));
+		manager.appendCompaction("[User]: origin user\n(filtered 6 lines)\n[Assistant]: origin answer", anchor, 100, fullDetails());
+		manager.appendMessage(userMsg("through branch"));
+
+		const throughContext = convertToLlm(manager.buildSessionContext().messages);
+		expect(JSON.stringify(throughContext)).toContain("through branch");
+
+		// A branch rooted before the boundary reconstructs from raw messages (no boundary on its path).
+		const aroundContext = convertToLlm(buildSessionContext(manager.getEntries(), anchor).messages);
+		expect(JSON.stringify(aroundContext)).toContain("origin answer");
+		expect(JSON.stringify(aroundContext)).not.toContain("filtered 6 lines");
+
+		const resumed = SessionManager.open(manager.getSessionFile()!);
+		expect(convertToLlm(resumed.buildSessionContext().messages)).toEqual(throughContext);
+	});
 });

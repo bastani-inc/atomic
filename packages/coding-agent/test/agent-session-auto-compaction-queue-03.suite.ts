@@ -27,16 +27,25 @@ const compactionMocks = vi.hoisted(() => ({
 vi.mock("../src/core/compaction/index.js", () => ({
 	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
+	VERBATIM_COMPACTION_FORMAT_FULL: "full-collapse",
 	calculateContextTokens: (usage: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number }) =>
 		usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
+	runFullCollapseCompaction: compactionMocks.runVerbatimCompaction,
 	estimateContextTokens: compactionMocks.estimateContextTokens,
 	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
 	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
 		firstKeptEntryId: entries[0].id,
 		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 190_000,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
+	prepareFullCollapseBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		format: "full-collapse", firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 0, protectedMessageCount: 0, tokensBefore: 190_000,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
 	}) : undefined,
@@ -347,7 +356,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
-			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
+			const last = session.agent.state.messages.at(-1);
+			expect(last?.role === "user" || (last?.role === "custom" && last.customType === "compaction")).toBe(true);
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi
@@ -376,7 +386,8 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		sessionManager.appendMessage(assistant);
 		session.agent.state.messages = [userMessage, assistant];
 		const continueSpy = vi.spyOn(session.agent, "continue").mockImplementation(async () => {
-			expect(session.agent.state.messages.at(-1)?.role).toBe("user");
+			const last = session.agent.state.messages.at(-1);
+			expect(last?.role === "user" || (last?.role === "custom" && last.customType === "compaction")).toBe(true);
 		});
 		const waitSpy = vi.spyOn(session, "waitForRetry").mockResolvedValue();
 		const drainSpy = vi

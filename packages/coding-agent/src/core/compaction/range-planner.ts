@@ -126,7 +126,7 @@ Soft rules:
 - After ranking every line, apply one global threshold and output self-contained records in the confidence order above.`;
 }
 
-function responseText(message: AssistantMessage): string {
+export function responseText(message: AssistantMessage): string {
 	// Text blocks are provider segments, not implicit record delimiters. Only a
 	// newline actually emitted inside a block may terminate a recoverable record.
 	return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
@@ -140,7 +140,7 @@ function providerErrorMessage(model: Model<Api>, errorMessage: string): Assistan
 	};
 }
 
-function outputTokenLimit(model: Model<Api>, reserveTokens: number): number {
+export function outputTokenLimit(model: Model<Api>, reserveTokens: number): number {
 	return Math.min(
 		Math.floor(0.8 * reserveTokens),
 		model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY,

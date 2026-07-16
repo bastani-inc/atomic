@@ -14,9 +14,15 @@ import { createTestResourceLoader } from "./utilities.ts";
 vi.mock("../src/core/compaction/index.js", () => ({
 	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
 	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
+	VERBATIM_COMPACTION_FORMAT_FULL: "full-collapse",
 	calculateContextTokens: () => 0,
 	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
 	runVerbatimCompaction: async () => ({
+		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
+		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
+		rung: "planned" as const,
+	}),
+	runFullCollapseCompaction: async () => ({
 		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
 		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
 		rung: "planned" as const,
@@ -27,6 +33,13 @@ vi.mock("../src/core/compaction/index.js", () => ({
 		firstKeptEntryId: entries[0].id,
 		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
 		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
+		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
+		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
+	}) : undefined,
+	prepareFullCollapseBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
+		format: "full-collapse", firstKeptEntryId: entries[0].id,
+		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
+		regionEntryIds: [entries[0].id], keptTailMessageCount: 0, protectedMessageCount: 0, tokensBefore: 100,
 		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
 		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
 	}) : undefined,

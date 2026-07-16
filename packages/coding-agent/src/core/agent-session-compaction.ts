@@ -2,8 +2,9 @@ import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApplyOptions } from "./agent-session-methods.ts";
 import {
 	getKeptTailTokenEstimate,
-	prepareCompactionBoundary,
-	runVerbatimCompaction,
+	prepareFullCollapseBoundary,
+	runFullCollapseCompaction,
+	VERBATIM_COMPACTION_FORMAT_FULL,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
 	type CompactionPlanOptions,
@@ -65,7 +66,7 @@ export async function _applyVerbatimCompaction(
 	const model = this.model;
 	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings();
-	const preparation = prepareCompactionBoundary(pathEntries, settings, {
+	const preparation = prepareFullCollapseBoundary(pathEntries, settings, {
 		...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
 		...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 		...(options.query === undefined ? {} : { query: options.query }),
@@ -105,7 +106,7 @@ export async function _applyVerbatimCompaction(
 	if (!compacted) {
 		const auth = await options.resolvePlannerAuth();
 		if (!auth) throw new Error("Compaction provider authentication is unavailable");
-		compacted = await runVerbatimCompaction(
+		compacted = await runFullCollapseCompaction(
 			preparation,
 			model,
 			auth.apiKey,
@@ -121,6 +122,7 @@ export async function _applyVerbatimCompaction(
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
+		format: VERBATIM_COMPACTION_FORMAT_FULL,
 		parameters: preparation.parameters,
 		stats: compacted.stats,
 		rung: compacted.rung,
@@ -135,6 +137,7 @@ export async function _applyVerbatimCompaction(
 		stats: compacted.stats,
 		parameters: preparation.parameters,
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
+		format: VERBATIM_COMPACTION_FORMAT_FULL,
 		rung: compacted.rung,
 		...(backupPath ? { backupPath } : {}),
 	};
