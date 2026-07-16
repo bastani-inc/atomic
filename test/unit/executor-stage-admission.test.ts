@@ -96,12 +96,14 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 			const orchestrationContext = createOptions?.orchestrationContext;
 			assert.ok(orchestrationContext);
 			surface._orchestrationContext = orchestrationContext;
-			assert.equal(admitWorkflowStageInbound({ orchestrationContext }, () => {
+			const admitted = admitWorkflowStageInbound({ orchestrationContext }, () => {
 				void pi.sendMessage(
 					{ customType: "intercom_message", content: "reviewer arrived", display: true, details: undefined },
 					{ triggerTurn: true, stageAdmissionKey: "intercom:message-1" },
 				);
-			}), true);
+			});
+			assert.ok(admitted);
+			await admitted;
 		},
 		getLastAssistantText: () => lastAssistantText,
 		async closeWorkflowStageGeneration() { await closeWorkflowStageGeneration.call(surface as never); },

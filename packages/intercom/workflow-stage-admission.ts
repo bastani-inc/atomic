@@ -6,9 +6,12 @@ import type { ExtensionContext } from "@bastani/atomic";
  */
 export function admitWorkflowStageInbound(
 	ctx: Pick<ExtensionContext, "orchestrationContext">,
-	deliver: () => void,
-): boolean {
+	deliver: () => void | Promise<void>,
+): false | Promise<void> {
 	if (ctx.orchestrationContext?.kind !== "workflow-stage") return false;
-	deliver();
-	return true;
+	try {
+		return Promise.resolve(deliver());
+	} catch (error) {
+		return Promise.reject(error);
+	}
 }

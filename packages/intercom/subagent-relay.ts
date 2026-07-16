@@ -21,20 +21,40 @@ interface SubagentRelayDeps {
   runtimeContext(): ExtensionContext | null;
   getLiveContext(ctx?: ExtensionContext | null, generation?: number): ExtensionContext | null;
   currentSessionTargetMatches(to: string, resolvedTo?: string | null, activeClient?: IntercomClient): boolean;
-  sendIncomingMessage(entry: { from: SessionInfo; message: Message; bodyText: string }, delivery: "trigger" | "followUp", generation?: number): void;
+  sendIncomingMessage(entry: { from: SessionInfo; message: Message; bodyText: string }, delivery: "trigger" | "followUp", generation?: number): unknown;
   ensureConnected(reason: "background"): Promise<IntercomClient>;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+}
+
+async function dispatchRelayFallback(
+  pi: ExtensionAPI,
+  prefix: Array<{ customType: string; content: string; display: boolean; details?: unknown }>,
+  terminalMessage: { customType: string; content: string; display: boolean; details?: unknown },
+): Promise<void> {
+  let delivered = 0;
+  try {
+    for (const message of prefix) {
+      await pi.sendMessage(message, { deliverAs: "steer" });
+      delivered += 1;
+    }
+    await pi.sendMessage(terminalMessage, { triggerTurn: true });
+  } catch (error) {
+    const failure = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+    Object.assign(failure, { terminalPreludeDelivered: delivered });
+    throw failure;
+  }
 }
 
 export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps): void {
   const { getLiveContext, currentSessionTargetMatches, sendIncomingMessage, ensureConnected, resolveSessionTarget } = deps;
   const localDeliveries = new DeliveredMessageCache();
+  const localDeliveriesInFlight = new Map<string, { signature: string; completion: Promise<void> }>();
   function deliverLocalSubagentRelayMessage(
     sender: "subagent-control" | "subagent-result",
     status: string,
     messageText: string,
     terminalBarrier?: { runId: string; terminalId?: string; sourceSessionTargets: string[] },
-  ): void {
+  ): Promise<void> {
     const now = Date.now();
     const entry = {
       from: {
@@ -45,12 +65,14 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
       bodyText: messageText,
     };
     let dispatched = false;
+    let completion: Promise<void> | undefined;
     if (terminalBarrier) {
       const payload = {
         ...terminalBarrier,
         terminalAt: now,
         source: "result-relay" as const,
         dispatch: (prefix: Array<{ customType: string; content: string; display: boolean; details?: unknown }>) => {
+          dispatched = true;
           const terminalMessage = {
             customType: "intercom_message",
             content: `**📨 From ${sender}** (${entry.from.cwd})\n\n${messageText}`,
@@ -58,18 +80,19 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
             details: entry,
           };
           if (typeof pi.sendMessages === "function") {
-            pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true });
-          } else {
-            for (const message of prefix) pi.sendMessage(message, { deliverAs: "steer" });
-            pi.sendMessage(terminalMessage, { triggerTurn: true });
+            return pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true });
           }
-          dispatched = true;
+          return dispatchRelayFallback(pi, prefix, terminalMessage);
         },
       };
+      Object.defineProperty(payload, "terminalOwner", { value: pi });
       pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
       emitGlobalTerminalOrderingBarrier(payload);
+      completion = (payload as typeof payload & { completion?: Promise<void> }).completion;
     }
-    if (!dispatched) sendIncomingMessage(entry, "trigger");
+    if (completion) return completion;
+    if (!dispatched) return Promise.resolve(sendIncomingMessage(entry, "trigger")).then(() => {});
+    return Promise.resolve();
   }
   function recordSubagentDeliveryError(entryType: string, to: string, message: string, error: unknown): void {
     pi.appendEntry(entryType, {
@@ -90,10 +113,10 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
   function acknowledgeResult(options: { acknowledge?: boolean }, requestId: string | undefined, delivered: boolean, error?: unknown): void {
     if (options.acknowledge) emitResultDelivery(requestId, delivered, error);
   }
-  function deliverLocal(
+  async function deliverLocal(
     parsed: ReturnType<typeof parseSubagentIntercomPayload> & {},
     options: { sender: "subagent-control" | "subagent-result"; status: string; errorEntryType: string; acknowledge?: boolean; terminalBarrier?: { runId: string; terminalId?: string; sourceSessionTargets: string[] } },
-  ): void {
+  ): Promise<void> {
     try {
       const signature = buildSendSignature(parsed.to, { text: parsed.message });
       const match = parsed.requestId ? localDeliveries.lookup(parsed.requestId, signature) : "miss";
@@ -101,7 +124,27 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         throw new Error(`Intercom message ID '${parsed.requestId}' was already delivered with a different target or payload`);
       }
       if (match === "miss") {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier);
+        const pending = parsed.requestId ? localDeliveriesInFlight.get(parsed.requestId) : undefined;
+        if (pending && pending.signature !== signature) {
+          await pending.completion;
+          throw new Error(`Intercom message ID '${parsed.requestId}' was already delivered with a different target or payload`);
+        }
+        let delivery = pending?.completion;
+        if (!delivery && parsed.requestId) {
+          const deferred = Promise.withResolvers<void>();
+          delivery = deferred.promise;
+          void delivery.catch(() => {});
+          localDeliveriesInFlight.set(parsed.requestId, { signature, completion: delivery });
+          try {
+            void deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier).then(deferred.resolve, deferred.reject);
+          } catch (error) {
+            deferred.reject(error);
+          }
+          void delivery.finally(() => { localDeliveriesInFlight.delete(parsed.requestId!); }).catch(() => {});
+        } else if (!delivery) {
+          delivery = deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, options.terminalBarrier);
+        }
+        await delivery;
         if (parsed.requestId) localDeliveries.record(parsed.requestId, signature);
       }
       acknowledgeResult(options, parsed.requestId, true);
@@ -137,7 +180,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        deliverLocal(parsed, { ...options, terminalBarrier });
+        await deliverLocal(parsed, { ...options, terminalBarrier });
         return;
       }
       if (!deps.runtimeStarted()) {
@@ -170,7 +213,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        deliverLocal(parsed, { ...options, terminalBarrier });
+        await deliverLocal(parsed, { ...options, terminalBarrier });
         return;
       }
 

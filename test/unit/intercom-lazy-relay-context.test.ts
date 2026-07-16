@@ -15,20 +15,19 @@ afterAll(() => {
 });
 
 import intercom from "../../packages/intercom/index.js";
-import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
 
 const SESSION_ID = "019f0000-aaaa-7bbb-8ccc-dddddddddddd";
 const SELF_ALIAS = "subagent-chat-019f0000";
 
-function fixture() {
+function fixture(options: { rejectLateRoutes?: number } = {}) {
 	const handlers = new Map<string, Handler[]>();
-	const eventHandlers = new Map<string, Array<(payload: unknown) => void>>();
+	const eventHandlers = new Map<string, Array<(payload: unknown) => void | Promise<void>>>();
 	const entries: Array<{ type: string; data: { error?: string } }> = [];
 	const inboundMessages: Array<{ customType?: string }> = [];
 	const deliveryAcks: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
-	const sourceAdmission = new InboundMessageAdmission();
+	let remainingLateRouteRejections = options.rejectLateRoutes ?? 0;
 	const ctx = {
 		hasUI: false,
 		cwd: process.cwd(),
@@ -48,11 +47,23 @@ function fixture() {
 		registerShortcut() {},
 		registerMessageRenderer() {},
 		appendEntry(type: string, data: { error?: string }) { entries.push({ type, data }); },
-		sendMessage(message: { customType?: string }) { inboundMessages.push(message); },
-		sendMessages(messages: Array<{ customType?: string }>) { inboundMessages.push(...messages); },
+		async sendMessage(message: { customType?: string }) {
+			if (message.customType === "intercom_message" && remainingLateRouteRejections > 0) {
+				remainingLateRouteRejections -= 1;
+				throw new Error("injected main-chat route failure");
+			}
+			inboundMessages.push(message);
+		},
+		async sendMessages(messages: Array<{ customType?: string }>) {
+			if (messages.some((message) => message.customType === "intercom_message") && remainingLateRouteRejections > 0) {
+				remainingLateRouteRejections -= 1;
+				throw new Error("injected main-chat route failure");
+			}
+			inboundMessages.push(...messages);
+		},
 		getSessionName: () => undefined,
 		events: {
-			on(name: string, handler: (payload: unknown) => void) {
+			on(name: string, handler: (payload: unknown) => void | Promise<void>) {
 				const current = eventHandlers.get(name) ?? [];
 				current.push(handler);
 				eventHandlers.set(name, current);
@@ -62,7 +73,7 @@ function fixture() {
 				if (name === "subagent:result-intercom-delivery") {
 					deliveryAcks.push(payload as { requestId?: string; delivered?: boolean; error?: string });
 				}
-				for (const handler of eventHandlers.get(name) ?? []) handler(payload);
+				for (const handler of eventHandlers.get(name) ?? []) void handler(payload);
 			},
 		},
 	};
@@ -77,16 +88,15 @@ function fixture() {
 		emitResult(requestId: string) {
 			pi.events.emit("subagent:result-intercom", { to: SELF_ALIAS, message: "grouped results", requestId });
 		},
-		emitLateStageMessage() {
+		emitLateStageMessage(batch = false) {
 			const details = {
 				from: { id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
 				message: { id: "late-message", timestamp: 1, content: { text: "late reviewer message" } },
 				bodyText: "late reviewer message",
 			};
-			assert.equal(sourceAdmission.accept(details.from, details.message), true);
 			const payload: { handled: boolean; completion?: Promise<void>; batch: boolean; messages: object[]; options: object } = {
 				handled: false,
-				batch: false,
+				batch,
 				messages: [{
 					customType: "intercom_message",
 					content: "late reviewer message",
@@ -134,6 +144,34 @@ describe("lazy relay lifecycle-context fallback", () => {
 		assert.equal(payload.handled, true);
 		assert.ok(payload.completion);
 		await payload.completion;
+		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
+	});
+
+	test("propagates a rejected main-chat route and permits the stable late message to retry once", async () => {
+		const current = fixture({ rejectLateRoutes: 1 });
+		await current.fire("turn_start", { type: "turn_start" });
+
+		const first = current.emitLateStageMessage();
+		assert.ok(first.completion);
+		await assert.rejects(first.completion, /injected main-chat route failure/);
+
+		const retry = current.emitLateStageMessage();
+		assert.ok(retry.completion);
+		await retry.completion;
+		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
+	});
+
+	test("propagates a rejected main-chat batch and permits the stable batch to retry once", async () => {
+		const current = fixture({ rejectLateRoutes: 1 });
+		await current.fire("turn_start", { type: "turn_start" });
+
+		const first = current.emitLateStageMessage(true);
+		assert.ok(first.completion);
+		await assert.rejects(first.completion, /injected main-chat route failure/);
+
+		const retry = current.emitLateStageMessage(true);
+		assert.ok(retry.completion);
+		await retry.completion;
 		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
 	});
 	test("still delivers locally on the normal session_start path", async () => {

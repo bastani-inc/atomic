@@ -1377,7 +1377,7 @@ pi.registerTool({
 
 ### pi.sendMessage(message, options?)
 
-Inject a custom message into the session.
+Inject a custom message into the session. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessage(...))` when admission or routing failure must be observed. Atomic's AgentSession runtime returns an admission receipt: it settles after the message is accepted by the local queue or workflow late-message route, without waiting for the resulting model turn to finish.
 
 ```typescript
 pi.sendMessage({
@@ -1403,7 +1403,7 @@ pi.sendMessage({
 
 ### pi.sendMessages(messages, options?)
 
-Atomically admit a batch of custom messages in array order. Admission is indivisible, but the resulting model turn remains asynchronous; use this when a prelude and terminal notice must stay contiguous without globally serializing other extension work.
+Atomically admit a batch of custom messages in array order. The call returns `void | Promise<void>` for compatibility with synchronous hosts; use `await Promise.resolve(pi.sendMessages(...))` when admission or routing failure must be observed. The promise is an admission receipt and does not wait for the resulting model turn. Admission is indivisible; use this when a prelude and terminal notice must stay contiguous without globally serializing other extension work.
 
 ```typescript
 pi.sendMessages([

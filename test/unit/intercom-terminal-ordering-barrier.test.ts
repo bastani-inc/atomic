@@ -384,6 +384,24 @@ describe("per-child terminal ordering barrier", () => {
     assert.deepEqual(harness.deliveries, ["first"]);
     assert.deepEqual(queue.drain().map((queued) => queued.message.id), ["unrelated", "second"]);
   });
+
+  test("an asynchronously rejected terminal dispatch restores its claimed prelude", async () => {
+    const harness = eventHarness();
+    const queue = new InboundIdleQueue();
+    const child = source("async-retry-session", "async-retry-target");
+    queue.enqueue(entry(child, "first", 1));
+    registerTerminalOrderingBarrier(harness.pi as never, { queue, toMessage: (queued) => ({ customType: "intercom_message", content: queued.bodyText, display: true, details: queued }), deliver: () => {} });
+    const payload = {
+      runId: "async-retry-run", terminalId: "complete", terminalAt: 2, source: "background-notify",
+      sourceSessionTargets: [child.name], dispatch: async () => { throw new Error("async dispatch failure"); },
+    };
+
+    harness.pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
+    const completion = (payload as typeof payload & { completion?: Promise<void> }).completion;
+    assert.ok(completion);
+    await assert.rejects(completion, /async dispatch failure/);
+    assert.deepEqual(queue.drain().map((queued) => queued.message.id), ["first"]);
+  });
   test("a terminal barrier can win during an in-flight foreground owner probe", () => {
     const harness = eventHarness();
     const queue = new InboundIdleQueue();

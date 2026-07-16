@@ -183,13 +183,13 @@ export interface ExtensionAPI {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options?: SendMessageOptions,
-	): void;
+	): void | Promise<void>;
 
 	/** Atomically admit custom messages in array order without waiting for the resulting turn. */
 	sendMessages<T = unknown>(
 		messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 		options?: SendMessagesOptions,
-	): void;
+	): void | Promise<void>;
 
 	/**
 	 * Send a user message to the agent. Always triggers a turn.

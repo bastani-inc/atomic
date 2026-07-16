@@ -93,13 +93,16 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
-			await this._enqueueInterruptCustomMessage(appMessage, options);
+			const interrupt = this._enqueueInterruptCustomMessage(appMessage, options);
+			boundary?.trackAdmittedWork(interrupt);
+			void interrupt.catch(() => {});
 		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {
 			this._appendCustomMessage(appMessage);
 		} else if (this.isStreaming) {
 			this._queueAgentMessage(appMessage, options?.deliverAs === "followUp" ? "followUp" : "steer");
 		} else if (options?.triggerTurn) {
-			await this._runAgentPrompt(appMessage);
+			const turn = this._runAgentPrompt(appMessage);
+			void turn.catch(() => {});
 		} else {
 			this._appendCustomMessage(appMessage);
 		}
@@ -142,7 +145,8 @@ export async function sendCustomMessages<T = unknown>(this: AgentSession,
 			const delivery = options?.deliverAs === "followUp" ? "followUp" : "steer";
 			for (const item of appMessages) this._queueAgentMessage(item, delivery);
 		} else if (options?.triggerTurn) {
-			await this._runAgentPrompt(appMessages);
+			const turn = this._runAgentPrompt(appMessages);
+			void turn.catch(() => {});
 		} else {
 			for (const item of appMessages) this._appendCustomMessage(item);
 		}

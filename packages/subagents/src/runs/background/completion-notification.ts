@@ -4,6 +4,7 @@ import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
 export interface CompletionNotificationEnvelope extends Record<string, unknown> {
 	notificationId: string;
 	acknowledge: (delivered: boolean) => void;
+	defer: () => void;
 }
 
 export function deliverLocalCompletionNotification(
@@ -13,6 +14,7 @@ export function deliverLocalCompletionNotification(
 ): Promise<boolean> {
 	return new Promise((resolve) => {
 		let settled = false;
+		let deferred = false;
 		const finish = (delivered: boolean) => {
 			if (settled) return;
 			settled = true;
@@ -22,11 +24,10 @@ export function deliverLocalCompletionNotification(
 			events.emit(SUBAGENT_ASYNC_COMPLETE_EVENT, {
 				...payload,
 				notificationId,
+				defer: () => { deferred = true; },
 				acknowledge: finish,
 			} satisfies CompletionNotificationEnvelope);
-			// The established event contract treats successful synchronous emission as
-			// delivery. Production listeners can synchronously reject via acknowledge(false).
-			finish(true);
+			if (!deferred) finish(true);
 		} catch {
 			finish(false);
 		}

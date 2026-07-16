@@ -86,6 +86,32 @@ function getNotifySeen(pi: ExtensionAPI): Map<string, number> {
 	return seen;
 }
 
+function isPromiseLike(value: unknown): value is PromiseLike<void> {
+	return (typeof value === "object" || typeof value === "function")
+		&& value !== null
+		&& typeof (value as { then?: unknown }).then === "function";
+}
+
+async function dispatchFallback(
+	pi: ExtensionAPI,
+	prefix: TerminalPreludeMessage[],
+	terminalMessage: TerminalPreludeMessage,
+	deliveryOptions: Parameters<ExtensionAPI["sendMessage"]>[1],
+): Promise<void> {
+	let delivered = 0;
+	try {
+		for (const message of prefix) {
+			await pi.sendMessage(message, { deliverAs: "steer" });
+			delivered += 1;
+		}
+		await pi.sendMessage(terminalMessage, deliveryOptions);
+	} catch (error) {
+		const failure = new Error(error instanceof Error ? error.message : String(error), { cause: error });
+		Object.assign(failure, { terminalPreludeDelivered: delivered });
+		throw failure;
+	}
+}
+
 export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const registry = getNotifyRegistry();
 	const previous = registry.get(pi);
@@ -99,15 +125,15 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 	const seen = getNotifySeen(pi);
 	const ttlMs = 10 * 60 * 1000;
 
-	const emitTerminalOrderingBarrier = (result: SubagentResult, dispatch?: (prefix: TerminalPreludeMessage[]) => void): void => {
+	const emitTerminalOrderingBarrier = (result: SubagentResult, dispatch?: (prefix: TerminalPreludeMessage[]) => void | Promise<void>): Promise<void> | undefined => {
 		const runId = result.runId ?? result.id;
-		if (!runId) return;
+		if (!runId) return undefined;
 		const resultTargets = result.results?.map((child, arrayIndex) =>
 			child.intercomTarget?.trim() || resolveSubagentIntercomTarget(runId, child.agent, child.index ?? arrayIndex)) ?? [];
 		const sourceSessionTargets = resultTargets.length > 0
 			? resultTargets
 			: result.agent ? [resolveSubagentIntercomTarget(runId, result.agent, 0)] : [];
-		if (sourceSessionTargets.length === 0) return;
+		if (sourceSessionTargets.length === 0) return undefined;
 		const terminalId = result.notificationId?.startsWith("completion-notify-")
 			? result.notificationId.slice("completion-notify-".length)
 			: result.notificationId;
@@ -119,12 +145,15 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			sourceSessionTargets,
 			...(dispatch ? { dispatch } : {}),
 		};
+		Object.defineProperty(payload, "terminalOwner", { value: pi });
 		pi.events.emit(SUBAGENT_TERMINAL_ORDERING_BARRIER_EVENT, payload);
 		const globalHandler = (globalThis as Record<string, unknown>).__atomicTerminalOrderingBarrierHandler;
 		if (typeof globalHandler === "function") (globalHandler as (value: unknown) => void)(payload);
+		return (payload as typeof payload & { completion?: Promise<void> }).completion;
 	};
+	const inFlight = new Map<string, Promise<void>>();
 	let registration: NotifyRegistration;
-	const handleComplete = (data: unknown) => {
+	const handleComplete = (data: unknown): void => {
 		if (registry.get(pi) !== registration) return;
 		const result = data as SubagentResult & Partial<CompletionNotificationEnvelope>;
 		const now = Date.now();
@@ -133,6 +162,15 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			result.acknowledge?.(true);
 			return;
 		}
+		const pending = inFlight.get(key);
+		if (pending) {
+			result.defer?.();
+			void pending.then(() => result.acknowledge?.(true), () => result.acknowledge?.(false));
+			return;
+		}
+		const ownership = Promise.withResolvers<void>();
+		void ownership.promise.catch(() => {});
+		inFlight.set(key, ownership.promise);
 		const agent = result.agent ?? "unknown";
 		const summary = typeof result.summary === "string" ? result.summary : "";
 		const paused = !result.success && (
@@ -172,23 +210,45 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			display: true,
 		};
 		const deliveryOptions = { triggerTurn: true, stageAdmissionKey: `subagent:${key}` } as const;
-		try {
-			let dispatched = false;
-			emitTerminalOrderingBarrier(result, (prefix) => {
-				if (typeof pi.sendMessages === "function") {
-					pi.sendMessages([...prefix, terminalMessage], deliveryOptions);
-				} else {
-					for (const message of prefix) pi.sendMessage(message, { deliverAs: "steer" });
-					pi.sendMessage(terminalMessage, deliveryOptions);
-				}
-				dispatched = true;
-			});
-			if (!dispatched) pi.sendMessage(terminalMessage, deliveryOptions);
+		const succeed = (): void => {
 			recordSeen(seen, key, Date.now());
+			inFlight.delete(key);
+			ownership.resolve();
 			result.acknowledge?.(true);
-		} catch (error) {
+		};
+		const fail = (error: unknown): void => {
+			inFlight.delete(key);
+			ownership.reject(error);
 			result.acknowledge?.(false);
 			console.error("Failed to deliver async subagent completion notification:", error);
+		};
+		const observe = (delivery: PromiseLike<void>): void => {
+			result.defer?.();
+			void Promise.resolve(delivery).then(succeed, fail);
+		};
+		try {
+			let dispatched = false;
+			const barrierCompletion = emitTerminalOrderingBarrier(result, (prefix) => {
+				dispatched = true;
+				if (typeof pi.sendMessages === "function") {
+					return pi.sendMessages([...prefix, terminalMessage], deliveryOptions);
+				}
+				return dispatchFallback(pi, prefix, terminalMessage, deliveryOptions);
+			});
+			if (barrierCompletion) {
+				observe(barrierCompletion);
+				return;
+			}
+			if (!dispatched) {
+				const delivery = pi.sendMessage(terminalMessage, deliveryOptions);
+				if (isPromiseLike(delivery)) {
+					observe(delivery);
+					return;
+				}
+			}
+			succeed();
+		} catch (error) {
+			fail(error);
 		}
 	};
 

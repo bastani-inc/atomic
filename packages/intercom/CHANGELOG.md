@@ -7,6 +7,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 ### Fixed
 
 - Fixed busy workflow-stage messages being retained solely in Intercom's private wait-until-idle queue. Stage-targeted traffic is now admitted synchronously through the AgentSession generation boundary with stable message IDs, preserving native follow-up ordering and exactly-once delivery; close-winning late traffic is surfaced through the parent/main chat without mutating the terminal stage. Existing non-stage idle batching, terminal barriers, reply correlation, and shutdown generation cleanup are unchanged.
+- Fixed closed workflow-stage Intercom routing to avoid source-side pre-admission, reserve destination dedupe entries until main-chat delivery succeeds, roll back reply context on failure, propagate asynchronous route rejection, and permit a failed stable-key delivery to retry without duplicate parent-chat messages.
 
 ## [0.9.9] - 2026-07-15
 

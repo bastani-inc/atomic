@@ -32,6 +32,23 @@ test("local completion acknowledgement retries failures and dedupes successful r
   unregister();
 });
 
+test("local completion acknowledgement waits for rejected async delivery before retrying", async () => {
+  const listeners = new Map<string, Set<(data: unknown) => void>>();
+  let sends = 0;
+  const events = {
+    on(event: string, handler: (data: unknown) => void) { const set = listeners.get(event) ?? new Set(); set.add(handler); listeners.set(event, set); return () => set.delete(handler); },
+    emit(event: string, payload: unknown) { for (const handler of listeners.get(event) ?? []) handler(payload); },
+  };
+  const pi = { events, sendMessage: async () => { sends += 1; if (sends === 1) throw new Error("async notification failure"); } };
+  const unregister = registerSubagentNotify(pi as never);
+  const payload = { id: "async-notify-run", agent: "worker", success: true, summary: "done" };
+
+  assert.equal(await deliverLocalCompletionNotification(events, payload, "stable-async-notify"), false);
+  assert.equal(await deliverLocalCompletionNotification(events, payload, "stable-async-notify"), true);
+  assert.equal(sends, 2);
+  unregister();
+});
+
 test("queued child messages drain before a direct terminal notification", () => {
   const listeners = new Map<string, Set<(data: unknown) => void>>();
   const pendingIdle = ["Ready…"];

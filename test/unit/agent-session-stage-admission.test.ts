@@ -98,6 +98,25 @@ describe("AgentSession workflow-stage admission", () => {
 		assert.deepEqual(processed, ["finished"]);
 	});
 
+	test("custom-message completion is an admission receipt rather than model-turn completion", async () => {
+		const turn = Promise.withResolvers<void>();
+		const admitted: string[] = [];
+		const surface = {
+			_workflowStageAdmission: undefined,
+			isStreaming: false,
+			_pendingNextTurnMessages: [],
+			_queueAgentMessage() {}, _appendCustomMessage() {}, async _enqueueInterruptCustomMessage() {},
+			_runAgentPrompt(message: { content: string | object[] }) { if (typeof message.content === "string") admitted.push(message.content); return turn.promise; },
+		};
+
+		await sendCustomMessage.call(surface as never, {
+			customType: "intercom_message", content: "accepted", display: true,
+		}, { triggerTurn: true });
+		assert.deepEqual(admitted, ["accepted"]);
+		turn.reject(new Error("later model turn failure"));
+		await Promise.resolve();
+	});
+
 	test("fallback replacement transfers already-admitted native queue entries", () => {
 		const notification = { role: "custom", customType: "async-job-result", content: "done", display: true, timestamp: 1 };
 		const restored: object[] = [];

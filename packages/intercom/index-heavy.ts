@@ -19,6 +19,8 @@ import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
+import { registerLateStageMessageRouter } from "./late-stage-message-router.js";
+import { retryStableDelivery } from "./stable-delivery-retry.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -29,14 +31,6 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
-const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
-type LateStageMessage = Parameters<ExtensionAPI["sendMessage"]>[0];
-type LateStageMessageEvent = {
-  handled: boolean;
-  batch: boolean;
-  messages: LateStageMessage[];
-  options?: Parameters<ExtensionAPI["sendMessage"]>[1];
-};
 export default function piIntercomExtension(pi: ExtensionAPI) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
@@ -64,7 +58,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
-  const acceptInbound = (from: SessionInfo, message: Message): boolean => inboundDeliveries.accept(from, message);
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void {
     replyWaiters.rejectCurrent(error);
@@ -163,45 +156,27 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       details: entry,
     };
   }
-  pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
-    if (!data || typeof data !== "object") return;
-    const event = data as Partial<LateStageMessageEvent>;
-    if (!Array.isArray(event.messages) || typeof event.batch !== "boolean") return;
-    const accepted: LateStageMessage[] = [];
-    let queuedTurnContext = false;
-    for (const message of event.messages) {
-      if (message.customType !== "intercom_message") { accepted.push(message); continue; }
-      const entry = message.details as InboundMessageEntry | undefined;
-      if (!entry?.from || !entry.message || !acceptInbound(entry.from, entry.message)) continue;
-      replyTracker.recordIncomingMessage(entry.from, entry.message);
-      if (!queuedTurnContext && event.options?.triggerTurn === true) {
-        replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
-        queuedTurnContext = true;
-      }
-      accepted.push(message);
-    }
-    event.handled = true;
-    if (accepted.length === 0) return;
-    if (event.batch && typeof pi.sendMessages === "function") {
-      pi.sendMessages(accepted, event.options as Parameters<ExtensionAPI["sendMessages"]>[1]);
-    } else {
-      accepted.forEach((message, index) => pi.sendMessage(message, index === 0 ? event.options : { deliverAs: "followUp" }));
-    }
-  });
-  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true): void {
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker);
+  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true, turnContext?: ReturnType<ReplyTracker["recordIncomingMessage"]>): Promise<void> {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
-      return;
+      return Promise.resolve();
     }
     if (delivery === "trigger" && trackReplyContext) {
-      replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+      replyTracker.queueTurnContext(turnContext ?? { from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
     const baseOptions = { stageAdmissionKey: `intercom:${entry.message.id}` } as const;
     const options = delivery === "trigger"
       ? { ...baseOptions, triggerTurn: true } as const
       : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
-    pi.sendMessage(buildIncomingCustomMessage(entry), options);
+    return Promise.resolve(pi.sendMessage(buildIncomingCustomMessage(entry), options));
   }
-  registerTerminalOrderingBarrier(pi, {
+  function routeClosedStageMessage(entry: InboundMessageEntry, generation: number): void {
+    retryStableDelivery({
+      deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
+      isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
+    });
+  }
+  const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
     queue: pendingIdleMessages,
     toMessage: buildIncomingCustomMessage,
     // A prelude is admitted synchronously when idle, or FIFO-queued when busy.
@@ -211,7 +186,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     onDrain: () => {
       if (pendingIdleMessages.size === 0) clearInboundFlushTimer();
     },
+    isCurrent: () => Boolean(getLiveContext()),
   });
+  pi.on("session_shutdown", () => { unregisterTerminalOrderingBarrier(); });
   function scheduleInboundFlush(delayMs = INBOUND_FLUSH_DELAY_MS): void {
     if (!getLiveContext()) {
       return;
@@ -247,8 +224,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const first = entries[0];
     if (first) replyTracker.queueTurnContext({ from: first.from, message: first.message, receivedAt: Date.now() });
     const messages = entries.map(buildIncomingCustomMessage);
-    if (typeof pi.sendMessages === "function") pi.sendMessages(messages, { triggerTurn: true });
-    else messages.forEach((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }));
+    void retryStableDelivery({
+      deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: true })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }))).then(() => {}),
+      isCurrent: () => Boolean(getLiveContext(ctx, generation)),
+    });
   }
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
@@ -257,8 +236,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       return;
     }
     replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
-    if (!acceptInbound(from, message)) return;
-    if (routeIncomingReply(replyWaiters.current(), from, message)) return;
     const attachmentText = message.content.attachments?.length
       ? formatAttachments(message.content.attachments)
       : "";
@@ -269,58 +246,90 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const entry = { from, message, replyCommand, bodyText };
     const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
+    // The parent chat owns a separate Intercom extension instance and admission
+    // cache. Do not consume this source delivery before that destination reserves it.
     if (stageClosed) {
-      sendIncomingMessage(entry, "trigger", messageGeneration, false);
+      routeClosedStageMessage(entry, messageGeneration);
       return;
     }
-    replyTracker.recordIncomingMessage(from, message);
-    if (admitWorkflowStageInbound(liveContext, () => sendIncomingMessage(entry, "trigger", messageGeneration))) return;
+    const admission = inboundDeliveries.admit(from, message);
+    if (admission.kind !== "reserved") return;
+    const reservation = admission.reservation;
+    if (routeIncomingReply(replyWaiters.current(), from, message)) {
+      inboundDeliveries.commit(reservation);
+      return;
+    }
+    const replyContext = replyTracker.recordIncomingMessage(from, message);
+    const commit = (): void => { inboundDeliveries.commit(reservation); };
+    const release = (error: unknown): void => {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      inboundDeliveries.release(reservation, failure);
+      replyTracker.forgetIncomingMessage(replyContext);
+    };
+    const stageDelivery = admitWorkflowStageInbound(liveContext, () => {
+      replyTracker.queueTurnContext(replyContext);
+      return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+    });
+    if (stageDelivery !== false) {
+      void stageDelivery.then(commit, release);
+      return;
+    }
     void (async () => {
-      const activeContext = getLiveContext(liveContext, messageGeneration);
-      if (!activeContext) {
-        return;
-      }
-      if (!activeContext.isIdle()) {
-        if (!activeContext.hasUI) {
-          const activeClient = client;
-          if (!message.replyTo && activeClient?.isConnected()) {
-            try {
-              const result = await activeClient.send(from.id, {
-                text: "This agent is running in non-interactive mode and cannot respond to intercom messages while it is working. It will continue its current task and exit when done.",
-                replyTo: message.id,
-              });
-              if (result.delivered && getLiveContext(liveContext, messageGeneration)) {
-                replyTracker.markReplied(message.id);
-              }
-            } catch {
-              // Best-effort reply; keep the busy non-interactive session running either way.
-            }
-          }
+      try {
+        const activeContext = getLiveContext(liveContext, messageGeneration);
+        if (!activeContext) {
+          release(new Error("Intercom session retired before inbound delivery"));
           return;
         }
-        // Establish queue ownership before probing asynchronously. If a terminal
-        // barrier wins the race, the later foreground callback cannot redeliver.
-        pendingIdleMessages.enqueue(entry);
-        await handleForegroundInboundDelivery({
-          handoff: foregroundDetachHandoff,
-          from,
-          message,
-          generation: messageGeneration,
-          surface: () => {
-            if (pendingIdleMessages.remove(entry)) sendIncomingMessage(entry, "trigger", messageGeneration);
-          },
-          isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
-          onUnclaimed: () => {
-            // No exact foreground owner acknowledged the target. Preserve the
-            // established background/cross-session behavior by waiting for idle.
-            if (pendingIdleMessages.has(entry)) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
-          },
-          onDelivered: () => { pendingIdleMessages.remove(entry); },
-        });
-        return;
-      }
-      if (getLiveContext(liveContext, messageGeneration)) {
-        sendIncomingMessage(entry, "trigger", messageGeneration);
+        if (!activeContext.isIdle()) {
+          if (!activeContext.hasUI) {
+            const activeClient = client;
+            if (!message.replyTo && activeClient?.isConnected()) {
+              try {
+                const result = await activeClient.send(from.id, {
+                  text: "This agent is running in non-interactive mode and cannot respond to intercom messages while it is working. It will continue its current task and exit when done.",
+                  replyTo: message.id,
+                });
+                if (result.delivered && getLiveContext(liveContext, messageGeneration)) {
+                  replyTracker.markReplied(message.id);
+                }
+              } catch {
+                // Best-effort reply; keep the busy non-interactive session running either way.
+              }
+            }
+            commit();
+            return;
+          }
+          // Establish queue ownership before probing asynchronously. If a terminal
+          // barrier wins the race, the later foreground callback cannot redeliver.
+          pendingIdleMessages.enqueue(entry);
+          commit();
+          await handleForegroundInboundDelivery({
+            handoff: foregroundDetachHandoff,
+            from,
+            message,
+            generation: messageGeneration,
+            surface: () => {
+              if (pendingIdleMessages.remove(entry)) {
+                replyTracker.queueTurnContext(replyContext);
+                void retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+              }
+            },
+            isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+            onUnclaimed: () => {
+              // No exact foreground owner acknowledged the target. Preserve the
+              // established background/cross-session behavior by waiting for idle.
+              if (pendingIdleMessages.has(entry)) scheduleInboundFlush(INBOUND_IDLE_RETRY_MS);
+            },
+            onDelivered: () => { pendingIdleMessages.remove(entry); },
+          });
+          return;
+        }
+        replyTracker.queueTurnContext(replyContext);
+        await retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+        commit();
+      } catch (error) {
+        release(error);
       }
     })();
   }

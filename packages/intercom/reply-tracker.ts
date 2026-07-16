@@ -26,6 +26,14 @@ export class ReplyTracker {
     this.pendingTurnContexts.push(context);
   }
 
+  forgetIncomingMessage(context: IntercomContext): void {
+    if (this.pendingAsks.get(context.message.id) === context) this.pendingAsks.delete(context.message.id);
+    for (let index = this.pendingTurnContexts.length - 1; index >= 0; index -= 1) {
+      if (this.pendingTurnContexts[index] === context) this.pendingTurnContexts.splice(index, 1);
+    }
+    if (this.currentTurnContext === context) this.currentTurnContext = null;
+  }
+
   beginTurn(now = Date.now()): void {
     this.pruneExpired(now);
     this.currentTurnContext = this.pendingTurnContexts.shift() ?? null;

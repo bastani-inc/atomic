@@ -122,14 +122,14 @@ export function createExtensionAPI(
       return resourceLoaderInheritanceSnapshotProvider?.() ?? {};
     },
 
-    sendMessage(message, options): void {
+    sendMessage(message, options): void | Promise<void> {
       runtime.assertActive();
-      runtime.sendMessage(message, options);
+      return runtime.sendMessage(message, options);
     },
 
-    sendMessages(messages, options): void {
+    sendMessages(messages, options): void | Promise<void> {
       runtime.assertActive();
-      runtime.sendMessages(messages, options);
+      return runtime.sendMessages(messages, options);
     },
 
     sendUserMessage(content, options): void {

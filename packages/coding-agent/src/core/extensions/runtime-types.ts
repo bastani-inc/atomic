@@ -42,12 +42,12 @@ type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 	options?: SendMessageOptions,
-) => void;
+) => void | Promise<void>;
 
 export type SendMessagesHandler = <T = unknown>(
 	messages: Array<Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">>,
 	options?: SendMessagesOptions,
-) => void;
+) => void | Promise<void>;
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],

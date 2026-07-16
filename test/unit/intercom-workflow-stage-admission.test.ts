@@ -13,14 +13,15 @@ const stageContext = {
 };
 
 describe("Intercom workflow-stage admission", () => {
-	test("a message received during a schema-backed structured_output tool turn is surfaced synchronously", () => {
+	test("a message received during a schema-backed structured_output tool turn is surfaced synchronously", async () => {
 		const events: string[] = ["structured_output:start"];
 		const admitted = admitWorkflowStageInbound(stageContext, () => {
 			events.push("agent-session:queue-follow-up");
 		});
 		events.push("structured_output:end");
 
-		assert.equal(admitted, true);
+		assert.ok(admitted);
+		await admitted;
 		assert.deepEqual(events, [
 			"structured_output:start",
 			"agent-session:queue-follow-up",

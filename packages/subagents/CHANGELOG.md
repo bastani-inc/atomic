@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed async subagent completion notices racing workflow-stage finalization. Completion notifications now carry stable admission identities, join already-claimed terminal preludes as one stage batch when received before close, and route externally without terminal transcript mutation when close wins. Successful-notification deduplication, retry acknowledgement, terminal ordering, and detached non-blocking execution remain intact.
+- Fixed asynchronous terminal dispatch to defer its acknowledgement and successful-notification dedupe until custom-message admission settles. Rejected batch routes now restore claimed Intercom preludes and return a failed acknowledgement so the durable result watcher can retry the same stable notification ID.
 
 ## [0.9.9] - 2026-07-15
 

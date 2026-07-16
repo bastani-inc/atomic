@@ -154,22 +154,26 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 	runner.bindCore(
 		{
 			sendMessage: (message, options) => {
-				this.sendCustomMessage(message, options).catch((err) => {
+				const delivery = this.sendCustomMessage(message, options);
+				void delivery.catch((err) => {
 					runner.emitError({
 						extensionPath: "<runtime>",
 						event: "send_message",
 						error: err instanceof Error ? err.message : String(err),
 					});
 				});
+				return delivery;
 			},
 			sendMessages: (messages, options) => {
-				this.sendCustomMessages(messages, options).catch((err) => {
+				const delivery = this.sendCustomMessages(messages, options);
+				void delivery.catch((err) => {
 					runner.emitError({
 						extensionPath: "<runtime>",
 						event: "send_messages",
 						error: err instanceof Error ? err.message : String(err),
 					});
 				});
+				return delivery;
 			},
 			sendUserMessage: (content, options) => {
 				this.sendUserMessage(content, options).catch((err) => {

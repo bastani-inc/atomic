@@ -57,6 +57,35 @@ describe("WorkflowStageAdmissionBoundary", () => {
 		assert.equal(attempts, 2);
 	});
 
+	test("a concurrent duplicate shares the owner's failed routing completion", async () => {
+		const boundary = new WorkflowStageAdmissionBoundary();
+		await boundary.close();
+		const route = Promise.withResolvers<void>();
+		let attempts = 0;
+		const first = boundary.admit("completion-1", () => {}, () => { attempts += 1; return route.promise; });
+		const duplicate = boundary.admit("completion-1", () => {}, () => { attempts += 1; });
+
+		assert.equal(duplicate.decision, "duplicate");
+		route.reject(new Error("temporary route failure"));
+		await assert.rejects(first.completion, /temporary route failure/);
+		await assert.rejects(duplicate.completion, /temporary route failure/);
+		assert.equal(attempts, 1);
+	});
+
+	test("a synchronous reentrant duplicate joins the installed owner", async () => {
+		const boundary = new WorkflowStageAdmissionBoundary();
+		const decisions: string[] = [];
+		const owner = boundary.admit("message-1", async () => {
+			await Promise.resolve();
+			const duplicate = boundary.admit("message-1", () => { decisions.push("duplicate-delivered"); }, () => {});
+			decisions.push(duplicate.decision);
+			return duplicate.completion;
+		}, () => {});
+
+		await owner.completion;
+		assert.deepEqual(decisions, ["duplicate"]);
+	});
+
 	test("close does not wait for detached producers that have not delivered", async () => {
 		const boundary = new WorkflowStageAdmissionBoundary();
 		const producer = Promise.withResolvers<void>();
