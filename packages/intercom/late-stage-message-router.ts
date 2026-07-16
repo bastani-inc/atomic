@@ -14,6 +14,7 @@ type LateStageMessageEvent = {
 };
 
 interface LateStageReservation {
+  message: LateStageMessage;
   reservation: InboundMessageReservation;
   context: IntercomContext;
 }
@@ -39,50 +40,83 @@ export function registerLateStageMessageRouter(
       const result = admission.admit(entry.from, entry.message);
       if (result.kind === "pending") { joined.push(result.completion); continue; }
       if (result.kind === "duplicate") continue;
-      const reservation = result.reservation;
       const context = tracker.recordIncomingMessage(entry.from, entry.message);
       if (!queuedTurnContext && event.options?.triggerTurn === true) {
         tracker.queueTurnContext(context);
         queuedTurnContext = true;
       }
-      reservations.push({ reservation, context });
+      reservations.push({ message, reservation: result.reservation, context });
       accepted.push(message);
     }
     event.handled = true;
-    for (const { reservation } of reservations) admission.beginDelivery(reservation);
-    const delivery = deliver(pi, accepted, event);
-    for (const { reservation } of reservations) admission.endDelivery(reservation);
-    const ownedCompletion = delivery.then(
-      () => { for (const { reservation } of reservations) admission.commit(reservation); },
-      (error: Error) => {
-        for (const { reservation, context } of reservations) {
-          admission.release(reservation, error);
-          tracker.forgetIncomingMessage(context);
-        }
-        throw error;
-      },
-    );
+    const ownedCompletion = event.batch && typeof pi.sendMessages === "function"
+      ? deliverAtomicBatch(pi, accepted, event, reservations, admission, tracker)
+      : deliverSequentially(pi, accepted, event, reservations, admission, tracker);
     event.completion = Promise.all([ownedCompletion, ...joined]).then(() => {});
     return event.completion;
   });
 }
 
-function deliver(
+function deliverAtomicBatch(
   pi: ExtensionAPI,
   accepted: LateStageMessage[],
   event: Partial<LateStageMessageEvent>,
+  reservations: LateStageReservation[],
+  admission: InboundMessageAdmission,
+  tracker: ReplyTracker,
 ): Promise<void> {
   if (accepted.length === 0) return Promise.resolve();
+  for (const { reservation } of reservations) admission.beginDelivery(reservation);
+  let delivery: Promise<void>;
   try {
-    if (event.batch && typeof pi.sendMessages === "function") {
-      return Promise.resolve(pi.sendMessages(accepted, event.options as Parameters<ExtensionAPI["sendMessages"]>[1]));
-    }
-    const deliveries = accepted.map((message, index) => pi.sendMessage(
-      message,
-      index === 0 ? event.options : { deliverAs: "followUp" },
-    ));
-    return Promise.all(deliveries).then(() => {});
+    delivery = Promise.resolve(pi.sendMessages(accepted, event.options as Parameters<ExtensionAPI["sendMessages"]>[1]));
   } catch (error) {
-    return Promise.reject(error);
+    delivery = Promise.reject(error);
+  }
+  for (const { reservation } of reservations) admission.endDelivery(reservation);
+  return delivery.then(
+    () => { for (const { reservation } of reservations) admission.commit(reservation); },
+    (error: Error) => { releaseReservations(reservations, admission, tracker, error); throw error; },
+  );
+}
+
+async function deliverSequentially(
+  pi: ExtensionAPI,
+  accepted: LateStageMessage[],
+  event: Partial<LateStageMessageEvent>,
+  reservations: LateStageReservation[],
+  admission: InboundMessageAdmission,
+  tracker: ReplyTracker,
+): Promise<void> {
+  const pending = new Map(reservations.map((owned) => [owned.message, owned]));
+  for (let index = 0; index < accepted.length; index += 1) {
+    const message = accepted[index]!;
+    const owned = pending.get(message);
+    if (owned) admission.beginDelivery(owned.reservation);
+    try {
+      await pi.sendMessage(message, index === 0 ? event.options : { deliverAs: "followUp" });
+    } catch (error) {
+      if (owned) admission.endDelivery(owned.reservation);
+      const failure = error instanceof Error ? error : new Error(String(error));
+      releaseReservations([...pending.values()], admission, tracker, failure);
+      throw failure;
+    }
+    if (owned) {
+      admission.endDelivery(owned.reservation);
+      admission.commit(owned.reservation);
+      pending.delete(message);
+    }
+  }
+}
+
+function releaseReservations(
+  reservations: LateStageReservation[],
+  admission: InboundMessageAdmission,
+  tracker: ReplyTracker,
+  error: Error,
+): void {
+  for (const { reservation, context } of reservations) {
+    admission.release(reservation, error);
+    tracker.forgetIncomingMessage(context);
   }
 }

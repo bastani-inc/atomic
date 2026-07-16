@@ -21,6 +21,7 @@ import { resolveSessionTargetId } from "./session-target.js";
 import { InboundMessageAdmission } from "./inbound-message-admission.js";
 import { registerLateStageMessageRouter } from "./late-stage-message-router.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
+import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
@@ -31,7 +32,7 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
-export default function piIntercomExtension(pi: ExtensionAPI) {
+export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: IntercomExtensionTestOverrides = {}) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
     if (inheritedIntercomSessionId === undefined) delete process.env[INTERCOM_SESSION_ID_ENV];
@@ -171,10 +172,10 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     return Promise.resolve(pi.sendMessage(buildIncomingCustomMessage(entry), options));
   }
   function routeClosedStageMessage(entry: InboundMessageEntry, generation: number): void {
-    retryStableDelivery({
+    void retryStableDelivery({
       deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
       isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
-    });
+    }).catch(() => {});
   }
   const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
     queue: pendingIdleMessages,
@@ -227,8 +228,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     void retryStableDelivery({
       deliver: () => typeof pi.sendMessages === "function" ? Promise.resolve(pi.sendMessages(messages, { triggerTurn: true })) : Promise.all(messages.map((message, index) => pi.sendMessage(message, index === 0 ? { triggerTurn: true } : { deliverAs: "followUp" }))).then(() => {}),
       isCurrent: () => Boolean(getLiveContext(ctx, generation)),
-    });
+    }).catch(() => {});
   }
+  testOverrides.captureInboundHandler?.(handleIncomingMessage);
   function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
@@ -246,8 +248,6 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const entry = { from, message, replyCommand, bodyText };
     const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
-    // The parent chat owns a separate Intercom extension instance and admission
-    // cache. Do not consume this source delivery before that destination reserves it.
     if (stageClosed) {
       routeClosedStageMessage(entry, messageGeneration);
       return;
@@ -312,7 +312,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
             surface: () => {
               if (pendingIdleMessages.remove(entry)) {
                 replyTracker.queueTurnContext(replyContext);
-                void retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
+                void retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) }).catch(() => {});
               }
             },
             isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
