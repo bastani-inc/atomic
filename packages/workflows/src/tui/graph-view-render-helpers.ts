@@ -113,7 +113,7 @@ export abstract class GraphViewRenderHelpers extends GraphViewState {
     const leftEdgePad = 1;
     const rightEdgePad = 2;
     const hintsBudget = Math.max(0, width - leftEdgePad - pillW - rightEdgePad);
-    const fullHierarchyHint = "ctrl+x leave graph · return to main chat";
+    const fullHierarchyHint = "ctrl+x return to main chat";
     const hintKeys = hintsBudget >= visibleWidth(fullHierarchyHint)
       ? HINT_KEYS
       : COMPACT_HINT_KEYS;

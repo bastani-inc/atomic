@@ -153,14 +153,14 @@ describe("GraphView return to main chat", () => {
     assert.match(text, /navigate/);
     assert.match(text, /↵ open stage chat/);
     assert.match(text, /stages/);
-    assert.match(text, /ctrl\+x\s+leave graph\s+·\s+return to main chat/i);
+    assert.match(text, /ctrl\+x\s+return to main chat/i);
     assert.doesNotMatch(text, /ctrl\+d|q\s+(?:quit|detach|return)/i);
 
     const mediumText = visibleText(view.render(96));
     assert.match(mediumText, /↵ open stage chat/);
 
     const compactText = visibleText(view.render(40));
-    assert.match(compactText, /ctrl\+x\s+graph→main chat/i);
+    assert.match(compactText, /ctrl\+x\s+return to main chat/i);
     view.dispose();
   });
 });
