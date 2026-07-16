@@ -78,7 +78,7 @@ export function getContextUsage(this: AgentSession): ContextUsage | undefined {
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				const assistant = entry.message;
 				if (assistant.stopReason !== "aborted" && assistant.stopReason !== "error") {
-					const contextTokens = calculateContextTokens(assistant.usage);
+					const contextTokens = calculateContextTokens(assistant.usage, assistant.api);
 					if (contextTokens > 0) {
 						hasPostCompactionUsage = true;
 					}

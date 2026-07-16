@@ -75,7 +75,7 @@ export async function _applyVerbatimCompaction(
 		return undefined;
 	}
 
-	const plan: CompactionPlanOptions = { streamFn: this.agent.streamFn };
+	const plan: CompactionPlanOptions = { streamFn: this.agent.streamFn, sessionFilePath: this.sessionManager.getSessionFile() };
 	let fromExtension = false;
 	let compacted: { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"] } | undefined;
 

@@ -105,4 +105,17 @@ describe("AssistantMessageComponent", () => {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
 	});
+
+	test("derives the output-token-limit warning from a length stop", () => {
+		initTheme("dark");
+		const component = new AssistantMessageComponent(
+			createAssistantMessage([{ type: "text", text: "partial response" }], {
+				stopReason: "length",
+			}),
+		);
+
+		const rendered = component.render(100).join("\n");
+		expect(rendered).toContain("maximum output token limit");
+		expect(rendered).toContain("The response may be");
+	});
 });

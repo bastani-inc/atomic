@@ -216,4 +216,30 @@ describe("AgentSession.getSessionStats", () => {
 			session.dispose();
 		}
 	});
+
+	it("counts normalized Codex cache partitions in post-compaction context usage", () => {
+		const { session, sessionManager } = createSession();
+		try {
+			sessionManager.appendMessage(createUserMessage("first", 1));
+			sessionManager.appendMessage(createAssistantMessage("response1", 195_000, 2));
+			appendTestCompaction(sessionManager, 195_000, 50_000);
+			sessionManager.appendMessage(createUserMessage("second", Date.now() + 1));
+			sessionManager.appendMessage({
+				...createAssistantMessageWithUsage("response2", {
+					input: 7_907, output: 7, cacheRead: 7_936, cacheWrite: 0, totalTokens: 15_850,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				}, Date.now() + 2),
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				model: "gpt-5.5",
+			});
+			syncAgentMessages(session, sessionManager);
+
+			const stats = session.getSessionStats();
+			expect(stats.contextUsage?.tokens).toBe(15_850);
+			expect(stats.contextUsage?.percent).toBe((15_850 / model.contextWindow) * 100);
+		} finally {
+			session.dispose();
+		}
+	});
 });

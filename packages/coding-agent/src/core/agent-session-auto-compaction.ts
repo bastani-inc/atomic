@@ -121,7 +121,7 @@ export async function _checkCompaction(this: AgentSession, assistantMessage: Ass
 		}
 		contextTokens = estimate.tokens;
 	} else {
-		contextTokens = calculateContextTokens(assistantMessage.usage);
+		contextTokens = calculateContextTokens(assistantMessage.usage, assistantMessage.api);
 	}
 	// Compact against the effective input budget (the hard prompt cap for providers like Copilot
 	// that advertise a larger total window) so we compact before overrunning the server-side limit

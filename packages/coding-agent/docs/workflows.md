@@ -2140,7 +2140,7 @@ Watch for these failure modes in long or multi-stage workflows:
 | Confusion | Similar instructions or duplicate facts conflict | Consolidate instructions and name artifacts clearly |
 | Clash | User, system, or stage instructions disagree | Resolve conflicts before launching downstream stages |
 
-Use compaction, file references, and bounded loops before context fills with transcript noise.
+Use compaction, file references, and bounded loops before context fills with transcript noise. In attached workflow stage chat, manual compaction shows `Compacting context...`, threshold compaction shows `Auto-compacting...`, and overflow recovery shows `Context overflow detected. Auto-compacting...` in the same animated status row used for normal model work. A successful compaction leaves the normal expandable `✻ Context compacted` boundary in the transcript; the boundary is reconstructed from the durable session and has a typed live fallback if the refreshed session snapshot is temporarily unavailable.
 
 ### Compression and Artifact Handoffs
 

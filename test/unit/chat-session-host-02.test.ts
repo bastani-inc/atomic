@@ -191,6 +191,46 @@ test("ChatSessionHost refreshes successful compacted transcripts exactly once fo
   }
 });
 
+test("ChatSessionHost renders a type-safe compaction boundary when the refreshed session is unavailable", () => {
+  const host = makeHost({ getCwd: () => process.cwd() });
+  host.appendMessages([{ role: "user", content: "pre-compaction", timestamp: 0 }] as never);
+  const result = {
+    compactedText: "[User]: retained\n(filtered 2 lines)",
+    firstKeptEntryId: "kept-1",
+    tokensBefore: 100,
+    stats: {
+      linesBefore: 4,
+      linesDeleted: 2,
+      linesKept: 2,
+      rangeCount: 1,
+      tokensBefore: 100,
+      tokensAfter: 50,
+      percentReduction: 50,
+    },
+    parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "" },
+    promptVersion: 3,
+    rung: "planned",
+  };
+
+  const event = {
+    type: "compaction_end",
+    reason: "manual",
+    result,
+    aborted: false,
+    willRetry: false,
+  } as never;
+  host.applyAgentEvent(event);
+  host.applyAgentEvent(event);
+
+  const boundaries = host.entries().filter(
+    (entry) => entry.role === "custom" && entry.kind === "custom" && entry.message.customType === "compaction",
+  );
+  assert.equal(boundaries.length, 1);
+  assert.equal(host.renderBody(200, 20).join("\n").match(/✻ Context compacted/g)?.length, 1);
+  assert.equal(host.entries().some((entry) => entry.role === "user"), true);
+  host.dispose();
+});
+
 test("ChatSessionHost does not refresh compacted transcripts for aborts or errors", () => {
   const agentSession = {
     messages: [{ role: "custom", customType: "compaction", content: "boundary", display: true, timestamp: 1 }],

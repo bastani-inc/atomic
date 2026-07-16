@@ -86,8 +86,8 @@ describe("verbatim compaction extension hooks", () => {
 	});
 
 	it.each([
-		["malformed", "not json"],
-		["empty", '{"d":[]}'],
+		["malformed", "not valid records"],
+		["empty", ""],
 	])("does not persist a compaction entry after one %s planner response", async (_label, response) => {
 		const faux = createFauxStreamFn([response]);
 		create(extension(() => undefined), faux.streamFn);

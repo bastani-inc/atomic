@@ -179,12 +179,17 @@ describe("Token calculation", () => {
 
 	it("does not double-count mirrored Anthropic-compatible cache buckets", () => {
 		const usage = createMockUsage(116_000, 500, 116_000, 0);
-		expect(calculateContextTokens(usage)).toBe(116_500);
+		expect(calculateContextTokens(usage, "anthropic-messages")).toBe(116_500);
+	});
+
+	it("counts disjoint Codex cache buckets even when they nearly equal uncached input", () => {
+		const usage = createMockUsage(7_907, 7, 7_936, 0);
+		expect(calculateContextTokens(usage, "openai-codex-responses")).toBe(15_850);
 	});
 
 	it("keeps separate Anthropic cache partitions when cache is not mirrored input", () => {
 		const usage = createMockUsage(35_000, 500, 81_000, 0);
-		expect(calculateContextTokens(usage)).toBe(116_500);
+		expect(calculateContextTokens(usage, "anthropic-messages")).toBe(116_500);
 	});
 
 	it("falls back to totalTokens when component values are unavailable", () => {
@@ -302,6 +307,14 @@ describe("estimateContextTokens", () => {
 		];
 		const result = estimateContextTokens(messages);
 		expect(result.tokens).toBe(150);
+	});
+
+	it("preserves the API discriminator for normalized cached usage", () => {
+		const usage = createMockUsage(7_907, 7, 7_936, 0);
+		const message = { ...createAssistantMessage("response", usage), api: "openai-codex-responses" as const, provider: "openai-codex" };
+		const result = estimateContextTokens([createUserMessage("hello"), message]);
+		expect(result.tokens).toBe(15_850);
+		expect(shouldCompact(result.tokens, 20_000, { ...DEFAULT_COMPACTION_SETTINGS, reserveTokens: 5_000 })).toBe(true);
 	});
 
 	it("should return zero tokens for empty messages", () => {

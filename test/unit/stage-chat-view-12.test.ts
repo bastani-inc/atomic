@@ -129,7 +129,47 @@ describe("StageChatView", () => {
         view.dispose();
     });
 
-    test("uses pi SDK compaction event names for status and animation", () => {
+    test("renders one reason-aware animated compaction status", () => {
+        const cases = [
+            ["manual", /Compacting context\.\.\./],
+            ["threshold", /Auto-compacting\.\.\./],
+            ["overflow", /Context overflow detected\. Auto-compacting\.\.\./],
+        ] as const;
+
+        for (const [reason, expected] of cases) {
+            const store = createStore();
+            setupRun(store, "run-1", "stage-a");
+            const { handle, emit } = makeHandle();
+            const view = new StageChatView({
+                store,
+                graphTheme: deriveGraphTheme({}),
+                runId: "run-1",
+                stageId: "stage-a",
+                workflowName: "test-wf",
+                handle,
+                onDetach: () => {},
+                onClose: () => {},
+            });
+
+            emit({ type: "compaction_start", reason } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, true);
+            const rendered = stripAnsi(view.render(96).join("\n"));
+            assert.match(rendered, expected);
+            assert.doesNotMatch(rendered, /Working\.\.\./);
+            assert.equal(rendered.match(/compacting/gi)?.length, 1);
+
+            emit({
+                type: "compaction_end",
+                reason,
+                aborted: false,
+                willRetry: false,
+            } as unknown as AgentSessionEvent);
+            assert.equal(view._hasAnimationTick, false);
+            view.dispose();
+        }
+    });
+
+    test("stops the compaction spinner and surfaces planner failures", () => {
         const store = createStore();
         setupRun(store, "run-1", "stage-a");
         const { handle, emit } = makeHandle();
@@ -144,19 +184,19 @@ describe("StageChatView", () => {
             onClose: () => {},
         });
 
-        emit({
-            type: "compaction_start",
-            reason: "manual",
-        } as unknown as AgentSessionEvent);
-        assert.equal(view._hasAnimationTick, true);
-        assert.match(view.render(96).join("\n"), /compacting context/);
+        emit({ type: "compaction_start", reason: "threshold" } as unknown as AgentSessionEvent);
         emit({
             type: "compaction_end",
-            reason: "manual",
+            reason: "threshold",
             aborted: false,
             willRetry: false,
+            errorMessage: "Auto-compaction failed: malformed JSON",
         } as unknown as AgentSessionEvent);
+
         assert.equal(view._hasAnimationTick, false);
+        const rendered = stripAnsi(view.render(96).join("\n"));
+        assert.match(rendered, /Auto-compaction failed: malformed JSON/);
+        assert.doesNotMatch(rendered, /Auto-compacting\.\.\./);
         view.dispose();
     });
 

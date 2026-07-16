@@ -8,7 +8,7 @@ Compaction runs entirely locally with the active session model; no external comp
 
 | Mechanism | Trigger | Model output | Durable result |
 |---|---|---|---|
-| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Compact JSON `{"d":[[start,end],...]}` only | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
+| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Bare `start,end` deletion records (one per line) | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
 There is one context-compaction door: `compact`.
@@ -28,13 +28,13 @@ Atomic serializes the compactable part of the conversation into role-tagged line
 [Assistant]: The off-by-one error is fixed.
 ```
 
-The planner sees the same text numbered as `N→content` and may return only one-based, inclusive line ranges:
+The planner sees the same text numbered as `N→content` and returns only one-based, inclusive line ranges as bare records:
 
-```json
-{"d":[[2,5]]}
+```text
+2,5
 ```
 
-Prompt version 3 accepts only this compact grammar. Atomic safety-normalizes finite integer endpoints by truncating, swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
+Each line is `start,end` — unsigned decimal integers, one comma, no brackets or prose. Atomic safety-normalizes endpoints by swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
 
 ### Markers and repeated compaction
 
@@ -92,9 +92,43 @@ The in-flight/final logical turn is outside the compactable region. Cancellation
 
 Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed JSON, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
 
 A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+
+### Length-truncated response recovery
+
+When the planner model's output is truncated by `max_tokens` (indicated by `stopReason: "length"`), Atomic silently recovers complete newline-terminated deletion records from the truncated response. A deterministic line parser validates each completed line (those followed by a newline) against the strict `start,end` grammar. The final fragment after the last newline is always discarded — even if it looks syntactically complete — because EOF may have cut a multi-digit integer (e.g. `300,30` could have intended `300,305`). If any completed line has invalid syntax or zero usable records survive validation, recovery fails and the normal `RangePlanError` path applies.
+
+Example of truncated output:
+
+```text
+120,180
+6,40
+300,
+```
+
+Recovery yields `120,180` and `6,40`; discards `300,` without guessing. The planner prompt instructs the model to emit ranges in descending deletion confidence (lowest continuation value first) so the most important deletions appear earliest and survive truncation.
+
+Successful partial recovery is an ordinary successful compaction: no warning, banner, toast, or special status copy appears. The UI shows the normal spinner then `✻ Context compacted`.
+
+For operational observability, a private recovery diagnostic sidecar is written beside persisted sessions with `0600` permissions. It records the full raw response, stop reason, usage, request `maxTokens`, model metadata, recovered range count, and recovery category. The sidecar path is never surfaced in the success UI, error messages, or user-visible status. In-memory sessions and sidecar write failures do not affect the successful recovery.
+
+### Planner failure diagnostics
+
+For a persisted session, a failed planner call writes a JSON sidecar beside the session JSONL and includes its path in the `RangePlanError`, for example:
+
+```text
+Compaction range planning returned malformed output (diagnostic: /path/session-compaction-diagnostic-….json)
+```
+
+The private sidecar uses `0600` permissions where supported and records the full planner response text, stop reason, provider error, usage, request `maxTokens`, timestamp, failure category, and non-secret model metadata. It does not record API keys, request headers, the planner prompt, or the numbered transcript request. The raw response itself may contain sensitive text if the model echoed input, so treat the sidecar with the same care as its adjacent session file.
+
+Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, and stream failures. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original error and classification rather than replacing the planner failure.
+
+Interactive main chat and attached workflow stage chat treat `compaction_end` as the authority for cancellation and failure UI. A failed or cancelled `/compact` stops its spinner, shows the event-provided status or diagnostic path without a duplicate stack trace, writes no boundary, and leaves the session usable for another `/compact` attempt or a normal follow-up turn.
+
+Context thresholds and persisted token-reduction statistics use API-aware normalized usage. OpenAI Responses, Codex Responses, and OpenAI Completions sum uncached input plus cache-read/cache-write partitions. Anthropic Messages alone applies the mirrored-cache guard needed by compatible endpoints that duplicate the same prompt tokens across `input` and cache fields.
 
 ## Persistence and resume
 

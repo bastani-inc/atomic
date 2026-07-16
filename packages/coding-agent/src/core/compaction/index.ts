@@ -8,6 +8,7 @@ export * from "./compaction-types.js";
 export * from "./compaction-parameters.js";
 export * from "./compaction-boundary.js";
 export * from "./range-planner.js";
+export * from "./range-planner-diagnostics.js";
 export * from "./compaction-runner.js";
 export * from "./deleted-ranges.js";
 export * from "./transcript-serialization.js";

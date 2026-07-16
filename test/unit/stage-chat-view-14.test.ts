@@ -443,9 +443,10 @@ describe("StageChatView streaming lifecycle", () => {
             onDetach: () => {},
             onClose: () => {},
         });
-        emit({ type: "compaction_start" } as AgentSessionEvent);
+        emit({ type: "compaction_start", reason: "manual" } as AgentSessionEvent);
 
-        assert.match(renderText(view), /Working/);
+        assert.match(renderText(view), /Compacting context\.\.\./);
+        assert.doesNotMatch(renderText(view), /Working\.\.\./);
         assert.equal(view.handleInput("\x1b"), true);
         await flush();
 

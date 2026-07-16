@@ -3,7 +3,7 @@
  */
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
+import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import type { SessionEntry } from "../session-manager.ts";
 import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
 
@@ -30,12 +30,12 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  *
  * Prefer normalized component fields over `totalTokens`: some providers expose
  * `totalTokens` as a billing/cumulative total, while the footer needs an active
- * context estimate. Anthropic-compatible endpoints can also mirror cached input
- * in both `input` and `cacheRead`/`cacheWrite`; when cache buckets are nearly the
- * same size as `input`, treat `input` as the full prompt instead of counting the
- * same cached prompt twice.
+ * context estimate. Some Anthropic-compatible endpoints mirror cached input in
+ * both `input` and `cacheRead`/`cacheWrite`; only Anthropic Messages usage uses
+ * the near-equal-bucket guard because OpenAI APIs expose disjoint normalized
+ * components that must always be summed.
  */
-export function calculateContextTokens(usage: Usage): number {
+export function calculateContextTokens(usage: Usage, api?: Api): number {
 	const input = Math.max(0, usage.input || 0);
 	const output = Math.max(0, usage.output || 0);
 	const cacheRead = Math.max(0, usage.cacheRead || 0);
@@ -44,7 +44,7 @@ export function calculateContextTokens(usage: Usage): number {
 	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
 	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
 
-	const cacheMirrorsInput = input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
+	const cacheMirrorsInput = api === "anthropic-messages" && input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
 	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
 	return promptTokens + output;
 }
@@ -84,15 +84,20 @@ export interface ContextUsageEstimate {
 	lastUsageIndex: number | null;
 }
 
-function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; index: number } | undefined {
+function getLastAssistantUsageInfo(messages: AgentMessage[]): { usage: Usage; api: Api; index: number } | undefined {
 	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
-	let usageInfo: { usage: Usage; index: number } | undefined;
+	let usageInfo: { usage: Usage; api: Api; index: number } | undefined;
 
 	for (let i = 0; i < messages.length; i++) {
 		const message = messages[i];
 		const usage = getAssistantUsage(message);
-		if (usage && message.timestamp >= latestPrefixTimestamp && calculateContextTokens(usage) > 0) {
-			usageInfo = { usage, index: i };
+		if (
+			usage &&
+			message.role === "assistant" &&
+			message.timestamp >= latestPrefixTimestamp &&
+			calculateContextTokens(usage, message.api) > 0
+		) {
+			usageInfo = { usage, api: message.api, index: i };
 		}
 		latestPrefixTimestamp = Math.max(latestPrefixTimestamp, message.timestamp);
 	}
@@ -120,7 +125,7 @@ export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEst
 		};
 	}
 
-	const usageTokens = calculateContextTokens(usageInfo.usage);
+	const usageTokens = calculateContextTokens(usageInfo.usage, usageInfo.api);
 	let trailingTokens = 0;
 	for (let i = usageInfo.index + 1; i < messages.length; i++) {
 		trailingTokens += estimateTokens(messages[i]);

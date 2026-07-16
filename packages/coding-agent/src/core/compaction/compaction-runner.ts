@@ -7,6 +7,8 @@ import type { CompactedTranscript, VerbatimCompactionPreparation } from "./compa
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
+	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
+	sessionFilePath?: string;
 }
 
 export type CompactionRungResult = CompactedTranscript & { rung: "planned" };
@@ -55,7 +57,7 @@ export async function runVerbatimCompaction(
 		thinkingLevel,
 		preparation.settings.reserveTokens,
 		targetKeepLines(preparation),
-		{ streamFn: options.streamFn },
+		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath },
 	);
 	if (signal?.aborted) throw new Error("Compaction cancelled");
 	return withWholeContextStats(

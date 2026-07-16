@@ -42,7 +42,7 @@ export function renderChatSessionBody<
   if (state.transcript.length > 0) {
     components.push(state.transcriptComponent);
   }
-  if (state.statusMessage) {
+  if (state.statusMessage && !state.compacting) {
     components.push(new Spacer(1));
     components.push(new Text(state.style.dim(state.statusMessage), 2, 0));
   }
@@ -80,7 +80,9 @@ export function renderChatSessionWorkingStatus<
   TExtraEntry extends ChatTranscriptEntryLike,
 >(state: ChatSessionHostState<TExtraEntry>, width: number): string[] {
   if (!isChatSessionStreaming(state)) return [];
-  const message = state.workingMessage ?? "Working...";
+  const message = state.compacting
+    ? state.statusMessage || "Compacting context..."
+    : state.workingMessage ?? "Working...";
   return new WorkingStatusComponent({
     spinner: spinnerFrame(),
     message,

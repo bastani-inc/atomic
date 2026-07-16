@@ -2,9 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added private compaction-planner diagnostic sidecars for failed persisted-session planner calls. Malformed output, unusable ranges, provider errors, and stream failures now save the full response text plus stop reason, usage, request output budget, and non-secret model metadata beside the session JSONL with `0600` permissions where supported; the compaction error reports that path. Credentials, headers, and request prompts are excluded, while in-memory sessions and sidecar write failures preserve the original `RangePlanError` unchanged.
+- Replaced the compaction planner output format from JSON `{"d":[[start,end],...]}` with bare `start,end` records (one per line, no brackets/fences/prose). The new format is ~1% more token-efficient at equivalent range counts and enables trivial newline-based length-truncation recovery.
+- Added silent recovery of complete deletion records from length-truncated compaction planner responses. When the model output is cut by `max_tokens` (`stopReason: "length"`), a deterministic line parser recovers newline-terminated `start,end` records, discards the final unterminated fragment (never guesses multi-digit integers), and passes results through normal validation. Recovery is silent: no warning, banner, or special status—UI shows the normal `✻ Context compacted` message. A private `0600` recovery-diagnostic sidecar is written beside persisted sessions for operational observability (never surfaced in UI). The planner prompt now instructs the model to emit ranges in descending deletion confidence so the highest-priority deletions survive truncation.
+
 ### Fixed
 
 - Fixed the repository `publish-release` workflow to reconcile an exact release PR merged externally while required checks are pending. It preserves identity/refs/SHA; correlates workflow-qualified Actions reruns by name plus workflow; and supports empty-workflow `StatusContext` and GitHub App `CheckRun` evidence. Linked reruns group by inferred kind/name across URL changes; linkless rows inspect both external kinds, accept all-passing candidates, block any pending/failure, and exclude nonempty-workflow Actions. Duplicate aliases reuse exact passing evidence. It rechecks after merge and validates merge/branch evidence. Tag recovery proves `verified merge → tag parent → current base`; exhaustive history avoids GitHub's 1,000-result ceiling; protected coordination retains its lock through ambiguous dispatch visibility; and recovered success requires exact-SHA integrity evidence.
+- Fixed shared extension chat compaction rendering so manual, threshold, and overflow compaction use the animated working spinner with reason-aware copy instead of a duplicate plain status row plus generic `Working...`; successful compaction now falls back to the existing typed `✻ Context compacted` message when a refreshed live session snapshot is unavailable, while preserving durable session reconstruction and avoiding duplicate boundaries.
+- Fixed workflow stage-chat `/compact` cancellation and planner/provider failures from escaping their fire-and-forget editor submission promise and terminating the CLI. The authoritative `compaction_end` event now owns the visible status, animation cleanup, and diagnostic path while the same stage remains usable for retry or follow-up.
+- Fixed OpenAI Responses, Codex Responses, and OpenAI Completions context accounting to sum their normalized uncached and cached input partitions even when the values are nearly equal. Anthropic Messages retains its mirrored-cache guard, preventing missed auto-compaction thresholds, understated footer usage, and negative persisted reduction percentages on Codex sessions.
 
 ## [0.9.9] - 2026-07-15
 

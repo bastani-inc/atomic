@@ -459,7 +459,7 @@ async function handleSlashCommand(ctx: StageChatViewContext, text: string): Prom
       if (!handle) return false;
       await handle.ensureAttached();
       if (!handle.agentSession) return false;
-      await handle.agentSession.compact();
+      try { await handle.agentSession.compact(); } catch { /* compaction_end owns cancellation/failure UI. */ }
       return true;
     }
     case "/quit":

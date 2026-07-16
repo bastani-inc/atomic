@@ -148,19 +148,24 @@ describe("compaction boundary preparation", () => {
 });
 
 describe("one-pass range planner", () => {
-	it("parses only the compact d grammar", () => {
-		expect(extractDeletedRanges('note {"d":[[2,4],["8",6]]} trailing')).toEqual([
+	it("parses bare start,end line records", () => {
+		expect(extractDeletedRanges("2,4\n8,6\n")).toEqual([
 			{ start: 2, end: 4 },
-			{ start: "8", end: 6 },
+			{ start: 8, end: 6 },
+		]);
+		expect(extractDeletedRanges("2,4\n8,6")).toEqual([
+			{ start: 2, end: 4 },
+			{ start: 8, end: 6 },
 		]);
 		expect(extractDeletedRanges('{"deleted_ranges":[{"start":2,"end":4}]}')).toBeUndefined();
+		expect(extractDeletedRanges("not records at all")).toBeUndefined();
 	});
 
 	it("uses the evidence-tuned one-pass contract with whole-region numbering", () => {
 		const prep = preparation();
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
 		expect(prompt).toContain('Target lines to keep: 12');
-		expect(prompt).toContain('{"d":[[start,end],...]}');
+		expect(prompt).toContain("120,180\n6,40\n300,305");
 		expect(prompt).toContain("Rank lines inside long tool results individually across the whole result");
 		expect(prompt).toContain("Do not truncate by position or blanket-delete merely because a result is long");
 		expect(prompt).toContain("keyword matches do not guarantee retention");
@@ -177,12 +182,12 @@ describe("one-pass range planner", () => {
 		const prompt = buildRangePlannerPrompt(prep.region, prep.parameters, 12);
 		expect(prompt.startsWith("<numbered-transcript>\n")).toBe(true);
 		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("The numbered lines above are"));
-		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf('{"d":[[start,end],...]}'));
+		expect(prompt.indexOf("</numbered-transcript>")).toBeLessThan(prompt.indexOf("120,180"));
 	});
 
 	it("makes exactly one request and forwards model, auth, headers, and reasoning unchanged", async () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(['{"d":[[1,20]]}']);
+		const faux = createFauxStreamFn(["1,20\n"]);
 		const calls: Array<{ candidate: Model<Api>; request: SimpleStreamOptions }> = [];
 		const capture = (candidate: Model<Api>, context: Parameters<typeof faux.streamFn>[1], request?: SimpleStreamOptions) => {
 			calls.push({ candidate, request: request ?? {} });
@@ -210,9 +215,9 @@ describe("one-pass range planner", () => {
 	});
 
 	it.each([
-		["malformed", "not json"],
-		["empty", '{"d":[]}'],
-		["unusable", '{"d":[["nan",null]]}'],
+		["malformed", "not valid records"],
+		["empty", ""],
+		["unusable", "nan,null\n"],
 	])("fails after one %s response with no semantic retry", async (_label, response) => {
 		const prep = preparation();
 		const faux = createFauxStreamFn([response]);
@@ -238,7 +243,7 @@ describe("one-pass range planner", () => {
 describe("single planned compaction rung", () => {
 	it.each(["manual", "threshold", "overflow"] as const)("makes one whole-region provider call for %s compaction", async (_reason) => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(['{"d":[[2,10]]}']);
+		const faux = createFauxStreamFn(["2,10\n"]);
 		await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", { streamFn: faux.streamFn });
 		expect(faux.state.callCount).toBe(1);
 		expect(JSON.stringify(faux.state.contexts[0])).toContain(`<numbered-transcript>`);
@@ -247,7 +252,7 @@ describe("single planned compaction rung", () => {
 
 	it("accepts a valid undershooting result without top-up or another call", async () => {
 		const prep = preparation();
-		const faux = createFauxStreamFn(['{"d":[[2,2]]}']);
+		const faux = createFauxStreamFn(["2,2\n"]);
 		const result = await runVerbatimCompaction(prep, model, "key", undefined, undefined, "off", {
 			streamFn: faux.streamFn,
 		});
@@ -265,6 +270,6 @@ describe("single planned compaction rung", () => {
 	it("honors abort before the request", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal, undefined, { streamFn: createFauxStreamFn(['{"d":[[1,1]]}']).streamFn })).rejects.toThrow("Compaction cancelled");
+		await expect(runVerbatimCompaction(preparation(), model, "key", undefined, controller.signal, undefined, { streamFn: createFauxStreamFn(["1,1\n"]).streamFn })).rejects.toThrow("Compaction cancelled");
 	});
 });
