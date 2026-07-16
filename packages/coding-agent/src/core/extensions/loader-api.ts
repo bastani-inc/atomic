@@ -199,12 +199,12 @@ export function createExtensionAPI(
 
     registerProvider(name: string, config: ProviderConfig) {
       runtime.assertActive();
-      runtime.registerProvider(name, config, extension.path);
+      runtime.registerProvider(name, config, extension);
     },
 
     unregisterProvider(name: string) {
       runtime.assertActive();
-      runtime.unregisterProvider(name, extension.path);
+      runtime.unregisterProvider(name, extension);
     },
 
     events: eventBus,

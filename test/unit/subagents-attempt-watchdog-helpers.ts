@@ -66,10 +66,13 @@ export async function withFakeCliEvent<T>(
   });
 }
 
-/** Runs `fn` with process.argv[1] pointed at a fake pi CLI script and short
- * watchdog timeouts (idle 250ms, wall 2000ms, kill grace 20ms); restores the
- * previous argv/env afterwards. */
-export async function withFakeCli<T>(script: string, fn: (dir: string) => Promise<T>): Promise<T> {
+/** Runs `fn` with process.argv[1] pointed at a fake pi CLI script and bounded
+ * watchdog timeouts; restores the previous argv/env afterwards. */
+export async function withFakeCli<T>(
+  script: string,
+  fn: (dir: string) => Promise<T>,
+  timeouts: { idleMs?: number; wallMs?: number } = {},
+): Promise<T> {
   const dir = mkdtempSync(join(tmpdir(), "atomic-subagent-watchdog-"));
   const scriptPath = join(dir, "fake-pi.js");
   const previousArgv1 = process.argv[1];
@@ -78,8 +81,8 @@ export async function withFakeCli<T>(script: string, fn: (dir: string) => Promis
   const previousKill = process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS;
   writeFileSync(scriptPath, script, { mode: 0o700 });
   process.argv[1] = scriptPath;
-  process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = "250";
-  process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = "2000";
+  process.env.ATOMIC_SUBAGENT_ATTEMPT_IDLE_TIMEOUT_MS = String(timeouts.idleMs ?? 250);
+  process.env.ATOMIC_SUBAGENT_ATTEMPT_TIMEOUT_MS = String(timeouts.wallMs ?? 2000);
   process.env.ATOMIC_SUBAGENT_ATTEMPT_KILL_GRACE_MS = "20";
   try {
     return await fn(dir);

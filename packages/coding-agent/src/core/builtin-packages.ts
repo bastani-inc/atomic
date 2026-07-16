@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { getPackageDir } from "../config.ts";
 import { moduleDirFromMetaUrl } from "../utils/split-launcher.ts";
@@ -156,4 +156,24 @@ export function getBuiltinPackagePaths(): string[] {
 		);
 		return packageDir ? [packageDir] : [];
 	});
+}
+
+/** Whether a real loaded module is an allowlisted first-party Cursor extension entry. */
+export function isBuiltinCursorExtensionPath(candidatePath: string): boolean {
+	const context = getBuiltinPackageCandidateContext();
+	const descriptor = BUILTIN_PACKAGES.find((entry) => entry.packageName === "@bastani/cursor");
+	if (!descriptor) return false;
+	const packageDir = firstExistingPackageDir(
+		[...descriptor.sourceCandidates(context), ...distCandidates(context, descriptor)],
+		descriptor,
+	);
+	if (!packageDir) return false;
+	const allowed = [join(packageDir, descriptor.requiredEntry)];
+	if (context.isSourceCheckout) allowed.push(join(packageDir, "test", "resumed-history-extension.ts"));
+	try {
+		const realCandidate = realpathSync(candidatePath);
+		return allowed.some((entry) => existsSync(entry) && realpathSync(entry) === realCandidate);
+	} catch {
+		return false;
+	}
 }

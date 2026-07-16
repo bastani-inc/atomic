@@ -19,7 +19,12 @@ function model(provider: string, id: string): Model<Api> {
     provider, id, name: id, api: provider === "cursor" ? "cursor-agent" : "anthropic-messages",
     baseUrl: "https://example.invalid", reasoning: false, input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 64_000,
+    ...(provider === "cursor" ? { compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } } : {}),
   } as Model<Api>;
+}
+
+function cursorInfo(id: string, value = model("cursor", id)): WorkflowModelInfo {
+  return { provider: "cursor", id, fullId: `cursor/${id}`, model: value };
 }
 
 describe("Cursor workflow model resolution", () => {
@@ -63,7 +68,7 @@ describe("Cursor workflow model resolution", () => {
       primaryModel: "cursor/cursor-grok-4.5-high",
       availableModels: [
         ...models,
-        { provider: "cursor", id: "cursor-grok-4.5-high", fullId: "cursor/cursor-grok-4.5-high" },
+        cursorInfo("cursor-grok-4.5-high"),
       ],
     });
     assert.deepEqual(candidates.map((candidate) => ({ id: candidate.id, level: candidate.reasoningLevel })), [
@@ -86,7 +91,7 @@ describe("Cursor workflow model resolution", () => {
 
   test("preserves every exact provider-qualified Cursor route shape byte-for-byte", () => {
     const ids = [" route ", "route:high", "route (1m)", "route/with/slashes", "CaseRoute"];
-    const availableModels = ids.map((id) => ({ provider: "cursor", id, fullId: `cursor/${id}` }));
+    const availableModels = ids.map((id) => cursorInfo(id));
     for (const id of ids) {
       const [candidate] = buildModelCandidates({ primaryModel: `cursor/${id}`, availableModels });
       assert.equal(candidate?.id, `cursor/${id}`);
@@ -131,9 +136,7 @@ describe("Cursor workflow model resolution", () => {
     const [candidate] = buildModelCandidates({
       fallbackModels: ["cursor/ route:high (1m)/exact "],
       fallbackThinkingLevels: ["max"],
-      availableModels: [{
-        provider: "cursor", id: " route:high (1m)/exact ", fullId: "cursor/ route:high (1m)/exact ",
-      }],
+      availableModels: [cursorInfo(" route:high (1m)/exact ")],
     });
     assert.equal(candidate?.id, "cursor/ route:high (1m)/exact ");
     assert.equal(candidate?.reasoningLevel, undefined);
@@ -157,91 +160,102 @@ describe("Cursor workflow model resolution", () => {
     }
   });
 
-  test("Cursor model objects resolve to the live catalog occurrence, never the caller object", () => {
-    const supplied = model("cursor", "cursor-grok-4.5-high");
-    const live = { ...supplied, name: "Live Catalog Row" };
+  test("a current live Cursor model object is accepted by identity", () => {
+    const live = { ...model("cursor", "cursor-grok-4.5-high"), name: "Live Catalog Row" };
     const [candidate] = buildModelCandidates({
-      primaryModel: supplied,
-      availableModels: [...models, {
-        provider: "cursor", id: live.id, fullId: `cursor/${live.id}`, model: live,
-      }],
+      primaryModel: live,
+      availableModels: [...models, { provider: "cursor", id: live.id, fullId: `cursor/${live.id}`, model: live }],
     });
     assert.equal(candidate?.value, live);
-    assert.notEqual(candidate?.value, supplied);
   });
 
-  test("a caller Cursor object with a fabricated api/baseUrl cannot bypass the live catalog", () => {
-    const supplied = {
-      ...model("cursor", "route"),
-      api: "anthropic-messages",
-      baseUrl: "https://caller.invalid/v1",
-    } as Model<Api>;
+  test("a routing-shaped caller clone cannot bypass live catalog membership", () => {
     const live = model("cursor", "route");
-    const [candidate] = buildModelCandidates({
-      primaryModel: supplied,
+    const forged = { ...live, baseUrl: "https://caller.invalid/v1" } as Model<Api>;
+    assert.throws(() => buildModelCandidates({
+      primaryModel: forged,
       availableModels: [{ provider: "cursor", id: "route", fullId: "cursor/route", model: live }],
-    });
-    assert.equal(candidate?.value, live);
-    assert.equal(typeof candidate?.value === "string" ? undefined : candidate?.value.api, "cursor-agent");
-    assert.equal(typeof candidate?.value === "string" ? undefined : candidate?.value.baseUrl, "https://example.invalid");
+    }), /not available|reselect|authenticated catalog/u);
   });
 
-  test("a selected later duplicate Cursor object uses its ordinal's current live metadata", () => {
-    const supplied = {
-      ...model("cursor", "dup"),
-      compat: { cursorRouting: { dup: { modelId: "dup", maxMode: true, supportsImages: false, catalogOccurrence: 1 } } },
-    } as Model<Api>;
-    const liveOcc0 = { ...model("cursor", "dup"), name: "occ0", compat: { cursorRouting: { dup: { modelId: "dup", maxMode: true, supportsImages: false, catalogOccurrence: 0 } } } } as Model<Api>;
-    const liveOcc1 = { ...model("cursor", "dup"), name: "occ1", compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence: 1 } } } } as Model<Api>;
+  test("a selected later duplicate live Cursor object preserves its exact occurrence", () => {
+    const liveOcc0 = { ...model("cursor", "dup"), name: "occ0" } as Model<Api>;
+    const liveOcc1 = { ...model("cursor", "dup"), name: "occ1", compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: true, catalogOccurrence: 1 } } } } as Model<Api>;
     const [candidate] = buildModelCandidates({
-      primaryModel: supplied,
+      primaryModel: liveOcc1,
       availableModels: [
         { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc0 },
         { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc1 },
       ],
     });
     assert.equal(candidate?.value, liveOcc1);
-    assert.notEqual(candidate?.value, supplied);
   });
 
-  test("a caller Cursor object with an out-of-range ordinal falls back to the first live occurrence", () => {
-    const supplied = {
-      ...model("cursor", "dup"),
-      compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence: 5 } } },
-    } as Model<Api>;
-    const liveOcc0 = { ...model("cursor", "dup"), name: "occ0" } as Model<Api>;
-    const liveOcc1 = { ...model("cursor", "dup"), name: "occ1" } as Model<Api>;
-    const [candidate] = buildModelCandidates({
+  test("a caller Cursor object with an out-of-range ordinal is rejected instead of migrating", () => {
+    const supplied = { ...model("cursor", "dup"), compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence: 5 } } } } as Model<Api>;
+    const liveOcc0 = model("cursor", "dup");
+    const liveOcc1 = { ...model("cursor", "dup"), compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence: 1 } } } } as Model<Api>;
+    assert.throws(() => buildModelCandidates({
       primaryModel: supplied,
       availableModels: [
         { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc0 },
         { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc1 },
       ],
-    });
-    assert.equal(candidate?.value, liveOcc0);
+    }), /not available|reselect|authenticated catalog/u);
   });
 
-  test("a caller Cursor object with a malformed non-integer ordinal falls back to the first live occurrence", () => {
-    const liveOcc0 = { ...model("cursor", "dup"), name: "occ0" } as Model<Api>;
-    const liveOcc1 = { ...model("cursor", "dup"), name: "occ1" } as Model<Api>;
+  test("malformed or absent Cursor occurrence identity is rejected", () => {
+    const liveOcc0 = model("cursor", "dup");
+    const liveOcc1 = { ...model("cursor", "dup"), compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence: 1 } } } } as Model<Api>;
     const availableModels = [
       { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc0 },
       { provider: "cursor", id: "dup", fullId: "cursor/dup", model: liveOcc1 },
     ];
-    // Each malformed runtime ordinal must NOT index liveMatches[1]; it must be
-    // treated as structurally invalid and fall back to the first live occurrence.
-    for (const catalogOccurrence of ["1", 1.5, -1, Number.NaN, Number.POSITIVE_INFINITY] as const) {
-      const supplied = {
-        ...model("cursor", "dup"),
-        api: "anthropic-messages",
-        baseUrl: "https://caller.invalid/v1",
+    const invalid: Model<Api>[] = [
+      { ...liveOcc0, compat: undefined } as Model<Api>,
+      { ...liveOcc0, compat: {} } as Model<Api>,
+      { ...liveOcc0, compat: { cursorRouting: {} } } as Model<Api>,
+      { ...liveOcc0, compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false } } } } as unknown as Model<Api>,
+      { ...liveOcc0, compat: { cursorRouting: { dup: { modelId: "other", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } } as Model<Api>,
+      ...(["1", 1.5, -1, Number.NaN, Number.POSITIVE_INFINITY] as const).map((catalogOccurrence) => ({
+        ...liveOcc0,
         compat: { cursorRouting: { dup: { modelId: "dup", maxMode: false, supportsImages: false, catalogOccurrence } } },
-      } as unknown as Model<Api>;
-      const [candidate] = buildModelCandidates({ primaryModel: supplied, availableModels });
-      assert.equal(candidate?.value, liveOcc0, `ordinal ${String(catalogOccurrence)}`);
-      assert.equal(typeof candidate?.value === "string" ? undefined : candidate?.value.api, "cursor-agent");
-      assert.equal(typeof candidate?.value === "string" ? undefined : candidate?.value.baseUrl, "https://example.invalid");
+      }) as unknown as Model<Api>),
+    ];
+    for (const supplied of invalid) {
+      assert.throws(
+        () => buildModelCandidates({ primaryModel: supplied, availableModels }),
+        /not available|reselect|authenticated catalog/u,
+      );
     }
+  });
+
+  test("strict workflows reject static lowercase Cursor catalog objects without live routing", async () => {
+    for (const staticModel of [
+      { ...model("cursor", "static-forbidden"), api: "anthropic-messages", compat: undefined } as Model<Api>,
+      { ...model("cursor", "static-forbidden"), api: "cursor-agent", compat: undefined } as Model<Api>,
+    ]) {
+      await assert.rejects(buildModelCandidatesFromCatalog({
+        primaryModel: "cursor/static-forbidden",
+        catalog: {
+          discoverModels: async () => undefined,
+          listModels: async () => [{ provider: "cursor", id: staticModel.id, fullId: `cursor/${staticModel.id}`, model: staticModel }],
+        },
+      }), /not available|reselect|authenticated catalog/u);
+    }
+  });
+
+  test("strict workflows reject catalog labels that point at another authenticated Cursor route", async () => {
+    const other = model("cursor", "other-live-route") as Model<Api>;
+    await assert.rejects(buildModelCandidatesFromCatalog({
+      primaryModel: "cursor/claimed-route",
+      catalog: {
+        discoverModels: async () => undefined,
+        listModels: async () => [{
+          provider: "cursor", id: "claimed-route", fullId: "cursor/claimed-route", model: other,
+        }],
+      },
+    }), /not available|reselect|authenticated catalog/u);
   });
 
   test("stale Cursor model objects reject before configured or current fallback", async () => {
@@ -289,20 +303,17 @@ describe("Cursor workflow model resolution", () => {
       assert.equal(discoveries, 0, provider);
     }
 
-    const selected = model("cursor", "route");
+    const live = { ...model("cursor", "route"), name: "current live" };
     let discoveries = 0;
     const [candidate] = await buildModelCandidatesFromCatalog({
-      primaryModel: selected,
+      primaryModel: live,
       catalog: {
         discoverModels: async () => { discoveries += 1; },
-        listModels: async () => [{ provider: "cursor", id: "route", fullId: "cursor/route" }],
+        listModels: async () => [cursorInfo("route", live)],
       },
     });
     assert.equal(candidate?.id, "cursor/route");
-    // No live catalog Model object is available on the info, so the candidate
-    // carries the exact full-ID string for live registry resolution, not the
-    // caller object.
-    assert.equal(candidate?.value, "cursor/route");
+    assert.equal(candidate?.value, live);
     assert.equal(discoveries, 1);
   });
 
@@ -330,7 +341,7 @@ describe("Cursor workflow model resolution", () => {
         discoverModels: async () => { discovered = true; },
         listModels: async () => {
           assert.equal(discovered, true);
-          return [{ provider: "cursor", id: "live-route", fullId: "cursor/live-route" }];
+          return [cursorInfo("live-route")];
         },
       },
     });
@@ -418,7 +429,7 @@ describe("Cursor workflow model resolution", () => {
       primaryModel: "cursor/composer-2",
       catalog: {
         discoverModels: async () => { discoveries += 1; },
-        listModels: async () => [...models, { provider: "cursor", id: "composer-2", fullId: "cursor/composer-2" }],
+        listModels: async () => [...models, cursorInfo("composer-2")],
       },
     });
     assert.equal(candidate?.id, "cursor/composer-2");

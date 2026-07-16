@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { withGitHubCopilotApiVersionHeader } from "./model-registry-builtins.ts";
-import type { ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
+import type { ModelRequestHeaders, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import {
 	getConfigValueEnvVarNames,
 	isCommandConfigValue,
@@ -15,7 +15,7 @@ export async function getModelRequestAuth(
 	model: Model<Api>,
 	authStorage: AuthStorage,
 	providerRequestConfigs: Map<string, ProviderRequestConfig>,
-	modelRequestHeaders: Map<string, Record<string, string>>,
+	modelRequestHeaders: ModelRequestHeaders,
 ): Promise<ResolvedRequestAuth> {
 	try {
 		const providerConfig = providerRequestConfigs.get(model.provider);
@@ -28,7 +28,7 @@ export async function getModelRequestAuth(
 
 		const providerHeaders = resolveHeadersOrThrow(providerConfig?.headers, `provider "${model.provider}"`);
 		const modelHeaders = resolveHeadersOrThrow(
-			modelRequestHeaders.get(`${model.provider}:${model.id}`),
+			modelRequestHeaders.get(model.provider)?.get(model.id),
 			`model "${model.provider}/${model.id}"`,
 		);
 

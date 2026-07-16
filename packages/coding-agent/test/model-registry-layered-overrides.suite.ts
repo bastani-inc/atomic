@@ -136,6 +136,29 @@ describeModelRegistry((context) => {
 		expect((await resolveHeaders(registry))["X-Layered"]).toBe("primary");
 	});
 
+	test("layered headers keep structured provider/model identities collision-free", async () => {
+		const registry = createLayeredRegistry(
+			{ cursor: {
+				baseUrl: "https://api2.cursor.sh", apiKey: "static-key", api: "cursor-agent",
+				models: [modelWithHeaders("proxy:variant-route", { "X-Static-Cursor": "ignored" })],
+			} },
+			{ "cursor:proxy": {
+				baseUrl: "https://proxy.invalid", apiKey: "variant-key", api: "anthropic-messages",
+				models: [modelWithHeaders("variant-route", { "X-Cursor-Variant": "legacy-preserved" })],
+			} },
+		);
+
+		expect(registry.find("cursor", "proxy:variant-route")).toBeUndefined();
+		const variant = registry.find("cursor:proxy", "variant-route");
+		expect(variant).toBeDefined();
+		const auth = await registry.getApiKeyAndHeaders(variant!);
+		expect(auth.ok).toBe(true);
+		if (auth.ok) {
+			expect(auth.headers?.["X-Cursor-Variant"]).toBe("legacy-preserved");
+			expect(auth.headers?.["X-Static-Cursor"]).toBeUndefined();
+		}
+	});
+
 	test("extension providers receive disjoint layered modelOverrides", () => {
 		const registry = createLayeredRegistry(
 			{ "layered-extension": { modelOverrides: { "model-b": { name: "Primary B" } } } },

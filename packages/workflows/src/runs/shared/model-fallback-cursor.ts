@@ -1,4 +1,4 @@
-import type { CreateAgentSessionOptions } from "@bastani/atomic";
+import { isAuthenticatedCursorRouteModel, type CreateAgentSessionOptions } from "@bastani/atomic";
 import type { WorkflowModelCatalogPort, WorkflowModelInfo, WorkflowModelValue } from "../../shared/types.js";
 
 export interface ExplicitCursorReference {
@@ -29,26 +29,28 @@ interface CursorObjectRoutingCompat {
 }
 
 /**
- * The private per-ID occurrence ordinal a selected Cursor model object carries
- * on its own `compat.cursorRouting`, guarded like the execution authority so a
- * mismatched routing key cannot fabricate an occurrence. Returns `undefined`
- * when the object carries no valid ordinal for its exact id.
+ * Return the exact private per-ID occurrence ordinal carried by a Cursor model.
+ * Missing, mismatched, and malformed routing identities are rejected by callers;
+ * routing shape identifies an occurrence but never proves live provenance.
  */
 export function cursorObjectOccurrence(value: NonNullable<CreateAgentSessionOptions["model"]>): number | undefined {
   const compat = value.compat as CursorObjectRoutingCompat | undefined;
   const routing = compat?.cursorRouting?.[value.id];
   if (routing?.modelId !== value.id) return undefined;
-  // Use the caller ordinal ONLY when structurally valid: a non-negative
-  // integer. TypeScript types disappear at runtime, so a malformed value (a
-  // numeric string, fractional, negative, NaN, or Infinity) must be treated as
-  // absent so selection falls back to the first live occurrence rather than
-  // indexing an arbitrary live row.
   const occurrence = routing.catalogOccurrence;
   return Number.isInteger(occurrence) && occurrence >= 0 ? occurrence : undefined;
 }
 
 export function liveInfoCursorOccurrence(info: WorkflowModelInfo): number | undefined {
   return info.model ? cursorObjectOccurrence(info.model) : undefined;
+}
+
+export function isAuthenticatedWorkflowCursorInfo(info: WorkflowModelInfo): info is WorkflowModelInfo & { readonly model: NonNullable<CreateAgentSessionOptions["model"]> } {
+  return info.provider === "cursor"
+    && info.fullId === `cursor/${info.id}`
+    && info.model !== undefined
+    && info.model.id === info.id
+    && isAuthenticatedCursorRouteModel(info.model);
 }
 
 export function hasStrictCursorReference(input: {

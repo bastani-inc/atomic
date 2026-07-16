@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { CursorAuthService } from "../../packages/cursor/src/auth.js";
 import { deriveCursorCredentialScope, FileCursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
-import { CursorModelDiscoveryError, CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
+import { CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider, type CursorProviderContext } from "../../packages/cursor/src/provider.js";
 import { CursorMockTransport } from "./cursor-test-helpers.js";
 
@@ -134,7 +134,7 @@ describe("Cursor provider credential-scoped startup", () => {
 		}
 	});
 
-	test("a successful empty GetUsable response invalidates a fresh cache and fails login", async () => {
+	test("a successful empty GetUsable response durably invalidates a fresh cache and login succeeds", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "atomic-cursor-authoritative-empty-"));
 		try {
 			const token = jwtForSubject("empty-account", "token");
@@ -143,23 +143,44 @@ describe("Cursor provider credential-scoped startup", () => {
 			const cache = new FileCursorCatalogCache(join(dir, "catalog.json"));
 			cache.save({ source: "live", fetchedAt: 90, models: [{ id: "cached-must-clear", maxMode: false }] }, scope);
 			const auth = cursorAuthService(async () => ({ access: token, refresh: "refresh", expires: 123 }));
-			const discovery = cursorDiscoveryService(async () => {
-				throw new CursorModelDiscoveryError("NoUsableModels", "Cursor account has no usable models");
-			});
-			const transport = new CursorMockTransport();
-			const { host, registrations } = makeHost();
-			const runtime = registerCursorProvider(host, {
-				transport, authService: auth, discoveryService: discovery, catalogCache: cache,
+			const transport = new CursorMockTransport({ models: [] });
+			const refreshErrors: Error[] = [];
+			const first = makeHost();
+			const runtime = registerCursorProvider(first.host, {
+				transport, authService: auth, discoveryService: new CursorModelDiscoveryService({ transport, now: () => 100 }), catalogCache: cache,
 				catalogCacheTtlMs: 100, now: () => 100, uuid: () => "authoritative-empty",
+				onCatalogRefreshError: (error) => refreshErrors.push(error),
 			});
-			await assert.rejects(registrations[0]!.config.oauth.login({
+			const credentials = await first.registrations[0]!.config.oauth.login({
 				onAuth() {}, onDeviceCode() {}, onPrompt: async () => "", onSelect: async () => undefined,
-			}), /authenticated model discovery failed/u);
-			assert.deepEqual(registrations.at(-1)?.config.models, []);
+			});
+			assert.equal(credentials.access, token);
+			assert.deepEqual(first.registrations.at(-1)?.config.models, []);
 			assert.equal(cache.load(scope), null);
-			assert.equal(runtime.getCatalogRefreshStatus().state, "failed");
+			assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "empty", fetchedAt: 100 });
+			assert.deepEqual(refreshErrors, []);
 			assert.equal(transport.runs.length, 0);
 			await runtime.dispose();
+
+			let restartDiscoveries = 0;
+			const restartTransport = new CursorMockTransport({ models: [{ id: "after-restart", maxMode: false }] });
+			const restartDiscovery = cursorDiscoveryService(async (accessToken, requestId, signal) => {
+				restartDiscoveries += 1;
+				return new CursorModelDiscoveryService({ transport: restartTransport, now: () => 101 })
+					.discover(accessToken, requestId, signal);
+			});
+			const second = makeHost();
+			const restarted = registerCursorProvider(second.host, {
+				transport: restartTransport, discoveryService: restartDiscovery, catalogCache: cache,
+				catalogCacheTtlMs: 100, now: () => 101, uuid: () => "restart-after-empty",
+			});
+			assert.equal(second.registrations.at(-1)?.config.models.length, 0);
+			const handler = second.lifecycleHandlers.get("session_start")?.[0];
+			assert.ok(handler);
+			await handler({}, { mode: "print", modelRegistry: { getApiKeyForProvider: async () => token } });
+			assert.equal(restartDiscoveries, 1);
+			assert.equal(second.registrations.at(-1)?.config.models[0]?.id, "after-restart");
+			await restarted.dispose();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

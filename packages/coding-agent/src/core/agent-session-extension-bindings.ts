@@ -110,15 +110,17 @@ interface CursorRoutingMetadata {
 	readonly catalogOccurrence: number;
 }
 
-function hasExactCursorRouting(model: NonNullable<AgentSession["model"]>): boolean {
-	if (model.provider !== "cursor") return false;
+function cursorRoutingMetadata(model: NonNullable<AgentSession["model"]>): CursorRoutingMetadata | undefined {
+	if (model.provider !== "cursor") return undefined;
 	const compat = model.compat as { readonly cursorRouting?: Readonly<Record<string, CursorRoutingMetadata>> } | undefined;
 	const routing = compat?.cursorRouting?.[model.id];
 	return routing?.modelId === model.id
 		&& typeof routing.maxMode === "boolean"
 		&& typeof routing.supportsImages === "boolean"
 		&& Number.isInteger(routing.catalogOccurrence)
-		&& routing.catalogOccurrence >= 0;
+		&& routing.catalogOccurrence >= 0
+		? routing
+		: undefined;
 }
 
 export function refreshCurrentModelFromRegistry(this: AgentSession): void {
@@ -131,22 +133,38 @@ export function _refreshCurrentModelFromRegistry(this: AgentSession): void {
 		return;
 	}
 
-	if (hasExactCursorRouting(currentModel)) return;
-	const refreshedModel = this._modelRegistry.find(currentModel.provider, currentModel.id);
-	if (!refreshedModel || refreshedModel === currentModel) {
-		return;
+	let refreshedModel;
+	if (currentModel.provider === "cursor") {
+		const routing = cursorRoutingMetadata(currentModel);
+		if (!routing) {
+			throw new Error(`Cursor model ${currentModel.id} has no exact catalog occurrence; refresh and reselect a model.`);
+		}
+		refreshedModel = this._modelRegistry.getAll().find((candidate) =>
+			candidate.provider === "cursor"
+			&& candidate.id === currentModel.id
+			&& cursorRoutingMetadata(candidate)?.catalogOccurrence === routing.catalogOccurrence,
+		);
+		if (!refreshedModel) {
+			throw new Error(`Cursor model ${currentModel.id} occurrence ${routing.catalogOccurrence} is no longer available; refresh and reselect a model.`);
+		}
+	} else {
+		refreshedModel = this._modelRegistry.find(currentModel.provider, currentModel.id);
 	}
+	if (!refreshedModel || refreshedModel === currentModel) return;
 
 	const previousModel = currentModel;
 	const previousThinkingLevel = this.thinkingLevel;
 	const replay = this._getResumeContextWindowReplayForModel(refreshedModel);
-	this.agent.state.model = replay.model;
-	if (currentModel.contextWindow !== replay.contextWindow) {
-		this._emit({ type: "context_window_changed", contextWindow: replay.contextWindow });
+	// Cursor registry membership is an identity capability. Its fixed catalog
+	// context window requires the canonical current object, not a replay clone.
+	const nextModel = refreshedModel.provider === "cursor" ? refreshedModel : replay.model;
+	this.agent.state.model = nextModel;
+	if (currentModel.contextWindow !== nextModel.contextWindow) {
+		this._emit({ type: "context_window_changed", contextWindow: nextModel.contextWindow });
 	}
 	this.setThinkingLevel(previousThinkingLevel);
 	this._refreshBaseSystemPromptFromActiveTools();
-	this._emit({ type: "model_changed", model: replay.model, previousModel, source: "restore" });
+	this._emit({ type: "model_changed", model: nextModel, previousModel, source: "restore" });
 }
 
 
@@ -260,12 +278,12 @@ export function _bindExtensionCore(this: AgentSession, runner: ExtensionRunner):
 			getSystemPromptOptions: () => this._baseSystemPromptOptions,
 		},
 		{
-			registerProvider: (name, config) => {
-				this._modelRegistry.registerProvider(name, config);
+			registerProvider: (name, config, source) => {
+				this._modelRegistry.registerProvider(name, config, source);
 				this.refreshCurrentModelFromRegistry();
 			},
-			unregisterProvider: (name) => {
-				this._modelRegistry.unregisterProvider(name);
+			unregisterProvider: (name, source) => {
+				this._modelRegistry.unregisterProvider(name, source);
 				this.refreshCurrentModelFromRegistry();
 			},
 		},

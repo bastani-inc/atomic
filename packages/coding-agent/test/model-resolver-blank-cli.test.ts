@@ -14,6 +14,7 @@ const blankCursor = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200_000,
 	maxTokens: 64_000,
+	compat: { cursorRouting: { "": { modelId: "", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
 } as Model<Api>;
 
 test("resolveCliModel preserves an explicit blank model id for an exact provider", () => {

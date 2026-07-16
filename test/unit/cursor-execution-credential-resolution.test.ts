@@ -82,14 +82,7 @@ async function publish(handler: Handler, resolver: () => Promise<string | undefi
 function selectedModel(config: CursorProviderConfig, index = 0): Model<Api> {
 	const definition = config.models[index];
 	if (!definition) throw new Error(`Missing Cursor model occurrence ${index}`);
-	return {
-		...definition,
-		provider: "cursor",
-		api: "cursor-agent",
-		input: [...definition.input],
-		cost: { ...definition.cost },
-		compat: definition.compat as Model<Api>["compat"],
-	} as Model<Api>;
+	return definition as unknown as Model<Api>;
 }
 
 function fabricatedModel(id: string): Model<Api> {
@@ -104,7 +97,8 @@ function fabricatedModel(id: string): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 64_000,
-	};
+		compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+	} as Model<Api>;
 }
 
 async function collect(stream: AsyncIterable<AssistantMessageEvent>): Promise<AssistantMessageEvent[]> {
@@ -259,9 +253,11 @@ describe("Cursor execution credential resolver epochs", () => {
 		await Promise.resolve();
 		assert.deepEqual(discovery.calls, [accessToken]);
 		catalog.resolve({ source: "live", fetchedAt: 100, models: [{ id: "shared-route", maxMode: true }] });
-		assert.equal((await first).at(-1)?.type, "done");
-		assert.equal((await second).at(-1)?.type, "done");
-		assert.equal(testHarness.transport.runs.length, 2);
+		assert.equal((await first).at(-1)?.type, "error");
+		assert.equal((await second).at(-1)?.type, "error");
+		const current = testHarness.registrations.at(-1)!;
+		assert.equal((await collect(current.streamSimple(selectedModel(current), context, { apiKey: accessToken }))).at(-1)?.type, "done");
+		assert.equal(testHarness.transport.runs.length, 1);
 		await testHarness.runtime.dispose();
 	});
 
@@ -446,9 +442,12 @@ describe("Cursor execution credential resolver epochs", () => {
 		controller.abort();
 		await expectAbortedCompletion(first);
 
-		const recovered = await collect(testHarness.registrations[0]!.streamSimple(
+		const copiedRecovery = await collect(testHarness.registrations[0]!.streamSimple(
 			fabricatedModel("recovery-route"), context, { apiKey: accessToken },
 		));
+		assert.equal(copiedRecovery.at(-1)?.type, "error");
+		const current = testHarness.registrations.at(-1)!;
+		const recovered = await collect(current.streamSimple(selectedModel(current), context, { apiKey: accessToken }));
 		assert.equal(recovered.at(-1)?.type, "done");
 		assert.equal(testHarness.transport.runs.length, 1);
 		await testHarness.runtime.dispose();

@@ -4,6 +4,7 @@ import { clampThinkingLevel, getSupportedThinkingLevels, modelsAreEqual } from "
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
 import { formatNoApiKeyFoundMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
+import { isSelectableModel } from "./cursor-model-reference.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS, THINKING_LEVELS, type ContextWindowReplayRequest, type ContextWindowReplaySource, type ModelCycleResult } from "./agent-session-types.ts";
 
@@ -78,6 +79,9 @@ export async function _emitModelSelect(this: AgentSession,
  */
 
 export async function setModel(this: AgentSession, model: Model<Api>): Promise<void> {
+	if (!this._modelRegistry.isCurrentModel(model)) {
+		throw new Error(`Cursor model cursor/${model.id} is not an exact route in the current authenticated catalog.`);
+	}
 	if (!this._modelRegistry.hasConfiguredAuth(model)) {
 		throw new Error(`No API key for ${model.provider}/${model.id}`);
 	}
@@ -114,7 +118,7 @@ export async function cycleModel(this: AgentSession, direction: "forward" | "bac
 
 
 export async function _cycleScopedModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-	const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.hasConfiguredAuth(scoped.model));
+	const scopedModels = this._scopedModels.filter((scoped) => this._modelRegistry.isCurrentModel(scoped.model) && this._modelRegistry.hasConfiguredAuth(scoped.model));
 	if (scopedModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
@@ -148,7 +152,7 @@ export async function _cycleScopedModel(this: AgentSession, direction: "forward"
 
 
 export async function _cycleAvailableModel(this: AgentSession, direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-	const availableModels = await this._modelRegistry.getAvailable();
+	const availableModels = (await this._modelRegistry.getAvailable()).filter(isSelectableModel);
 	if (availableModels.length <= 1) return undefined;
 
 	const currentModel = this.model;
@@ -266,6 +270,10 @@ export function _clampThinkingLevel(this: AgentSession, level: ThinkingLevel, _a
 // =========================================================================
 
 
+function preserveCursorRegistryIdentity(model: Model<Api>, selectedModel: Model<Api>): Model<Api> {
+	return model.provider === "cursor" ? model : selectedModel;
+}
+
 export function getAvailableContextWindows(this: AgentSession): number[] {
 	return this.model ? getSupportedContextWindows(this.model) : [];
 }
@@ -285,21 +293,25 @@ export function setContextWindow(this: AgentSession, contextWindow: number, opti
 		throw new Error(selected.error);
 	}
 
+	const nextModel = preserveCursorRegistryIdentity(this.model, selected.model);
 	const previousContextWindow = this.model.contextWindow;
 	const isChanging = previousContextWindow !== selected.contextWindow;
-	this.agent.state.model = selected.model;
+	this.agent.state.model = nextModel;
 
 	if (isChanging) {
 		this.sessionManager.appendContextWindowChange(selected.contextWindow);
 		this._emit({ type: "context_window_changed", contextWindow: selected.contextWindow });
 	}
 	if (options.persistDefault === true) {
-		this.settingsManager.setDefaultContextWindowForModel(selected.model.provider, selected.model.id, selected.contextWindow);
+		this.settingsManager.setDefaultContextWindowForModel(nextModel.provider, nextModel.id, selected.contextWindow);
 	}
 }
 
 
 export function _withContextWindowForModelSwitch(this: AgentSession, model: Model<Api>): Model<Api> {
+	// Cursor registry object identity is execution provenance, and its catalog
+	// context window is fixed. Context-window replay must not clone it.
+	if (model.provider === "cursor") return model;
 	// A source model's scalar contextWindow can be its natural default (for example a 1m-default
 	// model). Do not treat that alone as an opt-in to larger windows on a 400k-default target.
 	const settingsDefaultContextWindow = this._getSettingsContextWindowRequestForModel(model)?.contextWindow;
@@ -365,7 +377,11 @@ export function _getContextWindowReplayForModel(this: AgentSession,
 	if (requestedContextWindow !== undefined) {
 		const selected = selectContextWindow(model, requestedContextWindow, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
 		if (!("error" in selected)) {
-			return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn: false };
+			return {
+				model: preserveCursorRegistryIdentity(model, selected.model),
+				contextWindow: selected.contextWindow,
+				wouldWarn: false,
+			};
 		}
 		return this._getDefaultContextWindowReplayForModel(model, source !== "global-settings");
 	}
@@ -381,7 +397,11 @@ export function _getDefaultContextWindowReplayForModel(this: AgentSession,
 	const defaultContextWindow = getModelDefaultContextWindow(model);
 	const selected = selectContextWindow(model, defaultContextWindow, COPILOT_CONTEXT_WINDOW_SELECTION_OPTIONS);
 	if (!("error" in selected)) {
-		return { model: selected.model, contextWindow: selected.contextWindow, wouldWarn };
+		return {
+			model: preserveCursorRegistryIdentity(model, selected.model),
+			contextWindow: selected.contextWindow,
+			wouldWarn,
+		};
 	}
 	return {
 		model: { ...model, contextWindow: defaultContextWindow, defaultContextWindow },

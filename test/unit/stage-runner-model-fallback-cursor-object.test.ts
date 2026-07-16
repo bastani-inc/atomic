@@ -68,39 +68,20 @@ test("Cursor discovery failure stops before stage session creation, prompt, or R
   assert.equal(ctx.__modelFallbackMeta().attemptedModels, undefined);
 });
 
-test("stage creation resolves the selected duplicate Cursor occurrence to the LIVE object, never the caller", async () => {
-  const liveOcc0 = { ...staleCursorModel(), name: "live occ0" } as Model<Api>;
-  const liveOcc1 = {
-    ...staleCursorModel(),
-    name: "live occ1",
-    compat: {
-      cursorRouting: {
-        "old-synthetic-high": {
-          modelId: "old-synthetic-high", maxMode: false, supportsImages: false, catalogOccurrence: 1,
-        },
-      },
-    },
-  } as Model<Api>;
-  // Caller object carries occurrence 1 plus stale metadata and a fabricated api.
-  const selected = {
-    ...staleCursorModel(),
-    name: "caller duplicate",
-    api: "anthropic-messages",
-    compat: {
-      cursorRouting: {
-        "old-synthetic-high": {
-          modelId: "old-synthetic-high", maxMode: true, supportsImages: false, catalogOccurrence: 1,
-        },
-      },
-    },
-  } as Model<Api>;
+test("stage creation accepts the exact selected live duplicate Cursor occurrence", async () => {
+  const liveOcc0 = { ...staleCursorModel(), name: "live occ0", compat: { cursorRouting: { "old-synthetic-high": {
+    modelId: "old-synthetic-high", maxMode: true, supportsImages: false, catalogOccurrence: 0,
+  } } } } as Model<Api>;
+  const liveOcc1 = { ...staleCursorModel(), name: "live occ1", compat: { cursorRouting: { "old-synthetic-high": {
+    modelId: "old-synthetic-high", maxMode: false, supportsImages: true, catalogOccurrence: 1,
+  } } } } as Model<Api>;
   let createdModel: Model<Api> | string | undefined;
   const ctx = createStageContext(makeOpts({
     adapters: { agentSession: { async create(options) {
       createdModel = options.model;
       return makeMockSession({ async prompt() {} }).session;
     } } },
-    stageOptions: { model: selected },
+    stageOptions: { model: liveOcc1 },
     models: {
       discoverModels: async () => undefined,
       listModels: async () => [
@@ -112,5 +93,4 @@ test("stage creation resolves the selected duplicate Cursor occurrence to the LI
 
   await ctx.prompt("retain occurrence");
   assert.equal(createdModel, liveOcc1);
-  assert.notEqual(createdModel, selected);
 });

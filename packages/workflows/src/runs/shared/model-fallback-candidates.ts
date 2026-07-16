@@ -7,8 +7,8 @@ import type {
   WorkflowThinkingLevel,
 } from "../../shared/types.js";
 import {
-  cursorObjectOccurrence, explicitCursorModelObject, hasStrictCursorReference, liveInfoCursorOccurrence,
-  parseExplicitCursorReference, requireAuthenticatedCursorDiscovery, strictCursorStringReference,
+  cursorObjectOccurrence, explicitCursorModelObject, hasStrictCursorReference, isAuthenticatedWorkflowCursorInfo,
+  liveInfoCursorOccurrence, parseExplicitCursorReference, requireAuthenticatedCursorDiscovery, strictCursorStringReference,
 } from "./model-fallback-cursor.js";
 
 export interface WorkflowResolvedModelCandidate {
@@ -229,14 +229,12 @@ function resolveStringModel(
   const cursorReference = parseExplicitCursorReference(rawInput);
   if (cursorReference !== undefined) {
     if (availableModels === undefined) return unavailableCursorFailure(rawInput);
-    const exact = availableModels.map(normalizeInfo).find(
-      (model) => model.provider === "cursor"
-        && model.id === cursorReference.routeId
-        && model.fullId === cursorReference.fullId,
+    const exact = availableModels.map(normalizeInfo).filter(isAuthenticatedWorkflowCursorInfo).find(
+      (model) => model.id === cursorReference.routeId && model.fullId === cursorReference.fullId,
     );
     return exact === undefined
       ? unavailableCursorFailure(rawInput)
-      : makeCandidate(exact.fullId, exact.model ?? exact.fullId, undefined);
+      : makeCandidate(exact.fullId, exact.model, undefined);
   }
   const slashIndex = rawInput.indexOf("/");
   if (slashIndex >= 0) {
@@ -323,20 +321,20 @@ function resolveModelValue(
     if (!explicitCursorModelObject(value)) return { id: workflowModelId(value)!, value };
     const input = `cursor/${value.id}`;
     if (availableModels === undefined) return unavailableCursorFailure(input);
-    // Return the LIVE catalog occurrence object, never the caller's object: the
-    // executable api/baseUrl/headers/routing come only from the authenticated
-    // catalog (GetUsable sole authority). The caller's private per-ID ordinal
-    // selects among duplicate live occurrences when it indexes an existing one.
-    const liveMatches = availableModels.map(normalizeInfo).filter(
-      (model) => model.provider === "cursor" && model.id === value.id && model.fullId === input,
+    // Explicit model objects are accepted only by current catalog membership.
+    // Routing metadata identifies the exact duplicate occurrence but is not
+    // forgeable provenance and cannot canonicalize a caller-created clone.
+    const liveMatches = availableModels.map(normalizeInfo).filter(isAuthenticatedWorkflowCursorInfo).filter(
+      (model) => model.id === value.id && model.fullId === input,
     );
     if (liveMatches.length === 0) return unavailableCursorFailure(input);
     const ordinal = cursorObjectOccurrence(value);
-    const liveInfo = (ordinal === undefined
-      ? undefined
-      : liveMatches.find((model) => liveInfoCursorOccurrence(model) === ordinal) ?? liveMatches[ordinal])
-      ?? liveMatches[0]!;
-    return { id: liveInfo.fullId, value: liveInfo.model ?? liveInfo.fullId };
+    if (ordinal === undefined) return unavailableCursorFailure(input);
+    const liveInfo = liveMatches.find(
+      (model) => model.model === value && liveInfoCursorOccurrence(model) === ordinal,
+    );
+    if (liveInfo === undefined) return unavailableCursorFailure(input);
+    return { id: liveInfo.fullId, value: liveInfo.model };
   }
   return resolveStringModel(value, availableModels, preferredProvider);
 }

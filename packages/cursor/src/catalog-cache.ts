@@ -20,9 +20,12 @@ export interface CursorCatalogCacheRecord {
 	readonly models: readonly CursorUsableModel[];
 }
 
+/** `true` confirms persistence, `false` confirms a skipped write, and `void` is a legacy unconfirmed outcome. */
+export type CursorCatalogCacheSaveResult = boolean | void;
+
 export interface CursorCatalogCache {
 	load(credentialScope?: string): CursorModelCatalog | null;
-	save(catalog: CursorModelCatalog, credentialScope?: string): void | Promise<void>;
+	save(catalog: CursorModelCatalog, credentialScope?: string): CursorCatalogCacheSaveResult | Promise<CursorCatalogCacheSaveResult>;
 	clear?(credentialScope?: string): void | Promise<void>;
 }
 
@@ -36,20 +39,55 @@ export class FileCursorCatalogCache implements CursorCatalogCache {
 		if (!existsSync(path)) return null;
 		try { return parseCursorCatalogCacheRecord(JSON.parse(readFileSync(path, "utf8")), credentialScope) } catch { return null }
 	}
-	save(catalog: CursorModelCatalog, credentialScope?: string): void {
+	save(catalog: CursorModelCatalog, credentialScope?: string): boolean | Promise<boolean> {
+		if (!credentialScope) return false;
+		let record = toCursorCatalogCacheRecord(catalog, credentialScope);
+		const authoritativeEmpty = !record && isValidEmptyCatalog(catalog, credentialScope);
+		if (authoritativeEmpty) {
+			const marker: CursorCatalogCacheRecord = {
+				version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, credentialScope, models: [],
+			};
+			try {
+				const clearing = this.clear(credentialScope);
+				if (clearing) {
+					return clearing.then(
+						() => this.#writeRecord(marker, credentialScope, true),
+						() => this.#writeRecord(marker, credentialScope, true),
+					);
+				}
+				return this.#writeRecord(marker, credentialScope, true);
+			} catch {
+				record = marker;
+			}
+		}
+		if (!record) return false;
+		return this.#writeRecord(record, credentialScope, authoritativeEmpty);
+	}
+	clear(credentialScope?: string): void | Promise<void> {
 		if (!credentialScope) return;
-		const record = toCursorCatalogCacheRecord(catalog, credentialScope);
-		if (!record) return;
+		const path = this.#pathFor(credentialScope);
+		mkdirSync(dirname(path), { recursive: true });
+		withCacheFileLock(path, () => {
+			// Public loads hide authoritative-empty markers, but storage ordering must
+			// retain them so an older delayed writer cannot resurrect cleared routes.
+			if (this.#loadRecord(credentialScope)?.models.length === 0) return;
+			rmSync(path, { force: true });
+		});
+	}
+	#writeRecord(record: CursorCatalogCacheRecord, credentialScope: string, authoritativeEmpty: boolean): boolean {
 		const path = this.#pathFor(credentialScope);
 		mkdirSync(dirname(path), { recursive: true });
 		const tmpPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+		let applied = false;
 		try {
 			writeFileSync(tmpPath, `${JSON.stringify(record, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 			withCacheFileLock(path, () => {
-				const current = this.load(credentialScope);
-				if (current && current.fetchedAt > catalog.fetchedAt) return;
+				const current = this.#loadRecord(credentialScope);
+				if (!authoritativeEmpty && current && current.fetchedAt > record.fetchedAt) return;
 				renameSync(tmpPath, path);
+				applied = true;
 			});
+			return applied;
 		} catch (error) {
 			try { rmSync(tmpPath, { force: true }) } catch { /* preserve original error */ }
 			throw error;
@@ -57,10 +95,10 @@ export class FileCursorCatalogCache implements CursorCatalogCache {
 			try { rmSync(tmpPath, { force: true }) } catch { /* best-effort cleanup */ }
 		}
 	}
-	clear(credentialScope?: string): void {
-		if (!credentialScope) return;
+	#loadRecord(credentialScope: string): CursorCatalogCacheRecord | null {
 		const path = this.#pathFor(credentialScope);
-		withCacheFileLock(path, () => rmSync(path, { force: true }));
+		if (!existsSync(path)) return null;
+		try { return parseCursorCatalogStorageRecord(JSON.parse(readFileSync(path, "utf8")), credentialScope) } catch { return null }
 	}
 	#pathFor(credentialScope: string): string { return `${this.#path}.${credentialScope}` }
 }
@@ -110,6 +148,13 @@ export function deriveCursorCredentialScope(accessToken: string): string | undef
 }
 
 export function parseCursorCatalogCacheRecord(value: unknown, expectedCredentialScope?: string): CursorModelCatalog | null {
+	const record = parseCursorCatalogStorageRecord(value, expectedCredentialScope);
+	return record && record.models.length > 0
+		? { source: "live", fetchedAt: record.fetchedAt, credentialScope: record.credentialScope, models: record.models }
+		: null;
+}
+
+function parseCursorCatalogStorageRecord(value: unknown, expectedCredentialScope?: string): CursorCatalogCacheRecord | null {
 	if (!isRecord(value) || value.version !== CURSOR_CATALOG_CACHE_VERSION || hasUnexpectedKeys(value, CACHE_RECORD_KEYS)) return null;
 	if (typeof value.fetchedAt !== "number" || !Number.isFinite(value.fetchedAt) || value.fetchedAt < 0 || !Array.isArray(value.models)) return null;
 	const credentialScope = parseCredentialScope(value.credentialScope);
@@ -120,7 +165,7 @@ export function parseCursorCatalogCacheRecord(value: unknown, expectedCredential
 		if (!model) return null;
 		models.push(model);
 	}
-	return models.length > 0 ? { source: "live", fetchedAt: value.fetchedAt, credentialScope, models } : null;
+	return { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: value.fetchedAt, credentialScope, models };
 }
 
 export function toCursorCatalogCacheRecord(catalog: CursorModelCatalog, credentialScope?: string): CursorCatalogCacheRecord | null {
@@ -129,6 +174,15 @@ export function toCursorCatalogCacheRecord(catalog: CursorModelCatalog, credenti
 	if (!Number.isFinite(catalog.fetchedAt) || catalog.fetchedAt < 0) return null;
 	const models = catalog.models.map(toCachedCursorModel);
 	return models.length > 0 ? { version: CURSOR_CATALOG_CACHE_VERSION, fetchedAt: catalog.fetchedAt, credentialScope, models } : null;
+}
+
+function isValidEmptyCatalog(catalog: CursorModelCatalog, credentialScope: string): boolean {
+	return catalog.source === "live"
+		&& catalog.models.length === 0
+		&& parseCredentialScope(credentialScope) !== undefined
+		&& (catalog.credentialScope === undefined || catalog.credentialScope === credentialScope)
+		&& Number.isFinite(catalog.fetchedAt)
+		&& catalog.fetchedAt >= 0;
 }
 
 function toCachedCursorModel(model: CursorUsableModel): CursorUsableModel {

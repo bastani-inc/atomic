@@ -10,6 +10,7 @@ import { AuthStorage } from "../../src/core/auth-storage.ts";
 import { createExtensionRuntime, discoverAndLoadExtensions, loadExtensions } from "../../src/core/extensions/loader.ts";
 import { ExtensionRunner, emitProjectTrustEvent } from "../../src/core/extensions/runner.ts";
 import type {
+	Extension,
 	ExtensionActions,
 	ExtensionContextActions,
 	ExtensionUIContext,
@@ -18,6 +19,7 @@ import type {
 import { KeybindingsManager, type KeyId } from "../../src/core/keybindings.ts";
 import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
+import { trustedCursorProviderSource } from "../cursor-test-provider-source.ts";
 
 describe("ExtensionRunner", () => {
 	let tempDir: string;
@@ -93,6 +95,11 @@ describe("ExtensionRunner", () => {
 		compact: () => {},
 		getSystemPrompt: () => "",
 	};
+	const providerSource = (sourcePath: string): Extension => ({
+		path: sourcePath, resolvedPath: sourcePath, loadedFromModule: false,
+		sourceInfo: { path: sourcePath, source: "test", scope: "temporary", origin: "top-level" },
+		handlers: new Map(), tools: new Map(), messageRenderers: new Map(), commands: new Map(), flags: new Map(), shortcuts: new Map(),
+	});
 
 		describe("provider registration", () => {
 		it("bindCore ignores invalid queued registrations and reports extension error", () => {
@@ -104,7 +111,7 @@ describe("ExtensionRunner", () => {
 						throw new Error("should not run");
 					}) as any,
 				},
-				"/tmp/broken-extension.ts",
+				providerSource("/tmp/broken-extension.ts"),
 			);
 
 			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
@@ -121,7 +128,7 @@ describe("ExtensionRunner", () => {
 		it("pre-bind unregister removes all queued registrations for a provider", () => {
 			const runtime = createExtensionRuntime();
 
-			runtime.registerProvider("queued-provider", providerModelConfig);
+			runtime.registerProvider("queued-provider", providerModelConfig, providerSource("/tmp/queued-extension.ts"));
 			runtime.registerProvider("queued-provider", {
 				...providerModelConfig,
 				models: [
@@ -135,11 +142,21 @@ describe("ExtensionRunner", () => {
 						maxTokens: 4096,
 					},
 				],
-			});
+			}, providerSource("/tmp/queued-extension.ts"));
 			expect(runtime.pendingProviderRegistrations).toHaveLength(2);
 
 			runtime.unregisterProvider("queued-provider");
 			expect(runtime.pendingProviderRegistrations).toHaveLength(0);
+		});
+
+		it("pre-bind untrusted Cursor unregister cannot delete a trusted queued publication", () => {
+			const runtime = createExtensionRuntime();
+			const trusted = trustedCursorProviderSource();
+			const untrusted = providerSource("/tmp/forged-cursor-extension.ts");
+			runtime.registerProvider("cursor", providerModelConfig, trusted);
+			runtime.unregisterProvider("cursor", untrusted);
+			expect(runtime.pendingProviderRegistrations).toHaveLength(1);
+			expect(runtime.pendingProviderRegistrations[0]?.source).toBe(trusted);
 		});
 
 		it("post-bind register and unregister take effect immediately", () => {

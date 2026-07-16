@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the web-access extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no web-access source changes were needed.
+- Updated `linkedom` from 0.18.12 to 0.18.13 and refreshed its selector dependency graph.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the web-access extension; no functional web-access changes were made after 0.9.9-alpha.3.
+
 ## [0.9.9-alpha.3] - 2026-07-14
 
 ### Changed

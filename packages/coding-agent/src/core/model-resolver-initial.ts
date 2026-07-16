@@ -2,7 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import chalk from "chalk";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
-import { isExactCursorProvider } from "./cursor-model-reference.ts";
+import { isExactCursorProvider, isSelectableModel } from "./cursor-model-reference.ts";
 import type { ModelRegistry } from "./model-registry.ts";
 import { findPreferredAvailableModel } from "./model-resolver-defaults.ts";
 import { buildFallbackModel } from "./model-resolver-patterns.ts";
@@ -28,7 +28,7 @@ export async function resolveRestoredModelReference(
   modelRegistry: ModelRegistry,
 ): Promise<Model<Api> | undefined> {
   const found = modelRegistry.find(provider, modelId);
-  if (found) return modelRegistry.hasConfiguredAuth(found) ? found : undefined;
+  if (found) return isSelectableModel(found) && modelRegistry.hasConfiguredAuth(found) ? found : undefined;
   if (!modelRegistry.canRestoreUnknownModel(provider)) return undefined;
   return buildConfiguredProviderFallbackModel(provider, modelId, modelRegistry);
 }
@@ -85,17 +85,18 @@ export async function findInitialModel(options: {
     }
   }
 
-  if (scopedModels.length > 0 && !isContinuing) {
+  const firstScopedModel = scopedModels.find((entry) => modelRegistry.isCurrentModel(entry.model));
+  if (firstScopedModel && !isContinuing) {
     return {
-      model: scopedModels[0].model,
-      thinkingLevel: scopedModels[0].thinkingLevel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
+      model: firstScopedModel.model,
+      thinkingLevel: firstScopedModel.thinkingLevel ?? defaultThinkingLevel ?? DEFAULT_THINKING_LEVEL,
       fallbackMessage: undefined,
     };
   }
 
   if (hasSavedDefault) {
     const found = modelRegistry.find(defaultProvider, defaultModelId);
-    if (found && modelRegistry.hasConfiguredAuth(found)) {
+    if (found && isSelectableModel(found) && modelRegistry.hasConfiguredAuth(found)) {
       model = found;
       if (defaultThinkingLevel) {
         thinkingLevel = defaultThinkingLevel;
@@ -112,7 +113,7 @@ export async function findInitialModel(options: {
     };
   }
 
-  const availableModels = await modelRegistry.getAvailable();
+  const availableModels = (await modelRegistry.getAvailable()).filter(isSelectableModel);
   if (availableModels.length > 0) {
     return {
       model: findPreferredAvailableModel(availableModels),
@@ -164,7 +165,7 @@ export async function restoreModelFromSession(
     console.error(chalk.yellow(`Warning: Could not restore model ${savedProvider}/${savedModelId} (${reason}).`));
   }
 
-  if (currentModel) {
+  if (currentModel && modelRegistry.isCurrentModel(currentModel)) {
     if (shouldPrintMessages) {
       console.log(chalk.dim(`Falling back to: ${currentModel.provider}/${currentModel.id}`));
     }
@@ -174,7 +175,7 @@ export async function restoreModelFromSession(
     };
   }
 
-  const availableModels = await modelRegistry.getAvailable();
+  const availableModels = (await modelRegistry.getAvailable()).filter(isSelectableModel);
   const fallbackModel = findPreferredAvailableModel(availableModels);
   if (fallbackModel) {
     if (shouldPrintMessages) {

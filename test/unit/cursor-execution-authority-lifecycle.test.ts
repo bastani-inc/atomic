@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import type { Api, AssistantMessageEventStream, Context, Model } from "@earendil-works/pi-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import type { ProviderConfigInput } from "../../packages/coding-agent/src/core/model-registry-types.js";
+import { trustedCursorProviderSource } from "../../packages/coding-agent/test/cursor-test-provider-source.js";
 import type { CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type {
 	CursorExecutionAuthorityScheduler,
@@ -54,7 +56,8 @@ function model(id: string): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 64_000,
-	};
+		compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+	} as Model<Api>;
 }
 
 class DeferredDiscovery extends CursorModelDiscoveryService {
@@ -164,18 +167,8 @@ function harness(): {
 			registerProvider(name, config) {
 				registry.registerProvider(name, {
 					...config,
-					models: config.models.map((entry) => ({
-						id: entry.id,
-						name: entry.name,
-						api: "cursor-agent" as const,
-						baseUrl: entry.baseUrl,
-						reasoning: entry.reasoning,
-						input: [...entry.input],
-						cost: { ...entry.cost },
-						contextWindow: entry.contextWindow,
-						maxTokens: entry.maxTokens,
-					})),
-				});
+					models: [...config.models] as unknown as NonNullable<ProviderConfigInput["models"]>,
+				}, trustedCursorProviderSource());
 				registrations.push(config);
 			},
 			on(event, handler) { handlers.set(event, handler); },
@@ -226,10 +219,13 @@ test("execution activates only the host-selected account and joins its in-flight
 	assert.equal(testHarness.registry.find("cursor", "a-only"), undefined);
 	bCatalog.resolve({ source: "live", fetchedAt: Date.now(), models: [{ id: "shared-b", maxMode: true, supportsImages: true }] });
 	await hostDiscovery;
-	const result = await streamEvents;
+	const rejectedClone = await streamEvents;
+	assert.equal(rejectedClone.at(-1)?.type, "error");
+	const currentB = testHarness.registry.find("cursor", "shared-b")!;
+	const result = await events(testHarness.registrations.at(-1)!.streamSimple(currentB, context, { apiKey: accountB }));
+	assert.deepEqual(currentB.input, ["text", "image"]);
 	assert.equal(result.at(-1)?.type, "done");
 	assert.equal(transport.runs.at(-1)?.maxMode, true);
-	assert.deepEqual(testHarness.registry.find("cursor", "shared-b")?.input, ["text", "image"]);
 	assert.ok(testHarness.registry.find("cursor", "shared-b"));
 	assert.equal(testHarness.registry.getAll().filter((entry) => entry.provider === "cursor").length, 1);
 
@@ -274,12 +270,14 @@ test("cold execution rejects a stale caller credential before discovery or catal
 	assert.equal(testHarness.registry.getAll().some((entry) => entry.provider === "cursor"), false);
 	assert.equal(cache.catalog, null);
 
-	const selected = await events(testHarness.registrations.at(-1)!.streamSimple(model("selected-route"), context, { apiKey: selectedAccount }));
-	assert.equal(selected.at(-1)?.type, "done");
+	const copied = await events(testHarness.registrations.at(-1)!.streamSimple(model("selected-route"), context, { apiKey: selectedAccount }));
+	assert.equal(copied.at(-1)?.type, "error");
 	assert.deepEqual(discovery.calls, [selectedAccount]);
+	const selectedModel = testHarness.registry.find("cursor", "selected-route")!;
+	const selected = await events(testHarness.registrations.at(-1)!.streamSimple(selectedModel, context, { apiKey: selectedAccount }));
+	assert.equal(selected.at(-1)?.type, "done");
 	assert.equal(transport.runs.length, 1);
 	assert.equal(transport.runs[0]?.maxMode, true);
-	assert.ok(testHarness.registry.find("cursor", "selected-route"));
 
 	currentToken = undefined;
 	const noHostCredential = await events(testHarness.registrations.at(-1)!.streamSimple(model("selected-route"), context, { apiKey: selectedAccount }));
@@ -364,7 +362,8 @@ test("silent TTL expiry removes real registry rows, cache state, and an active s
 
 	const currentTimer = scheduler.timers.at(-1);
 	assert.ok(currentTimer);
-	const activeEvents = events(testHarness.registrations.at(-1)!.streamSimple(model("b-route"), context, { apiKey: accountB }));
+	const activeModel = testHarness.registry.find("cursor", "b-route")!;
+	const activeEvents = events(testHarness.registrations.at(-1)!.streamSimple(activeModel, context, { apiKey: accountB }));
 	await waitUntil(() => transport.runs === 1);
 	now = 11;
 	currentTimer.callback();
@@ -402,7 +401,8 @@ test("provider disposal is bounded and detaches permanently stalled cleanup", as
 	assert.ok(discover);
 	await discover({ type: "model_catalog_discover" }, { mode: "print", modelRegistry: { getApiKeyForProvider: () => accessToken } });
 	assert.ok(testHarness.registry.find("cursor", "dispose-route"));
-	const streamEvents = events(testHarness.registrations.at(-1)!.streamSimple(model("dispose-route"), context, { apiKey: accessToken }));
+	const disposeModel = testHarness.registry.find("cursor", "dispose-route")!;
+	const streamEvents = events(testHarness.registrations.at(-1)!.streamSimple(disposeModel, context, { apiKey: accessToken }));
 	await waitUntil(() => transport.runs === 1);
 
 	await Promise.race([

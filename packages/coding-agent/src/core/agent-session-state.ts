@@ -54,7 +54,7 @@ export function setActiveToolsByName(this: AgentSession, toolNames: string[]): v
 /** Whether compaction or branch summarization is currently running */
 
 export function setScopedModels(this: AgentSession, scopedModels: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }>): void {
-	this._scopedModels = scopedModels;
+	this._scopedModels = scopedModels.filter((entry) => this._modelRegistry.isCurrentModel(entry.model));
 }
 
 /** File-based prompt templates */

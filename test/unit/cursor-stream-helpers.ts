@@ -50,7 +50,8 @@ export function model(): Model<Api> {
 		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 1000,
 		maxTokens: 100,
-	};
+		compat: { cursorRouting: { [TEST_CURSOR_MODEL_ID]: { modelId: TEST_CURSOR_MODEL_ID, maxMode: true, supportsImages: false, catalogOccurrence: 0 } } },
+	} as Model<Api>;
 }
 
 export function context(): Context {

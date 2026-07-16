@@ -4,7 +4,7 @@ import { CursorTransportError, type CursorAgentTransport, type CursorTransportEr
 
 const DEFAULT_IMAGE_METADATA_GRACE_MS = 250;
 
-export type CursorDiscoveryErrorCode = CursorTransportErrorCode | "NoUsableModels";
+export type CursorDiscoveryErrorCode = CursorTransportErrorCode;
 
 export class CursorModelDiscoveryError extends Error {
 	constructor(
@@ -42,9 +42,7 @@ export class CursorModelDiscoveryService {
 		void availableTask.catch(() => undefined);
 		try {
 			const usable = normalizeCursorUsableModels(await this.#transport.getUsableModels(accessToken, requestId, signal));
-			if (usable.length === 0) {
-				throw new CursorModelDiscoveryError("NoUsableModels", "Cursor account has no usable models. Reselect a model after refreshing the authenticated Cursor catalog.");
-			}
+			if (usable.length === 0) return { source: "live", fetchedAt: this.#now(), models: [] };
 			const available = await settleWithin(availableTask, this.#imageMetadataGraceMs);
 			return {
 				source: "live",

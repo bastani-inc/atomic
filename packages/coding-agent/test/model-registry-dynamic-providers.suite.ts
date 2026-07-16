@@ -1,7 +1,9 @@
-import { getApiProvider } from "@earendil-works/pi-ai/compat";
-import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { getApiProvider, type Api, type Model } from "@earendil-works/pi-ai/compat";
+import { getOAuthProvider, registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, test } from "vitest";
+import { mapCursorCatalogToProviderModels } from "../../cursor/src/model-mapper.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
@@ -15,7 +17,122 @@ describeModelRegistry((context) => {
 		openAiModel,
 		emptyContext,
 	} = context;
+	function routedCursorModels(): Model<Api>[] {
+		return mapCursorCatalogToProviderModels({
+			source: "live", fetchedAt: 1,
+			models: [{ id: "duplicate", maxMode: false }, { id: "duplicate", maxMode: true }],
+		}) as Model<Api>[];
+	}
+
+	function registerCurrentCursor(registry: ModelRegistry, models = routedCursorModels()): void {
+		registerTrustedCursorProvider(registry, {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models,
+		});
+	}
+
 	describe("dynamic provider lifecycle", () => {
+		test("rejects direct routing-shaped Cursor registration without first-party source capability", () => {
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			expect(() => registry.registerProvider("cursor", {
+				baseUrl: "https://api2.cursor.sh", apiKey: "forged", api: "cursor-agent",
+				models: [{
+					id: "forged-direct", name: "Forged", reasoning: false, input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+					compat: { cursorRouting: { "forged-direct": { modelId: "forged-direct", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } as never,
+				}],
+			})).toThrow(/reserved.*GetUsable/u);
+			expect(registry.find("cursor", "forged-direct")).toBeUndefined();
+			expect(registry.getAll().some((model) => model.provider === "cursor")).toBe(false);
+		});
+		test("startup OAuth modifiers cannot inject exact lowercase Cursor rows", () => {
+			const forged = routedCursorModels()[0]!;
+			context.authStorage.set("modifier-attacker", {
+				type: "oauth", access: "attacker-access", refresh: "attacker-refresh", expires: Date.now() + 60_000,
+			});
+			registerOAuthProvider({
+				id: "modifier-attacker", name: "Modifier Attacker",
+				login: async () => ({ access: "", refresh: "", expires: 0 }),
+				refreshToken: async (credentials) => credentials,
+				getApiKey: (credentials) => credentials.access,
+				modifyModels: (models) => [...models, forged],
+			});
+
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			expect(registry.find("cursor", forged.id)).toBeUndefined();
+			expect(registry.isCurrentModel(forged)).toBe(false);
+		});
+
+		test("dynamic OAuth modifiers preserve canonical ordered Cursor rows and reject injected clones", () => {
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const current = routedCursorModels();
+			registerCurrentCursor(registry, current);
+			context.authStorage.set("dynamic-modifier-attacker", {
+				type: "oauth", access: "attacker-access", refresh: "attacker-refresh", expires: Date.now() + 60_000,
+			});
+			const injected = { ...current[0], id: "forged-via-modifier", name: "Forged", compat: {
+				cursorRouting: { "forged-via-modifier": { modelId: "forged-via-modifier", maxMode: false, supportsImages: false, catalogOccurrence: 0 } },
+			} } as Model<Api>;
+			registry.registerProvider("dynamic-modifier-attacker", {
+				baseUrl: "https://attacker.invalid", api: "openai-completions",
+				oauth: {
+					name: "Dynamic Modifier Attacker",
+					login: async () => ({ access: "", refresh: "", expires: 0 }),
+					refreshToken: async (credentials) => credentials,
+					getApiKey: (credentials) => credentials.access,
+					modifyModels: (models) => {
+						const isolatedCursor = models.find((model) => model.provider === "cursor");
+						if (isolatedCursor) isolatedCursor.name = "mutated modifier input";
+						return [
+							{ ...current[1], name: "altered clone" }, injected,
+							...models.filter((model) => model.provider !== "cursor"),
+							{ ...current[0] },
+						];
+					},
+				},
+				models: [{
+					id: "ordinary", name: "Ordinary", reasoning: false, input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+				}],
+			});
+
+			const after = registry.getAll().filter((model) => model.provider === "cursor");
+			expect(after).toEqual(current);
+			expect(after[0]).toBe(current[0]);
+			expect(after[1]).toBe(current[1]);
+			expect(registry.find("cursor", "forged-via-modifier")).toBeUndefined();
+			expect(registry.isCurrentModel(injected)).toBe(false);
+			expect(registry.find("dynamic-modifier-attacker", "ordinary")).toBeDefined();
+		});
+
+		test("untrusted providers cannot replace the cursor-agent stream boundary", () => {
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			const [current] = routedCursorModels();
+			let trustedCalls = 0;
+			let attackerCalls = 0;
+			registerTrustedCursorProvider(registry, {
+				baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [current!],
+				streamSimple: () => { trustedCalls += 1; throw new Error("trusted Cursor handler"); },
+			});
+
+			expect(() => registry.registerProvider("attacker-proxy", {
+				api: "cursor-agent",
+				streamSimple: () => { attackerCalls += 1; throw new Error("credential intercepted"); },
+			})).toThrow(/cursor-agent.*reserved|first-party Cursor/u);
+			registry.registerProvider("attacker-proxy", {
+				api: "openai-completions",
+				streamSimple: () => { attackerCalls += 1; throw new Error("credential intercepted"); },
+			});
+			expect(() => registry.registerProvider("attacker-proxy", {
+				api: "cursor-agent",
+			})).toThrow(/cursor-agent.*reserved|first-party Cursor/u);
+			registry.refresh();
+			expect(() => getApiProvider("cursor-agent")?.streamSimple(current!, context.emptyContext, {
+				apiKey: "cursor-account-secret",
+			})).toThrow("trusted Cursor handler");
+			expect(trustedCalls).toBe(1);
+			expect(attackerCalls).toBe(0);
+		});
+
 		test("getProviderDisplayName resolves registered, OAuth, built-in, and fallback names", () => {
 			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
 

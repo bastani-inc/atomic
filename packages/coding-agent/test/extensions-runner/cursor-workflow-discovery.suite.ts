@@ -1,5 +1,5 @@
-import type { OAuthCredentials } from "@earendil-works/pi-ai/compat";
-import { describe, expect, test } from "vitest";
+import type { Api, Model, OAuthCredentials } from "@earendil-works/pi-ai/compat";
+import { describe, expect, test, vi } from "vitest";
 import { CursorModelDiscoveryService } from "../../../cursor/src/models.ts";
 import type { CursorModelCatalog } from "../../../cursor/src/model-mapper.ts";
 import { registerCursorProvider, type CursorProviderHost, type CursorProviderRuntime } from "../../../cursor/src/provider.ts";
@@ -19,6 +19,7 @@ import { ModelRegistry } from "../../src/core/model-registry.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import { createTestExtensionsResult } from "../utilities.ts";
 import { CursorMockTransport } from "../../../../test/unit/cursor-test-helpers.ts";
+import { registerTrustedCursorProvider, trustedCursorProviderSource } from "../cursor-test-provider-source.ts";
 
 const extensionActions: ExtensionActions = {
 	sendMessage() {}, sendUserMessage() {}, appendEntry() {}, setSessionName() {}, getSessionName: () => undefined,
@@ -77,7 +78,7 @@ async function setup(result: Promise<CursorModelCatalog>): Promise<RealContext> 
 	const access = token("workflow-context-account");
 	const authStorage = AuthStorage.inMemory();
 	authStorage.set("cursor", { type: "oauth", access, refresh: "refresh", expires: Date.now() + 60_000 } satisfies OAuthCredentials & { type: "oauth" });
-	const registry = ModelRegistry.inMemory(authStorage);
+	const registry = ModelRegistry.inMemory(authStorage, trustedCursorProviderSource());
 	registry.registerProvider("openai", {
 		baseUrl: "https://example.invalid", apiKey: "test", api: "openai-responses",
 		models: [{ id: "gpt-5-mini", name: "GPT", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100 }],
@@ -93,6 +94,7 @@ async function setup(result: Promise<CursorModelCatalog>): Promise<RealContext> 
 			onCatalogDiagnostic() {},
 		});
 	}]);
+	for (const registration of loaded.runtime.pendingProviderRegistrations) registration.source = trustedCursorProviderSource();
 	const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), SessionManager.inMemory(), registry);
 	runner.bindCore(extensionActions, contextActions);
 	runner.setUIContext(undefined, "tui");
@@ -102,6 +104,30 @@ async function setup(result: Promise<CursorModelCatalog>): Promise<RealContext> 
 }
 
 describe("real Cursor workflow discovery timing", () => {
+	test("a runner with no catalog handlers exposes no strict Cursor discovery attestation", async () => {
+		const authStorage = AuthStorage.inMemory();
+		authStorage.set("cursor", { type: "api_key", key: "static-key" });
+		const registry = ModelRegistry.inMemory(authStorage, trustedCursorProviderSource());
+		const stale: Model<Api> = {
+			id: "stale-listed-route", name: "Stale", provider: "cursor", api: "cursor-agent",
+			baseUrl: "https://api2.cursor.sh", reasoning: false, input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+			compat: { cursorRouting: { "stale-listed-route": { modelId: "stale-listed-route", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+		};
+		registerTrustedCursorProvider(registry, { baseUrl: stale.baseUrl, apiKey: "static-key", api: "cursor-agent", models: [stale] });
+		const loaded = await createTestExtensionsResult([]);
+		const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, process.cwd(), SessionManager.inMemory(), registry);
+		runner.bindCore(extensionActions, contextActions);
+		runner.setUIContext(undefined, "tui");
+		const context = runner.createContext();
+		expect(context.discoverModelCatalog).toBeUndefined();
+		const listed = vi.spyOn(registry, "getAvailable");
+		const catalog = workflowModelCatalogFromContext(context);
+		expect(catalog).toBeDefined();
+		await expect(buildModelCandidatesFromCatalog({ primaryModel: "cursor/stale-listed-route", catalog })).rejects.toThrow(/authenticated Cursor model discovery is unavailable/u);
+		expect(listed).not.toHaveBeenCalled();
+	});
+
 	test("immediate callers share TUI discovery and one cancellation detaches", async () => {
 		let resolveCatalog: ((catalog: CursorModelCatalog) => void) | undefined;
 		const state = await setup(new Promise((resolve) => { resolveCatalog = resolve; }));

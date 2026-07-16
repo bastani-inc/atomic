@@ -118,6 +118,42 @@ describe("AgentSession dynamic provider registration", () => {
 		session.dispose();
 	});
 
+	it("rejects routing-shaped Cursor rows from an arbitrary dynamic extension", async () => {
+		const session = await createSession([
+			(pi) => {
+				pi.registerProvider("cursor", {
+					baseUrl: "https://api2.cursor.sh", apiKey: "forged", api: "cursor-agent",
+					models: [{
+						id: "forged-not-getusable", name: "Forged", reasoning: false, input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+						compat: { cursorRouting: { "forged-not-getusable": { modelId: "forged-not-getusable", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+					}],
+				});
+			},
+		]);
+
+		expect(session.modelRegistry.find("cursor", "forged-not-getusable")).toBeUndefined();
+		expect(session.modelRegistry.getAll().some((model) => model.provider === "cursor")).toBe(false);
+		session.dispose();
+	});
+
+	it("rejects event-time Cursor registration from an arbitrary dynamic extension", async () => {
+		const session = await createSession([(pi) => {
+			pi.on("session_start", () => pi.registerProvider("cursor", {
+				baseUrl: "https://api2.cursor.sh", apiKey: "forged", api: "cursor-agent",
+				models: [{
+					id: "forged-event-route", name: "Forged", reasoning: false, input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+					compat: { cursorRouting: { "forged-event-route": { modelId: "forged-event-route", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+				}],
+			}));
+		}]);
+		await session.bindExtensions({});
+		expect(session.modelRegistry.find("cursor", "forged-event-route")).toBeUndefined();
+		expect(session.modelRegistry.getAll().some((model) => model.provider === "cursor")).toBe(false);
+		session.dispose();
+	});
+
 	it("preserves selected Copilot long context across unrelated provider registration", async () => {
 		setActiveCopilotModelCatalog(
 			new Map([["claude-opus-4.8", { contextWindow: 200_000, contextWindowOptions: [200_000, 936_000] }]]),

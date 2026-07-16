@@ -275,7 +275,15 @@ describe("runtime.runDirect — workflow intercom", () => {
 				async discoverModels() { discoveryCalls += 1; discovered = true; },
 				async listModels() {
 					return [
-						{ provider: "cursor", id: "literal-route:high", fullId: "cursor/literal-route:high" },
+						{
+							provider: "cursor", id: "literal-route:high", fullId: "cursor/literal-route:high",
+							model: {
+								provider: "cursor", id: "literal-route:high", name: "literal-route:high", api: "cursor-agent",
+								baseUrl: "https://api2.cursor.sh", reasoning: false, input: ["text"],
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 64_000,
+								compat: { cursorRouting: { "literal-route:high": { modelId: "literal-route:high", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+							},
+						},
 						{ provider: "openai", id: "gpt-5-mini", fullId: "openai/gpt-5-mini" },
 					];
 				},

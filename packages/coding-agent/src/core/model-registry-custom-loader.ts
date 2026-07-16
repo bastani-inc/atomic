@@ -11,14 +11,12 @@ import {
 } from "./model-registry-schemas.ts";
 import type {
 	CustomModelsResult,
+	ModelRequestHeaders,
 	ModelRequestHeaderSource,
+	ModelRequestHeaderSources,
 	ProviderOverride,
 	ProviderRequestConfig,
 } from "./model-registry-types.ts";
-
-function modelRequestKey(provider: string, modelId: string): string {
-	return `${provider}:${modelId}`;
-}
 
 function emptyCustomModelsResult(error?: string): CustomModelsResult {
 	return {
@@ -50,32 +48,49 @@ function mergeModelOverrides(
 }
 
 interface MergedModelRequestHeaders {
-	headers: Map<string, Record<string, string>>;
-	sources: Map<string, ModelRequestHeaderSource>;
+	headers: ModelRequestHeaders;
+	sources: ModelRequestHeaderSources;
+}
+
+function cloneNestedMap<T>(source: Map<string, Map<string, T>>): Map<string, Map<string, T>> {
+	return new Map([...source].map(([providerName, models]) => [providerName, new Map(models)]));
+}
+
+function setNestedValue<T>(target: Map<string, Map<string, T>>, providerName: string, modelId: string, value: T): void {
+	const models = new Map(target.get(providerName) ?? []);
+	models.set(modelId, value);
+	target.set(providerName, models);
+}
+
+function deleteNestedValue<T>(target: Map<string, Map<string, T>>, providerName: string, modelId: string): void {
+	const models = target.get(providerName);
+	if (!models) return;
+	models.delete(modelId);
+	if (models.size === 0) target.delete(providerName);
 }
 
 function mergeModelRequestHeaders(
 	base: CustomModelsResult,
 	incoming: CustomModelsResult,
 ): MergedModelRequestHeaders {
-	const headers = new Map(base.modelRequestHeaders);
-	const sources = new Map(base.modelRequestHeaderSources);
-	const invalidate = (key: string, source: ModelRequestHeaderSource): void => {
-		if (sources.get(key) !== source) return;
-		headers.delete(key);
-		sources.delete(key);
+	const headers = cloneNestedMap(base.modelRequestHeaders);
+	const sources = cloneNestedMap(base.modelRequestHeaderSources);
+	const invalidate = (providerName: string, modelId: string, source: ModelRequestHeaderSource): void => {
+		if (sources.get(providerName)?.get(modelId) !== source) return;
+		deleteNestedValue(headers, providerName, modelId);
+		deleteNestedValue(sources, providerName, modelId);
 	};
 
-	for (const model of incoming.models) {
-		invalidate(modelRequestKey(model.provider, model.id), "model");
-	}
+	for (const model of incoming.models) invalidate(model.provider, model.id, "model");
 	for (const [providerName, overrides] of incoming.modelOverrides) {
-		for (const modelId of overrides.keys()) {
-			invalidate(modelRequestKey(providerName, modelId), "modelOverride");
-		}
+		for (const modelId of overrides.keys()) invalidate(providerName, modelId, "modelOverride");
 	}
-	for (const [key, value] of incoming.modelRequestHeaders) headers.set(key, value);
-	for (const [key, source] of incoming.modelRequestHeaderSources) sources.set(key, source);
+	for (const [providerName, models] of incoming.modelRequestHeaders) {
+		for (const [modelId, value] of models) setNestedValue(headers, providerName, modelId, value);
+	}
+	for (const [providerName, models] of incoming.modelRequestHeaderSources) {
+		for (const [modelId, source] of models) setNestedValue(sources, providerName, modelId, source);
+	}
 	return { headers, sources };
 }
 
@@ -109,14 +124,13 @@ function collectModelHeaders(
 	providerName: string,
 	modelId: string,
 	headers: Record<string, string> | undefined,
-	modelHeaders: Map<string, Record<string, string>>,
-	modelHeaderSources: Map<string, ModelRequestHeaderSource>,
+	modelHeaders: ModelRequestHeaders,
+	modelHeaderSources: ModelRequestHeaderSources,
 	source: ModelRequestHeaderSource,
 ): void {
 	if (!headers || Object.keys(headers).length === 0) return;
-	const key = modelRequestKey(providerName, modelId);
-	modelHeaders.set(key, headers);
-	modelHeaderSources.set(key, source);
+	setNestedValue(modelHeaders, providerName, modelId, headers);
+	setNestedValue(modelHeaderSources, providerName, modelId, source);
 }
 
 function validateContextWindowOptions(providerName: string, modelId: string, options: readonly number[] | undefined): void {
@@ -185,8 +199,8 @@ function validateConfig(config: ModelsConfig): void {
 
 function parseModels(
 	config: ModelsConfig,
-	modelHeaders: Map<string, Record<string, string>>,
-	modelHeaderSources: Map<string, ModelRequestHeaderSource>,
+	modelHeaders: ModelRequestHeaders,
+	modelHeaderSources: ModelRequestHeaderSources,
 ): Model<Api>[] {
 	const models: Model<Api>[] = [];
 	const builtInProviders = new Set<string>(getProviders());
@@ -266,8 +280,8 @@ function loadCustomModels(modelsJsonPath: string): CustomModelsResult {
 		const overrides = new Map<string, ProviderOverride>();
 		const modelOverrides = new Map<string, Map<string, ModelOverride>>();
 		const providerRequestConfigs = new Map<string, ProviderRequestConfig>();
-		const modelRequestHeaders = new Map<string, Record<string, string>>();
-		const modelRequestHeaderSources = new Map<string, ModelRequestHeaderSource>();
+		const modelRequestHeaders: ModelRequestHeaders = new Map();
+		const modelRequestHeaderSources: ModelRequestHeaderSources = new Map();
 
 		for (const [providerName, providerConfig] of Object.entries(config.providers)) {
 			if (providerConfig.baseUrl || providerConfig.compat) {

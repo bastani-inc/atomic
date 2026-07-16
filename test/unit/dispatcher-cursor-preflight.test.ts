@@ -1,5 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { ModelCatalogDiscoveryCoordinator } from "../../packages/coding-agent/src/core/extensions/model-catalog-discovery.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { dispatch } from "../../packages/workflows/src/extension/dispatcher.js";
@@ -17,13 +18,24 @@ function freshDeps() {
 	return { store: createStore(), cancellation: createCancellationRegistry(), jobs: createJobTracker() };
 }
 
+function liveCursorModel(id: string): Model<Api> {
+	return {
+		provider: "cursor", id, name: id, api: "cursor-agent", baseUrl: "https://api2.cursor.sh",
+		reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 200_000, maxTokens: 64_000,
+		compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } as Model<Api>["compat"],
+	};
+}
+
 function modelCatalog(options: {
 	readonly models?: readonly { readonly provider: string; readonly id: string; readonly fullId: string }[];
 	readonly discover?: () => Promise<void>;
 } = {}): WorkflowModelCatalogPort {
 	return {
 		discoverModels: options.discover,
-		listModels: async () => options.models ?? [],
+		listModels: async () => (options.models ?? []).map((model) => model.provider === "cursor"
+			? { ...model, model: liveCursorModel(model.id) }
+			: model),
 		currentModel: "openai/default-model",
 	};
 }
@@ -74,7 +86,7 @@ describe("named Cursor workflow preflight", () => {
 				await discoveryGate;
 				discovered = true;
 			}),
-			listModels: async () => discovered ? [{ provider: "cursor", id: "live-route", fullId: "cursor/live-route" }] : [],
+			listModels: async () => discovered ? [{ provider: "cursor", id: "live-route", fullId: "cursor/live-route", model: liveCursorModel("live-route") }] : [],
 		};
 		const definition = makeWorkflow("cursor-preflight-success");
 		const options = { registry: createRegistry([definition]), ...deps, models: catalog };

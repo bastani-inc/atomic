@@ -166,14 +166,14 @@ export async function createAgentSessionServices(
 	const diagnostics: AgentSessionRuntimeDiagnostic[] = [];
 	const providerSpan = startTimingSpan("createAgentSessionServices.providerRegistrations");
 	const extensionsResult = resourceLoader.getExtensions();
-	for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
+	for (const { name, config, source } of extensionsResult.runtime.pendingProviderRegistrations) {
 		try {
-			modelRegistry.registerProvider(name, config);
+			modelRegistry.registerProvider(name, config, source);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			diagnostics.push({
 				type: "error",
-				message: `Extension "${extensionPath}" error: ${message}`,
+				message: `Extension "${source?.path ?? "<unknown>"}" error: ${message}`,
 			});
 		}
 	}

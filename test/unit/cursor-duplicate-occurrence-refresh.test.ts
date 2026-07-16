@@ -1,8 +1,10 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import type { Api, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
+import type { Context, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import type { ProviderConfigInput } from "../../packages/coding-agent/src/core/model-registry-types.js";
+import { trustedCursorProviderSource } from "../../packages/coding-agent/test/cursor-test-provider-source.js";
 import { CursorAuthService } from "../../packages/cursor/src/auth.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
@@ -82,14 +84,8 @@ function registryHost(): {
 			registerProvider(name, config) {
 				registry.registerProvider(name, {
 					...config,
-					models: config.models.map((model) => ({
-						...model,
-						api: "cursor-agent" as const,
-						input: [...model.input],
-						cost: { ...model.cost },
-						compat: model.compat as Model<Api>["compat"],
-					})),
-				});
+					models: [...config.models] as unknown as NonNullable<ProviderConfigInput["models"]>,
+				}, trustedCursorProviderSource());
 				registrations.push(config);
 			},
 			on() {},
@@ -139,11 +135,14 @@ test("provider refresh keeps a selected duplicate occurrence while using its cur
 	await harness.registrations.at(-1)!.oauth.login(callbacks);
 	const currentRows = harness.registry.getAll().filter((model) => model.provider === "cursor" && model.id === "duplicate-route");
 	assert.deepEqual(currentRows.map((model) => model.name), ["First current", "Second current"]);
+	const currentLaterOccurrence = currentRows[1]!;
 	const textualFirstOccurrence = harness.registry.find("cursor", "duplicate-route")!;
 	const config = harness.registrations.at(-1)!;
 	await collectEvents(config.streamSimple(textualFirstOccurrence, imageContext, { apiKey: access }));
-	await collectEvents(config.streamSimple(selectedLaterOccurrence, context, { apiKey: access }));
-	const unsupportedImageEvents = await collectEvents(config.streamSimple(selectedLaterOccurrence, imageContext, { apiKey: access }));
+	const staleEvents = await collectEvents(config.streamSimple(selectedLaterOccurrence, context, { apiKey: access }));
+	assert.equal(staleEvents.at(-1)?.type, "error");
+	await collectEvents(config.streamSimple(currentLaterOccurrence, context, { apiKey: access }));
+	const unsupportedImageEvents = await collectEvents(config.streamSimple(currentLaterOccurrence, imageContext, { apiKey: access }));
 	assert.equal(unsupportedImageEvents.at(-1)?.type, "error");
 	assert.equal(transport.runs.length, 2);
 

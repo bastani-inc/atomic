@@ -7,12 +7,15 @@ import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import { dirname } from "node:path";
 import { getAgentConfigPaths } from "../config.ts";
 import { normalizePath } from "../utils/paths.ts";
+import { isSelectableModel } from "./cursor-model-reference.ts";
 import type { AuthStatus, AuthStorage } from "./auth-storage.ts";
 import { copilotCatalogCachePath, copilotTokenFromEnvironment, seedActiveCopilotModelCatalogFromCache } from "./copilot-model-catalog.ts";
 import { getModelRequestAuth, getApiKeyForProviderFromConfig, getProviderAuthStatusFromConfig } from "./model-registry-auth.ts";
 import { applyProviderConfigToModels, migrateLegacyRegisterProviderConfigValues, validateProviderConfig } from "./model-registry-dynamic.ts";
 import { loadModelRegistryModels } from "./model-registry-loader.ts";
-import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
+import { isTrustedCursorProviderSource } from "./extensions/provider-registration-source.ts";
+import type { Extension } from "./extensions/runtime-types.ts";
+import type { ModelRequestHeaders, ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
@@ -32,7 +35,7 @@ export class ModelRegistry {
 	private models: Model<Api>[] = [];
 	private modelOverrides: Map<string, Map<string, ModelOverride>> = new Map();
 	private providerRequestConfigs: Map<string, ProviderRequestConfig> = new Map();
-	private modelRequestHeaders: Map<string, Record<string, string>> = new Map();
+	private modelRequestHeaders: ModelRequestHeaders = new Map();
 	private registeredProviders: Map<string, ProviderConfigInput> = new Map();
 	private builtInProviders: Set<string> = new Set();
 	private customOpenAICompatibleProviders: Set<string> = new Set();
@@ -40,13 +43,16 @@ export class ModelRegistry {
 
 	declare readonly authStorage: AuthStorage;
 	declare private modelsJsonPaths: string[];
+	declare private defaultProviderSource: Extension | undefined;
 
 	private constructor(
 		authStorage: AuthStorage,
 		modelsJsonPaths: string[],
+		defaultProviderSource?: Extension,
 	) {
 		this.authStorage = authStorage;
 		this.modelsJsonPaths = modelsJsonPaths.map((path) => normalizePath(path));
+		this.defaultProviderSource = isTrustedCursorProviderSource(defaultProviderSource) ? defaultProviderSource : undefined;
 		this.seedCopilotModelCatalogFromCache();
 		this.loadModels();
 	}
@@ -62,12 +68,13 @@ export class ModelRegistry {
 	static create(
 		authStorage: AuthStorage,
 		modelsJsonPath: string | string[] = getAgentConfigPaths("models.json"),
+		defaultProviderSource?: Extension,
 	): ModelRegistry {
-		return new ModelRegistry(authStorage, Array.isArray(modelsJsonPath) ? modelsJsonPath : [modelsJsonPath]);
+		return new ModelRegistry(authStorage, Array.isArray(modelsJsonPath) ? modelsJsonPath : [modelsJsonPath], defaultProviderSource);
 	}
 
-	static inMemory(authStorage: AuthStorage): ModelRegistry {
-		return new ModelRegistry(authStorage, []);
+	static inMemory(authStorage: AuthStorage, defaultProviderSource?: Extension): ModelRegistry {
+		return new ModelRegistry(authStorage, [], defaultProviderSource);
 	}
 
 	/**
@@ -111,7 +118,7 @@ export class ModelRegistry {
 	 * If models.json had errors, returns only built-in models.
 	 */
 	getAll(): Model<Api>[] {
-		return this.models;
+		return this.models.filter(isSelectableModel);
 	}
 
 	/**
@@ -119,12 +126,21 @@ export class ModelRegistry {
 	 * This is a fast check that doesn't refresh OAuth tokens.
 	 */
 	getAvailable(): Model<Api>[] {
-		return this.models.filter((m) => this.hasConfiguredAuth(m));
+		return this.models.filter((model) => isSelectableModel(model) && this.hasConfiguredAuth(model));
 	}
 
 	/** Find a model by provider and exact current ID. */
 	find(provider: string, modelId: string): Model<Api> | undefined {
-		return this.models.find((model) => model.provider === provider && model.id === modelId);
+		return this.models.find((model) => model.provider === provider && model.id === modelId && isSelectableModel(model));
+	}
+
+	/**
+	 * Whether an explicit model object is admissible for selection now.
+	 * Cursor objects require identity membership in the current live registry;
+	 * caller-created routing-shaped clones do not establish provenance.
+	 */
+	isCurrentModel(model: Model<Api>): boolean {
+		return model.provider !== "cursor" || (this.models.includes(model) && isSelectableModel(model));
 	}
 
 	/** Whether an authenticated provider may reconstruct an absent saved model ID. */
@@ -153,10 +169,6 @@ export class ModelRegistry {
 		);
 	}
 
-	private getModelRequestKey(provider: string, modelId: string): string {
-		return `${provider}:${modelId}`;
-	}
-
 	private storeProviderRequestConfig(
 		providerName: string,
 		config: {
@@ -177,12 +189,15 @@ export class ModelRegistry {
 	}
 
 	private storeModelHeaders(providerName: string, modelId: string, headers?: Record<string, string>): void {
-		const key = this.getModelRequestKey(providerName, modelId);
+		const providerHeaders = this.modelRequestHeaders.get(providerName);
 		if (!headers || Object.keys(headers).length === 0) {
-			this.modelRequestHeaders.delete(key);
+			providerHeaders?.delete(modelId);
+			if (providerHeaders?.size === 0) this.modelRequestHeaders.delete(providerName);
 			return;
 		}
-		this.modelRequestHeaders.set(key, headers);
+		const nextProviderHeaders = new Map(providerHeaders ?? []);
+		nextProviderHeaders.set(modelId, headers);
+		this.modelRequestHeaders.set(providerName, nextProviderHeaders);
 	}
 
 	/**
@@ -234,7 +249,17 @@ export class ModelRegistry {
 	/**
 	 * Register a provider dynamically (from extensions).
 	 */
-	registerProvider(providerName: string, config: ProviderConfigInput): void {
+	registerProvider(providerName: string, config: ProviderConfigInput, source?: Extension): void {
+		const registrationSource = isTrustedCursorProviderSource(source) ? source : this.defaultProviderSource;
+		if (providerName === "cursor" && !registrationSource) {
+			throw new Error("The cursor provider is reserved for authenticated first-party GetUsable discovery.");
+		}
+		const existingConfig = this.registeredProviders.get(providerName);
+		const effectiveApi = config.api ?? existingConfig?.api;
+		const effectiveStreamSimple = config.streamSimple ?? existingConfig?.streamSimple;
+		if (effectiveApi === "cursor-agent" && effectiveStreamSimple && !registrationSource) {
+			throw new Error("The cursor-agent stream boundary is reserved for the authenticated first-party Cursor provider.");
+		}
 		const migratedConfig = migrateLegacyRegisterProviderConfigValues(providerName, config);
 		validateProviderConfig(providerName, migratedConfig);
 		this.applyProviderConfig(providerName, migratedConfig);
@@ -256,7 +281,11 @@ export class ModelRegistry {
 	/**
 	 * Unregister a previously registered provider.
 	 */
-	unregisterProvider(providerName: string): void {
+	unregisterProvider(providerName: string, source?: Extension): void {
+		const registrationSource = isTrustedCursorProviderSource(source) ? source : this.defaultProviderSource;
+		if (providerName === "cursor" && !registrationSource) {
+			throw new Error("The cursor provider is reserved for authenticated first-party GetUsable discovery.");
+		}
 		if (!this.registeredProviders.has(providerName)) return;
 		this.registeredProviders.delete(providerName);
 		this.refresh();

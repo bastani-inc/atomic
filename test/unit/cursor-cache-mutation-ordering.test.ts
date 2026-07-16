@@ -56,6 +56,25 @@ class CacheWithoutClear implements CursorCatalogCache {
 	}
 }
 
+class PromiseOutcomeCache implements CursorCatalogCache {
+	readonly records = new Map<string, CursorModelCatalog>();
+	outcome = false;
+	load(scope?: string): CursorModelCatalog | null { return scope === undefined ? null : this.records.get(scope) ?? null; }
+	async save(value: CursorModelCatalog, scope?: string): Promise<boolean> {
+		await Promise.resolve();
+		if (scope === undefined || !this.outcome) return false;
+		this.records.set(scope, value);
+		return true;
+	}
+	clear(): void { throw new Error("clear rejected"); }
+}
+
+class UncertainSkippingCache implements CursorCatalogCache {
+	readonly records = new Map<string, CursorModelCatalog>();
+	load(scope?: string): CursorModelCatalog | null { return scope === undefined ? null : this.records.get(scope) ?? null; }
+	save(): void { /* custom cache cannot confirm and does not apply the write */ }
+}
+
 
 describe("Cursor per-scope cache mutation ordering", () => {
 	test("a delayed invalidation blocks loads and finishes before a newer same-scope save", async () => {
@@ -199,8 +218,35 @@ describe("Cursor per-scope cache mutation ordering", () => {
 		await mutations.waitForIdle(scopeA);
 
 		assert.equal(mutations.load(scopeA)?.models[0]?.id, "replacement");
-		assert.deepEqual(cache.loads, [scopeA]);
+		assert.deepEqual(cache.loads, [scopeA, scopeA], "a legacy void save is verified before releasing the tombstone");
 		assert.deepEqual(cache.saves, [scopeA]);
+	});
+
+	test("authoritative empty supersedes an older save and a later nonempty save may repopulate", async () => {
+		const cache = new MemoryCache();
+		const oldSaveGate = Promise.withResolvers<void>();
+		const oldSaveStarted = Promise.withResolvers<void>();
+		let firstSave = true;
+		cache.onSave = async (_value, scope) => {
+			if (scope === scopeA && firstSave) {
+				firstSave = false;
+				oldSaveStarted.resolve();
+				await oldSaveGate.promise;
+			}
+		};
+		const mutations = new CursorCacheMutationCoordinator({ cache });
+		mutations.save(catalog("older-queued", scopeA, 1), scopeA);
+		await oldSaveStarted.promise;
+		const empty = { source: "live", fetchedAt: 2, credentialScope: scopeA, models: [] } as const;
+		const invalidated = mutations.authoritativeEmpty(empty, scopeA);
+		assert.equal(mutations.load(scopeA), null);
+		mutations.save(catalog("later-current", scopeA, 3), scopeA);
+		oldSaveGate.resolve();
+		await invalidated;
+		await mutations.waitForIdle(scopeA);
+		assert.equal(cache.records.get(scopeA)?.models[0]?.id, "later-current");
+		assert.deepEqual(cache.clears, [scopeA]);
+		assert.deepEqual(cache.saves, [scopeA, scopeA, scopeA], "the empty marker is saved between ordered positive writes");
 	});
 
 	test("equal-timestamp same-scope saves are linearized in invocation order", async () => {
@@ -230,4 +276,33 @@ describe("Cursor per-scope cache mutation ordering", () => {
 		assert.deepEqual(cache.saves, [scopeA, scopeA]);
 	});
 
+
+	test("Promise save outcomes retain or release a tombstone only when explicitly applied", async () => {
+		const cache = new PromiseOutcomeCache();
+		cache.records.set(scopeA, catalog("revoked", scopeA, 10_000));
+		const mutations = new CursorCacheMutationCoordinator({ cache });
+		mutations.clear(scopeA);
+		await mutations.waitForIdle(scopeA);
+
+		mutations.save(catalog("skipped", scopeA, 200), scopeA);
+		await mutations.waitForIdle(scopeA);
+		assert.equal(mutations.load(scopeA), null, "Promise false must retain the tombstone");
+
+		cache.outcome = true;
+		mutations.save(catalog("applied", scopeA, 10_000), scopeA);
+		await mutations.waitForIdle(scopeA);
+		assert.equal(mutations.load(scopeA)?.models[0]?.id, "applied", "Promise true may release the tombstone");
+	});
+
+	test("an uncertain custom void save cannot expose a retained stale row", async () => {
+		const cache = new UncertainSkippingCache();
+		cache.records.set(scopeA, catalog("revoked", scopeA, 10_000));
+		const mutations = new CursorCacheMutationCoordinator({ cache });
+		mutations.clear(scopeA);
+		await mutations.waitForIdle(scopeA);
+		mutations.save(catalog("uncertain", scopeA, 200), scopeA);
+		await mutations.waitForIdle(scopeA);
+
+		assert.equal(mutations.load(scopeA), null);
+	});
 });

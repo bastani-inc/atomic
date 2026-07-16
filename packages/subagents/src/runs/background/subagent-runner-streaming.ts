@@ -42,6 +42,23 @@ export function runPiStreaming(
 	}
 	return new Promise((resolve) => {
 		const outputStream = fs.createWriteStream(outputFile, { flags: "w" });
+		outputStream.on("error", () => undefined);
+		let outputClosePromise: Promise<void> | undefined;
+		const closeOutputStream = (): Promise<void> => {
+			if (outputClosePromise) return outputClosePromise;
+			outputClosePromise = new Promise((finish) => {
+				if (outputStream.closed || outputStream.destroyed) { finish(); return; }
+				let finished = false;
+				const done = (): void => {
+					if (finished) return;
+					finished = true;
+					finish();
+				};
+				outputStream.once("error", done);
+				outputStream.end(done);
+			});
+			return outputClosePromise;
+		};
 		const spawnEnv = {
 			...process.env,
 			...(env ?? {}),
@@ -256,8 +273,7 @@ export function runPiStreaming(
 			attemptWatchdog.clear();
 			if (stdoutBuf.trim()) processStdoutLine(stdoutBuf);
 			if (stderrBuf.trim()) appendChildLine("subagent.child.stderr", stderrBuf);
-			outputStream.end();
-			await childEventJournal.close();
+			await Promise.all([closeOutputStream(), childEventJournal.close()]);
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError ?? spawnErrorText;
 			const forcedDrainAfterFinalSuccess = forcedTerminationSignal && cleanTerminalAssistantStopReceived && !finalError;
@@ -285,8 +301,7 @@ export function runPiStreaming(
 			clearDrainTimers();
 			clearStdioGuard();
 			attemptWatchdog.clear();
-			outputStream.end();
-			await childEventJournal.close();
+			await Promise.all([closeOutputStream(), childEventJournal.close()]);
 			const finalOutput = getFinalOutput(messages) || rawStdoutLines.join("\n").trim();
 			const finalError = error ?? assistantError ?? spawnErrorText;
 			resolve({

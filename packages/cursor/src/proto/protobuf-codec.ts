@@ -78,6 +78,7 @@ export class CursorProtobufProtocolCodec implements CursorProtocolCodec {
 			request.context.systemPrompt ?? "",
 			extractCurrentActionText(request),
 			parseHistoricalTurns(request.context.messages.slice(0, -1)),
+			request.context.messages.slice(0, -1),
 			conversationIdValue,
 			storedState?.checkpoint ?? null,
 			storedState?.blobStore,

@@ -41,15 +41,16 @@ export function createExtensionRuntime(): ExtensionRuntime {
         message ??
         "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
     },
-    registerProvider: (name, config, extensionPath = "<unknown>") => {
-      runtime.pendingProviderRegistrations.push({
-        name,
-        config,
-        extensionPath,
-      });
+    registerProvider: (name, config, source) => {
+      const extensionPath = typeof source === "string" ? source : (source?.path ?? "<unknown>");
+      runtime.pendingProviderRegistrations.push({ name, config, extensionPath, ...(typeof source === "object" ? { source } : {}) });
     },
-    unregisterProvider: (name) => {
-      runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+    unregisterProvider: (name, source) => {
+      runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((registration) => {
+        if (registration.name !== name) return true;
+        if (source === undefined) return false;
+        return typeof source === "string" ? registration.extensionPath !== source : registration.source !== source;
+      });
     },
   };
 

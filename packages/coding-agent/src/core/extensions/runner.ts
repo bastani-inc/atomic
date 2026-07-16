@@ -163,8 +163,8 @@ export class ExtensionRunner {
 		actions: ExtensionActions,
 		contextActions: ExtensionContextActions,
 		providerActions?: {
-			registerProvider?: (name: string, config: ProviderConfig) => void;
-			unregisterProvider?: (name: string) => void;
+			registerProvider?: (name: string, config: ProviderConfig, source?: Extension) => void;
+			unregisterProvider?: (name: string, source?: Extension) => void;
 		},
 	): void {
 		// Copy actions into the shared runtime (all extension APIs reference this)
@@ -198,13 +198,10 @@ export class ExtensionRunner {
 		this.getSystemPromptOptionsFn = contextActions.getSystemPromptOptions ?? (() => ({ cwd: this.cwd }));
 
 		// Flush provider registrations queued during extension loading
-		for (const { name, config, extensionPath } of this.runtime.pendingProviderRegistrations) {
+		for (const { name, config, extensionPath, source } of this.runtime.pendingProviderRegistrations) {
 			try {
-				if (providerActions?.registerProvider) {
-					providerActions.registerProvider(name, config);
-				} else {
-					this.modelRegistry.registerProvider(name, config);
-				}
+				if (providerActions?.registerProvider) providerActions.registerProvider(name, config, source);
+				else this.modelRegistry.registerProvider(name, config, source);
 			} catch (error) {
 				this.emitError({
 					extensionPath,
@@ -218,19 +215,21 @@ export class ExtensionRunner {
 
 		// From this point on, provider registration/unregistration takes effect immediately
 		// without requiring a /reload.
-		this.runtime.registerProvider = (name, config) => {
+		this.runtime.registerProvider = (name, config, source) => {
+			const registrationSource = typeof source === "object" ? source : undefined;
 			if (providerActions?.registerProvider) {
-				providerActions.registerProvider(name, config);
+				providerActions.registerProvider(name, config, registrationSource);
 				return;
 			}
-			this.modelRegistry.registerProvider(name, config);
+			this.modelRegistry.registerProvider(name, config, registrationSource);
 		};
-		this.runtime.unregisterProvider = (name) => {
+		this.runtime.unregisterProvider = (name, source) => {
+			const registrationSource = typeof source === "object" ? source : undefined;
 			if (providerActions?.unregisterProvider) {
-				providerActions.unregisterProvider(name);
+				providerActions.unregisterProvider(name, registrationSource);
 				return;
 			}
-			this.modelRegistry.unregisterProvider(name);
+			this.modelRegistry.unregisterProvider(name, registrationSource);
 		};
 	}
 
@@ -387,7 +386,9 @@ export class ExtensionRunner {
 			isIdle: () => this.isIdleFn(),
 			isProjectTrusted: () => this.isProjectTrustedFn(),
 			getSignal: () => this.getSignalFn(),
-			discoverModelCatalog: (options) => this.discoverModelCatalog(options),
+			...(this.hasHandlers("model_catalog_discover")
+				? { discoverModelCatalog: (options?: { readonly signal?: AbortSignal }) => this.discoverModelCatalog(options) }
+				: {}),
 			abort: () => this.abortFn(),
 			hasPendingMessages: () => this.hasPendingMessagesFn(),
 			shutdown: () => this.shutdownHandler(),

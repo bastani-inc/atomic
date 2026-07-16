@@ -16,6 +16,7 @@ import type { WorkflowDetails } from "../shared/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
 import { renderStatusList } from "../tui/status-list.js";
+import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 import { renderRunDetail } from "../tui/run-detail.js";
 import { renderWorkflowList } from "../tui/workflow-list.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
@@ -23,6 +24,7 @@ import { renderDispatchConfirm } from "../tui/dispatch-confirm.js";
 import type { WorkflowInputValues, WorkflowOutputValues } from "../shared/types.js";
 import { renderRoundedBox } from "../tui/chat-surface.js";
 import { truncateToWidth } from "../tui/text-helpers.js";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 // ---------------------------------------------------------------------------
 // Result variants
@@ -138,7 +140,7 @@ type TranscriptResult = {
 };
 type SendResult = { action: "send"; runId: string; stageId: string; delivery: string; status: "ok" | "noop"; message: string };
 type PauseResult = { action: "pause"; runId: string; status: string; message: string };
-type ReloadResult = { action: "reload"; status: "ok" | "noop"; message: string };
+type ReloadResult = WorkflowReloadReport & { action: "reload"; status: "ok" | "noop"; message: string };
 type InterruptResult = { action: "interrupt"; runId: string; status: string; message: string };
 type KillResult = { action: "kill"; runId: string; status: string; message: string };
 type ResumeResult = { action: "resume"; runId: string; status: string; message: string };
@@ -201,6 +203,13 @@ function fitLine(line: string, width?: number): string {
   return truncateToWidth(line, width, "…");
 }
 
+function noticeBodyLines(message: string, width?: number): string[] {
+  return message.split(/\r?\n/).flatMap((line) => {
+    if (line.length === 0 || width === undefined || width <= 0) return [line];
+    return wrapTextWithAnsi(line, width);
+  }).map((line) => ` ${line} `);
+}
+
 function renderNotice(
   title: string,
   message: string,
@@ -212,7 +221,7 @@ function renderNotice(
   const contentWidth = width && width > 0 ? Math.max(1, width - 4) : undefined;
   return renderRoundedBox({
     title,
-    bodyLines: [` ${fitLine(message, contentWidth)} `],
+    bodyLines: noticeBodyLines(message, contentWidth),
     theme,
     width,
   });

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { join, resolve, sep } from "node:path";
+import { getModel, type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { ExtensionFactory } from "../src/core/extensions/index.ts";
@@ -10,6 +10,8 @@ import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
+import { mapCursorCatalogToProviderModels } from "../../cursor/src/model-mapper.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 
 describe("createAgentSession session manager defaults", () => {
 	let tempDir: string;
@@ -49,6 +51,70 @@ describe("createAgentSession session manager defaults", () => {
 		expect(sessionFile?.startsWith(`${expectedSessionDir}${sep}`)).toBe(true);
 
 		session.dispose();
+	});
+
+	it("rejects an explicit or later static lowercase Cursor model object", async () => {
+		const staticCursor: Model<Api> = {
+			id: "static-forbidden", name: "Static", provider: "cursor", api: "anthropic-messages",
+			baseUrl: "https://static.invalid", reasoning: false, input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+		};
+		const rejected = await createAgentSession({ cwd, agentDir, model: staticCursor });
+		expect(`${String(rejected.session.model?.provider)}/${rejected.session.model?.id}`).not.toBe("cursor/static-forbidden");
+		expect(rejected.modelFallbackMessage).toContain("reselect");
+		rejected.session.dispose();
+
+		const ordinary = getModel("anthropic", "claude-sonnet-4-5");
+		expect(ordinary).toBeTruthy();
+		const accepted = await createAgentSession({ cwd, agentDir, model: ordinary! });
+		await expect(accepted.session.setModel(staticCursor)).rejects.toThrow(/current authenticated catalog/u);
+		expect(accepted.session.model?.provider).toBe("anthropic");
+		accepted.session.dispose();
+	});
+
+	it("requires current live registry membership for explicit Cursor objects", async () => {
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		registerTrustedCursorProvider(registry, {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+			models: mapCursorCatalogToProviderModels({ source: "live", fetchedAt: 1, models: [{ id: "actual-live", maxMode: false }] }),
+		});
+		const live = registry.getAll().find((candidate) => candidate.provider === "cursor");
+		expect(live).toBeTruthy();
+		const forgedClone = { ...live! } as Model<Api>;
+		const forgedOther = { ...live!, id: "forged-not-live", name: "Forged", compat: { cursorRouting: { "forged-not-live": { modelId: "forged-not-live", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } } as Model<Api>;
+		expect(registry.isCurrentModel(live!)).toBe(true);
+		expect(registry.isCurrentModel(forgedClone)).toBe(false);
+		expect(registry.isCurrentModel(forgedOther)).toBe(false);
+
+		for (const forged of [forgedClone, forgedOther]) {
+			const rejected = await createAgentSession({ cwd, agentDir, model: forged, modelRegistry: registry, sessionManager: SessionManager.inMemory(cwd) });
+			expect(rejected.session.model).not.toBe(forged);
+			expect(rejected.modelFallbackMessage).toContain("reselect");
+			rejected.session.dispose();
+		}
+
+		const accepted = await createAgentSession({
+			cwd, agentDir, model: live!, modelRegistry: registry,
+			sessionManager: SessionManager.inMemory(cwd), contextWindow: live!.contextWindow,
+		});
+		expect(accepted.session.model).toBe(live);
+		accepted.session.setContextWindow(live!.contextWindow, { persistDefault: true });
+		expect(accepted.session.model).toBe(live);
+		accepted.session._applyContextWindowReplay(live!.contextWindow);
+		expect(accepted.session.model).toBe(live);
+		await accepted.session.setModel(live!);
+		expect(accepted.session.model).toBe(live);
+		await expect(accepted.session.setModel(forgedClone)).rejects.toThrow(/current authenticated catalog/u);
+		expect(accepted.session.model).toBe(live);
+		accepted.session.setScopedModels([{ model: forgedClone }, { model: live! }]);
+		expect(accepted.session.scopedModels.map((entry) => entry.model)).toEqual([live]);
+		registerTrustedCursorProvider(registry, {
+			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
+			models: mapCursorCatalogToProviderModels({ source: "live", fetchedAt: 2, models: [{ id: "actual-live", maxMode: true }] }),
+		});
+		expect(registry.isCurrentModel(live!)).toBe(false);
+		await expect(accepted.session.setModel(live!)).rejects.toThrow(/current authenticated catalog/u);
+		accepted.session.dispose();
 	});
 
 	it("keeps an explicit sessionManager override", async () => {
@@ -203,38 +269,23 @@ describe("createAgentSession session manager defaults", () => {
 		});
 	}
 
-	it("discovers and selects an exact saved Cursor default through real extension binding", async () => {
-		const exactId = "cursor-route:high (1m)/exact";
-		let discoveries = 0;
-		const extensionFactory: ExtensionFactory = (pi) => {
-			pi.on("model_catalog_discover", () => {
-				discoveries += 1;
-				pi.registerProvider("cursor", {
-					baseUrl: "https://api2.cursor.sh",
-					apiKey: "cursor-test-key",
-					api: "cursor-agent",
-					models: [{
-						id: exactId, name: "Exact Cursor Route", reasoning: false, input: ["text"],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 200_000, maxTokens: 64_000,
-					}],
-				});
-			});
-		};
+	it("discovers and selects an exact saved Cursor default through a trusted extension module", async () => {
+		const exactId = "continuity-route";
 		const authStorage = AuthStorage.inMemory();
+		authStorage.set("cursor", { type: "oauth", access: `x.${Buffer.from(JSON.stringify({ sub: "resumed-cli-test" })).toString("base64url")}.x`, refresh: "test", expires: Date.now() + 60_000 });
 		const modelRegistry = ModelRegistry.inMemory(authStorage);
 		const settingsManager = SettingsManager.inMemory();
 		settingsManager.setDefaultModelAndProvider("cursor", exactId);
 		const resourceLoader = new DefaultResourceLoader({
-			cwd, agentDir, settingsManager, extensionFactories: [extensionFactory],
-			noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+			cwd, agentDir, settingsManager,
+			additionalExtensionPaths: [resolve(import.meta.dirname, "../../cursor/test/resumed-history-extension.ts")],
+			builtinPackagePaths: [], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		});
 		await resourceLoader.reload();
 		const { session, modelFallbackMessage } = await createAgentSession({
 			cwd, agentDir, authStorage, modelRegistry, settingsManager,
 			sessionManager: SessionManager.inMemory(cwd), resourceLoader,
 		});
-		expect(discoveries).toBe(1);
 		expect(session.model?.provider).toBe("cursor");
 		expect(session.model?.id).toBe(exactId);
 		expect(modelFallbackMessage).toBeUndefined();

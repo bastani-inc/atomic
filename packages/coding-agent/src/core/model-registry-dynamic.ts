@@ -6,6 +6,7 @@ import {
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import { registerOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { applyModelModifierPreservingCursor, publishImmutableCursorModel } from "./model-registry-cursor-modifier.ts";
 import { warnDeprecation } from "../utils/deprecation.ts";
 import { normalizeContextWindowOptions, validateContextWindowValue } from "./context-window.ts";
 import { applyModelOverride } from "./model-registry-builtins.ts";
@@ -121,6 +122,13 @@ export function validateProviderConfig(providerName: string, config: ProviderCon
 		}
 	}
 }
+function canonicalCursorModel(providerName: string, model: NonNullable<ProviderConfigInput["models"]>[number]): Model<Api> | undefined {
+	if (providerName !== "cursor") return undefined;
+	const candidate = model as Model<Api>;
+	return candidate.provider === "cursor" && candidate.api === "cursor-agent"
+		? publishImmutableCursorModel(candidate)
+		: undefined;
+}
 
 export function applyProviderConfigToModels(input: DynamicProviderApplyInput): Model<Api>[] {
 	const { providerName, config, authStorage, modelOverrides, storeProviderRequestConfig, storeModelHeaders } = input;
@@ -159,7 +167,8 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 				...modelOverride?.headers,
 			});
 
-			const model = {
+			const canonical = canonicalCursorModel(providerName, modelDef);
+			const model = canonical ?? {
 				id: modelDef.id,
 				name: modelDef.name,
 				api: api as Api,
@@ -185,7 +194,7 @@ export function applyProviderConfigToModels(input: DynamicProviderApplyInput): M
 		if (config.models.length > 0 && config.oauth?.modifyModels) {
 			const cred = authStorage.get(providerName);
 			if (cred?.type === "oauth") {
-				models = config.oauth.modifyModels(models, cred);
+				models = applyModelModifierPreservingCursor(models, cred, config.oauth.modifyModels);
 			}
 		}
 	} else if (config.baseUrl || config.headers) {

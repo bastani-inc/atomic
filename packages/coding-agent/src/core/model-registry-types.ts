@@ -35,14 +35,15 @@ export type ResolvedRequestAuth =
 	  };
 
 export type ModelRequestHeaderSource = "model" | "modelOverride";
-
+export type ModelRequestHeaders = Map<string, Map<string, Record<string, string>>>;
+export type ModelRequestHeaderSources = Map<string, Map<string, ModelRequestHeaderSource>>;
 export interface CustomModelsResult {
 	models: Model<Api>[];
 	overrides: Map<string, ProviderOverride>;
 	modelOverrides: Map<string, Map<string, ModelOverride>>;
 	providerRequestConfigs: Map<string, ProviderRequestConfig>;
-	modelRequestHeaders: Map<string, Record<string, string>>;
-	modelRequestHeaderSources: Map<string, ModelRequestHeaderSource>;
+	modelRequestHeaders: ModelRequestHeaders;
+	modelRequestHeaderSources: ModelRequestHeaderSources;
 	error: string | undefined;
 }
 
@@ -50,7 +51,7 @@ export interface ModelRegistryLoadResult {
 	models: Model<Api>[];
 	modelOverrides: Map<string, Map<string, ModelOverride>>;
 	providerRequestConfigs: Map<string, ProviderRequestConfig>;
-	modelRequestHeaders: Map<string, Record<string, string>>;
+	modelRequestHeaders: ModelRequestHeaders;
 	builtInProviders: Set<string>;
 	customOpenAICompatibleProviders: Set<string>;
 	loadError: string | undefined;

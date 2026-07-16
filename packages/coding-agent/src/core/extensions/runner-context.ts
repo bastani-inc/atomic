@@ -34,7 +34,7 @@ export interface ExtensionContextSource {
 	isIdle(): boolean;
 	isProjectTrusted(): boolean;
 	getSignal(): AbortSignal | undefined;
-	discoverModelCatalog(options?: { readonly signal?: AbortSignal }): Promise<void>;
+	discoverModelCatalog?(options?: { readonly signal?: AbortSignal }): Promise<void>;
 	abort(): void;
 	hasPendingMessages(): boolean;
 	shutdown(): void;
@@ -111,10 +111,12 @@ export function createExtensionContext(source: ExtensionContextSource): Extensio
 			source.assertActive();
 			return source.getSignal();
 		},
-		discoverModelCatalog: (options) => {
-			source.assertActive();
-			return source.discoverModelCatalog(options);
-		},
+		...(source.discoverModelCatalog === undefined ? {} : {
+			discoverModelCatalog: (options?: { readonly signal?: AbortSignal }) => {
+				source.assertActive();
+				return source.discoverModelCatalog?.(options) ?? Promise.resolve();
+			},
+		}),
 		abort: () => {
 			source.assertActive();
 			source.abort();

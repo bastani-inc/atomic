@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { isValidThinkingLevel } from "../cli/args.ts";
-import { hasNormalizedCursorProviderQualifier, parseExactCursorProviderReference } from "./cursor-model-reference.ts";
+import { hasNormalizedCursorProviderQualifier, isAuthenticatedCursorRouteModel, isExactCursorProvider, parseExactCursorProviderReference } from "./cursor-model-reference.ts";
 import { defaultModelPerProvider } from "./model-resolver-defaults.ts";
 import type { ParsedModelResult } from "./model-resolver-types.ts";
 
@@ -32,13 +32,13 @@ export function findExactModelReferenceMatch(
   const reservedCursorId = parseExactCursorProviderReference(modelReference);
   if (reservedCursorId !== undefined) {
     return availableModels.find(
-      (model) => model.provider === "cursor" && model.id === reservedCursorId,
+      (model) => isAuthenticatedCursorRouteModel(model) && model.id === reservedCursorId,
     );
   }
   const normalizedCursorQualifier = hasNormalizedCursorProviderQualifier(modelReference);
   const exactCursorMatch = availableModels.find(
     (model) => !normalizedCursorQualifier
-      && model.provider === "cursor"
+      && isAuthenticatedCursorRouteModel(model)
       && (modelReference === model.id || modelReference === `cursor/${model.id}`),
   );
   if (exactCursorMatch) return exactCursorMatch;
@@ -122,6 +122,7 @@ export function buildFallbackModel(
   modelId: string,
   availableModels: Model<Api>[],
 ): Model<Api> | undefined {
+  if (isExactCursorProvider(provider)) return undefined;
   const providerModels = availableModels.filter((m) => m.provider === provider);
   if (providerModels.length === 0) return undefined;
 
@@ -165,14 +166,14 @@ export function parseModelPattern(
   const reservedCursorId = parseExactCursorProviderReference(pattern);
   if (reservedCursorId !== undefined) {
     const reservedMatch = availableModels.find(
-      (model) => model.provider === "cursor" && model.id === reservedCursorId,
+      (model) => isAuthenticatedCursorRouteModel(model) && model.id === reservedCursorId,
     );
     return { model: reservedMatch, thinkingLevel: undefined, warning: undefined };
   }
   const exactCursorMatch = hasNormalizedCursorProviderQualifier(pattern)
     ? undefined
     : availableModels.find(
-      (model) => model.provider === "cursor" && (pattern === model.id || pattern === `cursor/${model.id}`),
+      (model) => isAuthenticatedCursorRouteModel(model) && (pattern === model.id || pattern === `cursor/${model.id}`),
     );
   if (exactCursorMatch) {
     return { model: exactCursorMatch, thinkingLevel: undefined, warning: undefined };

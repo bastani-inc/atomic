@@ -72,6 +72,7 @@ interface CursorExecutionAuthoritySnapshot {
 	readonly lease: symbol;
 	readonly controller: AbortController;
 	readonly routes: ReadonlyMap<string, readonly CursorExecutionAuthorityRoute[]>;
+	readonly models: ReadonlySet<Model<Api>>;
 	expiryTimer?: CursorExecutionAuthorityTimer;
 }
 
@@ -100,7 +101,7 @@ export class CursorExecutionAuthority {
 		this.#onExpire = options.onExpire;
 	}
 
-	publish(catalog: CursorModelCatalog, credentialScope: string, generation: number): void {
+	publish(catalog: CursorModelCatalog, credentialScope: string, generation: number, models: readonly Model<Api>[]): void {
 		if (this.#closed) return;
 		this.invalidateSnapshot(new Error("Cursor model catalog authority changed; retry with the current exact route."));
 		const routes = new Map<string, CursorExecutionAuthorityRoute[]>();
@@ -122,6 +123,7 @@ export class CursorExecutionAuthority {
 			lease: Symbol("cursor-execution-authority"),
 			controller: new AbortController(),
 			routes,
+			models: new Set(models),
 		};
 		this.#snapshot = snapshot;
 		this.scheduleExpiry(snapshot);
@@ -177,15 +179,14 @@ export class CursorExecutionAuthority {
 	private resolve(scope: string, model: Model<Api>, runtime: CursorExecutionAuthorityRuntime): CursorAuthorizedRoute | undefined {
 		const snapshot = this.#snapshot;
 		if (!snapshot || snapshot.credentialScope !== scope) return undefined;
+		if (!snapshot.models.has(model)) return undefined;
 		const occurrences = snapshot.routes.get(model.id);
 		if (!occurrences || occurrences.length === 0) return undefined;
 		const selected = selectedCursorRouting(model);
-		// An in-memory selection names an occurrence; current catalog metadata at that ordinal stays authoritative.
-		const route = selected
-			? occurrences.find((candidate) => candidate.catalogOccurrence === selected.catalogOccurrence)
-				?? occurrences.find((candidate) => routeMatches(candidate, selected))
-				?? occurrences[0]
-			: occurrences[0];
+		// Execution requires an exact occurrence identity. Missing, malformed, or
+		// removed metadata never migrates to occurrence zero or another duplicate.
+		if (!selected) return undefined;
+		const route = occurrences.find((candidate) => candidate.catalogOccurrence === selected.catalogOccurrence);
 		if (!route) return undefined;
 		const authorization: CursorAuthorizedRoute = {
 			...route,
@@ -250,14 +251,13 @@ interface CursorSelectedModelCompat {
 function selectedCursorRouting(model: Model<Api>): CursorModelRouting | undefined {
 	const compat = model.compat as CursorSelectedModelCompat | undefined;
 	const selected = compat?.cursorRouting?.[model.id];
-	return selected?.modelId === model.id ? selected : undefined;
+	return selected?.modelId === model.id
+		&& Number.isInteger(selected.catalogOccurrence)
+		&& selected.catalogOccurrence >= 0
+		? selected
+		: undefined;
 }
 
-function routeMatches(route: CursorExecutionAuthorityRoute, selected: CursorModelRouting): boolean {
-	return route.modelId === selected.modelId
-		&& route.maxMode === selected.maxMode
-		&& route.supportsImages === selected.supportsImages;
-}
 
 function disposedError(): Error {
 	return new Error("Cursor provider is disposed; refresh the catalog in an active session.");

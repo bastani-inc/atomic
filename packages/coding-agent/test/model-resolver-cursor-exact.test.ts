@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { findExactModelReferenceMatch, parseModelPattern, resolveCliModel } from "../src/core/model-resolver.ts";
 import { resolveModelScopeWithDiagnostics } from "../src/core/model-resolver-scope.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 
 const exactId = "cursor-grok-4.5-high";
 const staleId = "grok-4.5-high";
@@ -20,12 +24,15 @@ function cursorModel(id: string): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 64_000,
+		compat: {
+			cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } },
+		},
 	};
 }
 
 function cursorRegistry(): ModelRegistry {
 	const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-	registry.registerProvider("cursor", {
+	registerTrustedCursorProvider(registry, {
 		baseUrl: "https://api2.cursor.sh",
 		apiKey: "cursor-test-key",
 		api: "cursor-agent",
@@ -57,7 +64,7 @@ describe("Cursor exact model resolution", () => {
 	test("preserves a thinking-like suffix when it is part of the exact flat route ID", () => {
 		const id = "cursor-route:high";
 		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [cursorModel(id)],
 		});
 		expect(resolveCliModel({ cliModel: `cursor/${id}`, modelRegistry: registry }).model?.id).toBe(id);
@@ -85,7 +92,7 @@ describe("Cursor exact model resolution", () => {
 	test("rejects normalized Cursor provider qualifiers across exact, CLI, pattern, and scope resolution", async () => {
 		const route = cursorModel("route");
 		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [route],
 		});
 		for (const reference of ["CURSOR/route", "CuRsOr/route", " cursor/route", "cursor /route"]) {
@@ -100,7 +107,7 @@ describe("Cursor exact model resolution", () => {
 	test("does not reinterpret a normalized qualifier variant as a bare Cursor route ID", async () => {
 		const lookalike = cursorModel("CURSOR/route");
 		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [lookalike],
 		});
 		expect(findExactModelReferenceMatch("CURSOR/route", [lookalike])).toBeUndefined();
@@ -178,7 +185,7 @@ describe("Cursor exact model resolution", () => {
 		expect(resolved.model?.id).toBe("composer-2");
 		expect(resolved.error).toBeUndefined();
 
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
 			models: [cursorModel("composer-2")],
 		});
@@ -208,7 +215,7 @@ describe("Cursor exact model resolution", () => {
 	test("enabled-model scope preserves exact provider-qualified Cursor route syntax", async () => {
 		const ids = ["cursor-route", "cursor-route:high", "cursor-route (1m)", " cursor-spaced ", "cursor/nested/route"];
 		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
 			models: ids.map(cursorModel),
 		});
@@ -239,7 +246,7 @@ describe("Cursor exact model resolution", () => {
 		const ordinary = await resolveModelScopeWithDiagnostics(["composer-2"], registry);
 		expect(ordinary.scopedModels.map((entry) => `${entry.model.provider}/${entry.model.id}`)).toEqual(["openai/composer-2"]);
 
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
 			models: [cursorModel("composer-2")],
 		});
@@ -308,13 +315,144 @@ describe("Cursor exact model resolution", () => {
 		expect(resolveCliModel({ cliModel: "Cursor/route", modelRegistry: registry }).model?.provider).toBe("Cursor");
 	});
 
+	test("static lowercase Cursor rows without authenticated live routing are never selectable", async () => {
+		for (const api of ["anthropic-messages", "cursor-agent"] as const) {
+			const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+			registerTrustedCursorProvider(registry, {
+				baseUrl: api === "cursor-agent" ? "https://api2.cursor.sh" : "https://static.invalid",
+				apiKey: "static-key", api,
+				models: [{ ...cursorModel("static-forbidden"), api, compat: undefined }],
+			});
+			const all = registry.getAll();
+			expect(resolveCliModel({ cliProvider: "cursor", cliModel: "static-forbidden", modelRegistry: registry }).model, api).toBeUndefined();
+			expect(resolveCliModel({ cliProvider: "cursor", cliModel: "static-forbidden", modelRegistry: registry }).error, api)
+				.toContain('Model "cursor/static-forbidden" not found');
+			expect(resolveCliModel({ cliModel: "static-forbidden", modelRegistry: registry }).model, api).toBeUndefined();
+			expect(resolveCliModel({ cliModel: "cursor/static-forbidden", modelRegistry: registry }).model, api).toBeUndefined();
+			expect(findExactModelReferenceMatch("cursor/static-forbidden", all), api).toBeUndefined();
+			expect(parseModelPattern("cursor/static-forbidden", all).model, api).toBeUndefined();
+			expect((await resolveModelScopeWithDiagnostics(["cursor/static-forbidden"], registry)).scopedModels, api).toEqual([]);
+		}
+	});
+
+	test("malformed Cursor routing metadata cannot authenticate a static row", () => {
+		const id = "malformed-route";
+		const malformedRouting: readonly object[] = [
+			{ cursorRouting: { wrong: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+			{ cursorRouting: { [id]: { modelId: "wrong", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+			{ cursorRouting: { [id]: { modelId: id, maxMode: "false", supportsImages: false, catalogOccurrence: 0 } } },
+			{ cursorRouting: { [id]: { modelId: id, maxMode: false, catalogOccurrence: 0 } } },
+			{ cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: -1 } } },
+			{ cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0.5 } } },
+			{ cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: "0" } } },
+		];
+		for (const [index, compat] of malformedRouting.entries()) {
+			const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+			registerTrustedCursorProvider(registry, {
+				baseUrl: "https://api2.cursor.sh", apiKey: "static-key", api: "cursor-agent",
+				models: [{ ...cursorModel(id), compat: compat as Model<Api>["compat"] }],
+			});
+			const result = resolveCliModel({ cliProvider: "cursor", cliModel: id, modelRegistry: registry });
+			expect(result.model, `case ${index}`).toBeUndefined();
+			expect(result.error, `case ${index}`).toContain(`Model "cursor/${id}" not found`);
+		}
+	});
+
+	test("direct dynamic Cursor registration cannot manufacture live provenance", () => {
+		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+		const forged = cursorModel("extension-forged");
+		expect(() => registry.registerProvider("cursor", {
+			baseUrl: "https://extension.invalid", apiKey: "forged", api: "cursor-agent", models: [forged],
+		})).toThrow(/reserved.*GetUsable/u);
+		expect(registry.find("cursor", forged.id)).toBeUndefined();
+		expect(registry.getAll().some((model) => model.provider === "cursor")).toBe(false);
+		expect(registry.isCurrentModel(forged)).toBe(false);
+	});
+
+	test("models.json cannot forge authenticated Cursor provenance with copied routing metadata", () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-forged-cursor-model-"));
+		const modelsPath = join(dir, "models.json");
+		try {
+			writeFileSync(modelsPath, JSON.stringify({ providers: { cursor: {
+				baseUrl: "https://api2.cursor.sh", apiKey: "static-key", api: "cursor-agent",
+				models: [{
+					id: "forged-static-route", name: "Forged", reasoning: false, input: ["text"],
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 64_000,
+					compat: { cursorRouting: { "forged-static-route": { modelId: "forged-static-route", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+				}],
+			} } }));
+			const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+			expect(registry.getAll().some((model) => model.provider === "cursor" && model.id === "forged-static-route")).toBe(false);
+			expect(resolveCliModel({ cliModel: "cursor/forged-static-route", modelRegistry: registry }).model).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	test("models.json preserves colliding model headers for ordinary cursor provider variants", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-cursor-variant-headers-"));
+		const modelsPath = join(dir, "models.json");
+		try {
+			writeFileSync(modelsPath, JSON.stringify({ providers: {
+				cursor: {
+					baseUrl: "https://api2.cursor.sh", apiKey: "static-key", api: "cursor-agent",
+					models: [{
+						id: "proxy:variant-route", name: "Static Collision", reasoning: false, input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+						headers: { "X-Static-Cursor": "must-be-ignored" },
+					}],
+				},
+				"cursor:proxy": {
+					baseUrl: "https://proxy.invalid", apiKey: "variant-test-key", api: "anthropic-messages",
+					models: [{
+						id: "variant-route", name: "Variant", reasoning: false, input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1_000, maxTokens: 100,
+						headers: { "X-Cursor-Variant": "preserved" },
+					}],
+				},
+			} }));
+			const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+			expect(registry.find("cursor", "proxy:variant-route")).toBeUndefined();
+			const variant = registry.find("cursor:proxy", "variant-route");
+			expect(variant).toBeDefined();
+			const auth = await registry.getApiKeyAndHeaders(variant!);
+			expect(auth.ok).toBe(true);
+			if (auth.ok) {
+				expect(auth.headers?.["X-Cursor-Variant"]).toBe("preserved");
+				expect(auth.headers?.["X-Static-Cursor"]).toBeUndefined();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("models.json cannot override authenticated Cursor Max or image metadata", () => {
+		const dir = mkdtempSync(join(tmpdir(), "atomic-cursor-model-override-"));
+		const modelsPath = join(dir, "models.json");
+		try {
+			writeFileSync(modelsPath, JSON.stringify({ providers: { cursor: { modelOverrides: { route: {
+				name: "Forged override", input: ["text", "image"],
+				compat: { cursorRouting: { route: { modelId: "route", maxMode: true, supportsImages: true, catalogOccurrence: 0 } } },
+			} } } } }));
+			const registry = ModelRegistry.create(AuthStorage.inMemory(), modelsPath);
+			registerTrustedCursorProvider(registry, {
+				baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [cursorModel("route")],
+			});
+			const live = registry.find("cursor", "route");
+			expect(live?.name).toBe("route");
+			expect(live?.input).toEqual(["text"]);
+			expect((live?.compat as { cursorRouting?: Record<string, { maxMode: boolean; supportsImages: boolean }> }).cursorRouting?.route).toMatchObject({ maxMode: false, supportsImages: false });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("a reserved lowercase cursor/<id> still resolves when the exact live route exists", () => {
 		const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
 		registry.registerProvider("Cursor", {
 			baseUrl: "https://custom.invalid", apiKey: "custom", api: "anthropic-messages",
 			models: [{ ...cursorModel("route"), provider: "Cursor", api: "anthropic-messages" }],
 		});
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent",
 			models: [cursorModel("route")],
 		});

@@ -27,6 +27,7 @@ import { sanitizeCopilotGeminiPayload } from "./copilot-gemini-payload-sanitizer
 import { restoreCopilotGeminiReasoningOpaque } from "./copilot-gemini-reasoning.ts";
 import { normalizeCopilotGeminiReplayToolArguments } from "./copilot-gemini-tool-arguments.ts";
 import { getModelDefaultContextWindow, getSupportedContextWindows, selectContextWindow } from "./context-window.ts";
+import { isExactCursorProvider } from "./cursor-model-reference.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type {
   ExtensionRunner,
@@ -43,12 +44,9 @@ import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanit
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
 import { time } from "./timings.ts";
 import { defaultToolNames } from "./tools/index.ts";
-
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
 export type { CreateAgentSessionOptions, CreateAgentSessionResult } from "./sdk-types.ts";
-
 export * from "./sdk-exports.ts";
-
 // Helper Functions
 
 function getDefaultAgentDir(): string {
@@ -162,8 +160,10 @@ export async function createAgentSession(
     .getBranch()
     .some((entry) => entry.type === "thinking_level_change");
 
-  let model = options.model;
-  let modelFallbackMessage: string | undefined;
+  const rejectedExplicitCursor = options.model !== undefined && isExactCursorProvider(options.model.provider)
+    && !modelRegistry.isCurrentModel(options.model);
+  let model = rejectedExplicitCursor ? undefined : options.model;
+  let modelFallbackMessage = rejectedExplicitCursor ? `Could not select Cursor model cursor/${options.model?.id ?? ""}. Cursor model IDs changed; reselect an exact model with --list-models.` : undefined;
   const deferredCursorModel = selectDeferredCursorModelReference({ explicitModel: options.model,
     sessionModel: hasExistingSession ? (existingSession.model ?? undefined) : undefined,
     defaultProvider: settingsManager.getDefaultProvider(), defaultModelId: settingsManager.getDefaultModel() });
@@ -184,7 +184,7 @@ export async function createAgentSession(
   }
 
   // If still no model, use findInitialModel (checks settings default, then provider defaults)
-  if (!model && !deferredCursorModel) {
+  if (!model && !deferredCursorModel && !rejectedExplicitCursor) {
     const result = await findInitialModel({
       scopedModels: [],
       isContinuing: hasExistingSession,
@@ -259,7 +259,7 @@ export async function createAgentSession(
         contextWindowWarning = selected.error;
       }
     } else {
-      model = selected.model;
+      model = model.provider === "cursor" ? model : selected.model;
       selectedContextWindow = selected.contextWindow;
     }
   }

@@ -72,7 +72,7 @@ function providerHarness(discover: (token: string) => Promise<CursorModelCatalog
 function streamModel(config: CursorProviderConfig): Model<Api> {
 	const model = config.models[0];
 	if (!model) throw new Error("Expected a registered Cursor model");
-	return { ...model, provider: "cursor", api: config.api, baseUrl: config.baseUrl } as Model<Api>;
+	return model as unknown as Model<Api>;
 }
 
 async function collect(stream: AsyncIterable<AssistantMessageEvent>): Promise<AssistantMessageEvent[]> {

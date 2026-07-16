@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import type { Api, Context, Model } from "@earendil-works/pi-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
-import type { CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { trustedCursorProviderSource } from "../../packages/coding-agent/test/cursor-test-provider-source.js";
+import { deriveCursorCredentialScope, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import {
@@ -89,7 +90,7 @@ function providerHarness(): {
 						cost: { ...entry.cost },
 						compat: entry.compat as Model<Api>["compat"],
 					})),
-				});
+				}, trustedCursorProviderSource());
 				registrations.push(config);
 			},
 			on(event, handler) { handlers.set(event, handler); },
@@ -145,4 +146,44 @@ test("same-account reauthentication cannot reload revoked data when cache clear 
 	assert.ok(harness.registry.find("cursor", "replacement-route"));
 	assert.equal(cache.catalog?.models[0]?.id, "replacement-route");
 	await runtime.dispose();
+});
+
+test("authoritative empty persists a non-reusable marker when cache clear is unavailable", async () => {
+	const accessToken = token("no-clear-authoritative-empty");
+	const scope = deriveCursorCredentialScope(accessToken);
+	assert.ok(scope);
+	const cache = new CacheWithoutClear();
+	cache.catalog = {
+		source: "live", fetchedAt: 0, credentialScope: scope,
+		models: [{ id: "stale-before-empty", maxMode: false }],
+	};
+	const emptyDiscovery = new MutableDiscovery({ source: "live", fetchedAt: 100, models: [] });
+	const first = providerHarness();
+	const runtime = registerCursorProvider(first.host, {
+		discoveryService: emptyDiscovery, transport: new CursorMockTransport(), catalogCache: cache,
+		catalogCacheTtlMs: 10, now: () => 100, resolveCurrentAccessToken: () => accessToken,
+	});
+	const discover = first.handlers.get("model_catalog_discover");
+	assert.ok(discover);
+	await discover({}, { mode: "print", modelRegistry: { getApiKeyForProvider: () => accessToken } });
+	assert.deepEqual(first.registry.getAll().filter((entry) => entry.provider === "cursor"), []);
+	assert.deepEqual(cache.catalog?.models, [], "the required save stores a durable empty marker");
+	assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "empty", fetchedAt: 100 });
+	await runtime.dispose();
+
+	const replacementDiscovery = new MutableDiscovery({
+		source: "live", fetchedAt: 101, models: [{ id: "replacement-after-empty", maxMode: true }],
+	});
+	const second = providerHarness();
+	const restarted = registerCursorProvider(second.host, {
+		discoveryService: replacementDiscovery, transport: new CursorMockTransport(), catalogCache: cache,
+		catalogCacheTtlMs: 10, now: () => 101, resolveCurrentAccessToken: () => accessToken,
+	});
+	const restartDiscover = second.handlers.get("model_catalog_discover");
+	assert.ok(restartDiscover);
+	await restartDiscover({}, { mode: "print", modelRegistry: { getApiKeyForProvider: () => accessToken } });
+	assert.deepEqual(replacementDiscovery.calls, [accessToken]);
+	assert.equal(second.registry.find("cursor", "stale-before-empty"), undefined);
+	assert.ok(second.registry.find("cursor", "replacement-after-empty"));
+	await restarted.dispose();
 });

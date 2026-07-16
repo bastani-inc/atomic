@@ -4,6 +4,7 @@ import { parseArgs } from "../src/cli/args.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { recoverCursorModelScopeAfterExtensionStartup } from "../src/main-cursor-model-scope-recovery.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 
 function model(provider: "cursor" | "openai", id: string): Model<Api> {
 	return {
@@ -17,6 +18,9 @@ function model(provider: "cursor" | "openai", id: string): Model<Api> {
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow: 200_000,
 		maxTokens: 64_000,
+		...(provider === "cursor" ? {
+			compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+		} : {}),
 	};
 }
 
@@ -65,7 +69,7 @@ describe("Cursor enabled-model scope recovery", () => {
 			session: {
 				async discoverExtensionModels() {
 					discoveries += 1;
-					modelRegistry.registerProvider("cursor", {
+					registerTrustedCursorProvider(modelRegistry, {
 						baseUrl: "https://api2.cursor.sh",
 						apiKey: "test",
 						api: "cursor-agent",
@@ -85,7 +89,7 @@ describe("Cursor enabled-model scope recovery", () => {
 	test("selectInitialModel honors the saved default and current selection over scopedModels[0]", async () => {
 		const buildRegistry = (): ModelRegistry => {
 			const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
-			modelRegistry.registerProvider("cursor", {
+			registerTrustedCursorProvider(modelRegistry, {
 				baseUrl: "https://api2.cursor.sh",
 				apiKey: "test",
 				api: "cursor-agent",
@@ -156,7 +160,7 @@ describe("Cursor enabled-model scope recovery", () => {
 
 	test("a blank saved default id ('') is honored as present and selects the matching scoped row", async () => {
 		const modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory());
-		modelRegistry.registerProvider("cursor", {
+		registerTrustedCursorProvider(modelRegistry, {
 			baseUrl: "https://api2.cursor.sh",
 			apiKey: "test",
 			api: "cursor-agent",
@@ -190,7 +194,7 @@ describe("Cursor enabled-model scope recovery", () => {
 			selectInitialModel: true,
 			session: {
 				async discoverExtensionModels() {
-					modelRegistry.registerProvider("cursor", {
+					registerTrustedCursorProvider(modelRegistry, {
 						baseUrl: "https://api2.cursor.sh",
 						apiKey: "test",
 						api: "cursor-agent",
@@ -218,7 +222,7 @@ describe("Cursor enabled-model scope recovery", () => {
 			selectInitialModel: true,
 			session: {
 				async discoverExtensionModels() {
-					modelRegistry.registerProvider("cursor", {
+					registerTrustedCursorProvider(modelRegistry, {
 						baseUrl: "https://api2.cursor.sh",
 						apiKey: "test",
 						api: "cursor-agent",
@@ -256,7 +260,7 @@ describe("Cursor enabled-model scope recovery", () => {
 			session: {
 				async discoverExtensionModels() {
 					discoveries += 1;
-					modelRegistry.registerProvider("cursor", {
+					registerTrustedCursorProvider(modelRegistry, {
 						baseUrl: "https://api2.cursor.sh",
 						apiKey: "test",
 						api: "cursor-agent",

@@ -132,6 +132,7 @@ export { createAskUserQuestionToolDefinition } from "./core/tools/index.ts";
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
+export { isAuthenticatedCursorRouteModel, isSelectableModel } from "./core/cursor-model-reference.ts";
 export {
 	classifyBareCursorModelReference,
 	type BareCursorModelReferenceKind,

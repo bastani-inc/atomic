@@ -29,6 +29,7 @@ export interface CursorModelRouting {
 }
 
 export interface CursorProviderModelDefinition {
+	readonly provider: "cursor";
 	readonly id: string;
 	readonly name: string;
 	readonly api: string;
@@ -38,6 +39,9 @@ export interface CursorProviderModelDefinition {
 	readonly cost: { readonly input: number; readonly output: number; readonly cacheRead: number; readonly cacheWrite: number };
 	readonly contextWindow: number;
 	readonly maxTokens: number;
+	readonly defaultContextWindow: number;
+	readonly contextWindowOptions: readonly number[];
+	readonly headers: undefined;
 	readonly metadataProvenance: {
 		readonly catalog: CursorCatalogSource;
 		readonly capabilities: string;
@@ -72,6 +76,7 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			maxTokens: "conservative operational fallback; exact limit unknown",
 		};
 		return {
+			provider: "cursor",
 			id: model.id,
 			name: model.displayName ?? model.displayNameShort ?? model.displayModelId ?? model.id,
 			api: CURSOR_API,
@@ -80,7 +85,10 @@ export function mapCursorCatalogToProviderModels(catalog: CursorModelCatalog): C
 			input: model.supportsImages === true ? ["text", "image"] : ["text"],
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 			contextWindow: ESTIMATED_CONTEXT_WINDOW,
+			defaultContextWindow: ESTIMATED_CONTEXT_WINDOW,
+			contextWindowOptions: [ESTIMATED_CONTEXT_WINDOW],
 			maxTokens: ESTIMATED_MAX_TOKENS,
+			headers: undefined,
 			metadataProvenance,
 			compat: {
 				cursorRouting: {

@@ -8,6 +8,7 @@ import {
 	restoreModelFromSession,
 } from "../src/core/model-resolver.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 
 const allModels: Model<"anthropic-messages">[] = [
 	{
@@ -71,6 +72,7 @@ const cursorBaseModel: Model<"cursor-agent"> = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 	contextWindow: 200000,
 	maxTokens: 64000,
+	compat: { cursorRouting: { "composer-2": { modelId: "composer-2", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
 };
 
 const copilotSelectableBaseModel: Model<"openai-completions"> = {
@@ -170,7 +172,7 @@ describe("default model selection", () => {
 		expect(result.thinkingLevel).toBe("medium");
 	});
 	test("findInitialModel preserves an authenticated blank saved Cursor model id", async () => {
-		const blankCursorModel = { ...cursorBaseModel, id: "", name: "Blank Cursor route" };
+		const blankCursorModel = { ...cursorBaseModel, id: "", name: "Blank Cursor route", compat: { cursorRouting: { "": { modelId: "", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } };
 		const find = vi.fn((provider: string, id: string) =>
 			provider === "cursor" && id === "" ? blankCursorModel : undefined,
 		);
@@ -228,6 +230,25 @@ describe("default model selection", () => {
 		expect(find).toHaveBeenCalledWith("", "");
 		expect(result.model).toBe(custom);
 	});
+	test("saved defaults and session restore reject static lowercase Cursor rows", async () => {
+		const staticCursor = { ...cursorBaseModel, id: "static-forbidden", api: "anthropic-messages" as const, baseUrl: "https://static.invalid", compat: undefined };
+		const registry = {
+			find: (provider: string, id: string) => provider === "cursor" && id === staticCursor.id ? staticCursor : undefined,
+			hasConfiguredAuth: () => true,
+			canRestoreUnknownModel: () => false,
+			getAvailable: async () => [staticCursor],
+		} as unknown as Parameters<typeof findInitialModel>[0]["modelRegistry"];
+		const initial = await findInitialModel({
+			scopedModels: [], isContinuing: false,
+			defaultProvider: "cursor", defaultModelId: staticCursor.id, modelRegistry: registry,
+		});
+		expect(initial.model).toBeUndefined();
+		expect(initial.fallbackMessage).toContain("reselect");
+		const restored = await restoreModelFromSession("cursor", staticCursor.id, undefined, false, registry);
+		expect(restored.model).toBeUndefined();
+		expect(restored.fallbackMessage).toContain("reselect");
+	});
+
 	test("restoreModelFromSession rejects a stale Cursor id without current/provider/model fallback", async () => {
 		let availableCalls = 0;
 		const registry = {
@@ -281,7 +302,7 @@ describe("default model selection", () => {
 		const authStorage = AuthStorage.inMemory();
 		authStorage.set("cursor", { type: "api_key", key: "cursor-test-key" });
 		const registry = ModelRegistry.inMemory(authStorage);
-		registry.registerProvider("cursor", {
+		registerTrustedCursorProvider(registry, {
 			baseUrl: "https://api2.cursor.sh",
 			apiKey: "cursor-test-key",
 			api: "cursor-agent",

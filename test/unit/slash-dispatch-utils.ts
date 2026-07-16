@@ -32,6 +32,8 @@ import {
     createExtensionRuntime,
     type ExtensionRuntime,
 } from "../../packages/workflows/src/extension/runtime.js";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { ChatSurfacePayload } from "../../packages/workflows/src/tui/chat-surface-message.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import {
@@ -112,6 +114,7 @@ export type {
 
 export function resetSlashDispatchTestStateBeforeEach(): void {
     delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
+    setDurableBackend(new InMemoryDurableBackend());
 }
 
 export async function cleanupSlashDispatchTestStateAfterEach(): Promise<void> {
@@ -122,6 +125,7 @@ export async function cleanupSlashDispatchTestStateAfterEach(): Promise<void> {
         jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise),
     );
     store.clear();
+    setDurableBackend(undefined);
 }
 
 export function installSlashDispatchTestHooks(): void {

@@ -32,11 +32,12 @@ import {
   topLevelExpandedSnapshots,
 } from "./workflow-targets.js";
 import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import type { WorkflowReloadReport } from "./workflow-reload-report.js";
 
 export function makeExecuteWorkflowTool(
   runtime: ExtensionRuntime | ((ctx: PiExecuteContext) => ExtensionRuntime),
   getPersistence: () => WorkflowPersistencePort | undefined,
-  reloadWorkflowResources: () => Promise<void> | void,
+  reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void,
   ensureWorkflowResourcesLoaded: () => Promise<void> | void = () => {},
 ): (args: WorkflowToolArgs, ctx: PiExecuteContext) => Promise<WorkflowToolResult> {
   return async function executeWorkflowTool(

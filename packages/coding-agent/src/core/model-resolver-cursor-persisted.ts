@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { ExtensionMode } from "./extensions/index.ts";
 import type { ModelRegistry } from "./model-registry.ts";
-import { isExactCursorProvider } from "./cursor-model-reference.ts";
+import { isAuthenticatedCursorRouteModel, isExactCursorProvider } from "./cursor-model-reference.ts";
 
 export interface DeferredCursorModelReference {
   readonly kind: "session" | "default";
@@ -42,9 +42,12 @@ export async function recoverDeferredCursorModel(input: {
   } catch {
     return cursorReselectionMessage(input.reference);
   }
-  const exact = input.modelRegistry.getAll().find(
-    (model) => model.provider === "cursor" && model.id === input.reference.id,
+  const matches = input.modelRegistry.getAll().filter(
+    (model) => isAuthenticatedCursorRouteModel(model) && model.id === input.reference.id,
   );
+  // Persisted provider/ID state carries no occurrence identity. It may recover
+  // only an unambiguous singleton; duplicates require explicit reselection.
+  const exact = matches.length === 1 ? matches[0] : undefined;
   if (!exact || !input.modelRegistry.hasConfiguredAuth(exact)) {
     return cursorReselectionMessage(input.reference);
   }

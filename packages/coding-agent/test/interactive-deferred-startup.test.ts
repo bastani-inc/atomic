@@ -96,7 +96,7 @@ describe("applyDeferredModelScope", () => {
 	});
 
 	it("installs and selects an exact Cursor scope after deferred discovery", async () => {
-		const cursorModel = { ...claudeModel, provider: "cursor", id: "cursor-route:high" };
+		const cursorModel = { ...claudeModel, provider: "cursor", id: "cursor-route:high", api: "cursor-agent", baseUrl: "https://api2.cursor.sh", compat: { cursorRouting: { "cursor-route:high": { modelId: "cursor-route:high", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } };
 		const setScopedModels = vi.fn();
 		const setModel = vi.fn();
 		const mode = {
@@ -124,7 +124,7 @@ describe("applyDeferredModelScope", () => {
 	});
 
 	it("prefers a present blank saved default within a deferred model scope", async () => {
-		const blankCursorModel = { ...claudeModel, provider: "cursor", id: "", name: "Blank Cursor route" };
+		const blankCursorModel = { ...claudeModel, provider: "cursor", id: "", name: "Blank Cursor route", api: "cursor-agent", baseUrl: "https://api2.cursor.sh", compat: { cursorRouting: { "": { modelId: "", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } };
 		const setModel = vi.fn();
 		const find = vi.fn((provider: string, id: string) =>
 			provider === "cursor" && id === "" ? blankCursorModel : undefined,

@@ -71,6 +71,7 @@ export function buildCursorRequest(
 	systemPrompt: string,
 	userText: string,
 	turns: readonly ParsedTurn[],
+	historicalMessages: readonly CursorRunRequest["context"]["messages"][number][],
 	conversationId: string,
 	checkpoint: Uint8Array | null,
 	existingBlobStore?: Map<string, Uint8Array>,
@@ -82,7 +83,7 @@ export function buildCursorRequest(
 	const selectedContextBlob = storeAsBlob(buildSelectedContextBlob([systemBlobId], CURSOR_PROTO_CLIENT_NAME), blobStore);
 	const conversationState = checkpoint
 		? fromBinary(ConversationStateStructureSchema, checkpoint)
-		: buildConversationState(turns, blobStore, systemBlobId, selectedContextBlob);
+		: buildConversationState(turns, historicalMessages, blobStore, systemBlobId, selectedContextBlob);
 	const userMessage = createUserMessage(userText, selectedContextBlob, userImages);
 	const action = create(ConversationActionSchema, {
 		action: { case: "userMessageAction", value: create(UserMessageActionSchema, { userMessage }) },
@@ -107,6 +108,7 @@ export function buildCursorRequest(
 
 function buildConversationState(
 	turns: readonly ParsedTurn[],
+	historicalMessages: readonly CursorRunRequest["context"]["messages"][number][],
 	blobStore: Map<string, Uint8Array>,
 	systemBlobId: Uint8Array,
 	selectedContextBlob: Uint8Array,
@@ -127,7 +129,7 @@ function buildConversationState(
 		turnBlobIds.push(storeAsBlob(toBinary(ConversationTurnStructureSchema, turnStructure), blobStore));
 	}
 	return create(ConversationStateStructureSchema, {
-		rootPromptMessagesJson: [systemBlobId],
+		rootPromptMessagesJson: [systemBlobId, ...storeHistoricalTextMessages(historicalMessages, blobStore)],
 		turns: turnBlobIds,
 		todos: [],
 		pendingToolCalls: [],
@@ -142,6 +144,28 @@ function buildConversationState(
 		readPaths: [],
 		clientName: CURSOR_PROTO_CLIENT_NAME,
 	});
+}
+
+function storeHistoricalTextMessages(
+	messages: readonly CursorRunRequest["context"]["messages"][number][],
+	blobStore: Map<string, Uint8Array>,
+): Uint8Array[] {
+	const blobIds: Uint8Array[] = [];
+	for (const message of messages) {
+		if (message.role === "user") {
+			const textParts = typeof message.content === "string"
+				? [message.content]
+				: message.content.filter((part) => part.type === "text").map((part) => part.text);
+			if (textParts.length === 0) continue;
+			blobIds.push(storeAsBlob(textEncoder.encode(JSON.stringify({ role: "user", content: textParts.join("\n") })), blobStore));
+			continue;
+		}
+		if (message.role !== "assistant") continue;
+		const textParts = message.content.filter((part) => part.type === "text").map((part) => part.text);
+		if (textParts.length === 0) continue;
+		blobIds.push(storeAsBlob(textEncoder.encode(JSON.stringify({ role: "assistant", content: textParts.join("") })), blobStore));
+	}
+	return blobIds;
 }
 
 function createUserMessage(text: string, selectedContextBlob: Uint8Array, images: readonly ImageContent[] = []): UserMessage {

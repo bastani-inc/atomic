@@ -3,6 +3,7 @@ import { isValidThinkingLevel } from "../cli/args.ts";
 import { buildFallbackModel, parseModelPattern } from "./model-resolver-patterns.ts";
 import {
   hasNormalizedCursorProviderQualifier,
+  isAuthenticatedCursorRouteModel,
   isExactCursorProvider,
   parseExactCursorProviderReference,
   resolveProviderIdentity,
@@ -20,12 +21,12 @@ function findRawExactModel(cliModel: string, availableModels: Model<Api>[]): Mod
   // match only exact Cursor rows and never case-fold onto a non-Cursor row.
   const reservedCursorId = parseExactCursorProviderReference(cliModel);
   if (reservedCursorId !== undefined) {
-    return availableModels.find((model) => model.provider === "cursor" && model.id === reservedCursorId);
+    return availableModels.find((model) => isAuthenticatedCursorRouteModel(model) && model.id === reservedCursorId);
   }
   const normalizedCursorQualifier = hasNormalizedCursorProviderQualifier(cliModel);
   const lower = cliModel.toLowerCase();
   return availableModels.find((model) => model.provider === "cursor"
-    ? !normalizedCursorQualifier && (cliModel === model.id || cliModel === `cursor/${model.id}`)
+    ? isAuthenticatedCursorRouteModel(model) && !normalizedCursorQualifier && (cliModel === model.id || cliModel === `cursor/${model.id}`)
     : model.id.toLowerCase() === lower || `${model.provider}/${model.id}`.toLowerCase() === lower);
 }
 
@@ -79,7 +80,7 @@ export function resolveCliModel(options: {
   if (classifyBareCursor) {
     const kind = classifyBareCursorModelReference(cliModel, availableModels);
     if (kind === "current-cursor") {
-      const current = availableModels.find((model) => isExactCursorProvider(model.provider) && model.id === cliModel);
+      const current = availableModels.find((model) => isAuthenticatedCursorRouteModel(model) && model.id === cliModel);
       if (current) return { model: current, warning: undefined, thinkingLevel: undefined, error: undefined };
     }
   }
@@ -96,7 +97,9 @@ export function resolveCliModel(options: {
     }
   }
 
-  let provider = cliProvider ? resolveProviderIdentity(cliProvider, providers) : undefined;
+  let provider = cliProvider
+    ? isExactCursorProvider(cliProvider) ? cliProvider : resolveProviderIdentity(cliProvider, providers)
+    : undefined;
   if (cliProvider && !provider) {
     return {
       model: undefined,
@@ -109,14 +112,21 @@ export function resolveCliModel(options: {
   let inferredProvider = false;
 
   if (!provider) {
-    const slashIndex = cliModel.indexOf("/");
-    if (slashIndex !== -1) {
-      const maybeProvider = cliModel.substring(0, slashIndex);
-      const canonical = resolveProviderIdentity(maybeProvider, providers);
-      if (canonical) {
-        provider = canonical;
-        pattern = cliModel.substring(slashIndex + 1);
-        inferredProvider = true;
+    const reservedCursorId = parseExactCursorProviderReference(cliModel);
+    if (reservedCursorId !== undefined) {
+      provider = "cursor";
+      pattern = reservedCursorId;
+      inferredProvider = true;
+    } else {
+      const slashIndex = cliModel.indexOf("/");
+      if (slashIndex !== -1) {
+        const maybeProvider = cliModel.substring(0, slashIndex);
+        const canonical = resolveProviderIdentity(maybeProvider, providers);
+        if (canonical) {
+          provider = canonical;
+          pattern = cliModel.substring(slashIndex + 1);
+          inferredProvider = true;
+        }
       }
     }
   }
@@ -137,7 +147,7 @@ export function resolveCliModel(options: {
   }
 
   if (isExactCursorProvider(provider)) {
-    const exact = availableModels.find((model) => model.provider === provider && model.id === pattern);
+    const exact = availableModels.find((model) => isAuthenticatedCursorRouteModel(model) && model.id === pattern);
     if (exact) return { model: exact, thinkingLevel: undefined, warning: undefined, error: undefined };
     return {
       model: undefined,

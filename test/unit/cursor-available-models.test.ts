@@ -298,6 +298,18 @@ describe("Cursor split catalog discovery", () => {
 		]);
 	});
 
+	test("successful empty GetUsable is an authoritative empty catalog and aborts Available enrichment", async () => {
+		const transport = new AbortAwareDiscoveryTransport();
+		const task = new CursorModelDiscoveryService({ transport, now: () => 42 }).discover("account", "request");
+		assert.equal(transport.usableStarts, 1);
+		assert.equal(transport.availableStarts, 1);
+		transport.usable.resolve([]);
+		const catalog = await task;
+		assert.deepEqual(catalog, { source: "live", fetchedAt: 42, models: [] });
+		assert.equal(transport.availableAborts, 1);
+		assert.equal(transport.usableAborts, 0);
+	});
+
 	test("Available failure does not block authoritative text routes", async () => {
 		const transport = new DiscoveryTransport(
 			[{ id: "text-route", displayName: "Text Route", maxMode: false }],

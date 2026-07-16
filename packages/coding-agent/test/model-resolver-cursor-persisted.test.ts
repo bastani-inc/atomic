@@ -6,6 +6,7 @@ import {
   recoverDeferredCursorModel,
   selectDeferredCursorModelReference,
 } from "../src/core/model-resolver-cursor-persisted.ts";
+import { registerTrustedCursorProvider } from "./cursor-test-provider-source.ts";
 
 function model(provider: string, id: string): Model<Api> {
   return {
@@ -19,6 +20,9 @@ function model(provider: string, id: string): Model<Api> {
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 200_000,
     maxTokens: 64_000,
+    ...(provider === "cursor" ? {
+      compat: { cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
+    } : {}),
   } as Model<Api>;
 }
 
@@ -46,7 +50,7 @@ describe("persisted Cursor model recovery", () => {
         session: {
           async discoverExtensionModels() {
             discoveries += 1;
-            registry.registerProvider("cursor", {
+            registerTrustedCursorProvider(registry, {
               baseUrl: "https://api2.cursor.sh",
               apiKey: "cursor-test-key",
               api: "cursor-agent",
@@ -59,6 +63,35 @@ describe("persisted Cursor model recovery", () => {
       expect(discoveries).toBe(1);
       expect(selected).toBe(registry.getAll().find((entry) => entry.provider === "cursor" && entry.id === exact.id));
       expect(message).toBeUndefined();
+    });
+  }
+
+  for (const kind of ["session", "default"] as const) {
+    test(`rejects an id-only persisted ${kind} reference when live occurrences are duplicated`, async () => {
+      const registry = registryWithOtherModel();
+      const id = "duplicate-route";
+      const first = { ...model("cursor", id), name: "first", compat: {
+        cursorRouting: { [id]: { modelId: id, maxMode: false, supportsImages: false, catalogOccurrence: 0 } },
+      } } as Model<Api>;
+      const second = { ...model("cursor", id), name: "second", input: ["text", "image"], compat: {
+        cursorRouting: { [id]: { modelId: id, maxMode: true, supportsImages: true, catalogOccurrence: 1 } },
+      } } as Model<Api>;
+      let selected: Model<Api> | undefined;
+      const message = await recoverDeferredCursorModel({
+        reference: { kind, id },
+        modelRegistry: registry,
+        session: {
+          async discoverExtensionModels() {
+            registerTrustedCursorProvider(registry, {
+              baseUrl: "https://api2.cursor.sh", apiKey: "cursor-test-key", api: "cursor-agent", models: [first, second],
+            });
+          },
+          async setModel(value) { selected = value; },
+        },
+      });
+      expect(selected).toBeUndefined();
+      expect(message).toContain(`cursor/${id}`);
+      expect(message).toContain("reselect an exact model");
     });
   }
 

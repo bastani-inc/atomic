@@ -1,4 +1,5 @@
-import { isExactCursorProvider } from "./cursor-model-reference.ts";
+import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { isAuthenticatedCursorRouteModel } from "./cursor-model-reference.ts";
 
 /**
  * Cursor exposes no static executable catalog: GetUsable is the sole authority.
@@ -12,6 +13,8 @@ export type BareCursorModelReferenceKind = "current-cursor" | "other";
 export interface CursorModelIdentity {
 	readonly provider: string;
 	readonly id: string;
+	readonly api: string;
+	readonly compat?: Model<Api>["compat"];
 }
 
 export function classifyBareCursorModelReference(
@@ -19,7 +22,7 @@ export function classifyBareCursorModelReference(
 	models: readonly CursorModelIdentity[],
 ): BareCursorModelReferenceKind {
 	if (rawInput.includes("/")) return "other";
-	return models.some((model) => isExactCursorProvider(model.provider) && model.id === rawInput)
+	return models.some((model) => isAuthenticatedCursorRouteModel(model) && model.id === rawInput)
 		? "current-cursor"
 		: "other";
 }

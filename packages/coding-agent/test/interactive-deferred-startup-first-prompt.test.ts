@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.ts";
+import { ModelRegistry } from "../src/core/model-registry.ts";
 import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
@@ -11,6 +13,7 @@ import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { ExtensionCommandContextActions } from "../src/core/extensions/index.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { applyDeferredModelScope } from "../src/modes/interactive/interactive-deferred-startup.ts";
+import { trustedCursorProviderSource } from "./cursor-test-provider-source.ts";
 
 type PromptTurnHarness = {
 	deferredStartupPending: boolean;
@@ -165,6 +168,8 @@ describe("interactive deferred startup first prompt readiness", () => {
 			const settingsManager = SettingsManager.create(tempDir, agentDir);
 			settingsManager.setDefaultModelAndProvider("cursor", exactId);
 			const sessionManager = SessionManager.inMemory();
+			const authStorage = AuthStorage.inMemory();
+			const modelRegistry = ModelRegistry.inMemory(authStorage, trustedCursorProviderSource());
 			const resourceLoader = new DefaultResourceLoader({
 				cwd: tempDir,
 				agentDir,
@@ -180,6 +185,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 								id: exactId, name: "Exact Cursor Route", reasoning: false, input: ["text"],
 								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 								contextWindow: 200_000, maxTokens: 64_000,
+								compat: { cursorRouting: { [exactId]: { modelId: exactId, maxMode: false, supportsImages: false, catalogOccurrence: 0 } } },
 							}],
 						});
 					});
@@ -187,7 +193,7 @@ describe("interactive deferred startup first prompt readiness", () => {
 			});
 			await resourceLoader.reload({ deferExtensions: true, deferResources: true });
 			const { session, modelFallbackMessage } = await createAgentSession({
-				cwd: tempDir, agentDir, settingsManager, sessionManager, resourceLoader,
+				cwd: tempDir, agentDir, authStorage, modelRegistry, settingsManager, sessionManager, resourceLoader,
 			});
 			try {
 				expect(session.model?.provider).not.toBe("cursor");

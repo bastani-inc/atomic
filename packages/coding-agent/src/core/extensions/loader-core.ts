@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { isBuiltinCursorExtensionPath } from "../builtin-packages.ts";
 import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
@@ -16,12 +17,11 @@ import {
   type ExtensionCacheToken,
   useExtensionCacheCwd,
 } from "./loader-virtual-modules.ts";
+import { trustCursorProviderSource } from "./provider-registration-source.ts";
 import type { Extension, ExtensionFactory, ExtensionRuntime, LoadExtensionsResult } from "./types.ts";
 
-/**
- * Create an Extension object with empty collections.
- */
-function createExtension(extensionPath: string, resolvedPath: string): Extension {
+/** Create an Extension object with empty collections. */
+function createExtension(extensionPath: string, resolvedPath: string, loadedFromModule: boolean): Extension {
   const source = extensionPath.startsWith("<") && extensionPath.endsWith(">")
     ? extensionPath.slice(1, -1).split(":")[0] || "temporary"
     : "local";
@@ -29,6 +29,7 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 
   return {
     path: extensionPath,
+    loadedFromModule,
     resolvedPath,
     sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
     handlers: new Map(),
@@ -61,8 +62,8 @@ async function loadExtension(
         error: `Extension does not export a valid factory function: ${extensionPath}`,
       };
     }
-
-    const extension = createExtension(extensionPath, resolvedPath);
+    const extension = createExtension(extensionPath, resolvedPath, true);
+    if (isBuiltinCursorExtensionPath(resolvedPath)) trustCursorProviderSource(extension);
     const api = createExtensionAPI(
       extension,
       runtime,
@@ -94,7 +95,7 @@ export async function loadExtensionFromFactory(
   workflowResourceProvider: WorkflowResourceProviderInput = emptyWorkflowResourceProvider,
   resourceLoaderInheritanceSnapshotProvider?: ResourceLoaderInheritanceSnapshotProvider,
 ): Promise<Extension> {
-  const extension = createExtension(extensionPath, extensionPath);
+  const extension = createExtension(extensionPath, extensionPath, false);
   const resolvedCwd = resolvePath(cwd);
   const api = createExtensionAPI(
     extension,

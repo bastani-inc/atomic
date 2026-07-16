@@ -79,6 +79,7 @@ function liveAuthorityHarness(): {
 	readonly authority: CursorExecutionAuthority;
 	readonly accessToken: string;
 	readonly scope: string;
+	readonly model: Model<Api>;
 	readonly runtime: CursorExecutionAuthorityRuntime;
 	setNow(value: number): void;
 } {
@@ -87,9 +88,11 @@ function liveAuthorityHarness(): {
 	const scope = deriveCursorCredentialScope(accessToken);
 	if (!scope) throw new Error("Expected test credential scope");
 	const authority = new CursorExecutionAuthority({ now: () => currentTime, ttlMs: 10 });
-	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: model().id, maxMode: false }] }, scope, 1);
+	const selected = model();
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: selected.id, maxMode: false }] }, scope, 1, [selected]);
 	return {
 		authority,
+		model: selected,
 		accessToken,
 		scope,
 		runtime: { isActive: () => true, activeCredentialScope: () => scope, now: () => currentTime, ttlMs: 10, discover: () => undefined },
@@ -158,16 +161,18 @@ test("execution authority actively expires and clears identity-fenced lease time
 		ttlMs: 10,
 		discover: () => undefined,
 	};
-	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: model().id, maxMode: false }] }, scope, 1);
+	const firstModel = model();
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: firstModel.id, maxMode: false }] }, scope, 1, [firstModel]);
 	const firstTimer = scheduler.timers[0];
-	const first = await authority.authorize(model(), accessToken, undefined, runtime);
+	const first = await authority.authorize(firstModel, accessToken, undefined, runtime);
 	assert.equal(first.authoritySignal.aborted, false);
 
 	currentTime = 101;
-	authority.publish({ source: "live", fetchedAt: 101, models: [{ id: model().id, maxMode: true }] }, scope, 2);
+	const secondModel = model();
+	authority.publish({ source: "live", fetchedAt: 101, models: [{ id: secondModel.id, maxMode: true }] }, scope, 2, [secondModel]);
 	assert.equal(firstTimer?.cancelled, true);
 	firstTimer?.callback();
-	const second = await authority.authorize(model(), accessToken, undefined, runtime);
+	const second = await authority.authorize(secondModel, accessToken, undefined, runtime);
 	assert.equal(second.authoritySignal.aborted, false, "stale timer callback must not revoke the replacement lease");
 
 	currentTime = 111;
@@ -189,6 +194,7 @@ test("execution authority preserves blank and duplicate occurrences and follows 
 		ttlMs: 10,
 		discover: () => undefined,
 	};
+	const initialModels = [occurrenceModel("", 0, false, false), occurrenceModel("   ", 0, true, false), occurrenceModel("duplicate", 0, false, false), occurrenceModel("duplicate", 1, true, true)];
 	authority.publish({
 		source: "live",
 		fetchedAt: 100,
@@ -198,15 +204,16 @@ test("execution authority preserves blank and duplicate occurrences and follows 
 			{ id: "duplicate", maxMode: false },
 			{ id: "duplicate", maxMode: true, supportsImages: true },
 		],
-	}, scope, 1);
+	}, scope, 1, initialModels);
 
-	assert.equal((await authority.authorize(occurrenceModel("", 0, false, false), accessToken, undefined, runtime)).modelId, "");
-	assert.equal((await authority.authorize(occurrenceModel("   ", 0, true, false), accessToken, undefined, runtime)).maxMode, true);
-	const firstDuplicate = await authority.authorize(occurrenceModel("duplicate", 0, false, false), accessToken, undefined, runtime);
-	const laterDuplicate = await authority.authorize(occurrenceModel("duplicate", 1, true, true), accessToken, undefined, runtime);
+	assert.equal((await authority.authorize(initialModels[0]!, accessToken, undefined, runtime)).modelId, "");
+	assert.equal((await authority.authorize(initialModels[1]!, accessToken, undefined, runtime)).maxMode, true);
+	const firstDuplicate = await authority.authorize(initialModels[2]!, accessToken, undefined, runtime);
+	const laterDuplicate = await authority.authorize(initialModels[3]!, accessToken, undefined, runtime);
 	assert.deepEqual([firstDuplicate.maxMode, firstDuplicate.supportsImages], [false, false]);
 	assert.deepEqual([laterDuplicate.maxMode, laterDuplicate.supportsImages], [true, true]);
 
+	const refreshedModels = [occurrenceModel("", 0, false, false), occurrenceModel("   ", 0, true, false), occurrenceModel("duplicate", 0, true, true), occurrenceModel("duplicate", 1, true, true)];
 	authority.publish({
 		source: "live",
 		fetchedAt: 100,
@@ -216,10 +223,10 @@ test("execution authority preserves blank and duplicate occurrences and follows 
 			{ id: "duplicate", maxMode: true, supportsImages: true },
 			{ id: "duplicate", maxMode: false },
 		],
-	}, scope, 2);
+	}, scope, 2, refreshedModels);
 	assert.equal(firstDuplicate.authoritySignal.aborted, true);
 	const changedMetadataAtSelectedOccurrence = await authority.authorize(
-		occurrenceModel("duplicate", 1, true, true), accessToken, undefined, runtime,
+		refreshedModels[3]!, accessToken, undefined, runtime,
 	);
 	assert.deepEqual(
 		[changedMetadataAtSelectedOccurrence.maxMode, changedMetadataAtSelectedOccurrence.supportsImages],
@@ -227,9 +234,40 @@ test("execution authority preserves blank and duplicate occurrences and follows 
 		"a still-current selected ordinal must win before stale routing metadata",
 	);
 
-	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: "duplicate", maxMode: false }] }, scope, 3);
-	const removedOccurrenceFallback = await authority.authorize(occurrenceModel("duplicate", 1, true, true), accessToken, undefined, runtime);
-	assert.deepEqual([removedOccurrenceFallback.maxMode, removedOccurrenceFallback.supportsImages], [false, false]);
+	const remaining = occurrenceModel("duplicate", 0, false, false);
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: "duplicate", maxMode: false }] }, scope, 3, [remaining]);
+	await assert.rejects(
+		authority.authorize(initialModels[3]!, accessToken, undefined, runtime),
+		/not an exact route|reselect/u,
+	);
+	authority.close();
+});
+
+test("execution authority rejects malformed or absent occurrence identity", async () => {
+	const accessToken = token("malformed-occurrence-account");
+	const scope = deriveCursorCredentialScope(accessToken);
+	assert.ok(scope);
+	const authority = new CursorExecutionAuthority({ now: () => 100, ttlMs: 10 });
+	const runtime: CursorExecutionAuthorityRuntime = {
+		isActive: () => true, activeCredentialScope: () => scope, now: () => 100, ttlMs: 10, discover: () => undefined,
+	};
+	const base = occurrenceModel("duplicate", 0, false, false);
+	const invalid: Model<Api>[] = [
+		{ ...base, compat: undefined } as Model<Api>,
+		{ ...base, compat: {} } as Model<Api>,
+		{ ...base, compat: { cursorRouting: {} } } as Model<Api>,
+		{ ...base, compat: { cursorRouting: { duplicate: { modelId: "duplicate", maxMode: false, supportsImages: false } } } } as unknown as Model<Api>,
+		{ ...base, compat: { cursorRouting: { duplicate: { modelId: "other", maxMode: false, supportsImages: false, catalogOccurrence: 0 } } } } as Model<Api>,
+		...(["1", 1.5, -1, Number.NaN, Number.POSITIVE_INFINITY] as const).map((catalogOccurrence) => ({
+			...base,
+			compat: { cursorRouting: { duplicate: { modelId: "duplicate", maxMode: false, supportsImages: false, catalogOccurrence } } },
+		}) as unknown as Model<Api>),
+	];
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: "duplicate", maxMode: false }, { id: "duplicate", maxMode: true }] }, scope, 1, [base, ...invalid]);
+	for (const selected of invalid) {
+		await assert.rejects(authority.authorize(selected, accessToken, undefined, runtime), /not an exact route|reselect/u);
+	}
+	assert.equal((await authority.authorize(base, accessToken, undefined, runtime)).catalogGeneration, 1);
 	authority.close();
 });
 
@@ -278,7 +316,8 @@ test("TTL expiry actively aborts a silent transport and removes its active turn"
 		ttlMs: 10,
 		discover: () => undefined,
 	};
-	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: model().id, maxMode: false }] }, scope, 1);
+	const selected = model();
+	authority.publish({ source: "live", fetchedAt: 100, models: [{ id: selected.id, maxMode: false }] }, scope, 1, [selected]);
 	let releaseMessages = (): void => {};
 	const transport = new CursorMockTransport({
 		messageFactory: () => (async function* (): AsyncIterable<never> {
@@ -287,9 +326,9 @@ test("TTL expiry actively aborts a silent transport and removes its active turn"
 	});
 	const adapter = new CursorStreamAdapter({
 		transport,
-		executionAuthorizer: (selected, tokenValue, signal) => authority.authorize(selected, tokenValue, signal, runtime),
+		executionAuthorizer: (current, tokenValue, signal) => authority.authorize(current, tokenValue, signal, runtime),
 	});
-	const eventsPromise = collectEvents(adapter.streamSimple(model(), context(), { apiKey: accessToken }));
+	const eventsPromise = collectEvents(adapter.streamSimple(selected, context(), { apiKey: accessToken }));
 	while (transport.runs.length === 0) await Promise.resolve();
 	await Promise.resolve();
 	assert.equal(adapter.getLifecycleSnapshot().activeTurns, 1);
@@ -331,13 +370,15 @@ test("stream rechecks authority after every inbound read and removes aborted tur
 	}
 });
 
-test("positive stream fixture is one exact flat authority route without parameterized compatibility", () => {
+test("positive stream fixture carries one exact flat occurrence identity", () => {
 	const selected = model();
 	const route = testAuthorizedRoute();
 	assert.equal(selected.id, "cursor-grok-4.5-high");
 	assert.equal(selected.reasoning, false);
 	assert.equal(selected.thinkingLevelMap, undefined);
-	assert.equal(selected.compat, undefined);
+	assert.deepEqual((selected.compat as { cursorRouting?: object }).cursorRouting, {
+		"cursor-grok-4.5-high": { modelId: "cursor-grok-4.5-high", maxMode: true, supportsImages: false, catalogOccurrence: 0 },
+	});
 	assert.equal(route.modelId, selected.id);
 	assert.equal(route.maxMode, true);
 });
@@ -362,7 +403,7 @@ test("explicit test authority supplies the exact route", async () => {
 test("explicit test authority rejects a fabricated caller outside its route map", async () => {
 	const transport = new CursorMockTransport({ messages: [{ type: "done", reason: "stop" }] });
 	const adapter = new CursorStreamAdapter({ transport, executionAuthorizer: exactTestAuthority });
-	const fabricated = { ...model(), id: "fabricated-route", name: "fabricated-route" };
+	const fabricated = { ...model(), id: "fabricated-route", name: "fabricated-route", compat: undefined } as Model<Api>;
 	assert.equal(fabricated.compat, undefined);
 	const events = await collectEvents(adapter.streamSimple(fabricated, context(), { apiKey: "access-secret" }));
 	assert.equal(events.at(-1)?.type, "error");
@@ -378,14 +419,14 @@ for (const scenario of ["publish", "revoke", "expire", "close"] as const) {
 			transport,
 			executionAuthorizer: async (selected, accessToken, signal) => {
 				const route = await harness.authority.authorize(selected, accessToken, signal, harness.runtime);
-				if (scenario === "publish") harness.authority.publish({ source: "live", fetchedAt: 101, models: [{ id: selected.id, maxMode: true }] }, harness.scope, 2);
+				if (scenario === "publish") harness.authority.publish({ source: "live", fetchedAt: 101, models: [{ id: selected.id, maxMode: true }] }, harness.scope, 2, [selected]);
 				else if (scenario === "revoke") harness.authority.revoke();
 				else if (scenario === "expire") harness.setNow(110);
 				else harness.authority.close();
 				return route;
 			},
 		});
-		const events = await collectEvents(adapter.streamSimple(model(), context(), { apiKey: harness.accessToken }));
+		const events = await collectEvents(adapter.streamSimple(harness.model, context(), { apiKey: harness.accessToken }));
 		assert.equal(events.at(-1)?.type, "error");
 		assert.equal(transport.runs.length, 0);
 		await adapter.dispose();

@@ -4,6 +4,24 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-07-15
+
+### Changed
+
+- Aligned the intercom extension peer dependency with `@earendil-works/pi-tui` `^0.80.7` as part of the consolidated Pi v0.80.7 dependency update; no intercom source changes were needed.
+- Updated the runtime `typebox` range to `^1.3.6`.
+
+### Fixed
+
+- Preserved per-child chronology between busy-parent Intercom messages and terminal async subagent notifications: paused, completed, and failed paths now claim pre-terminal ordinary messages from the exact child session/run in FIFO order and atomically admit the prelude plus terminal notice through the custom-message batch API. A process-local bridge complements extension-bus delivery for lazily activated companions; terminal identity deduplicates both paths even when the successful terminal dispatch has an empty prelude, while failed dispatches remain retryable and distinct resumed-run lifecycle terminals remain independent. Idle flushes use the same ordered batch admission, unrelated children remain independent, and ask/reply correlation is unchanged ([#1802](https://github.com/bastani-inc/atomic/issues/1802)).
+- Made every short session ID printed by `intercom list` directly actionable in `send`, blocking `ask`, and targeted `reply`. Target resolution now preserves exact full IDs and exact case-insensitive names before accepting unique ID prefixes, reports colliding prefixes with the matching sessions instead of guessing, resolves blocking asks to the full sender ID so threaded replies correlate correctly, and rejects short-form self-targets at both tool and broker routing boundaries.
+
+## [0.9.9-alpha.4] - 2026-07-15
+
+### Changed
+
+- Published a synchronized Atomic 0.9.9-alpha.4 prerelease for the intercom extension; no functional intercom changes were made after 0.9.9-alpha.3.
+
 ## [0.9.9-alpha.3] - 2026-07-14
 
 ### Fixed

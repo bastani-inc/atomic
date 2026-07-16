@@ -18,18 +18,17 @@ import {
   allStageConflictMessage,
   ambiguousRunMessage,
   formatAlreadyEndedRetainedMessage,
-  inFlightRunCount,
-  reloadBlockedMessage,
   reloadFailureMessage,
   resolveToolRunTarget,
   resolveToolStageTarget,
   stageFailureMessage,
 } from "./workflow-targets.js";
-import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import { formatWorkflowReloadReport, formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.js";
+import { normalizeWorkflowReloadReport, type WorkflowReloadReport } from "./workflow-reload-report.js";
 
 export interface WorkflowControlActionDeps {
   getPersistence: () => WorkflowPersistencePort | undefined;
-  reloadWorkflowResources: () => Promise<void> | void;
+  reloadWorkflowResources: () => Promise<WorkflowReloadReport | void> | void;
   getRuntime: () => ExtensionRuntime;
   policy: WorkflowExecutionPolicy;
   ensureWorkflowResourcesLoaded: () => Promise<void> | void;
@@ -71,22 +70,27 @@ export async function workflowReloadAction(
   args: WorkflowToolArgs,
   deps: Pick<WorkflowControlActionDeps, "reloadWorkflowResources">,
 ): Promise<WorkflowToolResult> {
-  const activeRuns = inFlightRunCount();
-  if (activeRuns > 0) {
-    return { action: "reload", status: "noop", message: reloadBlockedMessage(activeRuns) };
-  }
   try {
-    await deps.reloadWorkflowResources();
+    const report = normalizeWorkflowReloadReport(await deps.reloadWorkflowResources());
+    return {
+      action: "reload",
+      status: report.outcome === "applied" ? "ok" : "noop",
+      message: formatWorkflowReloadReport(report, args.reason),
+      ...report,
+    };
   } catch (error) {
-    return { action: "reload", status: "noop", message: reloadFailureMessage(error) };
+    return {
+      action: "reload",
+      status: "noop",
+      message: reloadFailureMessage(error),
+      outcome: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      generation: 0,
+      workflowCount: 0,
+      coalescedRequests: 1,
+      diagnostics: [],
+    };
   }
-  return {
-    action: "reload",
-    status: "ok",
-    message: args.reason?.trim()
-      ? `Reloaded workflow resources (${args.reason.trim()}).`
-      : "Reloaded workflow resources.",
-  };
 }
 
 export function workflowKillAction(

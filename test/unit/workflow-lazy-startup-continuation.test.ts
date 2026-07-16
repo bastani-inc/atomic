@@ -1,4 +1,4 @@
-import { afterEach, describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -17,6 +17,8 @@ import { Type } from "typebox";
 import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/workflows/src/extension/runtime.js";
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
+import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
+import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 interface SentMessage {
   customType?: string;
@@ -32,12 +34,17 @@ async function cleanupJobs(): Promise<void> {
   await Promise.all(jobTracker.runIds().map((runId) => jobTracker.get(runId)?.promise));
 }
 
+beforeEach(() => {
+  setDurableBackend(new InMemoryDurableBackend());
+});
+
 afterEach(async () => {
   delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
   process.chdir(originalCwd);
   killAllRuns({ store, cancellation: cancellationRegistry });
   await cleanupJobs();
   store.clear();
+  setDurableBackend(undefined);
 });
 
 function workflowConfigDir(root: string): string {
@@ -297,12 +304,23 @@ describe("workflow lazy-startup continuation fixes", () => {
   });
 
   test("/workflow resume lazy-loads resources before failed-run registry lookup", async () => {
+    class CatalogCountingBackend extends InMemoryDurableBackend {
+      completedCatalogCalls = 0;
+
+      override listCompletedWorkflows() {
+        this.completedCatalogCalls += 1;
+        return super.listCompletedWorkflows();
+      }
+    }
+
+    const backend = new CatalogCountingBackend();
+    setDurableBackend(backend);
     const dir = await mkdtemp(join(tmpdir(), "atomic-workflow-slash-resume-lazy-"));
     try {
       const workflowPath = join(dir, "slash-resume-lazy.ts");
       await writePromptWorkflowFixture(workflowPath, "slash-resume-lazy");
       let refreshCalls = 0;
-      const { commands } = registerFactory({
+      const { commands, sent } = registerFactory({
         refreshWorkflowResources: async () => {
           refreshCalls += 1;
           return [{ path: workflowPath, enabled: true }];
@@ -313,10 +331,15 @@ describe("workflow lazy-startup continuation fixes", () => {
       store.recordStageStart(sourceRunId, { id: "retry-old", name: "retry", status: "failed", parentIds: [], toolEvents: [], error: "boom" });
       store.recordStageEnd(sourceRunId, { id: "retry-old", name: "retry", status: "failed", parentIds: [], toolEvents: [], error: "boom" });
       store.recordRunEnd(sourceRunId, "failed", undefined, "boom", { resumable: true, failedStageId: "retry-old" });
+      backend.registerWorkflow({ workflowId: sourceRunId, name: "slash-resume-lazy", inputs: {}, createdAt: Date.now(), status: "failed", resumable: true });
       const workflowCmd = commands.find((command) => command.name === "workflow");
       assert.ok(workflowCmd);
       await workflowCmd.options.handler?.(`resume ${sourceRunId}`, { hasUI: false, ui: { notify: () => undefined } });
       assert.equal(refreshCalls, 1);
+      assert.equal(backend.completedCatalogCalls, 1);
+      const output = sent.map((entry) => entry.content ?? "").join("\n");
+      assert.match(output, /Resum/);
+      assert.doesNotMatch(output, /Run not found/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -387,10 +410,13 @@ describe("workflow lazy-startup continuation fixes", () => {
       await sessionStart({}, { ui: { notify: () => undefined } });
       await waitForRefresh(0);
       await sessionStart({}, { ui: { notify: () => undefined } });
-      await waitForRefresh(1);
 
-      assert.equal(refreshCalls, 2);
+      // The permanent reload coordinator serializes generations. Release the
+      // stale pass before waiting for the new session's trailing pass to start.
+      assert.equal(refreshCalls, 1);
       resolvers[0]?.([{ path: oldPath, enabled: true }]);
+      await waitForRefresh(1);
+      assert.equal(refreshCalls, 2);
       resolvers[1]?.([{ path: newPath, enabled: true }]);
 
       const workflowCmd = commands.find((command) => command.name === "workflow");

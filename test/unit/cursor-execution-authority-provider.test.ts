@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import type { Api, Context, Model, OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai/compat";
 import { AuthStorage } from "../../packages/coding-agent/src/core/auth-storage.js";
 import { ModelRegistry } from "../../packages/coding-agent/src/core/model-registry.js";
+import type { ProviderConfigInput } from "../../packages/coding-agent/src/core/model-registry-types.js";
+import { trustedCursorProviderSource } from "../../packages/coding-agent/test/cursor-test-provider-source.js";
 import { CursorAuthService } from "../../packages/cursor/src/auth.js";
-import type { CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
+import { deriveCursorCredentialScope, type CursorCatalogCache } from "../../packages/cursor/src/catalog-cache.js";
 import type { CursorModelCatalog } from "../../packages/cursor/src/model-mapper.js";
 import { CursorModelDiscoveryService } from "../../packages/cursor/src/models.js";
 import { registerCursorProvider, type CursorProviderConfig, type CursorProviderHost } from "../../packages/cursor/src/provider.js";
@@ -68,7 +70,7 @@ function host(): { readonly value: CursorProviderHost; readonly registrations: C
 	const registrations: CursorProviderConfig[] = [];
 	return { registrations, value: { registerProvider(_name, config) { registrations.push(config); }, on() {} } };
 }
-function realRegistryHost(): {
+function realRegistryHost(throwAfterRegistration?: (config: CursorProviderConfig) => boolean): {
 	readonly value: CursorProviderHost;
 	readonly registrations: CursorProviderConfig[];
 	readonly registry: ModelRegistry;
@@ -82,40 +84,19 @@ function realRegistryHost(): {
 			registerProvider(name, config) {
 				registry.registerProvider(name, {
 					...config,
-					models: config.models.map((model) => ({
-						id: model.id,
-						name: model.name,
-						api: "cursor-agent" as const,
-						baseUrl: model.baseUrl,
-						reasoning: model.reasoning,
-						input: [...model.input],
-						cost: { ...model.cost },
-						contextWindow: model.contextWindow,
-						maxTokens: model.maxTokens,
-						compat: model.compat as Model<Api>["compat"],
-					})),
-				});
+					models: [...config.models] as unknown as NonNullable<ProviderConfigInput["models"]>,
+				}, trustedCursorProviderSource());
 				registrations.push(config);
+				if (throwAfterRegistration?.(config)) throw new Error("selected Cursor occurrence is no longer available");
 			},
 			on() {},
 		},
 	};
 }
-function selectedModel(config: CursorProviderConfig, id = config.models[0]?.id): Model<Api> {
-	const definition = config.models.find((candidate) => candidate.id === id);
-	if (!definition) throw new Error(`Missing test Cursor route ${id ?? "<none>"}`);
-	return {
-		id: definition.id,
-		name: definition.name,
-		provider: "cursor",
-		api: "cursor-agent",
-		baseUrl: definition.baseUrl,
-		reasoning: definition.reasoning,
-		input: [...definition.input],
-		cost: { ...definition.cost },
-		contextWindow: definition.contextWindow,
-		maxTokens: definition.maxTokens,
-	};
+function selectedModel(config: CursorProviderConfig, id = config.models[0]?.id, occurrence = 0): Model<Api> {
+	const definition = config.models.filter((candidate) => candidate.id === id)[occurrence];
+	if (!definition) throw new Error(`Missing test Cursor route ${id ?? "<none>"} occurrence ${occurrence}`);
+	return definition as unknown as Model<Api>;
 }
 
 function fabricatedModel(id: string): Model<Api> {
@@ -165,7 +146,9 @@ test("execution rejects retained, fabricated, and cross-account routes before tr
 		() => runtime.streamAdapter.bindExecutionAuthority(async (candidate) => fabricatedAuthorization(candidate.id)),
 		/already bound/u,
 	);
-	for (const [candidate, apiKey] of [[retained, a2], [fabricatedModel("fabricated"), a2], [selectedModel(activeConfig), b]] as const) {
+	const current = selectedModel(activeConfig);
+	const copiedCurrent = { ...current } as Model<Api>;
+	for (const [candidate, apiKey] of [[retained, a2], [fabricatedModel("fabricated"), a2], [copiedCurrent, a2], [current, b]] as const) {
 		const events = await collectEvents(activeConfig.streamSimple(candidate, context, { apiKey }));
 		assert.equal(events.at(-1)?.type, "error");
 	}
@@ -233,9 +216,10 @@ test("same-account rotation uses the current route and current Max metadata", as
 	});
 	await login(testHost.registrations[0]!);
 	const retained = selectedModel(testHost.registrations.at(-1)!);
-	assert.equal(retained.compat, undefined);
+	assert.equal(((retained.compat as { cursorRouting?: Record<string, { catalogOccurrence: number }> }).cursorRouting?.[retained.id])?.catalogOccurrence, 0);
 	await login(testHost.registrations.at(-1)!);
-	await collectEvents(testHost.registrations.at(-1)!.streamSimple(retained, context, { apiKey: a2 }));
+	const current = selectedModel(testHost.registrations.at(-1)!);
+	await collectEvents(testHost.registrations.at(-1)!.streamSimple(current, context, { apiKey: a2 }));
 	assert.equal(transport.runs[0]?.request.maxMode, false);
 	assert.equal(transport.runs[0]?.request.resolvedModelId, "same-route");
 	assert.equal(discovery.calls, 2);
@@ -422,6 +406,47 @@ test("disposal immediately closes authority and fences abort-ignoring late disco
 	assert.deepEqual(testHost.registrations.at(-1)?.models, []);
 	assert.equal(cache.saves, savesBeforeDisposal);
 	assert.notEqual(runtime.getCatalogRefreshStatus().state, "fresh");
+});
+
+
+test("authoritative empty revokes the prior lease and aborts its active stream while login succeeds", async () => {
+	const firstToken = token("authoritative-empty-stream", "one");
+	const secondToken = token("authoritative-empty-stream", "two");
+	let currentToken = firstToken;
+	const discovery = new QueueDiscoveryService([
+		{ source: "live", fetchedAt: 1, models: [{ id: "route-before-empty", maxMode: false }] },
+		{ source: "live", fetchedAt: 2, models: [] },
+	]);
+	const streamStarted = Promise.withResolvers<void>();
+	const transport = new CursorMockTransport({ messageFactory: () => (async function* () {
+		streamStarted.resolve();
+		await new Promise<void>(() => undefined);
+	})() });
+	const cache = new MemoryCache();
+	const testHost = realRegistryHost();
+	const runtime = registerCursorProvider(testHost.value, {
+		authService: new QueueAuthService([firstToken, secondToken]), discoveryService: discovery,
+		transport, catalogCache: cache, now: () => 2, resolveCurrentAccessToken: () => currentToken,
+	});
+	await login(testHost.registrations.at(-1)!);
+	const retained = selectedModel(testHost.registrations.at(-1)!);
+	const activeEvents = collectEvents(testHost.registrations.at(-1)!.streamSimple(retained, context, { apiKey: firstToken }));
+	await streamStarted.promise;
+	assert.equal(transport.runs[0]?.request.signal?.aborted, false);
+	currentToken = secondToken;
+	await login(testHost.registrations.at(-1)!);
+	const events = await activeEvents;
+	assert.equal(events.at(-1)?.type, "error");
+	assert.equal(transport.runs[0]?.request.signal?.aborted, true);
+	assert.equal(transport.runs[0]?.stream.cancelled, true);
+	assert.deepEqual(testHost.registrations.at(-1)?.models, []);
+	assert.equal(testHost.registry.find("cursor", "route-before-empty"), undefined);
+	assert.deepEqual(runtime.getCatalogRefreshStatus(), { state: "empty", fetchedAt: 2 });
+	assert.deepEqual(cache.catalog, { source: "live", fetchedAt: 2, models: [], credentialScope: deriveCursorCredentialScope(secondToken) });
+	const retainedEvents = await collectEvents(testHost.registrations.at(-1)!.streamSimple(retained, context, { apiKey: secondToken }));
+	assert.equal(retainedEvents.at(-1)?.type, "error");
+	assert.equal(transport.runs.length, 1);
+	await runtime.dispose();
 });
 
 test("disposal wakes an execution waiter without waiting for abort-ignoring discovery", async () => {

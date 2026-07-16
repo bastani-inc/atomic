@@ -85,7 +85,7 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
 	/** Provider registrations queued during extension loading, processed when runner binds */
-	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
+	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string; source?: Extension }>;
 	/** Throws when this extension instance is stale after runtime replacement. */
 	assertActive: () => void;
 	/** Marks this extension instance as stale after runtime replacement or reload. */
@@ -96,8 +96,8 @@ export interface ExtensionRuntimeState {
 	 * Before bindCore(): queues registrations / removes from queue.
 	 * After bindCore(): calls ModelRegistry directly for immediate effect.
 	 */
-	registerProvider: (name: string, config: ProviderConfig, extensionPath?: string) => void;
-	unregisterProvider: (name: string, extensionPath?: string) => void;
+	registerProvider: (name: string, config: ProviderConfig, source?: Extension | string) => void;
+	unregisterProvider: (name: string, source?: Extension | string) => void;
 }
 
 /**
@@ -176,6 +176,8 @@ export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionAction
 export interface Extension {
 	path: string;
 	resolvedPath: string;
+	/** True only when the loader imported this module from disk, never for inline factories. */
+	loadedFromModule: boolean;
 	sourceInfo: SourceInfo;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool>;
