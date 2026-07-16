@@ -60,10 +60,7 @@ type SuccessfulPrReference = Extract<PullRequestReferenceVerification, { readonl
 
 async function verify(responses: readonly CommandResult[], reference: SuccessfulPrReference = prReference) {
   return await verifyReleasePrChecksPassed(release, reference, "main", {
-    attempts: 1,
-    pollIntervalMs: 1,
     runCommand: queuedExecutor(responses),
-    sleep: () => Promise.resolve(),
   });
 }
 
@@ -71,9 +68,7 @@ describe("publish-release PR reconciliation", () => {
   test("keeps the normal exact OPEN path mergeable after checks pass", async () => {
     const commands: string[] = [];
     const result = await verifyReleasePrChecksPassed(release, prReference, "main", {
-      attempts: 1,
       runCommand: queuedExecutor([response(openPr), response(passingChecks), response(openPr)], commands),
-      sleep: () => Promise.resolve(),
     });
 
     assert.deepEqual(result.ok && result.disposition, "merge-required");

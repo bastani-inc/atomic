@@ -1,21 +1,12 @@
+import { verifyReleaseBaseMetadata } from "../../../scripts/release-base.js";
 import {
   commandSummary,
-  parseJsonCommand,
   runCommand,
-  selectPublishWorkflowRunJson,
   type CommandResult,
   type ValidatedRelease,
-  type JsonValue,
 } from "./publish-release.js";
-import { defaultSleep } from "./publish-release-helpers.js";
 
 type Execute = (args: readonly string[]) => CommandResult;
-type DispatchLookupOptions = {
-  readonly execute?: Execute;
-  readonly attempts?: number;
-  readonly pollIntervalMs?: number;
-  readonly sleep?: (durationMs: number) => Promise<void>;
-};
 
 export type ReleaseTagRecovery =
   | {
@@ -26,21 +17,12 @@ export type ReleaseTagRecovery =
     }
   | { readonly ok: false; readonly summary: string };
 
-export type PublishDispatchRecovery =
-  | {
-      readonly ok: true;
-      readonly found: true;
-      readonly runId: number;
-      readonly runUrl?: string;
-      readonly summary: string;
-    }
-  | { readonly ok: true; readonly found: false; readonly summary: string }
-  | { readonly ok: false; readonly summary: string };
 
 export function inspectReleaseTagRecovery(
   release: ValidatedRelease,
   currentBaseOid: string,
   requiredMergeOid: string,
+  expectedBaseRef: string,
   execute: Execute = runCommand,
 ): ReleaseTagRecovery {
   const localTag = execute(["git", "rev-parse", `${release.version}^{commit}`]);
@@ -65,6 +47,7 @@ export function inspectReleaseTagRecovery(
 
   const tagParent = execute(["git", "rev-parse", `${release.version}^{commit}^`]);
   const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const tagMessage = execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
   const integratedParent = execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, currentBaseOid]);
   const containsMerge = execute(["git", "merge-base", "--is-ancestor", requiredMergeOid, tagParent.stdout]);
   let stampedVersion: string | undefined;
@@ -75,10 +58,21 @@ export function inspectReleaseTagRecovery(
       stampedVersion = undefined;
     }
   }
+  let releaseBaseError: string | undefined;
+  if (tagMessage.exitCode !== 0) {
+    releaseBaseError = "release commit message could not be read";
+  } else {
+    try {
+      verifyReleaseBaseMetadata(tagMessage.stdout, tagParent.stdout, expectedBaseRef, tagParent.stdout);
+    } catch (error) {
+      releaseBaseError = error instanceof Error ? error.message : String(error);
+    }
+  }
   const validationCommands = [
     ...commands,
     commandSummary(tagParent),
     commandSummary(taggedManifest),
+    commandSummary(tagMessage),
     commandSummary(integratedParent),
     commandSummary(containsMerge),
   ];
@@ -94,6 +88,7 @@ export function inspectReleaseTagRecovery(
   if (stampedVersion !== release.version) {
     failures.push(`tagged @bastani/atomic version was ${stampedVersion ?? "unparseable"}, expected ${release.version}`);
   }
+  if (releaseBaseError !== undefined) failures.push(releaseBaseError);
   if (remoteOid.length > 0 && remoteOid !== localOid) {
     failures.push(`remote tag target was ${remoteOid}, expected local release commit ${localOid}`);
   }
@@ -115,99 +110,6 @@ export function inspectReleaseTagRecovery(
         : "Existing local release tag matches deterministic release evidence and must be pushed without force.",
       `tagTargetOid: ${localOid}`,
       ...validationCommands,
-    ].join("\n\n"),
-  };
-}
-
-const restPageSize = 100;
-
-function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizePublishRunPages(value: JsonValue): readonly JsonValue[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized: JsonValue[] = [];
-  for (const page of value) {
-    if (!isJsonObject(page) || !Array.isArray(page.workflow_runs)) return undefined;
-    for (const run of page.workflow_runs) {
-      if (!isJsonObject(run)) {
-        normalized.push(run);
-        continue;
-      }
-      normalized.push({
-        databaseId: run.id ?? null,
-        workflowName: run.path === ".github/workflows/publish.yml" ? "Publish" : null,
-        headBranch: run.head_branch ?? null,
-        event: run.event ?? null,
-        displayTitle: run.display_title ?? null,
-        status: run.status ?? null,
-        conclusion: run.conclusion ?? null,
-        headSha: run.head_sha ?? null,
-        url: run.html_url ?? null,
-      });
-    }
-  }
-  return normalized;
-}
-
-function publishRunHistorySummary(result: CommandResult, runCount: number): string {
-  return [`$ ${result.command}`, `exitCode: ${result.exitCode}`, `runCount: ${runCount}`].join("\n");
-}
-
-export async function findExistingPublishDispatch(
-  release: ValidatedRelease,
-  options: DispatchLookupOptions = {},
-): Promise<PublishDispatchRecovery> {
-  const execute = options.execute ?? runCommand;
-  const attempts = Math.max(1, options.attempts ?? 1);
-  const pollIntervalMs = options.pollIntervalMs ?? 10_000;
-  const sleep = options.sleep ?? defaultSleep;
-  let lastSummary = "GitHub Actions publish run lookup did not execute.";
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const runList = execute([
-      "gh", "api", "--method", "GET", "--paginate", "--slurp",
-      `repos/{owner}/{repo}/actions/workflows/publish.yml/runs?per_page=${restPageSize}`,
-    ]);
-    if (runList.exitCode !== 0) {
-      return { ok: false, summary: ["GitHub Actions publish run history command failed.", commandSummary(runList)].join("\n\n") };
-    }
-    const parsed = parseJsonCommand(runList, "GitHub Actions publish run history returned invalid JSON.");
-    if (!parsed.ok) return parsed;
-    const normalized = normalizePublishRunPages(parsed.value);
-    if (normalized === undefined) {
-      return { ok: false, summary: ["GitHub Actions publish run history had an invalid paginated shape.", commandSummary(runList)].join("\n\n") };
-    }
-    const selected = selectPublishWorkflowRunJson(normalized, release.version);
-    if (selected.ok) {
-      return {
-        ok: true,
-        found: true,
-        runId: selected.runId,
-        runUrl: selected.runUrl,
-        summary: [
-          "Existing protected publish dispatch will be reused; no duplicate dispatch is needed.",
-          selected.summary,
-          publishRunHistorySummary(runList, normalized.length),
-        ].join("\n\n"),
-      };
-    }
-    if (selected.summary.startsWith("GitHub Actions publish run is not selectable.")) {
-      return { ok: false, summary: [selected.summary, commandSummary(runList)].join("\n\n") };
-    }
-    lastSummary = [selected.summary, publishRunHistorySummary(runList, normalized.length)].join("\n\n");
-    if (attempt < attempts) await sleep(pollIntervalMs);
-  }
-
-  return {
-    ok: true,
-    found: false,
-    summary: [
-      "No existing protected publish dispatch appeared during the reconciliation window.",
-      `attempts: ${attempts}`,
-      `pollIntervalMs: ${pollIntervalMs}`,
-      lastSummary,
     ].join("\n\n"),
   };
 }

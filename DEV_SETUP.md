@@ -284,17 +284,17 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow: `main` stays at the `0.0.0` placeholder and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) makes CI cross-compile binaries, publish to npm with OIDC provenance, and create the GitHub Release with binaries attached.
+Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) makes CI validate the immutable base metadata, cross-compile binaries, publish to npm with OIDC provenance, and create the GitHub Release with binaries attached. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative security and allowlist details.
 
 ### Workflow
 
-1. Land the CHANGELOG move on `main` like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI extracts release notes from it). **Do not bump any `package.json` version** — `main` is versionless.
-2. From a clean `main`, cut the release. This stamps the version onto an off-`main` `Release <version>` commit, tags it, and pushes only the tag:
+1. Land the CHANGELOG move on the selected versionless base like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI extracts release notes from it). **Do not bump any `package.json` version.**
+2. From a clean selected base, cut the release. This resolves the exact remote branch, stamps the version onto a detached `Release <version>` commit, records `Release-base-ref` and `Release-base-sha`, tags it, and pushes only the tag:
     ```sh
     bun run scripts/cut-release.ts <version> --base main --push
     ```
-    `main` is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`.
-3. The tag push triggers `.github/workflows/publish.yml`, which builds from the tagged (real-version) commit and publishes `@bastani/atomic` to npm with OIDC provenance — stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next` — and creates the GitHub Release with six binary archives attached (darwin/linux/windows × arm64/x64).
+    The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. Non-main bases must be configured as exact canonical refs in `RELEASE_BASE_REFS` as documented in [Release base allowlist](./docs/ci.md#release-base-allowlist).
+3. The tag push triggers `.github/workflows/publish.yml` from the protected default branch. It validates the selected base and tagged real-version commit before publishing `@bastani/atomic` to npm with OIDC provenance—stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`—and creates the GitHub Release with six binary archives attached.
 
 To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
 

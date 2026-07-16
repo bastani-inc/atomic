@@ -4,10 +4,13 @@ import { $ } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { verifyReleaseBaseMetadata } from "./release-base.js";
 
 interface Options {
-  baseRef: string;
-  releaseCommit: string;
+  readonly baseRef: string;
+  readonly releaseCommit: string;
+  readonly expectedBaseRef?: string;
+  readonly expectedBaseSha?: string;
 }
 
 function fail(message: string): never {
@@ -18,12 +21,19 @@ function parseArgs(): Options {
   const args = process.argv.slice(2);
   let baseRef = "origin/main";
   let releaseCommit = "HEAD";
+  let expectedBaseRef: string | undefined;
+  let expectedBaseSha: string | undefined;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--base-ref" && args[i + 1]) baseRef = args[++i] as string;
     else if (args[i] === "--release-commit" && args[i + 1]) releaseCommit = args[++i] as string;
+    else if (args[i] === "--expected-base-ref" && args[i + 1]) expectedBaseRef = args[++i] as string;
+    else if (args[i] === "--expected-base-sha" && args[i + 1]) expectedBaseSha = args[++i] as string;
     else fail(`unknown or incomplete argument: ${args[i]}`);
   }
-  return { baseRef, releaseCommit };
+  if ((expectedBaseRef === undefined) !== (expectedBaseSha === undefined)) {
+    fail("--expected-base-ref and --expected-base-sha must be supplied together");
+  }
+  return { baseRef, releaseCommit, expectedBaseRef, expectedBaseSha };
 }
 
 const ROOT = resolve(import.meta.dir, "..");
@@ -33,14 +43,27 @@ async function git(args: string[], cwd = ROOT): Promise<string> {
   if (result.exitCode !== 0) fail(`git ${args.join(" ")} failed: ${result.stderr.toString().trim()}`);
   return result.stdout.toString().trim();
 }
+async function gitRaw(args: string[], cwd = ROOT): Promise<string> {
+  const result = await $`git -C ${cwd} ${args}`.nothrow().quiet();
+  if (result.exitCode !== 0) fail(`git ${args.join(" ")} failed: ${result.stderr.toString().trim()}`);
+  return result.stdout.toString();
+}
 
 async function main(): Promise<void> {
-  const { baseRef, releaseCommit } = parseArgs();
+  const { baseRef, releaseCommit, expectedBaseRef, expectedBaseSha } = parseArgs();
   const releaseSha = await git(["rev-parse", "--verify", `${releaseCommit}^{commit}`]);
   const parents = (await git(["show", "-s", "--format=%P", releaseSha])).split(/\s+/).filter(Boolean);
   if (parents.length !== 1) fail(`release commit must have exactly one parent; found ${parents.length}`);
   const parent = parents[0] as string;
 
+  if (expectedBaseRef !== undefined && expectedBaseSha !== undefined) {
+    const message = await gitRaw(["show", "-s", "--format=%B", releaseSha]);
+    try {
+      verifyReleaseBaseMetadata(message, parent, expectedBaseRef, expectedBaseSha);
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+    }
+  }
   const ancestry = await $`git -C ${ROOT} merge-base --is-ancestor ${parent} ${baseRef}`.nothrow().quiet();
   if (ancestry.exitCode !== 0) fail(`release parent ${parent} is not integrated into ${baseRef}`);
 
