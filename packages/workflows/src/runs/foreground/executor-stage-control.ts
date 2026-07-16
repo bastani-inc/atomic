@@ -103,9 +103,10 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
       const wasPausedBeforeResume = runtime.innerCtx.__isPaused();
-      const hasResumeContinuationMessage = typeof message === "string" && message.trim().length > 0;
+      const shouldContinueInterruptedTurn = message === undefined ||
+        (typeof message === "string" && message.trim().length > 0);
       const previousResumeContinuationPending = runtime.state.resumeContinuationPending;
-      const queuedResumeContinuation = wasPausedBeforeResume && hasResumeContinuationMessage;
+      const queuedResumeContinuation = wasPausedBeforeResume && shouldContinueInterruptedTurn;
       if (queuedResumeContinuation) runtime.state.resumeContinuationPending = true;
       try {
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
