@@ -2,112 +2,13 @@ import { describe } from "bun:test";
 import {
     assert, createStageControlRegistry, createStore, deferred, makeSmartSession,
     mockSession, RESUME_CONTINUATION_PROMPT, run, test, waitForPromptCall, workflow,
-    type StageSessionRuntime, type WorkflowDefinition,
+    type StageSessionRuntime,
 } from "./executor-shared.js";
-
-interface QueuedMessageRecorder {
-    readonly promptCalls: string[];
-    readonly steerCalls: string[];
-    readonly followUpCalls: string[];
-}
-
-type StreamingTurnSession = StageSessionRuntime & { finishTurn(): void };
-
-function newRecorder(): QueuedMessageRecorder {
-    return { promptCalls: [], steerCalls: [], followUpCalls: [] };
-}
-
-/**
- * A stage session whose non-continuation prompts stay "streaming" until the
- * test resolves them via finishTurn() (or rejects them via abort()).
- */
-function streamingTurnSession(recorder: QueuedMessageRecorder): StreamingTurnSession {
-    let streaming = false;
-    let resolveTurn: (() => void) | undefined;
-    let rejectTurn: ((error: Error) => void) | undefined;
-    return {
-        ...mockSession(),
-        get isStreaming() { return streaming; },
-        async prompt(text: string) {
-            recorder.promptCalls.push(text);
-            if (text === RESUME_CONTINUATION_PROMPT) return;
-            streaming = true;
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    resolveTurn = resolve;
-                    rejectTurn = reject;
-                });
-            } finally {
-                streaming = false;
-            }
-        },
-        async steer(text: string) { recorder.steerCalls.push(text); },
-        async followUp(text: string) { recorder.followUpCalls.push(text); },
-        async abort() {
-            const reject = rejectTurn;
-            resolveTurn = undefined;
-            rejectTurn = undefined;
-            reject?.(new Error("AbortError"));
-        },
-        getLastAssistantText() { return "assistant"; },
-        finishTurn() {
-            const resolve = resolveTurn;
-            resolveTurn = undefined;
-            rejectTurn = undefined;
-            resolve?.();
-        },
-    };
-}
-
-function singleStageWorkflow(name: string): WorkflowDefinition {
-    return workflow({
-        name,
-        description: "",
-        inputs: {},
-        outputs: {},
-        run: async (ctx) => {
-            await ctx.stage("worker").prompt("go");
-            return {};
-        },
-    });
-}
-
-async function runStreamingStage(input: {
-    readonly workflowName: string;
-    readonly session: StreamingTurnSession;
-    readonly recorder: QueuedMessageRecorder;
-    readonly signal?: AbortSignal;
-}): Promise<{
-    runPromise: ReturnType<typeof run>;
-    handle: NonNullable<ReturnType<ReturnType<typeof createStageControlRegistry>["get"]>>;
-}> {
-    const registry = createStageControlRegistry();
-    const sawStage = deferred<{ runId: string; stageId: string }>();
-    let sawStageResolved = false;
-    const runPromise = run(singleStageWorkflow(input.workflowName), {}, {
-        adapters: {
-            agentSession: {
-                async create() { return input.session; },
-            },
-        },
-        store: createStore(),
-        stageControlRegistry: registry,
-        onStageStart: (runId, stage) => {
-            if (!sawStageResolved) {
-                sawStageResolved = true;
-                sawStage.resolve({ runId, stageId: stage.id });
-            }
-        },
-        confirmStageReadiness: async () => true,
-        ...(input.signal !== undefined ? { signal: input.signal } : {}),
-    });
-    const { runId, stageId } = await sawStage.promise;
-    await waitForPromptCall(input.recorder.promptCalls, "go");
-    const handle = registry.get(runId, stageId);
-    assert.ok(handle, "stage handle should be registered");
-    assert.equal(handle.isStreaming, true);
-    return { runPromise, handle };
-}
+import {
+    newRecorder,
+    runStreamingStage,
+    streamingTurnSession,
+} from "./executor-queued-message-helpers.js";
 
 describe("executor — queued steer/follow-up resume continuation", () => {
     test("steer during a streaming turn injects exactly one continuation prompt after the turn ends", async () => {
@@ -125,6 +26,45 @@ describe("executor — queued steer/follow-up resume continuation", () => {
         const result = await runPromise;
         assert.equal(result.status, "completed");
         assert.deepEqual(recorder.steerCalls, ["focus on the tests"]);
+        assert.deepEqual(recorder.promptCalls, ["go", RESUME_CONTINUATION_PROMPT]);
+    });
+
+    test("SDK-direct steer delivery injects exactly one continuation after the consumed turn", async () => {
+        const recorder = newRecorder();
+        const session = streamingTurnSession(recorder);
+        const { runPromise, handle } = await runStreamingStage({
+            workflowName: "sdk-direct-steer-continuation-wf",
+            session,
+            recorder,
+        });
+
+        const agentSession = handle.agentSession;
+        assert.ok(agentSession, "stage handle should expose the SDK AgentSession");
+        await agentSession.prompt("focus through the SDK", { streamingBehavior: "steer" });
+        session.finishTurn();
+
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
+        assert.deepEqual(recorder.sdkPromptCalls, [{ text: "focus through the SDK", behavior: "steer" }]);
+        assert.deepEqual(recorder.steerCalls, [], "SDK-direct delivery must bypass handle.steer");
+        assert.deepEqual(recorder.promptCalls, ["go", RESUME_CONTINUATION_PROMPT]);
+    });
+
+    test("queued user delivery injects when the readiness gate is disabled", async () => {
+        const recorder = newRecorder();
+        const session = streamingTurnSession(recorder);
+        const { runPromise, handle } = await runStreamingStage({
+            workflowName: "gate-disabled-queued-steer-continuation-wf",
+            session,
+            recorder,
+            gateEnabled: false,
+        });
+
+        await handle.steer("continue without a readiness gate");
+        session.finishTurn();
+
+        const result = await runPromise;
+        assert.equal(result.status, "completed");
         assert.deepEqual(recorder.promptCalls, ["go", RESUME_CONTINUATION_PROMPT]);
     });
 
@@ -155,15 +95,20 @@ describe("executor — queued steer/follow-up resume continuation", () => {
             recorder,
         });
 
-        await handle.steer("first correction");
-        await handle.steer("second correction");
-        await handle.followUp("and a follow-up");
+        const agentSession = handle.agentSession;
+        assert.ok(agentSession, "stage handle should expose the SDK AgentSession");
+        await agentSession.prompt("first correction", { streamingBehavior: "steer" });
+        await agentSession.prompt("second correction", { streamingBehavior: "steer" });
+        await agentSession.prompt("and a follow-up", { streamingBehavior: "followUp" });
         session.finishTurn();
 
         const result = await runPromise;
         assert.equal(result.status, "completed");
-        assert.deepEqual(recorder.steerCalls, ["first correction", "second correction"]);
-        assert.deepEqual(recorder.followUpCalls, ["and a follow-up"]);
+        assert.deepEqual(recorder.sdkPromptCalls, [
+            { text: "first correction", behavior: "steer" },
+            { text: "second correction", behavior: "steer" },
+            { text: "and a follow-up", behavior: "followUp" },
+        ]);
         assert.deepEqual(recorder.promptCalls, ["go", RESUME_CONTINUATION_PROMPT]);
     });
 

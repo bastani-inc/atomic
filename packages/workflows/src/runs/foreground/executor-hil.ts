@@ -11,6 +11,7 @@ import type {
 import type { PendingPrompt, CustomPromptIdentitySource } from "../../shared/store-types.js";
 import { selectPromptCallsiteFrame } from "../shared/prompt-callsite.js";
 import { currentPromptCallerStack } from "../../shared/prompt-callsite-context.js";
+import type { ResumeContinuationReason } from "./executor-stage-types.js";
 
 export type PrimitivePromptDescriptor =
   | { readonly kind: "input"; readonly message: string; readonly initial?: string }
@@ -314,11 +315,12 @@ export function toolResultHasChatAnswer(result: unknown): boolean {
 export { RESUME_CONTINUATION_PROMPT } from "../../shared/resume-continuation.js";
 
 export function shouldInjectResumeContinuation(state: {
-  readonly resumeOccurred: boolean;
+  readonly reason: ResumeContinuationReason | false;
   readonly gateEnabled: boolean;
   readonly aborted: boolean;
 }): boolean {
-  return state.resumeOccurred && state.gateEnabled && !state.aborted;
+  if (state.reason === false || state.aborted) return false;
+  return state.reason === "queued-user-message" || state.gateEnabled;
 }
 
 let cachedReadinessGateTool: ReturnType<typeof createAskUserQuestionToolDefinition> | undefined;

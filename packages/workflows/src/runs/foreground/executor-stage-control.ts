@@ -75,7 +75,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
       try {
         await runtime.innerCtx.steer(text);
-        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = true;
+        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
       } finally {
         runtime.captureStageSessionMeta();
       }
@@ -87,7 +87,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
       try {
         await runtime.innerCtx.followUp(text);
-        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = true;
+        if (queuedIntoInFlightTurn) runtime.state.resumeContinuationPending = "queued-user-message";
       } finally {
         runtime.captureStageSessionMeta();
       }
@@ -115,9 +115,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       const wasPausedBeforeResume = runtime.innerCtx.__isPaused();
       const shouldContinueInterruptedTurn = message === undefined ||
         (typeof message === "string" && message.trim().length > 0);
-      const previousResumeContinuationPending = runtime.state.resumeContinuationPending;
       const queuedResumeContinuation = wasPausedBeforeResume && shouldContinueInterruptedTurn;
-      if (queuedResumeContinuation) runtime.state.resumeContinuationPending = true;
+      const addedResumeContinuation = queuedResumeContinuation && runtime.state.resumeContinuationPending === false;
+      if (addedResumeContinuation) runtime.state.resumeContinuationPending = "resume";
       try {
         await runtime.innerCtx.__resume(message);
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
@@ -129,7 +129,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
           runtime.activeStore.recordRunResumed(runtime.runId);
         }
       } catch (err) {
-        if (queuedResumeContinuation) runtime.state.resumeContinuationPending = previousResumeContinuationPending;
+        if (addedResumeContinuation && runtime.state.resumeContinuationPending === "resume") {
+          runtime.state.resumeContinuationPending = false;
+        }
         throw err;
       } finally {
         runtime.captureStageSessionMeta();

@@ -25,6 +25,7 @@ import { createStageControlHandle } from "./executor-stage-control.js";
 import { createTrackedStageCaller } from "./executor-stage-call.js";
 import { createStageContext } from "./executor-stage-context.js";
 import { stageOptionsWithGitWorktree, stageOptionsWithInputDefaults, type GitWorktreeSetupCache } from "./executor-direct-helpers.js";
+import { createQueuedUserMessageConsumptionWatcher } from "./executor-queued-user-message.js";
 
 export function createWorkflowStageFactory(input: {
   readonly runId: string;
@@ -178,9 +179,15 @@ export function createWorkflowStageFactory(input: {
         stageUiBroker.clearStagePrompt(input.runId, stageId);
       }
     });
+    const unsubscribeQueuedUserMessageWatcher = innerCtx.subscribe(
+      createQueuedUserMessageConsumptionWatcher(() => {
+        state.resumeContinuationPending = "queued-user-message";
+      }),
+    );
 
     const disposeInnerContext = async (): Promise<void> => {
       unsubscribeAskUserQuestionWatcher();
+      unsubscribeQueuedUserMessageWatcher();
       activeAskUserQuestionCalls.clear();
       state.activeAskUserQuestionAnonymousCalls = 0;
       input.activeStore.recordStageAwaitingInput(input.runId, stageId, false);

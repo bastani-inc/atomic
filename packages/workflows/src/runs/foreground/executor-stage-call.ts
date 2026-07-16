@@ -68,11 +68,12 @@ export function createTrackedStageCaller(input: {
 
   const drainResumeContinuations = async <T>(currentResult: T): Promise<T> => {
     let result = currentResult;
-    while (runtime.state.resumeContinuationPending) {
+    while (runtime.state.resumeContinuationPending !== false) {
+      const reason = runtime.state.resumeContinuationPending;
       runtime.state.resumeContinuationPending = false;
       suppressReadinessForCurrentTurn();
       if (!shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason,
         gateEnabled: readinessGateEnabled,
         aborted: runtime.signal.aborted,
       })) {

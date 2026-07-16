@@ -16,7 +16,7 @@ describe("resume continuation decision", () => {
   test("resume + gate enabled + not aborted injects", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: true,
         aborted: false,
       }),
@@ -24,10 +24,10 @@ describe("resume continuation decision", () => {
     );
   });
 
-  test("gate disabled is a no-op", () => {
+  test("resume reason with gate disabled is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: false,
         aborted: false,
       }),
@@ -35,10 +35,21 @@ describe("resume continuation decision", () => {
     );
   });
 
+  test("queued user message reason does not require the readiness gate", () => {
+    assert.equal(
+      shouldInjectResumeContinuation({
+        reason: "queued-user-message",
+        gateEnabled: false,
+        aborted: false,
+      }),
+      true,
+    );
+  });
+
   test("aborted run is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: true,
+        reason: "resume",
         gateEnabled: true,
         aborted: true,
       }),
@@ -49,7 +60,7 @@ describe("resume continuation decision", () => {
   test("no resume is a no-op", () => {
     assert.equal(
       shouldInjectResumeContinuation({
-        resumeOccurred: false,
+        reason: false,
         gateEnabled: true,
         aborted: false,
       }),
