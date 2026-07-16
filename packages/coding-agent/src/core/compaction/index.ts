@@ -8,6 +8,7 @@ export * from "./compaction-types.js";
 export * from "./compaction-parameters.js";
 export * from "./compaction-boundary.js";
 export * from "./full-collapse-boundary.js";
+export * from "./compaction-cache.js";
 export * from "./range-planner.js";
 export * from "./collapse-planner.js";
 export * from "./subsequence.js";

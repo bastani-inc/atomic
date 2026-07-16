@@ -4,15 +4,23 @@ import { planFullCollapse } from "./collapse-planner.js";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
 import { planDeletedLineRanges } from "./range-planner.js";
-import type { CompactedTranscript, FullCollapsePreparation, VerbatimCompactionPreparation } from "./compaction-types.js";
+import type {
+	CompactedTranscript,
+	CompactionCacheTelemetry,
+	CompactionRequestPrefix,
+	FullCollapsePreparation,
+	VerbatimCompactionPreparation,
+} from "./compaction-types.js";
 
 export interface CompactionPlanOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
 	sessionFilePath?: string;
+	/** Active-request prefix to reuse for cache-read on the full-collapse path. */
+	prefix?: CompactionRequestPrefix;
 }
 
-export type CompactionRungResult = CompactedTranscript & { rung: "planned" };
+export type CompactionRungResult = CompactedTranscript & { rung: "planned"; cache?: CompactionCacheTelemetry };
 
 /** Calculate the single global line threshold directly from the prepared setting. */
 export function targetKeepLines(preparation: VerbatimCompactionPreparation): number {
@@ -71,6 +79,7 @@ export async function runVerbatimCompaction(
 function withFullCollapseStats(
 	result: CompactedTranscript,
 	preparation: FullCollapsePreparation,
+	cache: CompactionCacheTelemetry | undefined,
 ): CompactionRungResult {
 	const tokensAfter = result.stats.tokensAfter;
 	const percentReduction = preparation.tokensBefore === 0
@@ -80,13 +89,15 @@ function withFullCollapseStats(
 		...result,
 		rung: "planned",
 		stats: { ...result.stats, tokensBefore: preparation.tokensBefore, tokensAfter, percentReduction },
+		...(cache ? { cache } : {}),
 	};
 }
 
 /**
  * Execute one whole-context v2 collapse: the model returns a compacted string
  * that the host validates as an ordered byte-identical subsequence, then rebuilds
- * mechanically with canonical elision markers.
+ * mechanically with canonical elision markers. When `options.prefix` is set the
+ * request reuses the cached active prefix and cache telemetry is attached.
  */
 export async function runFullCollapseCompaction(
 	preparation: FullCollapsePreparation,
@@ -98,7 +109,7 @@ export async function runFullCollapseCompaction(
 	options: CompactionPlanOptions,
 ): Promise<CompactionRungResult> {
 	if (signal?.aborted) throw new Error("Compaction cancelled");
-	const validated = await planFullCollapse(
+	const plan = await planFullCollapse(
 		preparation.region,
 		preparation.parameters,
 		model,
@@ -107,8 +118,12 @@ export async function runFullCollapseCompaction(
 		thinkingLevel,
 		preparation.settings.reserveTokens,
 		targetKeepLines(preparation),
-		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath },
+		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath, prefix: options.prefix },
 	);
 	if (signal?.aborted) throw new Error("Compaction cancelled");
-	return withFullCollapseStats(reconstructCompactedTranscript(preparation.region, validated), preparation);
+	return withFullCollapseStats(
+		reconstructCompactedTranscript(preparation.region, plan.ranges),
+		preparation,
+		plan.telemetry,
+	);
 }

@@ -98,11 +98,31 @@ The in-flight/final logical turn is outside the compactable region. Cancellation
 
 Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-For v2 full-collapse compaction the request returns the retained transcript **as a string** rather than deletion records: the model reproduces the numbered region verbatim, deleting only low-value lines, and the host validates the returned text as an ordered byte-identical subsequence that retains every protected line before mechanically rebuilding the canonical markers. (Reusing the provider's already-cached conversation prefix for this request is a separate optimization tracked independently; today the collapse request is sent on its own.)
+For v2 full-collapse compaction the request returns the retained transcript **as a string** rather than deletion records: the model reproduces the numbered region verbatim, deleting only low-value lines, and the host validates the returned text as an ordered byte-identical subsequence that retains every protected line before mechanically rebuilding the canonical markers. The collapse request also reuses the provider's already-cached conversation prefix — see [Compaction-call prompt caching](#compaction-call-prompt-caching).
 
 The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
 
 A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+
+### Compaction-call prompt caching
+
+The full-collapse compaction request is issued as the exact active-request prefix followed by the compaction instruction, so the provider can serve the old conversation from its existing prompt cache:
+
+```
+[ tools + system + old messages ]   ← cached prefix (cache read)
+        ⟨cache breakpoint⟩
+[ appended user instruction: numbered transcript + directive ]   ← fresh (cache write)
+```
+
+The request reuses the same model, provider, tools, system prompt, and old messages as the last normal turn — token-identical — plus the same cache routing (`sessionId` / `prompt_cache_key`, cache retention, transport). No compaction system prompt, numbering, wrapper, or serialization is placed before the breakpoint; the numbered transcript the model copies from lives entirely inside the appended instruction, after the breakpoint. Tools and any structured-output schema are never changed for compaction, which would break the cached prefix.
+
+Provider-specific breakpoints are applied on top of automatic caching:
+
+- **Anthropic Messages** — automatic caching marks the appended instruction; an explicit `cache_control: {"type":"ephemeral"}` breakpoint is added on the final old-conversation block, respecting the four-breakpoint limit and the 20-block lookback.
+- **OpenAI GPT-5.6+** (Responses and Chat Completions) — the stable `prompt_cache_key` is preserved and an explicit `prompt_cache_breakpoint: {"mode":"explicit"}` is placed on the final old-conversation content block (only on cacheable block types). Older OpenAI models keep their compatible automatic-caching behavior with no explicit breakpoint field.
+- **Custom / unsupported providers** — behavior is unchanged: cache routing is passed through and no explicit breakpoint is injected.
+
+Cache reuse is provider-dependent. Atomic records normalized cache-read/cache-write telemetry on the compaction result and `details.cache` (`cacheReadTokens`, `cacheWriteTokens`, `cacheHit`, `provider`, `model`), and never reports a hit unless the provider response usage reports nonzero cache-read tokens. Applying compaction invalidates the old cache; the first normal post-compaction turn writes a fresh one. The optimization targets the compaction request's prefill latency, not a reduction in total tokens processed.
 
 ### Length-truncated response recovery
 

@@ -7,13 +7,16 @@ import {
 	VERBATIM_COMPACTION_FORMAT_FULL,
 	VERBATIM_COMPACTION_PROMPT_VERSION,
 	VERBATIM_COMPACTION_STRATEGY,
+	type CompactionCacheTelemetry,
 	type CompactionPlanOptions,
+	type CompactionRequestPrefix,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
 } from "./compaction/index.ts";
+import { convertToLlm } from "./messages.ts";
 import type { SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionCompactEvent } from "./extensions/index.ts";
 import type { CompactionEntry } from "./session-manager.ts";
 
@@ -76,9 +79,22 @@ export async function _applyVerbatimCompaction(
 		return undefined;
 	}
 
-	const plan: CompactionPlanOptions = { streamFn: this.agent.streamFn, sessionFilePath: this.sessionManager.getSessionFile() };
+	const prefix: CompactionRequestPrefix = {
+		systemPrompt: this.agent.state.systemPrompt,
+		tools: this.agent.state.tools,
+		messages: convertToLlm(this.sessionManager.buildSessionContext().messages),
+		sessionId: this.sessionId,
+		transport: this.settingsManager.getTransport(),
+	};
+	const plan: CompactionPlanOptions = {
+		streamFn: this.agent.streamFn,
+		sessionFilePath: this.sessionManager.getSessionFile(),
+		prefix,
+	};
 	let fromExtension = false;
-	let compacted: { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"] } | undefined;
+	let compacted:
+		| { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"]; cache?: CompactionCacheTelemetry }
+		| undefined;
 
 	if (this._extensionRunner.hasHandlers("session_before_compact")) {
 		let snapshot: VerbatimCompactionPreparation;
@@ -126,6 +142,7 @@ export async function _applyVerbatimCompaction(
 		parameters: preparation.parameters,
 		stats: compacted.stats,
 		rung: compacted.rung,
+		...(compacted.cache ? { cache: compacted.cache } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const entryId = this.sessionManager.appendCompaction(compacted.text, preparation.firstKeptEntryId, preparation.tokensBefore, details);
@@ -139,6 +156,7 @@ export async function _applyVerbatimCompaction(
 		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
 		format: VERBATIM_COMPACTION_FORMAT_FULL,
 		rung: compacted.rung,
+		...(compacted.cache ? { cache: compacted.cache } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;

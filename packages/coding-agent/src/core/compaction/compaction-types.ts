@@ -1,4 +1,34 @@
+import type { CacheRetention, Message, Tool, Transport } from "@earendil-works/pi-ai/compat";
 import type { CompactionSettings } from "./compaction.js";
+
+/**
+ * Normalized prompt-cache telemetry for one compaction request. `cacheHit` is
+ * true only when the provider reported nonzero cache-read usage; a request that
+ * merely writes a fresh cache (or reports nothing) is never a hit.
+ */
+export interface CompactionCacheTelemetry {
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	cacheHit: boolean;
+	provider: string;
+	model: string;
+}
+
+/**
+ * The exact active-request prefix a compaction call reuses so the provider can
+ * serve the already-cached old conversation. Token-identical to the last normal
+ * request's tools + system + messages; the compaction instruction is appended
+ * after this prefix (after the cache breakpoint), never before it.
+ */
+export interface CompactionRequestPrefix {
+	systemPrompt?: string;
+	tools?: Tool[];
+	messages: Message[];
+	/** Stable cache-routing key (OpenAI prompt_cache_key / provider session affinity). */
+	sessionId?: string;
+	cacheRetention?: CacheRetention;
+	transport?: Transport;
+}
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 4 as const;
 export const VERBATIM_COMPACTION_STRATEGY = "verbatim-lines" as const;
@@ -73,6 +103,8 @@ export interface VerbatimCompactionDetails {
 	parameters: VerbatimCompactionParameters;
 	stats: VerbatimCompactionStats;
 	rung: "planned" | "extension";
+	/** Prompt-cache telemetry for the compaction request. Absent for extension-provided compactions. */
+	cache?: CompactionCacheTelemetry;
 	backupPath?: string;
 }
 
@@ -109,5 +141,7 @@ export interface VerbatimCompactionResult {
 	/** Present only on v2 full-collapse results; absent => legacy hybrid. */
 	format?: typeof VERBATIM_COMPACTION_FORMAT_FULL;
 	rung: VerbatimCompactionDetails["rung"];
+	/** Prompt-cache telemetry for the compaction request. Absent for extension-provided compactions. */
+	cache?: CompactionCacheTelemetry;
 	backupPath?: string;
 }

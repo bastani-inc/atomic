@@ -136,11 +136,11 @@ describe("AgentSession auto-compaction queue resume", () => {
 
 		await runAutoCompaction("threshold", false);
 		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[1]).toBe(session.model);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({ streamFn: session.agent.streamFn });
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toMatchObject({ streamFn: session.agent.streamFn, prefix: { sessionId: session.sessionId } });
 
 		compactionMocks.runVerbatimCompaction.mockClear();
 		await runAutoCompaction("overflow", false);
-		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toEqual({ streamFn: session.agent.streamFn });
+		expect(compactionMocks.runVerbatimCompaction.mock.calls[0]?.[6]).toMatchObject({ streamFn: session.agent.streamFn });
 	});
 	it.each(["threshold", "overflow"] as const)("does not persist or schedule continuation when %s planning fails", async (reason) => {
 		compactionMocks.runVerbatimCompaction.mockRejectedValueOnce(new Error("malformed planner response"));
