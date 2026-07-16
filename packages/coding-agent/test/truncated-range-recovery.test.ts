@@ -17,6 +17,8 @@ import { buildRangePlannerPrompt, planDeletedLineRanges, RangePlanError } from "
 import type { RecoveryDiagnostic } from "../src/core/compaction/range-planner-diagnostics.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
+const testPosixFileMode = process.platform === "win32" ? it.skip : it;
+
 const mockUsage: Usage = {
 	input: 8000, output: 4096, cacheRead: 0, cacheWrite: 0, totalTokens: 12096,
 	cost: { input: 0.02, output: 0.06, cacheRead: 0, cacheWrite: 0, total: 0.08 },
@@ -255,7 +257,7 @@ describe("truncated recovery: private diagnostic sidecar", () => {
 	beforeEach(() => { testDir = tmpDir(); });
 	afterEach(() => { rmSync(testDir, { recursive: true, force: true }); });
 
-	it("writes recovery sidecar with 0600 permissions", async () => {
+	testPosixFileMode("writes recovery sidecar with 0600 permissions", async () => {
 		const sf = join(testDir, "session.jsonl");
 		await plan("10,20\n30,40\n50", "length", { sessionFilePath: sf });
 		const files = recoveryFiles(testDir);

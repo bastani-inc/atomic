@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
-import { join } from "path";
+import { basename, dirname, join } from "path";
 import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import {
@@ -21,6 +21,8 @@ import {
 } from "../src/core/compaction/range-planner-diagnostics.ts";
 import { RangePlanError, planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
+
+const testPosixFileMode = process.platform === "win32" ? it.skip : it;
 
 // ============================================================================
 // Helpers
@@ -222,7 +224,7 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		expect(content.model.provider).toBe("anthropic");
 	});
 
-	it("sets 0600 file permissions on the sidecar", () => {
+	testPosixFileMode("sets 0600 file permissions on the sidecar", () => {
 		const sessionFile = join(testDir, "session.jsonl");
 		const model = createMockModel();
 
@@ -244,12 +246,12 @@ describe("compaction diagnostics: persisted sidecar", () => {
 	});
 
 	it("diagnosticSidecarPath generates correct filename pattern", () => {
-		const sessionFile = "/home/user/.atomic/sessions/2026-07-15_abc123.jsonl";
+		const sessionDir = join(tmpdir(), "atomic", "sessions");
+		const sessionFile = join(sessionDir, "2026-07-15_abc123.jsonl");
 		const result = diagnosticSidecarPath(sessionFile);
 
-		expect(result).toContain("2026-07-15_abc123-compaction-diagnostic-");
-		expect(result.endsWith(".json")).toBe(true);
-		expect(result.startsWith("/home/user/.atomic/sessions/")).toBe(true);
+		expect(dirname(result)).toBe(sessionDir);
+		expect(basename(result)).toMatch(/^2026-07-15_abc123-compaction-diagnostic-\d+\.json$/);
 	});
 
 	it("RangePlanError.message includes diagnostic path when sidecar is written", async () => {

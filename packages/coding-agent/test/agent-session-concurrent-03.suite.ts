@@ -254,6 +254,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		finishInterruptTurn?.();
 		await interrupt;
 		await firstPrompt.catch(() => {});
+		await waitFor(() => session.agent.hasQueuedMessages());
 
 		expect(session.pendingMessageCount).toBe(3);
 		expect(drainQueuedTexts(session.agent)).toEqual({
@@ -334,6 +335,7 @@ describe("AgentSession concurrent prompt guard", () => {
 		finishInterruptTurn?.();
 		await interrupt;
 		await firstPrompt.catch(() => {});
+		await waitFor(() => session.agent.hasQueuedMessages());
 
 		expect(session.pendingMessageCount).toBe(1);
 		expect(drainQueuedTexts(session.agent)).toEqual({ steering: ["Queued C"], followUp: [] });
