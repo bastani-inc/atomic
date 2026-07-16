@@ -74,7 +74,7 @@ The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`,
 
 ## Release shrinkwrap
 
-`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` for deterministic package-manager installs. Main stays versionless at `0.0.0`; `scripts/cut-release.ts` stamps the real version in an off-main worktree and regenerates the shrinkwrap there before tagging.
+`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` for deterministic package-manager installs. Release bases stay versionless at `0.0.0`; `scripts/cut-release.ts` resolves the selected exact remote branch, stamps the real version in a detached worktree, records immutable base-ref/SHA trailers, and regenerates the shrinkwrap there before tagging. Non-main publication bases must be exactly allowlisted as documented in the repository CI guide.
 
 The shrinkwrap generator is hermetic for Atomic-owned packages. It derives `@bastani/atomic-natives` and generated native optional package entries from local package metadata plus deterministic registry tarball URLs, so release publishing does not depend on npm metadata for native packages that were just published.
 

@@ -1,3 +1,4 @@
+import { verifyReleaseBaseMetadata } from "../../../scripts/release-base.js";
 import {
   commandSummary,
   parseJsonCommand,
@@ -369,13 +370,14 @@ export function verifyMainReadyForTag(_release: ValidatedRelease, mergeCommitOid
 export type TagPublicationOptions = {
   readonly allowIntegratedParent?: boolean;
   readonly requiredAncestorOid?: string;
+  readonly expectedBaseRef: string;
   readonly execute?: (args: readonly string[]) => CommandResult;
 };
 
 export function verifyReleaseTagPublished(
   release: ValidatedRelease,
   expectedParentOid: string,
-  options: TagPublicationOptions = {},
+  options: TagPublicationOptions,
 ): TagPublicationVerification {
   // cut-release.ts tags a throwaway version-stamped commit. A newly-created
   // tag must parent the verified base tip exactly; recovery may also reuse a
@@ -391,6 +393,7 @@ export function verifyReleaseTagPublished(
     ? undefined
     : execute(["git", "merge-base", "--is-ancestor", options.requiredAncestorOid, tagParent.stdout]);
   const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const tagMessage = execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
   const remoteTag = execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const remoteTagTargetOid = remoteTag.stdout.split(/\s+/u)[0] ?? "";
   const failures: string[] = [];
@@ -420,6 +423,15 @@ export function verifyReleaseTagPublished(
   if (stampedVersion !== release.version) {
     failures.push(`tagged @bastani/atomic version was ${stampedVersion ?? "unparseable"}, expected ${release.version}`);
   }
+  if (tagMessage.exitCode !== 0) {
+    failures.push("release commit message could not be read");
+  } else {
+    try {
+      verifyReleaseBaseMetadata(tagMessage.stdout, tagParent.stdout, options.expectedBaseRef, tagParent.stdout);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   if (remoteTag.exitCode !== 0 || remoteTagTargetOid.length === 0) {
     failures.push(`remote tag ${release.version} was missing on origin`);
@@ -435,6 +447,7 @@ export function verifyReleaseTagPublished(
     commandSummary(localTag),
     commandSummary(tagParent),
     commandSummary(remoteTag),
+    commandSummary(tagMessage),
     integratedParent === undefined ? undefined : commandSummary(integratedParent),
     containsRequiredAncestor === undefined ? undefined : commandSummary(containsRequiredAncestor),
   ].filter((line): line is string => line !== undefined).join("\n\n");

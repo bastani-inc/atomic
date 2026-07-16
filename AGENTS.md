@@ -121,7 +121,7 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Creating that tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the default branch; the integrity job additionally requires `github.workflow_ref` to identify protected `main`, pins `github.workflow_sha`, binds the event tag/SHA to the remote tag, and verifies the deterministic release tree before publishing with npm OIDC provenance. Repository permissions default to read-only, and only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
+Atomic uses a **versionless release-base** flow (modeled on openai/codex): every supported base, including `main`, keeps `packages/*/package.json` at the `0.0.0` placeholder. The real version is materialized only on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA; that commit is tagged but never merged back. `scripts/cut-release.ts --base <short-branch>` records immutable `Release-base-ref: refs/heads/<short-branch>` and `Release-base-sha: <full SHA>` trailers. Creating the tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the protected default branch, pins `github.workflow_sha`, and binds the event tag/SHA to the remote tag. The publisher allows `refs/heads/main` by default plus exact canonical refs in the comma-separated repository variable `RELEASE_BASE_REFS`, fetches only that branch into a fixed local ref, proves trailer SHA/parent equality and current remote containment, and verifies the deterministic release tree before npm OIDC publication. Repository permissions default to read-only; only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
 
 Cut and publish a release with:
 
@@ -129,21 +129,22 @@ Cut and publish a release with:
 bun run scripts/cut-release.ts 0.8.31 --base main --push
 ```
 
-`main` is never advanced by the version stamp; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree. The tag push is the sole publication signal.
+The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the immutable base trailers, tags it, and abandons the worktree. The tag push is the sole publication signal. Configure non-main bases in `RELEASE_BASE_REFS` before cutting the release. There is no legacy fallback: release commits without both valid trailers are rejected.
 
 ### Agent publishing requests
 
 If a user asks to publish a release or prerelease, execute the release process directly rather than launching an Atomic workflow:
 
 1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
-2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid.
-3. Create `[release|prerelease]/<version>` without a leading `v`.
-4. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep `main` versionless; do not run `scripts/bump-version.ts` on the branch.
-5. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to `main`.
-6. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
-7. After checks pass, merge the exact verified head commit, switch to `main`, and pull `origin/main`.
-8. Run `bun run scripts/cut-release.ts <version> --base main --push --yes`. This stamps the real version only on the detached release commit and pushes the tag, which automatically starts protected publishing.
-9. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
+2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
+3. For non-main bases, require the branch to be protected with the repository's required CI checks and configure its exact canonical `refs/heads/<base_ref>` in the repository variable `RELEASE_BASE_REFS`; entries are comma-separated with no spaces, aliases, globs, or partial matches.
+4. Create `[release|prerelease]/<version>` without a leading `v` from the selected base.
+5. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep the selected base versionless; do not run `scripts/bump-version.ts` on the branch.
+6. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to the selected base.
+7. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
+8. After checks pass, merge the exact verified head commit, switch to the selected base, and pull `origin/<base_ref>`.
+9. Run `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`. This stamps the real version only on the detached release commit, records canonical base metadata, and pushes the tag, which automatically starts protected publishing.
+10. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
 
 ## Docs
 
@@ -184,16 +185,16 @@ Use these sections under `## [Unreleased]`:
 - **Internal changes (from issues)**: `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
 - **External contributions**: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
 
-## Versionless main & bumping
+## Versionless release bases & bumping
 
-`main` is versionless: every `packages/*/package.json` (plus `bun.lock` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on `main`.**
+`main` and supported workstream bases are versionless: every `packages/*/package.json` (plus `bun.lock` workspace entries, the `@bastani/atomic-natives` dependency pin, `packages/natives/native/index.js` checks, and the Cargo manifests/lock) stays at the `0.0.0` placeholder. **Do not bump the version on a release base.**
 
-`scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree to materialize the real version on the tagged release commit. You normally never run it directly against `main`; the only direct use is resetting the placeholder if it ever drifts:
+`scripts/bump-version.ts` is the low-level stamper that rewrites every versioned manifest. It is invoked by `scripts/cut-release.ts` inside a throwaway worktree at the exact remote base SHA to materialize the real version on the tagged release commit. You normally never run it directly against a release base; the only direct use is resetting the placeholder if it ever drifts:
 
 ```sh
-# stamp a real version onto the off-main tag commit (preferred)
-bun run scripts/cut-release.ts 0.1.0
-bun run scripts/cut-release.ts 0.1.0-alpha.1
+# stamp a real version onto the off-base tag commit (preferred; explicit base shown)
+bun run scripts/cut-release.ts 0.1.0 --base main
+bun run scripts/cut-release.ts 0.1.0-alpha.1 --base main
 
 # low-level: reset main back to the versionless placeholder
 bun run scripts/bump-version.ts 0.0.0 && bun install

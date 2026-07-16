@@ -1,3 +1,4 @@
+import { verifyReleaseBaseMetadata } from "../../../scripts/release-base.js";
 import {
   commandSummary,
   runCommand,
@@ -21,6 +22,7 @@ export function inspectReleaseTagRecovery(
   release: ValidatedRelease,
   currentBaseOid: string,
   requiredMergeOid: string,
+  expectedBaseRef: string,
   execute: Execute = runCommand,
 ): ReleaseTagRecovery {
   const localTag = execute(["git", "rev-parse", `${release.version}^{commit}`]);
@@ -45,6 +47,7 @@ export function inspectReleaseTagRecovery(
 
   const tagParent = execute(["git", "rev-parse", `${release.version}^{commit}^`]);
   const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const tagMessage = execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
   const integratedParent = execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, currentBaseOid]);
   const containsMerge = execute(["git", "merge-base", "--is-ancestor", requiredMergeOid, tagParent.stdout]);
   let stampedVersion: string | undefined;
@@ -55,10 +58,21 @@ export function inspectReleaseTagRecovery(
       stampedVersion = undefined;
     }
   }
+  let releaseBaseError: string | undefined;
+  if (tagMessage.exitCode !== 0) {
+    releaseBaseError = "release commit message could not be read";
+  } else {
+    try {
+      verifyReleaseBaseMetadata(tagMessage.stdout, tagParent.stdout, expectedBaseRef, tagParent.stdout);
+    } catch (error) {
+      releaseBaseError = error instanceof Error ? error.message : String(error);
+    }
+  }
   const validationCommands = [
     ...commands,
     commandSummary(tagParent),
     commandSummary(taggedManifest),
+    commandSummary(tagMessage),
     commandSummary(integratedParent),
     commandSummary(containsMerge),
   ];
@@ -74,6 +88,7 @@ export function inspectReleaseTagRecovery(
   if (stampedVersion !== release.version) {
     failures.push(`tagged @bastani/atomic version was ${stampedVersion ?? "unparseable"}, expected ${release.version}`);
   }
+  if (releaseBaseError !== undefined) failures.push(releaseBaseError);
   if (remoteOid.length > 0 && remoteOid !== localOid) {
     failures.push(`remote tag target was ${remoteOid}, expected local release commit ${localOid}`);
   }

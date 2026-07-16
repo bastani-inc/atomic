@@ -1,3 +1,4 @@
+import { canonicalReleaseBaseRef } from "../../scripts/release-base.js";
 import { workflow } from "@bastani/workflows";
 import { Type } from "typebox";
 import {
@@ -50,7 +51,20 @@ export default workflow({
   },
   run: async (ctx) => {
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
-    const baseRef = ctx.inputs.base_ref.trim() || "main";
+    const requestedBaseRef = ctx.inputs.base_ref.length === 0 ? "main" : ctx.inputs.base_ref;
+    let releaseBaseRef: string;
+    try {
+      releaseBaseRef = canonicalReleaseBaseRef(requestedBaseRef);
+    } catch (error) {
+      return blockedOutput(
+        release,
+        "validate-release-base-ref",
+        "base_ref is a canonical remote branch name suitable for protected publication",
+        error instanceof Error ? error.message : String(error),
+        "failed",
+      );
+    }
+    const baseRef = releaseBaseRef.slice("refs/heads/".length);
     const baseInstructions = releaseInstructions(release, baseRef);
 
     const sourceHead = await ctx.tool(
@@ -250,7 +264,7 @@ export default workflow({
       );
     }
 
-    const tagRecovery = inspectReleaseTagRecovery(release, mainReady.mainOid, mergeVerification.mergeCommitOid);
+    const tagRecovery = inspectReleaseTagRecovery(release, mainReady.mainOid, mergeVerification.mergeCommitOid, releaseBaseRef);
     if (!tagRecovery.ok) {
       return blockedOutput(release, "inspect-release-tag", "any existing release tag matches the verified base parent and stamped version", tagRecovery.summary, "failed");
     }
@@ -299,6 +313,7 @@ export default workflow({
     }
 
     const tagVerification = verifyReleaseTagPublished(release, mainReady.mainOid, {
+      expectedBaseRef: releaseBaseRef,
       allowIntegratedParent: tagRecovery.state !== "absent",
       requiredAncestorOid: mergeVerification.mergeCommitOid,
     });

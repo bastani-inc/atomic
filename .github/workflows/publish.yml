@@ -46,6 +46,7 @@ jobs:
                   TRIGGER_SHA: ${{ github.sha }}
                   WORKFLOW_REF: ${{ github.workflow_ref }}
                   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+                  ALLOWED_RELEASE_BASE_REFS: ${{ vars.RELEASE_BASE_REFS }}
               run: |
                   set -euo pipefail
                   expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/${DEFAULT_BRANCH}"
@@ -55,8 +56,40 @@ jobs:
                   release_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
                   [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve tag $RELEASE_TAG to one commit" >&2; exit 1; }
                   [[ "$release_sha" == "$TRIGGER_SHA" ]] || { echo "Tag $RELEASE_TAG moved from triggering SHA $TRIGGER_SHA to $release_sha" >&2; exit 1; }
-                  git fetch --no-tags origin "$release_sha" main:refs/remotes/origin/main
-                  bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit "$release_sha"
+                  git fetch --no-tags origin "$release_sha"
+
+                  release_base_ref=$(git show -s --format='%(trailers:key=Release-base-ref,valueonly)' "$release_sha")
+                  release_base_sha=$(git show -s --format='%(trailers:key=Release-base-sha,valueonly)' "$release_sha")
+                  [[ "$release_base_ref" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] || { echo "Invalid or duplicate Release-base-ref trailer" >&2; exit 1; }
+                  [[ "$release_base_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid or duplicate Release-base-sha trailer" >&2; exit 1; }
+                  base_branch=${release_base_ref#refs/heads/}
+                  [[ -n "$base_branch" && "$base_branch" != -* && "$base_branch" != */ && "$base_branch" != /* && "$base_branch" != *..* && "$base_branch" != *//* && "$base_branch" != *@\{* ]] || { echo "Release base is not a canonical publication branch: $release_base_ref" >&2; exit 1; }
+                  git check-ref-format "$release_base_ref" >/dev/null || { echo "Invalid release base ref: $release_base_ref" >&2; exit 1; }
+
+                  base_allowed=false
+                  [[ "$release_base_ref" == "refs/heads/main" ]] && base_allowed=true
+                  if [[ -n "$ALLOWED_RELEASE_BASE_REFS" ]]; then
+                    IFS=',' read -r -a configured_base_refs <<< "$ALLOWED_RELEASE_BASE_REFS"
+                    for configured_ref in "${configured_base_refs[@]}"; do
+                      [[ "$configured_ref" =~ ^refs/heads/[A-Za-z0-9._/-]+$ ]] && git check-ref-format "$configured_ref" >/dev/null || { echo "Invalid ref in RELEASE_BASE_REFS: $configured_ref" >&2; exit 1; }
+                      [[ "$release_base_ref" == "$configured_ref" ]] && base_allowed=true
+                    done
+                  fi
+                  [[ "$base_allowed" == true ]] || { echo "Release base ref is not allowlisted: $release_base_ref" >&2; exit 1; }
+
+                  fixed_base_ref=refs/remotes/atomic-publisher/release-base
+                  git update-ref -d "$fixed_base_ref"
+                  git fetch --no-tags origin "${release_base_ref}:${fixed_base_ref}"
+                  fetched_base_sha=$(git rev-parse --verify "${fixed_base_ref}^{commit}")
+                  release_parent=$(git show -s --format=%P "$release_sha")
+                  [[ "$release_parent" =~ ^[0-9a-f]{40}$ ]] || { echo "Release commit must have exactly one parent" >&2; exit 1; }
+                  [[ "$release_base_sha" == "$release_parent" ]] || { echo "Recorded release base $release_base_sha does not equal release parent $release_parent" >&2; exit 1; }
+                  git merge-base --is-ancestor "$release_base_sha" "$fetched_base_sha" || { echo "Recorded release base is not contained in current remote $release_base_ref" >&2; exit 1; }
+                  bun run scripts/verify-release-integrity.ts \
+                    --base-ref "$fixed_base_ref" \
+                    --release-commit "$release_sha" \
+                    --expected-base-ref "$release_base_ref" \
+                    --expected-base-sha "$release_base_sha"
                   echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
                   echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 
