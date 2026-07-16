@@ -35,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Made resume-shadow reads and conditional lifecycle writes use one authoritative durable generation, preventing stale file instances from reviving terminal workflows; reconciled fulfilled quit controls and nested child resume progress through aggregate root Store/durability; preserved DBOS prompt-token ownership across workflow re-registration; and made mixed bulk quit outcomes report ordered partial successes.
 - Reported fulfilled resume acknowledgements whose controls finish before aggregate root finalization as successful progress instead of falsely claiming that no paused stages existed.
 - Made DBOS conditional lifecycle transitions terminal-absorbing under concurrent metadata writes, made legacy custom backends without an atomic transition primitive refuse safely, and distinguished omitted prompt counts from explicit new reservation-ledger baselines during DBOS re-registration.
+- Fixed attached stage-chat footers at the supported 40-column minimum to keep truncated provider/model context separated from the compact Ctrl+X/Copy Mode controls instead of merging both segments into corrupted text.
 
 ### Removed
 

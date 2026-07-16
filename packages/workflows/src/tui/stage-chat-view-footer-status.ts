@@ -168,7 +168,8 @@ function mergeOrchestratorReturnHintIntoLine(
     Math.max(0, width - suffixWidth - hintWidth),
   );
   const hintStart = Math.max(0, width - suffixWidth - rightMargin - hintWidth);
-  const prefix = truncateToWidth(line, hintStart, "", true);
+  const prefixWidth = Math.max(0, hintStart - 1);
+  const prefix = truncateToWidth(line, prefixWidth, "", true);
   const gap = Math.max(0, hintStart - visibleWidth(prefix));
   return (
     prefix +
