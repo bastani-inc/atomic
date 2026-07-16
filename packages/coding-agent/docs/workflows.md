@@ -410,7 +410,12 @@ Named runs go to the background. Common controls:
 /workflow interrupt <run-id>           # pause resumably
 /workflow resume <run-id> [stage] msg  # forward a steer message and resume
 /workflow quit <run-id>                # pause gracefully and keep the run resumable
+/workflows [run-id]                    # retained alias for /workflow resume (history picker)
 ```
+
+`/workflows` (plural) is a retained alias for `/workflow resume`: with no argument it opens the resume/history picker, and with a run id it resumes that run directly. In the history picker, press Ctrl+D on a highlighted inactive durable or completed row to delete it after a confirmation. Deletion rechecks same-process activity and the authoritative durable status, atomically refuses to remove a `running` workflow, updates the resume catalog, and leaves the host and stage session transcripts untouched.
+
+The resume/history surface matches `/resume`'s retention semantics: eligible durable runs stay searchable regardless of age or count, with no automatic history garbage collection, and the 10-row selector viewport is display-only (it never limits search or navigation). History opens sub-second even at 100k+ durable runs because Atomic maintains an incremental SQLite/WAL catalog from authoritative per-run writes and hydrates the selected row's transcript lazily instead of scanning the whole durable directory; a missing, stale, incomplete, or corrupt catalog rebuilds automatically.
 
 Graceful quit is idempotent for an already-paused resumable run. If a run is waiting on a `ctx.ui` prompt, quit preserves the prompt, records a stable author-callsite-and-scope reservation, and keeps the original workflow id discoverable from a fresh process. An answer submitted while the run is quit/paused is retained at the prompt boundary but cannot advance workflow code until an explicit `/workflow resume`; every later quit creates a fresh pause barrier. After resume, Atomic checkpoints the answer and releases that exact reservation generation at most once; a duplicate completed release is a no-op rather than consuming another legacy slot. Concurrent prompts, including same-named grandchildren beneath different parents, compose their full nested scope and contribute independently to the root count without overwriting unrelated file/DBOS reservations. Author callsites use stable module/file identity rather than the resuming process working directory, so changing CWD does not create a second checkpoint.
 
