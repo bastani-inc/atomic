@@ -21,31 +21,23 @@ import {
   verifyReleasePrMerged,
   verifyReleaseTagPublished,
 } from "./lib/publish-release-gates.js";
-import { runEphemeralRelease } from "./lib/publish-release-ephemeral.js";
-import { findExistingPublishDispatch, inspectReleaseTagRecovery } from "./lib/publish-release-recovery.js";
+import { inspectReleaseTagRecovery } from "./lib/publish-release-recovery.js";
 
 const releaseKindSchema = Type.Union([Type.Literal("release"), Type.Literal("prerelease")]);
 const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]);
 
 export default workflow({
   name: "publish-release",
-  description: "Automate Atomic release/prerelease branch, PR, merge, tag, and publish monitoring.",
+  description: "Prepare and publish Atomic releases through resumable, event-driven gates without polling or workflow dispatch.",
   inputs: {
     target_version: Type.String({ description: "Version to publish, without a leading v." }),
     release_kind: Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
-    description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
-  }),
+      description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
+    }),
     base_ref: Type.String({
       default: "main",
-      description:
-        "Branch to release from: the release-notes PR merges into it and the tag is cut from it. Defaults to main. Ignored when from_ref is set.",
+      description: "Protected branch that receives the release-notes PR and becomes the parent of the release commit. Defaults to main.",
     }),
-    from_ref: Type.Optional(
-      Type.String({
-        description:
-          "Optional: cut an ephemeral release from any commit/tag/branch. Auto-creates release/<version> (or prerelease/<version>) from this ref, gates on that branch's CI, cuts and publishes the tag, then deletes the branch. The changelog lives on the tag only; main is untouched.",
-      }),
-    ),
   },
   outputs: {
     status: statusSchema,
@@ -60,11 +52,6 @@ export default workflow({
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
     const baseRef = ctx.inputs.base_ref.trim() || "main";
     const baseInstructions = releaseInstructions(release, baseRef);
-
-    const fromRef = ctx.inputs.from_ref?.trim();
-    if (fromRef) {
-      return await runEphemeralRelease((name, options) => ctx.task(name, options), release, fromRef);
-    }
 
     const sourceHead = await ctx.tool(
       "capture-source-head",
@@ -168,27 +155,6 @@ export default workflow({
       );
     }
 
-    const ciWait = await ctx.task("wait-for-release-ci", {
-      prompt: [
-        "Wait for required CI checks on the exact release PR, but do not merge it.",
-        "",
-        baseInstructions,
-        "",
-        "Deterministic PR reference captured from GitHub:",
-        excerpt(prReference.summary),
-        "",
-        "Required actions:",
-        `1. Identify the PR using this deterministic selector: ${prReference.prUrl}`,
-        "2. Wait for required checks using `gh pr checks --watch --required` or an equivalent `gh` workflow that returns a non-zero status on failures.",
-        "3. The PR may be externally merged while checks are pending. Do not attempt to merge it; report its observed state with the check evidence.",
-        "4. If any required check fails, report the failed check names and URLs/log hints. Do not merge.",
-        "5. If checks appear to pass, stop after summarizing the check evidence. Do not merge.",
-        "",
-        "Final response format:",
-        "- Include commands run, check names/states, URLs/log hints for failures, and any blockers.",
-        "- The workflow body performs the deterministic required-check gate after this stage.",
-      ].join("\n"),
-    });
 
     // Required-check and PR-state evidence is mutable. Re-evaluate it on every
     // durable resume instead of checkpointing either stale success or a
@@ -199,7 +165,7 @@ export default workflow({
         release,
         "verify-release-pr-checks-passed",
         "GitHub PR required checks pass for the exact captured head SHA, with exact identity and valid merge evidence if it was externally merged",
-        [ciVerification.summary, "", "CI wait stage output:", excerpt(ciWait.text, 2_000)].join("\n"),
+        ciVerification.summary,
         ciVerification.pending === true ? "blocked" : "failed",
       );
     }
@@ -293,7 +259,7 @@ export default workflow({
     if (tagRecovery.state === "absent") {
       const tagStage = await ctx.task("materialize-release-tag", {
         prompt: [
-          `Create and push the immutable release tag from verified ${baseRef}; do not dispatch publishing in this stage.`,
+          `Create and push the immutable release tag from verified ${baseRef}; the tag push automatically signals protected publishing.`,
           "",
           baseInstructions,
           "",
@@ -303,7 +269,7 @@ export default workflow({
           "Required actions:",
           `1. Verify clean local \`${baseRef}\` at \`${mainReady.mainOid}\`.`,
           `2. Run \`bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes\`.`,
-          `3. Do not dispatch publish.yml, push ${baseRef}, force a tag, or run scripts/bump-version.ts directly.`,
+          `3. Do not dispatch a workflow, push ${baseRef}, force a tag, or run scripts/bump-version.ts directly.`,
           "4. Report the release commit SHA/parent and exact local/remote tag evidence.",
         ].join("\n"),
       });
@@ -346,44 +312,17 @@ export default workflow({
       );
     }
 
-    const existingDispatch = await findExistingPublishDispatch(release, {
-      attempts: tagRecovery.state === "absent" ? 1 : 6,
-    });
-    if (!existingDispatch.ok) {
-      return blockedOutput(release, "inspect-publish-dispatch", "existing protected publish dispatches can be inspected before any new dispatch", existingDispatch.summary);
-    }
-
-    let dispatchStageText = existingDispatch.found
-      ? `Dispatch task skipped: reusing protected publish run ${existingDispatch.runId}.\n\n${existingDispatch.summary}`
-      : "No prior protected publish dispatch was found.";
-    if (!existingDispatch.found) {
-      const dispatchStage = await ctx.task("coordinate-protected-publish-dispatch", {
-        prompt: [
-          "Request serialized protected publishing after deterministic release-tag verification.",
-          "",
-          baseInstructions,
-          "",
-          "Deterministic tag evidence:",
-          excerpt(tagVerification.summary),
-          "",
-          `Run only \`gh workflow run publish-dispatch.yml --ref main -f tag=${release.version}\`. The protected-main coordinator owns the per-tag GitHub concurrency lock, exhaustively reconciles publish.yml history, and issues \`gh workflow run publish.yml --ref main\` at most once. Do not dispatch publish.yml directly.`,
-          "Report the coordinator workflow_dispatch run URL/ID if available.",
-        ].join("\n"),
-      });
-      dispatchStageText = dispatchStage.text;
-    }
 
     const publishVerification = await verifyPublishWorkflowSucceeded(
       release,
       tagVerification.tagTargetOid,
-      existingDispatch.found ? existingDispatch.runId : undefined,
     );
     if (!publishVerification.ok) {
       return blockedOutput(
         release,
         "verify-publish-workflow-succeeded",
-        "GitHub Actions protected Publish dispatch for the release tag completes successfully after its integrity job verifies and pins the release SHA",
-        [publishVerification.summary, "", "Tag stage output:", excerpt(tagStageText, 1_000), "", "Dispatch stage output:", excerpt(dispatchStageText, 2_000)].join("\n"),
+        "GitHub Actions tag-triggered Publish run completes successfully after its protected integrity job verifies and pins the release SHA",
+        [publishVerification.summary, "", "Tag stage output:", excerpt(tagStageText, 1_000)].join("\n"),
         publishVerification.pending === true ? "blocked" : "failed",
       );
     }
@@ -395,7 +334,7 @@ export default workflow({
       `Branch: ${release.branch}`,
       prUrl === undefined ? "PR URL: see open-release-pr stage output" : `PR URL: ${prUrl}`,
       `Tag: ${release.version}`,
-      actionUrl === undefined ? "Publish run: see dispatch-protected-publish stage output" : `Publish run: ${actionUrl}`,
+      actionUrl === undefined ? "Publish run: resume after GitHub reports the tag-triggered run" : `Publish run: ${actionUrl}`,
       "",
       "Stage summaries:",
       "## prepare-release-branch-and-metadata",
@@ -412,9 +351,6 @@ export default workflow({
       "",
       "## deterministic-pr-reference",
       excerpt(prReference.summary, 800),
-      "",
-      "## wait-for-release-ci",
-      excerpt(ciWait.text, 800),
       "",
       "## deterministic-ci-verification",
       excerpt(ciVerification.summary, 800),
@@ -436,10 +372,6 @@ export default workflow({
       "",
       "## deterministic-tag-verification",
       excerpt(tagVerification.summary, 800),
-      "",
-      "## protected-publish-dispatch",
-      excerpt(dispatchStageText, 800),
-      "",
       "## deterministic-publish-verification",
       excerpt(publishVerification.summary, 800),
     ].join("\n");

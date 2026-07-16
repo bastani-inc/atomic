@@ -27,21 +27,30 @@ test("test workflow runs platform-independent suites once and preserves cross-pl
   assert.match(workflow, /name: Upload flaky-test diagnostics[\s\S]*if: always\(\)/);
 });
 
-test("publish replaces full-suite reruns with release integrity and preserves release gates", async () => {
+test("publish uses an unprivileged tag signal and a protected event-driven publisher", async () => {
+  const trigger = await Bun.file(join(root, ".github/workflows/release-tag.yml")).text();
   const workflow = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
+  assert.match(trigger, /push:\s*\n\s*tags:/);
+  assert.match(trigger, /permissions:\s*\n\s*contents: read/);
+  assert.doesNotMatch(trigger, /id-token: write|actions: write/);
+  assert.match(workflow, /workflow_run:/);
+  assert.match(workflow, /workflows: \["Release Tag"\]/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /push:\s*\n\s*tags:/);
+  assert.doesNotMatch(`${trigger}\n${workflow}`, /gh workflow run|--paginate|--watch|sleep [0-9]/);
   assert.match(workflow, /bun run scripts\/verify-release-integrity\.ts --base-ref origin\/main/);
   assert.doesNotMatch(workflow, /name: (Typecheck|Test)\n/);
   assert.match(workflow, /npm publish --provenance/g);
-  assert.match(workflow, /workflow_dispatch:/);
-  assert.doesNotMatch(workflow, /push:\s*\n\s*tags:/);
   assert.match(workflow, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/);
   assert.match(workflow, /needs: release-integrity/);
   assert.match(workflow, /name: Mintlify docs validation/);
   const integrityJob = workflow.slice(workflow.indexOf("release-integrity:"), workflow.indexOf("linux-binary-smoke:"));
-  assert.doesNotMatch(integrityJob, /ref: \$\{\{ github\.event\.inputs\.tag/);
+  assert.match(integrityJob, /RELEASE_TAG.*workflow_run\.head_branch/);
+  assert.match(integrityJob, /TRIGGER_SHA.*workflow_run\.head_sha/);
   assert.match(integrityJob, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
   assert.match(integrityJob, /WORKFLOW_REF_NAME.*github\.ref_name/);
   assert.match(integrityJob, /DEFAULT_BRANCH.*repository\.default_branch/);
+  assert.match(integrityJob, /release_sha.*TRIGGER_SHA/);
   assert.match(integrityJob, /git ls-remote --exit-code --refs origin/);
   assert.match(workflow, /atomic_natives\.win32-arm64-msvc\.node/);
   assert.match(workflow, /atomic-windows-arm64\.zip/);

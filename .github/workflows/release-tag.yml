@@ -1,0 +1,30 @@
+name: Release Tag
+run-name: Release tag ${{ github.ref_name }}
+
+on:
+    push:
+        tags:
+            - "*.*.*"
+
+# This workflow is intentionally unprivileged. Its completion is only an event
+# signal; publish.yml is loaded from protected main and independently verifies
+# the immutable tag commit before receiving write or OIDC permissions.
+permissions:
+    contents: read
+
+jobs:
+    validate:
+        name: Validate release tag event
+        runs-on: ubuntu-latest
+        steps:
+            - name: Validate tag format
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ github.ref_name }}
+                  REF_TYPE: ${{ github.ref_type }}
+              run: |
+                  set -euo pipefail
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+                  [[ "$REF_TYPE" == "tag" ]] || { echo "Expected a tag push, received ref type $REF_TYPE" >&2; exit 1; }
+                  [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Unexpected release tag format: $RELEASE_TAG" >&2; exit 1; }
+                  echo "Validated release tag event for $RELEASE_TAG."

@@ -1,21 +1,11 @@
 import {
   commandSummary,
-  parseJsonCommand,
   runCommand,
-  selectPublishWorkflowRunJson,
   type CommandResult,
   type ValidatedRelease,
-  type JsonValue,
 } from "./publish-release.js";
-import { defaultSleep } from "./publish-release-helpers.js";
 
 type Execute = (args: readonly string[]) => CommandResult;
-type DispatchLookupOptions = {
-  readonly execute?: Execute;
-  readonly attempts?: number;
-  readonly pollIntervalMs?: number;
-  readonly sleep?: (durationMs: number) => Promise<void>;
-};
 
 export type ReleaseTagRecovery =
   | {
@@ -26,16 +16,6 @@ export type ReleaseTagRecovery =
     }
   | { readonly ok: false; readonly summary: string };
 
-export type PublishDispatchRecovery =
-  | {
-      readonly ok: true;
-      readonly found: true;
-      readonly runId: number;
-      readonly runUrl?: string;
-      readonly summary: string;
-    }
-  | { readonly ok: true; readonly found: false; readonly summary: string }
-  | { readonly ok: false; readonly summary: string };
 
 export function inspectReleaseTagRecovery(
   release: ValidatedRelease,
@@ -115,99 +95,6 @@ export function inspectReleaseTagRecovery(
         : "Existing local release tag matches deterministic release evidence and must be pushed without force.",
       `tagTargetOid: ${localOid}`,
       ...validationCommands,
-    ].join("\n\n"),
-  };
-}
-
-const restPageSize = 100;
-
-function isJsonObject(value: JsonValue): value is { readonly [key: string]: JsonValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizePublishRunPages(value: JsonValue): readonly JsonValue[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized: JsonValue[] = [];
-  for (const page of value) {
-    if (!isJsonObject(page) || !Array.isArray(page.workflow_runs)) return undefined;
-    for (const run of page.workflow_runs) {
-      if (!isJsonObject(run)) {
-        normalized.push(run);
-        continue;
-      }
-      normalized.push({
-        databaseId: run.id ?? null,
-        workflowName: run.path === ".github/workflows/publish.yml" ? "Publish" : null,
-        headBranch: run.head_branch ?? null,
-        event: run.event ?? null,
-        displayTitle: run.display_title ?? null,
-        status: run.status ?? null,
-        conclusion: run.conclusion ?? null,
-        headSha: run.head_sha ?? null,
-        url: run.html_url ?? null,
-      });
-    }
-  }
-  return normalized;
-}
-
-function publishRunHistorySummary(result: CommandResult, runCount: number): string {
-  return [`$ ${result.command}`, `exitCode: ${result.exitCode}`, `runCount: ${runCount}`].join("\n");
-}
-
-export async function findExistingPublishDispatch(
-  release: ValidatedRelease,
-  options: DispatchLookupOptions = {},
-): Promise<PublishDispatchRecovery> {
-  const execute = options.execute ?? runCommand;
-  const attempts = Math.max(1, options.attempts ?? 1);
-  const pollIntervalMs = options.pollIntervalMs ?? 10_000;
-  const sleep = options.sleep ?? defaultSleep;
-  let lastSummary = "GitHub Actions publish run lookup did not execute.";
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const runList = execute([
-      "gh", "api", "--method", "GET", "--paginate", "--slurp",
-      `repos/{owner}/{repo}/actions/workflows/publish.yml/runs?per_page=${restPageSize}`,
-    ]);
-    if (runList.exitCode !== 0) {
-      return { ok: false, summary: ["GitHub Actions publish run history command failed.", commandSummary(runList)].join("\n\n") };
-    }
-    const parsed = parseJsonCommand(runList, "GitHub Actions publish run history returned invalid JSON.");
-    if (!parsed.ok) return parsed;
-    const normalized = normalizePublishRunPages(parsed.value);
-    if (normalized === undefined) {
-      return { ok: false, summary: ["GitHub Actions publish run history had an invalid paginated shape.", commandSummary(runList)].join("\n\n") };
-    }
-    const selected = selectPublishWorkflowRunJson(normalized, release.version);
-    if (selected.ok) {
-      return {
-        ok: true,
-        found: true,
-        runId: selected.runId,
-        runUrl: selected.runUrl,
-        summary: [
-          "Existing protected publish dispatch will be reused; no duplicate dispatch is needed.",
-          selected.summary,
-          publishRunHistorySummary(runList, normalized.length),
-        ].join("\n\n"),
-      };
-    }
-    if (selected.summary.startsWith("GitHub Actions publish run is not selectable.")) {
-      return { ok: false, summary: [selected.summary, commandSummary(runList)].join("\n\n") };
-    }
-    lastSummary = [selected.summary, publishRunHistorySummary(runList, normalized.length)].join("\n\n");
-    if (attempt < attempts) await sleep(pollIntervalMs);
-  }
-
-  return {
-    ok: true,
-    found: false,
-    summary: [
-      "No existing protected publish dispatch appeared during the reconciliation window.",
-      `attempts: ${attempts}`,
-      `pollIntervalMs: ${pollIntervalMs}`,
-      lastSummary,
     ].join("\n\n"),
   };
 }

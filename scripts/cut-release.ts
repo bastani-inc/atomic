@@ -183,12 +183,10 @@ async function main(): Promise<void> {
   if (push) {
     console.log(`Pushing tag ${version}...`);
     await $`git -C ${ROOT} push origin ${version}`;
-    console.log("Tag pushed. Dispatch the protected per-tag publish coordinator:");
-    console.log(`  gh workflow run publish-dispatch.yml --ref main -f tag=${version}`);
+    console.log("Tag pushed. GitHub Actions will validate the tag event and start protected publishing automatically.");
   } else {
-    console.log("Next: push the tag, then dispatch the protected publish coordinator:");
+    console.log("Next: push the tag to trigger protected publishing:");
     console.log(`  git push origin ${version}`);
-    console.log(`  gh workflow run publish-dispatch.yml --ref main -f tag=${version}`);
   }
 }
 

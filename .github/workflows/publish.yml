@@ -1,22 +1,20 @@
 name: Publish
-run-name: Publish ${{ inputs.tag }}
+run-name: Publish ${{ github.event.workflow_run.head_branch }}
 
 on:
-    # Manual dispatch is deliberate: GitHub loads this workflow from the protected
-    # default branch, so a forged tag cannot remove its own integrity gate.
-    workflow_dispatch:
-        inputs:
-            tag:
-                description: "Tag to publish (e.g., 0.8.0 or 0.8.0-alpha.1)"
-                required: true
-                type: string
+    # A tag push runs the unprivileged Release Tag signal workflow. This
+    # workflow_run event then loads the privileged publisher from protected
+    # main, rather than trusting workflow code from the release tag.
+    workflow_run:
+        workflows: ["Release Tag"]
+        types: [completed]
 
 permissions:
     contents: write
     id-token: write
 
 concurrency:
-    group: publish-${{ github.event.inputs.tag || github.ref }}
+    group: publish-${{ github.event.workflow_run.head_branch }}
     cancel-in-progress: false
 
 env:
@@ -28,6 +26,7 @@ env:
 jobs:
     release-integrity:
         name: Verify release integrity
+        if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
         runs-on: blacksmith-4vcpu-ubuntu-2404
         outputs:
             sha: ${{ steps.release.outputs.sha }}
@@ -47,7 +46,8 @@ jobs:
               id: release
               shell: bash
               env:
-                  RELEASE_TAG: ${{ github.event.inputs.tag }}
+                  RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
+                  TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
                   WORKFLOW_REF_NAME: ${{ github.ref_name }}
                   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
               run: |
@@ -57,6 +57,7 @@ jobs:
                   [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Unexpected tag format: $RELEASE_TAG" >&2; exit 1; }
                   release_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
                   [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve tag $RELEASE_TAG to one commit" >&2; exit 1; }
+                  [[ "$release_sha" == "$TRIGGER_SHA" ]] || { echo "Tag $RELEASE_TAG moved from triggering SHA $TRIGGER_SHA to $release_sha" >&2; exit 1; }
                   git fetch --no-tags origin "$release_sha" main:refs/remotes/origin/main
                   bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit "$release_sha"
                   echo "sha=$release_sha" >> "$GITHUB_OUTPUT"

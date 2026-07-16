@@ -121,20 +121,29 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Publishing is intentionally dispatch-only so GitHub loads trusted workflows from protected `main`: after pushing the tag, run `gh workflow run publish-dispatch.yml --ref main -f tag=<version>`. The protected per-tag coordinator serializes and reconciles requests before it dispatches `publish.yml --ref main`; do not dispatch `publish.yml` directly. The integrity job accepts only a deterministic release commit whose parent is already integrated into `main`, then publishes with npm OIDC provenance and creates the GitHub Release.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Pushing that tag starts an unprivileged `Release Tag` signal workflow. Its successful completion triggers `publish.yml` through GitHub's `workflow_run` event, so the privileged publisher is loaded from protected `main`, verifies the exact triggering tag SHA and deterministic release tree, publishes with npm OIDC provenance, and creates the GitHub Release. Do not dispatch either workflow manually.
 
-Cut and dispatch a release with:
+Cut and publish a release with:
 
 ```sh
 bun run scripts/cut-release.ts 0.8.31 --base main --push
-gh workflow run publish-dispatch.yml --ref main -f tag=0.8.31
 ```
 
-`main` is never advanced; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree. Pushing the tag alone does **not** publish it.
+`main` is never advanced by the version stamp; the script creates the release commit in a detached git worktree, tags it, and abandons the worktree. The tag push is the sole publication signal.
 
 ### Agent publishing requests
 
-If a user asks you to publish the package or create a release/prerelease, run the `publish-release` workflow using your workflow tool. It opens a CHANGELOG-only PR to `main`, stamps and pushes the deterministic off-`main` release tag, dispatches the protected `publish-dispatch.yml` coordinator with `--ref main`, and monitors the exact `publish.yml` run selected or created by that coordinator. The release-integrity gate requires the tag commit's parent to be integrated into `main`; do not use the legacy `base_ref` maintenance-branch or `from_ref` ephemeral-release inputs, because non-`main` parents are rejected before publishing.
+If a user asks to publish a release or prerelease, execute the release process directly rather than launching an Atomic workflow:
+
+1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
+2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid.
+3. Create `[release|prerelease]/<version>` without a leading `v`.
+4. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep `main` versionless; do not run `scripts/bump-version.ts` on the branch.
+5. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to `main`.
+6. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
+7. After checks pass, merge the exact verified head commit, switch to `main`, and pull `origin/main`.
+8. Run `bun run scripts/cut-release.ts <version> --base main --push --yes`. This stamps the real version only on the detached release commit and pushes the tag, which automatically starts protected publishing.
+9. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
 
 ## Docs
 
@@ -157,6 +166,9 @@ Use these sections under `## [Unreleased]`:
 
 ### Rules
 
+- Package changelogs are user-facing release notes. Add entries only for changes to shipped package behavior, APIs, features, or user-visible fixes.
+- CI configuration, release/publish pipelines, repository automation, maintainer scripts, and agent-instruction changes are infrastructure-level changes. Do **not** add them to `packages/*/CHANGELOG.md` unless they also change the behavior of a shipped package for users.
+- In particular, changing how a release is tagged, dispatched, built, verified, or published does not itself warrant a package changelog entry.
 - Before adding entries, read the full `[Unreleased]` section to see which subsections already exist
 - New entries ALWAYS go under `## [Unreleased]` section
 - Append to existing subsections (e.g., `### Fixed`), do not create duplicates

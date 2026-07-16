@@ -166,7 +166,7 @@ export function selectPublishWorkflowRunJson(
     const displayTitle = stringField(candidate, "displayTitle");
     const workflowName = stringField(candidate, "workflowName");
 
-    if (displayTitle !== `Publish ${expectedHeadBranch}` || event !== "workflow_dispatch" || headBranch !== "main" || workflowName !== "Publish") {
+    if (displayTitle !== `Publish ${expectedHeadBranch}` || event !== "workflow_run" || headBranch !== "main" || workflowName !== "Publish") {
       mismatches.push(
         `run[${index}] displayTitle=${displayTitle ?? "missing"} event=${event ?? "missing"} headBranch=${headBranch ?? "missing"} workflowName=${workflowName ?? "missing"}`,
       );
@@ -190,9 +190,9 @@ export function selectPublishWorkflowRunJson(
     return {
       ok: true,
       summary: [
-        "GitHub Actions publish run is selected.",
+        "GitHub Actions tag-triggered publish run is selected.",
         `databaseId: ${runId}`,
-        `headBranch: ${headBranch}`,
+        `releaseTag: ${expectedHeadBranch}`,
         `event: ${event}`,
         `status: ${status}`,
         conclusion === undefined ? undefined : `conclusion: ${conclusion}`,
@@ -210,7 +210,7 @@ export function selectPublishWorkflowRunJson(
   return {
     ok: false,
     summary: [
-      "GitHub Actions publish run was not found for the release tag.",
+      "GitHub Actions tag-triggered publish run was not found for the release tag.",
       `expected release: ${expectedHeadBranch} on protected main workflow Publish`,
       `examined runs: ${value.length}`,
       ...mismatches.slice(0, 10).map((mismatch) => `- ${mismatch}`),
@@ -243,12 +243,11 @@ export function verifyPublishWorkflowRunJson(
   }
   if (headBranch !== "main") failures.push(`headBranch was ${headBranch ?? "missing"}, expected main`);
   if (workflowName !== "Publish") failures.push(`workflowName was ${workflowName ?? "missing"}, expected Publish`);
-  if (event !== "workflow_dispatch") failures.push(`event was ${event ?? "missing"}, expected workflow_dispatch`);
+  if (event !== "workflow_run") failures.push(`event was ${event ?? "missing"}, expected workflow_run`);
   if (status !== "completed") failures.push(`status was ${status ?? "missing"}, expected completed`);
   if (conclusion !== "success") failures.push(`conclusion was ${conclusion ?? "missing"}, expected success`);
-  // workflow_dispatch runs execute the protected default-branch workflow; its
-  // headSha is therefore the workflow revision, while the integrity job pins
-  // and verifies the release SHA supplied as input.
+  // workflow_run executes the protected default-branch workflow. The integrity
+  // job independently binds the triggering tag event to the immutable release SHA.
 
   if (failures.length > 0 || runId === undefined || status === undefined || conclusion === undefined) {
     return {
@@ -268,7 +267,7 @@ export function verifyPublishWorkflowRunJson(
       "GitHub Actions publish run is verified as successful.",
       `databaseId: ${runId}`,
       workflowName === undefined ? undefined : `workflowName: ${workflowName}`,
-      `headBranch: ${headBranch}`,
+      `releaseTag: ${expectedHeadBranch}`,
       `event: ${event}`,
       `status: ${status}`,
       `conclusion: ${conclusion}`,

@@ -12,8 +12,7 @@ import {
   type PullRequestReferenceVerification,
   type ValidatedRelease,
 } from "./publish-release.js";
-import { waitForWorkflowRunSucceeded } from "./publish-release-run-wait.js";
-import { defaultSleep } from "./publish-release-helpers.js";
+import { verifyPublishRunSucceeded } from "./publish-release-run.js";
 
 export type ReleasePrCheckGateVerification =
   | {
@@ -28,14 +27,8 @@ export type ReleasePrCheckGateVerification =
     };
 
 type CheckGateOptions = {
-  readonly attempts?: number;
-  readonly pollIntervalMs?: number;
   readonly runCommand?: (args: readonly string[]) => CommandResult;
-  readonly sleep?: (durationMs: number) => Promise<void>;
 };
-
-const defaultCheckGateAttempts = 30;
-const defaultCheckGatePollIntervalMs = 30_000;
 
 
 type MainReadyVerification =
@@ -138,31 +131,7 @@ export async function verifyReleasePrChecksPassed(
   baseRef: string,
   options: CheckGateOptions = {},
 ): Promise<ReleasePrCheckGateVerification> {
-  const attempts = options.attempts ?? defaultCheckGateAttempts;
-  const pollIntervalMs = options.pollIntervalMs ?? defaultCheckGatePollIntervalMs;
-  const sleep = options.sleep ?? defaultSleep;
-  let lastPendingSummary: string | undefined;
-
-  const execute = options.runCommand ?? runCommand;
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const verification = verifyReleasePrChecksOnce(release, prReference, baseRef, execute);
-    if (verification.ok) return verification;
-    if (verification.pending !== true) return verification;
-
-    lastPendingSummary = verification.summary;
-    if (attempt < attempts) await sleep(pollIntervalMs);
-  }
-
-  return {
-    ok: false,
-    pending: true,
-    summary: [
-      "GitHub PR required checks did not finish before the polling timeout.",
-      `attempts: ${attempts}`,
-      `pollIntervalMs: ${pollIntervalMs}`,
-      lastPendingSummary,
-    ].filter((line): line is string => line !== undefined).join("\n\n"),
-  };
+  return verifyReleasePrChecksOnce(release, prReference, baseRef, options.runCommand ?? runCommand);
 }
 
 function verifyReleasePrChecksOnce(
@@ -477,23 +446,7 @@ export function verifyReleaseTagPublished(
 export function verifyPublishWorkflowSucceeded(
   release: ValidatedRelease,
   expectedHeadSha: string,
-  expectedRunId?: number,
 ): Promise<PublishWorkflowRunVerification> {
-  return waitForWorkflowRunSucceeded(expectedHeadSha, {
-    workflowFile: "publish.yml",
-    expectedHeadBranch: release.version,
-    expectedRunId,
-    listAttempts: 12,
-  });
-}
-
-export function verifyReleaseBranchCiSucceeded(
-  release: ValidatedRelease,
-  branchHeadSha: string,
-): Promise<PublishWorkflowRunVerification> {
-  return waitForWorkflowRunSucceeded(branchHeadSha, {
-    workflowFile: "test.yml",
-    expectedHeadBranch: release.branch,
-  });
+  return verifyPublishRunSucceeded(release.version, expectedHeadSha);
 }
 

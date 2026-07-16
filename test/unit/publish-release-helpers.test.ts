@@ -186,7 +186,7 @@ describe("publish-release GitHub PR checks verification", () => {
     assert.match(pending.summary, /unit bucket=pending state=PENDING/u);
   });
 
-  test("polls pending PR checks until they pass", async () => {
+  test("checks current PR status once without polling", async () => {
     const release = validateReleaseRequest("release", "1.2.3");
     const prReference = {
       ok: true as const,
@@ -207,33 +207,23 @@ describe("publish-release GitHub PR checks verification", () => {
     };
     const responses: CommandResult[] = [
       { command: "gh pr view", exitCode: 0, stdout: JSON.stringify(prView), stderr: "" },
-      { command: "gh pr checks", exitCode: 8, stdout: JSON.stringify([{ name: "unit", bucket: "pending", state: "PENDING" }]), stderr: "" },
-      { command: "gh pr view", exitCode: 0, stdout: JSON.stringify(prView), stderr: "" },
       { command: "gh pr checks", exitCode: 0, stdout: JSON.stringify([{ name: "unit", bucket: "pass", state: "SUCCESS" }]), stderr: "" },
       { command: "gh pr view", exitCode: 0, stdout: JSON.stringify(prView), stderr: "" },
     ];
-    const sleeps: number[] = [];
 
     const result = await verifyReleasePrChecksPassed(release, prReference, "main", {
-      attempts: 2,
-      pollIntervalMs: 25,
       runCommand: (args) => {
         const response = responses.shift();
         if (response === undefined) throw new Error(`unexpected command: ${args.join(" ")}`);
         return { ...response, command: args.join(" ") };
       },
-      sleep: (durationMs) => {
-        sleeps.push(durationMs);
-        return Promise.resolve();
-      },
     });
 
     assert.equal(result.ok, true);
-    assert.deepEqual(sleeps, [25]);
     assert.equal(responses.length, 0);
   });
 
-  test("marks PR checks as pending when polling times out", async () => {
+  test("marks PR checks as pending after one observation", async () => {
     const release = validateReleaseRequest("release", "1.2.3");
     const prReference = {
       ok: true as const,
@@ -253,29 +243,27 @@ describe("publish-release GitHub PR checks verification", () => {
       statusCheckRollup: [{ name: "unit", status: "IN_PROGRESS", conclusion: null }],
     };
     const result = await verifyReleasePrChecksPassed(release, prReference, "main", {
-      attempts: 1,
-      pollIntervalMs: 25,
       runCommand: (args) => ({
         command: args.join(" "),
         exitCode: args.includes("checks") ? 8 : 0,
         stdout: JSON.stringify(args.includes("checks") ? [{ name: "unit", bucket: "pending", state: "PENDING" }] : prView),
         stderr: "",
       }),
-      sleep: () => Promise.resolve(),
     });
 
     assert.equal(result.ok, false);
     assert.equal(result.pending, true);
-    assert.match(result.summary, /did not finish before the polling timeout/u);
+    assert.match(result.summary, /required checks are still pending/u);
   });
 
-  test("publish-release polling helpers do not reference Bun globals", () => {
+  test("publish-release gates do not poll or reference Bun globals", () => {
     const helpers = [
       ".atomic/workflows/lib/publish-release-gates.ts",
-      ".atomic/workflows/lib/publish-release-run-wait.ts",
+      ".atomic/workflows/lib/publish-release-run.ts",
     ];
     for (const helper of helpers) {
-      assert.doesNotMatch(readFileSync(helper, "utf8"), /\bBun\./u, helper);
+      const source = readFileSync(helper, "utf8");
+      assert.doesNotMatch(source, /\bBun\.|setTimeout|\bsleep\b|--watch/u, helper);
     }
   });
 
