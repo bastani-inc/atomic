@@ -1,20 +1,23 @@
-/**
- * RPC Client for programmatic access to the coding agent.
- *
- * Spawns the agent in RPC mode and provides a typed API for all operations.
- */
 
-import { type ChildProcess, spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai/compat";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai/compat";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { VerbatimCompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
+import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
+import { serializeInteractiveEngineFrame, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
+import { RpcEventBuffer } from "./rpc-event-buffer.ts";
+import { collectRpcEvents, waitForRpcIdle } from "./rpc-client-waits.ts";
 import type {
 	RpcCommand,
 	RpcContextWindowInfo,
+	RpcExtensionUIRequest,
+	RpcExtensionUIResponse,
 	RpcEvent,
 	RpcResponse,
 	RpcSessionState,
@@ -22,31 +25,25 @@ import type {
 } from "./rpc-types.ts";
 export type { RpcContextWindowInfo, RpcEvent } from "./rpc-types.ts";
 
-// ============================================================================
-// Types
-// ============================================================================
 
-/** Distributive Omit that works with union types */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
 
-/** RpcCommand without the id field (for internal send) */
-type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
+export type RpcCommandBody = DistributiveOmit<RpcCommand, "id">;
 
 export interface RpcClientOptions {
-	/** Path to the CLI entry point (default: searches for dist/cli.js) */
 	cliPath?: string;
-	/** Working directory for the agent */
 	cwd?: string;
-	/** Environment variables */
 	env?: Record<string, string>;
-	/** Provider to use */
 	provider?: string;
-	/** Model ID to use */
 	model?: string;
-	/** Startup context-window selection, as raw tokens or compact form like "400k"/"1m" */
 	contextWindow?: number | string;
-	/** Additional CLI arguments */
 	args?: string[];
+	runtimeExecutable?: string;
+	runtimeArgs?: string[];
+	interactiveEngine?: {
+		onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void;
+		onActivityChange?: (active: boolean) => void;
+	};
 }
 
 export interface ModelInfo {
@@ -58,19 +55,22 @@ export interface ModelInfo {
 
 export type RpcEventListener = (event: RpcEvent) => void;
 
-// ============================================================================
-// RPC Client
-// ============================================================================
 
 export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private extensionUIListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
+	private pendingExtensionUIRequests: RpcExtensionUIRequest[] = [];
+	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	private pendingEngineMessages: InteractiveEngineMessage[] = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
 	private stderr = "";
 	private exitError: Error | null = null;
+	private engineMonitor: InteractiveEngineMonitor | undefined;
+	private eventBuffer: RpcEventBuffer | undefined;
 
 	declare private options: RpcClientOptions;
 
@@ -78,7 +78,6 @@ export class RpcClient {
 		this.options = options;
 	}
 
-	/** Start the RPC agent process. */
 	async start(): Promise<void> {
 		if (this.process) {
 			throw new Error("Client already started");
@@ -101,69 +100,72 @@ export class RpcClient {
 		}
 
 		this.exitError = null;
-		const childProcess = spawn("node", [cliPath, ...args], {
+		this.engineMonitor = this.options.interactiveEngine
+			? new InteractiveEngineMonitor(
+					this.options.interactiveEngine.onDiagnostic,
+					(message) => this.observeInteractiveEngineMessage(message),
+				)
+			: undefined;
+		this.eventBuffer = this.engineMonitor ? new RpcEventBuffer((event) => this.emitEvent(event)) : undefined;
+		const childProcess = spawnRpcClientProcess({
+			cliPath,
+			cliArgs: args,
 			cwd: this.options.cwd,
-			env: { ...process.env, ...this.options.env },
-			stdio: ["pipe", "pipe", "pipe"],
+			env: this.options.env,
+			runtimeExecutable: this.options.runtimeExecutable,
+			runtimeArgs: this.options.runtimeArgs,
+			interactiveEngine: this.engineMonitor !== undefined,
 		});
 		this.process = childProcess;
 
 		childProcess.once("exit", (code, signal) => {
 			const error = this.createProcessExitError(code, signal);
 			this.exitError = error;
+			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.once("error", (error) => {
 			this.exitError = error;
+			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 		});
 		childProcess.stdin?.on("error", (error) => {
 			this.exitError = error;
+			this.engineMonitor?.fail(error);
 			this.rejectPendingRequests(error);
 		});
-
-		// Collect stderr for debugging
 		childProcess.stderr?.on("data", (data) => {
 			this.stderr += data.toString();
 			process.stderr.write(data);
 		});
-
-		// Set up strict JSONL reader for stdout.
 		this.stopReadingStdout = attachJsonlLineReader(childProcess.stdout!, (line) => {
 			this.handleLine(line);
-		});
-
-		// Wait a moment for process to initialize
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		}, createInteractiveJsonlOptions(
+			this.engineMonitor !== undefined,
+			this.options.interactiveEngine?.onDiagnostic,
+		));
+		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
+		else await new Promise((resolve) => setTimeout(resolve, 100));
 
 		if (this.process.exitCode !== null) {
 			throw new Error(`Agent process exited immediately with code ${this.process.exitCode}. Stderr: ${this.stderr}`);
 		}
 	}
 
-	/** Stop the RPC agent process. */
 	async stop(): Promise<void> {
-		if (!this.process) return;
-
+		const child = this.process;
+		if (!child) return;
+		const terminateTree = this.engineMonitor !== undefined;
 		this.stopReadingStdout?.();
+		this.engineMonitor?.stop();
+		this.engineMonitor = undefined;
 		this.stopReadingStdout = null;
-		this.process.kill("SIGTERM");
-
-		// Wait for process to exit
-		await new Promise<void>((resolve) => {
-			const timeout = setTimeout(() => {
-				this.process?.kill("SIGKILL");
-				resolve();
-			}, 1000);
-
-			this.process?.on("exit", () => {
-				clearTimeout(timeout);
-				resolve();
-			});
-		});
+		await terminateRpcClientProcess(child, terminateTree);
 
 		this.process = null;
-		this.pendingRequests.clear();
+		this.rejectPendingRequests(new Error("Agent process stopped"));
+		this.eventBuffer?.dispose();
+		this.eventBuffer = undefined;
 	}
 
 	/** Subscribe to agent events. */
@@ -177,22 +179,51 @@ export class RpcClient {
 		};
 	}
 
-	/** Get collected stderr output (useful for debugging). */
+	onExtensionUIRequest(listener: (request: RpcExtensionUIRequest) => void): () => void {
+		this.extensionUIListeners.push(listener);
+		for (const request of this.pendingExtensionUIRequests.splice(0)) listener(request);
+		return () => {
+			const index = this.extensionUIListeners.indexOf(listener);
+			if (index !== -1) this.extensionUIListeners.splice(index, 1);
+		};
+	}
+
+	respondExtensionUI(response: RpcExtensionUIResponse): void {
+		const stdin = this.process?.stdin;
+		if (!stdin?.writable) throw new Error("Interactive engine stdin is not writable");
+		stdin.write(serializeJsonLine(response));
+	}
+
+	onInteractiveEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
+		this.engineMessageListeners.push(listener);
+		for (const message of this.pendingEngineMessages.splice(0)) listener(message);
+		return () => {
+			const index = this.engineMessageListeners.indexOf(listener);
+			if (index !== -1) this.engineMessageListeners.splice(index, 1);
+		};
+	}
+
+	sendInteractiveEngineCommand(command: InteractiveEngineCommand): void {
+		const stdin = this.process?.stdin;
+		if (stdin?.writable) stdin.write(serializeInteractiveEngineFrame(command));
+	}
+	waitForInteractiveEngineBound(): Promise<void> { return this.engineMonitor?.waitUntilBound() ?? Promise.resolve(); }
+
+	async requestInternal<T>(command: RpcCommandBody): Promise<T> {
+		return this.getData<T>(await this.send(command));
+	}
 	getStderr(): string {
 		return this.stderr;
 	}
 
-	// =========================================================================
-	// Command Methods
-	// =========================================================================
 
 	/**
 	 * Send a prompt to the agent.
 	 * Returns immediately after sending; use onEvent() to receive streaming events.
 	 * Use waitForIdle() to wait for completion.
 	 */
-	async prompt(message: string, images?: ImageContent[]): Promise<void> {
-		await this.send({ type: "prompt", message, images });
+	async prompt(message: string, images?: ImageContent[], streamingBehavior?: "steer" | "followUp"): Promise<void> {
+		await this.send({ type: "prompt", message, images, streamingBehavior });
 	}
 
 	/** Queue a steering message to interrupt the agent mid-run. */
@@ -231,14 +262,13 @@ export class RpcClient {
 		const response = await this.send({ type: "set_model", provider, modelId });
 		return this.getData(response);
 	}
-
 	/** Cycle to next model. */
-	async cycleModel(): Promise<{
-		model: { provider: string; id: string };
+	async cycleModel(direction?: "forward" | "backward"): Promise<{
+		model: Model<Api>;
 		thinkingLevel: ThinkingLevel;
 		isScoped: boolean;
 	} | null> {
-		const response = await this.send({ type: "cycle_model" });
+		const response = await this.send({ type: "cycle_model", direction });
 		return this.getData(response);
 	}
 
@@ -358,36 +388,10 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 	waitForIdle(timeout = 60000): Promise<void> {
-		return new Promise((resolve, reject) => {
-			const timer = setTimeout(() => {
-				unsubscribe();
-				reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.stderr}`));
-			}, timeout);
-			const unsubscribe = this.onEvent((event) => {
-				if (event.type === "agent_end") {
-					clearTimeout(timer);
-					unsubscribe();
-					resolve();
-				}
-			});
-		});
+		return waitForRpcIdle(this, timeout);
 	}
 	collectEvents(timeout = 60000): Promise<RpcEvent[]> {
-		return new Promise((resolve, reject) => {
-			const events: RpcEvent[] = [];
-			const timer = setTimeout(() => {
-				unsubscribe();
-				reject(new Error(`Timeout collecting events. Stderr: ${this.stderr}`));
-			}, timeout);
-			const unsubscribe = this.onEvent((event) => {
-				events.push(event);
-				if (event.type === "agent_end") {
-					clearTimeout(timer);
-					unsubscribe();
-					resolve(events);
-				}
-			});
-		});
+		return collectRpcEvents(this, timeout);
 	}
 	async promptAndWait(message: string, images?: ImageContent[], timeout = 60000): Promise<RpcEvent[]> {
 		const eventsPromise = this.collectEvents(timeout);
@@ -395,22 +399,44 @@ export class RpcClient {
 		return eventsPromise;
 	}
 	private handleLine(line: string): void {
+		if (this.engineMonitor?.handleLine(line)) return;
 		try {
 			const data = JSON.parse(line);
+			if (data.type === "extension_ui_request") {
+				const request = data as RpcExtensionUIRequest;
+				if (this.extensionUIListeners.length === 0) this.pendingExtensionUIRequests.push(request);
+				for (const listener of this.extensionUIListeners) listener(request);
+				return;
+			}
 			if (data.type === "response" && data.id && this.pendingRequests.has(data.id)) {
 				const pending = this.pendingRequests.get(data.id)!;
 				this.pendingRequests.delete(data.id);
 				pending.resolve(data as RpcResponse);
 				return;
 			}
-			for (const listener of this.eventListeners) {
-				listener(data as RpcEvent);
-			}
+			const event = data as RpcEvent;
+			if (this.eventBuffer) this.eventBuffer.enqueue(event);
+			else this.emitEvent(event);
 		} catch {
 		}
 	}
+	private emitEvent(event: RpcEvent): void {
+		for (const listener of this.eventListeners) listener(event);
+	}
+	private emitInteractiveEngineMessage(message: InteractiveEngineMessage): void {
+		if (this.engineMessageListeners.length === 0 && message.type.startsWith("engine_custom_")) {
+			if (this.pendingEngineMessages.length === 256) this.pendingEngineMessages.shift();
+			this.pendingEngineMessages.push(message);
+		}
+		for (const listener of this.engineMessageListeners) listener(message);
+	}
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
+	}
+	private observeInteractiveEngineMessage(message: InteractiveEngineMessage): void {
+		if (message.type === "engine_activity_started") this.options.interactiveEngine?.onActivityChange?.(true);
+		else if (message.type === "engine_activity_finished") this.options.interactiveEngine?.onActivityChange?.(false);
+		this.emitInteractiveEngineMessage(message);
 	}
 	private rejectPendingRequests(error: Error): void {
 		for (const { reject } of this.pendingRequests.values()) {

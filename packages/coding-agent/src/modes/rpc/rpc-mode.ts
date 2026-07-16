@@ -14,6 +14,8 @@
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
@@ -43,6 +45,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	};
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const signalCleanupHandlers: Array<() => void> = [];
+	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
+	const customUi = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+		? new EngineCustomUiService(writeRawStdout)
+		: undefined;
 
 	let shutdownRequested = false;
 	let shuttingDown = false;
@@ -57,6 +63,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		output,
 		pendingExtensionRequests,
 		requestShutdown,
+		customUi,
 	});
 
 	runtimeHost.setRebindSession(async () => {
@@ -79,6 +86,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			cleanup();
 		}
 		sessionBinding.disposeSubscriptions();
+		engineLiveness.stop();
+		customUi?.dispose();
 		await runtimeHost.dispose();
 		detachInput();
 		process.stdin.pause();
@@ -109,14 +118,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-	await sessionBinding.rebindSession();
-	registerSignalHandlers();
 
 	const handleInputLine = createRpcInputLineHandler({
 		output,
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
+		handleInteractiveEngineLine: customUi ? (line) => customUi.handleLine(line) : undefined,
 	});
 
 	const onInputEnd = () => {
@@ -133,6 +141,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			process.stdin.off("end", onInputEnd);
 		};
 	})();
+	registerSignalHandlers();
+	engineLiveness.ready();
+	await sessionBinding.rebindSession();
+	engineLiveness.bound();
 
 	// Keep process alive forever
 	return new Promise(() => {});

@@ -31,6 +31,7 @@ See [examples/extensions/](https://github.com/bastani-inc/atomic/tree/main/packa
 ## Table of Contents
 
 - [Startup and lazy discovery](#startup-and-lazy-discovery)
+- [Interactive callback isolation](#interactive-callback-isolation)
 - [Quick Start](#quick-start)
 - [Extension Locations](#extension-locations)
 - [Available Imports](#available-imports)
@@ -60,6 +61,12 @@ Atomic keeps the interactive startup path responsive by registering lightweight 
 Web-access and Intercom first-use calls await one shared lazy initializer plus the latest active lifecycle replay before executing. Failed initializer/replay attempts remain retryable. Session-scoped leases retire candidates synchronously on shutdown, reject calls spanning teardown, and require fresh initialization after restart; shutdown awaits retired replay/initializer cleanup before the extension instance can be replaced, and Intercom serializes replay with live lifecycle forwarding so matching ends and newer model selections cannot be overtaken by stale replay. Aborting one web-access caller during a shared wait does not cancel initialization for other callers, and host abort after provider/curator execution preserves the exact abort reason while explicit curator user cancellation remains result-shaped. Non-empty `web_search`/`fetch_content` batches with no successful items are marked as tool errors with stage diagnostics; partial successes remain successful and retain their completed items.
 
 Bundled MCP startup, proxy calls, direct tools, and readiness-critical commands share a generation-scoped initializer and exact session lease. Failed background attempts remain retryable and single-flight; stale contexts cannot reuse initialized state; commands keep the state they initialized across lazy imports; and direct/proxy operations revalidate ownership after lifecycle-spanning waits and before metadata or SDK side effects. Caller cancellation races readiness, connection, manager-close, and UI-start waits with the exact reason, closes any UI runtime produced after cancellation, and does not cancel shared producers needed by survivors. Session restart/shutdown retires OAuth ownership immediately and uses bounded, observed cleanup so non-abortable SDK work cannot permanently block replacement sessions while late completion remains fenced. SDK-supported resource/tool requests still receive the call signal, though protocol-level remote cancellation is advisory; UI-backed MCP Apps calls preserve terminal cancellation ordering and keep successful result events mutually exclusive.
+
+## Interactive callback isolation
+
+Interactive Atomic sessions run the agent engine, extensions, tools, hooks, workflow code, and extension-owned render components in a supervised child process. The terminal host owns stdin and cached rendering, so a synchronous busy loop in one callback cannot stop keyboard handling, spinners, or render scheduling. The engine sends a heartbeat every 50 ms; Atomic identifies the active callback after a 250 ms heartbeat gap and marks the engine unresponsive after one second. Escape requests cooperative cancellation and escalates to terminating the engine when it cannot acknowledge; the interrupted result is reported as unknown and is never retried automatically.
+
+Dialogs and `ctx.ui.custom()` components are proxied to the host as rendered lines with asynchronous input forwarding. Custom UI results must be JSON-safe. APIs that require a synchronous callback in the terminal process—raw `onTerminalInput` transforms, synchronous `getEditorText`, custom editor factories, autocomplete wrappers, component-factory widgets, and custom header/footer factories—are unavailable in isolated interactive mode and produce a warning rather than executing extension code in the host. Print and public RPC modes retain their existing execution model.
 
 ## Quick Start
 

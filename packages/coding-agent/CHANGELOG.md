@@ -5,6 +5,7 @@
 ### Added
 
 - Added `/workflows [run-id]` as a retained workflow-run alias for `/workflow resume`, with confirmed backend-aware deletion for inactive durable/completed rows that protects in-flight runs and preserves independent session transcripts.
+- Added supervised interactive-engine isolation: extension tools, hooks, commands, workflow code, and custom UI rendering now run in a child process so a synchronous busy loop cannot freeze terminal input, spinners, or rendering. A 50 ms heartbeat watchdog identifies blocked callbacks after 250 ms, exposes interrupt/termination guidance after one second, and reports terminated results as unknown without automatic retry. JSON-safe `ctx.ui.custom()` components are remotely rendered with asynchronous input forwarding; unsupported synchronous host callback APIs warn instead of falling back in-process.
 
 ### Changed
 
