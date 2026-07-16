@@ -97,7 +97,7 @@ describe("publish-release tag recovery", () => {
     assert.equal(existsSync(".github/workflows/publish-dispatch.yml"), false);
     assert.equal(existsSync(".github/workflows/release-tag.yml"), false);
     const publish = readFileSync(".github/workflows/publish.yml", "utf8");
-    assert.match(publish, /on:\s*\n(?:\s*#.*\n)*\s*create:/u);
+    assert.match(publish, /on:[ \t]*\r?\n(?:[ \t]*#[^\r\n]*\r?\n)*[ \t]*create:/u);
     assert.doesNotMatch(publish, /gh workflow run|sleep [0-9]|--paginate|--watch|workflow_run:/u);
   });
 });

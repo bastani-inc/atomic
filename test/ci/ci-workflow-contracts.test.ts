@@ -29,13 +29,13 @@ test("test workflow runs platform-independent suites once and preserves cross-pl
 
 test("publish uses the default-branch create event with least-privilege jobs", async () => {
   const workflow = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
-  assert.match(workflow, /on:\s*\n(?:\s*#.*\n)*\s*create:/);
-  assert.doesNotMatch(workflow, /workflow_dispatch:|workflow_run:|push:\s*\n\s*tags:/);
-  assert.match(workflow, /permissions:\s*\n\s*contents: read/);
+  assert.match(workflow, /on:[ \t]*\r?\n(?:[ \t]*#[^\r\n]*\r?\n)*[ \t]*create:/);
+  assert.doesNotMatch(workflow, /workflow_dispatch:|workflow_run:|push:\s*\r?\n\s*tags:/);
+  assert.match(workflow, /permissions:\s*\r?\n\s*contents: read/);
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf("jobs:")), /id-token: write|contents: write/);
   assert.doesNotMatch(workflow, /gh workflow run|--paginate|--watch|sleep [0-9]/);
   assert.match(workflow, /bun run scripts\/verify-release-integrity\.ts --base-ref origin\/main/);
-  assert.doesNotMatch(workflow, /name: (Typecheck|Test)\n/);
+  assert.doesNotMatch(workflow, /name: (Typecheck|Test)\r?\n/);
   assert.match(workflow, /npm publish --provenance/g);
   assert.match(workflow, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/);
   assert.match(workflow, /needs: release-integrity/);
@@ -50,7 +50,7 @@ test("publish uses the default-branch create event with least-privilege jobs", a
   assert.match(integrityJob, /release_sha.*TRIGGER_SHA/);
   assert.match(integrityJob, /git ls-remote --exit-code --refs origin/);
   const publishJob = workflow.slice(workflow.indexOf("    publish:"));
-  assert.match(publishJob, /permissions:\s*\n\s*contents: write\s*\n\s*id-token: write/);
+  assert.match(publishJob, /permissions:\s*\r?\n\s*contents: write\s*\r?\n\s*id-token: write/);
   assert.match(workflow, /atomic_natives\.win32-arm64-msvc\.node/);
   assert.match(workflow, /atomic-windows-arm64\.zip/);
   assert.match(workflow, /bun run check:shrinkwrap/);
@@ -62,7 +62,7 @@ test("publish uses the default-branch create event with least-privilege jobs", a
 test("release verifier accepts generated release and rejects an extra forged file", async () => {
   const tag = "0.9.7-alpha.1";
   const integrityWorktrees = async () => (await $`git worktree list --porcelain`.cwd(root).text())
-    .split("\n")
+    .split(/\r?\n/u)
     .filter((line) => line.startsWith("worktree ") && line.includes("atomic-release-integrity-")).length;
   const worktreesBefore = await integrityWorktrees();
   const valid = await $`bun run scripts/verify-release-integrity.ts --base-ref origin/main --release-commit ${tag}`.cwd(root).nothrow().quiet();
