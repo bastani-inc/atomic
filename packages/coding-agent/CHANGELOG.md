@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.9.10-alpha.1] - 2026-07-15
+
 ### Added
 
 - Added private compaction-planner diagnostic sidecars for failed persisted-session planner calls. Malformed output, unusable ranges, provider errors, and stream failures now save the full response text plus stop reason, usage, request output budget, and non-secret model metadata beside the session JSONL with `0600` permissions where supported; the compaction error reports that path. Credentials, headers, and request prompts are excluded, while in-memory sessions and sidecar write failures preserve the original `RangePlanError` unchanged.
