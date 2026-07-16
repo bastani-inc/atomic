@@ -110,7 +110,10 @@ describe("per-child terminal ordering barrier", () => {
       "failed-run-first", "failed-run-second", "subagent-notify",
     ]);
     assert.equal(queue.size, 0);
-    assert.deepEqual(harness.sentOptions, [{ triggerTurn: true }, { triggerTurn: true }]);
+    assert.deepEqual(harness.sentOptions, [
+      { triggerTurn: true, stageAdmissionKey: "subagent:run:completed-run" },
+      { triggerTurn: true, stageAdmissionKey: "subagent:run:failed-run" },
+    ]);
   });
 
   test("completion derives a target when optional result target metadata is omitted", () => {

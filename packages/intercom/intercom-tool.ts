@@ -26,14 +26,16 @@ interface IntercomToolDeps {
    * never observe a rejected promise.
    */
   beginReplyWait(from: string, replyTo: string, signal?: AbortSignal): ReplyWaitAdmission;
-  replyTracker: ReplyTracker;
+  replyTracker: ReplyTracker | (() => ReplyTracker);
   /** Advisory fast-path check; beginReplyWait is the authoritative reservation. */
   hasReplyWaiter(): boolean;
 }
 
 export function registerIntercomTool(pi: ExtensionAPI, deps: IntercomToolDeps): void {
-  const { ensureConnected, syncPresenceIdentity, beginReplyWait, replyTracker, hasReplyWaiter } = deps;
+  const { ensureConnected, syncPresenceIdentity, beginReplyWait, hasReplyWaiter } = deps;
   const resolveTarget = deps.resolveSessionTarget ?? resolveSessionTargetId;
+  const activeReplyTracker = (): ReplyTracker =>
+    typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   pi.registerTool({
     name: "intercom",
     label: "Intercom",
@@ -173,7 +175,7 @@ Usage:
               timestamp: Date.now(),
             });
             if (replyTo) {
-              replyTracker.markReplied(replyTo);
+              activeReplyTracker().markReplied(replyTo);
             }
             return {
               content: [{ type: "text", text: `Message sent to ${to}` }],
@@ -302,7 +304,7 @@ Usage:
           }
 
           try {
-            const target = replyTracker.resolveReplyTarget({ to });
+            const target = activeReplyTracker().resolveReplyTarget({ to });
             if (target.from.id === connectedClient.sessionId) {
               return {
                 content: [{ type: "text", text: "Cannot message the current session" }],
@@ -322,7 +324,7 @@ Usage:
                 details: { messageId: result.id, delivered: false, reason: result.reason },
               };
             }
-            replyTracker.markReplied(target.message.id);
+            activeReplyTracker().markReplied(target.message.id);
             pi.appendEntry("intercom_sent", {
               to: target.from.name || target.from.id,
               message: { text: message, replyTo: target.message.id },
@@ -344,7 +346,7 @@ Usage:
         }
 
         case "pending": {
-          const pendingAsks = replyTracker.listPending();
+          const pendingAsks = activeReplyTracker().listPending();
           if (pendingAsks.length === 0) {
             return {
               content: [{ type: "text", text: "No unresolved inbound asks." }],

@@ -216,6 +216,8 @@ export interface StageExecutionMeta {
   signal?: AbortSignal;
   /** Runtime execution mode for policy-aware child sessions. */
   executionMode?: WorkflowExecutionMode;
+  /** Internal stage-generation context reused across model-fallback sessions. */
+  orchestrationContext?: CreateAgentSessionOptions["orchestrationContext"];
 }
 
 export interface CompleteStageOpts extends WorkflowModelFallbackFields {

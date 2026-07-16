@@ -76,12 +76,7 @@ export interface RegisteredFlag {
   options: PiFlagNamedOpts;
 }
 
-export interface SentMessage {
-  customType?: string;
-  content?: string;
-  display?: boolean;
-  details?: unknown;
-}
+export type SentMessage = Parameters<NonNullable<ExtensionAPI["sendMessage"]>>[0];
 
 export function makeMock(): ExtensionAPI & {
   tools: RegisteredTool[];
@@ -130,7 +125,7 @@ export function makeMock(): ExtensionAPI & {
     },
     // Chat surfaces dispatch via emitChatSurface → pi.sendMessage. Mirror
     // the recipient so tests can assert against the message stream.
-    sendMessage(msg: SentMessage) {
+    sendMessage(msg) {
       sent.push(msg);
     },
   };

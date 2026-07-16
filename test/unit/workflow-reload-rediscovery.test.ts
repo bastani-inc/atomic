@@ -85,7 +85,7 @@ function createHarness(overrides: Partial<ExtensionAPI> = {}): Harness {
     registerMessageRenderer: () => undefined,
     registerFlag: () => undefined,
     registerShortcut: () => undefined,
-    sendMessage: (message) => { if (message.content !== undefined) messages.push(message.content); },
+    sendMessage: (message) => { if (typeof message.content === "string") messages.push(message.content); },
     on: () => undefined,
     ui: { setWidget: () => undefined },
     createAgentSession: async () => ({ session: fakeSession() }),

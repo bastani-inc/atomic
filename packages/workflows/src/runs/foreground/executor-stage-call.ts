@@ -179,6 +179,7 @@ export function createTrackedStageCaller(input: {
       } finally {
         runtime.signal.removeEventListener("abort", abortSession);
       }
+      await runtime.innerCtx.__closeGeneration();
       runtime.captureStageSessionMeta();
       runtime.applyModelFallbackMeta(runtime.innerCtx.__modelFallbackMeta());
       if (trackStageLifecycle && runtime.stageFailFastScope?.failed === true && runtime.stageFailFastScope.activeStages.has(runtime.stageId)) {
@@ -210,6 +211,7 @@ export function createTrackedStageCaller(input: {
       // so the concurrency semaphore is not leaked.
       // cross-ref: issue #1498 — durable finalization failures must not leak the stage limiter.
       runtime.mcpScope.clear();
+      await runtime.innerCtx.__closeGeneration();
       runtime.captureStageSessionMeta();
       let finalizationError: { readonly thrown: true; readonly error: unknown } | undefined;
       if (trackStageLifecycle) {

@@ -265,8 +265,13 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
 
     test("agentSession.create marks workflow stages with orchestration constraints and excludes workflow tool", async () => {
         const calls: Array<CreateAgentSessionOptions | undefined> = [];
+        const externallyRouted: string[] = [];
         const adapters = buildRuntimeAdapters(
-            {},
+            {
+                sendMessage: (message) => {
+                    if (typeof message.content === "string") externallyRouted.push(message.content);
+                },
+            },
             {
                 createAgentSession: async (options) => {
                     calls.push(options);
@@ -287,15 +292,86 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
             "ask_user_question",
             "workflow",
         ]);
-        assert.deepEqual(calls[0]?.orchestrationContext, {
-            kind: "workflow-stage",
-            workflowRunId: "run-1",
-            workflowStageId: "stage-1",
-            workflowStageName: "Implement",
-            constraints: { disableWorkflowTool: true, maxSubagentDepth: 5 },
-        });
+        const orchestration = calls[0]?.orchestrationContext;
+        assert.equal(orchestration?.kind, "workflow-stage");
+        assert.equal(orchestration?.workflowRunId, "run-1");
+        assert.equal(orchestration?.workflowStageId, "stage-1");
+        assert.equal(orchestration?.workflowStageName, "Implement");
+        assert.deepEqual(orchestration?.constraints, { disableWorkflowTool: true, maxSubagentDepth: 5 });
+        assert.equal(typeof orchestration?.lateMessageRouter?.routeMessage, "function");
+        await orchestration?.lateMessageRouter?.routeMessage({ customType: "async-job-result", content: "late result", display: true });
+        assert.deepEqual(externallyRouted, ["late result"]);
     });
 
+
+    test("late Intercom traffic is handed to the parent extension event before generic routing", async () => {
+        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+        const routed: string[] = [];
+        const adapters = buildRuntimeAdapters({
+            events: {
+                emit(_channel, payload) {
+                    const event = payload as { handled: boolean; messages: Array<{ content?: string }> };
+                    event.handled = true;
+                    if (typeof event.messages[0]?.content === "string") routed.push(event.messages[0].content);
+                },
+            },
+        }, {
+            createAgentSession: async (options) => {
+                orchestration = options?.orchestrationContext;
+                return { session: fakeSession() };
+            },
+        });
+        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+        await orchestration?.lateMessageRouter?.routeMessage({
+            customType: "intercom_message",
+            content: "late reviewer message",
+            display: true,
+        });
+        assert.deepEqual(routed, ["late reviewer message"]);
+    });
+
+    test("late stage routing fails when the host has no external message route", async () => {
+        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+        const adapters = buildRuntimeAdapters({}, {
+            createAgentSession: async (options) => {
+                orchestration = options?.orchestrationContext;
+                return { session: fakeSession() };
+            },
+        });
+        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+        await assert.rejects(async () => {
+            await orchestration?.lateMessageRouter?.routeMessage({ customType: "async-job-result", content: "late", display: true });
+        }, /main-chat late-message route is unavailable/);
+    });
+
+    test("late batch fallback routing awaits ordered sends and propagates failures", async () => {
+        let orchestration: CreateAgentSessionOptions["orchestrationContext"];
+        const routed: string[] = [];
+        const adapters = buildRuntimeAdapters({
+            async sendMessage(message) {
+                if (typeof message.content === "string") routed.push(message.content);
+                if (message.content === "second") throw new Error("injected route failure");
+            },
+        }, {
+            createAgentSession: async (options) => {
+                orchestration = options?.orchestrationContext;
+                return { session: fakeSession() };
+            },
+        });
+        await adapters.agentSession!.create({}, { runId: "run-1", stageId: "stage-1", stageName: "Implement" });
+
+        await assert.rejects(
+            () => orchestration!.lateMessageRouter!.routeMessages([
+                { customType: "async-job-result", content: "first", display: true },
+                { customType: "async-job-result", content: "second", display: true },
+                { customType: "async-job-result", content: "third", display: true },
+            ]),
+            /injected route failure/,
+        );
+        assert.deepEqual(routed, ["first", "second"]);
+    });
     test("interactive stage sessions exclude workflow without blocking opt-in structured_output", async () => {
         const calls: Array<CreateAgentSessionOptions | undefined> = [];
         const adapters = buildRuntimeAdapters(

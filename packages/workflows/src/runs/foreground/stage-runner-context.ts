@@ -188,6 +188,14 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       await controller.ensureSessionFromFile(sessionFile);
     },
 
+    __sealGeneration() {
+      controller.sealGeneration();
+    },
+
+    async __closeGeneration() {
+      await controller.closeGeneration();
+    },
+
     __sessionMeta() {
       return controller.sessionMeta();
     },

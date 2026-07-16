@@ -318,6 +318,16 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			});
 		});
 	}
+	pi.events.on("atomic:workflow-stage-late-message", (payload) => {
+		if (!payload || typeof payload !== "object") return;
+		const event = payload as { handled?: boolean; completion?: Promise<void> };
+		event.handled = true;
+		event.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			await dispatchEventHandlers(handle.heavy, "atomic:workflow-stage-late-message", payload);
+			handle.assertCurrent();
+		});
+	});
 	// Heavy Intercom state stays unloaded until the model or user invokes an
 	// Intercom tool, command, shortcut, or relay that needs it.
 	pi.registerTool({

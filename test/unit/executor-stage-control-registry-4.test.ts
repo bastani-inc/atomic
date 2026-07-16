@@ -144,20 +144,27 @@ describe("executor — stage-control registry integration", () => {
         let sawSlowStageResolved = false;
         const releaseFailure = deferred();
         const promptCalls: string[] = [];
+        const lifecycleEvents: string[] = [];
         const makeSession = (): StageSessionRuntime => {
             let currentResolve: (() => void) | undefined;
+            let currentPrompt = "unstarted";
+            let currentIdle = Promise.resolve();
             return {
                 ...mockSession(),
                 async prompt(text: string) {
+                    currentPrompt = text;
                     promptCalls.push(text);
                     if (text === "fail") {
                         await releaseFailure.promise;
                         throw new Error("boom");
                     }
                     if (text === RESUME_CONTINUATION_PROMPT) return;
-                    await new Promise<void>((resolve) => {
-                        currentResolve = resolve;
-                    });
+                    currentIdle = new Promise<void>((resolve) => { currentResolve = resolve; });
+                    await currentIdle;
+                },
+                async closeWorkflowStageGeneration() {
+                    lifecycleEvents.push(`close:${currentPrompt}`);
+                    await currentIdle;
                 },
                 async abort() {
                     const resolve = currentResolve;
@@ -206,6 +213,7 @@ describe("executor — stage-control registry integration", () => {
                     }
                 },
                 confirmStageReadiness: async () => true,
+                onStageEnd: (_runId, stage) => { lifecycleEvents.push(`end:${stage.name}`); },
             },
         );
 
@@ -224,6 +232,11 @@ describe("executor — stage-control registry integration", () => {
         const slow = store.runs()[0]?.stages.find((stage) => stage.name === "slow");
         assert.equal(slow?.status, "skipped");
         assert.equal(slow?.skippedReason, "fail-fast");
+        assert.equal(
+            lifecycleEvents.indexOf("close:slow") < lifecycleEvents.indexOf("end:slow"),
+            true,
+            "fail-fast must close admission before terminal stage publication",
+        );
     });
 
     test("manual handle.pause()/resume() updates run-level status (single stage), like pauseRun", async () => {

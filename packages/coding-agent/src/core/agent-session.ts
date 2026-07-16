@@ -36,6 +36,7 @@ import { agentSessionStateMethods } from "./agent-session-state.ts";
 import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
+import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
 import type {
 	AgentSessionConfig,
 	AgentSessionEventListener,
@@ -127,6 +128,7 @@ export class AgentSession {
 	protected _lastAssistantMessage: AssistantMessage | undefined = undefined;
 	protected _asyncJobManager: AsyncJobManager;
 	protected _asyncJobManagerSessionId: symbol;
+	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -144,6 +146,18 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._orchestrationContext = config.orchestrationContext;
+		const stageContext = config.orchestrationContext?.kind === "workflow-stage"
+			? config.orchestrationContext
+			: undefined;
+		this._workflowStageAdmission = stageContext?.messageAdmission?.boundary
+			?? (stageContext ? new WorkflowStageAdmissionBoundary() : undefined);
+		if (this._workflowStageAdmission && stageContext && stageContext.messageAdmission === undefined) {
+			(stageContext as { messageAdmission?: { boundary: WorkflowStageAdmissionBoundary; extensionState: Map<string, object>; isOpen(): boolean } }).messageAdmission = {
+				boundary: this._workflowStageAdmission,
+				extensionState: new Map(),
+				isOpen: () => this._workflowStageAdmission?.isOpen() === true,
+			};
+		}
 		const internals = this as unknown as AgentSessionInternalSurface;
 		const asyncJobManagerHandle = createSessionAsyncJobManager(internals);
 		this._asyncJobManager = asyncJobManagerHandle.manager;

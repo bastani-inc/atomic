@@ -119,6 +119,8 @@ export function createReplayStageContext(input: {
     getLastAssistantText: () => replayResult,
     __ensureSession: async () => {},
     __ensureSessionFromFile: async () => {},
+    __sealGeneration: () => {},
+    __closeGeneration: async () => {},
     __sessionMeta: () => ({ sessionId: replaySource.sessionId, sessionFile: replaySource.sessionFile }),
     __agentSession: () => undefined,
     __pendingMessageCount: () => 0,

@@ -1,13 +1,16 @@
-import { getModelDefaultContextWindow, getSupportedContextWindows, SessionManager, shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
+import { shouldApplyCodexFastModeForScope, type AgentSession, type CreateAgentSessionOptions, type PromptOptions, type StructuredOutputCapture } from "@bastani/atomic";
 import type { StageContext, StageExecutionMeta, StageOptions, StageSendUserMessageOptions, StageUserMessageContent, WorkflowModelAttempt, WorkflowModelCatalogPort } from "../../shared/types.js";
 import { buildModelCandidatesFromCatalog, errorMessage, isRetryableModelFailure, workflowModelId, type WorkflowResolvedModelCandidate } from "../shared/model-fallback.js";
+import { candidateLabel, effectiveCandidateReasoning, modelAttemptReasoning } from "./stage-runner-candidate.js";
 import { WorkflowPromptModelFailure, lastAssistantTextFromSession, latestTerminalAssistantFailureSince } from "./stage-runner-messages.js";
 import { missingAdapter, stripWorkflowOnlyOptions, unavailableSync } from "./stage-runner-options.js";
 import { asAgentSession, attachCreatedStageSession, disposeStageSession, normalizeSessionCreateResult } from "./stage-runner-session.js";
 import { structuredOutputToolErrorFromEvent } from "./stage-runner-structured-output.js";
+import { buildStageSessionOptions } from "./stage-runner-session-options.js";
 import { sendStageUserMessage } from "./stage-runner-send-user-message.js";
 import { nextResumedContextOverflowFallbackIndex, terminatingToolCallId, unresolvedContextOverflowFailure, unresolvedContextOverflowMessage } from "./stage-runner-unresolved-overflow.js";
 import type { AgentSessionConsumer, StageModelFallbackMeta, StageRunnerOpts, StageSessionCreateOptions, StageSessionCreateResult, StageSessionEvent, StageSessionRuntime, WorkflowFastModeSettingsManager } from "./stage-runner-types.js";
+import { StageSessionReplacement } from "./stage-runner-replacement.js";
 
 type PauseRequest = {
   deferred: PromiseWithResolvers<{ message?: string }>;
@@ -15,12 +18,14 @@ type PauseRequest = {
 
 export class StageSessionController {
   private session: StageSessionRuntime | undefined;
+  private activeCreation: Promise<StageSessionRuntime> | undefined;
   private sessionPromise: Promise<StageSessionRuntime> | undefined;
   private reattachSessionFile: string | undefined;
   private readonly terminatingToolCallIds = new Set<string>();
   private latestStructuredOutputToolErrorValue: string | undefined;
   private unsubscribeTerminateWatcher: (() => void) | undefined;
   private unresolvedContextOverflowMessage: string | undefined;
+  private generationSealed = false;
   private disposed = false;
   private pendingThinkingLevel: Parameters<StageContext["setThinkingLevel"]>[0] | undefined;
   private readonly pendingListeners = new Set<(event: StageSessionEvent) => void>();
@@ -31,12 +36,14 @@ export class StageSessionController {
   private activeCandidateIndex: number | undefined;
   private selectedModel: string | undefined;
   private sharedModelRegistry: CreateAgentSessionOptions["modelRegistry"];
+  private sharedOrchestrationContext: CreateAgentSessionOptions["orchestrationContext"];
   private resumeCurrentSession = false;
   private readonly modelAttempts: WorkflowModelAttempt[] = [];
   private readonly modelWarnings: string[] = [];
   private readonly pendingFallbackWarnings: string[] = [];
   private readonly modelCatalog: WorkflowModelCatalogPort | undefined;
   private sessionSettingsManager: WorkflowFastModeSettingsManager | undefined;
+  private readonly replacement = new StageSessionReplacement();
 
   constructor(
     private readonly opts: StageRunnerOpts,
@@ -83,9 +90,7 @@ export class StageSessionController {
     };
   }
 
-  setThinkingLevel(level: Parameters<StageContext["setThinkingLevel"]>[0]): void {
-    this.pendingThinkingLevel = level; this.session?.setThinkingLevel(level);
-  }
+  setThinkingLevel(level: Parameters<StageContext["setThinkingLevel"]>[0]): void { this.pendingThinkingLevel = level; this.session?.setThinkingLevel(level); }
 
   async ensureSession(consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
     if (this.disposed) throw new Error(`atomic-workflows: stage "${this.opts.stageName}" session has been disposed`);
@@ -95,13 +100,26 @@ export class StageSessionController {
   }
 
   async ensureSessionFromFile(sessionFile: string, consumer: AgentSessionConsumer = "prompt"): Promise<StageSessionRuntime> {
-    if (this.sessionPromise || this.session) return this.ensureSession(consumer);
-    this.reattachSessionFile = sessionFile;
-    return this.ensureSession(consumer);
+    if (!this.sessionPromise && !this.session) this.reattachSessionFile = sessionFile;
+    const session = await this.ensureSession(consumer);
+    await session.closeWorkflowStageGeneration?.();
+    return session;
   }
 
   async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void> {
     await sendStageUserMessage(await this.ensureSession("prompt"), content, options);
+  }
+
+  sealGeneration(): void {
+    this.generationSealed = true;
+    this.sharedOrchestrationContext?.messageAdmission?.boundary.seal();
+    this.session?.sealWorkflowStageGeneration?.();
+  }
+  async closeGeneration(): Promise<void> {
+    this.sealGeneration();
+    const pending = this.activeCreation ?? this.sessionPromise;
+    const session = pending ? await pending : this.session;
+    await session?.closeWorkflowStageGeneration?.();
   }
 
   async promptWithFallback(
@@ -172,6 +190,7 @@ export class StageSessionController {
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = undefined;
     this.terminatingToolCallIds.clear();
+    await this.replacement.dispose();
     await disposeStageSession(this.session);
   }
 
@@ -233,50 +252,6 @@ export class StageSessionController {
     return this.candidatesPromise;
   }
 
-  private stageOptionsForCandidate(
-    candidate: WorkflowResolvedModelCandidate | undefined,
-    resumeOptions?: { restoreSavedModel?: boolean },
-  ): StageOptions | undefined {
-    const optionsForCandidate: StageOptions = candidate === undefined
-      ? { ...(this.effectiveStageOptions ?? {}) }
-      : {
-          ...(this.effectiveStageOptions ?? {}),
-          model: candidate.value,
-          ...(candidate.reasoningLevel !== undefined ? { thinkingLevel: candidate.reasoningLevel } : {}),
-          ...(candidate.contextWindow !== undefined ? { contextWindow: candidate.contextWindow } : {}),
-          fallbackModels: undefined,
-          fallbackThinkingLevels: undefined,
-        };
-    if (resumeOptions?.restoreSavedModel) delete optionsForCandidate.model;
-    // Pin a tiered model's short default context window for fresh, non-resumed
-    // stage sessions unless the author selected a long tier via `(1m)` or
-    // contextWindow. This prevents persisted interactive long-tier preferences
-    // from leaking into workflow stages; single-window models are left alone.
-    if (
-      resumeOptions?.restoreSavedModel !== true &&
-      this.reattachSessionFile === undefined &&
-      optionsForCandidate.contextWindow === undefined &&
-      candidate !== undefined &&
-      typeof candidate.value !== "string" &&
-      getSupportedContextWindows(candidate.value).length > 1
-    ) {
-      optionsForCandidate.contextWindow = getModelDefaultContextWindow(candidate.value);
-    }
-    if (this.reattachSessionFile !== undefined && optionsForCandidate.sessionManager === undefined) {
-      const cwd = optionsForCandidate.cwd ?? process.cwd();
-      optionsForCandidate.sessionManager = SessionManager.open(
-        this.reattachSessionFile,
-        optionsForCandidate.sessionDir,
-        cwd,
-      );
-      optionsForCandidate.context = undefined;
-      optionsForCandidate.forkFromSessionFile = undefined;
-    }
-    if (this.sharedModelRegistry !== undefined && optionsForCandidate.modelRegistry === undefined) {
-      optionsForCandidate.modelRegistry = this.sharedModelRegistry;
-    }
-    return Object.keys(optionsForCandidate).length === 0 ? undefined : optionsForCandidate;
-  }
 
   private async createInitialSession(consumer: AgentSessionConsumer): Promise<StageSessionRuntime> {
     if (!this.hasExplicitModelFallbackConfig) return this.createSession(undefined, consumer);
@@ -297,17 +272,43 @@ export class StageSessionController {
     return this.createSession(first, consumer);
   }
 
-  private async createSession(
+
+  private createSession(
+    candidate: WorkflowResolvedModelCandidate | undefined,
+    consumer: AgentSessionConsumer,
+    resumeOptions?: { restoreSavedModel?: boolean },
+  ): Promise<StageSessionRuntime> {
+    const creation = this.createSessionAttempt(candidate, consumer, resumeOptions);
+    this.activeCreation = creation;
+    void creation.finally(() => {
+      if (this.activeCreation === creation) this.activeCreation = undefined;
+    }).catch(() => {});
+    return creation;
+  }
+
+  private async createSessionAttempt(
     candidate: WorkflowResolvedModelCandidate | undefined,
     consumer: AgentSessionConsumer,
     resumeOptions?: { restoreSavedModel?: boolean },
   ): Promise<StageSessionRuntime> {
     this.applyCandidateThinking(candidate);
-    const stageOptions = this.stageOptionsForCandidate(candidate, resumeOptions);
+    const stageOptions = buildStageSessionOptions({
+      effectiveStageOptions: this.effectiveStageOptions,
+      candidate,
+      restoreSavedModel: resumeOptions?.restoreSavedModel,
+      reattachSessionFile: this.reattachSessionFile,
+      sharedModelRegistry: this.sharedModelRegistry,
+    });
     const created = this.opts.adapters.agentSession
       ? await this.opts.adapters.agentSession.create(
           stripWorkflowOnlyOptions(stageOptions, this.opts.defaultSessionDir, this.meta) as StageSessionCreateOptions,
-          { ...this.meta, stageOptions },
+          {
+            ...this.meta,
+            stageOptions,
+            ...(this.sharedOrchestrationContext !== undefined
+              ? { orchestrationContext: this.sharedOrchestrationContext }
+              : {}),
+          },
         )
       : missingAdapter(consumer);
     return attachCreatedStageSession(created, this.disposed, this.opts.stageName, (result) => this.attachSession(result));
@@ -315,6 +316,12 @@ export class StageSessionController {
 
   private attachSession(created: StageSessionRuntime | StageSessionCreateResult): StageSessionRuntime {
     const result = normalizeSessionCreateResult(created);
+    const orchestrationContext = asAgentSession(result.session)?.orchestrationContext;
+    if (this.sharedOrchestrationContext === undefined && orchestrationContext !== undefined) {
+      this.sharedOrchestrationContext = orchestrationContext;
+    }
+    if (this.generationSealed) result.session.sealWorkflowStageGeneration?.();
+    this.replacement.adopt(result.session);
     this.session = result.session;
     if (this.sharedModelRegistry === undefined) {
       const withRegistry = result.session as Partial<Pick<AgentSession, "modelRegistry">>;
@@ -338,6 +345,7 @@ export class StageSessionController {
 
   private async disposeCurrentSession(): Promise<void> {
     const current = this.session;
+    this.replacement.retire(current);
     this.session = undefined;
     this.sessionPromise = undefined;
     this.sessionSettingsManager = undefined;
@@ -347,7 +355,6 @@ export class StageSessionController {
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = undefined;
     this.terminatingToolCallIds.clear();
-    await disposeStageSession(current);
   }
 
   private async promptWithPauseResume(
@@ -431,7 +438,7 @@ export class StageSessionController {
       }
       const resumedOverflowNextIndex = nextResumedContextOverflowFallbackIndex(err, this.activeCandidateIndex, candidates.length);
       if (resumedOverflowNextIndex === "terminal") { this.modelWarnings.push(...this.pendingFallbackWarnings); this.pendingFallbackWarnings.length = 0; this.notifyModelFallbackMetaChange(); throw err; }
-      this.pendingFallbackWarnings.push(resumedOverflowNextIndex === undefined ? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${this.candidateLabel(candidates[0]!)}.` : `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${this.candidateLabel(candidates[resumedOverflowNextIndex]!)}.`);
+      this.pendingFallbackWarnings.push(resumedOverflowNextIndex === undefined ? `[fallback] resume on ${resumedLabel} failed: ${message}. Restarting fallback from ${candidateLabel(candidates[0]!)}.` : `[fallback] resume on ${resumedLabel} failed: ${message}. Retrying with ${candidateLabel(candidates[resumedOverflowNextIndex]!)}.`);
       await this.disposeCurrentSession(); this.activeCandidateIndex = resumedOverflowNextIndex; return false;
     }
   }
@@ -447,7 +454,7 @@ export class StageSessionController {
       this.recordSuccessfulAttempt(candidate);
       return "handled";
     }
-    this.modelAttempts.push({ model: candidate.id, success: false, ...this.modelAttemptReasoning(candidate), error: message });
+    this.modelAttempts.push({ model: candidate.id, success: false, ...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel), error: message });
     if (this.opts.signal?.aborted || !isRetryableModelFailure(err) || index === candidates.length - 1) {
       this.modelWarnings.push(...this.pendingFallbackWarnings);
       this.pendingFallbackWarnings.length = 0;
@@ -455,7 +462,7 @@ export class StageSessionController {
       return "throw";
     }
     const nextCandidate = candidates[index + 1]!;
-    this.pendingFallbackWarnings.push(`[fallback] ${this.candidateLabel(candidate)} failed: ${message}. Retrying with ${this.candidateLabel(nextCandidate)}.`);
+    this.pendingFallbackWarnings.push(`[fallback] ${candidateLabel(candidate)} failed: ${message}. Retrying with ${candidateLabel(nextCandidate)}.`);
     await this.disposeCurrentSession();
     return "retry";
   }
@@ -465,28 +472,16 @@ export class StageSessionController {
   }
 
   private recordSuccessfulAttempt(candidate: WorkflowResolvedModelCandidate): void {
-    this.modelAttempts.push({ model: candidate.id, success: true, ...this.modelAttemptReasoning(candidate) });
+    this.modelAttempts.push({ model: candidate.id, success: true, ...modelAttemptReasoning(candidate, this.effectiveStageOptions?.thinkingLevel) });
     this.pendingFallbackWarnings.length = 0; this.resumeCurrentSession = true;
   }
 
   private notifyModelFallbackMetaChange(): void { this.opts.onModelFallbackMetaChange?.(this.currentModelFallbackMeta()); }
 
-  private effectiveCandidateReasoning(candidate: WorkflowResolvedModelCandidate): StageOptions["thinkingLevel"] | undefined {
-    return candidate.reasoningLevel ?? this.effectiveStageOptions?.thinkingLevel;
-  }
-
-  private modelAttemptReasoning(candidate: WorkflowResolvedModelCandidate): Pick<WorkflowModelAttempt, "reasoningLevel"> {
-    const reasoningLevel = this.effectiveCandidateReasoning(candidate); return reasoningLevel !== undefined ? { reasoningLevel } : {};
-  }
-
   private applyCandidateThinking(candidate: WorkflowResolvedModelCandidate | undefined): void {
     this.pendingThinkingLevel = candidate === undefined
       ? this.effectiveStageOptions?.thinkingLevel
-      : this.effectiveCandidateReasoning(candidate);
-  }
-
-  private candidateLabel(candidate: WorkflowResolvedModelCandidate): string {
-    return candidate.reasoningLevel !== undefined ? `${candidate.id}:${candidate.reasoningLevel}` : candidate.id;
+      : effectiveCandidateReasoning(candidate, this.effectiveStageOptions?.thinkingLevel);
   }
   private isWorkflowFastModeEnabled(): boolean | undefined {
     const model = this.session?.model;

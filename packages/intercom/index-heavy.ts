@@ -18,6 +18,9 @@ import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
+import { InboundMessageAdmission } from "./inbound-message-admission.js";
+import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
+import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -26,6 +29,14 @@ if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL_FILE) {
 }
 
 const INTERCOM_SESSION_ID_ENV = `${APP_NAME.toUpperCase()}_INTERCOM_SESSION_ID`;
+const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
+type LateStageMessage = Parameters<ExtensionAPI["sendMessage"]>[0];
+type LateStageMessageEvent = {
+  handled: boolean;
+  batch: boolean;
+  messages: LateStageMessage[];
+  options?: Parameters<ExtensionAPI["sendMessage"]>[1];
+};
 export default function piIntercomExtension(pi: ExtensionAPI) {
   const inheritedIntercomSessionId = process.env[INTERCOM_SESSION_ID_ENV];
   const restoreIntercomSessionIdEnv = (): void => {
@@ -48,10 +59,12 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
   let runtimeGeneration = 0;
   let agentRunning = false;
   const activeTools = new Map<string, string>();
-  const replyTracker = new ReplyTracker();
+  let replyTracker = new ReplyTracker();
   const replyWaiters = new ReplyWaiterSlot();
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
+  const inboundDeliveries = new InboundMessageAdmission();
+  const acceptInbound = (from: SessionInfo, message: Message): boolean => inboundDeliveries.accept(from, message);
   let inboundFlushTimer: NodeJS.Timeout | null = null;
   function rejectReplyWaiter(error: Error): void {
     replyWaiters.rejectCurrent(error);
@@ -150,16 +163,42 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
       details: entry,
     };
   }
-  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration): void {
+  pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
+    if (!data || typeof data !== "object") return;
+    const event = data as Partial<LateStageMessageEvent>;
+    if (!Array.isArray(event.messages) || typeof event.batch !== "boolean") return;
+    const accepted: LateStageMessage[] = [];
+    let queuedTurnContext = false;
+    for (const message of event.messages) {
+      if (message.customType !== "intercom_message") { accepted.push(message); continue; }
+      const entry = message.details as InboundMessageEntry | undefined;
+      if (!entry?.from || !entry.message || !acceptInbound(entry.from, entry.message)) continue;
+      replyTracker.recordIncomingMessage(entry.from, entry.message);
+      if (!queuedTurnContext && event.options?.triggerTurn === true) {
+        replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
+        queuedTurnContext = true;
+      }
+      accepted.push(message);
+    }
+    event.handled = true;
+    if (accepted.length === 0) return;
+    if (event.batch && typeof pi.sendMessages === "function") {
+      pi.sendMessages(accepted, event.options as Parameters<ExtensionAPI["sendMessages"]>[1]);
+    } else {
+      accepted.forEach((message, index) => pi.sendMessage(message, index === 0 ? event.options : { deliverAs: "followUp" }));
+    }
+  });
+  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true): void {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return;
     }
-    if (delivery === "trigger") {
+    if (delivery === "trigger" && trackReplyContext) {
       replyTracker.queueTurnContext({ from: entry.from, message: entry.message, receivedAt: Date.now() });
     }
+    const baseOptions = { stageAdmissionKey: `intercom:${entry.message.id}` } as const;
     const options = delivery === "trigger"
-      ? { triggerTurn: true } as const
-      : delivery === "followUp" ? { deliverAs: "followUp" } as const : undefined;
+      ? { ...baseOptions, triggerTurn: true } as const
+      : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
     pi.sendMessage(buildIncomingCustomMessage(entry), options);
   }
   registerTerminalOrderingBarrier(pi, {
@@ -217,6 +256,8 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     if (!liveContext) {
       return;
     }
+    replyTracker = bindWorkflowReplyTracker(liveContext, replyTracker);
+    if (!acceptInbound(from, message)) return;
     if (routeIncomingReply(replyWaiters.current(), from, message)) return;
     const attachmentText = message.content.attachments?.length
       ? formatAttachments(message.content.attachments)
@@ -225,8 +266,15 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    replyTracker.recordIncomingMessage(from, message);
     const entry = { from, message, replyCommand, bodyText };
+    const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
+      && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
+    if (stageClosed) {
+      sendIncomingMessage(entry, "trigger", messageGeneration, false);
+      return;
+    }
+    replyTracker.recordIncomingMessage(from, message);
+    if (admitWorkflowStageInbound(liveContext, () => sendIncomingMessage(entry, "trigger", messageGeneration))) return;
     void (async () => {
       const activeContext = getLiveContext(liveContext, messageGeneration);
       if (!activeContext) {
@@ -398,7 +446,9 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     activeTools,
     getLiveContext,
     rejectReplyWaiter,
-    replyTracker,
+    replyTracker: () => replyTracker,
+    bindReplyTracker: (ctx) => { replyTracker = bindWorkflowReplyTracker(ctx, replyTracker); },
+    preserveReplyTrackerOnCleanup: () => preserveWorkflowReplyTracker(runtimeContext),
     pendingIdleMessages,
     clearInboundFlushTimer,
     scheduleInboundFlush,
@@ -428,7 +478,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
     syncPresenceIdentity,
     beginReplyWait: (from, replyTo, signal) => replyWaiters.begin(from, replyTo, signal),
     confirmSend: config.confirmSend,
-    replyTracker,
+    replyTracker: () => replyTracker,
     hasReplyWaiter: () => replyWaiters.has(),
   });
   registerIntercomOverlay(pi, {

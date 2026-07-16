@@ -23,7 +23,9 @@ interface LifecycleDeps {
   activeTools: Map<string, string>;
   getLiveContext(ctx?: ExtensionContext | null, generation?: number): ExtensionContext | null;
   rejectReplyWaiter(error: Error): void;
-  replyTracker: ReplyTracker;
+  replyTracker: ReplyTracker | (() => ReplyTracker);
+  bindReplyTracker?(ctx: ExtensionContext): void;
+  preserveReplyTrackerOnCleanup?(): boolean;
   pendingIdleMessages: InboundIdleQueue;
   clearInboundFlushTimer(): void;
   scheduleInboundFlush(delayMs?: number): void;
@@ -34,6 +36,8 @@ interface LifecycleDeps {
 }
 
 export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps): void {
+  const activeReplyTracker = (): ReplyTracker =>
+    typeof deps.replyTracker === "function" ? deps.replyTracker() : deps.replyTracker;
   let hasActiveSession = false;
 
   async function cleanupRuntime(reason: string): Promise<void> {
@@ -43,7 +47,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.incrementRuntimeGeneration();
     deps.clearReconnectTimer();
     deps.rejectReplyWaiter(new Error(reason));
-    deps.replyTracker.reset();
+    if (deps.preserveReplyTrackerOnCleanup?.() !== true) activeReplyTracker().reset();
     deps.pendingIdleMessages.clear();
     deps.clearInboundFlushTimer();
     deps.setAgentRunning(false);
@@ -74,6 +78,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
     deps.resetReconnectAttempt();
     deps.clearReconnectTimer();
     deps.setRuntimeContext(ctx);
+    deps.bindReplyTracker?.(ctx);
     deps.setCurrentSessionId(ctx.sessionManager.getSessionId());
     deps.setCurrentModel(ctx.model?.id ?? "unknown");
     deps.setSessionStartedAt(Date.now());
@@ -89,7 +94,7 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
 
   pi.on("turn_end", () => {
     if (!deps.getLiveContext()) return;
-    deps.replyTracker.endTurn();
+    activeReplyTracker().endTurn();
     // Preserve the normal grace period so a same-tick terminal barrier can
     // claim accepted child messages before idle delivery releases ownership.
     deps.scheduleInboundFlush();
@@ -119,9 +124,10 @@ export function registerIntercomLifecycle(pi: ExtensionAPI, deps: LifecycleDeps)
   });
   pi.on("turn_start", (_event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;
+    deps.bindReplyTracker?.(ctx);
     deps.setCurrentSessionId(ctx.sessionManager.getSessionId());
     deps.syncPresenceIdentity(ctx.sessionManager.getSessionId());
-    deps.replyTracker.beginTurn();
+    activeReplyTracker().beginTurn();
   });
   pi.on("model_select", (event, ctx) => {
     if (!deps.getLiveContext(ctx)) return;

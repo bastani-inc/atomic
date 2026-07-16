@@ -245,6 +245,9 @@ export interface AgentSessionMethodSurface {
 	exportToJsonl(outputPath?: string): string;
 	getLastAssistantText(): string | undefined;
 	createReplacedSessionContext(): ReplacedSessionContext;
+	sealWorkflowStageGeneration(): void;
+	closeWorkflowStageGeneration(): Promise<void>;
+	transferWorkflowStageDeliveriesTo(target: object): void;
 	hasExtensionHandlers(eventType: string): boolean;
 }
 
@@ -388,5 +391,6 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lastAssistantMessage: AssistantMessage | undefined;
 	_asyncJobManager: AsyncJobManager;
 	_asyncJobManagerSessionId: symbol;
+	_workflowStageAdmission: import("./workflow-stage-admission.ts").WorkflowStageAdmissionBoundary | undefined;
 }
 

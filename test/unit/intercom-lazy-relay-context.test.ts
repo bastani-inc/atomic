@@ -15,6 +15,7 @@ afterAll(() => {
 });
 
 import intercom from "../../packages/intercom/index.js";
+import { InboundMessageAdmission } from "../../packages/intercom/inbound-message-admission.js";
 
 type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) => void | Promise<void>;
 
@@ -27,6 +28,7 @@ function fixture() {
 	const entries: Array<{ type: string; data: { error?: string } }> = [];
 	const inboundMessages: Array<{ customType?: string }> = [];
 	const deliveryAcks: Array<{ requestId?: string; delivered?: boolean; error?: string }> = [];
+	const sourceAdmission = new InboundMessageAdmission();
 	const ctx = {
 		hasUI: false,
 		cwd: process.cwd(),
@@ -75,6 +77,27 @@ function fixture() {
 		emitResult(requestId: string) {
 			pi.events.emit("subagent:result-intercom", { to: SELF_ALIAS, message: "grouped results", requestId });
 		},
+		emitLateStageMessage() {
+			const details = {
+				from: { id: "sender", name: "reviewer", cwd: "/repo", model: "test", pid: 1, startedAt: 1, lastActivity: 1 },
+				message: { id: "late-message", timestamp: 1, content: { text: "late reviewer message" } },
+				bodyText: "late reviewer message",
+			};
+			assert.equal(sourceAdmission.accept(details.from, details.message), true);
+			const payload: { handled: boolean; completion?: Promise<void>; batch: boolean; messages: object[]; options: object } = {
+				handled: false,
+				batch: false,
+				messages: [{
+					customType: "intercom_message",
+					content: "late reviewer message",
+					display: true,
+					details,
+				}],
+				options: { triggerTurn: true, stageAdmissionKey: "intercom:late-message" },
+			};
+			pi.events.emit("atomic:workflow-stage-late-message", payload);
+			return payload;
+		},
 	};
 }
 
@@ -102,6 +125,17 @@ describe("lazy relay lifecycle-context fallback", () => {
 		assert.deepEqual(current.entries, [], "no delivery-error entries are recorded");
 	});
 
+
+	test("lazy-loads parent Intercom before accepting a late stage route", async () => {
+		const current = fixture();
+		await current.fire("turn_start", { type: "turn_start" });
+		const payload = current.emitLateStageMessage();
+
+		assert.equal(payload.handled, true);
+		assert.ok(payload.completion);
+		await payload.completion;
+		assert.equal(current.inboundMessages.filter((message) => message.customType === "intercom_message").length, 1);
+	});
 	test("still delivers locally on the normal session_start path", async () => {
 		const current = fixture();
 		await current.fire("session_start", { type: "session_start", reason: "startup" });

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed async subagent completion notices racing workflow-stage finalization. Completion notifications now carry stable admission identities, join already-claimed terminal preludes as one stage batch when received before close, and route externally without terminal transcript mutation when close wins. Successful-notification deduplication, retry acknowledgement, terminal ordering, and detached non-blocking execution remain intact.
+
 ## [0.9.9] - 2026-07-15
 
 ### Changed

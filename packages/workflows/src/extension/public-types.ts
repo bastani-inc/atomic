@@ -148,6 +148,10 @@ export interface WorkflowResourceInfo {
   };
 }
 
+type StageLateMessageRouter = NonNullable<
+  NonNullable<CreateAgentSessionOptions["orchestrationContext"]>["lateMessageRouter"]
+>;
+
 export interface ExtensionAPI {
   registerTool?: <TArgs, TResult>(opts: PiToolOpts<TArgs, TResult>) => void;
   registerCommand?: (name: string, options: PiCommandOptions) => void;
@@ -155,20 +159,8 @@ export interface ExtensionAPI {
     event: string,
     renderer: PiMessageRenderer,
   ) => void;
-  sendMessage?: <T = unknown>(
-    message: {
-      customType: string;
-      content?: string;
-      display?: boolean;
-      details?: T;
-    },
-    options?: {
-      triggerTurn?: boolean;
-      deliverAs?: "steer" | "followUp" | "nextTurn" | "interrupt";
-      excludeFromContext?: boolean;
-      interruptAbortMessage?: string;
-    },
-  ) => void | Promise<void>;
+  sendMessage?: StageLateMessageRouter["routeMessage"];
+  sendMessages?: StageLateMessageRouter["routeMessages"];
   registerFlag?: (name: string, opts: PiFlagNamedOpts) => void;
   getWorkflowResources?: () => readonly WorkflowResourceInfo[];
   refreshWorkflowResources?: () => Promise<readonly WorkflowResourceInfo[]>;

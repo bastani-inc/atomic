@@ -9,6 +9,8 @@ export interface SendMessageOptions {
 	deliverAs?: CustomMessageDelivery;
 	/** Render/persist the custom message without including it in LLM context. */
 	excludeFromContext?: boolean;
+	/** Stable producer identity used for exactly-once workflow-stage admission. */
+	stageAdmissionKey?: string;
 
 	/**
 	 * Optional replacement text for generic abort tool/assistant results when

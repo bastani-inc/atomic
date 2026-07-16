@@ -171,18 +171,19 @@ export default function registerSubagentNotify(pi: ExtensionAPI): () => void {
 			content,
 			display: true,
 		};
+		const deliveryOptions = { triggerTurn: true, stageAdmissionKey: `subagent:${key}` } as const;
 		try {
 			let dispatched = false;
 			emitTerminalOrderingBarrier(result, (prefix) => {
 				if (typeof pi.sendMessages === "function") {
-					pi.sendMessages([...prefix, terminalMessage], { triggerTurn: true });
+					pi.sendMessages([...prefix, terminalMessage], deliveryOptions);
 				} else {
 					for (const message of prefix) pi.sendMessage(message, { deliverAs: "steer" });
-					pi.sendMessage(terminalMessage, { triggerTurn: true });
+					pi.sendMessage(terminalMessage, deliveryOptions);
 				}
 				dispatched = true;
 			});
-			if (!dispatched) pi.sendMessage(terminalMessage, { triggerTurn: true });
+			if (!dispatched) pi.sendMessage(terminalMessage, deliveryOptions);
 			recordSeen(seen, key, Date.now());
 			result.acknowledge?.(true);
 		} catch (error) {

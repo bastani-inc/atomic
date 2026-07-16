@@ -330,20 +330,24 @@ export function createWorkflowStageFactory(input: {
     const skipForParallelFailFast = async (): Promise<void> => {
       if (isTerminalStage(stageSnapshot)) return;
       markSkippedForParallelFailFast();
-      await finalizeStageSnapshot();
+      innerCtx.__sealGeneration();
       await innerCtx.abort().catch(() => {});
+      await innerCtx.__closeGeneration();
+      await finalizeStageSnapshot();
       await dropStageControlForCompletion().catch(() => {});
     };
     stageFailFastScope?.activeStages.set(stageId, { skip: skipForParallelFailFast });
     runtime.unregisterWorkflowExitCleanup = input.exit.registerWorkflowExitCleanup(stageId, {
       async skipForWorkflowExit(reason?: string): Promise<void> {
         state.stageClosedByWorkflowExit = true;
+        innerCtx.__sealGeneration();
+        await innerCtx.abort().catch(() => {});
+        await innerCtx.__closeGeneration();
         if (!isTerminalStage(stageSnapshot)) {
           stageSnapshot.status = "skipped";
           stageSnapshot.skippedReason = input.exit.workflowExitSkippedReason(reason);
           await finalizeStageSnapshot();
         }
-        await innerCtx.abort().catch(() => {});
         await releaseLiveHandle().catch(() => {});
       },
     });
