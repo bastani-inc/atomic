@@ -10,6 +10,7 @@
 ### Changed
 
 - Documented and enforced `/resume`-equivalent workflow-history retention: eligible runs are not filtered or garbage-collected by age/count, and the selector viewport does not limit search/navigation.
+- Kept the interactive-engine watchdog's early 250 ms blocking signal internal instead of rendering repetitive "has not yielded" warnings during ordinary slow extension/tool loading. Atomic still surfaces the actionable one-second unresponsive diagnostic with Escape/Ctrl+C recovery guidance.
 
 ### Fixed
 

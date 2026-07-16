@@ -456,8 +456,9 @@ export class InteractiveModeBase {
 				this.ui.setFocus(this.editor);
 				this.ui.requestRender();
 			}
+			// Sub-second heartbeat gaps are useful internally for attribution, but
+			// surfacing them as chat warnings is noisy during ordinary cold loads.
 			if (diagnostic.level === "unresponsive") this.showError(diagnostic.message);
-			else this.showWarning(diagnostic.message);
 		},
       (handler) => { this.defaultEditor.onExtensionShortcut = handler; },
     );
