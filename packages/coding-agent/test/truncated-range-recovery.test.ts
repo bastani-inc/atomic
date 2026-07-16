@@ -13,7 +13,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import { parseRangeRecords, recoverTruncatedRecords } from "../src/core/compaction/truncated-range-recovery.ts";
-import { buildRangePlannerPrompt, extractDeletedRanges, planDeletedLineRanges, RangePlanError } from "../src/core/compaction/range-planner.ts";
+import { buildRangePlannerPrompt, planDeletedLineRanges, RangePlanError } from "../src/core/compaction/range-planner.ts";
 import type { RecoveryDiagnostic } from "../src/core/compaction/range-planner-diagnostics.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
 
