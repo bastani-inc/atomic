@@ -8,9 +8,10 @@ import type { PromptOptions } from "../../core/agent-session-types.ts";
 import { SessionManager } from "../../core/session-manager.ts";
 import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../rpc/rpc-types.ts";
-import type { RpcEvent } from "../rpc/rpc-types.ts";
+import type { RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
+import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
@@ -31,6 +32,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private remoteSessionName: string | undefined;
 	private remoteSessionFile: string | undefined;
 	private restartPromise: Promise<void> | undefined;
+	private readonly remoteCommands: RemoteCommandCatalog;
 
 	constructor(
 		localRuntime: AgentSessionRuntime,
@@ -45,6 +47,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 			localRuntime.modelFallbackMessage,
 		);
 		this.client = client;
+		this.remoteCommands = new RemoteCommandCatalog(client);
 		this.client.onEvent((event) => this.observeEvent(event));
 	}
 
@@ -75,6 +78,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 		if (state.sessionFile && session.sessionFile !== state.sessionFile) await super.switchSession(state.sessionFile);
 		this.refreshSessionView();
 		this.engineCallbackActive = false;
+		// Non-blocking refresh so isolated autocomplete lists engine-only extension
+		// commands after bind/restart/reload/new/resume/fork. See RemoteCommandCatalog.
+		this.remoteCommands.refresh();
 	}
 
 	onDiagnostic(listener: (diagnostic: ActivityWatchdogDiagnostic) => void): () => void {
@@ -90,6 +96,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	sendEngineCommand(command: InteractiveEngineCommand): void {
 		this.client.sendInteractiveEngineCommand(command);
 	}
+
+	getRemoteCommands(): readonly RpcSlashCommand[] { return this.remoteCommands.getCommands(); }
+	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void { return this.remoteCommands.onChange(listener); }
 
 	getRemoteShortcuts(): Promise<{ shortcuts: Array<{ key: string; description?: string }> }> {
 		return this.client.requestInternal({ type: "get_shortcuts" });

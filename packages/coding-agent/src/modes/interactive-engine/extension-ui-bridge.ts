@@ -4,7 +4,7 @@ import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import { RemoteComponentController } from "./remote-component.ts";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../rpc/rpc-types.ts";
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
 
 async function handleRequest(
 	ui: ExtensionUIContext,
@@ -82,4 +82,20 @@ export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime
 
 export function interruptBlockedInteractiveEngine(runtime: AgentSessionRuntime): boolean {
 	return runtime instanceof IsolatedInteractiveRuntime && runtime.interruptBlockedCallback();
+}
+
+/**
+ * Command catalog the engine child exposes to the isolated host. Returns an
+ * empty list for non-isolated runtimes so callers can merge unconditionally.
+ */
+export function getInteractiveEngineRemoteCommands(runtime: AgentSessionRuntime): readonly RpcSlashCommand[] {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.getRemoteCommands() : [];
+}
+
+/** Subscribe to engine-child command catalog changes. No-op when not isolated. */
+export function onInteractiveEngineRemoteCommandsChanged(
+	runtime: AgentSessionRuntime,
+	listener: (commands: readonly RpcSlashCommand[]) => void,
+): () => void {
+	return runtime instanceof IsolatedInteractiveRuntime ? runtime.onRemoteCommandsChanged(listener) : () => {};
 }

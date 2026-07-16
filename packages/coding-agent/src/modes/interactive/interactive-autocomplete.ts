@@ -1,6 +1,7 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Api, type Model, type AutocompleteItem, type AutocompleteProvider, type AutocompleteSuggestions, type SlashCommand, type ExtensionRunner, type ResourceDiagnostic, type SourceInfo, CombinedAutocompleteProvider, fuzzyFilter, hasSupportedCodexFastModeModel, BUILTIN_SLASH_COMMANDS, BUNDLED_EXTENSION_SLASH_COMMANDS, parseGitUrl, getModelSearchText } from "./interactive-mode-deps.ts";
 import { BUILTIN_SLASH_COMMAND_NAMES } from "./interactive-mode-helpers.ts";
+import { getInteractiveEngineRemoteCommands } from "../interactive-engine/extension-ui-bridge.ts";
 
 const AT_MENTION_PATH_DELIMITERS = new Set([" ", "\t", '"', "'", "="]);
 
@@ -174,6 +175,39 @@ InteractiveModeBase.prototype.hasCodexFastModeSupportedModels = function(this: I
     );
   };
 
+InteractiveModeBase.prototype.buildRemoteSlashCommands = function(this: InteractiveModeBase, localCommands: SlashCommand[]): SlashCommand[] {
+    const remote = getInteractiveEngineRemoteCommands(this.runtimeHost);
+    if (remote.length === 0) return [];
+
+    // Names already present locally (built-ins, prompt templates, skills) win, so
+    // the child catalog only contributes commands the host is genuinely missing.
+    const takenNames = new Set<string>(localCommands.map((command) => command.name));
+    const skillCommandsEnabled = this.settingsManager.getEnableSkillCommands();
+    // Reuse bundled argument-completion providers (e.g. /workflow subcommands and
+    // input schemas) for their matching child commands; RPC cannot serialize the
+    // completion callbacks themselves.
+    const bundledArgumentCompletions = new Map(
+      BUNDLED_EXTENSION_SLASH_COMMANDS.map((command) => [command.name, command.getArgumentCompletions] as const),
+    );
+
+    const remoteCommands: SlashCommand[] = [];
+    for (const command of remote) {
+      // Built-in interactive command names stay reserved regardless of source.
+      if (BUILTIN_SLASH_COMMAND_NAMES.has(command.name)) continue;
+      // Honor the skill-commands setting for child-provided skills too.
+      if (command.source === "skill" && !skillCommandsEnabled) continue;
+      if (takenNames.has(command.name)) continue;
+      takenNames.add(command.name);
+      const getArgumentCompletions = bundledArgumentCompletions.get(command.name);
+      remoteCommands.push({
+        name: command.name,
+        description: this.prefixAutocompleteDescription(command.description, command.sourceInfo),
+        ...(getArgumentCompletions ? { getArgumentCompletions } : {}),
+      });
+    }
+    return remoteCommands;
+  };
+
 InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: InteractiveModeBase): AutocompleteProvider {
     // Define commands for autocomplete
     const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
@@ -279,11 +313,28 @@ InteractiveModeBase.prototype.createBaseAutocompleteProvider = function(this: In
       }
     }
 
+    // In the isolated interactive host (isolateInteractiveHost) the host session
+    // loads no extensions, so extension slash commands (/workflow, /workflows,
+    // /run, /mcp, …) exist only in the engine child. Merge the child's command
+    // catalog — fetched asynchronously after engine bind — so autocomplete lists
+    // them. Built-in names stay reserved and anything already present locally
+    // (built-ins, prompt templates, skills the host also loaded) is deduped, so
+    // only genuinely engine-only commands are added. Execution keeps routing
+    // through the child via the patched session.prompt(); nothing is handled
+    // twice on the host.
+    const remoteCommandList = this.buildRemoteSlashCommands([
+      ...slashCommands,
+      ...templateCommands,
+      ...extensionCommands,
+      ...skillCommandList,
+    ]);
+
     const commands = [
       ...slashCommands,
       ...templateCommands,
       ...extensionCommands,
       ...skillCommandList,
+      ...remoteCommandList,
     ];
     const cwd = this.sessionManager.getCwd();
     return new AtMentionFallbackAutocompleteProvider(

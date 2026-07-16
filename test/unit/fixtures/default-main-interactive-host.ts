@@ -54,6 +54,21 @@ class RecordingTerminal implements Terminal {
 	}
 }
 
+async function reportAutocomplete(mode: InteractiveMode | undefined, prefix: string): Promise<void> {
+	const provider = mode?.autocompleteProvider;
+	if (!provider) {
+		report({ type: "autocomplete", prefix, items: null });
+		return;
+	}
+	const controller = new AbortController();
+	const suggestions = await provider.getSuggestions([prefix], 0, prefix.length, { signal: controller.signal });
+	report({
+		type: "autocomplete",
+		prefix,
+		items: (suggestions?.items ?? []).map((item) => ({ value: item.value, label: item.label })),
+	});
+}
+
 async function runHost(): Promise<void> {
 	const terminal = new RecordingTerminal();
 	let mode: InteractiveMode | undefined;
@@ -79,6 +94,7 @@ async function runHost(): Promise<void> {
 				if (command.type === "input" && typeof command.data === "string") terminal.inject(command.data);
 				else if (command.type === "state") terminal.snapshot(mode);
 				else if (command.type === "mutate") void mutateSession();
+				else if (command.type === "autocomplete" && typeof command.data === "string") void reportAutocomplete(mode, command.data);
 			} catch {}
 		}
 	});

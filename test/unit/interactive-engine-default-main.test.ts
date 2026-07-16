@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,8 @@ interface HarnessReport {
 	eventType?: string;
 	message?: string;
 	renders?: number;
+	prefix?: string;
+	items?: Array<{ value?: string; label?: string }> | null;
 }
 
 const PREFIX = "@@ATOMIC_TEST@@";
@@ -44,7 +46,7 @@ class DefaultMainDriver {
 		void this.readStderr();
 	}
 
-	send(command: { type: "input" | "mutate" | "state"; data?: string }): void {
+	send(command: { type: "input" | "mutate" | "state" | "autocomplete"; data?: string }): void {
 		const stdin = this.process.stdin;
 		if (!stdin || typeof stdin === "number") throw new Error("fixture stdin is unavailable");
 		stdin.write(`${JSON.stringify(command)}\n`);
@@ -69,6 +71,32 @@ class DefaultMainDriver {
 			this.waiters.add(inspect);
 		});
 	}
+	async waitForNext(fromIndex: number, predicate: (report: HarnessReport) => boolean, timeoutMs = 8_000): Promise<HarnessReport> {
+		const scan = (): HarnessReport | undefined => {
+			for (let index = fromIndex; index < this.reports.length; index += 1) {
+				const report = this.reports[index]!;
+				if (predicate(report)) return report;
+			}
+			return undefined;
+		};
+		const existing = scan();
+		if (existing) return existing;
+		return new Promise<HarnessReport>((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				this.waiters.delete(inspect);
+				reject(new Error(`Timed out waiting for fixture report. last=${JSON.stringify(this.reports.slice(-5))} stderr=${this.stderr.slice(-4000)}`));
+			}, timeoutMs);
+			const inspect = (): void => {
+				const found = scan();
+				if (!found) return;
+				clearTimeout(timeout);
+				this.waiters.delete(inspect);
+				resolve(found);
+			};
+			this.waiters.add(inspect);
+		});
+	}
+
 
 	async stop(): Promise<void> {
 		if (this.process.exitCode === null) this.process.kill("SIGKILL");
@@ -288,3 +316,109 @@ test.serial("default InteractiveMode preserves child-owned custom renderers and 
 		rmSync(temp, { recursive: true, force: true });
 	}
 }, 20_000);
+
+function commandNames(items: HarnessReport["items"]): Set<string> {
+	const names = new Set<string>();
+	for (const item of items ?? []) {
+		const raw = item.label ?? item.value ?? "";
+		names.add(raw.replace(/^\//, "").trim());
+	}
+	return names;
+}
+
+async function listSlashCommands(driver: DefaultMainDriver, prefix: string, timeoutMs = 8_000): Promise<Set<string>> {
+	const from = driver.reports.length;
+	driver.send({ type: "autocomplete", data: prefix });
+	const report = await driver.waitForNext(from, (r) => r.type === "autocomplete" && r.prefix === prefix, timeoutMs);
+	return commandNames(report.items);
+}
+
+async function waitForSlashCommands(driver: DefaultMainDriver, prefix: string, required: string[], timeoutMs = 10_000): Promise<Set<string>> {
+	const deadline = performance.now() + timeoutMs;
+	let names = new Set<string>();
+	while (performance.now() < deadline) {
+		names = await listSlashCommands(driver, prefix);
+		if (required.every((name) => names.has(name))) return names;
+		await Bun.sleep(50);
+	}
+	throw new Error(`Autocomplete for '${prefix}' never listed ${required.join(", ")}. Saw: ${[...names].join(", ")}`);
+}
+
+function invocationPids(logPath: string, name: string): number[] {
+	if (!existsSync(logPath)) return [];
+	const pids: number[] = [];
+	for (const line of readFileSync(logPath, "utf8").split("\n")) {
+		if (!line) continue;
+		const entry = JSON.parse(line) as { name?: string; pid?: number };
+		if (entry.name === name && typeof entry.pid === "number") pids.push(entry.pid);
+	}
+	return pids;
+}
+
+async function waitForInvocation(logPath: string, name: string, timeoutMs = 8_000): Promise<number> {
+	const deadline = performance.now() + timeoutMs;
+	while (performance.now() < deadline) {
+		const pids = invocationPids(logPath, name);
+		if (pids.length > 0) return pids[pids.length - 1]!;
+		await Bun.sleep(20);
+	}
+	throw new Error(`Command '${name}' was never invoked (log: ${logPath})`);
+}
+
+test.serial("isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions", async () => {
+	const temp = mkdtempSync(join(tmpdir(), "atomic-remote-commands-"));
+	const extension = join(import.meta.dir, "fixtures", "workflow-command-extension.ts");
+	// Reproduction parity with `bun packages/coding-agent/src/cli.ts` from the
+	// worktree: interactive host isolates extensions, engine child owns them.
+	const args = fixtureArgs(extension).filter((value) => value !== "--no-session");
+	args.push("--session-dir", join(temp, "sessions"));
+	const logFile = join(temp, "commands.log");
+	const toolPidFile = join(temp, "tool.pid");
+	const driver = new DefaultMainDriver(args, {
+		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_WORKFLOW_COMMAND_LOG: logFile,
+		ATOMIC_WORKFLOW_TOOL_PID_FILE: toolPidFile,
+	});
+	try {
+		await driver.waitFor((report) => report.type === "terminal_ready");
+		const initial = await driver.waitFor((report) => report.type === "heartbeat" && typeof report.enginePid === "number");
+		const enginePid = initial.enginePid!;
+
+		// The engine-only extension commands must surface in host autocomplete even
+		// though the host session itself loaded zero extensions.
+		const names = await waitForSlashCommands(driver, "/workflow", ["workflow", "workflows"]);
+		assert.ok(names.has("workflow"), "autocomplete missing /workflow");
+		assert.ok(names.has("workflows"), "autocomplete missing /workflows alias");
+
+		// Executing them routes through the engine child (handler pid === engine pid).
+		driver.send({ type: "input", data: "/workflow list" });
+		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/workflow list");
+		driver.send({ type: "input", data: "\r" });
+		assert.equal(await waitForInvocation(logFile, "workflow"), enginePid);
+
+		driver.send({ type: "input", data: "/workflows" });
+		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/workflows");
+		driver.send({ type: "input", data: "\r" });
+		assert.equal(await waitForInvocation(logFile, "workflows"), enginePid);
+
+		// Force an engine restart and confirm the catalog is re-fetched: the child
+		// commands remain listed under the new engine generation.
+		driver.send({ type: "input", data: "restart the engine" });
+		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "restart the engine");
+		driver.send({ type: "input", data: "\r" });
+		await waitForFile(toolPidFile);
+		driver.send({ type: "input", data: "\u001b" });
+		const restarted = await driver.waitFor((report) =>
+			report.type === "heartbeat" && typeof report.enginePid === "number" && report.enginePid !== enginePid && report.recovering === false,
+			12_000,
+		);
+		assert.notEqual(restarted.enginePid, enginePid);
+
+		const afterRestart = await waitForSlashCommands(driver, "/workflow", ["workflow", "workflows"]);
+		assert.ok(afterRestart.has("workflow"), "/workflow missing after engine restart");
+		assert.ok(afterRestart.has("workflows"), "/workflows missing after engine restart");
+	} finally {
+		await driver.stop();
+		rmSync(temp, { recursive: true, force: true });
+	}
+}, 30_000);

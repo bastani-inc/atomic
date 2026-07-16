@@ -1,5 +1,5 @@
 /** Method surface installed onto InteractiveModeBase by sibling modules. */
-import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, VerbatimCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
+import type { AgentMessage, Api, Message, Model, OAuthSelectPrompt, AutocompleteProvider, SlashCommand, Keybinding, MarkdownTheme, OverlayHandle, OverlayOptions, Component, LoaderIndicatorOptions, AgentSession, AgentSessionEvent, EditorFactory, ExtensionCommandContext, ExtensionRunner, ExtensionUIContext, ExtensionUIDialogOptions, HostCustomUiState, HostCustomUiStateListener, ProjectTrustContext, ExtensionWidgetOptions, ReadonlyFooterDataProvider, AppKeybinding, VerbatimCompactionResult, ResourceDiagnostic, SessionContext, SourceInfo, ChatMessageEntry, ChatMessageRenderOptions, AuthSelectorProvider, Container, TUI, Theme, Loader, MissingSessionCwdError, KeybindingsManager, LoginDialogComponent } from "./interactive-mode-deps.ts";
 
 declare module "./interactive-mode-base.ts" {
   interface InteractiveModeBase {
@@ -9,6 +9,7 @@ declare module "./interactive-mode-base.ts" {
   getCodexFastModeCandidateModels(): Model<Api>[];
   hasCodexFastModeSupportedModels(): boolean;
   createBaseAutocompleteProvider(): AutocompleteProvider;
+  buildRemoteSlashCommands(localCommands: SlashCommand[]): SlashCommand[];
   setupAutocompleteProvider(): void;
   showStartupNoticesIfNeeded(targetContainer?: Container): void;
   hadLastChangelogVersionAtStartup: boolean;

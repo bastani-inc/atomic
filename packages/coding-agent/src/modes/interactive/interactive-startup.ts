@@ -2,7 +2,7 @@ import { InteractiveModeBase, seedStartupInput } from "./interactive-mode-base.t
 import { type Container, type MarkdownTheme, os, path, Markdown, Spacer, Text, spawn, APP_NAME, APP_TITLE, ENV_OFFLINE, getEnvValue, getAgentDir, VERSION, formatCodexFastModeModelLabel, shouldApplyCodexFastMode, DefaultPackageManager, isInstallTelemetryEnabled, getChangelogPath, getEntriesForVersion, getNewEntries, normalizeChangelogLinks, parseChangelog, getCwdRelativePath, getPiUserAgent, recordTimeSinceReset, ensureTool, checkForNewPiVersion, renderAtomicAnsiBanner, DynamicBorder, getMarkdownTheme, onThemeChange, theme } from "./interactive-mode-deps.ts";
 import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
-import { waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
+import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 
 function prepareStartupNotices(mode: InteractiveModeBase): void {
     if (mode.startupNoticesPrepared) return;
@@ -112,6 +112,13 @@ InteractiveModeBase.prototype.init = async function(this: InteractiveModeBase): 
 
     this.setupKeyHandlers();
     this.setupEditorSubmitHandler();
+    // Rebuild autocomplete whenever the engine child's command catalog arrives or
+    // changes (initial bind, engine restart, reload, new/resume/fork). Subscribed
+    // before bind so the first async catalog fetch can never be missed. No-op when
+    // the host is not isolated.
+    onInteractiveEngineRemoteCommandsChanged(this.runtimeHost, () => {
+      this.setupAutocompleteProvider();
+    });
 
     seedStartupInput(
       this.pendingUserInputs,
