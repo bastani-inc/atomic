@@ -166,7 +166,7 @@ export function selectPublishWorkflowRunJson(
     const displayTitle = stringField(candidate, "displayTitle");
     const workflowName = stringField(candidate, "workflowName");
 
-    if (displayTitle !== `Publish ${expectedHeadBranch}` || event !== "workflow_run" || headBranch !== "main" || workflowName !== "Publish") {
+    if (displayTitle !== `Publish ${expectedHeadBranch}` || event !== "create" || headBranch !== expectedHeadBranch || workflowName !== "Publish") {
       mismatches.push(
         `run[${index}] displayTitle=${displayTitle ?? "missing"} event=${event ?? "missing"} headBranch=${headBranch ?? "missing"} workflowName=${workflowName ?? "missing"}`,
       );
@@ -241,13 +241,13 @@ export function verifyPublishWorkflowRunJson(
   if (displayTitle !== `Publish ${expectedHeadBranch}`) {
     failures.push(`displayTitle was ${displayTitle ?? "missing"}, expected Publish ${expectedHeadBranch}`);
   }
-  if (headBranch !== "main") failures.push(`headBranch was ${headBranch ?? "missing"}, expected main`);
+  if (headBranch !== expectedHeadBranch) failures.push(`headBranch was ${headBranch ?? "missing"}, expected ${expectedHeadBranch}`);
   if (workflowName !== "Publish") failures.push(`workflowName was ${workflowName ?? "missing"}, expected Publish`);
-  if (event !== "workflow_run") failures.push(`event was ${event ?? "missing"}, expected workflow_run`);
+  if (event !== "create") failures.push(`event was ${event ?? "missing"}, expected create`);
   if (status !== "completed") failures.push(`status was ${status ?? "missing"}, expected completed`);
   if (conclusion !== "success") failures.push(`conclusion was ${conclusion ?? "missing"}, expected success`);
-  // workflow_run executes the protected default-branch workflow. The integrity
-  // job independently binds the triggering tag event to the immutable release SHA.
+  // The create event loads the workflow from the default branch while github.sha
+  // and the run head identify the newly-created tag commit.
 
   if (failures.length > 0 || runId === undefined || status === undefined || conclusion === undefined) {
     return {

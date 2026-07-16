@@ -121,7 +121,7 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Pushing that tag starts an unprivileged `Release Tag` signal workflow. Its successful completion triggers `publish.yml` through GitHub's `workflow_run` event, so the privileged publisher is loaded from protected `main`, verifies the exact triggering tag SHA and deterministic release tree, publishes with npm OIDC provenance, and creates the GitHub Release. Do not dispatch either workflow manually.
+Atomic uses a **versionless `main`** release flow (modeled on openai/codex): every `packages/*/package.json` on `main` stays at the `0.0.0` placeholder, and the real version is materialized only on a throwaway, off-`main` `Release <version>` commit that is tagged but never merged back. Creating that tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the default branch; the integrity job additionally requires `github.workflow_ref` to identify protected `main`, pins `github.workflow_sha`, binds the event tag/SHA to the remote tag, and verifies the deterministic release tree before publishing with npm OIDC provenance. Repository permissions default to read-only, and only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
 
 Cut and publish a release with:
 

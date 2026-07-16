@@ -1,20 +1,16 @@
 name: Publish
-run-name: Publish ${{ github.event.workflow_run.head_branch }}
+run-name: Publish ${{ github.ref_name }}
 
 on:
-    # A tag push runs the unprivileged Release Tag signal workflow. This
-    # workflow_run event then loads the privileged publisher from protected
-    # main, rather than trusting workflow code from the release tag.
-    workflow_run:
-        workflows: ["Release Tag"]
-        types: [completed]
+    # The create event is evaluated from the default branch. A release tag can
+    # select the release commit, but it cannot replace this workflow definition.
+    create:
 
 permissions:
-    contents: write
-    id-token: write
+    contents: read
 
 concurrency:
-    group: publish-${{ github.event.workflow_run.head_branch }}
+    group: publish-${{ github.ref_name }}
     cancel-in-progress: false
 
 env:
@@ -26,17 +22,17 @@ env:
 jobs:
     release-integrity:
         name: Verify release integrity
-        if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+        if: github.ref_type == 'tag'
         runs-on: blacksmith-4vcpu-ubuntu-2404
         outputs:
             sha: ${{ steps.release.outputs.sha }}
             tag: ${{ steps.release.outputs.tag }}
         steps:
-            # Keep the protected workflow revision checked out so the tag cannot
-            # replace the verifier that validates it.
+            # Pin the protected workflow revision rather than checking out code
+            # selected by the newly-created tag.
             - uses: useblacksmith/checkout@v1
               with:
-                  ref: ${{ github.event.repository.default_branch }}
+                  ref: ${{ github.workflow_sha }}
                   fetch-depth: 0
                   persist-credentials: false
             - uses: oven-sh/setup-bun@v2
@@ -46,13 +42,14 @@ jobs:
               id: release
               shell: bash
               env:
-                  RELEASE_TAG: ${{ github.event.workflow_run.head_branch }}
-                  TRIGGER_SHA: ${{ github.event.workflow_run.head_sha }}
-                  WORKFLOW_REF_NAME: ${{ github.ref_name }}
+                  RELEASE_TAG: ${{ github.ref_name }}
+                  TRIGGER_SHA: ${{ github.sha }}
+                  WORKFLOW_REF: ${{ github.workflow_ref }}
                   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
               run: |
                   set -euo pipefail
-                  [[ "$WORKFLOW_REF_NAME" == "$DEFAULT_BRANCH" ]] || { echo "Publish must run from protected default branch $DEFAULT_BRANCH, not $WORKFLOW_REF_NAME" >&2; exit 1; }
+                  expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/${DEFAULT_BRANCH}"
+                  [[ "$WORKFLOW_REF" == "$expected_workflow_ref" ]] || { echo "Publish workflow was not loaded from protected $DEFAULT_BRANCH: $WORKFLOW_REF" >&2; exit 1; }
                   release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
                   [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Unexpected tag format: $RELEASE_TAG" >&2; exit 1; }
                   release_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
@@ -312,6 +309,9 @@ jobs:
 
     publish:
         name: Publish @bastani/atomic
+        permissions:
+            contents: write
+            id-token: write
         # npm provenance only supports GitHub-hosted runners.
         runs-on: ubuntu-latest
         needs:

@@ -14,8 +14,8 @@ describe("publish-release event-driven GitHub Actions verification", () => {
   const successfulRun: JsonValue = {
     databaseId: 987654321,
     workflowName: "Publish",
-    headBranch: "main",
-    event: "workflow_run",
+    headBranch: "1.2.3",
+    event: "create",
     displayTitle: "Publish 1.2.3",
     status: "completed",
     conclusion: "success",
@@ -37,7 +37,7 @@ describe("publish-release event-driven GitHub Actions verification", () => {
     if (!result.ok) return;
     assert.equal(result.runId, 987654321);
     assert.equal(result.status, "in_progress");
-    assert.match(result.summary, /event: workflow_run/u);
+    assert.match(result.summary, /event: create/u);
   });
 
   test("rejects manual dispatches and unrelated tag events", () => {
@@ -51,7 +51,7 @@ describe("publish-release event-driven GitHub Actions verification", () => {
     assert.match(result.summary, /event=workflow_dispatch/u);
   });
 
-  test("accepts only a completed successful workflow_run", () => {
+  test("accepts only a completed successful create event", () => {
     const result = verifyPublishWorkflowRunJson(successfulRun, "1.2.3");
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -78,7 +78,7 @@ describe("publish-release event-driven GitHub Actions verification", () => {
 
     assert.equal(result.ok, true);
     assert.equal(commands.length, 4);
-    assert.match(commands[0] ?? "", /--event workflow_run/u);
+    assert.match(commands[0] ?? "", /--event create/u);
     assert.equal(commands.some((command) => command.includes("--watch")), false);
   });
 

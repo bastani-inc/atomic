@@ -95,10 +95,9 @@ describe("publish-release tag recovery", () => {
     assert.match(source, /allowIntegratedParent: tagRecovery\.state !== "absent"/u);
 
     assert.equal(existsSync(".github/workflows/publish-dispatch.yml"), false);
-    const trigger = readFileSync(".github/workflows/release-tag.yml", "utf8");
+    assert.equal(existsSync(".github/workflows/release-tag.yml"), false);
     const publish = readFileSync(".github/workflows/publish.yml", "utf8");
-    assert.match(trigger, /push:\s*\n\s*tags:/u);
-    assert.match(publish, /workflow_run:/u);
-    assert.doesNotMatch(`${trigger}\n${publish}`, /gh workflow run|sleep [0-9]|--paginate|--watch/u);
+    assert.match(publish, /on:\s*\n(?:\s*#.*\n)*\s*create:/u);
+    assert.doesNotMatch(publish, /gh workflow run|sleep [0-9]|--paginate|--watch|workflow_run:/u);
   });
 });
