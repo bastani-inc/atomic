@@ -13,6 +13,7 @@ import { buildHostHtmlTemplate, buildCspMetaContent, applyCspMeta } from "./host
 import { logger } from "./logger.js";
 import { parseBody, sendJson, validateTokenBody, validateTokenQuery } from "./ui-server-http.js";
 import type { McpServerManager } from "./server-manager.js";
+import { callToolWithConfiguredTimeout } from "./tool-call-timeout.js";
 import {
   extractUiPromptText,
   getVisualizationStreamEnvelope,
@@ -312,13 +313,13 @@ export async function startUiServer(options: UiServerOptions): Promise<UiServerH
         try {
           options.manager.touch(options.serverName);
           options.manager.incrementInFlight(options.serverName);
-          const result = await connection.client.callTool({
+          const result = await callToolWithConfiguredTimeout(connection.client, {
             name: callParams.name,
             arguments:
               callParams.arguments && typeof callParams.arguments === "object" && !Array.isArray(callParams.arguments)
                 ? callParams.arguments
                 : {},
-          });
+          }, connection.definition, options.serverName);
           sendJson(res, 200, { ok: true, result });
         } finally {
           options.manager.decrementInFlight(options.serverName);

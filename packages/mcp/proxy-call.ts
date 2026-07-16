@@ -9,11 +9,11 @@ import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { unflattenToolArguments } from "./utils.js";
 import { attemptAutoAuth, getAuthRequiredMessage, type AutoAuthResult } from "./proxy-auth.js";
 import type { ProxyToolResult } from "./proxy-types.js";
-import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { waitForCaller, waitForCallerWithLateCleanup } from "./caller-wait.js";
 import { notifyUiCancellation, rethrowHostAbortAfterUiCancellation } from "./apps-cancellation.js";
 import { asCallToolResult } from "./call-tool-result.js";
 import { assertMcpStateLease, McpStateChangedError, type AssertMcpStateLease } from "./state-lease.js";
+import { callToolWithConfiguredTimeout, formatMcpToolCallFailure } from "./tool-call-timeout.js";
 
 export async function executeCall(
   state: McpExtensionState,
@@ -297,6 +297,7 @@ export async function executeCall(
       };
     }
   }
+  const definition = state.config.mcpServers[serverName] ?? connection.definition;
 
   let uiSession: UiSessionRuntime | null = null;
 
@@ -339,7 +340,7 @@ export async function executeCall(
     assertMcpStateLease(assertActive);
 
     assertMcpStateLease(assertActive);
-    const resultPromise = connection.client.callTool({
+    const resultPromise = callToolWithConfiguredTimeout(connection.client, {
       name: toolMeta.originalName,
       // Normalize provider-flattened argument keys (e.g. Gemini's `keywords[0]`)
       // back into arrays/objects before the MCP server validates them.
@@ -347,7 +348,7 @@ export async function executeCall(
       // preserved unless the schema proves the head is a container.
       arguments: unflattenToolArguments(args, toolMeta.inputSchema),
       _meta: uiSession?.requestMeta,
-    }, CallToolResultSchema, { signal });
+    }, definition, serverName, signal);
 
     if (toolMeta.uiResourceUri) {
       const sdkResult = await resultPromise;
@@ -420,7 +421,7 @@ export async function executeCall(
     signal?.throwIfAborted();
     assertMcpStateLease(assertActive);
 
-    let errorWithSchema = `Failed to call tool: ${message}`;
+    let errorWithSchema = formatMcpToolCallFailure(error, serverName, definition.timeoutMs);
     if (toolMeta.inputSchema) {
       errorWithSchema += `\n\nExpected parameters:\n${formatSchema(toolMeta.inputSchema)}`;
     }

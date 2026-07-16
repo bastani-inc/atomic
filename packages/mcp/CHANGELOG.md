@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added validated per-server MCP tool-call inactivity timeouts for local and remote servers, with progress-aware timer resets, user-readable timeout errors, and preserved host cancellation.
+
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Changed
