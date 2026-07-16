@@ -56,6 +56,7 @@ export class AsyncJobManager {
 	#timer: NodeJS.Timeout | undefined;
 	#disposed = false;
 	#runningDeliveryLoop = false;
+	#disposeWhenUnused = false;
 
 	constructor(options: AsyncJobManagerOptions) {
 		this.#onJobComplete = options.onJobComplete;
@@ -88,6 +89,7 @@ export class AsyncJobManager {
 		session.disposed = true;
 		this.acknowledgeDeliveries([...session.activeJobIds]);
 		this.#sessions.delete(sessionId);
+		if (this.#sessions.size === 0) this.#disposeWhenUnused = true;
 		this.#disposeIfUnused();
 	}
 
@@ -189,7 +191,7 @@ export class AsyncJobManager {
 		this.#jobSessions.delete(jobId);
 	}
 	#disposeIfUnused(): void {
-		if (this.#sessions.size > 0 || this.#inFlightDeliveries.size > 0) return;
+		if (!this.#disposeWhenUnused || this.#sessions.size > 0 || this.#inFlightDeliveries.size > 0) return;
 		this.dispose();
 		if (AsyncJobManager.#instance === this) AsyncJobManager.#instance = undefined;
 	}
