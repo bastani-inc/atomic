@@ -1,9 +1,12 @@
 import { SessionSelectorComponent, type SessionInfo } from "@bastani/atomic";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type {
   PiCustomComponent,
   PiCustomOverlayFactoryTui,
   PiCustomOverlayFunction,
+  PiKeybindings,
+  PiTheme,
 } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 
@@ -15,6 +18,10 @@ export type WorkflowResumeSelectorResult =
 
 export interface WorkflowResumeSelectorUiSurface {
   custom?: PiCustomOverlayFunction;
+}
+
+export interface WorkflowResumeSelectorOptions {
+  readonly deleteWorkflow?: (workflowId: string) => Promise<DurableWorkflowDeleteOutcome>;
 }
 
 interface WorkflowResumeSelectorItem {
@@ -111,6 +118,7 @@ export function openWorkflowResumeSelector(
   liveRuns: readonly RunSnapshot[],
   durableEntries: readonly ResumableWorkflowEntry[],
   completedEntries: readonly ResumableWorkflowEntry[] = [],
+  options: WorkflowResumeSelectorOptions = {},
 ): Promise<WorkflowResumeSelectorResult> {
   const custom = ui.custom;
   if (typeof custom !== "function") return Promise.resolve({ kind: "close" });
@@ -118,7 +126,7 @@ export function openWorkflowResumeSelector(
   const items = workflowResumeSelectorItems(liveRuns, durableEntries, completedEntries);
 
   const resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
-  const sessions = items.map((item) => item.session);
+  let sessions = items.map((item) => item.session);
   const loadSessions = async (onProgress?: (loaded: number, total: number) => void): Promise<SessionInfo[]> => {
     onProgress?.(sessions.length, sessions.length);
     return [...sessions];
@@ -138,8 +146,8 @@ export function openWorkflowResumeSelector(
 
     const factory = (
       tui: PiCustomOverlayFactoryTui,
-      _theme: unknown,
-      _keys: unknown,
+      _theme: PiTheme,
+      _keys: PiKeybindings,
       done: (result: undefined) => void,
     ): PiCustomComponent => {
       const selector = new SessionSelectorComponent(
@@ -151,10 +159,27 @@ export function openWorkflowResumeSelector(
         () => tui.requestRender?.(),
         { showRenameHint: false },
       );
-      // Workflow rows are synthetic SessionInfo records. Reuse the /resume
-      // selector chrome, but never let its session-file delete action touch a
-      // path derived from a workflow id.
-      selector.getSessionList().onDeleteSession = async () => {
+      const sessionList = selector.getSessionList();
+      sessionList.onDeleteSession = async (path) => {
+        const target = resultByPath.get(path);
+        if (target === undefined || target.kind === "live") {
+          sessionList.onError?.("Cannot delete an in-flight workflow run");
+          tui.requestRender?.();
+          return;
+        }
+        if (options.deleteWorkflow === undefined) {
+          sessionList.onError?.("Workflow history deletion is unavailable");
+          tui.requestRender?.();
+          return;
+        }
+        const outcome = await options.deleteWorkflow(target.workflowId);
+        if (!outcome.ok) {
+          sessionList.onError?.(outcome.message);
+        } else {
+          resultByPath.delete(path);
+          sessions = sessions.filter((session) => session.path !== path);
+          sessionList.setSessions(sessions, true);
+        }
         tui.requestRender?.();
       };
       selector.focused = true;

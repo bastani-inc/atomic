@@ -22,7 +22,6 @@
  */
 
 import type { WorkflowSerializableValue } from "../shared/types.js";
-import { createHash } from "node:crypto";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { DURABLE_FORMAT_VERSION } from "./format-version.js";
 import { inactivePromptReservationToken, PromptReservationState, type PromptReservationToken } from "./prompt-reservation-state.js";
@@ -35,8 +34,9 @@ import type {
   DurableWorkflowHandle,
   DurableWorkflowStatus,
   ResumableWorkflowEntry,
-  WorkflowSerializableObject,
 } from "./types.js";
+import type { DurableWorkflowCatalogEntries } from "./file-catalog.js";
+export { durableHash } from "./durable-hash.js";
 
 // ---------------------------------------------------------------------------
 // Backend interface
@@ -49,6 +49,10 @@ import type {
 export type WorkflowRegistrationInput =
   Omit<DurableWorkflowHandle, "completedCheckpoints" | "pendingPrompts" | "updatedAt">
   & Partial<Pick<DurableWorkflowHandle, "completedCheckpoints" | "pendingPrompts" | "updatedAt">>;
+
+export type DurableInactiveDeleteResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: "not_found" | "running" };
 
 /**
  * Abstract durable checkpoint store. Implementations:
@@ -136,12 +140,18 @@ export interface DurableWorkflowBackend {
   listResumableWorkflows(): readonly ResumableWorkflowEntry[];
   /** List successful completed root workflows with durable checkpoint progress. */
   listCompletedWorkflows(): readonly ResumableWorkflowEntry[];
+  /** Prepare one shared advisory catalog for resumable and completed listings. */
+  prepareWorkflowCatalog?(): Promise<DurableWorkflowCatalogEntries>;
+  /** Revalidate one advisory catalog row from authoritative state. */
+  repairWorkflowCatalogEntry?(workflowId: string): void;
 
   /** Export a session-cache entry for the given workflow (for JSONL persistence). */
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined;
 
   /** Permanently remove one root workflow and its durable checkpoints. */
   deleteWorkflow(workflowId: string): Promise<void>;
+  /** Atomically delete only when authoritative state is not currently running. */
+  deleteWorkflowIfInactive?(workflowId: string): Promise<DurableInactiveDeleteResult>;
 
   /** Whether a workflow id may be exposed or resumed from live/restored metadata. */
   isWorkflowLoadable(workflowId: string): boolean;
@@ -184,32 +194,6 @@ export function adjustDurablePendingPrompts(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Hashing helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Compute a deterministic content digest for a JSON-serializable value.
- * Uses canonical JSON stringification (sorted keys) for stability and SHA-256
- * for collision resistance. The earlier 32-bit DJB2 hash demonstrably
- * collided across distinct tool/stage identities and could cause completed
- * side effects to be skipped (or merged) incorrectly on resume.
- *
- * cross-ref: issue #1498 — collision-resistant durable replay identities.
- */
-export function durableHash(value: WorkflowSerializableValue | WorkflowSerializableObject): string {
-  const canonical = canonicalJsonString(value);
-  const digest = createHash("sha256").update(canonical).digest("hex");
-  return `h${digest.slice(0, 32)}`;
-}
-
-function canonicalJsonString(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJsonString).join(",")}]`;
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonString(obj[k])}`).join(",")}}`;
-}
 
 // ---------------------------------------------------------------------------
 // In-memory backend
@@ -430,6 +414,14 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     this.workflows.delete(workflowId);
     this.promptReservations.delete(workflowId);
     this.deletedWorkflowIds.add(workflowId);
+  }
+
+  async deleteWorkflowIfInactive(workflowId: string): Promise<DurableInactiveDeleteResult> {
+    const handle = this.workflows.get(workflowId)?.handle;
+    if (handle === undefined) return { ok: false, reason: "not_found" };
+    if (handle.status === "running") return { ok: false, reason: "running" };
+    await this.deleteWorkflow(workflowId);
+    return { ok: true };
   }
 
   isWorkflowLoadable(workflowId: string): boolean {

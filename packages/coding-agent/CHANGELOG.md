@@ -2,10 +2,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `/workflows [run-id]` as a retained workflow-run alias for `/workflow resume`, with confirmed backend-aware deletion for inactive durable/completed rows that protects in-flight runs and preserves independent session transcripts.
+
+### Changed
+
+- Documented and enforced `/resume`-equivalent workflow-history retention: eligible runs are not filtered or garbage-collected by age/count, and the selector viewport does not limit search/navigation.
+
 ### Fixed
 
 - Fixed startup changelog and first-run onboarding notices being gated behind the deferred extension reload — and, when a prompt was typed immediately at launch, behind the entire first agent turn. They now render right after the input handler is ready (milliseconds after first paint), matching pi's behavior; the RESOURCES disclosure still waits for the actual extension load it reports on.
 - Reduced deferred extension-load stalls by yielding to the event loop between extension loads only when the current turn has actually run long (≥16 ms) instead of unconditionally — the previous unconditional yields cost a full macrotask turn (~100 ms each while the TUI is live) per bundled extension (~0.5 s of the deferred load).
+- Fixed `/workflow resume` and `/workflows` history opening at 100k+ file-backed durable runs by using an incremental SQLite/WAL catalog and lazy selected-row transcript hydration instead of whole-directory scans. The catalog atomically tracks normal writes and self-heals from authoritative per-run JSON when missing, stale, incomplete, or corrupt.
 
 ## [0.9.10-alpha.1] - 2026-07-15
 

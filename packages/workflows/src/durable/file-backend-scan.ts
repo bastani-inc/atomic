@@ -39,29 +39,34 @@ export interface DurableRecordScanDeps {
  * parsed at most once per generation thanks to the stat-gated cache; the
  * loadability re-check below is a cache hit rather than a second disk read.
  */
+export function readDurableRecordsFromFile(
+  deps: DurableRecordScanDeps,
+  filePath: string,
+): readonly FileDurableRecord[] {
+  const workflowId = workflowIdFromStateFile(deps.dir, filePath);
+  if (workflowId === undefined) return [];
+  const result = readDurableFileStateCached(filePath);
+  const embeddedIds = result.kind === "current"
+    ? [...result.state.workflows.map((record) => record.handle.workflowId), ...result.state.deletedWorkflowIds]
+    : result.kind === "legacy" ? result.workflowIds : [];
+  const mismatched = embeddedIds.filter((id) => id !== workflowId);
+  if (mismatched.length > 0) {
+    deps.suppressedIds.add(workflowId);
+    mismatched.forEach((id) => deps.suppressedIds.add(id));
+    deps.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
+    return [];
+  }
+  const backend = deps.backendForFile(filePath, workflowId);
+  if (!backend.isWorkflowLoadable(workflowId)) {
+    deps.suppressedIds.add(workflowId);
+    return [];
+  }
+  deps.suppressedIds.delete(workflowId);
+  const current = readDurableFileStateCached(filePath);
+  if (current.kind !== "current" || !stateMatchesWorkflowId(current.state, workflowId)) return [];
+  return current.state.workflows.filter((record) => !current.state.deletedWorkflowIds.includes(record.handle.workflowId));
+}
+
 export function readAllDurableRecords(deps: DurableRecordScanDeps): readonly FileDurableRecord[] {
-  return durableStateFiles(deps.dir).flatMap((filePath) => {
-    const workflowId = workflowIdFromStateFile(deps.dir, filePath);
-    if (workflowId === undefined) return [];
-    const result = readDurableFileStateCached(filePath);
-    const embeddedIds = result.kind === "current"
-      ? [...result.state.workflows.map((record) => record.handle.workflowId), ...result.state.deletedWorkflowIds]
-      : result.kind === "legacy" ? result.workflowIds : [];
-    const mismatched = embeddedIds.filter((id) => id !== workflowId);
-    if (mismatched.length > 0) {
-      deps.suppressedIds.add(workflowId);
-      mismatched.forEach((id) => deps.suppressedIds.add(id));
-      deps.backendForFile(filePath, workflowId).isWorkflowLoadable(workflowId);
-      return [];
-    }
-    const backend = deps.backendForFile(filePath, workflowId);
-    if (!backend.isWorkflowLoadable(workflowId)) {
-      deps.suppressedIds.add(workflowId);
-      return [];
-    }
-    deps.suppressedIds.delete(workflowId);
-    const current = readDurableFileStateCached(filePath);
-    if (current.kind !== "current" || !stateMatchesWorkflowId(current.state, workflowId)) return [];
-    return current.state.workflows.filter((record) => !current.state.deletedWorkflowIds.includes(record.handle.workflowId));
-  });
+  return durableStateFiles(deps.dir).flatMap((filePath) => readDurableRecordsFromFile(deps, filePath));
 }

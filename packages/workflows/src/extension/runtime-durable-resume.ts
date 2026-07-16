@@ -20,6 +20,7 @@ import {
   type OpenCompletedDurableResult,
 } from "../durable/completed-inspection.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
+import type { DurableWorkflowCatalogEntries } from "../durable/file-catalog.js";
 
 export interface DurableResumeRuntime {
   resumeDurableWorkflow(
@@ -31,6 +32,7 @@ export interface DurableResumeRuntime {
     workflowIdOrPrefix?: string,
     sessionDir?: string,
   ): Promise<readonly ResumableWorkflowEntry[]>;
+  prepareDurableCatalog?(): Promise<DurableWorkflowCatalogEntries>;
   /**
    * Targeted preparation for known workflow ids: reads only those workflows'
    * durable state (O(ids)) instead of enumerating the entire durable
@@ -101,6 +103,29 @@ export function createDurableResumeRuntime(
           sessionDir,
         );
         return preparedCatalog;
+      } finally {
+        purgeSuppressedWorkflowRuns(backend, deps.store);
+      }
+    },
+    async prepareDurableCatalog() {
+      await deps.ensureReady();
+      const backend = getDurableBackend();
+      try {
+        await backend.hydrateResumableWorkflows?.();
+        await hydrateStoredWorkflowCandidates(backend);
+        const indexed = await backend.prepareWorkflowCatalog?.();
+        if (indexed !== undefined) {
+          preparedCatalog = indexed.resumable;
+          return indexed;
+        }
+        preparedCatalog = await prepareRuntimeDurableResumable(
+          () => backend,
+          () => deps.resolveDefaultStageSessionDir?.(),
+        );
+        return {
+          resumable: preparedCatalog,
+          completed: listOpenableCompletedWorkflows(backend),
+        };
       } finally {
         purgeSuppressedWorkflowRuns(backend, deps.store);
       }

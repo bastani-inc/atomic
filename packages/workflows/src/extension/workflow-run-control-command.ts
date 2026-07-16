@@ -22,6 +22,7 @@ import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.j
 import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import {
+  deleteWorkflowResumeEntry,
   handleDurableResume,
   prepareWorkflowResumeCatalog,
   resolveWorkflowResumeTarget,
@@ -254,9 +255,18 @@ export async function handleRunControlCommand(
           }
         }
         liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
-        const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries, completedEntries);
+        const picked = await openWorkflowResumeSelector(
+          ctx.ui,
+          liveRuns,
+          durableEntries,
+          completedEntries,
+          { deleteWorkflow: deleteWorkflowResumeEntry },
+        );
         if (picked.kind === "durable" || picked.kind === "completed") {
-          return await handleDurableResume(picked.workflowId, ctx, reporter, deps);
+          return await handleDurableResume(picked.workflowId, ctx, reporter, deps, {
+            resumable: durableEntries,
+            completed: completedEntries,
+          });
         }
         if (picked.kind === "live") {
           const resolved = resolveRunIdPrefix(picked.runId);

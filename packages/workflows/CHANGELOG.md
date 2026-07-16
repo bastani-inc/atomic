@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- Added `/workflows [run-id]` as a retained-run alias for `/workflow resume`, plus confirmed Ctrl+D deletion for non-live durable/completed rows. Deletion rechecks same-process activity and authoritative status, atomically refuses `running` workflows, updates the catalog, and leaves host/stage session transcripts untouched.
+
 ### Changed
 
 - Debounced durable stage-session timing checkpoints into 30-second buckets. Duration-only progress no longer forces a full durable state read-merge-rewrite on every prompt/steer event; session identity changes (session id/file/start) still persist immediately, so cross-process resume continues from the same retained session with at most a 30-second loss of accumulated timing precision.
+- Matched coding-agent `/resume` retention semantics for workflow history: all eligible durable runs remain searchable regardless of age or count, with no automatic history GC; the 10-row selector viewport remains display-only.
 
 ### Fixed
 
@@ -16,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Made `/workflow resume` dramatically cheaper on large histories: durable state files are now parsed through a stat-gated cache keyed by `(path, mtime, size)` so unchanged files are never re-read or re-parsed (the previous listing flow read every file up to 4 times per pass), replay lookups read lock-free against atomic rename snapshots instead of spinning on the lock directory, the per-command catalog is built once and reused instead of re-enumerating the directory per phase, and session-transcript scans cache extracted checkpoint rows per file with a fast pre-filter that skips JSON-parsing unrelated transcript lines.
 - Fixed TUI freezes at workflow stage transitions: the file durable backend now implements `recordCheckpointAsync`, so `ctx.tool`/`ctx.ui`/`ctx.stage` checkpoint writes serialize through an in-process per-file queue and an event-loop-friendly async file lock (25 ms `setTimeout` retries) instead of pinning the main thread in an `Atomics.wait` spin for up to 5 seconds under lock contention.
 - Bounded per-file backend and parse-cache retention (LRU) so listing a large durable directory no longer pins every parsed workflow state in memory for the life of the process.
+- Replaced full durable-directory scans and eager completed-transcript hydration on `/workflow resume` and `/workflows` with a persistent SQLite/WAL catalog maintained incrementally from authoritative per-run writes. Normal 100,000-row picker preparation now takes ~131 ms (plus ~15–22 ms to build selector rows) in the seeded benchmark, versus the previous linear multi-scan path; missing, stale, incomplete, and corrupt catalogs rebuild automatically, while selected rows are authoritatively revalidated and stale completed transcript metadata is repaired lazily.
+
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Added

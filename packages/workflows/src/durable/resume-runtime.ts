@@ -170,9 +170,24 @@ export function resumeDurableWorkflow(
   removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
 
 
-  // Mark the workflow as resuming in the backend, then re-dispatch with the
-  // ORIGINAL workflow id as the run id so durable checkpoints replay.
-  backend.setWorkflowStatus(resolved.workflowId, "running");
+  // Backends that expose conditional deletion must claim resume atomically
+  // against it, so a confirmed delete and a resume cannot both succeed.
+  if (backend.deleteWorkflowIfInactive !== undefined && backend.transitionWorkflowStatus !== undefined) {
+    const claimed = backend.transitionWorkflowStatus(
+      resolved.workflowId,
+      [handle.status],
+      "running",
+    );
+    if (typeof claimed !== "boolean" || !claimed) {
+      return {
+        ok: false,
+        reason: "stale",
+        message: `Workflow ${resolved.workflowId.slice(0, 8)} changed while resume was pending; refresh the workflow list and try again.`,
+      };
+    }
+  } else {
+    backend.setWorkflowStatus(resolved.workflowId, "running");
+  }
 
   const resumeRunOpts: RunOpts = {
     ...deps.baseRunOpts,

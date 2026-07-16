@@ -11,7 +11,7 @@
 
 import type { DurableWorkflowBackend } from "./backend.js";
 import { InMemoryDurableBackend } from "./backend.js";
-import { FileDurableBackend, WorkflowFileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
+import { WorkflowFileDurableBackend, defaultDurableStateDir } from "./file-backend.js";
 import { createDbosDurableBackend } from "./dbos-backend.js";
 
 let globalBackend: DurableWorkflowBackend | undefined;
@@ -87,7 +87,7 @@ export function createDefaultFileBackend(): DurableWorkflowBackend {
 export function createWorkflowFileBackend(workflowId: string): DurableWorkflowBackend {
   const dir = defaultDurableStateDir();
   if (dir === undefined) return createInMemoryBackend();
-  return new FileDurableBackend(durableStateFileFor(dir, workflowId), workflowId);
+  return new WorkflowFileDurableBackend(dir, workflowId);
 }
 
 function isDurabilityOptedOut(): boolean {

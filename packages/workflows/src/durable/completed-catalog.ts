@@ -60,9 +60,11 @@ export function resolveCompletedWorkflow(
   if (resolved !== undefined) {
     if ("kind" in resolved) return { kind: "ambiguous", matches: resolved.matches };
     const snapshot = completedWorkflowSnapshot(backend, resolved);
-    return snapshot === undefined
-      ? { kind: "stale", entry: resolved }
-      : { kind: "found", entry: resolved, snapshot };
+    if (snapshot === undefined) {
+      backend.repairWorkflowCatalogEntry?.(resolved.workflowId);
+      return { kind: "stale", entry: resolved };
+    }
+    return { kind: "found", entry: resolved, snapshot };
   }
 
   const authoritative = resolveDurableEntry(workflowIdOrPrefix, listCompletedFromBackend(backend));
