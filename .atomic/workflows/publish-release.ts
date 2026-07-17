@@ -29,7 +29,7 @@ const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocke
 
 export default workflow({
   name: "publish-release",
-  description: "Prepare and publish Atomic releases through resumable, event-driven gates.",
+  description: "Prepare and publish Atomic releases through resumable, event-driven gates without polling or workflow dispatch.",
   inputs: {
     target_version: Type.String({ description: "Version to publish, without a leading v." }),
     release_kind: Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
@@ -349,7 +349,7 @@ export default workflow({
       `Branch: ${release.branch}`,
       prUrl === undefined ? "PR URL: see open-release-pr stage output" : `PR URL: ${prUrl}`,
       `Tag: ${release.version}`,
-      ...(actionUrl === undefined ? [] : [`Publish run: ${actionUrl}`]),
+      actionUrl === undefined ? "Publish run: resume after GitHub reports the tag-triggered run" : `Publish run: ${actionUrl}`,
       "",
       "Stage summaries:",
       "## prepare-release-branch-and-metadata",

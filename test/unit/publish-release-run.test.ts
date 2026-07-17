@@ -82,7 +82,7 @@ describe("publish-release event-driven GitHub Actions verification", () => {
     assert.equal(commands.some((command) => command.includes("--watch")), false);
   });
 
-  test("returns pending when the observed run is active", async () => {
+  test("returns pending after one observation when the run is active", async () => {
     const runningRun = { ...successfulRun, status: "in_progress", conclusion: null };
     const commands: string[] = [];
     const execute = (args: readonly string[]): CommandResult => {
@@ -100,8 +100,7 @@ describe("publish-release event-driven GitHub Actions verification", () => {
     assert.equal(result.ok, false);
     assert.equal(result.pending, true);
     assert.equal(commands.length, 2);
-    assert.match(result.summary, /status: in_progress/u);
-    assert.doesNotMatch(result.summary, /poll|resume after/u);
+    assert.match(result.summary, /No polling was performed/u);
   });
 
   test("rejects integrity evidence bound to another release SHA", async () => {

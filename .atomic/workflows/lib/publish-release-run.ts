@@ -68,7 +68,11 @@ export async function verifyPublishRunSucceeded(
     return {
       ok: false,
       pending: !selected.summary.startsWith("GitHub Actions publish run is not selectable."),
-      summary: [selected.summary, commandSummary(runList)].join("\n\n"),
+      summary: [
+        selected.summary,
+        "No polling was performed. Resume the release workflow after GitHub reports the event-driven publish run.",
+        commandSummary(runList),
+      ].join("\n\n"),
     };
   }
 
@@ -88,7 +92,11 @@ export async function verifyPublishRunSucceeded(
       pending: true,
       runId: viewed.runId,
       runUrl: viewed.runUrl,
-      summary: [viewed.summary, commandSummary(runView)].join("\n\n"),
+      summary: [
+        "GitHub Actions publish run is still active. No polling was performed; resume after it reaches a terminal state.",
+        viewed.summary,
+        commandSummary(runView),
+      ].join("\n\n"),
     };
   }
 

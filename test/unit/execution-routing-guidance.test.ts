@@ -144,35 +144,16 @@ describe("workflow-first execution routing", () => {
     });
   });
 
-  test("keeps workflow transcript and artifact handoff guidance", () => {
+  test("keeps workflow lifecycle, transcript, and artifact handoff guidance", () => {
     for (const phrase of [
+      "lifecycle notice",
+      "Do not use sleep/status polling loops",
       "sessionFile",
       "transcriptPath",
       "files/artifacts",
       "Read the file at <path>",
     ]) {
       expect(combinedGuidance).toContain(phrase);
-    }
-  });
-
-  test("removes post-launch babysitting instructions from active workflow prompt surfaces", async () => {
-    const repositoryPromptSources = (await Promise.all([
-      "AGENTS.md",
-      ".atomic/workflows/publish-release.ts",
-      ".atomic/workflows/lib/publish-release-run.ts",
-    ].map(readRepositoryFile))).join("\n");
-    const activeWorkflowPrompts = `${workflowGuidance.join("\n")}\n${repositoryPromptSources}`;
-
-    for (const removedInstruction of [
-      "Once you run a workflow, end the current turn",
-      "Do not use sleep/status polling loops",
-      "wait for a lifecycle notice or user follow-up",
-      "No polling was performed",
-      "resume after it reaches a terminal state",
-      "without polling or workflow dispatch",
-      "Publish run: resume after",
-    ]) {
-      expect(activeWorkflowPrompts).not.toContain(removedInstruction);
     }
   });
 
