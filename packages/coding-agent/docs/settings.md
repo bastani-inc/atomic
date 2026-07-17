@@ -137,7 +137,7 @@ Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Us
 | `compaction.enabled` | boolean | `true` | Enable automatic verbatim line compaction |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the next model response; automatic threshold compaction begins before this reserve is consumed |
 | `compaction.compression_ratio` | number | `0.5` | Fraction of compactable transcript **lines to keep** (`0 < value < 1`) |
-| `compaction.preserve_recent` | number | `2` | Recent context-visible messages kept outside the compactable region; Atomic widens the cut to a user-turn start and always retains the final logical turn |
+| `compaction.preserve_recent` | number | `2` | Trailing context-visible messages retained byte-identically inside the compacted string; new full-collapse compaction does not widen the cut to a user-turn start |
 | `compaction.query` | string | last user message | Optional relevance focus for selecting older lines to retain |
 
 ```json
@@ -152,7 +152,7 @@ Set `ATOMIC_SKIP_VERSION_CHECK=1` to disable the Atomic version update check. Us
 }
 ```
 
-The model emits numbered line ranges only; Atomic reconstructs retained text mechanically. `preserve_recent` is enforced client-side and is not a provider parameter.
+For new full-collapse compaction the model returns the retained transcript as a verbatim-subsequence string, which Atomic validates and reconstructs mechanically with canonical `(filtered N lines)` markers; legacy line-range compaction still emits numbered ranges only. `preserve_recent` is enforced client-side and is not a provider parameter. The compaction request reuses the provider's cached conversation prefix. See [Compaction](/compaction) — [Full-context collapse](/compaction#full-context-collapse-v2) and [Compaction-call prompt caching](/compaction#compaction-call-prompt-caching).
 
 ### Branch Summary
 
