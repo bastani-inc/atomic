@@ -131,6 +131,10 @@ export function resumeDurableWorkflow(
     };
   }
   if (!backend.isWorkflowLoadable(resolved.workflowId)) {
+    // Selection-time revalidation (contract §4): the picker trusts indexed rows
+    // for speed, so a row whose authoritative state no longer loads is repaired
+    // (dropped) here before surfacing the failure.
+    backend.repairWorkflowCatalogEntry?.(resolved.workflowId);
     return { ok: false, reason: "not_registered", message: `Durable workflow ${resolved.workflowId.slice(0, 8)} uses an incompatible or unavailable persisted format and cannot be resumed.` };
   }
   // Authoritative backend-handle check: a cache-only entry (no handle) is
@@ -140,6 +144,9 @@ export function resumeDurableWorkflow(
   // recovery should proceed.
   const handle = backend.getWorkflow(resolved.workflowId);
   if (handle === undefined) {
+    // Missing authoritative handle is a stale index row: repair (drop) it so
+    // the picker stops offering a row that can only fail on selection.
+    backend.repairWorkflowCatalogEntry?.(resolved.workflowId);
     return {
       ok: false,
       reason: "stale",

@@ -161,7 +161,12 @@ describe("durable workflow catalog index", () => {
     const incremental = new WorkflowFileDurableBackend(durableDir);
     incremental.setWorkflowStatus("incremental", "failed", 0, true);
 
-    const reconciled = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
+    // D1: the incremental write must NOT advance the reconcile signature, so it
+    // cannot bless the interleaved external deletion. Selection is rejected as
+    // stale (no authoritative handle) and the row is dropped by reconciliation.
+    const reader = new WorkflowFileDurableBackend(durableDir);
+    assert.equal(reader.getWorkflow("externally-deleted"), undefined);
+    const reconciled = await reader.reconcileWorkflowCatalog();
     assert.equal(reconciled.resumable.some((entry) => entry.workflowId === "externally-deleted"), false);
     assert.equal(reconciled.resumable.find((entry) => entry.workflowId === "incremental")?.status, "failed");
   });
@@ -198,7 +203,12 @@ describe("durable workflow catalog index", () => {
       deletedWorkflowIds: [],
     }));
 
-    const healed = await new WorkflowFileDurableBackend(durableDir).prepareWorkflowCatalog();
+    // Out-of-band additions surface after asynchronous reconciliation (contract
+    // §4): the picker serves indexed rows immediately, drift is a background hint.
+    const reader = new WorkflowFileDurableBackend(durableDir);
+    const served = await reader.prepareWorkflowCatalog();
+    assert.deepEqual(served.resumable.map((entry) => entry.workflowId), ["indexed"]);
+    const healed = await reader.reconcileWorkflowCatalog();
     assert.deepEqual(healed.resumable.map((entry) => entry.workflowId), ["indexed", "external"]);
   });
 
@@ -373,6 +383,7 @@ describe("durable workflow catalog index", () => {
     assert.equal(catalog.resumable.length, 25);
     assert.equal(backend.loadabilityChecks, 0);
   });
+
   function durableStateFilesInFixture(): number {
     return Array.from(new Bun.Glob("workflow-*.json").scanSync(durableDir)).length;
   }

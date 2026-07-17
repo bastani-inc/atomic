@@ -30,13 +30,17 @@ describe("durable format adversarial file regressions", () => {
     else process.env.HOME = originalHome;
   });
 
-  test("suppresses both filename and embedded IDs for current and legacy mismatches", () => {
+  test("suppresses both filename and embedded IDs for current and legacy mismatches", async () => {
     dir = mkdtempSync(join(tmpdir(), "durable-mismatched-ids-"));
     for (const [expected, version] of [["current-expected", 2], ["legacy-expected", 1]] as const) {
       const path = durableStateFileFor(dir, expected);
       const raw = JSON.stringify({ version, workflows: [durableRecord(`${expected}-payload`)], ...(version === 2 ? { deletedWorkflowIds: [] } : {}) });
       writeFileSync(path, raw);
       const backend: WorkflowFileDurableBackend = new WorkflowFileDurableBackend(dir);
+      // A mismatched file the backend did not write is out-of-band relative to
+      // any servable catalog, so authoritative suppression applies after the
+      // asynchronous reconcile rather than a synchronous drift-triggered rescan.
+      await backend.reconcileWorkflowCatalog();
       assert.deepEqual(backend.listResumableWorkflows(), []);
       assert.equal(backend.isWorkflowLoadable(expected), false);
       assert.equal(backend.isWorkflowLoadable(`${expected}-payload`), false);

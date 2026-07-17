@@ -144,6 +144,12 @@ export interface DurableWorkflowBackend {
   prepareWorkflowCatalog?(): Promise<DurableWorkflowCatalogEntries>;
   /** Revalidate one advisory catalog row from authoritative state. */
   repairWorkflowCatalogEntry?(workflowId: string): void;
+  /**
+   * Optional: await the coalesced background reconcile to converge against the
+   * current authoritative directory. Strong-consistency/test seam only; normal
+   * listing never awaits reconciliation.
+   */
+  reconcileWorkflowCatalog?(): Promise<DurableWorkflowCatalogEntries>;
 
   /** Export a session-cache entry for the given workflow (for JSONL persistence). */
   toCacheEntry(workflowId: string): DurableCheckpointEntry | undefined;

@@ -1,12 +1,17 @@
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import type { FileDurableRecord } from "./file-state.js";
 import type { ResumableWorkflowEntry } from "./types.js";
 import { withDurableFileLock, withDurableFileLockAsync } from "./file-lock.js";
+import { readCatalogEntries, upsertCatalogRow } from "./catalog-rows.js";
+import { ReconcileCoalescer } from "./catalog-reconcile.js";
+import { timeCatalogPhase, timeCatalogPhaseAsync } from "./catalog-diagnostics.js";
 
-const CATALOG_SCHEMA_VERSION = 1;
+// Schema 2 decouples freshness from the durable-directory mtime: a normal
+// self-write no longer registers as drift (mtime dropped from the sync gate).
+// A v1 catalog fails the schema check and cold-rebuilds once.
+const CATALOG_SCHEMA_VERSION = 2;
 const CATALOG_DIR_NAME = ".catalog";
 const CATALOG_FILE_NAME = "workflow-catalog.sqlite";
 const REBUILD_MARKER_NAME = "rebuild-required";
@@ -25,39 +30,29 @@ export interface FileCatalogSource {
   readonly completedOpenable: boolean;
 }
 
-interface CatalogSqlRow {
-  workflow_id: string;
-  name: string;
-  status: ResumableWorkflowEntry["status"];
-  completed_checkpoints: number;
-  pending_prompts: number;
-  created_at: number;
-  updated_at: number;
-  label: string | null;
-  root_workflow_id: string | null;
-  resumable: number | null;
-  invocation_cwd: string | null;
-  workflow_cwd: string | null;
-  repository_root: string | null;
-  git_worktree_root: string | null;
-  completed_openable: number;
-  state_file: string;
-  state_mtime_ms: number;
-  state_size: number;
-}
-
-interface MetaSqlRow { value: string }
 interface CountSqlRow { count: number }
+interface MetaSqlRow { value: string }
+interface DirtyIdSqlRow { workflow_id: string }
 
-type CatalogInsertParams = [
-  string, string, string, number, number, number, number,
-  string | null, string | null, number | null,
-  string | null, string | null, string | null, string | null,
-  number, string, number, number,
-];
+/** Enumerate all authoritative durable sources (cold rebuild / reconcile). */
+type AsyncScan = () => Promise<readonly FileCatalogSource[]>;
+/** Synchronous variant for the rare cold rebuild inside {@link FileDurableCatalog.list}. */
+type SyncScan = () => readonly FileCatalogSource[];
+/** Repair only the journaled dirty ids from authoritative state (O(dirty)). */
+type RepairDirty = (ids: readonly string[]) => void;
+
+const NO_REPAIR: RepairDirty = () => { /* default when no repair callback is supplied */ };
 
 type PendingMutation = FileCatalogSource | null;
 
+/**
+ * Persistent SQLite/WAL advisory index over the authoritative per-run durable
+ * state files. The DB is a derived cache and always self-heals from the state
+ * files. Freshness is split (contract §3, spec D2): {@link serveState} gates the
+ * synchronous picker read purely on index integrity (no directory-mtime term, so
+ * a known write stays servable → ZERO scans), while {@link needsReconcile} is a
+ * non-gating drift hint that only schedules an async background reconcile.
+ */
 export class FileDurableCatalog {
   readonly databasePath: string;
   private readonly catalogDir: string;
@@ -69,6 +64,9 @@ export class FileDurableCatalog {
   private rebuildPromise: Promise<DurableWorkflowCatalogEntries> | undefined;
   private catalogInvalid = false;
   private readonly pendingMutations = new Map<string, PendingMutation>();
+  private readonly reconciler = new ReconcileCoalescer(() => this.runReconcile());
+  private reconcileScan: AsyncScan | undefined;
+  private repairDirtyFn: RepairDirty = NO_REPAIR;
 
   constructor(private readonly durableDir: string) {
     this.catalogDir = join(durableDir, CATALOG_DIR_NAME);
@@ -78,9 +76,12 @@ export class FileDurableCatalog {
     this.publishLockPath = join(this.catalogDir, "catalog-publish");
   }
 
-  async prepare(scan: () => Promise<readonly FileCatalogSource[]>): Promise<DurableWorkflowCatalogEntries> {
+  async prepare(scan: AsyncScan, repairDirty: RepairDirty = NO_REPAIR): Promise<DurableWorkflowCatalogEntries> {
+    this.reconcileScan = scan;
+    this.repairDirtyFn = repairDirty;
     try {
-      if (this.isFresh()) return this.readEntries();
+      const served = this.serveIfServable();
+      if (served !== undefined) return served;
     } catch {
       this.closeDatabase();
       this.catalogInvalid = true;
@@ -94,16 +95,24 @@ export class FileDurableCatalog {
     return rebuilding;
   }
 
-  list(scan: () => readonly FileCatalogSource[]): DurableWorkflowCatalogEntries {
+  list(
+    scan: SyncScan,
+    repairDirty: RepairDirty = NO_REPAIR,
+    reconcileScan?: AsyncScan,
+  ): DurableWorkflowCatalogEntries {
+    if (reconcileScan !== undefined) this.reconcileScan = reconcileScan;
+    this.repairDirtyFn = repairDirty;
     try {
-      if (this.isFresh()) return this.readEntries();
+      const served = this.serveIfServable();
+      if (served !== undefined) return served;
     } catch {
       this.closeDatabase();
       this.catalogInvalid = true;
     }
     return withDurableFileLock(this.rebuildLockPath, () => {
       try {
-        if (this.isFresh()) return this.readEntries();
+        const served = this.serveIfServable();
+        if (served !== undefined) return served;
       } catch {
         this.closeDatabase();
         this.catalogInvalid = true;
@@ -112,6 +121,18 @@ export class FileDurableCatalog {
       try { return this.scanAndPublishSync(scan); }
       finally { this.rebuilding = false; }
     });
+  }
+
+  /**
+   * Await any scheduled background reconcile to drain, then force one final
+   * reconcile so the catalog is guaranteed converged against the current
+   * directory state. Test/strong-consistency seam only.
+   */
+  async whenReconciled(scan: AsyncScan, repairDirty: RepairDirty = NO_REPAIR): Promise<DurableWorkflowCatalogEntries> {
+    this.reconcileScan = scan;
+    this.repairDirtyFn = repairDirty;
+    await this.reconciler.drain();
+    return this.reconcileAsync(scan);
   }
 
   markDirty(workflowId: string): void {
@@ -132,7 +153,7 @@ export class FileDurableCatalog {
     }
     this.coordinatedWrite((database) => {
       const update = database.transaction(() => {
-        this.upsert(database, source);
+        upsertCatalogRow(database, source);
         database.query<never, [string]>("DELETE FROM dirty_runs WHERE workflow_id = ?").run(workflowId);
       });
       update();
@@ -160,43 +181,119 @@ export class FileDurableCatalog {
     this.catalogInvalid = false;
   }
 
-  private async rebuildAsync(
-    scan: () => Promise<readonly FileCatalogSource[]>,
-  ): Promise<DurableWorkflowCatalogEntries> {
+  /** Journaled dirty ids awaiting targeted repair (crash-safety, O(dirty)). */
+  dirtyIds(): readonly string[] {
+    return this.openDatabase()
+      .query<DirtyIdSqlRow, []>("SELECT workflow_id FROM dirty_runs")
+      .all().map((row) => row.workflow_id);
+  }
+
+  /** Monotone self-write watermark (coalescing / diagnostics; never a gate). */
+  generation(): number {
+    try {
+      const value = Number(this.getMeta(this.openDatabase(), "generation") ?? "0");
+      return Number.isFinite(value) ? value : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Serve indexed rows when servable, repairing journaled dirty ids in place
+   * first (targeted, never a scan). Returns undefined when a cold rebuild is
+   * required; schedules a background reconcile on drift (never a sync scan).
+   */
+  private serveIfServable(): DurableWorkflowCatalogEntries | undefined {
+    const state = timeCatalogPhase("freshness", () => this.serveState(), (result) => result);
+    if (state === "cold") return undefined;
+    if (state === "dirty") {
+      const ids = this.dirtyIds();
+      timeCatalogPhase("dirty-repair", () => this.repairDirtyFn(ids), () => `ids:${ids.length}`);
+      if (this.serveState() !== "servable") return undefined;
+    }
+    const entries = timeCatalogPhase(
+      "sql-query",
+      () => readCatalogEntries(this.openDatabase()),
+      (result) => `resumable:${result.resumable.length} completed:${result.completed.length}`,
+    );
+    if (this.needsReconcile()) this.scheduleReconcile();
+    return entries;
+  }
+
+  private scheduleReconcile(): void {
+    this.reconciler.schedule();
+  }
+
+  private async runReconcile(): Promise<void> {
+    const scan = this.reconcileScan;
+    if (scan === undefined) return;
+    await this.reconcileAsync(scan);
+  }
+
+  /**
+   * Background out-of-band reconcile. Reuses the cold-rebuild lock nest, but
+   * (unlike {@link rebuildAsync}) does not short out on a servable-but-drifted
+   * catalog — it must scan to absorb external changes. When the signature
+   * already matches, the scan is skipped (coalesced follow-ups → O(1) scans).
+   */
+  private async reconcileAsync(scan: AsyncScan): Promise<DurableWorkflowCatalogEntries> {
     return withDurableFileLockAsync(this.rebuildLockPath, async () => {
       try {
-        if (this.isFresh()) return this.readEntries();
+        if (!this.needsReconcile() && this.serveState() === "servable") {
+          return timeCatalogPhase("sql-query", () => readCatalogEntries(this.openDatabase()));
+        }
       } catch {
         this.closeDatabase();
         this.catalogInvalid = true;
       }
       this.rebuilding = true;
       try {
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          const directoryBefore = await withDurableFileLockAsync(this.publishLockPath, () => {
-            rmSync(this.rebuildMarker, { force: true });
-            return this.directorySignature();
-          });
-          const sources = await scan();
-          const published = await withDurableFileLockAsync(this.publishLockPath, () => {
-            const directoryAfter = this.directorySignature();
-            const unstable = directoryBefore !== directoryAfter || existsSync(this.rebuildMarker);
-            if (unstable && attempt === 0) return undefined;
-            return this.publishRebuild(sources, !unstable, directoryAfter);
-          });
-          if (published !== undefined) return published;
-        }
-        return withDurableFileLockAsync(this.publishLockPath, () =>
-          this.publishRebuild([], false, this.directorySignature()));
+        return await timeCatalogPhaseAsync(
+          "background-reconcile",
+          () => this.runScanPublishAsync(scan),
+          (result) => `resumable:${result.resumable.length}`,
+        );
       } finally {
         this.rebuilding = false;
       }
     });
   }
 
-  private scanAndPublishSync(
-    scan: () => readonly FileCatalogSource[],
-  ): DurableWorkflowCatalogEntries {
+  private async rebuildAsync(scan: AsyncScan): Promise<DurableWorkflowCatalogEntries> {
+    return withDurableFileLockAsync(this.rebuildLockPath, async () => {
+      try {
+        const served = this.serveIfServable();
+        if (served !== undefined) return served;
+      } catch {
+        this.closeDatabase();
+        this.catalogInvalid = true;
+      }
+      this.rebuilding = true;
+      try { return await this.runScanPublishAsync(scan); }
+      finally { this.rebuilding = false; }
+    });
+  }
+
+  private async runScanPublishAsync(scan: AsyncScan): Promise<DurableWorkflowCatalogEntries> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const directoryBefore = await withDurableFileLockAsync(this.publishLockPath, () => {
+        rmSync(this.rebuildMarker, { force: true });
+        return this.directorySignature();
+      });
+      const sources = await timeCatalogPhaseAsync("resource-discovery", scan, (result) => `files:${result.length}`);
+      const published = await withDurableFileLockAsync(this.publishLockPath, () => {
+        const directoryAfter = this.directorySignature();
+        const unstable = directoryBefore !== directoryAfter || existsSync(this.rebuildMarker);
+        if (unstable && attempt === 0) return undefined;
+        return this.publishRebuild(sources, !unstable, directoryAfter);
+      });
+      if (published !== undefined) return published;
+    }
+    return withDurableFileLockAsync(this.publishLockPath, () =>
+      this.publishRebuild([], false, this.directorySignature()));
+  }
+
+  private scanAndPublishSync(scan: SyncScan): DurableWorkflowCatalogEntries {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const directoryBefore = withDurableFileLock(this.publishLockPath, () => {
         rmSync(this.rebuildMarker, { force: true });
@@ -238,90 +335,53 @@ export class FileDurableCatalog {
     const rebuild = database.transaction(() => {
       database.run("DELETE FROM runs");
       database.run("DELETE FROM dirty_runs");
-      for (const source of sources) this.upsert(database, source);
+      for (const source of sources) upsertCatalogRow(database, source);
       for (const [workflowId, source] of this.pendingMutations) {
         if (source === null) {
           database.query<never, [string]>("DELETE FROM runs WHERE workflow_id = ?").run(workflowId);
         } else {
-          this.upsert(database, source);
+          upsertCatalogRow(database, source);
         }
       }
       this.setMeta(database, "schema_version", String(CATALOG_SCHEMA_VERSION));
       this.setMeta(database, "complete", complete ? "1" : "0");
-      this.setMeta(database, "directory_mtime_ms", directorySignature);
+      // D1: the reconciled directory signature is advanced ONLY here (full/
+      // background reconcile), never by incremental sync/remove — otherwise a
+      // self-write could bless an externally-interleaved deletion.
+      this.setMeta(database, "reconciled_dir_signature", directorySignature);
+      this.bumpGeneration(database);
     });
     rebuild();
     this.pendingMutations.clear();
     this.catalogInvalid = false;
     if (!complete) this.writeRebuildMarker();
-    return this.readEntries();
+    return readCatalogEntries(database);
   }
 
-  private isFresh(): boolean {
-    if (existsSync(this.rebuildMarker)) return false;
+  /**
+   * Synchronous integrity gate (contract §3). Purely index-local: no directory
+   * signature term. `cold` → rebuild; `dirty` → targeted repair then serve;
+   * `servable` → serve indexed rows immediately.
+   */
+  private serveState(): "cold" | "dirty" | "servable" {
+    if (existsSync(this.rebuildMarker)) return "cold";
     const database = this.openDatabase();
     if (this.getMeta(database, "schema_version") !== String(CATALOG_SCHEMA_VERSION)) {
       this.catalogInvalid = true;
-      return false;
+      return "cold";
     }
-    if (this.getMeta(database, "complete") !== "1") return false;
-    if (this.getMeta(database, "directory_mtime_ms") !== this.directorySignature()) return false;
+    if (this.getMeta(database, "complete") !== "1") return "cold";
     const dirty = database.query<CountSqlRow, []>("SELECT COUNT(*) AS count FROM dirty_runs").get();
-    return dirty?.count === 0;
+    return (dirty?.count ?? 0) > 0 ? "dirty" : "servable";
   }
 
-  private readEntries(): DurableWorkflowCatalogEntries {
-    const rows = this.openDatabase().query<CatalogSqlRow, []>(`
-      SELECT workflow_id, name, status, completed_checkpoints, pending_prompts,
-        created_at, updated_at, label, root_workflow_id, resumable,
-        invocation_cwd, workflow_cwd, repository_root, git_worktree_root,
-        completed_openable, state_file, state_mtime_ms, state_size
-      FROM runs ORDER BY updated_at DESC, workflow_id ASC
-    `).all();
-    const entries = rows.map(entryFromSqlRow);
-    const completedAll = rows.flatMap((row, index) =>
-      row.status === "completed" && row.completed_checkpoints > 0
-        && (row.root_workflow_id === null || row.root_workflow_id === row.workflow_id)
-        ? [entries[index]!] : []);
-    const openableCompletedIds = new Set(
-      rows.filter((row) => row.completed_openable === 1).map((row) => row.workflow_id),
-    );
-    return {
-      resumable: entries.filter(isDurableWorkflowResumable),
-      completed: completedAll.filter((entry) => openableCompletedIds.has(entry.workflowId)),
-      completedAll,
-    };
-  }
-
-  private upsert(database: Database, source: FileCatalogSource): void {
-    const handle = source.record.handle;
-    database.query<never, CatalogInsertParams>(`
-      INSERT INTO runs (
-        workflow_id, name, status, completed_checkpoints, pending_prompts,
-        created_at, updated_at, label, root_workflow_id, resumable,
-        invocation_cwd, workflow_cwd, repository_root, git_worktree_root,
-        completed_openable, state_file, state_mtime_ms, state_size
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workflow_id) DO UPDATE SET
-        name=excluded.name, status=excluded.status,
-        completed_checkpoints=excluded.completed_checkpoints,
-        pending_prompts=excluded.pending_prompts, created_at=excluded.created_at,
-        updated_at=excluded.updated_at, label=excluded.label,
-        root_workflow_id=excluded.root_workflow_id, resumable=excluded.resumable,
-        invocation_cwd=excluded.invocation_cwd, workflow_cwd=excluded.workflow_cwd,
-        repository_root=excluded.repository_root, git_worktree_root=excluded.git_worktree_root,
-        completed_openable=excluded.completed_openable, state_file=excluded.state_file,
-        state_mtime_ms=excluded.state_mtime_ms, state_size=excluded.state_size
-    `).run(
-      handle.workflowId, handle.name, handle.status, handle.completedCheckpoints,
-      handle.pendingPrompts, handle.createdAt, handle.updatedAt,
-      handle.label ?? null, handle.rootWorkflowId ?? null,
-      handle.resumable === undefined ? null : handle.resumable ? 1 : 0,
-      handle.invocationCwd ?? null, handle.workflowCwd ?? null,
-      handle.repositoryRoot ?? null, handle.gitWorktreeRoot ?? null,
-      source.completedOpenable ? 1 : 0, source.stateFile,
-      source.stateMtimeMs, source.stateSize,
-    );
+  /** Non-gating drift hint: only ever schedules a background reconcile. */
+  private needsReconcile(): boolean {
+    try {
+      return this.getMeta(this.openDatabase(), "reconciled_dir_signature") !== this.directorySignature();
+    } catch {
+      return true;
+    }
   }
 
   private openDatabase(): Database {
@@ -349,6 +409,7 @@ export class FileDurableCatalog {
         `);
         this.setMeta(database, "schema_version", String(CATALOG_SCHEMA_VERSION));
         this.setMeta(database, "complete", "0");
+        this.setMeta(database, "generation", "0");
       }
       try {
         chmodSync(this.catalogDir, 0o700);
@@ -376,11 +437,21 @@ export class FileDurableCatalog {
     try {
       withDurableFileLock(this.publishLockPath, () => {
         if (this.noteConcurrentRebuild()) return;
-        this.advisoryWrite(operation);
+        // D3: every coordinated self-write advances the monotone generation in
+        // the same publish-locked transaction as the row mutation.
+        this.advisoryWrite((database) => {
+          operation(database);
+          this.bumpGeneration(database);
+        });
       });
     } catch {
       this.writeRebuildMarker();
     }
+  }
+
+  private bumpGeneration(database: Database): void {
+    const current = Number(this.getMeta(database, "generation") ?? "0");
+    this.setMeta(database, "generation", String(Number.isFinite(current) ? current + 1 : 1));
   }
 
   private noteConcurrentRebuild(): boolean {
@@ -422,23 +493,4 @@ export class FileDurableCatalog {
     rmSync(`${this.databasePath}-wal`, { force: true });
     rmSync(`${this.databasePath}-shm`, { force: true });
   }
-}
-
-function entryFromSqlRow(row: CatalogSqlRow): ResumableWorkflowEntry {
-  return {
-    workflowId: row.workflow_id,
-    name: row.name,
-    status: row.status,
-    completedCheckpoints: row.completed_checkpoints,
-    pendingPrompts: row.pending_prompts,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    ...(row.label !== null ? { label: row.label } : {}),
-    ...(row.root_workflow_id !== null ? { rootWorkflowId: row.root_workflow_id } : {}),
-    ...(row.resumable !== null ? { resumable: row.resumable === 1 } : {}),
-    ...(row.invocation_cwd !== null ? { invocationCwd: row.invocation_cwd } : {}),
-    ...(row.workflow_cwd !== null ? { workflowCwd: row.workflow_cwd } : {}),
-    ...(row.repository_root !== null ? { repositoryRoot: row.repository_root } : {}),
-    ...(row.git_worktree_root !== null ? { gitWorktreeRoot: row.git_worktree_root } : {}),
-  };
 }

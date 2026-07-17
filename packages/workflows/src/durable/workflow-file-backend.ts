@@ -103,13 +103,30 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
     this.syncCatalog(workflowId);
   }
 
-  listResumableWorkflows() { return this.catalog.list(() => this.scanCatalogSync()).resumable; }
+  listResumableWorkflows() {
+    return this.catalog.list(
+      () => this.scanCatalogSync(),
+      (ids) => this.repairDirtyIds(ids),
+      () => this.scanCatalog(),
+    ).resumable;
+  }
   listCompletedWorkflows() {
-    const catalog = this.catalog.list(() => this.scanCatalogSync());
+    const catalog = this.catalog.list(
+      () => this.scanCatalogSync(),
+      (ids) => this.repairDirtyIds(ids),
+      () => this.scanCatalog(),
+    );
     return catalog.completedAll ?? catalog.completed;
   }
   prepareWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
-    return this.catalog.prepare(() => this.scanCatalog());
+    return this.catalog.prepare(() => this.scanCatalog(), (ids) => this.repairDirtyIds(ids));
+  }
+  /**
+   * Await the coalesced background reconcile to converge against the current
+   * durable directory (test / strong-consistency seam; the picker never awaits).
+   */
+  reconcileWorkflowCatalog(): Promise<DurableWorkflowCatalogEntries> {
+    return this.catalog.whenReconciled(() => this.scanCatalog(), (ids) => this.repairDirtyIds(ids));
   }
   repairWorkflowCatalogEntry(workflowId: string): void { this.syncCatalog(workflowId); }
   toCacheEntry(workflowId: string) { return this.backendFor(workflowId).toCacheEntry(workflowId); }
@@ -222,6 +239,15 @@ export class WorkflowFileDurableBackend implements DurableWorkflowBackend {
       return;
     }
     this.catalog.sync(this.catalogSource(record, filePath, new Map()));
+  }
+
+  /**
+   * Targeted crash repair: re-derive each journaled dirty id from its single
+   * authoritative state file (O(dirty)), never enumerating the directory. Wired
+   * into the catalog's servable-but-dirty serve path.
+   */
+  private repairDirtyIds(ids: readonly string[]): void {
+    for (const id of ids) this.syncCatalog(id);
   }
 
   private catalogSource(record: FileDurableRecord, filePath: string, transcriptCache: Map<string, boolean>): FileCatalogSource {
