@@ -334,7 +334,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
     const { ctx, messages } = buildPrintCtx();
     await commands["workflow"]!.options.handler(`resume ${runId}`, ctx);
     assert.equal(customCalls.length, 0);
-    assert.match(messages.join("\n"), /No durable workflow|No completed durable workflow|stale/);
+    assert.match(messages.join("\n"), /No resumable workflow|No durable workflow|No completed durable workflow|stale/);
   });
 });
 
