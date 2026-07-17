@@ -3,7 +3,7 @@
  */
 
 import { Type } from "typebox";
-import { MAX_PARALLEL_TASKS, SUBAGENT_ACTIONS } from "../shared/types.ts";
+import { MAX_PARALLEL_TASKS, MAX_SUBAGENT_NESTING_DEPTH, SUBAGENT_ACTIONS } from "../shared/types.ts";
 
 const SkillOverride = Type.Unsafe({
 	anyOf: [
@@ -92,7 +92,7 @@ const DynamicExpandSchema = Type.Object({
 	}, { additionalProperties: false }),
 	item: Type.Optional(Type.String({ description: "Template variable name for each item. Defaults to item." })),
 	key: Type.Optional(Type.String({ description: "JSON Pointer relative to each item for stable child ids." })),
-	maxItems: Type.Optional(Type.Integer({ minimum: 0 })),
+	maxItems: Type.Optional(Type.Integer({ minimum: 0, description: "Required fanout bound unless configured globally." })),
 	onEmpty: Type.Optional(Type.String({ enum: ["skip", "fail"], description: "Empty input behavior. Defaults to skip." })),
 }, { additionalProperties: false });
 
@@ -142,7 +142,7 @@ const ChainItem = Type.Object({
 	})),
 	expand: Type.Optional(DynamicExpandSchema),
 	collect: Type.Optional(DynamicCollectSchema),
-	concurrency: Type.Optional(Type.Number()),
+	concurrency: Type.Optional(Type.Number({ description: "Max concurrent tasks (default: 4)" })),
 	failFast: Type.Optional(Type.Boolean({ description: "Stop on first failure (default: false)" })),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task."
@@ -196,13 +196,13 @@ export const SubagentParams = Type.Object({
 			{ type: "object", additionalProperties: true },
 			{ type: "string" },
 		],
-		description: `Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON.`
+		description: `Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth (integer >= 0, clamped to ${MAX_SUBAGENT_NESTING_DEPTH}). Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON.`
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, {
 		maxItems: MAX_PARALLEL_TASKS,
-		description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...].",
+		description: `PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]. Maximum ${MAX_PARALLEL_TASKS} tasks after count expansion.`,
 	})),
-	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only." })),
+	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +

@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Matched coding-agent `/resume` retention semantics for workflow history: all eligible durable runs remain searchable regardless of age or count, with no automatic history GC; the 10-row selector viewport remains display-only.
 
 ### Removed
-- Removed prescriptive post-launch workflow supervision and prompt-level orchestration resource-limit guidance from the default model prompt and repository release workflow messages.
+- Removed prescriptive post-launch workflow supervision guidance from the default model prompt and repository release workflow messages.
 
 ### Fixed
 

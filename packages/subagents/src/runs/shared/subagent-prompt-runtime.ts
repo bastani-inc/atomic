@@ -22,6 +22,9 @@ export const CHILD_SUBAGENT_BOUNDARY_INSTRUCTIONS = [
 export const CHILD_FANOUT_BOUNDARY_INSTRUCTIONS = [
 	"You are a child subagent with explicit fanout responsibility for this assigned task.",
 	"The parent session owns final orchestration, completion decisions, and follow-up implementation launches.",
+	"You may use the `subagent` tool only for the fanout work explicitly requested in this task.",
+	"Do not broaden yourself into general parent orchestration. Do not launch follow-up workers unless the task explicitly asks for that.",
+	"The maxSubagentDepth cap still applies and may block further fanout.",
 	"If you need to edit files, call the actual edit/write tools. Do not print tool-call syntax, patches, or pseudo-tool calls as text.",
 ].join("\n");
 
