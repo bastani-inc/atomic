@@ -150,12 +150,19 @@ test.serial("blocking extension initialization cannot delay creation of the inte
 		interactiveEngine: { onDiagnostic: resolveDiagnostic },
 	});
 	try {
-		const startedAt = performance.now();
-		await client.start();
-		assert.ok(performance.now() - startedAt < 800, "host creation waited for blocking extension initialization");
+		let bound = false;
+		// `start()` initializes the monitor synchronously before awaiting
+		// engine_ready, so capture engine_bound concurrently. The invariant we
+		// care about is ordering, not an OS-specific absolute spawn budget:
+		// host readiness MUST resolve while the deliberately blocking extension
+		// initialization is still pending.
+		const startPromise = client.start();
+		const boundPromise = client.waitForInteractiveEngineBound().then(() => { bound = true; });
+		await startPromise;
+		assert.equal(bound, false, "host creation waited for blocking extension initialization");
 		const diagnostic = await diagnosticPromise;
 		assert.equal(diagnostic.level, "blocking");
-		await client.waitForInteractiveEngineBound();
+		await boundPromise;
 	} finally {
 		await client.stop();
 		clearInterval(heartbeat);
