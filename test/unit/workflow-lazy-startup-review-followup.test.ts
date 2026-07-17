@@ -108,7 +108,12 @@ describe("workflow lazy-startup review follow-up fixes", () => {
           // confirm the picker stayed open the whole time.
           const component = (factoryArg as SelectorFactory)({ requestRender: () => undefined }, {}, {}, () => undefined);
           void (async () => {
-            for (let attempt = 0; attempt < 50 && refreshCalls === 0; attempt += 1) {
+            // Wait on a generous wall-clock deadline (not a fixed tick count):
+            // under a loaded event loop the async loader's failure can take many
+            // more than a handful of setImmediate turns to land, so a small tick
+            // budget makes this cancel prematurely and flake.
+            const deadline = Date.now() + 5_000;
+            while (refreshCalls === 0 && Date.now() < deadline) {
               await new Promise((resolve) => setImmediate(resolve));
             }
             component.handleInput?.("\u001b");
