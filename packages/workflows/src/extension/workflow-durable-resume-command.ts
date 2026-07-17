@@ -132,15 +132,15 @@ export async function handleDurableResume(
   const picked = await openWorkflowResumeSelector(
     ctx.ui,
     [],
-    catalog.resumable,
-    catalog.completed,
+    // Catalog already prepared above; resolve it immediately with no rescan.
+    () => Promise.resolve({ durable: catalog.resumable, completed: catalog.completed }),
     { deleteWorkflow: deleteWorkflowResumeEntry },
   );
-  if (picked.kind === "durable") {
-    return resumeDurableTarget(picked.workflowId, ctx, reporter, deps, runtime);
+  if (picked.result.kind === "durable") {
+    return resumeDurableTarget(picked.result.workflowId, ctx, reporter, deps, runtime);
   }
-  if (picked.kind === "completed") {
-    return openCompletedTarget(picked.workflowId, catalog.completed, ctx, reporter, deps, runtime);
+  if (picked.result.kind === "completed") {
+    return openCompletedTarget(picked.result.workflowId, catalog.completed, ctx, reporter, deps, runtime);
   }
   return true;
 }

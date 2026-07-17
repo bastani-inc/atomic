@@ -226,14 +226,17 @@ InteractiveModeBase.prototype.showSessionSelector = function(this: InteractiveMo
                 onProgress,
               ),
         async (sessionPath) => {
+          selector.dispose();
           done();
           await this.handleResumeSession(sessionPath);
         },
         () => {
+          selector.dispose();
           done();
           this.ui.requestRender();
         },
         () => {
+          selector.dispose();
           void this.shutdown();
         },
         () => this.ui.requestRender(),

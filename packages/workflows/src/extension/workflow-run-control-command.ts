@@ -238,40 +238,38 @@ export async function handleRunControlCommand(
             )
             .map((run) => run.id),
         );
-        await ensureWorkflowResourcesVisible();
-        const runtime = deps.runtimeForContext(ctx);
-        let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        let completedEntries: readonly ResumableWorkflowEntry[] = [];
-        try {
-          const catalog = await prepareWorkflowResumeCatalog(runtime, activeLiveIds);
-          durableEntries = catalog.resumable;
-          completedEntries = catalog.completed;
-        } catch (error) {
-          liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (liveRuns.length === 0) {
-            fail(`Failed to list workflow resume targets: ${errorMessage}`);
-            return true;
-          }
-        }
+        // Mount the picker before any resource/catalog loading. Live rows seed the
+        // first frame; durable/completed rows hydrate asynchronously and merge in.
+        // The RPC prompt carrying this slash command no longer times out while the
+        // picker awaits (long-lived command classification in RpcClient).
         liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
+        const runtime = deps.runtimeForContext(ctx);
+        const hydrate = async (): Promise<{
+          durable: readonly ResumableWorkflowEntry[];
+          completed: readonly ResumableWorkflowEntry[];
+        }> => {
+          await ensureWorkflowResourcesVisible();
+          const catalog = await prepareWorkflowResumeCatalog(runtime, activeLiveIds);
+          return { durable: catalog.resumable, completed: catalog.completed };
+        };
         const picked = await openWorkflowResumeSelector(
           ctx.ui,
           liveRuns,
-          durableEntries,
-          completedEntries,
+          hydrate,
           { deleteWorkflow: deleteWorkflowResumeEntry },
         );
-        if (picked.kind === "durable" || picked.kind === "completed") {
-          return await handleDurableResume(picked.workflowId, ctx, reporter, deps, {
+        const durableEntries = picked.catalog.durable;
+        const completedEntries = picked.catalog.completed;
+        if (picked.result.kind === "durable" || picked.result.kind === "completed") {
+          return await handleDurableResume(picked.result.workflowId, ctx, reporter, deps, {
             resumable: durableEntries,
             completed: completedEntries,
           });
         }
-        if (picked.kind === "live") {
-          const resolved = resolveRunIdPrefix(picked.runId);
+        if (picked.result.kind === "live") {
+          const resolved = resolveRunIdPrefix(picked.result.runId);
           if (resolved.kind !== "exact") {
-            fail(`Run not found: ${picked.runId}`);
+            fail(`Run not found: ${picked.result.runId}`);
             return true;
           }
           const run = store.runs().find((r) => r.id === resolved.runId);
@@ -291,7 +289,7 @@ export async function handleRunControlCommand(
                 fail(result.message ?? ("Partially resumed " + result.runId + "."));
               } else {
                 if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
+                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.result.runId}`);
               }
             } catch (error) {
               fail(`Failed to resume run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`);

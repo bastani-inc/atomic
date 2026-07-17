@@ -113,34 +113,72 @@ export function workflowResumeSelectorItems(
   ].sort(compareResumeItemsByRecency);
 }
 
+export interface WorkflowResumeCatalogRows {
+  readonly durable: readonly ResumableWorkflowEntry[];
+  readonly completed: readonly ResumableWorkflowEntry[];
+}
+
+/**
+ * Lazily produces the durable/completed catalog. Invoked at most once, after the
+ * selector has already mounted with live rows, so resource/catalog loading stays
+ * off the command's synchronous mount path.
+ */
+export type WorkflowResumeHydrate = () => Promise<WorkflowResumeCatalogRows>;
+
+export interface OpenWorkflowResumeSelectorResult {
+  readonly result: WorkflowResumeSelectorResult;
+  /** The catalog resolved by hydrate(), for follow-on resume without a rescan. */
+  readonly catalog: WorkflowResumeCatalogRows;
+}
+
+const EMPTY_CATALOG: WorkflowResumeCatalogRows = { durable: [], completed: [] };
+
 export function openWorkflowResumeSelector(
   ui: WorkflowResumeSelectorUiSurface,
   liveRuns: readonly RunSnapshot[],
-  durableEntries: readonly ResumableWorkflowEntry[],
-  completedEntries: readonly ResumableWorkflowEntry[] = [],
+  hydrate: WorkflowResumeHydrate,
   options: WorkflowResumeSelectorOptions = {},
-): Promise<WorkflowResumeSelectorResult> {
+): Promise<OpenWorkflowResumeSelectorResult> {
   const custom = ui.custom;
-  if (typeof custom !== "function") return Promise.resolve({ kind: "close" });
+  if (typeof custom !== "function") {
+    return Promise.resolve({ result: { kind: "close" }, catalog: EMPTY_CATALOG });
+  }
 
-  const items = workflowResumeSelectorItems(liveRuns, durableEntries, completedEntries);
+  // Frame-1 seed: cheap in-memory live rows only. Durable/completed rows merge in
+  // once the async hydrate() resolves; errors keep the live rows on screen.
+  const liveItems = workflowResumeSelectorItems(liveRuns, [], []);
+  let sessions = liveItems.map((item) => item.session);
+  let resultByPath = new Map(liveItems.map((item) => [item.session.path, item.result]));
+  let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
 
-  const resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
-  let sessions = items.map((item) => item.session);
-  const loadSessions = async (onProgress?: (loaded: number, total: number) => void): Promise<SessionInfo[]> => {
+  // Hydrate at most once even though both scope loaders point at it.
+  let hydratePromise: Promise<WorkflowResumeCatalogRows> | undefined;
+  const hydrateOnce = (): Promise<WorkflowResumeCatalogRows> => (hydratePromise ??= hydrate());
+
+  const loadSessions = async (
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<SessionInfo[]> => {
+    const catalog = await hydrateOnce();
+    resolvedCatalog = catalog;
+    const items = workflowResumeSelectorItems(liveRuns, catalog.durable, catalog.completed);
+    sessions = items.map((item) => item.session);
+    resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
     onProgress?.(sessions.length, sessions.length);
     return [...sessions];
   };
 
-  return new Promise<WorkflowResumeSelectorResult>((resolve) => {
+  return new Promise<OpenWorkflowResumeSelectorResult>((resolve) => {
     let settled = false;
+    let activeSelector: SessionSelectorComponent | undefined;
     const settle = (result: WorkflowResumeSelectorResult, done?: (result: undefined) => void): void => {
       if (settled) return;
       settled = true;
+      // Cancel any late hydration/render and clear status timeouts.
+      activeSelector?.dispose();
       try {
         done?.(undefined);
       } finally {
-        resolve(result);
+        resolve({ result, catalog: resolvedCatalog });
       }
     };
 
@@ -157,8 +195,12 @@ export function openWorkflowResumeSelector(
         () => settle({ kind: "close" }, done),
         () => settle({ kind: "close" }, done),
         () => tui.requestRender?.(),
-        { showRenameHint: false },
+        {
+          showRenameHint: false,
+          initialSessions: sessions.length > 0 ? [...sessions] : undefined,
+        },
       );
+      activeSelector = selector;
       const sessionList = selector.getSessionList();
       sessionList.onDeleteSession = async (path) => {
         const target = resultByPath.get(path);

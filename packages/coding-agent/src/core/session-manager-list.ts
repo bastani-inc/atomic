@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { readdir, readFile, stat } from "fs/promises";
 import { join } from "path";
 import { getSessionsDir } from "../config.ts";
+import { yieldToEventLoopIfSlow } from "../utils/event-loop.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { classifiedWorkflowMetadata } from "./session-manager-classification.ts";
 import { parseSessionEntries } from "./session-manager-migrations.ts";
@@ -76,10 +77,77 @@ function getSessionModifiedDate(entries: FileEntry[], header: SessionHeader, sta
 	return !Number.isNaN(headerTime) ? new Date(headerTime) : statsMtime;
 }
 
+// A single very large transcript is parsed in bounded cooperative chunks so the
+// synchronous JSON.parse-per-line loop yields to terminal input, timers, and
+// render work instead of freezing the host. Smaller files stay on the cheaper
+// fully-synchronous fast path.
+const COOPERATIVE_PARSE_CONTENT_BYTES = 512 * 1024;
+const PARSE_YIELD_EVERY_LINES = 2000;
+
+// Directory listings walk files in bounded batches, yielding between batches so
+// large session folders cannot starve the event loop during a scan.
+const LIST_FILE_BATCH_SIZE = 24;
+
+async function parseSessionEntriesCooperatively(content: string): Promise<FileEntry[]> {
+	const entries: FileEntry[] = [];
+	const lines = content.trim().split("\n");
+	let startedAt = Date.now();
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index]!;
+		if (line.trim()) {
+			try {
+				entries.push(JSON.parse(line) as FileEntry);
+			} catch {
+				// Skip malformed lines, matching parseSessionEntries.
+			}
+		}
+		if ((index + 1) % PARSE_YIELD_EVERY_LINES === 0) {
+			await yieldToEventLoopIfSlow(startedAt);
+			startedAt = Date.now();
+		}
+	}
+	return entries;
+}
+
+/**
+ * Parse + summarize session files in bounded batches, yielding between batches
+ * so a large directory scan never blocks the TUI event loop. Progress is
+ * reported per file via onFileDone, matching the previous eager Promise.all.
+ */
+async function mapSessionFilesCooperatively(
+	files: readonly string[],
+	includeInternal: boolean,
+	onFileDone: () => void,
+): Promise<(SessionInfo | null)[]> {
+	const results: (SessionInfo | null)[] = [];
+	for (let offset = 0; offset < files.length; offset += LIST_FILE_BATCH_SIZE) {
+		const batch = files.slice(offset, offset + LIST_FILE_BATCH_SIZE);
+		const startedAt = Date.now();
+		const batchResults = await Promise.all(
+			batch.map(async (file) => {
+				// Prefilter via the header so hidden/internal sessions are skipped
+				// before the expensive full-transcript parse in buildSessionInfo.
+				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
+					onFileDone();
+					return null;
+				}
+				const info = await buildSessionInfo(file);
+				onFileDone();
+				return info;
+			}),
+		);
+		for (const info of batchResults) results.push(info);
+		await yieldToEventLoopIfSlow(startedAt);
+	}
+	return results;
+}
+
 async function buildSessionInfo(filePath: string): Promise<SessionInfo | null> {
 	try {
 		const content = await readFile(filePath, "utf8");
-		const entries = parseSessionEntries(content);
+		const entries = content.length > COOPERATIVE_PARSE_CONTENT_BYTES
+			? await parseSessionEntriesCooperatively(content)
+			: parseSessionEntries(content);
 
 		if (entries.length === 0) return null;
 		const header = entries[0];
@@ -158,21 +226,10 @@ export async function listSessionsFromDir(
 		const total = progressTotal ?? files.length;
 
 		let loaded = 0;
-		const results = await Promise.all(
-			files.map(async (file) => {
-				// Prefilter via the header so hidden/internal sessions are skipped
-				// before the expensive full-transcript parse in buildSessionInfo.
-				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
-					loaded++;
-					onProgress?.(progressOffset + loaded, total);
-					return null;
-				}
-				const info = await buildSessionInfo(file);
-				loaded++;
-				onProgress?.(progressOffset + loaded, total);
-				return info;
-			}),
-		);
+		const results = await mapSessionFilesCooperatively(files, includeInternal, () => {
+			loaded++;
+			onProgress?.(progressOffset + loaded, total);
+		});
 		for (const info of results) {
 			if (info && (includeInternal || !info.internal)) {
 				sessions.push(info);
@@ -242,21 +299,10 @@ export async function listAllSessions(
 		const sessions: SessionInfo[] = [];
 		const allFiles = dirFiles.flat();
 
-		const results = await Promise.all(
-			allFiles.map(async (file) => {
-				// Prefilter via the header so hidden/internal sessions are skipped
-				// before the expensive full-transcript parse in buildSessionInfo.
-				if (!includeInternal && isInternalHeader(readSessionHeader(file))) {
-					loaded++;
-					progress?.(loaded, totalFiles);
-					return null;
-				}
-				const info = await buildSessionInfo(file);
-				loaded++;
-				progress?.(loaded, totalFiles);
-				return info;
-			}),
-		);
+		const results = await mapSessionFilesCooperatively(allFiles, includeInternal, () => {
+			loaded++;
+			progress?.(loaded, totalFiles);
+		});
 
 		for (const info of results) {
 			if (info && (includeInternal || !info.internal)) {

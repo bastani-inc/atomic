@@ -1,11 +1,72 @@
-import { describe, test } from "bun:test";
+import { beforeAll, describe, test } from "bun:test";
 import assert from "node:assert/strict";
+import { initTheme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
   openWorkflowResumeSelector,
   workflowResumeSelectorItems,
+  type OpenWorkflowResumeSelectorResult,
+  type WorkflowResumeCatalogRows,
 } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
+import type {
+  PiCustomComponent,
+  PiCustomOverlayFactory,
+  PiCustomOverlayFactoryTui,
+  PiCustomOverlayFunction,
+} from "../../packages/workflows/src/extension/wiring.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flush(times = 6): Promise<void> {
+  for (let index = 0; index < times; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+function stripAnsi(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/\u001b\[[0-9;]*m/g, "");
+}
+
+interface MountedSelector {
+  readonly promise: Promise<OpenWorkflowResumeSelectorResult>;
+  readonly component: () => PiCustomComponent;
+}
+
+function mountSelector(
+  liveRuns: readonly RunSnapshot[],
+  hydrate: () => Promise<WorkflowResumeCatalogRows>,
+): MountedSelector {
+  let mounted: PiCustomComponent | undefined;
+  const custom: PiCustomOverlayFunction = (factory: PiCustomOverlayFactory) =>
+    new Promise<undefined>((resolveCustom) => {
+      const tui: PiCustomOverlayFactoryTui = { requestRender: () => {} };
+      const built = factory(tui, undefined, undefined, () => resolveCustom(undefined));
+      if (built instanceof Promise) void built.then((component) => { mounted = component; });
+      else mounted = built;
+    });
+  const promise = openWorkflowResumeSelector({ custom }, liveRuns, hydrate, {});
+  return {
+    promise,
+    component: () => {
+      if (mounted === undefined) throw new Error("selector not mounted");
+      return mounted;
+    },
+  };
+}
+
+function renderText(component: PiCustomComponent, width = 120): string {
+  return stripAnsi(component.render(width).join("\n"));
+}
 
 function entry(
   id: string,
@@ -49,6 +110,10 @@ function pausedLiveRun(id = "live-paused", activityAt = 100): RunSnapshot {
 }
 
 describe("workflow resume selector", () => {
+  beforeAll(() => {
+    initTheme("dark");
+  });
+
   test("globally orders mixed rows and renders completed rows with a green semantic", () => {
     const items = workflowResumeSelectorItems(
       [pausedLiveRun()],
@@ -135,14 +200,72 @@ describe("workflow resume selector", () => {
   });
 
   test("closes when the custom selector mount throws or rejects", async () => {
+    const noCatalog = async (): Promise<WorkflowResumeCatalogRows> => ({ durable: [], completed: [] });
     const thrown = await openWorkflowResumeSelector({
       custom: () => { throw new Error("mount failed"); },
-    }, [pausedLiveRun()], []);
+    }, [pausedLiveRun()], noCatalog);
     const rejected = await openWorkflowResumeSelector({
       custom: async () => { throw new Error("async mount failed"); },
-    }, [pausedLiveRun()], []);
+    }, [pausedLiveRun()], noCatalog);
 
-    assert.deepEqual(thrown, { kind: "close" });
-    assert.deepEqual(rejected, { kind: "close" });
+    assert.deepEqual(thrown.result, { kind: "close" });
+    assert.deepEqual(rejected.result, { kind: "close" });
+  });
+
+  test("mounts live rows before hydrate resolves and merges durable rows after", async () => {
+    const gate = deferred<WorkflowResumeCatalogRows>();
+    let hydrateCalls = 0;
+    const mounted = mountSelector([pausedLiveRun("live-a", 100)], () => {
+      hydrateCalls += 1;
+      return gate.promise;
+    });
+
+    await flush();
+    const before = renderText(mounted.component());
+    assert.ok(before.includes("live-workflow"), "live row visible on the first frame");
+    assert.ok(!before.includes("paused-workflow"), "durable row absent before hydrate resolves");
+
+    gate.resolve({ durable: [entry("durable-a", "paused")], completed: [] });
+    await flush();
+    const after = renderText(mounted.component());
+    assert.ok(after.includes("paused-workflow"), "durable row merged after hydrate resolves");
+    assert.ok(after.includes("live-workflow"), "live row retained after merge");
+    assert.equal(hydrateCalls, 1, "hydrate invoked exactly once");
+
+    mounted.component().dispose?.();
+    const outcome = await mounted.promise;
+    assert.deepEqual(outcome.result, { kind: "close" });
+    assert.equal(outcome.catalog.durable.length, 1, "resolved catalog returned for follow-on resume");
+  });
+
+  test("dispose cancels late hydration and prevents merge after close", async () => {
+    const gate = deferred<WorkflowResumeCatalogRows>();
+    const mounted = mountSelector([pausedLiveRun("live-b", 100)], () => gate.promise);
+
+    await flush();
+    mounted.component().dispose?.();
+    const outcome = await mounted.promise;
+    assert.deepEqual(outcome.result, { kind: "close" });
+    assert.equal(outcome.catalog.durable.length, 0, "catalog empty because closed before hydrate");
+
+    // Late-resolving hydration must not merge into the disposed selector.
+    gate.resolve({ durable: [entry("late", "paused")], completed: [] });
+    await flush();
+    const rendered = renderText(mounted.component());
+    assert.ok(!rendered.includes("paused-workflow"), "late hydration not merged after dispose");
+  });
+
+  test("hydrate failure keeps live rows on screen without rejecting", async () => {
+    const mounted = mountSelector([pausedLiveRun("live-c", 100)], async () => {
+      throw new Error("catalog boom");
+    });
+
+    await flush();
+    const rendered = renderText(mounted.component());
+    assert.ok(rendered.includes("live-workflow"), "live rows survive a hydrate failure");
+
+    mounted.component().dispose?.();
+    const outcome = await mounted.promise;
+    assert.deepEqual(outcome.result, { kind: "close" });
   });
 });

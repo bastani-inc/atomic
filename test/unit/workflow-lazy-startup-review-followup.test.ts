@@ -102,8 +102,17 @@ describe("workflow lazy-startup review follow-up fixes", () => {
         notify: () => undefined,
         custom: (factoryArg: unknown) => {
           pickerCalls += 1;
+          // The picker must mount before any resource/catalog discovery runs.
+          // Discovery now happens lazily via the selector's async loader, so we
+          // wait until it has been attempted (and failed) before cancelling, and
+          // confirm the picker stayed open the whole time.
           const component = (factoryArg as SelectorFactory)({ requestRender: () => undefined }, {}, {}, () => undefined);
-          setImmediate(() => component.handleInput?.("\u001b"));
+          void (async () => {
+            for (let attempt = 0; attempt < 50 && refreshCalls === 0; attempt += 1) {
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+            component.handleInput?.("\u001b");
+          })();
           return undefined;
         },
       },

@@ -27,8 +27,6 @@ function restartArgs(args: readonly string[] | undefined, sessionFile: string | 
 	if (sessionFile) result.push(sessionFile);
 	return result;
 }
-
-
 export interface RpcClientOptions {
 	cliPath?: string;
 	cwd?: string;
@@ -39,11 +37,45 @@ export interface RpcClientOptions {
 	args?: string[];
 	runtimeExecutable?: string;
 	runtimeArgs?: string[];
+	/**
+	 * Bounded deadline (ms) applied to short metadata/control requests. Long-lived
+	 * commands (see LONG_LIVED_COMMANDS) never use this timer. Defaults to 30s.
+	 */
+	requestTimeoutMs?: number;
 	interactiveEngine?: {
 		onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void;
 		onActivityChange?: (active: boolean) => void;
 	};
 }
+
+/**
+ * Commands whose response is legitimately gated on human/agent interaction or a
+ * turn boundary and therefore must not be subject to the generic request
+ * timeout: interactive prompts and custom-UI pickers (routed through `prompt`),
+ * queued turn-boundary sends (`steer`/`follow_up`), long-running shell and
+ * compaction work, and session-tree navigation/mutation that can open pickers.
+ *
+ * Failure detection is unaffected: engine exit, transport violations, aborts,
+ * generation replacement, and explicit stop all reject pending requests via
+ * rejectPendingRequests/failTransport independently of any timer.
+ */
+const LONG_LIVED_COMMANDS: ReadonlySet<string> = new Set<string>([
+	"prompt",
+	"steer",
+	"follow_up",
+	"bash",
+	"user_bash",
+	"compact",
+	"fork",
+	"clone",
+	"switch_session",
+	"new_session",
+	"import_session",
+	"navigate_tree",
+	"invoke_shortcut",
+]);
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 
 export type RpcEventListener = (event: RpcEvent) => void;
@@ -375,11 +407,11 @@ export class RpcClient extends RpcClientApi {
 			rejectResponse(error instanceof Error ? error : new Error(String(error)));
 			return response;
 		}
-		if (this.pendingRequests.has(id)) {
+		if (this.pendingRequests.has(id) && !LONG_LIVED_COMMANDS.has(command.type)) {
 			timeout = setTimeout(() => {
 				this.pendingRequests.delete(id);
 				rejectResponse(new Error(`Timeout waiting for response to ${command.type}. Stderr: ${this.stderr}`));
-			}, 30_000);
+			}, this.options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
 		}
 		return response;
 	}
