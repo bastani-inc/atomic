@@ -31,8 +31,13 @@ jobs:
         steps:
             - uses: useblacksmith/checkout@v1
               with:
+                  # LFS fixtures are required by the coding-agent test suite.
+                  # No test-job step needs git history, so use the default
+                  # shallow fetch: it keeps the workspace checkout small on the
+                  # cached git-mirror path and makes the standard-clone fallback
+                  # (taken whenever the Blacksmith sticky disk fails to mount)
+                  # cheap as well.
                   lfs: true
-                  fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
