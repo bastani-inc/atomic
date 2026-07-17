@@ -31,13 +31,20 @@ class DefaultMainDriver {
 	private stderr = "";
 
 	constructor(args: string[], env: Record<string, string>) {
+		// Strip inherited engine-child markers: when this suite itself runs inside an
+		// isolated Atomic engine session, ATOMIC_INTERACTIVE_ENGINE_CHILD=1 would leak
+		// into the fixture and silently flip it into engine-child mode.
+		const baseEnv: Record<string, string | undefined> = { ...process.env };
+		for (const key of Object.keys(baseEnv)) {
+			if (key.startsWith("ATOMIC_INTERACTIVE_ENGINE_")) delete baseEnv[key];
+		}
 		this.process = Bun.spawn([
 			process.execPath,
 			join(import.meta.dir, "fixtures", "default-main-interactive-host.ts"),
 			...args,
 		], {
 			cwd: join(import.meta.dir, "../.."),
-			env: { ...process.env, ...env },
+			env: { ...baseEnv, ...env },
 			stdin: "pipe",
 			stdout: "pipe",
 			stderr: "pipe",
@@ -164,8 +171,10 @@ function maximumGap(values: readonly number[]): number {
 
 function fixtureArgs(extension: string): string[] {
 	return [
+		// --approve pins project trust for this run so a fresh agent dir (CI, containers)
+		// never blocks startup on the interactive "Trust project folder?" prompt.
 		"--no-session", "--no-extensions", "--extension", extension,
-		"--no-skills", "--no-prompt-templates", "--no-themes", "--offline",
+		"--no-skills", "--no-prompt-templates", "--no-themes", "--offline", "--approve",
 		"--provider", "isolation-fixture", "--model", "blocking-model",
 	];
 }
@@ -187,7 +196,7 @@ test.serial("default main InteractiveMode survives Escape, restarts, and kills t
 	const driver = new DefaultMainDriver(fixtureArgs(join(import.meta.dir, "fixtures", "blocking-tool-extension.ts")), {
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_BLOCKING_GRANDCHILD_PID_FILE: grandchildPidFile,
-		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 	});
 	try {
 		await driver.waitFor((report) => report.type === "terminal_ready");
@@ -232,7 +241,7 @@ test.serial("forced default-main host death leaves no engine or detached grandch
 	const driver = new DefaultMainDriver(fixtureArgs(join(import.meta.dir, "fixtures", "blocking-tool-extension.ts")), {
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_BLOCKING_GRANDCHILD_PID_FILE: grandchildPidFile,
-		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 	});
 	try {
 		await driver.waitFor((report) => report.type === "terminal_ready");
@@ -257,7 +266,7 @@ test.serial("default InteractiveMode host mutations persist exactly once in the 
 	args.push("--session-dir", join(temp, "sessions"));
 	const toolPidFile = join(temp, "tool.pid");
 	const driver = new DefaultMainDriver(args, {
-		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_NONBLOCKING_TOOL: "1",
 	});
@@ -295,7 +304,7 @@ test.serial("default InteractiveMode preserves child-owned custom renderers and 
 		ATOMIC_RENDERER_FIXTURE: "1",
 		ATOMIC_RENDERER_PID_FILE: rendererPidFile,
 		ATOMIC_WIDGET_PID_FILE: widgetPidFile,
-		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 		ATOMIC_BLOCKING_TOOL_PID_FILE: toolPidFile,
 		ATOMIC_TOOL_RENDERER_PID_FILE: toolRendererPidFile,
 		ATOMIC_NONBLOCKING_TOOL: "1",
@@ -303,12 +312,14 @@ test.serial("default InteractiveMode preserves child-owned custom renderers and 
 	try {
 		const ready = await driver.waitFor((report) => report.type === "terminal_ready");
 		await driver.waitFor((report) => report.type === "render" && report.output?.includes("factory widget parity") === true);
-		await driver.waitFor((report) => report.type === "render" && report.output?.includes("custom renderer parity") === true);
 		assert.notEqual(await waitForFile(widgetPidFile), ready.hostPid);
-		assert.notEqual(await waitForFile(rendererPidFile), ready.hostPid);
+		// The fixture-message is sent on the first agent turn, so the custom
+		// renderer parity render is only expected after input starts a turn.
 		driver.send({ type: "input", data: "render the tool" });
 		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "render the tool");
 		driver.send({ type: "input", data: "\r" });
+		await driver.waitFor((report) => report.type === "render" && report.output?.includes("custom renderer parity") === true);
+		assert.notEqual(await waitForFile(rendererPidFile), ready.hostPid);
 		await driver.waitFor((report) => report.type === "render" && report.output?.includes("child tool renderer:busy-call") === true);
 		assert.equal(await waitForFile(toolRendererPidFile), await waitForFile(toolPidFile));
 	} finally {
@@ -355,14 +366,29 @@ function invocationPids(logPath: string, name: string): number[] {
 	return pids;
 }
 
-async function waitForInvocation(logPath: string, name: string, timeoutMs = 8_000): Promise<number> {
+/**
+ * Type a slash command and wait for its engine-side invocation. Text typed this
+ * fast can land in the startup input-capture window, where the host replays a
+ * completed slash draft as an executed command without the text ever appearing
+ * in the editor. Tolerate both paths: submit with Enter once the editor shows
+ * the draft, or accept the replay-executed invocation directly.
+ */
+async function invokeSlashCommand(driver: DefaultMainDriver, logPath: string, name: string, text: string, timeoutMs = 8_000): Promise<number> {
+	const before = invocationPids(logPath, name).length;
+	const from = driver.reports.length;
+	driver.send({ type: "input", data: text });
 	const deadline = performance.now() + timeoutMs;
+	let submitted = false;
 	while (performance.now() < deadline) {
 		const pids = invocationPids(logPath, name);
-		if (pids.length > 0) return pids[pids.length - 1]!;
+		if (pids.length > before) return pids[pids.length - 1]!;
+		if (!submitted && driver.reports.slice(from).some((report) => report.type === "heartbeat" && report.editorText === text)) {
+			submitted = true;
+			driver.send({ type: "input", data: "\r" });
+		}
 		await Bun.sleep(20);
 	}
-	throw new Error(`Command '${name}' was never invoked (log: ${logPath})`);
+	throw new Error(`Command '${name}' was never invoked after typing ${JSON.stringify(text)} (log: ${logPath})`);
 }
 
 test.serial("isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions", async () => {
@@ -375,7 +401,7 @@ test.serial("isolated default main lists and executes engine-only /workflow and 
 	const logFile = join(temp, "commands.log");
 	const toolPidFile = join(temp, "tool.pid");
 	const driver = new DefaultMainDriver(args, {
-		ATOMIC_CONFIG_DIR: join(temp, "config"),
+		ATOMIC_CODING_AGENT_DIR: join(temp, "agent"),
 		ATOMIC_WORKFLOW_COMMAND_LOG: logFile,
 		ATOMIC_WORKFLOW_TOOL_PID_FILE: toolPidFile,
 	});
@@ -391,15 +417,8 @@ test.serial("isolated default main lists and executes engine-only /workflow and 
 		assert.ok(names.has("workflows"), "autocomplete missing /workflows alias");
 
 		// Executing them routes through the engine child (handler pid === engine pid).
-		driver.send({ type: "input", data: "/workflow list" });
-		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/workflow list");
-		driver.send({ type: "input", data: "\r" });
-		assert.equal(await waitForInvocation(logFile, "workflow"), enginePid);
-
-		driver.send({ type: "input", data: "/workflows" });
-		await driver.waitFor((report) => report.type === "heartbeat" && report.editorText === "/workflows");
-		driver.send({ type: "input", data: "\r" });
-		assert.equal(await waitForInvocation(logFile, "workflows"), enginePid);
+		assert.equal(await invokeSlashCommand(driver, logFile, "workflow", "/workflow list"), enginePid);
+		assert.equal(await invokeSlashCommand(driver, logFile, "workflows", "/workflows"), enginePid);
 
 		// Force an engine restart and confirm the catalog is re-fetched: the child
 		// commands remain listed under the new engine generation.

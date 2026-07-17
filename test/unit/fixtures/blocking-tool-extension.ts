@@ -80,7 +80,6 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 				if (pidFile) writeFileSync(pidFile, String(process.pid), "utf8");
 				return new Text("factory widget parity", 0, 0);
 			}, { placement: "belowEditor" });
-			setTimeout(() => { void api.sendMessage({ customType: "fixture-message", content: "fixture", display: true }); }, 50);
 		}
 		if (process.env.ATOMIC_STARTUP_CUSTOM_UI !== "1") return;
 		await ctx.ui.custom<void>((_tui, _theme, _keybindings, done) => ({
@@ -89,6 +88,19 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 			invalidate: () => {},
 		}));
 	});
+
+	if (process.env.ATOMIC_RENDERER_FIXTURE === "1") {
+		// Send the display message on the first agent turn instead of a startup
+		// timer: a session_start-time send races the host InteractiveMode's agent
+		// subscription in isolated mode and is dropped from the chat when the host
+		// starts cold (fresh agent dir on CI).
+		let fixtureMessageSent = false;
+		api.on("agent_start", () => {
+			if (fixtureMessageSent) return;
+			fixtureMessageSent = true;
+			void api.sendMessage({ customType: "fixture-message", content: "fixture", display: true });
+		});
+	}
 
 	api.registerTool({
 		name: "busy_loop",
