@@ -11,6 +11,20 @@ export interface ActivityWatchdogDiagnostic {
 	elapsedMs: number;
 	level: "blocking" | "unresponsive";
 	message: string;
+	/** Set when the diagnostic came from the heartbeat watchdog rather than a concrete engine failure. */
+	source?: "watchdog";
+}
+
+/**
+ * Chat-surface policy for engine diagnostics. Watchdog heartbeat gaps stay
+ * internal unless they attribute a specific stuck callback: unattributed gaps
+ * are ordinary engine event-loop lag (cold loads, GC, heavy parses) and the
+ * TUI itself remains responsive, so rendering them as chat errors is noise.
+ * Concrete engine failures (termination, RPC errors) always surface.
+ */
+export function shouldRenderEngineDiagnosticAsChatError(diagnostic: ActivityWatchdogDiagnostic): boolean {
+	if (diagnostic.level !== "unresponsive") return false;
+	return diagnostic.source !== "watchdog" || diagnostic.activity !== undefined;
 }
 
 export interface ActivityWatchdogOptions {
@@ -91,6 +105,7 @@ export class ActivityWatchdog {
 			elapsedMs,
 			level,
 			message: `Engine callback ${label} has not yielded for ${Math.round(elapsedMs)} ms; ${suffix}`,
+			source: "watchdog",
 		});
 	}
 }

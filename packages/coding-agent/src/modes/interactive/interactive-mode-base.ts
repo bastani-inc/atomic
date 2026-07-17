@@ -6,6 +6,7 @@ import type {} from "./interactive-mode-surface.ts";
 import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
+import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 
@@ -456,9 +457,7 @@ export class InteractiveModeBase {
 				this.ui.setFocus(this.editor);
 				this.ui.requestRender();
 			}
-			// Sub-second heartbeat gaps are useful internally for attribution, but
-			// surfacing them as chat warnings is noisy during ordinary cold loads.
-			if (diagnostic.level === "unresponsive") this.showError(diagnostic.message);
+			if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
 		},
       (handler) => { this.defaultEditor.onExtensionShortcut = handler; },
     );
