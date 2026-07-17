@@ -1,14 +1,14 @@
 # Compaction & Branch Summarization
 
-LLMs have finite context windows. Atomic reduces older context with **verbatim line compaction** while preserving recent logical turns as ordinary messages. Branch summarization is a separate, intentionally lossy feature used only when navigating away from a branch.
+LLMs have finite context windows. Atomic reduces context with **verbatim full-collapse compaction**. Current boundaries serialize the full context into one canonical region and mechanically retain selected source text; protected recent messages live inside that serialized region. Branch summarization is a separate, intentionally lossy feature used only when navigating away from a branch.
 
-Compaction runs entirely locally with the active session model; no external compaction service is involved. The model only selects which lines to delete — Atomic reconstructs the retained text mechanically, so surviving lines are never rewritten.
+Compaction uses the active session model; no external compaction service is involved. An isolated planner returns retained canonical text, while the supported warm-cache path returns `KEEP` line identifiers. Atomic reconstructs the durable result from the canonical source, so surviving lines are never rewritten.
 
 ## Overview
 
-| Mechanism | Trigger | Model output | Durable result |
+| Mechanism | Trigger | Current model output | Durable result |
 |---|---|---|---|
-| Verbatim compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Bare `start,end` deletion records (one per line) | A `CompactionEntry` whose `summary` is mechanically reconstructed transcript text |
+| Verbatim full-collapse compaction | `/compact`, RPC `compact`, or automatic threshold/overflow recovery | Canonical retained text, or `KEEP` identifiers for supported warm-cache reuse | A `CompactionEntry` whose `summary` is mechanically reconstructed canonical transcript text |
 | Branch summarization | Optional `/tree` navigation | Generated summary prose | A `BranchSummaryEntry` |
 
 There is one context-compaction door: `compact`.
@@ -17,7 +17,7 @@ There is one context-compaction door: `compact`.
 
 ### What "verbatim" means
 
-Atomic serializes the compactable part of the conversation into role-tagged lines:
+Atomic serializes the entire context-visible conversation into canonical role-tagged lines:
 
 ```text
 [User]: Fix the failing parser test
@@ -28,13 +28,9 @@ Atomic serializes the compactable part of the conversation into role-tagged line
 [Assistant]: The off-by-one error is fixed.
 ```
 
-The planner sees the same text numbered as `N→content` and returns only one-based, inclusive line ranges as bare records:
+The current isolated full-collapse planner returns an ordered byte-identical subsequence of that canonical source. When exact final provider-payload reuse is supported, it instead returns a `KEEP` record containing canonical line identifiers. In both paths Atomic validates the decision and reconstructs the durable text itself; the model never rewrites, reorders, or normalizes retained text.
 
-```text
-2,5
-```
-
-Each line is `start,end` — unsigned decimal integers, one comma, no brackets or prose. Atomic safety-normalizes endpoints by swapping reversed pairs, clamping to the transcript, sorting, merging overlap/adjacency, and splitting around explicit protected spans. It then reconstructs from the original input lines. The model never writes, summarizes, reorders, or normalizes retained text. Every retained non-marker line is byte-identical to an input line and remains in input order.
+The older deletion-range protocol (`start,end` records over `N→content`) applies only to legacy boundaries and their compatibility/recovery behavior. It is not the current full-collapse planner contract.
 
 ### Markers and repeated compaction
 
@@ -48,13 +44,13 @@ The spelling is always plural, including `(filtered 1 lines)`. When a later comp
 
 ### Protected structure
 
-Role-header lines such as `[User]:` and `[Assistant]:` are ordinary ranked lines and may be deleted. Explicit protected spans, including blank lines, are never deleted. The recent logical-turn tail is protected client-side by remaining outside the classifier request entirely.
+Legacy (pre-full-collapse) boundaries kept a recent logical-turn tail outside the classifier request, preserving its structured images and tool messages. New full-collapse boundaries do not use that legacy tail: `preserve_recent` protects the final N context-visible messages as their canonical serialized physical lines inside the single region. Images therefore become `[image]`, and oversized tool-result text is capped at 16,000 characters with an explicit remainder marker only in the temporary canonical projection; raw durable entries remain unchanged.
 
-Images in the compactable region become the literal line `[image]`; images in the protected recent tail remain normal image content. Tool-result text remains capped at 16,000 characters before becoming durable compaction text, with an explicit truncation marker for the remainder.
+Role-header lines such as `[User]:` and `[Assistant]:` remain ordinary selectable lines unless they fall inside those protected serialized messages. Tool-call/result pairing is not independently protected.
 
 ### Full-context collapse (v2)
 
-New compaction boundaries use the additive **full-collapse** format (`details.format: "full-collapse"`, `promptVersion: 4`). Instead of a compacted string plus a replayed structured tail, the entire current context — the prior compacted string, if any, plus every context-visible message since it — is serialized into one region and collapsed into a single verbatim string. The model returns the retained transcript lines directly; the host accepts the result only when it is an ordered, byte-identical subsequence of the serialized source that retains every protected line and deletes at least one useful line. Rewrites, reordering, duplicated lines, or a dropped protected line are rejected, and the persisted string is always host-reconstructed with canonical `(filtered N lines)` markers rather than the raw model text.
+New compaction boundaries use the additive **full-collapse** format (`details.format: "full-collapse"`, `promptVersion: 4`). Instead of a compacted string plus a replayed structured tail, the entire current context — the prior compacted string, if any, plus every context-visible message since it — is serialized into one region and collapsed into a single verbatim string. The isolated request returns retained transcript lines; a supported cache-reuse request returns only canonical line identifiers. In both cases the host accepts the decision only when mechanical reconstruction is an ordered, byte-identical subsequence of the serialized source that retains every protected line and deletes at least one useful line. Rewrites, reordering, duplicated lines, or a dropped protected line are rejected, and the persisted string is always host-reconstructed with canonical `(filtered N lines)` markers.
 
 There is no structural protection for user turns, assistant roles, tool calls, or call/result pairing beyond the final `preserve_recent` messages; every other serialized line is ordinary deletable content, and there is no user-turn `selectCut` widening. Because the whole context collapses into text, repeated compaction within one user turn keeps working: each run folds the previous string plus everything appended after it into a new boundary. Legacy boundaries (without `details.format`) keep their previous string-plus-kept-tail behavior unchanged.
 
@@ -89,58 +85,51 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 ## When compaction runs
 
 - **Manual:** `/compact`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
-- **Threshold:** automatic compaction starts when estimated context usage reaches the effective input budget minus `reserveTokens`.
+- **Threshold:** automatic compaction starts only when estimated context usage is strictly greater than the effective input budget minus `reserveTokens`; equality does not trigger it.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 
-The in-flight/final logical turn is outside the compactable region. Cancellation and abort behavior remains consistent with normal session operations. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+The in-flight/final logical turn is included in the prepared full-collapse region. An overflow-triggering assistant error remains archived in JSONL but is excluded from the request-local compaction projection and retry context. When other final-turn content was not present in the preceding provider request, Atomic carries it once as the uncached compaction delta. Cancellation and abort behavior remains consistent with normal session operations. Immediately before backup and boundary persistence, Atomic verifies that the prepared leaf is still current. Manual and automatic compaction catch a first `StaleCompactionPlanError`, prepare again from the fresh ordered branch, and retry once; another concurrent change fails loudly. A stale attempt writes neither a backup nor a boundary.
 
 ## One-pass planning and failure behavior
 
-Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
+Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to select a retained byte-identical subsequence in one global pass. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-For v2 full-collapse compaction the request returns the retained transcript **as a string** rather than deletion records: the model reproduces the numbered region verbatim, deleting only low-value lines, and the host validates the returned text as an ordered byte-identical subsequence that retains every protected line before mechanically rebuilding the canonical markers. The collapse request also reuses the provider's already-cached conversation prefix — see [Compaction-call prompt caching](#compaction-call-prompt-caching).
+For v2 full-collapse, Atomic first tries cache reuse only when it can mechanically prove a one-to-one mapping between simple host user/assistant messages and the captured final provider-native role/text items. The exact supported region has one non-empty text block per message, alternating roles, no tool calls/results, images, omitted blocks, adapter merges, custom prototypes, aliases, or transform mismatch. The provider-native prefix appears once; the fresh suffix contains deterministic canonical line identifiers plus numbered post-prefix context, never the full old transcript, and the provider must answer with an actual `KEEP` record that the host reconstructs byte-identically. The originating stateful hook is not replayed. Every unprovable shape uses an isolated compaction-only view instead. Oversized tool output is capped in that temporary view, while the raw tool result remains unchanged in JSONL, backups, branching, and resumed sessions.
 
-The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+Requested planner output is bounded by the configured reserve, the model maximum, remaining total context, and the provider/API minimum (16 for OpenAI Responses). A provider hard input cap is checked independently. The final provider-shaped payload is conservatively bounded at the last `onPayload` boundary; cached tokens count fully toward occupancy. Input-cap or remaining-context headroom failure may transparently retry without a cached prefix because isolation can reduce occupancy. A reserve-derived cap or `model.maxTokens` below the provider output minimum is instead a configuration/output-budget underflow: it is not provider input overflow and is never retried in isolated mode. Input exhaustion and `stopReason: "length"` output exhaustion have distinct diagnostics; neither writes a boundary.
 
-A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+A syntactically valid usable result is accepted once after host subsequence/protected-line validation. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
 
 ### Compaction-call prompt caching
 
-The full-collapse compaction request is issued as the exact active-request prefix followed by the compaction instruction, so the provider can serve the old conversation from its existing prompt cache:
+The full-collapse compaction request can reuse the exact preceding active request captured immediately before provider dispatch:
 
 ```
-[ tools + system + old messages ]   ← cached prefix (cache read)
-        ⟨cache breakpoint⟩
-[ appended user instruction: numbered transcript + directive ]   ← fresh (cache write)
+[ tools + system + preceding request messages ]   ← exact cached prefix, once
+        ⟨explicit breakpoint or provider-native automatic cache boundary⟩
+[ directive + only post-prefix/new context ]      ← fresh delta, once
 ```
 
-The request reuses the same model, provider, tools, system prompt, and old messages as the last normal turn — token-identical — plus the same cache routing (`sessionId` / `prompt_cache_key`, cache retention, transport). No compaction system prompt, numbering, wrapper, or serialization is placed before the breakpoint; the numbered transcript the model copies from lives entirely inside the appended instruction, after the breakpoint. Tools and any structured-output schema are never changed for compaction, which would break the cached prefix.
+Reuse is bound to the captured model, provider, API, base endpoint, cache routing, and transport. The cached portion of the compaction payload is cloned from the immutable captured final provider payload; only the provider-shaped compaction suffix is appended, and the old stateful payload hook is never rerun. Unsupported or unprovable shapes use the isolated request and omit cache telemetry.
 
-Provider-specific breakpoints are applied on top of automatic caching:
+On a warm request, an auto-derived `query` is already canonical transcript content in the cached prefix or numbered delta, so Atomic does not copy it into a second `Relevance focus` field. A non-empty explicit query supplied by settings or the caller has explicit provenance and remains in the suffix exactly once. This warm-path decision uses provenance only; Atomic does not compare or deduplicate arbitrary user text. Isolated requests keep their single-request relevance focus.
 
-- **Anthropic Messages** — automatic caching marks the appended instruction; an explicit `cache_control: {"type":"ephemeral"}` breakpoint is added on the final old-conversation block, respecting the four-breakpoint limit and the 20-block lookback.
-- **OpenAI GPT-5.6+** (Responses and Chat Completions) — the stable `prompt_cache_key` is preserved and an explicit `prompt_cache_breakpoint: {"mode":"explicit"}` is placed on the final old-conversation content block (only on cacheable block types). Older OpenAI models keep their compatible automatic-caching behavior with no explicit breakpoint field.
-- **Custom / unsupported providers** — behavior is unchanged: cache routing is passed through and no explicit breakpoint is injected.
+Prompt caching reduces repeated prefill work; it does **not** remove cached tokens from the context window. Atomic therefore falls back whenever the exact prefix would leave insufficient room for the directive and desired output reserve. The fallback sends the compactable representation once, without the active history prefix. This is request-local: durable messages, optional fields, duplicate values, tool IDs/results, and raw oversized payloads are not rewritten.
 
-Cache reuse is provider-dependent. Atomic records normalized cache-read/cache-write telemetry on the compaction result and `details.cache` (`cacheReadTokens`, `cacheWriteTokens`, `cacheHit`, `provider`, `model`), and never reports a hit unless the provider response usage reports nonzero cache-read tokens. Applying compaction invalidates the old cache; the first normal post-compaction turn writes a fresh one. The optimization targets the compaction request's prefill latency, not a reduction in total tokens processed.
+Cache behavior is API-specific. Later compaction clones captured historical provider bytes unchanged and appends only the new suffix:
 
-### Length-truncated response recovery
+- **Anthropic Messages** — `cache_control: {"type":"ephemeral"}` is placed on the normal request's final conversation block, respecting the four-breakpoint limit.
+- **Public OpenAI GPT-5.6+ Responses/Chat APIs** — `prompt_cache_breakpoint: {"mode":"explicit"}` is placed on the normal request's final cacheable content block; the stable `prompt_cache_key` is preserved.
+- **Codex Responses, Azure Responses, and older OpenAI Responses models** — unsupported explicit breakpoint fields are never added. Mechanically proven warm requests use provider-native automatic caching and preserve the existing `prompt_cache_key`.
+- **Custom, non-Responses, or otherwise unprovable payloads** — compaction uses the isolated request without changing historical bytes.
 
-When the planner model's output is truncated by `max_tokens` (indicated by `stopReason: "length"`), Atomic silently recovers complete newline-terminated deletion records from the truncated response. A deterministic line parser validates each completed line (those followed by a newline) against the strict `start,end` grammar. The final fragment after the last newline is always discarded — even if it looks syntactically complete — because EOF may have cut a multi-digit integer (e.g. `300,30` could have intended `300,305`). If any completed line has invalid syntax or zero usable records survive validation, recovery fails and the normal `RangePlanError` path applies.
+Cache reuse is provider-dependent. Atomic records normalized cache-read/cache-write telemetry on the compaction result and `details.cache` (`cacheReadTokens`, `cacheWriteTokens`, `cacheHit`, `provider`, `model`), and never reports a hit unless the provider response usage reports nonzero cache-read tokens. Isolated fallback requests omit cache telemetry. Applying compaction invalidates the old cache; the first normal post-compaction turn writes a fresh one. The optimization targets prefill latency, not a reduction in occupied context tokens.
 
-Example of truncated output:
+### Output-limit handling
 
-```text
-120,180
-6,40
-300,
-```
+Full-collapse output ending with `stopReason: "length"` is handled separately from input-context rejection. Atomic may validate complete newline-terminated output while preserving the exact original response — including its unterminated partial fragment — as diagnostic `rawResponseText`. A valid recovered result must still pass ordered-subsequence, useful-deletion, and protected-line checks. Otherwise Atomic raises an output-limit `RangePlanError` and writes an `output_limit` diagnostic. Input budget exhaustion uses `input_overflow`; provider errors remain provider errors.
 
-Recovery yields `120,180` and `6,40`; discards `300,` without guessing. The planner prompt instructs the model to emit ranges in descending deletion confidence (lowest continuation value first) so the most important deletions appear earliest and survive truncation.
-
-Successful partial recovery is an ordinary successful compaction: no warning, banner, toast, or special status copy appears. The UI shows the normal spinner then `✻ Context compacted`.
-
-For operational observability, a private recovery diagnostic sidecar is written beside persisted sessions with `0600` permissions. It records the full raw response, stop reason, usage, request `maxTokens`, model metadata, recovered range count, and recovery category. The sidecar path is never surfaced in the success UI, error messages, or user-visible status. In-memory sessions and sidecar write failures do not affect the successful recovery.
+The legacy deletion-range planner retains its deterministic recovery of complete newline-terminated `start,end` records from a length-truncated response. The final fragment is never guessed because EOF may have cut a multi-digit integer. Successful legacy partial recovery remains an ordinary compaction and may write its private recovery diagnostic.
 
 ### Planner failure diagnostics
 
@@ -152,7 +141,7 @@ Compaction range planning returned malformed output (diagnostic: /path/session-c
 
 The private sidecar uses `0600` permissions where supported and records the full planner response text, stop reason, provider error, usage, request `maxTokens`, timestamp, failure category, and non-secret model metadata. It does not record API keys, request headers, the planner prompt, or the numbered transcript request. The raw response itself may contain sensitive text if the model echoed input, so treat the sidecar with the same care as its adjacent session file.
 
-Diagnostic categories distinguish malformed output, valid output with no usable ranges, provider errors, and stream failures. In-memory sessions do not create sidecars. If the diagnostic write fails, Atomic preserves the original error and classification rather than replacing the planner failure.
+Diagnostic categories distinguish malformed output, valid output with no usable ranges, input-budget overflow, output-limit exhaustion, provider errors, and stream failures. In-memory sessions do not create sidecars. If diagnostic writing fails, Atomic preserves the original error and classification.
 
 Interactive main chat and attached workflow stage chat treat `compaction_end` as the authority for cancellation and failure UI. A failed or cancelled `/compact` stops its spinner, shows the event-provided status or diagnostic path without a duplicate stack trace, writes no boundary, and leaves the session usable for another `/compact` attempt or a normal follow-up turn.
 

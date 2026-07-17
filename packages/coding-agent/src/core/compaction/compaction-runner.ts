@@ -2,6 +2,7 @@ import type { StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import { planFullCollapse } from "./collapse-planner.js";
 import { getKeptTailTokenEstimate } from "./compaction-boundary.js";
+import { getCompactionQueryProvenance } from "./compaction-query-provenance.js";
 import { reconstructCompactedTranscript, validateDeletedRanges } from "./deleted-ranges.js";
 import { planDeletedLineRanges } from "./range-planner.js";
 import type {
@@ -118,7 +119,12 @@ export async function runFullCollapseCompaction(
 		thinkingLevel,
 		preparation.settings.reserveTokens,
 		targetKeepLines(preparation),
-		{ streamFn: options.streamFn, sessionFilePath: options.sessionFilePath, prefix: options.prefix },
+		{
+			streamFn: options.streamFn,
+			sessionFilePath: options.sessionFilePath,
+			prefix: options.prefix,
+			queryProvenance: getCompactionQueryProvenance(preparation),
+		},
 	);
 	if (signal?.aborted) throw new Error("Compaction cancelled");
 	return withFullCollapseStats(

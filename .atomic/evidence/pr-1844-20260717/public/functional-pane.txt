@@ -1,0 +1,17 @@
+Call e2e_blob exactly once with lines 9000 and width 48. After it returns,
+reply exactly BLOB_READY.
+
+e2e_blob lines=9000 width=48
+generated lines=9000 chars=503999
+sha256=81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3
+
+BLOB_READY
+
+Context compacted
+Compacted from 126,621 tokens
+
+Reply exactly CONTINUATION_OK pr1844-functional
+
+CONTINUATION_OK pr1844-functional
+
+Footer at capture: 108.0%/262k (auto)

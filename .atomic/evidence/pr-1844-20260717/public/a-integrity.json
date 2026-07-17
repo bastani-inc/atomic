@@ -1,0 +1,55 @@
+{
+  "session": {
+    "file": "2026-07-17T20-54-21-709Z_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3.jsonl",
+    "bytes": 533882,
+    "mode": "0600",
+    "sha256": "929309840feb84d77d459c0c0528430fcb0aa572824740313fb649de9803d964",
+    "large": {
+      "chars": 503999,
+      "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+    },
+    "toolCalls": 1,
+    "toolResults": 1,
+    "unmatchedCalls": 0,
+    "unmatchedResults": 0,
+    "continuation": true
+  },
+  "backup": {
+    "file": "2026-07-17T20-54-21-709Z_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3.jsonl.2026-07-17T20-57-16-639Z.overflow-auto-compact.bak",
+    "bytes": 515668,
+    "mode": "0600",
+    "sha256": "d46bd9d874c5bd4a2b0b71edc8b7a83a6d3128291ffaad46222d9a90279c5ad2",
+    "large": {
+      "chars": 503999,
+      "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+    },
+    "toolCalls": 1,
+    "toolResults": 1,
+    "unmatchedCalls": 0,
+    "unmatchedResults": 0,
+    "continuation": false
+  },
+  "pairIntegrity": [
+    {
+      "sampleId": "2r",
+      "snapshotBodySha256": "36d475d8a4651a39f3ee4110aa2f8f061427436778876f127e1c181c7c3de498",
+      "coldBackupBodySha256": "36d475d8a4651a39f3ee4110aa2f8f061427436778876f127e1c181c7c3de498",
+      "semanticHistoryMatch": true,
+      "snapshotBytes": 48144
+    },
+    {
+      "sampleId": "5",
+      "snapshotBodySha256": "b1c0df9adcbc0b28c309cc2d31c8e052df60cf55979d9d097afc074df65d192d",
+      "coldBackupBodySha256": "b1c0df9adcbc0b28c309cc2d31c8e052df60cf55979d9d097afc074df65d192d",
+      "semanticHistoryMatch": true,
+      "snapshotBytes": 48167
+    },
+    {
+      "sampleId": "6",
+      "snapshotBodySha256": "c6999ef3362d3b5b6d17f9b00278ad6891087acc109fe798bf8217c05da55e6f",
+      "coldBackupBodySha256": "c6999ef3362d3b5b6d17f9b00278ad6891087acc109fe798bf8217c05da55e6f",
+      "semanticHistoryMatch": true,
+      "snapshotBytes": 48168
+    }
+  ]
+}

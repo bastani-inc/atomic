@@ -1,18 +1,11 @@
 import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
-import { existsSync, statSync } from "fs";
+import { existsSync, statSync, truncateSync } from "fs";
 import { resolve } from "path";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import type { VerbatimCompactionDetails } from "./compaction/compaction-types.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
-import {
-	createBackupSnapshot,
-	createBranchedSessionState,
-	forkSessionFromFile,
-} from "./session-manager-archive.ts";
-import {
-	classifiedWorkflowMetadata,
-	validSessionWorkflowMetadata,
-} from "./session-manager-classification.ts";
+import { createBackupSnapshot, createBranchedSessionState, forkSessionFromFile } from "./session-manager-archive.ts";
+import { classifiedWorkflowMetadata, validSessionWorkflowMetadata } from "./session-manager-classification.ts";
 import {
 	createBranchSummaryEntry,
 	createCompactionEntry,
@@ -219,10 +212,22 @@ export class SessionManager {
 	}
 
 	private _appendEntry(entry: SessionEntry): void {
-		this.fileEntries.push(entry);
-		this.byId.set(entry.id, entry);
-		this.leafId = entry.id;
-		this._persist(entry);
+		const previousLeafId = this.leafId, previousFlushed = this.flushed;
+		const persistedPath = this.persist ? this.sessionFile : undefined;
+		const previousFileLength = persistedPath && existsSync(persistedPath) ? statSync(persistedPath).size : undefined;
+		this.fileEntries.push(entry); this.byId.set(entry.id, entry); this.leafId = entry.id;
+		try {
+			this._persist(entry);
+		} catch (error) {
+			this.fileEntries.pop(); this.byId.delete(entry.id);
+			this.leafId = previousLeafId; this.flushed = previousFlushed;
+			if (persistedPath && previousFileLength !== undefined) try {
+				truncateSync(persistedPath, previousFileLength);
+			} catch (rollbackError) {
+				throw new AggregateError([error, rollbackError], "Session append failed and the active JSONL could not be restored byte-exactly");
+			}
+			throw error;
+		}
 	}
 
 	/** Append a message as child of current leaf, then advance leaf. Returns entry id. */

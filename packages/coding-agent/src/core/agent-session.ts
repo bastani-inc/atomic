@@ -9,6 +9,7 @@
 import type {
 	Agent,
 	AgentTool,
+	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai/compat";
@@ -37,6 +38,8 @@ import { agentSessionToolHooksMethods } from "./agent-session-tool-hooks.ts";
 import { agentSessionToolRegistryMethods } from "./agent-session-tool-registry.ts";
 import { agentSessionTreeMethods } from "./agent-session-tree.ts";
 import { WorkflowStageAdmissionBoundary } from "./workflow-stage-admission.ts";
+import { compactionRequestIdentity, type CompactionRequestPrefix } from "./compaction/index.ts";
+import { createNormalRequestCachePayloadHook } from "./compaction/compaction-cache.js";
 import type {
 	AgentSessionConfig,
 	AgentSessionEventListener,
@@ -66,6 +69,40 @@ export type {
 export { parseSkillBlock } from "./agent-session-skill-block.ts";
 export type { ParsedSkillBlock } from "./agent-session-skill-block.ts";
 
+function deepImmutableJsonClone<T>(value: T, ancestors = new WeakSet<object>(), arraySlot = false): T {
+	if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+	if (typeof value === "number") return (Number.isFinite(value) ? value : null) as T;
+	if (value === undefined && arraySlot) return null as T;
+	if (typeof value !== "object") throw new TypeError("Provider payload is not plain JSON data");
+	if (ancestors.has(value)) throw new TypeError("Provider payload contains a cycle");
+	const array = Array.isArray(value);
+	if (array ? Object.getPrototypeOf(value) !== Array.prototype : Object.getPrototypeOf(value) !== Object.prototype) {
+		throw new TypeError("Provider payload has a custom prototype");
+	}
+	ancestors.add(value);
+	try {
+		if (array) {
+			const target: unknown[] = [];
+			for (let index = 0; index < value.length; index++) {
+				const item = Object.hasOwn(value, index) ? value[index] : undefined;
+				target.push(deepImmutableJsonClone(item, ancestors, true));
+			}
+			return Object.freeze(target) as T;
+		}
+		const target: Record<string, unknown> = {};
+		for (const key of Reflect.ownKeys(value)) {
+			if (typeof key !== "string") throw new TypeError("Provider payload has a symbol key");
+			const descriptor = Object.getOwnPropertyDescriptor(value, key);
+			if (!descriptor?.enumerable || !("value" in descriptor)) throw new TypeError("Provider payload has a non-JSON property");
+			if (descriptor.value === undefined) continue;
+			target[key] = deepImmutableJsonClone(descriptor.value, ancestors);
+		}
+		return Object.freeze(target) as T;
+	} finally {
+		ancestors.delete(value);
+	}
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -87,6 +124,11 @@ export class AgentSession {
 	protected _compactionAbortController: AbortController | undefined = undefined;
 	protected _autoCompactionAbortController: AbortController | undefined = undefined;
 	protected _overflowRecoveryAttempted = false;
+	protected _lastAssistantEntryId: string | undefined = undefined;
+	/** Last context/options actually handed to the provider stream abstraction. */
+	protected _activeRequestPrefix: CompactionRequestPrefix | undefined = undefined;
+	protected _originatingStreamFn: StreamFn;
+	protected _capturingStreamFn: StreamFn;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
 	protected _postCompactionContinuationToken = 0;
 	protected _lengthContinuationAttempts = 0;
@@ -131,6 +173,42 @@ export class AgentSession {
 	protected _workflowStageAdmission: WorkflowStageAdmissionBoundary | undefined;
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
+		this._originatingStreamFn = this.agent.streamFn;
+		this._capturingStreamFn = (model, context, options) => {
+			let semantic: { systemPrompt?: string; tools?: typeof context.tools; messages: typeof context.messages };
+			let warmEligible = true;
+			try {
+				semantic = deepImmutableJsonClone({
+					...(context.systemPrompt !== undefined ? { systemPrompt: context.systemPrompt } : {}),
+					...(context.tools !== undefined ? { tools: context.tools } : {}),
+					messages: context.messages,
+				});
+			} catch {
+				warmEligible = false;
+				semantic = { messages: [] };
+			}
+			const originatingPayloadHook = options?.onPayload;
+			const capturePayload = async (payload: unknown, payloadModel: Model<Api>): Promise<unknown> => {
+				const transformed = await originatingPayloadHook?.(payload, payloadModel);
+				let finalPayload = transformed === undefined ? payload : transformed;
+				const marked = await createNormalRequestCachePayloadHook(payloadModel)?.(finalPayload, payloadModel);
+				if (marked !== undefined) finalPayload = marked;
+				try {
+					this._activeRequestPrefix = deepImmutableJsonClone({
+						...semantic,
+						identity: compactionRequestIdentity(model, options),
+						finalPayload,
+						warmEligible,
+						...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+						...(options?.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
+						...(options?.transport !== undefined ? { transport: options.transport } : {}),
+					});
+				} catch { this._activeRequestPrefix = undefined; }
+				return finalPayload;
+			};
+			return this._originatingStreamFn(model, context, { ...options, onPayload: capturePayload });
+		};
+		this.agent.streamFn = this._capturingStreamFn;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];

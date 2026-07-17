@@ -11,6 +11,7 @@ import {
 } from "./compaction-boundary.js";
 import { estimateContextTokens, type CompactionSettings } from "./compaction.js";
 import { normalizeCompactionParameters } from "./compaction-parameters.js";
+import { compactionQueryProvenance, setCompactionQueryProvenance } from "./compaction-query-provenance.js";
 import {
 	MIN_COMPACTABLE_REGION_LINES,
 	VERBATIM_COMPACTION_FORMAT_FULL,
@@ -75,15 +76,22 @@ function regionStartIndex(entries: SessionEntry[], previous: ReturnType<typeof l
  * Returns `undefined` only when the serialized region is below the minimum
  * compactable size or every non-blank line is protected (contract §8).
  */
+export interface FullCollapsePreparationOptions extends Partial<VerbatimCompactionParameters> {
+	excludedEntryIds?: ReadonlySet<string>;
+	anchorId?: string;
+}
+
 export function prepareFullCollapseBoundary(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
-	options: Partial<VerbatimCompactionParameters> = {},
+	options: FullCollapsePreparationOptions = {},
 ): FullCollapsePreparation | undefined {
-	const entries = normalizeDerivedSessionEntries(pathEntries);
+	const entries = normalizeDerivedSessionEntries(pathEntries).filter((entry) => !options.excludedEntryIds?.has(entry.id));
 	const previous = latestActiveBoundary(entries);
 	const visible = visibleEntries(entries, regionStartIndex(entries, previous));
-	const parameters = normalizeCompactionParameters({ ...settings, ...options }, autoDetectCompactionQuery(entries));
+	const { excludedEntryIds: _excludedEntryIds, anchorId: _anchorId, ...parameterOptions } = options;
+	const parameterInput = { ...settings, ...parameterOptions };
+	const parameters = normalizeCompactionParameters(parameterInput, autoDetectCompactionQuery(entries));
 
 	const serialized = serializeConversationForCompaction(convertToLlm(visible.map((item) => item.message)));
 	const regionText = previous?.entry.summary ? `${previous.entry.summary}\n${serialized}` : serialized;
@@ -94,7 +102,7 @@ export function prepareFullCollapseBoundary(
 	if (region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 	if (allLinesProtected(region)) return undefined;
 
-	const anchorId = entries[entries.length - 1]?.id;
+	const anchorId = options.anchorId ?? entries[entries.length - 1]?.id;
 	if (!anchorId) return undefined;
 
 	const preparation: FullCollapsePreparation = {
@@ -109,5 +117,6 @@ export function prepareFullCollapseBoundary(
 		settings,
 	};
 	setKeptTailTokenEstimate(preparation, 0);
+	setCompactionQueryProvenance(preparation, compactionQueryProvenance(parameterInput));
 	return preparation;
 }

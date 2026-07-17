@@ -1,6 +1,7 @@
 import { formatNoModelSelectedMessage } from "./auth-guidance.ts";
 import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApplyOptions } from "./agent-session-methods.ts";
 import {
+	compactionRequestIdentityMatches,
 	getKeptTailTokenEstimate,
 	prepareFullCollapseBoundary,
 	runFullCollapseCompaction,
@@ -9,14 +10,12 @@ import {
 	VERBATIM_COMPACTION_STRATEGY,
 	type CompactionCacheTelemetry,
 	type CompactionPlanOptions,
-	type CompactionRequestPrefix,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
 	type VerbatimCompactionPreparation,
 	type VerbatimCompactionResult,
 	type VerbatimCompactionStats,
 } from "./compaction/index.ts";
-import { convertToLlm } from "./messages.ts";
 import type { SessionBeforeCompactEvent, SessionBeforeCompactResult, SessionCompactEvent } from "./extensions/index.ts";
 import type { CompactionEntry } from "./session-manager.ts";
 
@@ -61,6 +60,14 @@ function extensionStats(preparation: VerbatimCompactionPreparation, compactedTex
 	};
 }
 
+export class StaleCompactionPlanError extends Error {
+	readonly retryable = true;
+	constructor() {
+		super("Compaction plan became stale because the session changed during planning");
+		this.name = "StaleCompactionPlanError";
+	}
+}
+
 export async function _applyVerbatimCompaction(
 	this: AgentSession,
 	options: VerbatimCompactionApplyOptions,
@@ -73,23 +80,29 @@ export async function _applyVerbatimCompaction(
 		...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
 		...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 		...(options.query === undefined ? {} : { query: options.query }),
+		...(options.excludeEntryId ? {
+			excludedEntryIds: new Set([options.excludeEntryId]),
+			anchorId: this.sessionManager.getLeafId() ?? undefined,
+		} : {}),
 	});
 	if (!preparation) {
 		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
 		return undefined;
 	}
-
-	const prefix: CompactionRequestPrefix = {
-		systemPrompt: this.agent.state.systemPrompt,
-		tools: this.agent.state.tools,
-		messages: convertToLlm(this.sessionManager.buildSessionContext().messages),
-		sessionId: this.sessionId,
-		transport: this.settingsManager.getTransport(),
-	};
+	// Reuse only a request captured at the actual pre-dispatch stream boundary.
+	// With no preceding request (for example a manual compact before any prompt),
+	// the planner deliberately uses its isolated request rather than claiming a
+	// post-response reconstruction is cache-identical.
+	const reusablePrefix = this._activeRequestPrefix
+		&& compactionRequestIdentityMatches(this._activeRequestPrefix.identity, model)
+		&& this._activeRequestPrefix.identity.sessionId === this.sessionManager.getSessionId()
+		? this._activeRequestPrefix
+		: undefined;
 	const plan: CompactionPlanOptions = {
-		streamFn: this.agent.streamFn,
+		// Compaction-internal dispatch must not replace the normal request snapshot.
+		streamFn: this._originatingStreamFn,
 		sessionFilePath: this.sessionManager.getSessionFile(),
-		prefix,
+		...(reusablePrefix ? { prefix: reusablePrefix } : {}),
 	};
 	let fromExtension = false;
 	let compacted:
@@ -133,7 +146,9 @@ export async function _applyVerbatimCompaction(
 		);
 	}
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
+	if (this.sessionManager.getLeafId() !== preparation.firstKeptEntryId) throw new StaleCompactionPlanError();
 
+	// Retain this recovery artifact if the transactional boundary append fails.
 	const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
@@ -177,10 +192,17 @@ export async function compact(this: AgentSession, options: Partial<VerbatimCompa
 	try {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
 		const model = this.model;
-		const result = await this._applyVerbatimCompaction({
+		const applyOptions: VerbatimCompactionApplyOptions = {
 			resolvePlannerAuth: () => this._getRequiredRequestAuth(model), abortController: this._compactionAbortController,
 			backupLabel: "compact", reason: "manual", ...options,
-		});
+		};
+		let result: VerbatimCompactionResult | undefined;
+		try {
+			result = await this._applyVerbatimCompaction(applyOptions);
+		} catch (error) {
+			if (!(error instanceof StaleCompactionPlanError)) throw error;
+			result = await this._applyVerbatimCompaction(applyOptions);
+		}
 		if (!result) throw new Error("Nothing to compact (session too small)");
 		this._emit({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false });
 		return result;

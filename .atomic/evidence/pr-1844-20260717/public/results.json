@@ -1,0 +1,129 @@
+{
+  "runRoot": ".atomic/evidence/pr-1844-20260717",
+  "attribution": {
+    "head": "01490d715ad136be47eee124b54f24c7a697c179",
+    "finalDirtyDiffSha256": "b154719ec8608e1c6b439938b0afbd47d12343a0ddabcbae796503a62f75ed83",
+    "finalDirtyPathListSha256": "eb23f9b3546dcd43a6223b7df67cd75f31cbee8c1ca13bbfdee8db77f0b66a39",
+    "compiledCliSha256": "222f4d1a9493043055bbca61d4f1e183a79f19741c8af56694d3cab7e4cd245e",
+    "bun": "1.3.14",
+    "tmux": "3.7b",
+    "model": "openai-codex/gpt-5.6-sol:off",
+    "providerContextWindow": 372000
+  },
+  "preflight": {
+    "finalBuild": "pass",
+    "modelListing": "pass",
+    "authExactResponse": "AUTH_OK",
+    "initialBuildFailurePreserved": true,
+    "unsupportedBreakpointFailurePreserved": true,
+    "resolvedSmoke": "pass"
+  },
+  "scenarioA": {
+    "tmuxSession": "pr1844-a-final",
+    "blob": {
+      "lines": 9000,
+      "chars": 503999,
+      "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+    },
+    "providerMeasuredTokens": 283100,
+    "localContextWindow": 262130,
+    "localPercent": 107.99984740395988,
+    "providerInputUnderHardCap": true,
+    "autoCompaction": {
+      "reason": "overflow",
+      "format": "full-collapse",
+      "promptVersion": 4,
+      "rung": "planned",
+      "linesBefore": 292,
+      "linesDeleted": 2,
+      "linesKept": 290,
+      "tokensBefore": 126621,
+      "tokensAfter": 4033,
+      "percentReduction": 96.8,
+      "backupExists": true,
+      "failureDiagnosticCount": 0
+    },
+    "rawPreservation": {
+      "sessionLargeChars": 503999,
+      "backupLargeChars": 503999,
+      "sessionLargeSha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3",
+      "backupLargeSha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3",
+      "toolCalls": 1,
+      "toolResults": 1,
+      "unmatchedCalls": 0,
+      "unmatchedResults": 0
+    },
+    "continuationExact": "CONTINUATION_OK pr1844-functional"
+  },
+  "scenarioB": {
+    "successfulSamples": {
+      "warm": 3,
+      "cold": 3
+    },
+    "sampleIds": [
+      "2r",
+      "5",
+      "6"
+    ],
+    "workload": {
+      "alternatingPairs": 8,
+      "physicalLinesPerMessage": 40,
+      "linesBefore": 659,
+      "realTokensBeforeRange": [
+        22567,
+        22568
+      ],
+      "compressionRatio": 0.05
+    },
+    "semanticHistoryMatchAllPairs": true,
+    "warm": {
+      "elapsedMs": [
+        8072.884875,
+        8648.738709,
+        7012.363875
+      ],
+      "medianMs": 8072.884875,
+      "minMs": 7012.363875,
+      "maxMs": 8648.738709,
+      "cacheReadTokens": [
+        22272,
+        22272,
+        22272
+      ],
+      "cacheWriteTokens": [
+        0,
+        0,
+        0
+      ],
+      "cacheHit": [
+        true,
+        true,
+        true
+      ]
+    },
+    "cold": {
+      "elapsedMs": [
+        22430.960375,
+        24998.884291,
+        24775.391667
+      ],
+      "medianMs": 24775.391667,
+      "minMs": 22430.960375,
+      "maxMs": 24998.884291,
+      "cacheTelemetry": "absent by design on isolated no-snapshot fallback; not represented as zero"
+    },
+    "medianDeltaMsColdMinusWarm": 16702.506792,
+    "warmOverColdMedianRatio": 0.3258428760080033,
+    "coldOverWarmMedianRatio": 3.0689638277543256,
+    "medianLatencyReductionPercent": 67.41571239919966,
+    "conclusion": "All three mechanically eligible warm samples reported authoritative native Codex cache reads and were materially faster than every paired isolated cold sample.",
+    "generatedSummary": "benchmark-summary.json"
+  },
+  "failures": [
+    "Initial mandated command word order was invalid for Bun 1.3.14; corrected syntax was used thereafter.",
+    "Initial current-tree build failed TS1294 before an independent product fix; retained as history.",
+    "First real smoke was rejected because Codex did not support an injected explicit breakpoint; retained as history; final smoke passed after independent fix.",
+    "Early cache sample 1 used string-form seeded user messages and therefore fell back isolated; it is excluded, not relabeled.",
+    "Warm samples 2, 3, and 4 returned malformed non-KEEP planner output and produced diagnostics; failures remain raw. Sample 2r was the one fresh paired retry; samples 5 and 6 used the same declared deterministic workload and exact prompt as successful 2r."
+  ]
+}

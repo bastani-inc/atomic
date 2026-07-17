@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { VERBATIM_COMPACTION_PREFIX, convertToLlm, isVerbatimCompactionMessage, type CustomMessage } from "../../src/core/messages.js";
 import { buildSessionContext, SessionManager, type SessionEntry } from "../../src/core/session-manager.js";
 import type { VerbatimCompactionDetails } from "../../src/core/compaction/compaction-types.js";
+import { setSessionAppendImplementationForTest } from "../../src/core/session-manager-storage.js";
 import { assistantMsg, userMsg } from "../utilities.js";
 
 function details(rung: VerbatimCompactionDetails["rung"] = "standard"): VerbatimCompactionDetails {
@@ -32,9 +33,9 @@ function messageEntry(id: string, parentId: string | null, text: string): Sessio
 describe("verbatim compaction persistence and resume", () => {
 	const tempDirs: string[] = [];
 	afterEach(() => {
+		setSessionAppendImplementationForTest(undefined);
 		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 	});
-
 	it("persists the exact string and rebuilds the boundary plus kept tail across open", () => {
 		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-resume-"));
 		tempDirs.push(cwd);
@@ -212,5 +213,32 @@ describe("verbatim compaction persistence and resume", () => {
 
 		const resumed = SessionManager.open(manager.getSessionFile()!);
 		expect(convertToLlm(resumed.buildSessionContext().messages)).toEqual(throughContext);
+	});
+
+	it("restores active JSONL bytes after a partial compaction append while retaining the backup", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-compaction-partial-"));
+		tempDirs.push(cwd);
+		const manager = SessionManager.create(cwd, cwd);
+		manager.appendMessage(userMsg("origin user"));
+		const anchor = manager.appendMessage(assistantMsg("origin answer"));
+		const file = manager.getSessionFile()!;
+		const beforeBytes = readFileSync(file);
+		const beforeEntries = manager.getEntries();
+		const backup = manager.writeBackupSnapshot("partial-append");
+		setSessionAppendImplementationForTest((path, data) => {
+			appendFileSync(path, data.slice(0, Math.max(1, Math.floor(data.length / 2))));
+			throw new Error("injected partial write");
+		});
+		expect(() => manager.appendCompaction("[User]: exact", anchor, 100, fullDetails())).toThrow("injected partial write");
+		expect(readFileSync(file)).toEqual(beforeBytes);
+		expect(manager.getEntries()).toEqual(beforeEntries);
+		expect(manager.getLeafId()).toBe(anchor);
+		expect(backup && existsSync(backup)).toBe(true);
+		setSessionAppendImplementationForTest(undefined);
+		const next = manager.appendMessage(userMsg("after rollback"));
+		expect(manager.getEntry(next)?.parentId).toBe(anchor);
+		const reopened = SessionManager.open(file);
+		expect(reopened.getLeafId()).toBe(next);
+		expect(reopened.getEntries()).toEqual(manager.getEntries());
 	});
 });

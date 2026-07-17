@@ -1,0 +1,11 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [source, destinationDir, id] = process.argv.slice(2);
+if (!source || !destinationDir || !id) throw new Error("usage: clone-session.ts SOURCE DEST_DIR ID");
+const lines = readFileSync(source, "utf8").trimEnd().split("\n");
+const header = JSON.parse(lines[0]) as Record<string, unknown>;
+header.id = id;
+mkdirSync(destinationDir, { recursive: true });
+const destination = join(destinationDir, `paired_${id}.jsonl`);
+writeFileSync(destination, `${[JSON.stringify(header), ...lines.slice(1)].join("\n")}\n`, { mode: 0o600 });
+console.log(destination);

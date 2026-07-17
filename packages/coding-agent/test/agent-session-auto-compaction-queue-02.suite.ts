@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, getModel } from "@earendil-works/pi-ai/compat";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, jest as vi } from "bun:test";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -13,67 +13,7 @@ import { createTestResourceLoader } from "./utilities.ts";
 import { appendTestCompaction } from "./verbatim-compaction-test-helpers.ts";
 
 
-const compactionMocks = vi.hoisted(() => ({
-	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
-		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }],
-		stats: { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 },
-		rung: "planned" as const,
-	})),
-}));
-
-vi.mock("../src/core/compaction/index.js", () => ({
-	VERBATIM_COMPACTION_PROMPT_VERSION: 3,
-	VERBATIM_COMPACTION_STRATEGY: "verbatim-lines",
-	VERBATIM_COMPACTION_FORMAT_FULL: "full-collapse",
-	calculateContextTokens: (usage: {
-		input: number;
-		output: number;
-		cacheRead: number;
-		cacheWrite: number;
-		totalTokens?: number;
-	}) => usage.totalTokens ?? usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
-	collectEntriesForBranchSummary: () => ({ entries: [], commonAncestorId: null }),
-	runVerbatimCompaction: compactionMocks.runVerbatimCompaction,
-	runFullCollapseCompaction: compactionMocks.runVerbatimCompaction,
-	estimateContextTokens: (
-		messages: Array<{
-			role: string;
-			usage?: { input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens?: number };
-			stopReason?: string;
-		}>,
-	) => {
-		// Walk backwards to find last non-error, non-aborted assistant with usage
-		for (let i = messages.length - 1; i >= 0; i--) {
-			const msg = messages[i];
-			if (msg.role === "assistant" && msg.stopReason !== "error" && msg.stopReason !== "aborted" && msg.usage) {
-				const tokens =
-					msg.usage.totalTokens ?? msg.usage.input + msg.usage.output + msg.usage.cacheRead + msg.usage.cacheWrite;
-				return { tokens, usageTokens: tokens, trailingTokens: 0, lastUsageIndex: i };
-			}
-		}
-		return { tokens: 0, usageTokens: 0, trailingTokens: 0, lastUsageIndex: null };
-	},
-	generateBranchSummary: async () => ({ summary: "", aborted: false, readFiles: [], modifiedFiles: [] }),
-	prepareCompactionBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 1, tokensBefore: 100,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
-	prepareFullCollapseBoundary: (entries: Array<{ id: string }>) => entries[0] ? ({
-		format: "full-collapse", firstKeptEntryId: entries[0].id,
-		region: { __brand: "NumberedRegion", lines: ["[User]: test", "body"], headerLineNumbers: new Set([1]), priorMarkerNs: new Map(), tokenEstimate: 10 },
-		regionEntryIds: [entries[0].id], keptTailMessageCount: 0, protectedMessageCount: 0, tokensBefore: 100,
-		parameters: { compression_ratio: 0.5, preserve_recent: 2, query: "test" },
-		settings: { enabled: true, reserveTokens: 16384, compression_ratio: 0.5, preserve_recent: 2 },
-	}) : undefined,
-	shouldCompact: (
-		contextTokens: number,
-		contextWindow: number,
-		settings: { enabled: boolean; reserveTokens: number },
-	) => settings.enabled && contextTokens > contextWindow - settings.reserveTokens,
-}));
+import { advanceTimers, compactionMocks, installCompactionMock } from "./agent-session-auto-compaction-queue.setup.ts";
 describe("AgentSession auto-compaction queue resume", () => {
 	let session: AgentSession;
 	let sessionManager: SessionManager;
@@ -109,6 +49,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 			modelRegistry,
 			resourceLoader: createTestResourceLoader(),
 		});
+		installCompactionMock(session, sessionManager);
 	});
 
 	afterEach(() => {
@@ -139,7 +80,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		)._runAutoCompaction.bind(session);
 
 		await runAutoCompaction("threshold", false);
-		await vi.advanceTimersByTimeAsync(100);
+		await advanceTimers(100);
 
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 		expect(waitSpy).toHaveBeenCalledTimes(1);
@@ -167,7 +108,7 @@ describe("AgentSession auto-compaction queue resume", () => {
 		)._runAutoCompaction.bind(session);
 
 		await runAutoCompaction("threshold", false);
-		await vi.advanceTimersByTimeAsync(100);
+		await advanceTimers(100);
 
 		expect(errors).toEqual(["Post-compaction continuation failed: boom"]);
 	});

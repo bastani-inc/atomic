@@ -17,6 +17,8 @@ import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/
 export type DiagnosticFailureCategory =
 	| "malformed_output"
 	| "no_usable_ranges"
+	| "input_overflow"
+	| "output_limit"
 	| "provider_error"
 	| "stream_error";
 

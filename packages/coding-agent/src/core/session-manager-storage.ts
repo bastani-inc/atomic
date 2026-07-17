@@ -171,8 +171,18 @@ export function writeSessionEntries(filePath: string, entries: FileEntry[]): voi
 	writeFileSync(filePath, serializeSessionEntries(entries));
 }
 
+type SessionAppendImplementation = (filePath: string, data: string) => void;
+let sessionAppendImplementation: SessionAppendImplementation | undefined;
+
+/** Test-only fault injection at the physical append boundary. */
+export function setSessionAppendImplementationForTest(implementation: SessionAppendImplementation | undefined): void {
+	sessionAppendImplementation = implementation;
+}
+
 export function appendSessionEntry(filePath: string, entry: FileEntry): void {
-	appendFileSync(filePath, `${JSON.stringify(entry)}\n`);
+	const data = `${JSON.stringify(entry)}\n`;
+	if (sessionAppendImplementation) sessionAppendImplementation(filePath, data);
+	else appendFileSync(filePath, data);
 }
 
 export function appendSessionEntries(filePath: string, entries: FileEntry[]): void {

@@ -1,0 +1,53 @@
+{
+  "scope": "final product tree after query-provenance exact-once fix",
+  "commands": [
+    {
+      "command": "AGENT=1 bun test packages/coding-agent/test/compaction-cache-exact-once.test.ts packages/coding-agent/test/compaction-cache.test.ts packages/coding-agent/test/full-collapse-overflow-reproduction.test.ts packages/coding-agent/test/full-collapse-boundary.test.ts packages/coding-agent/test/full-collapse-runner.test.ts packages/coding-agent/test/agent-session-public-compaction-lifecycle.test.ts packages/coding-agent/test/agent-session-auto-compaction-queue.test.ts packages/coding-agent/test/compaction-diagnostics.test.ts packages/coding-agent/test/session-manager/verbatim-compaction-resume.test.ts",
+      "outcome": "pass",
+      "testsPassed": 98,
+      "testsFailed": 0,
+      "files": 9,
+      "assertions": 402
+    },
+    { "command": "AGENT=1 bun run test:unit", "outcome": "pass", "testsPassed": 3686, "testsFailed": 0, "files": 441 },
+    { "command": "AGENT=1 bun run test:integration", "outcome": "pass", "testsPassed": 250, "testsFailed": 0, "files": 25 },
+    { "command": "derived focused + unit + integration total", "outcome": "pass", "testsPassed": 4034, "testsFailed": 0, "files": 475 },
+    { "command": "bun run typecheck", "outcome": "pass" },
+    { "command": "bun run lint", "outcome": "pass" },
+    { "command": "bun run check:file-length", "outcome": "pass", "filesChecked": 2209, "violations": 0 },
+    { "command": "bun run --cwd packages/coding-agent build", "outcome": "pass" },
+    { "command": "bun run --cwd packages/coding-agent docs:check", "outcome": "pass", "markdownFiles": 32, "pages": 32 },
+    { "command": "bun run check:shrinkwrap", "outcome": "pass" },
+    { "command": "git diff --check", "outcome": "pass" },
+    { "command": "bun run hooks:run", "outcome": "pass", "hooksPassed": 12, "hooksFailed": 0 },
+    { "command": "test ! -e issues.md", "outcome": "pass at final-tree validation" }
+  ],
+  "validationRuns": [
+    {
+      "name": "final-tree automated validation",
+      "result": "APPROVED",
+      "artifact": "3d42f42e_worker_0_output.md"
+    }
+  ],
+  "approvals": [
+    {
+      "name": "final overflow/session/tool",
+      "verdict": "APPROVED — final overflow/session/tool review",
+      "independentReviewArtifact": "f6e9365e_codebase-analyzer_0_output.md"
+    },
+    {
+      "name": "final exact-once prompt-cache",
+      "verdict": "APPROVED — final exact-once prompt-cache code review",
+      "independentReviewArtifact": "1f3dd804_codebase-analyzer_0_output.md"
+    },
+    {
+      "name": "final tmux/cache evidence review",
+      "verdict": "APPROVED — final tmux/cache evidence review"
+    }
+  ],
+  "evidenceReview": {
+    "status": "approved",
+    "verdict": "APPROVED — final tmux/cache evidence review",
+    "context": "Final approval recorded after review of the repaired public evidence bundle."
+  }
+}

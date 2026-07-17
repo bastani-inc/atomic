@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from "fs";
 import { basename, dirname, join } from "path";
 import { tmpdir } from "os";
-import type { Api, AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
+import { createAssistantMessageEventStream, type Api, type AssistantMessage, type Model, type Usage } from "@earendil-works/pi-ai/compat";
 import {
 	buildDiagnosticPayload,
 	type CompactionDiagnostic,
@@ -21,6 +21,10 @@ import {
 } from "../src/core/compaction/range-planner-diagnostics.ts";
 import { RangePlanError, planDeletedLineRanges } from "../src/core/compaction/range-planner.ts";
 import type { NumberedRegion, VerbatimCompactionParameters } from "../src/core/compaction/compaction-types.ts";
+import { DEFAULT_COMPACTION_SETTINGS } from "../src/core/compaction/compaction.ts";
+import { runFullCollapseCompaction } from "../src/core/compaction/compaction-runner.ts";
+import { prepareFullCollapseBoundary } from "../src/core/compaction/full-collapse-boundary.ts";
+import { SessionManager } from "../src/core/session-manager.ts";
 
 const testPosixFileMode = process.platform === "win32" ? it.skip : it;
 
@@ -224,6 +228,51 @@ describe("compaction diagnostics: persisted sidecar", () => {
 		expect(content.model.provider).toBe("anthropic");
 	});
 
+
+	it("persists exact multi-block partial bytes as output_limit, distinct from input overflow", () => {
+		const raw = ["first block\n", "second block\n", "unterminated tail"].join("");
+		const path = writeDiagnosticSidecar({
+			sessionFilePath: join(testDir, "output-limit.jsonl"), model: createMockModel(), requestMaxTokens: 16,
+			response: createMockResponse(raw, "length"), rawResponseText: raw,
+			failureCategory: "output_limit", failureMessage: "provider output stopped at its limit",
+		});
+		const content = JSON.parse(readFileSync(path!, "utf8")) as CompactionDiagnostic;
+		expect(content.failureCategory).toBe("output_limit");
+		expect(content.failureCategory).not.toBe("input_overflow");
+		expect(content.rawResponse).toBe(raw);
+		expect(Buffer.from(content.rawResponse)).toEqual(Buffer.from(raw));
+	});
+
+	it("classifies multi-block full-collapse length output through the public runner", async () => {
+		const manager = SessionManager.inMemory();
+		manager.appendMessage({ role: "user", content: Array.from({ length: 24 }, (_, index) => `source ${index + 1}`).join("\n"), timestamp: 1 });
+		manager.appendMessage(createMockResponse("answer one\nanswer two"));
+		const preparation = prepareFullCollapseBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 })!;
+		const blocks = ["[User]: source one\n", "[Assistant]: answer", " incomplete-tail"];
+		const response = { ...createMockResponse("", "length"), content: blocks.map((text) => ({ type: "text" as const, text })) };
+		const streamFn = () => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: { ...response, content: [] } });
+				stream.push({ type: "done", reason: "length", message: response });
+			});
+			return stream;
+		};
+		let error: RangePlanError | undefined;
+		try {
+			await runFullCollapseCompaction(preparation, createMockModel(), "key", undefined, undefined, undefined, {
+				streamFn, sessionFilePath: join(testDir, "full-collapse.jsonl"),
+			});
+		} catch (caught) {
+			if (caught instanceof RangePlanError) error = caught;
+			else throw caught;
+		}
+		expect(error?.providerOverflow).toBe(false);
+		const diagnostic = JSON.parse(readFileSync(error!.diagnosticPath!, "utf8")) as CompactionDiagnostic;
+		expect(diagnostic.failureCategory).toBe("output_limit");
+		expect(diagnostic.failureCategory).not.toBe("input_overflow");
+		expect(diagnostic.rawResponse).toBe(blocks.join(""));
+	});
 	testPosixFileMode("sets 0600 file permissions on the sidecar", () => {
 		const sessionFile = join(testDir, "session.jsonl");
 		const model = createMockModel();

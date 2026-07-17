@@ -6,6 +6,7 @@ import { calculateContextTokens, estimateContextTokens, shouldCompact } from "./
 import { getLatestCompactionBoundaryEntry } from "./session-manager.ts";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "./openai-responses-payload-sanitizer.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
+import { StaleCompactionPlanError } from "./agent-session-compaction.js";
 
 /**
  * Upper bound on consecutive automatic continuations of a response that was
@@ -337,6 +338,7 @@ export function _resumeAfterLengthTruncation(this: AgentSession): void {
 }
 
 
+
 function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): boolean | undefined {
 	return reason === "overflow" && !aborted ? true : undefined;
 }
@@ -363,7 +365,7 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
 		const model = this.model;
-		const result = await this._applyVerbatimCompaction({
+		const applyOptions = {
 			resolvePlannerAuth: async () => {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
 				if (!authResult.ok || !authResult.apiKey) {
@@ -374,7 +376,15 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 			abortController: this._autoCompactionAbortController,
 			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
 			reason,
-		});
+			...(reason === "overflow" && this._lastAssistantEntryId ? { excludeEntryId: this._lastAssistantEntryId } : {}),
+		} as const;
+		let result;
+		try {
+			result = await this._applyVerbatimCompaction(applyOptions);
+		} catch (error) {
+			if (!(error instanceof StaleCompactionPlanError)) throw error;
+			result = await this._applyVerbatimCompaction(applyOptions);
+		}
 		if (!result) {
 			this._emit({
 				type: "compaction_end",

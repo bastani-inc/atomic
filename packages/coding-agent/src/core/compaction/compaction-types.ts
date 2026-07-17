@@ -1,4 +1,4 @@
-import type { CacheRetention, Message, Tool, Transport } from "@earendil-works/pi-ai/compat";
+import type { Api, CacheRetention, Message, Model, SimpleStreamOptions, Tool, Transport } from "@earendil-works/pi-ai/compat";
 import type { CompactionSettings } from "./compaction.js";
 
 /**
@@ -14,6 +14,33 @@ export interface CompactionCacheTelemetry {
 	model: string;
 }
 
+export interface CompactionRequestIdentity {
+	api: Api;
+	provider: string;
+	model: string;
+	baseUrl: string;
+	sessionId?: string;
+	transport?: Transport;
+}
+
+export function compactionRequestIdentity(
+	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
+	options?: Pick<SimpleStreamOptions, "sessionId" | "transport">,
+): CompactionRequestIdentity {
+	return {
+		api: model.api, provider: model.provider, model: model.id, baseUrl: model.baseUrl,
+		...(options?.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+		...(options?.transport !== undefined ? { transport: options.transport } : {}),
+	};
+}
+
+export function compactionRequestIdentityMatches(
+	identity: CompactionRequestIdentity,
+	model: Pick<Model<Api>, "api" | "provider" | "id" | "baseUrl">,
+): boolean {
+	return identity.api === model.api && identity.provider === model.provider && identity.model === model.id && identity.baseUrl === model.baseUrl;
+}
+
 /**
  * The exact active-request prefix a compaction call reuses so the provider can
  * serve the already-cached old conversation. Token-identical to the last normal
@@ -21,13 +48,18 @@ export interface CompactionCacheTelemetry {
  * after this prefix (after the cache breakpoint), never before it.
  */
 export interface CompactionRequestPrefix {
-	systemPrompt?: string;
-	tools?: Tool[];
-	messages: Message[];
+	readonly identity: CompactionRequestIdentity;
+	readonly systemPrompt?: string;
+	readonly tools?: Tool[];
+	readonly messages: Message[];
+	/** Exact deeply immutable payload after the normal request's final payload hook. */
+	readonly finalPayload: unknown;
 	/** Stable cache-routing key (OpenAI prompt_cache_key / provider session affinity). */
-	sessionId?: string;
-	cacheRetention?: CacheRetention;
-	transport?: Transport;
+	readonly sessionId?: string;
+	readonly cacheRetention?: CacheRetention;
+	readonly transport?: Transport;
+	/** False when host semantic inputs were captured for diagnostics but cannot prove warm alignment. */
+	readonly warmEligible?: boolean;
 }
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 4 as const;

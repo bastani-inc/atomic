@@ -4,7 +4,12 @@ import { normalizeDerivedSessionEntries } from "../session-entry-normalization.j
 import { buildSessionContext } from "../session-manager-history.js";
 import type { CompactionEntry, SessionEntry } from "../session-manager-types.js";
 import { estimateContextTokens, estimateTokens, type CompactionSettings } from "./compaction.js";
-import { normalizeCompactionParameters, normalizeCompactionQuery, COMPACTION_AUTO_QUERY } from "./compaction-parameters.js";
+import {
+	COMPACTION_AUTO_QUERY,
+	normalizeCompactionParameters,
+	normalizeCompactionQuery,
+} from "./compaction-parameters.js";
+import { compactionQueryProvenance, setCompactionQueryProvenance } from "./compaction-query-provenance.js";
 import {
 	MIN_COMPACTABLE_REGION_LINES,
 	VERBATIM_COMPACTION_STRATEGY,
@@ -112,7 +117,8 @@ export function prepareCompactionBoundary(
 	}
 
 	const visible = visibleEntries(entries, regionStart);
-	const parameters = normalizeCompactionParameters({ ...settings, ...options }, autoDetectCompactionQuery(entries));
+	const parameterInput = { ...settings, ...options };
+	const parameters = normalizeCompactionParameters(parameterInput, autoDetectCompactionQuery(entries));
 	const cut = selectCut(visible, parameters.preserve_recent);
 	if (!cut) return undefined;
 	const regionMessages = visible.filter((item) => item.index < cut.index);
@@ -134,5 +140,6 @@ export function prepareCompactionBoundary(
 		settings,
 	};
 	keptTailTokensByPreparation.set(preparation, tailMessages.reduce((sum, message) => sum + estimateTokens(message), 0));
+	setCompactionQueryProvenance(preparation, compactionQueryProvenance(parameterInput));
 	return preparation;
 }

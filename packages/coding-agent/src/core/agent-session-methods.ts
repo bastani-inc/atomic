@@ -1,7 +1,7 @@
-import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
 import type { BashResult } from "./bash-executor.ts";
-import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
+import type { CompactionRequestPrefix, VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
 	ContextUsage,
 	ExtensionCommandContextActions,
@@ -48,6 +48,7 @@ export interface VerbatimCompactionApplyOptions {
 	preserve_recent?: number;
 	query?: string;
 	reason: "manual" | "threshold" | "overflow";
+	excludeEntryId?: string;
 }
 
 export interface ExtensionResourcePathEntry {
@@ -349,12 +350,16 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_lengthContinuationAttempts: number;
 	_outputBudgetErrorContinuationAttempts: number;
 	_pendingInterruptDeliveries: number;
+	_activeRequestPrefix: CompactionRequestPrefix | undefined;
+	_originatingStreamFn: StreamFn;
+	_capturingStreamFn: StreamFn;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;
 	_pendingNextTurnMessages: CustomMessage[];
 	_compactionAbortController: AbortController | undefined;
 	_autoCompactionAbortController: AbortController | undefined;
 	_overflowRecoveryAttempted: boolean;
+	_lastAssistantEntryId: string | undefined;
 	_branchSummaryAbortController: AbortController | undefined;
 	_retryAbortController: AbortController | undefined;
 	_retryAttempt: number;

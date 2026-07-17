@@ -134,7 +134,8 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 				this._normalizePersistedGeminiToolArgs(event.message);
 			}
 			// Regular LLM message - persist as SessionMessageEntry
-			this.sessionManager.appendMessage(event.message);
+			const entryId = this.sessionManager.appendMessage(event.message);
+			if (event.message.role === "assistant") this._lastAssistantEntryId = entryId;
 		}
 		// Other message types (bashExecution, branchSummary) are persisted elsewhere
 
@@ -419,6 +420,7 @@ export function dispose(this: AgentSession): void {
 	);
 	disposeSessionAsyncJobManager(this._asyncJobManager, this._asyncJobManagerSessionId);
 	this._disconnectFromAgent();
+	if (this.agent.streamFn === this._capturingStreamFn) this.agent.streamFn = this._originatingStreamFn;
 	this._eventListeners = [];
 	cleanupSessionResources(this.sessionId);
 }
