@@ -181,6 +181,67 @@ export type PiCustomOverlayFunction = (
 ) => Promise<unknown> | unknown;
 
 /**
+ * JSON-safe session-selector row for the host-native session picker
+ * capability. Structural mirror of @bastani/atomic `HostSessionPickerRow` —
+ * `SessionInfo` with `created`/`modified` flattened to epoch millis.
+ */
+export interface PiHostSessionPickerRow {
+  path: string;
+  id: string;
+  cwd: string;
+  /** Creation time in epoch milliseconds. */
+  createdAt: number;
+  /** Last-modified time in epoch milliseconds. */
+  modifiedAt: number;
+  messageCount: number;
+  firstMessage: string;
+  allMessagesText?: string;
+  name?: string;
+  /** Optional semantic color for synthetic selector rows. */
+  messageColor?: "success" | "warning" | "accent" | "error";
+}
+
+/** Request accepted by the host-native session picker capability. */
+export interface PiHostSessionPickerRequest {
+  /** Rows shown in the first frame; push later rows via the handle's `update()`. */
+  sessions: PiHostSessionPickerRow[];
+  /** Show the rename keybinding hint in the picker header. Defaults to false. */
+  showRenameHint?: boolean;
+  /**
+   * Invoked after the user confirms a Ctrl+D delete on a row. The host never
+   * removes the row itself; reply with `update()` (row removed) or `error()`.
+   */
+  onDelete?: (path: string) => void | Promise<void>;
+}
+
+/** Live control surface for an open host-native session picker. */
+export interface PiHostSessionPickerHandle {
+  /** Resolves with the selected row's `path`, or `undefined` on cancel/close. */
+  result: Promise<string | undefined>;
+  /** Replace the picker rows; host-side navigation/search state is preserved. */
+  update(sessions: PiHostSessionPickerRow[]): void;
+  /** Surface a transient error message in the picker header. */
+  error(message: string): void;
+  /** Close the picker; `result` resolves `undefined`. Idempotent. */
+  close(): void;
+}
+
+/**
+ * Host-native session-list picker capability (`ctx.ui.hostSessionPicker`).
+ * Every interactive Atomic host implements it with one identical API: the
+ * terminal host mounts the real `SessionSelectorComponent` natively —
+ * directly (no IPC) in non-isolated mode, over the engine session-picker
+ * protocol channel in isolated mode — so picker navigation and search are
+ * zero-IPC and only open/update/select/delete/cancel cross a process
+ * boundary. Absent only on non-interactive surfaces (headless RPC, print)
+ * and mismatched hosts; callers fail with an actionable error there rather
+ * than degrade. The workflow resume picker REQUIRES this capability.
+ */
+export type PiHostSessionPickerFunction = (
+  request: PiHostSessionPickerRequest,
+) => PiHostSessionPickerHandle;
+
+/**
  * Structural shape of pi's custom editor component. Interactive mode
  * currently installs extension editors through `InteractiveMode.setEditorComponent`,
  * which expects the richer `CustomEditor` surface and configures these methods
@@ -264,6 +325,8 @@ export interface PiUISurface {
   setTitle?: (title: string) => void;
   /** Show a custom component or overlay. */
   custom?: PiCustomOverlayFunction;
+  /** Host-native session-list picker (all interactive hosts; absent headless). */
+  hostSessionPicker?: PiHostSessionPickerFunction;
   /** Get host-owned inline custom UI focus state, if exposed by the host. */
   getHostCustomUiState?: () => PiHostCustomUiState;
   /** Observe host-owned inline custom UI focus state changes, if exposed by the host. */

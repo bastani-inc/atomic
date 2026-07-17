@@ -115,6 +115,30 @@ await ctx.ui.custom((tui, theme, keybindings, done) => {
 
 These are the only terminal controls exposed; arbitrary child bytes are never forwarded to the terminal. The host resets any mode a component enabled when the overlay hides, closes, is disposed, or when the engine child crashes/restarts, so a stranded child can never leave the terminal in mouse-reporting or autowrap-off mode. On non-isolated hosts and test seams the setters are absent, and callers should fall back to writing escape sequences to their own `process.stdout`.
 
+### Host-native session picker
+
+Remote-rendered components pay one host⇄child round trip per keypress under engine isolation. For session-style list pickers, the `ctx.ui.hostSessionPicker(request)` capability avoids that entirely: the terminal host mounts the real built-in `SessionSelectorComponent` and feeds it JSON-safe rows, so arrow-key navigation and search stay host-local and survive extension event-loop stalls. Only semantic events cross the host⇄extension boundary: the extension pushes row `update`s and `error`s (and may `close()` the picker); the host reports selection, cancel, and confirmed Ctrl+D deletes.
+
+Every interactive host implements the same API — non-isolated mode mounts the selector directly in-process (no IPC at all), isolated mode routes it over the engine session-picker protocol channel — so callers never branch on the mode. The member is absent only on non-interactive surfaces (headless RPC, print); fail with an actionable error there instead of degrading to a hand-rolled picker.
+
+```typescript
+const picker = ctx.ui.hostSessionPicker?.({
+  sessions: rows, // HostSessionPickerRow[]: SessionInfo with createdAt/modifiedAt epoch millis
+  showRenameHint: false,
+  onDelete: async (path) => {
+    // Deletion is extension-owned: the host keeps the row until you reply.
+    const outcome = await remove(path);
+    if (outcome.ok) picker!.update(rowsWithout(path));
+    else picker!.error(outcome.message);
+  },
+});
+if (!picker) throw new Error("This command requires an interactive session picker");
+picker.update(await loadMoreRows()); // merge late rows into the open picker
+const path = await picker.result;    // selected row's path, or undefined on cancel
+```
+
+The bundled workflows extension's `/workflow resume` picker is built exclusively on this channel.
+
 ## Overlays
 
 Overlays render components on top of existing content without clearing the screen. Pass `{ overlay: true }` to `ctx.ui.custom()`:

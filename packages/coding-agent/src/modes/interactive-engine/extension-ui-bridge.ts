@@ -4,6 +4,7 @@ import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import { RemoteComponentController } from "./remote-component.ts";
+import { SessionPickerHostController } from "./session-picker-host.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
 
 async function handleRequest(
@@ -61,6 +62,7 @@ export function attachInteractiveEngineHost(
 	runtime.onDiagnostic(onDiagnostic);
 	runtime.setExtensionUIHandler((request) => handleRequest(ui, request));
 	new RemoteComponentController(runtime, ui);
+	new SessionPickerHostController(runtime, ui);
 	if (setShortcutHandler) {
 		void runtime.getRemoteShortcuts().then(({ shortcuts }) => {
 			setShortcutHandler((data) => {

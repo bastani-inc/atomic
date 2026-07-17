@@ -1,12 +1,9 @@
-import { SessionSelectorComponent, type SessionInfo } from "@bastani/atomic";
+import type { SessionInfo } from "@bastani/atomic";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { DurableWorkflowDeleteOutcome } from "../durable/retention-policy.js";
 import type {
-  PiCustomComponent,
-  PiCustomOverlayFactoryTui,
-  PiCustomOverlayFunction,
-  PiKeybindings,
-  PiTheme,
+  PiHostSessionPickerFunction,
+  PiHostSessionPickerRow,
 } from "../extension/wiring.js";
 import type { RunSnapshot, StageSnapshot } from "../shared/store-types.js";
 
@@ -16,8 +13,16 @@ export type WorkflowResumeSelectorResult =
   | { kind: "completed"; workflowId: string }
   | { kind: "close" };
 
+/**
+ * UI surface required by the resume picker. The host session-picker
+ * capability is REQUIRED: both isolated (engine-child) and non-isolated
+ * interactive hosts expose the identical `hostSessionPicker` API, so the
+ * picker always mounts natively in the terminal process. There is no
+ * remote-rendered fallback; `openWorkflowResumeSelector` rejects with an
+ * actionable error when the capability is absent (e.g. a mismatched host).
+ */
 export interface WorkflowResumeSelectorUiSurface {
-  custom?: PiCustomOverlayFunction;
+  hostSessionPicker?: PiHostSessionPickerFunction;
 }
 
 export interface WorkflowResumeSelectorOptions {
@@ -164,24 +169,61 @@ export interface OpenWorkflowResumeSelectorResult {
 
 const EMPTY_CATALOG: WorkflowResumeCatalogRows = { durable: [], completed: [] };
 
+export const WORKFLOW_RESUME_PICKER_UNAVAILABLE =
+  "The workflow resume picker requires the host session-picker capability (ctx.ui.hostSessionPicker), " +
+  "which this host does not expose. Update @bastani/atomic, or resume directly with: /workflow resume <id>";
+
+function toPickerRow(session: SessionInfo): PiHostSessionPickerRow {
+  return {
+    path: session.path,
+    id: session.id,
+    cwd: session.cwd,
+    createdAt: session.created.getTime(),
+    modifiedAt: session.modified.getTime(),
+    messageCount: session.messageCount,
+    firstMessage: session.firstMessage,
+    allMessagesText: session.allMessagesText,
+    ...(session.name !== undefined ? { name: session.name } : {}),
+    ...(session.messageColor !== undefined ? { messageColor: session.messageColor } : {}),
+  };
+}
+
+/**
+ * Open the `/workflow resume` picker through the host session-picker
+ * capability: the terminal host mounts the real `SessionSelectorComponent`,
+ * so arrow-key navigation and search never cross the host⇄extension boundary
+ * and stay instant even while this process hydrates the catalog or refreshes
+ * the run store.
+ *
+ * Semantics: live rows seed the first frame, `hydrate()` runs once and merges
+ * via a row update (errors keep the seeded rows and surface in-picker), watch
+ * refreshes are debounced (250 ms) and polling defaults to 5 s, a failed
+ * refresh keeps the previous rows, live rows cannot be deleted, and the
+ * resolved catalog is returned with the result for follow-on resume.
+ *
+ * Rejects with `WORKFLOW_RESUME_PICKER_UNAVAILABLE` when the host does not
+ * expose the capability — there is no remote-rendered fallback.
+ */
 export function openWorkflowResumeSelector(
   ui: WorkflowResumeSelectorUiSurface,
   liveRuns: readonly RunSnapshot[],
   hydrate: WorkflowResumeHydrate,
   options: WorkflowResumeSelectorOptions = {},
 ): Promise<OpenWorkflowResumeSelectorResult> {
-  const custom = ui.custom;
-  if (typeof custom !== "function") {
-    return Promise.resolve({ result: { kind: "close" }, catalog: EMPTY_CATALOG });
+  const hostSessionPicker = ui.hostSessionPicker;
+  if (typeof hostSessionPicker !== "function") {
+    return Promise.reject(new Error(WORKFLOW_RESUME_PICKER_UNAVAILABLE));
   }
 
-  // Frame-1 seed: cheap in-memory live rows only. Durable/completed rows merge in
-  // once the async hydrate() resolves; errors keep the live rows on screen.
   let currentLiveRuns = liveRuns;
+  let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
   const liveItems = workflowResumeSelectorItems(currentLiveRuns, [], []);
   let sessions = liveItems.map((item) => item.session);
   let resultByPath = new Map(liveItems.map((item) => [item.session.path, item.result]));
-  let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
+  let settled = false;
+  let stopWatching: (() => void) | undefined;
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
 
   const applyRows = (catalog: WorkflowResumeCatalogRows): void => {
     resolvedCatalog = catalog;
@@ -190,141 +232,89 @@ export function openWorkflowResumeSelector(
     resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
   };
 
-  // Hydrate at most once even though both scope loaders point at it.
-  let hydratePromise: Promise<WorkflowResumeCatalogRows> | undefined;
-  const hydrateOnce = (): Promise<WorkflowResumeCatalogRows> => (hydratePromise ??= hydrate());
-
-  const loadSessions = async (
-    onProgress?: (loaded: number, total: number) => void,
-  ): Promise<SessionInfo[]> => {
-    applyRows(await hydrateOnce());
-    onProgress?.(sessions.length, sessions.length);
-    return [...sessions];
-  };
-
-  return new Promise<OpenWorkflowResumeSelectorResult>((resolve) => {
-    let settled = false;
-    let activeSelector: SessionSelectorComponent | undefined;
-    let stopWatching: (() => void) | undefined;
-    let refreshTimer: ReturnType<typeof setInterval> | undefined;
-    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
-    let requestPickerRender: (() => void) | undefined;
-    const settle = (result: WorkflowResumeSelectorResult, done?: (result: undefined) => void): void => {
+  // Deletion is extension-owned: the host keeps the row until update()/error().
+  const handle = hostSessionPicker({
+    sessions: sessions.map(toPickerRow),
+    showRenameHint: false,
+    onDelete: async (path) => {
       if (settled) return;
-      settled = true;
-      stopWatching?.();
-      if (refreshTimer !== undefined) clearInterval(refreshTimer);
-      if (debounceTimer !== undefined) clearTimeout(debounceTimer);
-      // Cancel any late hydration/render and clear status timeouts.
-      activeSelector?.dispose();
-      try {
-        done?.(undefined);
-      } finally {
-        resolve({ result, catalog: resolvedCatalog });
+      const target = resultByPath.get(path);
+      if (target === undefined || target.kind === "live") {
+        handle.error("Cannot delete an in-flight workflow run");
+        return;
       }
-    };
-
-    // Live updates: the picker re-lists rows on local run-store changes and on
-    // a bounded cross-session poll, so a workflow that pauses, fails, or
-    // completes appears (and a freshly running one disappears) while open.
-    let refreshing = false;
-    const runRefresh = async (): Promise<void> => {
-      const refresh = options.refresh;
-      if (refresh === undefined || settled || refreshing) return;
-      refreshing = true;
-      try {
-        const next = await refresh();
-        if (settled) return;
-        currentLiveRuns = next.liveRuns;
-        applyRows(next.catalog);
-        activeSelector?.getSessionList().setSessions([...sessions], true);
-        requestPickerRender?.();
-      } catch {
-        // Keep the previous rows on a failed refresh; the next tick retries.
-      } finally {
-        refreshing = false;
+      if (options.deleteWorkflow === undefined) {
+        handle.error("Workflow history deletion is unavailable");
+        return;
       }
-    };
-    const scheduleRefresh = (): void => {
-      if (settled || debounceTimer !== undefined) return;
-      debounceTimer = setTimeout(() => {
-        debounceTimer = undefined;
-        void runRefresh();
-      }, 250);
-      debounceTimer.unref?.();
-    };
-
-    const factory = (
-      tui: PiCustomOverlayFactoryTui,
-      _theme: PiTheme,
-      _keys: PiKeybindings,
-      done: (result: undefined) => void,
-    ): PiCustomComponent => {
-      const selector = new SessionSelectorComponent(
-        loadSessions,
-        loadSessions,
-        (path) => settle(resultByPath.get(path) ?? { kind: "close" }, done),
-        () => settle({ kind: "close" }, done),
-        () => settle({ kind: "close" }, done),
-        () => tui.requestRender?.(),
-        {
-          showRenameHint: false,
-          initialSessions: sessions.length > 0 ? [...sessions] : undefined,
-        },
-      );
-      activeSelector = selector;
-      const sessionList = selector.getSessionList();
-      sessionList.onDeleteSession = async (path) => {
-        const target = resultByPath.get(path);
-        if (target === undefined || target.kind === "live") {
-          sessionList.onError?.("Cannot delete an in-flight workflow run");
-          tui.requestRender?.();
-          return;
-        }
-        if (options.deleteWorkflow === undefined) {
-          sessionList.onError?.("Workflow history deletion is unavailable");
-          tui.requestRender?.();
-          return;
-        }
-        const outcome = await options.deleteWorkflow(target.workflowId);
-        if (!outcome.ok) {
-          sessionList.onError?.(outcome.message);
-        } else {
-          resultByPath.delete(path);
-          sessions = sessions.filter((session) => session.path !== path);
-          sessionList.setSessions(sessions, true);
-        }
-        tui.requestRender?.();
-      };
-      selector.focused = true;
-
-      requestPickerRender = () => tui.requestRender?.();
-      if (options.watch !== undefined && options.refresh !== undefined) {
-        stopWatching = options.watch(scheduleRefresh);
+      const outcome = await options.deleteWorkflow(target.workflowId);
+      if (settled) return;
+      if (!outcome.ok) {
+        handle.error(outcome.message);
+        return;
       }
-      const intervalMs = options.refreshIntervalMs ?? 5_000;
-      if (options.refresh !== undefined && intervalMs > 0) {
-        refreshTimer = setInterval(() => { void runRefresh(); }, intervalMs);
-        refreshTimer.unref?.();
-      }
+      resultByPath.delete(path);
+      sessions = sessions.filter((session) => session.path !== path);
+      handle.update(sessions.map(toPickerRow));
+    },
+  });
 
-      return {
-        render: (width) => selector.render(width),
-        handleInput: (data) => selector.handleInput(data),
-        invalidate: () => {
-          selector.invalidate?.();
-          tui.requestRender?.();
-        },
-        dispose: () => settle({ kind: "close" }),
-      };
-    };
+  // Frame-1 seed is the cheap in-memory live rows; the durable/completed
+  // catalog hydrates once, asynchronously, and merges via a row update.
+  // Hydrate errors keep the live rows on screen (error surfaces in-header).
+  void hydrate().then((catalog) => {
+    if (settled) return;
+    applyRows(catalog);
+    handle.update(sessions.map(toPickerRow));
+  }).catch((error: unknown) => {
+    if (settled) return;
+    const message = error instanceof Error ? error.message : String(error);
+    handle.error(`Failed to load sessions: ${message}`);
+  });
 
+  // Live updates: re-list rows on local run-store changes and on a bounded
+  // cross-session poll; a failed refresh keeps the previous rows.
+  let refreshing = false;
+  const runRefresh = async (): Promise<void> => {
+    const refresh = options.refresh;
+    if (refresh === undefined || settled || refreshing) return;
+    refreshing = true;
     try {
-      void Promise.resolve(custom(factory, { overlay: false })).catch(() => {
-        settle({ kind: "close" });
-      });
+      const next = await refresh();
+      if (settled) return;
+      currentLiveRuns = next.liveRuns;
+      applyRows(next.catalog);
+      handle.update(sessions.map(toPickerRow));
     } catch {
-      settle({ kind: "close" });
+      // Keep the previous rows on a failed refresh; the next tick retries.
+    } finally {
+      refreshing = false;
     }
+  };
+  const scheduleRefresh = (): void => {
+    if (settled || debounceTimer !== undefined) return;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      void runRefresh();
+    }, 250);
+    debounceTimer.unref?.();
+  };
+  if (options.watch !== undefined && options.refresh !== undefined) {
+    stopWatching = options.watch(scheduleRefresh);
+  }
+  const intervalMs = options.refreshIntervalMs ?? 5_000;
+  if (options.refresh !== undefined && intervalMs > 0) {
+    refreshTimer = setInterval(() => { void runRefresh(); }, intervalMs);
+    refreshTimer.unref?.();
+  }
+
+  return handle.result.then((path): OpenWorkflowResumeSelectorResult => {
+    settled = true;
+    stopWatching?.();
+    if (refreshTimer !== undefined) clearInterval(refreshTimer);
+    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    const result: WorkflowResumeSelectorResult =
+      path === undefined ? { kind: "close" } : (resultByPath.get(path) ?? { kind: "close" });
+    return { result, catalog: resolvedCatalog };
   });
 }

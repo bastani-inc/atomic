@@ -4,10 +4,12 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HostSessionPickerRequest,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
@@ -22,6 +24,7 @@ interface CreateRpcExtensionUIContextOptions {
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	customUi?: EngineCustomUiService;
+	sessionPicker?: EngineSessionPickerService;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -83,6 +86,7 @@ export function createRpcExtensionUIContext({
 	output,
 	pendingExtensionRequests,
 	customUi,
+	sessionPicker,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
 	const warnUnsupported = (method: string): void => {
@@ -198,6 +202,12 @@ export function createRpcExtensionUIContext({
 		custom: (factory, options) => customUi
 			? customUi.custom(factory, options)
 			: Promise.resolve(undefined as never),
+
+		// Exposed in the isolated engine child, where the terminal host mounts
+		// the real session selector natively so picker navigation never crosses
+		// the process boundary. Absent in plain headless RPC (no interactive
+		// host); callers must fail with an actionable error, not degrade.
+		...(sessionPicker ? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) } : {}),
 
 		pasteToEditor(text: string): void {
 			// Paste handling not supported in RPC mode - falls back to setEditorText

@@ -16,6 +16,7 @@ import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/outpu
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
+import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
 import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "./jsonl.ts";
@@ -53,6 +54,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const renderService = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
 		? new EngineRenderService(writeRawStdout)
 		: undefined;
+	const sessionPicker = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+		? new EngineSessionPickerService(writeRawStdout)
+		: undefined;
 
 	let shutdownRequested = false;
 	let shuttingDown = false;
@@ -69,6 +73,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		requestShutdown,
 		customUi,
 		renderService,
+		sessionPicker,
 	});
 
 	runtimeHost.setRebindSession(async () => {
@@ -94,6 +99,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		engineLiveness.stop();
 		customUi?.dispose();
 		renderService?.dispose();
+		sessionPicker?.dispose();
 		outputBuffer.dispose();
 		await runtimeHost.dispose();
 		detachInput();
@@ -131,8 +137,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
-		handleInteractiveEngineLine: customUi || renderService
-			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true
+		handleInteractiveEngineLine: customUi || renderService || sessionPicker
+			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true || sessionPicker?.handleLine(line) === true
 			: undefined,
 	});
 

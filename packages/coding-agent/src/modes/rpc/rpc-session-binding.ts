@@ -3,6 +3,7 @@ import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
+import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
@@ -12,6 +13,7 @@ interface RpcSessionBindingOptions {
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	customUi?: EngineCustomUiService;
 	renderService?: EngineRenderService;
+	sessionPicker?: EngineSessionPickerService;
 	requestShutdown: () => void;
 }
 
@@ -24,15 +26,17 @@ export class RpcSessionBinding {
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
 	private readonly customUi: EngineCustomUiService | undefined;
 	private readonly renderService: EngineRenderService | undefined;
+	private readonly sessionPicker: EngineSessionPickerService | undefined;
 	private readonly requestShutdown: () => void;
 
-	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService }: RpcSessionBindingOptions) {
+	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker }: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
 		this.requestShutdown = requestShutdown;
 		this.customUi = customUi;
 		this.renderService = renderService;
+		this.sessionPicker = sessionPicker;
 		this.session = runtimeHost.session;
 	}
 
@@ -50,6 +54,7 @@ export class RpcSessionBinding {
 				output: this.output,
 				pendingExtensionRequests: this.pendingExtensionRequests,
 				customUi: this.customUi,
+				sessionPicker: this.sessionPicker,
 			}),
 			mode: this.customUi ? "tui" : "rpc",
 			commandContextActions: {

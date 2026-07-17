@@ -33,7 +33,7 @@ import type { PiCodingAgentSdk, PrepareAtomicStageSessionOptions } from "./atomi
 export { prepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 export type { AtomicCreateAgentSessionOptions, PiCodingAgentSdk, PiSdkResourceLoader, PiSdkSettingsManager, PrepareAtomicStageSessionOptions } from "./atomic-stage-session.js";
 import type { PiCustomOverlayFactory, PiCustomOverlayOptions, PiUISurface } from "./ui-surface.js";
-export type { PiCustomComponent, PiCustomOverlayFactory, PiCustomOverlayFactoryTui, PiCustomOverlayFunction, PiCustomOverlayOptions, PiEditorComponent, PiEditorFactory, PiHostCustomUiState, PiHostCustomUiStateListener, PiKeybindings, PiOverlayHandle, PiOverlayOptions, PiRemoteTerminalControl, PiTheme, PiUIDialogOptions, PiUISurface, UIWiringSurface } from "./ui-surface.js";
+export type { PiCustomComponent, PiCustomOverlayFactory, PiCustomOverlayFactoryTui, PiCustomOverlayFunction, PiCustomOverlayOptions, PiEditorComponent, PiEditorFactory, PiHostCustomUiState, PiHostCustomUiStateListener, PiHostSessionPickerFunction, PiHostSessionPickerHandle, PiHostSessionPickerRequest, PiHostSessionPickerRow, PiKeybindings, PiOverlayHandle, PiOverlayOptions, PiRemoteTerminalControl, PiTheme, PiUIDialogOptions, PiUISurface, UIWiringSurface } from "./ui-surface.js";
 
 // ---------------------------------------------------------------------------
 // Minimal pi surface

@@ -129,13 +129,21 @@ export async function handleDurableResume(
     print(`${formatResumableWorkflowList(allOpenable)}\n\n${instruction}: /workflow resume <id>`);
     return true;
   }
-  const picked = await openWorkflowResumeSelector(
-    ctx.ui,
-    [],
-    // Catalog already prepared above; resolve it immediately with no rescan.
-    () => Promise.resolve({ durable: catalog.resumable, completed: catalog.completed }),
-    { deleteWorkflow: deleteWorkflowResumeEntry },
-  );
+  let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;
+  try {
+    picked = await openWorkflowResumeSelector(
+      ctx.ui,
+      [],
+      // Catalog already prepared above; resolve it immediately with no rescan.
+      () => Promise.resolve({ durable: catalog.resumable, completed: catalog.completed }),
+      { deleteWorkflow: deleteWorkflowResumeEntry },
+    );
+  } catch (error) {
+    // No fallback: a host without the session-picker capability fails the
+    // resume command with one actionable message.
+    fail(error instanceof Error ? error.message : String(error));
+    return true;
+  }
   if (picked.result.kind === "durable") {
     return resumeDurableTarget(picked.result.workflowId, ctx, reporter, deps, runtime);
   }

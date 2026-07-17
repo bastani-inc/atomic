@@ -232,10 +232,18 @@ export async function handleRunControlCommand(
           const catalog = await prepareWorkflowResumeCatalog(runtime, initial.activeLiveIds);
           return { durable: catalog.resumable, completed: catalog.completed };
         };
-        const picked = await openWorkflowResumeSelector(ctx.ui, initial.liveRuns, hydrate, {
-          deleteWorkflow: deleteWorkflowResumeEntry,
-          ...resumePickerLiveUpdateOptions(store, runtime),
-        });
+        let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;
+        try {
+          picked = await openWorkflowResumeSelector(ctx.ui, initial.liveRuns, hydrate, {
+            deleteWorkflow: deleteWorkflowResumeEntry,
+            ...resumePickerLiveUpdateOptions(store, runtime),
+          });
+        } catch (error) {
+          // No fallback: a host without the session-picker capability fails
+          // the resume command with one actionable message.
+          fail(error instanceof Error ? error.message : String(error));
+          return true;
+        }
         const durableEntries = picked.catalog.durable;
         const completedEntries = picked.catalog.completed;
         if (picked.result.kind === "durable" || picked.result.kind === "completed") {

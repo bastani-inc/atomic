@@ -68,6 +68,52 @@ export interface HostCustomUiState {
 export type HostCustomUiStateListener = (state: HostCustomUiState) => void;
 
 /**
+ * JSON-safe session-selector row for the host-native session picker.
+ * Mirrors `SessionInfo` with `created`/`modified` flattened to epoch millis so
+ * rows can cross the interactive-engine protocol without `Date` objects.
+ */
+export interface HostSessionPickerRow {
+	path: string;
+	id: string;
+	cwd: string;
+	/** Creation time in epoch milliseconds. */
+	createdAt: number;
+	/** Last-modified time in epoch milliseconds. */
+	modifiedAt: number;
+	messageCount: number;
+	firstMessage: string;
+	allMessagesText?: string;
+	name?: string;
+	/** Optional semantic color for synthetic selector rows. */
+	messageColor?: "success" | "warning" | "accent" | "error";
+}
+
+/** Request for {@link ExtensionUIContext.hostSessionPicker}. */
+export interface HostSessionPickerRequest {
+	/** Rows shown in the first frame. Push later rows via the handle's `update()`. */
+	sessions: HostSessionPickerRow[];
+	/** Show the rename keybinding hint in the picker header. Defaults to false. */
+	showRenameHint?: boolean;
+	/**
+	 * Invoked after the user confirms a Ctrl+D delete on a row. The host does
+	 * NOT remove the row; reply with `update()` (row removed) or `error()`.
+	 */
+	onDelete?: (path: string) => void | Promise<void>;
+}
+
+/** Live control surface for an open host-native session picker. */
+export interface HostSessionPickerHandle {
+	/** Resolves with the selected row's `path`, or `undefined` on cancel/close. */
+	result: Promise<string | undefined>;
+	/** Replace the picker rows (navigation/search state is preserved host-side). */
+	update(sessions: HostSessionPickerRow[]): void;
+	/** Surface a transient error message in the picker header. */
+	error(message: string): void;
+	/** Close the picker; `result` resolves `undefined`. Idempotent. */
+	close(): void;
+}
+
+/**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
  */
@@ -167,6 +213,19 @@ export interface ExtensionUIContext {
 			onHandle?: (handle: OverlayHandle) => void;
 		},
 	): Promise<T>;
+
+	/**
+	 * Open a session-list picker that runs natively in the host terminal
+	 * process. Every interactive host implements it — non-isolated mode
+	 * mounts the selector directly (no IPC), isolated mode routes it over
+	 * the engine session-picker protocol channel — so callers use one
+	 * identical API. In both cases navigation and search never cross a
+	 * process boundary; only open/update/select/delete/cancel do. The
+	 * member is absent only on non-interactive surfaces (headless RPC,
+	 * print); callers should fail with an actionable error there rather
+	 * than degrade.
+	 */
+	hostSessionPicker?(request: HostSessionPickerRequest): HostSessionPickerHandle;
 
 	/** Paste text into the editor, triggering paste handling (collapse for large content). */
 	pasteToEditor(text: string): void;

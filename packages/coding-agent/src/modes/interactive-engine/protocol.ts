@@ -1,4 +1,5 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
+import type { HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
 
 export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
 export const INTERACTIVE_ENGINE_MAX_FRAME_BYTES = 1_048_576;
@@ -45,14 +46,21 @@ export type InteractiveEngineMessage =
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
 	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
-	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" };
+	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" }
+	| { type: "engine_session_picker_open"; componentId: string; sessions: HostSessionPickerRow[]; showRenameHint?: boolean }
+	| { type: "engine_session_picker_update"; componentId: string; sessions: HostSessionPickerRow[] }
+	| { type: "engine_session_picker_error"; componentId: string; message: string }
+	| { type: "engine_session_picker_close"; componentId: string };
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
 	| { type: "engine_custom_input"; componentId: string; data: string }
 	| { type: "engine_custom_dispose"; componentId: string }
 	| { type: "engine_tool_render"; componentId: string; requestId: number; width: number; toolName: string; toolCallId: string; args: JsonValue; result?: JsonObject; executionStarted: boolean; argsComplete: boolean; isPartial: boolean; expanded: boolean; showImages: boolean; imageWidthCells: number }
 	| { type: "engine_message_render"; componentId: string; requestId: number; width: number; message: JsonObject; expanded: boolean }
-	| { type: "engine_render_dispose"; componentId: string };
+	| { type: "engine_render_dispose"; componentId: string }
+	| { type: "engine_session_picker_select"; componentId: string; path: string }
+	| { type: "engine_session_picker_cancel"; componentId: string }
+	| { type: "engine_session_picker_delete"; componentId: string; path: string };
 
 const ACTIVITY_KINDS: readonly CallbackActivityKind[] = [
 	"extension.hook", "renderer", "tool.execute", "tool.prepare", "workflow.ctx_tool",
@@ -84,6 +92,36 @@ function parseEngineTerminalControl(value: JsonValue | undefined): EngineTermina
 		return { kind: value.kind, enabled: value.enabled };
 	}
 	return undefined;
+}
+
+const SESSION_PICKER_MESSAGE_COLORS = ["success", "warning", "accent", "error"] as const;
+
+function parseSessionPickerRow(value: JsonValue): HostSessionPickerRow | undefined {
+	if (!isJsonObject(value)) return undefined;
+	const { path, id, cwd, createdAt, modifiedAt, messageCount, firstMessage, allMessagesText, name, messageColor } = value;
+	if (typeof path !== "string" || typeof id !== "string" || typeof cwd !== "string" ||
+		typeof createdAt !== "number" || typeof modifiedAt !== "number" ||
+		typeof messageCount !== "number" || typeof firstMessage !== "string") return undefined;
+	if (allMessagesText !== undefined && typeof allMessagesText !== "string") return undefined;
+	if (name !== undefined && typeof name !== "string") return undefined;
+	if (messageColor !== undefined && !SESSION_PICKER_MESSAGE_COLORS.includes(messageColor as typeof SESSION_PICKER_MESSAGE_COLORS[number])) return undefined;
+	return {
+		path, id, cwd, createdAt, modifiedAt, messageCount, firstMessage,
+		...(allMessagesText !== undefined ? { allMessagesText } : {}),
+		...(name !== undefined ? { name } : {}),
+		...(messageColor !== undefined ? { messageColor: messageColor as typeof SESSION_PICKER_MESSAGE_COLORS[number] } : {}),
+	};
+}
+
+function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPickerRow[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const rows: HostSessionPickerRow[] = [];
+	for (const entry of value) {
+		const row = parseSessionPickerRow(entry);
+		if (!row) return undefined;
+		rows.push(row);
+	}
+	return rows;
 }
 
 function parseJsonObject(line: string): JsonObject | undefined {
@@ -131,6 +169,24 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 		case "engine_custom_control":
 			return typeof value.componentId === "string" && ["focus", "hide", "show", "unfocus"].includes(String(value.action))
 				? { type: value.type, componentId: value.componentId, action: value.action as "focus" | "hide" | "show" | "unfocus" } : undefined;
+		case "engine_session_picker_open": {
+			const sessions = parseSessionPickerRows(value.sessions);
+			return typeof value.componentId === "string" && sessions &&
+				(value.showRenameHint === undefined || typeof value.showRenameHint === "boolean")
+				? { type: value.type, componentId: value.componentId, sessions,
+					...(typeof value.showRenameHint === "boolean" ? { showRenameHint: value.showRenameHint } : {}) }
+				: undefined;
+		}
+		case "engine_session_picker_update": {
+			const sessions = parseSessionPickerRows(value.sessions);
+			return typeof value.componentId === "string" && sessions
+				? { type: value.type, componentId: value.componentId, sessions } : undefined;
+		}
+		case "engine_session_picker_error":
+			return typeof value.componentId === "string" && typeof value.message === "string"
+				? { type: value.type, componentId: value.componentId, message: value.message } : undefined;
+		case "engine_session_picker_close":
+			return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
 		default: return undefined;
 	}
 }
@@ -143,6 +199,10 @@ export function parseInteractiveEngineCommand(line: string): InteractiveEngineCo
 	}
 	if (value.type === "engine_custom_input" && typeof value.data === "string") return { type: value.type, componentId: value.componentId, data: value.data };
 	if (value.type === "engine_custom_dispose" || value.type === "engine_render_dispose") return { type: value.type, componentId: value.componentId };
+	if ((value.type === "engine_session_picker_select" || value.type === "engine_session_picker_delete") && typeof value.path === "string") {
+		return { type: value.type, componentId: value.componentId, path: value.path };
+	}
+	if (value.type === "engine_session_picker_cancel") return { type: value.type, componentId: value.componentId };
 	if (value.type === "engine_tool_render" && typeof value.requestId === "number" && typeof value.width === "number" &&
 		typeof value.toolName === "string" && typeof value.toolCallId === "string" && typeof value.executionStarted === "boolean" &&
 		typeof value.argsComplete === "boolean" && typeof value.isPartial === "boolean" && typeof value.expanded === "boolean" &&
