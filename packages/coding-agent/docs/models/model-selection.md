@@ -39,7 +39,7 @@ The Pareto frontier is **gpt-5.5** (value axis) and **claude-fable-5** (accuracy
 | claude-sonnet-5 [xhigh/high/medium/low] | 31–50% | $2.19–11.89 | Drop everywhere | Dominated at every level by gpt-5.5 medium; removed from all chains |
 | claude-opus-4.8 [medium] | 49% | $3.44 | Fallback tail | Kept in medium-tier chains as the cheap Anthropic backstop |
 | glm-5.2 [max→xhigh] | 44% | $3.92 | Diversity only | Reviewer-C primary (third model family decorrelates review errors); budget fallback elsewhere |
-| claude-opus-4.8 [low] | 41% | $2.29 | Skip | Narrowly on the frontier but fable:low is +19 pts for +$1.47 |
+| claude-opus-4.8 [low] | 41% | $2.29 | Skip | Cheapest opus tier, but dominated by fable:low (+19 pts for +$1.47) — not on the frontier |
 | gemini-3.5-flash [medium] | 37% | $7.34 | Drop from reasoning | Token hose (276k output tokens); kept only at :low in retrieval chains where token price rules |
 | glm-5.2 [high] | 36% | $2.84 | Drop | gpt-5.5 medium is cheaper AND +18 pts |
 | kimi-k2.7-code | 31% | $2.82 | Drop | Dominated; not in any chain |
