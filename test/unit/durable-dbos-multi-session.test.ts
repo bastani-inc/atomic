@@ -106,6 +106,53 @@ describe("foreign-live workflow classification", () => {
   });
 });
 
+describe("cross-process hydration of ordinary run checkpoints", () => {
+  test("a completed run whose stage checkpoints omit topology stays visible in a fresh process", async () => {
+    const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+    const writer = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-session-a" });
+    writer.registerWorkflow({
+      workflowId: "wf-completed-run",
+      name: "multi-session-flow",
+      inputs: {},
+      createdAt: 1,
+      status: "running",
+    });
+    // Session-timing and direct-task writers emit stage-kind checkpoints
+    // WITHOUT topology; the durable record must still be current-format.
+    await writer.recordCheckpointAsync({
+      kind: "stage",
+      workflowId: "wf-completed-run",
+      checkpointId: "stage-session:stage:task:echo:1:h123",
+      name: "echo",
+      replayKey: "stage:task:echo:1",
+      sessionId: "session-1",
+      sessionFile: "/tmp/echo.jsonl",
+      completedAt: 10,
+    });
+    await writer.recordCheckpointAsync({
+      kind: "stage",
+      workflowId: "wf-completed-run",
+      checkpointId: "task:stage:task:echo:1",
+      name: "echo",
+      replayKey: "stage:task:echo:1",
+      output: { text: "pong" },
+      completedAt: 11,
+    });
+    writer.setWorkflowStatus("wf-completed-run", "completed");
+    await writer.flush();
+
+    const fresh = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-session-b" });
+    await fresh.hydrateResumableWorkflows();
+
+    const handle = fresh.getWorkflow("wf-completed-run");
+    assert.equal(handle?.status, "completed");
+    assert.equal(fresh.isWorkflowLoadable("wf-completed-run"), true);
+    assert.equal(fresh.listCheckpoints("wf-completed-run").length, 2);
+    assert.deepEqual(fresh.listCompletedWorkflows().map((entry) => entry.workflowId), ["wf-completed-run"]);
+    assert.equal(fresh.getStageOutput("wf-completed-run", "stage:task:echo:1") !== undefined, true);
+  });
+});
+
 describe("shared-database visibility across sessions", () => {
   test("hides another session's live running workflow from resume, surfaces it once its heartbeat ages out", async () => {
     const state: SharedDbosState = { workflows: new Map(), steps: new Map() };

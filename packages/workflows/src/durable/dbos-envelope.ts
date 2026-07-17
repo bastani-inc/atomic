@@ -63,9 +63,24 @@ export interface DbosCheckpointEnvelope extends WorkflowSerializableObject {
 }
 
 /**
+ * Stage-kind checkpoints from session-timing and direct-task writers may omit
+ * topology. The current format requires it, so default at every write
+ * boundary — persisted records must match the normalized in-memory mirror or
+ * a fresh process would reject them as foreign.
+ */
+export function withCurrentStageTopology(cp: DurableCheckpoint): DurableCheckpoint {
+  if (cp.kind !== "stage" || cp.topology !== undefined) return cp;
+  return {
+    ...cp,
+    topology: { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: cp.checkpointId, parentIds: [] },
+  };
+}
+
+/**
  * Encode a durable checkpoint into a DBOS step-output envelope.
  */
-export function encodeCheckpoint(cp: DurableCheckpoint): DbosCheckpointEnvelope {
+export function encodeCheckpoint(checkpoint: DurableCheckpoint): DbosCheckpointEnvelope {
+  const cp = withCurrentStageTopology(checkpoint);
   const output = checkpointOutputValue(cp);
   const base: DbosCheckpointEnvelope = {
     __dbos_checkpoint__: ENVELOPE_MARKER,

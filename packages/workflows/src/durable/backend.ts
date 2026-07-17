@@ -3,7 +3,7 @@
 import type { WorkflowSerializableValue } from "../shared/types.js";
 import { isDurableWorkflowResumable } from "./resume-eligibility.js";
 import { inactivePromptReservationToken, PromptReservationState, type PromptReservationToken } from "./prompt-reservation-state.js";
-import { DURABLE_STAGE_TOPOLOGY_VERSION } from "./types.js";
+import { withCurrentStageTopology } from "./dbos-envelope.js";
 import type {
   DurableCheckpoint,
   DurableWorkflowMetadata,
@@ -194,9 +194,7 @@ export class InMemoryDurableBackend implements DurableWorkflowBackend {
     if (handle.pendingPrompts !== undefined) this.promptReservations.delete(handle.workflowId);
   }
   recordCheckpoint(checkpoint: DurableCheckpoint): void {
-    const currentCheckpoint: DurableCheckpoint = checkpoint.kind === "stage" && checkpoint.topology === undefined
-      ? { ...checkpoint, topology: { version: DURABLE_STAGE_TOPOLOGY_VERSION, stageId: checkpoint.checkpointId, parentIds: [] } }
-      : checkpoint;
+    const currentCheckpoint = withCurrentStageTopology(checkpoint);
     const rec = this.workflows.get(currentCheckpoint.workflowId);
     if (!rec) return;
     const key = checkpointKey(currentCheckpoint);
