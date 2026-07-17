@@ -1,7 +1,8 @@
-import type { Component, OverlayHandle, OverlayOptions } from "@earendil-works/pi-tui";
+import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
+import { TerminalModeController } from "./terminal-mode-controller.ts";
 
 interface MountedRemoteComponent {
 	component: RemoteComponent;
@@ -75,9 +76,22 @@ function overlayOptions(options: SerializableOverlayOptions | undefined): Overla
 	return options as OverlayOptions | undefined;
 }
 
+/**
+ * Resolve the real host terminal from the pi-tui TUI handed to the overlay
+ * factory. Optional: some hosts / test seams do not surface `tui.terminal`, in
+ * which case terminal-mode controls harmlessly no-op.
+ */
+function hostTerminal(tui: TUI): { write(data: string): void } {
+	const terminal = (tui as { terminal?: { write?(data: string): void } }).terminal;
+	return typeof terminal?.write === "function"
+		? (terminal as { write(data: string): void })
+		: { write: () => {} };
+}
+
 export class RemoteComponentController {
 	private readonly mounted = new Map<string, MountedRemoteComponent>();
 	private readonly unsubscribe: () => void;
+	private readonly terminalModes = new TerminalModeController();
 
 	constructor(
 		private readonly runtime: IsolatedInteractiveRuntime,
@@ -88,6 +102,7 @@ export class RemoteComponentController {
 
 	dispose(): void {
 		this.unsubscribe();
+		this.terminalModes.resetAll();
 		for (const record of this.mounted.values()) {
 			if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 			record.component.dispose();
@@ -97,6 +112,13 @@ export class RemoteComponentController {
 
 	private handleMessage(message: InteractiveEngineMessage): void {
 		switch (message.type) {
+			case "engine_ready":
+				// A fresh engine generation replaced the child: any terminal modes
+				// the dead generation left on are stale. Reset them so a crashed or
+				// restarted overlay never strands the host TTY in mouse-reporting
+				// or autowrap-off mode; the new generation re-asserts on remount.
+				this.terminalModes.resetAll();
+				break;
 			case "engine_custom_open":
 				this.open(message.componentId, message.overlay, message.deferInlineCustomUiFocus, message.overlayOptions, message.widgetKey, message.widgetPlacement);
 				break;
@@ -108,6 +130,9 @@ export class RemoteComponentController {
 				break;
 			case "engine_custom_invalidate":
 				this.mounted.get(message.componentId)?.component.requestRemoteRender();
+				break;
+			case "engine_custom_terminal":
+				this.terminalModes.applyControl(message.componentId, message.control);
 				break;
 			case "engine_custom_done": {
 				const record = this.mounted.get(message.componentId);
@@ -150,6 +175,10 @@ export class RemoteComponentController {
 				);
 				mounted = { component, done, engineDone: false };
 				this.mounted.set(componentId, mounted);
+				// Bind this component to the real host terminal so buffered/pending
+				// terminal-mode controls (e.g. mouse-scroll reporting the overlay
+				// enabled before the mount frame) apply to the host TTY.
+				this.terminalModes.onMount(componentId, hostTerminal(tui));
 				return component;
 			},
 			{
@@ -159,6 +188,7 @@ export class RemoteComponentController {
 				onHandle: (handle) => { if (mounted) mounted.handle = handle; },
 			},
 		).catch(() => undefined).finally(() => {
+			this.terminalModes.onUnmount(componentId);
 			const record = this.mounted.get(componentId);
 			if (!record) return;
 			this.mounted.delete(componentId);
@@ -169,6 +199,7 @@ export class RemoteComponentController {
 	private close(componentId: string): void {
 		const record = this.mounted.get(componentId);
 		if (!record) return;
+		this.terminalModes.onUnmount(componentId);
 		this.mounted.delete(componentId);
 		if (record.widgetKey) this.ui.setWidget(record.widgetKey, undefined);
 		record.component.dispose();

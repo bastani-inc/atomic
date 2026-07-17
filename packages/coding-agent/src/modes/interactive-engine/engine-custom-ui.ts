@@ -9,6 +9,7 @@ import {
 	isJsonValue,
 	parseInteractiveEngineCommand,
 	serializeInteractiveEngineMessage,
+	type EngineTerminalControl,
 	type InteractiveEngineMessage,
 	type JsonValue,
 	type SerializableOverlayOptions,
@@ -36,7 +37,11 @@ class RemoteTerminal implements Terminal {
 	rows = 24;
 	kittyProtocolActive = false;
 	private readonly invalidate: () => void;
-	constructor(invalidate: () => void) { this.invalidate = invalidate; }
+	private readonly control: ((control: EngineTerminalControl) => void) | undefined;
+	constructor(invalidate: () => void, control?: (control: EngineTerminalControl) => void) {
+		this.invalidate = invalidate;
+		this.control = control;
+	}
 	start(): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
@@ -49,6 +54,14 @@ class RemoteTerminal implements Terminal {
 	clearScreen(): void {}
 	setTitle(): void {}
 	setProgress(): void {}
+	/** Ask the host to toggle host-TTY mouse-scroll reporting for this component. */
+	setMouseScrollTracking(enabled: boolean): void {
+		this.control?.({ kind: "mouse-scroll-tracking", enabled });
+	}
+	/** Ask the host to toggle host-TTY autowrap (DECAWM) for this component. */
+	setAutowrap(enabled: boolean): void {
+		this.control?.({ kind: "autowrap", enabled });
+	}
 }
 
 function serializableOverlayOptions(options: CustomUiOptions["overlayOptions"]): SerializableOverlayOptions | undefined {
@@ -147,7 +160,10 @@ export class EngineCustomUiService {
 			resolveCompletion(result);
 			if (opened) this.sendDone(componentId, result);
 		};
-		const terminal = new RemoteTerminal(() => this.send({ type: "engine_custom_invalidate", componentId }));
+		const terminal = new RemoteTerminal(
+			() => this.send({ type: "engine_custom_invalidate", componentId }),
+			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
+		);
 		const tui = new TUI(terminal);
 		const component = await factory(tui, theme, KeybindingsManager.create(), done);
 		tui.addChild(component);

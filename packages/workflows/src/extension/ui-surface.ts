@@ -131,13 +131,34 @@ export interface PiCustomOverlayOptions {
 }
 
 /**
+ * Optional remote-control capability exposed on `PiCustomOverlayFactoryTui.terminal`.
+ *
+ * In isolated interactive mode the workflow extension runs inside the engine
+ * child, whose stdout is the JSONL transport rather than a TTY — writing raw
+ * mouse/autowrap escape sequences to `process.stdout` there is a no-op. The
+ * host instead exposes these typed setters on the factory TUI's terminal so the
+ * overlay can drive host-TTY modes over the allowlisted engine protocol. Absent
+ * on non-isolated hosts and test seams, where the overlay falls back to writing
+ * escape sequences to its local `process.stdout`.
+ */
+export interface PiRemoteTerminalControl {
+  setMouseScrollTracking(enabled: boolean): void;
+  setAutowrap(enabled: boolean): void;
+}
+
+/**
  * Surface of the Pi `TUI` instance exposed to overlay factories. The
  * `terminal` accessor is optional because some host implementations and
  * test mocks do not surface it; consumers must handle `undefined`.
  */
 export interface PiCustomOverlayFactoryTui {
   requestRender?: () => void;
-  terminal?: { rows?: number; columns?: number };
+  terminal?: {
+    rows?: number;
+    columns?: number;
+    setMouseScrollTracking?: (enabled: boolean) => void;
+    setAutowrap?: (enabled: boolean) => void;
+  };
   setFocus?: (target: unknown) => void;
   start?: () => void;
   stop?: () => void;

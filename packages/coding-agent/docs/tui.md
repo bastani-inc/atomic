@@ -101,6 +101,20 @@ Pass `{ signal }` to `ctx.ui.custom()` when the UI belongs to an abortable opera
 
 In Atomic's default interactive mode, the component instance remains in the isolated engine child. The terminal host caches rendered lines and forwards input asynchronously, so `render()` and `handleInput()` must not depend on direct access to host process objects. Return values passed to `done()` must be JSON-safe.
 
+### Host terminal modes from an isolated component
+
+Because the component runs in the engine child — whose stdout is the JSONL transport, not a TTY — writing raw terminal escape sequences to `process.stdout` from `render()`/`handleInput()` is a no-op and never reaches the real host terminal. For the two host-terminal modes an overlay commonly needs, the factory `tui.terminal` exposes typed, allowlisted setters that the host applies to the real TTY over the engine protocol:
+
+```typescript
+await ctx.ui.custom((tui, theme, keybindings, done) => {
+  tui.terminal.setMouseScrollTracking?.(true); // enable SGR mouse-scroll reporting on the host TTY
+  tui.terminal.setAutowrap?.(false);           // disable autowrap (DECAWM) — Windows terminals only
+  return new MyOverlay({ onClose: done });
+}, { overlay: true });
+```
+
+These are the only terminal controls exposed; arbitrary child bytes are never forwarded to the terminal. The host resets any mode a component enabled when the overlay hides, closes, is disposed, or when the engine child crashes/restarts, so a stranded child can never leave the terminal in mouse-reporting or autowrap-off mode. On non-isolated hosts and test seams the setters are absent, and callers should fall back to writing escape sequences to their own `process.stdout`.
+
 ## Overlays
 
 Overlays render components on top of existing content without clearing the screen. Pass `{ overlay: true }` to `ctx.ui.custom()`:

@@ -23,6 +23,16 @@ export interface SerializableOverlayOptions {
 	width?: number | string;
 }
 
+/**
+ * Allowlisted terminal-mode controls a remote custom component may ask the host
+ * to apply to the real host TTY. Deliberately NOT a raw byte channel: the child
+ * names an intent and the host owns the concrete escape sequence, so a buggy or
+ * compromised child can only toggle these two documented modes.
+ */
+export type EngineTerminalControl =
+	| { kind: "mouse-scroll-tracking"; enabled: boolean }
+	| { kind: "autowrap"; enabled: boolean };
+
 export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
@@ -34,6 +44,7 @@ export type InteractiveEngineMessage =
 	| { type: "engine_custom_frame"; componentId: string; requestId: number; lines: string[] }
 	| { type: "engine_custom_invalidate"; componentId: string }
 	| { type: "engine_custom_done"; componentId: string; result?: JsonValue }
+	| { type: "engine_custom_terminal"; componentId: string; control: EngineTerminalControl }
 	| { type: "engine_custom_control"; componentId: string; action: "focus" | "hide" | "show" | "unfocus" };
 export type InteractiveEngineCommand =
 	| { type: "engine_custom_render"; componentId: string; requestId: number; width: number; rows: number }
@@ -65,6 +76,14 @@ function isActivityKind(value: JsonValue): value is CallbackActivityKind {
 function isCallbackActivity(value: JsonValue): value is JsonObject & CallbackActivity {
 	return isJsonObject(value) && typeof value.id === "string" && isActivityKind(value.kind) &&
 		typeof value.name === "string" && typeof value.startedAt === "number";
+}
+
+function parseEngineTerminalControl(value: JsonValue | undefined): EngineTerminalControl | undefined {
+	if (value === undefined || !isJsonObject(value) || typeof value.enabled !== "boolean") return undefined;
+	if (value.kind === "mouse-scroll-tracking" || value.kind === "autowrap") {
+		return { kind: value.kind, enabled: value.enabled };
+	}
+	return undefined;
 }
 
 function parseJsonObject(line: string): JsonObject | undefined {
@@ -104,6 +123,11 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 				? { type: value.type, componentId: value.componentId, requestId: value.requestId, lines: value.lines } : undefined;
 		case "engine_custom_invalidate": return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId } : undefined;
 		case "engine_custom_done": return typeof value.componentId === "string" ? { type: value.type, componentId: value.componentId, result: value.result } : undefined;
+		case "engine_custom_terminal": {
+			const control = parseEngineTerminalControl(value.control);
+			return typeof value.componentId === "string" && control
+				? { type: value.type, componentId: value.componentId, control } : undefined;
+		}
 		case "engine_custom_control":
 			return typeof value.componentId === "string" && ["focus", "hide", "show", "unfocus"].includes(String(value.action))
 				? { type: value.type, componentId: value.componentId, action: value.action as "focus" | "hide" | "show" | "unfocus" } : undefined;

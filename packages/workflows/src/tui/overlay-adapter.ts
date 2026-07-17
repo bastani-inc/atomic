@@ -36,6 +36,7 @@ import type {
   PiKeybindings,
   PiOverlayHandle,
   PiOverlayOptions,
+  PiRemoteTerminalControl,
   PiTheme,
 } from "../extension/wiring.js";
 
@@ -124,6 +125,22 @@ function setTerminalAutowrap(enabled: boolean, output: OverlayTerminalOutput): v
   output.write(enabled ? TERMINAL_AUTOWRAP_ON : TERMINAL_AUTOWRAP_OFF);
 }
 
+/**
+ * Extract the host's remote terminal-control capability from the factory TUI —
+ * present in isolated interactive mode (drives the real host TTY over the
+ * allowlisted engine protocol); `null` for non-isolated hosts and test seams.
+ */
+function remoteTerminalControlFrom(tui: PiCustomOverlayFactoryTui): PiRemoteTerminalControl | null {
+  const terminal = tui.terminal;
+  if (terminal === undefined || typeof terminal.setMouseScrollTracking !== "function" || typeof terminal.setAutowrap !== "function") {
+    return null;
+  }
+  return {
+    setMouseScrollTracking: terminal.setMouseScrollTracking.bind(terminal),
+    setAutowrap: terminal.setAutowrap.bind(terminal),
+  };
+}
+
 export interface BuildGraphOverlayAdapterOpts {
   /**
    * Live stage-control registry threaded through to the attach shell.
@@ -161,8 +178,13 @@ export function buildGraphOverlayAdapter(
       process.stdout.write(data);
     },
   };
+  // Isolated interactive mode exposes a remote terminal-control capability;
+  // prefer it so the real host TTY (not the child's non-TTY JSONL stdout) gets
+  // the modes. Otherwise fall back to the local process.stdout seam.
+  let remoteTerminalControl: PiRemoteTerminalControl | null = null;
   const updateMouseScrollTracking = (enabled: boolean): void => {
-    setMouseScrollTracking(enabled, terminalOutput);
+    if (remoteTerminalControl) remoteTerminalControl.setMouseScrollTracking(enabled);
+    else setMouseScrollTracking(enabled, terminalOutput);
   };
   let currentView: WorkflowAttachPane | null = null;
   // pi-tui returns an OverlayHandle via `options.onHandle`. We hold onto
@@ -180,6 +202,10 @@ export function buildGraphOverlayAdapter(
   function updateTerminalAutowrap(visible: boolean): void {
     if (overlayVisible === visible) return;
     overlayVisible = visible;
+    if (remoteTerminalControl) {
+      if (terminalOutput.platform === "win32") remoteTerminalControl.setAutowrap(!visible);
+      return;
+    }
     setTerminalAutowrap(!visible, terminalOutput);
   }
 
@@ -232,6 +258,7 @@ export function buildGraphOverlayAdapter(
     finishMounted = null;
     currentView = null;
     mounted = false;
+    remoteTerminalControl = null;
     clearHostCustomUiObservation();
   }
 
@@ -295,6 +322,7 @@ export function buildGraphOverlayAdapter(
       dispose: () => {
         updateTerminalAutowrap(false);
         updateMouseScrollTracking(false);
+        remoteTerminalControl = null;
         unsubscribe();
         view.dispose();
       },
@@ -345,6 +373,9 @@ export function buildGraphOverlayAdapter(
       keybindings: PiKeybindings,
       done: (result: undefined) => void,
     ): PiCustomComponent => {
+      // Prefer the host's remote terminal-control capability (isolated mode);
+      // stays null for non-isolated hosts, keeping the local process.stdout seam.
+      remoteTerminalControl = remoteTerminalControlFrom(tui);
       const finish = (): void => {
         if (settled) return;
         settled = true;
@@ -361,6 +392,7 @@ export function buildGraphOverlayAdapter(
           done(undefined);
         } finally {
           updateTerminalAutowrap(false);
+          remoteTerminalControl = null;
         }
       };
       const view = new WorkflowAttachPane({
