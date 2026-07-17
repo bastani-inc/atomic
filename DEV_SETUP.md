@@ -7,6 +7,7 @@ This document covers setup, the local dev loop, testing patterns, and project la
 ## Prerequisites
 
 - **[Bun](https://bun.sh) ≥ 1.3.14** — runtime, package manager, and test runner
+- **[GitHub CLI](https://cli.github.com/) ≥ 2.87.0** — release workflow dispatch must return the exact created run URL/ID
 - **[uv](https://docs.astral.sh/uv/)** — Python package/environment manager for the `evals/` harness
 - **Docker** — required for local Pier/DeepSWE sandbox runs
 
@@ -284,21 +285,26 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) makes CI validate the immutable base metadata, cross-compile binaries, publish to npm with OIDC provenance, and create the GitHub Release with binaries attached. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative security and allowlist details.
+Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Publishing requires two explicit actions after the changelog PR lands: push the immutable version tag, then dispatch `.github/workflows/publish.yml` at protected `main` with that exact version. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative identity, integrity, environment, and allowlist details.
 
 ### Workflow
 
 1. Land the CHANGELOG move on the selected versionless base like any other change: move the `[Unreleased]` section in `packages/coding-agent/CHANGELOG.md` into a new `## [<version>] - <YYYY-MM-DD>` section (CI extracts release notes from it). **Do not bump any `package.json` version.**
-2. From a clean selected base, cut the release. This resolves the exact remote branch, stamps the version onto a detached `Release <version>` commit, records `Release-base-ref` and `Release-base-sha`, tags it, and pushes only the tag:
+2. From a clean selected base, cut and push the release tag. This resolves the exact remote branch, stamps the version onto a detached `Release <version>` commit, records `Release-base-ref` and `Release-base-sha`, and pushes only the tag:
     ```sh
-    bun run scripts/cut-release.ts <version> --base main --push
+    bun run scripts/cut-release.ts <version> --base main --push --yes
     ```
-    The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. Non-main bases must be configured as exact canonical refs in `RELEASE_BASE_REFS` as documented in [Release base allowlist](./docs/ci.md#release-base-allowlist).
-3. The tag push triggers `.github/workflows/publish.yml` from the protected default branch. It validates the selected base and tagged real-version commit before publishing `@bastani/atomic` to npm with OIDC provenance—stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`—and creates the GitHub Release with six binary archives attached.
+    The selected branch is never advanced; the script stamps in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. Non-main bases must be configured as exact canonical refs in `RELEASE_BASE_REFS` as documented in [Release base allowlist](./docs/ci.md#release-base-allowlist).
+3. Dispatch the protected publisher exactly once from `main`:
+    ```sh
+    gh workflow run publish.yml --ref main -f version=<version>
+    ```
+    `publish.yml` rejects another dispatch ref or stale workflow revision, resolves the current remote tag, verifies its base trailers/sole parent/current-base containment and deterministic tree, then publishes stable versions to `@latest` or `-alpha.N` prereleases to `@next`. The final GitHub-hosted job uses the protected `npm-publish` environment and npm trusted publishing; no registry token is stored.
+4. Inspect the matching `Publish <version>` run once. If it is active, return later or rely on lifecycle notices—never use watch mode, sleeps, polling loops, or another dispatch as a waiter. The publisher reconfirms the remote tag before each npm publication and before creating the GitHub Release with six binary archives.
 
-To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
+For full guarded automation (release-notes PR, one-shot CI gate, exact-head merge, cut-release, protected dispatch, one-shot publish gate, and summary), use the named `publish-release` Atomic workflow. Pending or failed external gates wait for an explicit human choice inside that same run; do not launch a duplicate release workflow.
 
-Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. Provenance is enabled in CI; no `NPM_TOKEN` is needed.
+Bun is the development/test/runtime path. **npm is still the registry publication tool** because npm's provenance flow signs the published tarball via OIDC. The `npm-publish` GitHub environment and matching npm trusted-publisher identities for `@bastani/atomic` and `@bastani/atomic-natives` are external release prerequisites.
 
 ---
 

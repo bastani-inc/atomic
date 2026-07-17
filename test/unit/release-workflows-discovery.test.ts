@@ -12,18 +12,18 @@ describe("repo-local release workflow discovery imports", () => {
       ".atomic/workflows/lib/release-docs.ts",
     ]) {
       const source = repoFile(path);
-
       assert.doesNotMatch(
         source,
         /from\s+["']@bastani\/atomic["']/,
         `${path} must not import @bastani/atomic because workspace discovery resolves that package root to missing dist/index.js`,
       );
-      assert.match(
-        source,
-        /packages\/coding-agent\/src\/utils\/git-env\.js/,
-        `${path} should import the Git environment helper from the workspace source file`,
-      );
     }
+
+    assert.match(
+      repoFile(".atomic/workflows/lib/release-docs.ts"),
+      /packages\/coding-agent\/src\/utils\/git-env\.js/,
+      "release-docs should import the Git environment helper from workspace source",
+    );
   });
 
   test("release-docs imports builtin child workflows through the virtual workflow SDK", () => {

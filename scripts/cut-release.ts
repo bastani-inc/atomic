@@ -20,8 +20,8 @@
  *   5. commit `Release <version>` and tag `<version>` inside the worktree
  *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
- * Because publish.yml checks out the *tagged commit* (which now carries the
- * real version) every existing version validation passes unchanged.
+ * publish.yml later checks out the tagged commit after an explicit protected
+ * workflow_dispatch from main, so release validation sees the real version.
  *
  * Usage:
  *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]
@@ -175,7 +175,7 @@ async function main(): Promise<void> {
     await $`git -C ${worktreeDir} add -A`;
     const commitMessage = `Release ${version}\n\nRelease-base-ref: ${baseRef}\nRelease-base-sha: ${baseSha}`;
     await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} commit --no-verify -m ${commitMessage}`.quiet();
-    // Lightweight tag, matching the repo's publish trigger + verification convention.
+    // Lightweight tag, matching the protected publisher's verification convention.
     await $`git -C ${worktreeDir} -c user.name=${name} -c user.email=${email} tag ${version}`.quiet();
   } finally {
     if (worktreeAdded) {
@@ -199,10 +199,12 @@ async function main(): Promise<void> {
   if (push) {
     console.log(`Pushing tag ${version}...`);
     await $`git -C ${ROOT} push origin ${version}`;
-    console.log("Tag pushed. GitHub Actions will validate the tag event and start protected publishing automatically.");
+    console.log("Tag pushed. Next, dispatch the protected publisher from main:");
+    console.log(`  gh workflow run publish.yml --ref main -f version=${version}`);
   } else {
-    console.log("Next: push the tag to trigger protected publishing:");
+    console.log("Next: push the tag, then dispatch the protected publisher from main:");
     console.log(`  git push origin ${version}`);
+    console.log(`  gh workflow run publish.yml --ref main -f version=${version}`);
   }
 }
 

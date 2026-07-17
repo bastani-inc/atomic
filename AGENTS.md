@@ -121,30 +121,33 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow (modeled on openai/codex): every supported base, including `main`, keeps `packages/*/package.json` at the `0.0.0` placeholder. The real version is materialized only on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA; that commit is tagged but never merged back. `scripts/cut-release.ts --base <short-branch>` records immutable `Release-base-ref: refs/heads/<short-branch>` and `Release-base-sha: <full SHA>` trailers. Creating the tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the protected default branch, pins `github.workflow_sha`, and binds the event tag/SHA to the remote tag. The publisher allows `refs/heads/main` by default plus exact canonical refs in the comma-separated repository variable `RELEASE_BASE_REFS`, fetches only that branch into a fixed local ref, proves trailer SHA/parent equality and current remote containment, and verifies the deterministic release tree before npm OIDC publication. Repository permissions default to read-only; only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
+Atomic uses a **versionless release-base** flow (modeled on openai/codex): every supported base, including `main`, keeps `packages/*/package.json` at the `0.0.0` placeholder. The real version is materialized only on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA; that commit is tagged but never merged back. `scripts/cut-release.ts --base <short-branch>` records immutable `Release-base-ref: refs/heads/<short-branch>` and `Release-base-sha: <full SHA>` trailers. After the tag is pushed, explicitly dispatch `.github/workflows/publish.yml` with `gh workflow run publish.yml --ref main -f version=<version>`. The publisher requires `workflow_dispatch` from protected `main`, pins and verifies the exact workflow revision, resolves the current remote tag, validates the recorded base/parent/current-base containment, and verifies the deterministic stamped tree before npm OIDC publication. Repository permissions default to read-only; only the final `npm-publish` environment job receives `contents: write` and `id-token: write`.
 
-Cut and publish a release with:
+Cut and dispatch a release with:
 
 ```sh
-bun run scripts/cut-release.ts 0.8.31 --base main --push
+bun run scripts/cut-release.ts 0.8.31 --base main --push --yes
+gh workflow run publish.yml --ref main -f version=0.8.31
 ```
 
-The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the immutable base trailers, tags it, and abandons the worktree. The tag push is the sole publication signal. Configure non-main bases in `RELEASE_BASE_REFS` before cutting the release. There is no legacy fallback: release commits without both valid trailers are rejected.
+The selected base is never advanced by the version stamp. The script resolves its exact `refs/heads/...` ref on `origin`, creates the release commit in a detached git worktree, records the immutable base trailers, tags it, and abandons the worktree. Tag push and protected dispatch are separate explicit actions. Configure non-main bases in `RELEASE_BASE_REFS` before cutting the release. There is no legacy fallback: release commits without both valid trailers are rejected.
 
 ### Agent publishing requests
 
-If a user asks to publish a release or prerelease, execute the release process directly rather than launching an Atomic workflow:
+If a user asks to publish a release or prerelease, route the request through the named Atomic `publish-release` workflow. When it is discoverable, it is the only authorized end-to-end agent path; never silently duplicate its actions inline.
 
-1. Ask for the version only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1.
-2. Infer release versus prerelease from a valid supplied version; ask only when it is ambiguous or invalid. Use the requested `base_ref`, defaulting to the short branch name `main` when omitted.
-3. For non-main bases, require the branch to be protected with the repository's required CI checks and configure its exact canonical `refs/heads/<base_ref>` in the repository variable `RELEASE_BASE_REFS`; entries are comma-separated with no spaces, aliases, globs, or partial matches.
-4. Create `[release|prerelease]/<version>` without a leading `v` from the selected base.
-5. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep the selected base versionless; do not run `scripts/bump-version.ts` on the branch.
-6. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to the selected base.
-7. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
-8. After checks pass, merge the exact verified head commit, switch to the selected base, and pull `origin/<base_ref>`.
-9. Run `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`. This stamps the real version only on the detached release commit, records canonical base metadata, and pushes the tag, which automatically starts protected publishing.
-10. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
+1. Ask for `target_version` only when it was not supplied. Stable releases use `MAJOR.MINOR.PATCH`; prereleases use `MAJOR.MINOR.PATCH-alpha.REVISION` with revision starting at 1. Versions never have a leading `v`.
+2. Infer `release_kind` (`release` or `prerelease`) from a valid version. Ask a structured clarification when the version/kind is missing, ambiguous, invalid, or contradictory rather than guessing.
+3. Use the requested short `base_ref`, defaulting to `main`. For non-main bases, require repository protection with required CI and an exact canonical `refs/heads/<base_ref>` entry in `RELEASE_BASE_REFS` (comma-separated, no spaces, aliases, globs, or partial matches).
+4. Discover and inspect the named `publish-release` workflow and its current inputs before launch. It requires GitHub CLI 2.87.0 or newer so dispatch returns the exact created run URL/ID; the workflow exits before its first model stage when this prerequisite fails. If discovery or input validation fails, report the configuration problem; do not fall back to an inline release.
+5. Launch exactly one background run with `target_version`, `release_kind`, and `base_ref`. Report its run ID and end the turn immediately. Do not launch a duplicate while that run is active, awaiting input, blocked, or resumable.
+6. The workflow creates `[release|prerelease]/<version>` from the selected base and updates relevant `packages/*/CHANGELOG.md` files only. The release branch and base remain versionless; no package version bump is allowed.
+7. The workflow validates the changelog-only diff, commits, pushes, and opens or reuses the exact release PR to `base_ref`.
+8. The workflow inspects required CI once. Pending CI suspends at a resumable human-input gate; after a lifecycle notice or user follow-up, continue the SAME run and choose reinspection. A failed gate requires an explicit structured human decision. Never wait with watch mode, sleeps, or polling loops.
+9. Only after a passed gate may the workflow merge the exact captured head SHA with a head guard, synchronize the selected base, and verify the merged ancestry.
+10. The workflow runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit, records canonical base trailers, and pushes the immutable tag.
+11. The same run dispatches the protected publisher exactly once with `gh workflow run publish.yml --ref main -f version=<version>`, captures the exact run URL/ID returned by GitHub CLI 2.87+, and inspects only that run. If no exact identity is returned, stop without redispatching. Pending or failed publishing uses the same resumable/structured-decision rule as CI; never dispatch again as a waiter or retry.
+12. After protected publishing succeeds, the workflow summarizes the exact PR, base, tag/release SHA, publisher run, npm, and GitHub Release evidence. The parent reports that result without opening another release workflow.
 
 ## Docs
 

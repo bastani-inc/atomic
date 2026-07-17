@@ -1,409 +1,290 @@
 import { canonicalReleaseBaseRef } from "../../scripts/release-base.js";
 import { workflow } from "@bastani/workflows";
+import type { Static } from "@bastani/workflows";
 import { Type } from "typebox";
 import {
-  commandSummary,
-  runCommand,
+  releaseFacts,
   validateReleaseRequest,
-  type PublishReleaseOutput,
+  type ValidatedRelease,
 } from "./lib/publish-release.js";
-import {
-  blockedOutput,
-  excerpt,
-  releaseInstructions,
-  runLocalReleaseChecks,
-  verifyReleasePreparation,
-} from "./lib/publish-release-helpers.js";
-import {
-  captureReleasePrReference,
-  verifyMainReadyForTag,
-  verifyPublishWorkflowSucceeded,
-  verifyReleasePrChecksPassed,
-  verifyReleasePrMerged,
-  verifyReleaseTagPublished,
-} from "./lib/publish-release-gates.js";
-import { inspectReleaseTagRecovery } from "./lib/publish-release-recovery.js";
+import { detectGhVersion } from "./lib/publish-release-gh.js";
 
 const releaseKindSchema = Type.Union([Type.Literal("release"), Type.Literal("prerelease")]);
-const statusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked"), Type.Literal("failed")]);
+const finalStatusSchema = Type.Union([Type.Literal("completed"), Type.Literal("blocked")]);
+const summaryOutcomeSchema = Type.Object({ summary: Type.String() }, { additionalProperties: false });
+const stageStatusSchema = Type.Union([Type.Literal("succeeded"), Type.Literal("blocked")]);
+const preparationOutcomeSchema = Type.Object({
+  status: stageStatusSchema,
+  summary: Type.String(),
+  changed_files: Type.Array(Type.String()),
+}, { additionalProperties: false });
+type PreparationOutcome = Static<typeof preparationOutcomeSchema>;
+const pullRequestOutcomeSchema = Type.Object({
+  status: stageStatusSchema,
+  summary: Type.String(),
+  pr_url: Type.Optional(Type.String()),
+  pr_number: Type.Optional(Type.Integer({ minimum: 1 })),
+  head_sha: Type.Optional(Type.String({ pattern: "^[0-9a-f]{40}$" })),
+}, { additionalProperties: false });
+type PullRequestOutcome = Static<typeof pullRequestOutcomeSchema>;
+const gateOutcomeSchema = Type.Object({
+  status: Type.Union([Type.Literal("passed"), Type.Literal("pending"), Type.Literal("failed")]),
+  summary: Type.String(),
+  evidence_url: Type.Optional(Type.String()),
+  run_id: Type.Optional(Type.Integer({ minimum: 1 })),
+}, { additionalProperties: false });
+type GateOutcome = Static<typeof gateOutcomeSchema>;
+const baseOutcomeSchema = Type.Object({
+  status: stageStatusSchema,
+  summary: Type.String(),
+  base_sha: Type.Optional(Type.String({ pattern: "^[0-9a-f]{40}$" })),
+}, { additionalProperties: false });
+type BaseOutcome = Static<typeof baseOutcomeSchema>;
+const releaseOutcomeSchema = Type.Object({
+  status: stageStatusSchema,
+  summary: Type.String(),
+  release_sha: Type.Optional(Type.String({ pattern: "^[0-9a-f]{40}$" })),
+}, { additionalProperties: false });
+type ReleaseOutcome = Static<typeof releaseOutcomeSchema>;
+const dispatchOutcomeSchema = Type.Object({
+  status: stageStatusSchema,
+  summary: Type.String(),
+  run_id: Type.Optional(Type.Integer({ minimum: 1 })),
+  run_url: Type.Optional(Type.String()),
+}, { additionalProperties: false });
+type DispatchOutcome = Static<typeof dispatchOutcomeSchema>;
+const retryChoice = "Reinspect after external state changes";
+const stopChoice = "Stop this release";
+
+function stoppedSummary(release: ValidatedRelease, stage: string, details: string): string {
+  return [
+    `publish-release stopped at ${stage} for ${release.kind} ${release.version}.`,
+    details,
+    "No later release, dispatch, or publication action was attempted.",
+  ].join("\n\n");
+}
 
 export default workflow({
   name: "publish-release",
-  description: "Prepare and publish Atomic releases through resumable, event-driven gates without polling or workflow dispatch.",
+  description: "Prepare, merge, tag, dispatch, and verify an Atomic release through resumable one-shot gates.",
   inputs: {
     target_version: Type.String({ description: "Version to publish, without a leading v." }),
-    release_kind: Type.Union([Type.Literal("release"), Type.Literal("prerelease")], {
-      description: "Release type; release requires MAJOR.MINOR.PATCH and prerelease requires MAJOR.MINOR.PATCH-alpha.REVISION.",
-    }),
+    release_kind: releaseKindSchema,
     base_ref: Type.String({
       default: "main",
-      description: "Protected branch that receives the release-notes PR and becomes the parent of the release commit. Defaults to main.",
+      description: "Protected short branch name for the changelog PR and detached release commit parent.",
     }),
   },
   outputs: {
-    status: statusSchema,
-    target_version: Type.String({ description: "Validated version supplied to the release workflow." }),
+    status: finalStatusSchema,
+    target_version: Type.String(),
     release_kind: releaseKindSchema,
-    branch: Type.String({ description: "Release branch created by the workflow." }),
-    pr_url: Type.Optional(Type.String({ description: "Best-effort PR URL detected from the PR stage output." })),
-    tag: Type.Optional(Type.String({ description: "Version tag pushed to trigger publishing." })),
-    summary: Type.String({ description: "Compact release execution summary." }),
+    branch: Type.String(),
+    pr_url: Type.Optional(Type.String()),
+    tag: Type.Optional(Type.String()),
+    publish_run_url: Type.Optional(Type.String()),
+    summary: Type.String(),
   },
   run: async (ctx) => {
     const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
-    const requestedBaseRef = ctx.inputs.base_ref.length === 0 ? "main" : ctx.inputs.base_ref;
-    let releaseBaseRef: string;
-    try {
-      releaseBaseRef = canonicalReleaseBaseRef(requestedBaseRef);
-    } catch (error) {
-      return blockedOutput(
-        release,
-        "validate-release-base-ref",
-        "base_ref is a canonical remote branch name suitable for protected publication",
-        error instanceof Error ? error.message : String(error),
-        "failed",
+    const requestedBase = ctx.inputs.base_ref.trim() || "main";
+    const canonicalBase = canonicalReleaseBaseRef(requestedBase);
+    const baseRef = canonicalBase.slice("refs/heads/".length);
+    const facts = releaseFacts(release, baseRef);
+
+    const stop = (stage: string, details: string): never => ctx.exit({
+      status: "blocked",
+      reason: stoppedSummary(release, stage, details),
+      outputs: {
+        status: "blocked",
+        target_version: release.version,
+        release_kind: release.kind,
+        branch: release.branch,
+        summary: stoppedSummary(release, stage, details),
+      },
+    });
+
+    const ghVersion = detectGhVersion();
+    if (!ghVersion.ok) return stop("validate-gh-version", ghVersion.summary);
+
+    const inspectGate = async (
+      gate: "ci" | "publish",
+      prompt: (attempt: number) => string,
+      attempt = 1,
+    ): Promise<GateOutcome> => {
+      const result = await ctx.task(`inspect-${gate}-once-${attempt}`, {
+        context: "fresh",
+        schema: gateOutcomeSchema,
+        prompt: prompt(attempt),
+      });
+      const outcome = result.structured as GateOutcome;
+      if (outcome.status === "passed") return outcome;
+
+      const pending = outcome.status === "pending";
+      const choice = await ctx.ui.select(
+        [
+          `${gate === "ci" ? "Required CI" : "Protected publishing"} is ${outcome.status}.`,
+          outcome.summary,
+          pending
+            ? "This is a resumable one-shot gate. End the parent turn now. After GitHub advances, continue this SAME workflow run; do not launch another release workflow."
+            : "A human decision is required. The workflow will not repair, merge, tag, dispatch, or publish silently.",
+          "Choose the next action:",
+        ].join("\n\n"),
+        [retryChoice, stopChoice] as const,
       );
-    }
-    const baseRef = releaseBaseRef.slice("refs/heads/".length);
-    const baseInstructions = releaseInstructions(release, baseRef);
+      if (choice === stopChoice) return stop(`inspect-${gate}`, outcome.summary);
+      return inspectGate(gate, prompt, attempt + 1);
+    };
 
-    const sourceHead = await ctx.tool(
-      "capture-source-head",
-      { release: release.version },
-      async () => runCommand(["git", "rev-parse", "HEAD"]),
-    );
-
-    if (sourceHead.exitCode !== 0 || sourceHead.stdout.length === 0) {
-      return blockedOutput(
-        release,
-        "capture-source-head",
-        "git rev-parse HEAD resolves the source commit before release preparation",
-        commandSummary(sourceHead),
-      );
-    }
-
-    const prepare = await ctx.task("prepare-release-branch-and-metadata", {
+    const prepare = await ctx.task("prepare-changelog-branch", {
+      context: "fresh",
+      schema: preparationOutcomeSchema,
       prompt: [
-        "Prepare the release branch and metadata changes for this Atomic repository.",
-        "",
-        baseInstructions,
-        "",
-        "Required actions:",
-        "1. Inspect `git status --short`, `git branch --show-current`, `git rev-parse HEAD`, `git log -1 --oneline`, and `git remote -v` to record the source branch and exact source commit.",
-        "2. Ensure you are starting from a safe state for a release. If unrelated uncommitted changes already exist before your release edits, stop and report BLOCKED with the exact files.",
-        `3. Create and switch to branch \`${release.branch}\` from the recorded source commit \`${sourceHead.stdout}\` if it does not already exist; if it exists, verify it is the intended same-version release-notes branch before continuing.`,
-        `4. Read package changelogs, especially \`packages/*/CHANGELOG.md\`, and move the \`## [Unreleased]\` entries into a new \`## [${release.version}]\` section dated today, per AGENTS.md Changelog guidance.`,
-        "5. Do NOT bump versions: main is versionless and every package manifest must stay at the 0.0.0 placeholder. Do not run scripts/bump-version.ts and do not touch package.json, bun.lock, Cargo.*, or generated version files.",
-        "6. Inspect the resulting diff and ensure it contains only CHANGELOG.md changes.",
-        `7. Commit the changelog changes on \`${release.branch}\` with a concise conventional message such as \`docs: release notes for ${release.version}\`.`,
-        "",
-        "Final response format:",
-        "- Summarize source branch, source HEAD, created/current release branch, release commit hash, `git status --short`, changed files, commands run, and any blockers.",
-        "- Do not claim the workflow is ready based on prose alone; the workflow body performs deterministic release-preparation verification after this stage.",
-      ].join("\n"),
+        "Prepare the versionless changelog branch for this Atomic release.",
+        facts,
+        "Start from a clean checkout. Fetch origin, resolve the exact current protected base, and create or safely reuse the release branch from that base.",
+        "Read AGENTS.md changelog rules. Move every relevant package CHANGELOG.md Unreleased content into the target version section dated today. Do not edit released sections.",
+        "Do not commit, push, open a PR, bump versions, run scripts/bump-version.ts, tag, dispatch, or publish in this stage.",
+        "Inspect the diff. It must contain changelog files only. Return blocked rather than guessing if the checkout or existing branch is unsafe.",
+        "Return the structured outcome with status, summary, and changed_files.",
+      ].join("\n\n"),
     });
+    const preparation = prepare.structured as PreparationOutcome;
+    if (preparation.status !== "succeeded") return stop("prepare-changelog-branch", preparation.summary);
 
-    const preparationVerification = await ctx.tool(
-      "verify-release-preparation",
-      { release: release.version, sourceHeadOid: sourceHead.stdout },
-      async () => await verifyReleasePreparation(release, sourceHead.stdout),
-    );
-    if (!preparationVerification.ok) {
-      return blockedOutput(
-        release,
-        "verify-release-preparation",
-        "release branch, clean worktree, allowed release files, and package metadata are deterministically verified",
-        [preparationVerification.summary, "", "Prepare stage output:", excerpt(prepare.text, 2_000)].join("\n"),
-      );
-    }
-
-    const localChecks = await ctx.tool(
-      "run-local-release-checks",
-      { release: release.version },
-      async () => runLocalReleaseChecks(release),
-    );
-    if (!localChecks.ok) {
-      return blockedOutput(
-        release,
-        "run-local-release-checks",
-        "bun run typecheck and bun run test:unit exit successfully on a clean release branch",
-        localChecks.summary,
-        "failed",
-      );
-    }
-
-    const pr = await ctx.task("open-release-pr", {
+    const pr = await ctx.task("validate-commit-push-open-pr", {
+      context: "fork",
+      schema: pullRequestOutcomeSchema,
       prompt: [
-        "Push the release branch and open the release PR with GitHub CLI.",
-        "",
-        baseInstructions,
-        "",
-        "Deterministic preparation and local checks:",
-        excerpt([preparationVerification.summary, localChecks.summary].join("\n\n")),
-        "",
-        "Required actions:",
-        `1. Use \`git branch --show-current\` plus \`git rev-parse HEAD\` to verify the current branch is \`${release.branch}\` at commit \`${preparationVerification.releaseCommitOid}\`.`,
-        `2. Push branch with \`git push -u origin ${release.branch}\`.`,
-        "3. Use `gh auth status` and `gh repo view` or equivalent non-destructive checks to confirm GitHub access.",
-        `4. Create a PR from \`${release.branch}\` to \`${baseRef}\` with title \`Release ${release.version}\` if one does not already exist. If a PR already exists for the branch, reuse it.`,
-        "5. Include release kind, version, changelog/version bump summary, and validation commands in the PR body.",
-        "",
-        "Final response format:",
-        "- Include the PR URL on its own line if available.",
-        "- Include PR base, head branch, head SHA, commands run, and any blockers.",
-        "- Do not use a PR_STATUS marker; the workflow body captures and verifies the PR identity deterministically after this stage.",
-      ].join("\n"),
+        "Validate the prepared changelog-only release branch, then commit, push, and open or reuse its pull request.",
+        facts,
+        `Prepared files: ${preparation.changed_files.join(", ") || "none"}`,
+        "Verify the branch diff changes only CHANGELOG.md files and every package manifest remains at 0.0.0.",
+        "Run the relevant one-shot local validation, including bun run lint, bun run check:file-length, and bun run test:unit. Do not repair unrelated failures silently.",
+        `Commit with a concise Conventional Commit such as docs: release notes for ${release.version}. Push ${release.branch}, then create or reuse exactly one PR targeting ${baseRef}.`,
+        "Read the PR back once. Return its URL, positive number, and exact 40-character head SHA. Do not merge, tag, dispatch, or publish.",
+      ].join("\n\n"),
     });
-
-    const prReference = await ctx.tool(
-      "capture-release-pr-reference",
-      { release: release.version, releaseCommitOid: preparationVerification.releaseCommitOid, baseRef },
-      async () => captureReleasePrReference(release, preparationVerification.releaseCommitOid, baseRef),
-    );
-    if (!prReference.ok) {
-      return blockedOutput(
-        release,
-        "capture-release-pr-reference",
-        "GitHub PR is the exact OPEN or already-MERGED release PR with matching base/head refs and captured head SHA",
-        [prReference.summary, "", "PR stage output:", excerpt(pr.text, 2_000)].join("\n"),
-      );
+    const pullRequest = pr.structured as PullRequestOutcome;
+    if (
+      pullRequest.status !== "succeeded"
+      || pullRequest.pr_url === undefined
+      || pullRequest.pr_number === undefined
+      || pullRequest.head_sha === undefined
+    ) {
+      return stop("validate-commit-push-open-pr", pullRequest.summary);
     }
 
+    const ci = await inspectGate("ci", (attempt) => [
+      `Inspect required CI exactly once for release PR ${pullRequest.pr_url} (attempt ${attempt}).`,
+      facts,
+      `Captured PR number: ${pullRequest.pr_number}`,
+      `Captured PR head SHA: ${pullRequest.head_sha}`,
+      "Use current gh pr view/checks data. Require the same OPEN or already-MERGED PR identity, base, head branch, and exact head SHA, plus a non-empty required-check set.",
+      "Classify the one observation as passed, pending, or failed. Pending includes queued/in-progress/missing-yet checks. Failed includes failing checks, identity drift, a closed PR, malformed evidence, or command/auth failure.",
+      "Do not merge, rerun checks, repair, watch, sleep, poll, tag, dispatch, or publish. Return an evidence URL when available.",
+    ].join("\n\n"));
 
-    // Required-check and PR-state evidence is mutable. Re-evaluate it on every
-    // durable resume instead of checkpointing either stale success or a
-    // transient pending/failing result.
-    const ciVerification = await verifyReleasePrChecksPassed(release, prReference, baseRef);
-    if (!ciVerification.ok) {
-      return blockedOutput(
-        release,
-        "verify-release-pr-checks-passed",
-        "GitHub PR required checks pass for the exact captured head SHA, with exact identity and valid merge evidence if it was externally merged",
-        ciVerification.summary,
-        ciVerification.pending === true ? "blocked" : "failed",
-      );
-    }
-
-    let mergeStageText = "Merge task skipped: the exact captured release PR was already externally merged with deterministic evidence.";
-    if (ciVerification.disposition === "merge-required") {
-      const merge = await ctx.task("merge-verified-release-pr", {
-        prompt: [
-          "Merge the release PR after deterministic CI verification.",
-          "",
-          baseInstructions,
-          "",
-          "Deterministic CI gate:",
-          excerpt(ciVerification.summary),
-          "",
-          "Required actions:",
-          `1. Re-read this exact PR before any merge command: ${prReference.prUrl}. Require number ${prReference.prNumber}, base ${baseRef}, head ${release.branch}, and head SHA ${prReference.headRefOid}.`,
-          "2. If that exact PR is already MERGED, do not invoke a merge command. If it is CLOSED or any identity/ref/SHA differs, stop and report the mismatch.",
-          `3. If it is still OPEN, merge only captured head commit \`${prReference.headRefOid}\` with the explicit selector and atomic head-SHA guard: \`gh pr merge ${prReference.prUrl} --match-head-commit ${prReference.headRefOid}\`. Never issue an unguarded or implicit-selector merge command.`,
-          "4. Use the repository-supported merge method. Do not delete the release branch after merge.",
-          "5. Summarize the merge attempt, commands run, merged commit/ref evidence if available, branch-retention evidence if available, and any blockers.",
-          "",
-          "Final response format:",
-          "- Do not rely on an exact merge status marker; the workflow body verifies exact GitHub PR identity, merge state/evidence, head SHA, and branch retention directly after this stage.",
-        ].join("\n"),
-      });
-      mergeStageText = merge.text;
-    }
-    // A required check can be rerun after the initial OPEN gate or while an
-    // external actor merges. Re-query immediately after the merge stage and
-    // require the exact captured PR to be MERGED with current passing checks.
-    const postMergeCiVerification = await verifyReleasePrChecksPassed(release, prReference, baseRef);
-    if (!postMergeCiVerification.ok || postMergeCiVerification.disposition !== "already-merged") {
-      return blockedOutput(
-        release,
-        "reverify-release-pr-checks-after-merge",
-        "the exact captured PR is MERGED and its required checks still pass for the captured head SHA",
-        postMergeCiVerification.summary,
-        postMergeCiVerification.ok || postMergeCiVerification.pending === true ? "blocked" : "failed",
-      );
-    }
-
-    // Final PR merge and retained-branch evidence is mutable and must be
-    // revalidated on every durable resume.
-    const mergeVerification = verifyReleasePrMerged(release, prReference, baseRef);
-    if (!mergeVerification.ok) {
-      return blockedOutput(
-        release,
-        "verify-release-pr-merged",
-        "GitHub PR state MERGED with valid mergedAt and mergeCommit.oid, exact captured identity/base/head/SHA, and remote branch retained at that SHA",
-        [mergeVerification.summary, "", "Merge stage output:", excerpt(mergeStageText, 2_000)].join("\n"),
-      );
-    }
-
-    const syncMain = await ctx.task("sync-main-after-merge", {
+    const merge = await ctx.task("merge-exact-head-and-sync-base", {
+      context: "fresh",
+      schema: baseOutcomeSchema,
       prompt: [
-        `Sync local ${baseRef} after the release PR merge. Do not create or push a tag.`,
-        "",
-        baseInstructions,
-        "",
-        "Deterministic merge verification:",
-        excerpt(mergeVerification.summary),
-        "",
-        "Required actions:",
-        `1. Switch to \`${baseRef}\` and run \`git pull origin ${baseRef}\`.`,
-        `2. Confirm the merged release commit for ${release.version} is present on local ${baseRef} with command-backed evidence such as \`git rev-parse HEAD\` and \`git merge-base --is-ancestor ${mergeVerification.mergeCommitOid} HEAD\`.`,
-        `3. Inspect whether tag \`${release.version}\` exists locally or on origin, but do not create, fetch, push, or modify it in this stage.`,
-        "",
-        "Final response format:",
-        `- Include local ${baseRef} HEAD, origin/${baseRef} evidence, worktree status, tag existence checks, commands run, and any blockers.`,
-        "- The workflow body deterministically reconciles absent, local-only, remote-only, and already-published tag states after this stage.",
-      ].join("\n"),
+        "Merge the exact CI-verified release PR head, then synchronize the selected protected base.",
+        facts,
+        `PR: ${pullRequest.pr_url}`,
+        `PR number: ${pullRequest.pr_number}`,
+        `Verified head SHA: ${pullRequest.head_sha}`,
+        `CI evidence: ${ci.summary}`,
+        "Read the PR once immediately before merging and require identical identity, refs, head SHA, and passing required checks. If already merged, verify that exact head was merged.",
+        `If still open, use the explicit PR selector and gh pr merge ${pullRequest.pr_url} --match-head-commit ${pullRequest.head_sha} with the repository-supported merge method. Never issue an unguarded merge.`,
+        `Switch to ${baseRef}, fetch origin, and fast-forward with git pull --ff-only origin ${baseRef}. Require a clean tree, local HEAD equal to origin/${baseRef}, and the merged release head in its ancestry.`,
+        "Return the exact synchronized 40-character base_sha. Do not bump, tag, dispatch, or publish.",
+      ].join("\n\n"),
     });
-
-    const mainReady = verifyMainReadyForTag(release, mergeVerification.mergeCommitOid, baseRef);
-    if (!mainReady.ok) {
-      return blockedOutput(
-        release,
-        "verify-main-ready-for-tag",
-        `local ${baseRef} is clean, matches origin/${baseRef}, and contains the verified merge commit before tag reconciliation`,
-        [mainReady.summary, "", "Sync-main stage output:", excerpt(syncMain.text, 2_000)].join("\n"),
-      );
+    const synchronized = merge.structured as BaseOutcome;
+    if (synchronized.status !== "succeeded" || synchronized.base_sha === undefined) {
+      return stop("merge-exact-head-and-sync-base", synchronized.summary);
     }
 
-    const tagRecovery = inspectReleaseTagRecovery(release, mainReady.mainOid, mergeVerification.mergeCommitOid, releaseBaseRef);
-    if (!tagRecovery.ok) {
-      return blockedOutput(release, "inspect-release-tag", "any existing release tag matches the verified base parent and stamped version", tagRecovery.summary, "failed");
-    }
-
-    let tagStageText = `Tag task skipped: deterministic recovery state is ${tagRecovery.state}.`;
-    if (tagRecovery.state === "absent") {
-      const tagStage = await ctx.task("materialize-release-tag", {
-        prompt: [
-          `Create and push the immutable release tag from verified ${baseRef}; the tag push automatically signals protected publishing.`,
-          "",
-          baseInstructions,
-          "",
-          "Deterministic base and tag evidence:",
-          excerpt([mainReady.summary, tagRecovery.summary].join("\n\n")),
-          "",
-          "Required actions:",
-          `1. Verify clean local \`${baseRef}\` at \`${mainReady.mainOid}\`.`,
-          `2. Run \`bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes\`.`,
-          `3. Do not dispatch a workflow, push ${baseRef}, force a tag, or run scripts/bump-version.ts directly.`,
-          "4. Report the release commit SHA/parent and exact local/remote tag evidence.",
-        ].join("\n"),
-      });
-      tagStageText = tagStage.text;
-    } else if (tagRecovery.state === "local-only") {
-      const tagStage = await ctx.task("publish-existing-release-tag", {
-        prompt: [
-          `Recover the already-created, deterministically verified local tag \`${release.version}\` by pushing that exact ref without force.`,
-          "",
-          excerpt(tagRecovery.summary),
-          "",
-          `Run \`git push origin refs/tags/${release.version}:refs/tags/${release.version}\`. Do not recreate, move, delete, or force the tag, and do not dispatch publishing in this stage.`,
-        ].join("\n"),
-      });
-      tagStageText = tagStage.text;
-    } else if (tagRecovery.state === "remote-only") {
-      const tagStage = await ctx.task("fetch-existing-release-tag", {
-        prompt: [
-          `Recover the existing remote tag \`${release.version}\` locally for deterministic verification.`,
-          "",
-          excerpt(tagRecovery.summary),
-          "",
-          `Run \`git fetch origin refs/tags/${release.version}:refs/tags/${release.version}\` without force. Do not recreate, move, delete, push, or dispatch anything.`,
-        ].join("\n"),
-      });
-      tagStageText = tagStage.text;
-    }
-
-    const tagVerification = verifyReleaseTagPublished(release, mainReady.mainOid, {
-      expectedBaseRef: releaseBaseRef,
-      allowIntegratedParent: tagRecovery.state !== "absent",
-      requiredAncestorOid: mergeVerification.mergeCommitOid,
+    const cut = await ctx.task("cut-and-push-release-tag", {
+      context: "fork",
+      schema: releaseOutcomeSchema,
+      prompt: [
+        "Materialize and push the detached Atomic release commit and immutable tag.",
+        facts,
+        `Verified synchronized base SHA: ${synchronized.base_sha}`,
+        `Run exactly: bun run scripts/cut-release.ts ${release.version} --base ${baseRef} --push --yes`,
+        "Never run scripts/bump-version.ts directly, move the base branch, force a tag, or dispatch publishing in this stage.",
+        "After the command, resolve the exact remote tag once and verify its Release-base-ref/Release-base-sha trailers, sole parent, and stamped package version agree with the synchronized base and target version.",
+        "If an exact pre-existing tag is encountered during crash recovery, verify all of that evidence and stop as blocked unless it is already the intended immutable release; never recreate or move it.",
+        "Return the exact 40-character release_sha.",
+      ].join("\n\n"),
     });
-    if (!tagVerification.ok) {
-      return blockedOutput(
-        release,
-        "verify-release-tag-published",
-        `local and remote release tag exist at one immutable release commit whose parent is verified ${baseRef} and whose manifest carries the target version`,
-        [tagVerification.summary, "", "Tag recovery stage output:", excerpt(tagStageText, 2_000)].join("\n"),
-        "failed",
-      );
+    const released = cut.structured as ReleaseOutcome;
+    if (released.status !== "succeeded" || released.release_sha === undefined) {
+      return stop("cut-and-push-release-tag", released.summary);
     }
 
-
-    const publishVerification = await verifyPublishWorkflowSucceeded(
-      release,
-      tagVerification.tagTargetOid,
-    );
-    if (!publishVerification.ok) {
-      return blockedOutput(
-        release,
-        "verify-publish-workflow-succeeded",
-        "GitHub Actions tag-triggered Publish run completes successfully after its protected integrity job verifies and pins the release SHA",
-        [publishVerification.summary, "", "Tag stage output:", excerpt(tagStageText, 1_000)].join("\n"),
-        publishVerification.pending === true ? "blocked" : "failed",
-      );
+    const dispatch = await ctx.task("dispatch-protected-publisher", {
+      context: "fresh",
+      schema: dispatchOutcomeSchema,
+      prompt: [
+        "Dispatch the protected publisher exactly once from main.",
+        facts,
+        `Verified release tag SHA: ${released.release_sha}`,
+        `Run exactly: gh workflow run publish.yml --ref main -f version=${release.version}`,
+        "GitHub CLI 2.87 or newer returns the created run URL. Capture that exact URL and numeric run ID from this command; do not select a run from history.",
+        "Do not run any other dispatch command and do not inspect or wait for the run in this stage. Durable stage replay prevents a completed dispatch stage from executing again on resume.",
+        "Return succeeded with run_id and run_url only after gh accepts the dispatch and identifies its created run. If no exact run identity is returned, return blocked and do not redispatch.",
+      ].join("\n\n"),
+    });
+    const dispatched = dispatch.structured as DispatchOutcome;
+    if (
+      dispatched.status !== "succeeded"
+      || dispatched.run_id === undefined
+      || dispatched.run_url === undefined
+    ) {
+      return stop("dispatch-protected-publisher", dispatched.summary);
     }
 
-    const prUrl = mergeVerification.prUrl ?? prReference.prUrl;
-    const actionUrl = publishVerification.runUrl;
-    const summary = [
-      `publish-release completed for ${release.kind} ${release.version}.`,
-      `Branch: ${release.branch}`,
-      prUrl === undefined ? "PR URL: see open-release-pr stage output" : `PR URL: ${prUrl}`,
-      `Tag: ${release.version}`,
-      actionUrl === undefined ? "Publish run: resume after GitHub reports the tag-triggered run" : `Publish run: ${actionUrl}`,
-      "",
-      "Stage summaries:",
-      "## prepare-release-branch-and-metadata",
-      excerpt(prepare.text, 800),
-      "",
-      "## deterministic-release-preparation",
-      excerpt(preparationVerification.summary, 800),
-      "",
-      "## deterministic-local-release-checks",
-      excerpt(localChecks.summary, 800),
-      "",
-      "## open-release-pr",
-      excerpt(pr.text, 800),
-      "",
-      "## deterministic-pr-reference",
-      excerpt(prReference.summary, 800),
-      "",
-      "## deterministic-ci-verification",
-      excerpt(ciVerification.summary, 800),
-      "",
-      "## merge-verified-release-pr",
-      excerpt(mergeStageText, 800),
-      "",
-      "## deterministic-merge-verification",
-      excerpt(mergeVerification.summary, 800),
-      "",
-      "## sync-main-after-merge",
-      excerpt(syncMain.text, 800),
-      "",
-      "## deterministic-main-ready-for-tag",
-      excerpt(mainReady.summary, 800),
-      "",
-      "## release-tag-recovery",
-      excerpt(tagStageText, 800),
-      "",
-      "## deterministic-tag-verification",
-      excerpt(tagVerification.summary, 800),
-      "## deterministic-publish-verification",
-      excerpt(publishVerification.summary, 800),
-    ].join("\n");
+    const publish = await inspectGate("publish", (attempt) => [
+      `Inspect the explicitly dispatched protected publisher exactly once (attempt ${attempt}).`,
+      facts,
+      `Exact dispatched run ID: ${dispatched.run_id}`,
+      `Exact dispatched run URL: ${dispatched.run_url}`,
+      `Expected release SHA: ${released.release_sha}`,
+      "View only that exact run once. Require workflow Publish, event workflow_dispatch, head branch main, and display title Publish <target version>. Any identity mismatch is failed.",
+      "Active/queued is pending. A non-success conclusion is failed. Success passes only when its Verify release integrity job succeeded and its evidence binds the target tag to the expected release SHA.",
+      "Do not list run history, dispatch, rerun, watch, sleep, poll, tag, publish, or create releases. Return the exact run_id and evidence_url.",
+    ].join("\n\n"));
 
-    const result: PublishReleaseOutput = {
-      status: "completed",
+    const final = await ctx.task("summarize-release", {
+      context: "fresh",
+      schema: summaryOutcomeSchema,
+      prompt: [
+        `Summarize the completed Atomic ${release.kind} ${release.version} release with concise command-backed evidence.`,
+        `Branch: ${release.branch}`,
+        `PR: ${pullRequest.pr_url}`,
+        `PR head SHA: ${pullRequest.head_sha}`,
+        `Base SHA: ${synchronized.base_sha}`,
+        `Tag and release SHA: ${release.version} -> ${released.release_sha}`,
+        `Publish run: ${publish.evidence_url ?? `run ${publish.run_id ?? "unknown"}`}`,
+        "State that the base remained versionless, publishing was explicitly dispatched from protected main, and npm/GitHub Release verification passed. Mention residual external prerequisites only if evidence identifies one.",
+      ].join("\n\n"),
+    });
+    const finalSummary = final.structured as { readonly summary: string };
+
+    const completed = {
+      status: "completed" as const,
       target_version: release.version,
       release_kind: release.kind,
       branch: release.branch,
+      pr_url: pullRequest.pr_url,
       tag: release.version,
-      summary,
+      summary: finalSummary.summary,
     };
-
-    if (prUrl !== undefined) {
-      return { ...result, pr_url: prUrl };
-    }
-
-    return result;
+    return publish.evidence_url === undefined
+      ? completed
+      : { ...completed, publish_run_url: publish.evidence_url };
   },
 });

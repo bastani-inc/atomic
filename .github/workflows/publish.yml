@@ -1,16 +1,19 @@
 name: Publish
-run-name: Publish ${{ github.ref_name }}
+run-name: Publish ${{ inputs.version }}
 
 on:
-    # The create event is evaluated from the default branch. A release tag can
-    # select the release commit, but it cannot replace this workflow definition.
-    create:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Exact release version/tag without a leading v
+                required: true
+                type: string
 
 permissions:
     contents: read
 
 concurrency:
-    group: publish-${{ github.ref_name }}
+    group: publish-${{ inputs.version }}
     cancel-in-progress: false
 
 env:
@@ -22,14 +25,13 @@ env:
 jobs:
     release-integrity:
         name: Verify release integrity
-        if: github.ref_type == 'tag'
         runs-on: blacksmith-4vcpu-ubuntu-2404
         outputs:
             sha: ${{ steps.release.outputs.sha }}
             tag: ${{ steps.release.outputs.tag }}
         steps:
-            # Pin the protected workflow revision rather than checking out code
-            # selected by the newly-created tag.
+            # workflow_dispatch is invoked explicitly at --ref main. Pin trusted
+            # verification code to the exact protected-main workflow revision.
             - uses: useblacksmith/checkout@v1
               with:
                   ref: ${{ github.workflow_sha }}
@@ -42,21 +44,35 @@ jobs:
               id: release
               shell: bash
               env:
-                  RELEASE_TAG: ${{ github.ref_name }}
+                  RELEASE_TAG: ${{ inputs.version }}
                   TRIGGER_SHA: ${{ github.sha }}
+                  WORKFLOW_EVENT: ${{ github.event_name }}
                   WORKFLOW_REF: ${{ github.workflow_ref }}
+                  WORKFLOW_SHA: ${{ github.workflow_sha }}
+                  DISPATCH_REF: ${{ github.ref }}
                   DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
                   ALLOWED_RELEASE_BASE_REFS: ${{ vars.RELEASE_BASE_REFS }}
               run: |
                   set -euo pipefail
-                  expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/${DEFAULT_BRANCH}"
-                  [[ "$WORKFLOW_REF" == "$expected_workflow_ref" ]] || { echo "Publish workflow was not loaded from protected $DEFAULT_BRANCH: $WORKFLOW_REF" >&2; exit 1; }
+                  expected_workflow_ref="${GITHUB_REPOSITORY}/.github/workflows/publish.yml@refs/heads/main"
+                  [[ "$WORKFLOW_EVENT" == "workflow_dispatch" ]] || { echo "Publish requires workflow_dispatch: $WORKFLOW_EVENT" >&2; exit 1; }
+                  [[ "$DEFAULT_BRANCH" == "main" ]] || { echo "Protected publisher requires main to be the default branch: $DEFAULT_BRANCH" >&2; exit 1; }
+                  [[ "$DISPATCH_REF" == "refs/heads/main" ]] || { echo "Publish must be dispatched with --ref main: $DISPATCH_REF" >&2; exit 1; }
+                  [[ "$WORKFLOW_REF" == "$expected_workflow_ref" ]] || { echo "Publish workflow was not loaded from protected main: $WORKFLOW_REF" >&2; exit 1; }
+                  [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ && "$WORKFLOW_SHA" == "$TRIGGER_SHA" ]] || { echo "Workflow revision $WORKFLOW_SHA does not equal dispatch SHA $TRIGGER_SHA" >&2; exit 1; }
+                  [[ "$(git rev-parse HEAD)" == "$WORKFLOW_SHA" ]] || { echo "Checkout does not match exact workflow revision $WORKFLOW_SHA" >&2; exit 1; }
+                  current_main_sha=$(git ls-remote --exit-code --refs origin refs/heads/main | awk 'NR == 1 { print $1 }')
+                  [[ "$current_main_sha" == "$WORKFLOW_SHA" ]] || { echo "Protected main moved or dispatch revision is stale: workflow=$WORKFLOW_SHA remote=$current_main_sha" >&2; exit 1; }
                   release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
-                  [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Unexpected tag format: $RELEASE_TAG" >&2; exit 1; }
-                  release_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
-                  [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve tag $RELEASE_TAG to one commit" >&2; exit 1; }
-                  [[ "$release_sha" == "$TRIGGER_SHA" ]] || { echo "Tag $RELEASE_TAG moved from triggering SHA $TRIGGER_SHA to $release_sha" >&2; exit 1; }
+                  [[ "$RELEASE_TAG" =~ ^$release_version_re$ && "$RELEASE_TAG" != "0.0.0" ]] || { echo "Unexpected version input: $RELEASE_TAG" >&2; exit 1; }
+                  expected_tag_ref="refs/tags/$RELEASE_TAG"
+                  tag_response=$(git ls-remote --exit-code --refs origin "$expected_tag_ref")
+                  [[ -n "$tag_response" && "$tag_response" != *$'\n'* ]] || { echo "Tag $RELEASE_TAG did not resolve to exactly one ref" >&2; exit 1; }
+                  read -r release_sha resolved_tag_ref extra <<< "$tag_response"
+                  [[ -z "${extra:-}" && "$resolved_tag_ref" == "$expected_tag_ref" && "$release_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not resolve tag $RELEASE_TAG to one exact object" >&2; exit 1; }
                   git fetch --no-tags origin "$release_sha"
+                  release_commit=$(git rev-parse --verify "${release_sha}^{commit}")
+                  [[ "$release_commit" == "$release_sha" ]] || { echo "Tag $RELEASE_TAG must be a lightweight tag naming one commit" >&2; exit 1; }
 
                   release_base_ref=$(git show -s --format='%(trailers:key=Release-base-ref,valueonly)' "$release_sha")
                   release_base_sha=$(git show -s --format='%(trailers:key=Release-base-sha,valueonly)' "$release_sha")
@@ -342,6 +358,7 @@ jobs:
 
     publish:
         name: Publish @bastani/atomic
+        environment: npm-publish
         permissions:
             contents: write
             id-token: write
@@ -630,6 +647,23 @@ jobs:
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
+            - name: Prepare Atomic native packages for npm
+              if: steps.native_registry.outputs.exists != 'true'
+              working-directory: packages/natives
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  bun run prepublish:native
+                  bun pm pack --dry-run
+
+            - name: Reconfirm release tag before @bastani/atomic-natives publish
+              if: steps.native_registry.outputs.exists != 'true'
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+                  VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
+              run: bun scripts/reconfirm-release-tag.ts
+
             - name: Publish Atomic native packages to npm
               if: steps.native_registry.outputs.exists != 'true'
               working-directory: packages/natives
@@ -638,11 +672,7 @@ jobs:
                   NPM_CONFIG_PROVENANCE: "true"
                   NPM_CONFIG_TAG: ${{ steps.package.outputs.npm_tag }}
                   NPM_TAG: ${{ steps.package.outputs.npm_tag }}
-              run: |
-                  set -euo pipefail
-                  bun run prepublish:native
-                  bun pm pack --dry-run
-                  npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
+              run: npm publish --provenance --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
 
             - name: Verify prepared npm shrinkwrap for published package
               if: steps.registry.outputs.exists != 'true'
@@ -664,6 +694,14 @@ jobs:
                       throw new Error("npm pack output is missing npm-shrinkwrap.json");
                     }
                   '
+
+            - name: Reconfirm release tag before @bastani/atomic publish
+              if: steps.registry.outputs.exists != 'true'
+              shell: bash
+              env:
+                  RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+                  VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
+              run: bun scripts/reconfirm-release-tag.ts
 
             - name: Publish to npm
               if: steps.registry.outputs.exists != 'true'
@@ -704,18 +742,12 @@ jobs:
                   )
                   sha256sum "${release_assets[@]}" > SHA256SUMS
 
-            - name: Reconfirm release tag is immutable
+            - name: Reconfirm release tag before GitHub Release
               shell: bash
               env:
                   RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
                   VERIFIED_SHA: ${{ needs.release-integrity.outputs.sha }}
-              run: |
-                  set -euo pipefail
-                  current_sha=$(git ls-remote --exit-code --refs origin "refs/tags/$RELEASE_TAG" | awk 'NR == 1 { print $1 }')
-                  [[ "$current_sha" == "$VERIFIED_SHA" ]] || {
-                    echo "Release tag $RELEASE_TAG moved from verified $VERIFIED_SHA to ${current_sha:-missing}; refusing release creation." >&2
-                    exit 1
-                  }
+              run: bun scripts/reconfirm-release-tag.ts
 
             - name: Create GitHub Release with binaries
               uses: softprops/action-gh-release@v3
