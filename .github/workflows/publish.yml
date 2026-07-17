@@ -24,6 +24,9 @@ jobs:
         name: Verify release integrity
         if: github.ref_type == 'tag'
         runs-on: blacksmith-4vcpu-ubuntu-2404
+        # Finite wall-clock budgets on every job: without them a hang burns the
+        # 360-minute GitHub default. Verified integrity checks finish in <1m.
+        timeout-minutes: 10
         outputs:
             sha: ${{ steps.release.outputs.sha }}
             tag: ${{ steps.release.outputs.tag }}
@@ -97,6 +100,8 @@ jobs:
         needs: release-integrity
         name: Smoke test Linux binary
         runs-on: blacksmith-4vcpu-ubuntu-2404
+        # Green runs finish in ~2m; 10m flags a hang or regression fast.
+        timeout-minutes: 10
 
         steps:
             - uses: useblacksmith/checkout@v1
@@ -178,6 +183,8 @@ jobs:
         name: Smoke test Windows binary
         needs: release-integrity
         runs-on: blacksmith-4vcpu-windows-2025
+        # Green runs finish in ~4m; 15m leaves headroom for cold Windows caches.
+        timeout-minutes: 15
 
         steps:
             - uses: useblacksmith/checkout@v1
@@ -266,6 +273,9 @@ jobs:
         name: Atomic native ${{ matrix.platform }}
         needs: release-integrity
         runs-on: ${{ matrix.runner }}
+        # Rust release builds peak at ~8m (windows-x64) on warm caches; 15m
+        # leaves headroom for cold cargo caches without allowing multi-hour hangs.
+        timeout-minutes: 15
         strategy:
             fail-fast: false
             matrix:
@@ -347,6 +357,8 @@ jobs:
             id-token: write
         # npm provenance only supports GitHub-hosted runners.
         runs-on: ubuntu-latest
+        # Green publishes finish in ~4m; 10m flags a hang or regression fast.
+        timeout-minutes: 10
         needs:
             - linux-binary-smoke
             - windows-binary-smoke

@@ -86,6 +86,10 @@ Blacksmith [Test Analytics](https://docs.blacksmith.sh/blacksmith-observability/
 Only the unit, integration, and coding-agent test-suite steps use `scripts/run-flaky-test-suite.ts`. The green path runs the command once with no artifact writes. After a genuine suite failure, the runner preserves attempt 1, emits an OS/Bun/CPU/memory/load summary, and reruns that same smallest safe suite **once**. If attempt 2 passes, the job succeeds with a visible `Detected flake` warning and step-summary entry; if it fails, the step fails with both logs. `.ci-diagnostics/` is uploaded for 14 days on both Linux and Windows whenever files exist.
 
 This is not a blanket command retry. Typecheck, docs, file-length/lint, builds, native/package/archive checks, shrinkwrap, metadata, provenance, and publishing never use the wrapper. Workflow structure and release-verifier fixtures run first in the separate `test:ci-contracts` step with no retry wrapper; the retry runner's own unit contract is also a no-retry file. Bun does not currently expose a stable cross-platform failed-file manifest suitable for safely reconstructing arbitrary test commands, so the fallback reruns the named suite rather than guessing file paths. The policy adds no second-run cost when CI is green; a recovered flake costs one suite duration and remains observable instead of hiding the instability.
+
+### Job time limits
+
+Every job in `test.yml` and `publish.yml` sets an explicit `timeout-minutes` so a hung process can never burn GitHub's 360-minute default (observed once as a wedged windows-x64 unit-test step running six hours before cancellation). Test-matrix jobs are capped at **10 minutes** (green runs finish in ~3.5m on Linux and ~9m on Windows). In the release pipeline, integrity verification, the Linux binary smoke, and the final publish job are capped at 10 minutes, while the Windows binary smoke and the native-artifact Rust builds get **15 minutes** for cold-cache headroom (warm-cache peak is ~8m on windows-x64). Anything exceeding these budgets is treated as a hang or a performance regression and fails fast.
 ---
 
 ## Pull Request Workflows
