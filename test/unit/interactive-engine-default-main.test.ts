@@ -4,6 +4,16 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/**
+ * This harness drives POSIX process-tree semantics end to end: SIGKILL of the
+ * fixture host, detached grandchildren reaped by the parent-process guardian,
+ * and kill(pid, 0) liveness probes. On Windows those semantics differ enough
+ * that the harness can wedge the whole bun test process (observed as a CI job
+ * hanging until the 6h timeout), so the suite is POSIX-only until a
+ * Windows-safe harness exists.
+ */
+const serialTest = process.platform === "win32" ? test.serial.skip : test.serial;
+
 interface HarnessReport {
 	type?: string;
 	at?: number;
@@ -189,7 +199,7 @@ function settingsEntryCounts(path: string): Record<"model_change" | "session_inf
 }
 
 
-test.serial("default main InteractiveMode survives Escape, restarts, and kills the full blocked process tree", async () => {
+serialTest("default main InteractiveMode survives Escape, restarts, and kills the full blocked process tree", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-default-main-"));
 	const toolPidFile = join(temp, "tool.pid");
 	const grandchildPidFile = join(temp, "grandchild.pid");
@@ -233,8 +243,7 @@ test.serial("default main InteractiveMode survives Escape, restarts, and kills t
 	}
 }, 20_000);
 
-test.serial("forced default-main host death leaves no engine or detached grandchild", async () => {
-	if (process.platform === "win32") return;
+serialTest("forced default-main host death leaves no engine or detached grandchild", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-host-death-"));
 	const toolPidFile = join(temp, "tool.pid");
 	const grandchildPidFile = join(temp, "grandchild.pid");
@@ -259,7 +268,7 @@ test.serial("forced default-main host death leaves no engine or detached grandch
 	}
 }, 20_000);
 
-test.serial("default InteractiveMode host mutations persist exactly once in the engine", async () => {
+serialTest("default InteractiveMode host mutations persist exactly once in the engine", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-exact-once-"));
 	const extension = join(import.meta.dir, "fixtures", "blocking-tool-extension.ts");
 	const args = fixtureArgs(extension).filter((value) => value !== "--no-session");
@@ -293,7 +302,7 @@ test.serial("default InteractiveMode host mutations persist exactly once in the 
 	}
 }, 20_000);
 
-test.serial("default InteractiveMode preserves child-owned custom renderers and factory widgets", async () => {
+serialTest("default InteractiveMode preserves child-owned custom renderers and factory widgets", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-render-parity-"));
 	const rendererPidFile = join(temp, "renderer.pid");
 	const widgetPidFile = join(temp, "widget.pid");
@@ -391,7 +400,7 @@ async function invokeSlashCommand(driver: DefaultMainDriver, logPath: string, na
 	throw new Error(`Command '${name}' was never invoked after typing ${JSON.stringify(text)} (log: ${logPath})`);
 }
 
-test.serial("isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions", async () => {
+serialTest("isolated default main lists and executes engine-only /workflow and /workflows while the host has no extensions", async () => {
 	const temp = mkdtempSync(join(tmpdir(), "atomic-remote-commands-"));
 	const extension = join(import.meta.dir, "fixtures", "workflow-command-extension.ts");
 	// Reproduction parity with `bun packages/coding-agent/src/cli.ts` from the
