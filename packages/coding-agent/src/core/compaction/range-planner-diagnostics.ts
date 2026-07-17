@@ -88,7 +88,7 @@ function buildDiagnosticPayload(ctx: DiagnosticContext): CompactionDiagnostic {
 		stopReason: ctx.response?.stopReason,
 		providerError: ctx.response?.errorMessage,
 		usage: ctx.response?.usage,
-		requestMaxTokens: ctx.requestMaxTokens,
+		requestMaxTokens: Number.isFinite(ctx.requestMaxTokens) ? Math.max(0, Math.floor(ctx.requestMaxTokens)) : 0,
 		model: {
 			provider: ctx.model.provider,
 			id: ctx.model.id,
@@ -156,7 +156,7 @@ function buildRecoveryPayload(ctx: RecoveryDiagnosticContext): RecoveryDiagnosti
 		rawResponse: ctx.rawResponseText,
 		stopReason: ctx.response.stopReason,
 		usage: ctx.response.usage,
-		requestMaxTokens: ctx.requestMaxTokens,
+		requestMaxTokens: Number.isFinite(ctx.requestMaxTokens) ? Math.max(0, Math.floor(ctx.requestMaxTokens)) : 0,
 		model: {
 			provider: ctx.model.provider,
 			id: ctx.model.id,

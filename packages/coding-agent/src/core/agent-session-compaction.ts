@@ -93,11 +93,12 @@ export async function _applyVerbatimCompaction(
 	// With no preceding request (for example a manual compact before any prompt),
 	// the planner deliberately uses its isolated request rather than claiming a
 	// post-response reconstruction is cache-identical.
-	const reusablePrefix = this._activeRequestPrefix
+	const capturedPrefix = this._activeRequestPrefix
 		&& compactionRequestIdentityMatches(this._activeRequestPrefix.identity, model)
 		&& this._activeRequestPrefix.identity.sessionId === this.sessionManager.getSessionId()
 		? this._activeRequestPrefix
 		: undefined;
+	const reusablePrefix = capturedPrefix;
 	const plan: CompactionPlanOptions = {
 		// Compaction-internal dispatch must not replace the normal request snapshot.
 		streamFn: this._originatingStreamFn,

@@ -19,6 +19,8 @@ export interface CompactionPlanOptions {
 	sessionFilePath?: string;
 	/** Active-request prefix to reuse for cache-read on the full-collapse path. */
 	prefix?: CompactionRequestPrefix;
+	/** Optional exact provider-visible token counter used for preflight admission. */
+	providerTokenCounter?: import("./provider-payload-fit.js").ProviderPayloadTokenCounter;
 }
 
 export type CompactionRungResult = CompactedTranscript & { rung: "planned"; cache?: CompactionCacheTelemetry };
@@ -124,6 +126,7 @@ export async function runFullCollapseCompaction(
 			sessionFilePath: options.sessionFilePath,
 			prefix: options.prefix,
 			queryProvenance: getCompactionQueryProvenance(preparation),
+			providerTokenCounter: options.providerTokenCounter,
 		},
 	);
 	if (signal?.aborted) throw new Error("Compaction cancelled");

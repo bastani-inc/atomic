@@ -3,6 +3,7 @@ import type { Api, AssistantMessage, Context, Message, Model, SimpleStreamOption
 import { isContextOverflow } from "@earendil-works/pi-ai/compat";
 import { getEffectiveInputBudget } from "../context-window.js";
 import { isAnthropicCacheApi, isOpenAIResponsesCacheApi, normalizeCompactionCacheTelemetry, supportsOpenAIExplicitCacheBreakpoint } from "./compaction-cache.js";
+import { buildElidedCollapsePlannerPrompt } from "./collapse-elision.js";
 import type { CompactionQueryProvenance } from "./compaction-query-provenance.js";
 import type {
 	CompactionCacheTelemetry,
@@ -17,11 +18,13 @@ import { type DiagnosticFailureCategory, writeDiagnosticSidecar } from "./range-
 import { SubsequenceValidationError, validateCompactedSubsequence } from "./subsequence.js";
 import { numberRegionLines, serializeConversationForCompaction } from "./transcript-serialization.js";
 import {
-	conservativePayloadTokenUpperBound,
 	createProviderPayloadFitHook,
 	FinalPayloadFitError,
 	providerOutputMinimum,
+	ProviderPayloadRetryError,
 	type PayloadFitState,
+	type ProviderPayloadRetryGuard,
+	type ProviderPayloadTokenCounter,
 } from "./provider-payload-fit.js";
 
 export interface CollapsePlannerOptions {
@@ -36,6 +39,8 @@ export interface CollapsePlannerOptions {
 	prefix?: CompactionRequestPrefix;
 	/** Provenance controls whether warm suffix relevance text is additional caller input. */
 	queryProvenance?: CompactionQueryProvenance;
+	/** Optional exact provider counter; production safely falls back when unavailable. */
+	providerTokenCounter?: ProviderPayloadTokenCounter;
 }
 
 /** Result of a full-collapse plan: validated deletions plus cache telemetry. */
@@ -236,14 +241,8 @@ interface BuiltCollapseRequest {
 	cacheReuse: boolean;
 }
 
-function estimateSemanticInputUpperBound(context: Context): number {
-	return conservativePayloadTokenUpperBound({
-		systemPrompt: context.systemPrompt ?? "",
-		tools: context.tools ?? [],
-		messages: context.messages,
-	});
-}
 
+type CollapseProjection = "warm" | "isolated-full" | "isolated-elided";
 function buildCollapseRequest(
 	region: NumberedRegion,
 	parameters: VerbatimCompactionParameters,
@@ -256,10 +255,13 @@ function buildCollapseRequest(
 	queryProvenance: CompactionQueryProvenance,
 	desiredOutput: number,
 	fitState: PayloadFitState,
-): BuiltCollapseRequest {
+	providerTokenCounter: ProviderPayloadTokenCounter | undefined,
+	projection: CollapseProjection,
+	retryGuard: ProviderPayloadRetryGuard | undefined,
+): BuiltCollapseRequest | undefined {
 	const reasoning = model.reasoning && thinkingLevel && thinkingLevel !== "off" ? { reasoning: thinkingLevel } : {};
 	const base = { apiKey: auth.apiKey, headers: auth.headers, signal, maxTokens: desiredOutput };
-	const delta = prefix?.messages.length && providerPayloadMatchesCanonicalMessages(prefix, model) ? postPrefixDelta(region, prefix) : undefined;
+	const delta = projection === "warm" && prefix?.messages.length && providerPayloadMatchesCanonicalMessages(prefix, model) ? postPrefixDelta(region, prefix) : undefined;
 	if (prefix && delta !== undefined) {
 		const instruction = buildCacheReuseCollapsePrompt(region, parameters, targetKeepLines, delta, prefix, queryProvenance);
 		const appended: Message = { role: "user", content: [{ type: "text", text: instruction }], timestamp: Date.now() };
@@ -268,7 +270,7 @@ function buildCollapseRequest(
 			...(prefix.tools ? { tools: prefix.tools } : {}),
 			messages: [...prefix.messages, appended],
 		};
-		const onPayload = createProviderPayloadFitHook(model, desiredOutput, fitState, prefix);
+		const onPayload = createProviderPayloadFitHook(model, desiredOutput, fitState, prefix, providerTokenCounter, retryGuard);
 		return { context, cacheReuse: true, request: {
 			...base, ...reasoning,
 			...(prefix.sessionId !== undefined ? { sessionId: prefix.sessionId } : {}),
@@ -277,12 +279,16 @@ function buildCollapseRequest(
 			onPayload,
 		} };
 	}
-	const prompt = buildCollapsePlannerPrompt(region, parameters, targetKeepLines);
+	if (projection === "warm") return undefined;
+	const prompt = projection === "isolated-elided"
+		? buildElidedCollapsePlannerPrompt(region, parameters, targetKeepLines)
+		: buildCollapsePlannerPrompt(region, parameters, targetKeepLines);
+	if (prompt === undefined) return undefined;
 	const context: Context = {
 		systemPrompt: COLLAPSE_PLANNER_SYSTEM_PROMPT,
 		messages: [{ role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() }],
 	};
-	return { context, request: { ...base, ...reasoning, onPayload: createProviderPayloadFitHook(model, desiredOutput, fitState) }, cacheReuse: false };
+	return { context, request: { ...base, ...reasoning, onPayload: createProviderPayloadFitHook(model, desiredOutput, fitState, undefined, providerTokenCounter, retryGuard) }, cacheReuse: false };
 }
 
 function providerErrorMessage(model: Model<Api>, message: string): AssistantMessage {
@@ -294,9 +300,9 @@ function providerErrorMessage(model: Model<Api>, message: string): AssistantMess
 }
 
 /**
- * Issue exactly one whole-region collapse request. Isolated requests require an
- * ordered byte-identical subsequence; warm prefix-reuse requests require the
- * explicit KEEP protocol. Cache telemetry accompanies only proven warm shapes.
+ * Execute the bounded request-local projection sequence. Every projection is
+ * entered at most once; only a changed, strictly smaller provider payload may
+ * follow a provider context rejection.
  */
 export async function planFullCollapse(
 	region: NumberedRegion,
@@ -311,74 +317,118 @@ export async function planFullCollapse(
 ): Promise<FullCollapsePlan> {
 	if (signal?.aborted) throw new Error("Compaction cancelled");
 	const desiredOutput = outputTokenLimit(model, reserveTokens);
-	const fitState: PayloadFitState = { maxTokens: desiredOutput, inputUpperBound: 0, finalPayloadProven: false };
-	const queryProvenance = options.queryProvenance ?? "explicit";
-	let built = buildCollapseRequest(region, parameters, model, auth, signal, thinkingLevel, targetKeepLines, options.prefix, queryProvenance, desiredOutput, fitState);
-	let inputTokens = estimateSemanticInputUpperBound(built.context);
-	const inputBudget = getEffectiveInputBudget(model);
 	const minimumOutput = providerOutputMinimum(model);
-	// This semantic UTF-8 bound is deliberately independent of provider framing.
-	// The adapter-bound onPayload proof below remains authoritative and can still
-	// abort pre-transport if provider shaping or hooks expand the request.
-	if (built.cacheReuse && (inputTokens > inputBudget || inputTokens + minimumOutput > model.contextWindow)) {
-		built = buildCollapseRequest(region, parameters, model, auth, signal, thinkingLevel, targetKeepLines, undefined, queryProvenance, desiredOutput, fitState);
-		inputTokens = estimateSemanticInputUpperBound(built.context);
-	}
-	const remainingContext = Math.floor(model.contextWindow - inputTokens);
-	const configuredOutput = Math.min(desiredOutput, model.maxTokens);
-	const maxTokens = Math.min(configuredOutput, remainingContext);
+	const configuredOutput = Math.max(0, Math.floor(Math.min(desiredOutput, model.maxTokens)));
 	if (configuredOutput < minimumOutput) {
 		const message = "Compaction output budget is below the provider minimum";
-		const diagPath = emit(options, model, Math.max(0, maxTokens), undefined, "", "stream_error", message);
+		const diagPath = emit(options, model, 0, undefined, "", "output_limit", message);
 		throw new RangePlanError(message, 1, "", false, diagPath);
 	}
-	if (inputTokens > inputBudget || maxTokens < minimumOutput) {
-		const message = `Compaction input exhausted the provider budget (${inputTokens} conservative input tokens, ${inputBudget} input cap, ${model.contextWindow} total context)`;
-		const diagPath = emit(options, model, Math.max(0, maxTokens), undefined, "", "input_overflow", message);
-		throw new RangePlanError(message, 1, "", true, diagPath);
-	}
-	built.request.maxTokens = maxTokens;
-	const { context, request, cacheReuse } = built;
-
-	let response: AssistantMessage;
-	try {
-		response = await (await options.streamFn(model, context, request)).result();
-	} catch (error) {
-		if (signal?.aborted) throw new Error("Compaction cancelled");
-		if (error instanceof FinalPayloadFitError && error.failure === "input_headroom" && cacheReuse) {
-			return planFullCollapse(region, parameters, model, auth, signal, thinkingLevel, reserveTokens, targetKeepLines, { ...options, prefix: undefined });
+	const projections: CollapseProjection[] = options.prefix
+		? ["warm", "isolated-full", "isolated-elided"]
+		: ["isolated-full", "isolated-elided"];
+	const rejectedTransportFingerprints = new Set<string>();
+	const rejectedInputFingerprints = new Set<string>();
+	let smallerThanInputBytes: number | undefined;
+	let lastFailure: { message: string; category: DiagnosticFailureCategory; providerOverflow: boolean; response?: AssistantMessage; raw: string; limit: number; attempts: number } | undefined;
+	let enteredProjections = 0;
+	for (let index = 0; index < projections.length; index++) {
+		const projection = projections[index];
+		let attempts = enteredProjections + 1;
+		const fitState: PayloadFitState = { maxTokens: configuredOutput, inputTokens: 0, countConfidence: "unavailable", finalPayloadProven: false };
+		const retryGuard: ProviderPayloadRetryGuard | undefined = rejectedInputFingerprints.size > 0 || rejectedTransportFingerprints.size > 0
+			? {
+				rejectedTransportFingerprints, rejectedInputFingerprints,
+				...(smallerThanInputBytes !== undefined ? { strictlySmallerThanInputBytes: smallerThanInputBytes } : {}),
+			} : undefined;
+		const built = buildCollapseRequest(
+			region, parameters, model, auth, signal, thinkingLevel, targetKeepLines,
+			projection === "warm" ? options.prefix : undefined,
+			options.queryProvenance ?? "explicit", desiredOutput, fitState,
+			options.providerTokenCounter, projection, retryGuard,
+		);
+		if (!built) continue;
+		enteredProjections++;
+		attempts = enteredProjections;
+		built.request.maxTokens = configuredOutput;
+		let response: AssistantMessage;
+		try {
+			response = await (await options.streamFn(model, built.context, built.request)).result();
+		} catch (error) {
+			if (signal?.aborted) throw new Error("Compaction cancelled");
+			const message = error instanceof Error ? error.message : String(error);
+			const localFit = error instanceof FinalPayloadFitError || error instanceof ProviderPayloadRetryError;
+			const providerOverflow = !localFit && isContextOverflow(providerErrorMessage(model, message), getEffectiveInputBudget(model));
+			const category: DiagnosticFailureCategory = error instanceof FinalPayloadFitError && error.failure === "output_budget" ? "output_limit"
+				: providerOverflow || (error instanceof FinalPayloadFitError && error.failure === "input_headroom") ? "input_overflow" : "stream_error";
+			const limit = localFit ? 0 : fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0;
+			lastFailure = { message, category, providerOverflow, raw: "", limit, attempts };
+			const mayAdvance = index < projections.length - 1 && (providerOverflow
+				|| error instanceof ProviderPayloadRetryError
+				|| (error instanceof FinalPayloadFitError && error.failure === "input_headroom"));
+			if (mayAdvance) {
+				if (fitState.payloadFingerprint) rejectedTransportFingerprints.add(fitState.payloadFingerprint);
+				if (fitState.inputFingerprint) rejectedInputFingerprints.add(fitState.inputFingerprint);
+				if (fitState.inputBytes !== undefined) {
+					smallerThanInputBytes = smallerThanInputBytes === undefined
+						? fitState.inputBytes : Math.min(smallerThanInputBytes, fitState.inputBytes);
+				}
+				continue;
+			}
+			return throwPlanFailure(options, model, lastFailure);
 		}
-		const message = error instanceof Error ? error.message : String(error);
-		const fitOverflow = error instanceof FinalPayloadFitError && error.failure === "input_headroom";
-		const providerOverflow = fitOverflow || (!(error instanceof FinalPayloadFitError)
-			&& isContextOverflow(providerErrorMessage(model, message), getEffectiveInputBudget(model)));
-		const requestLimit = fitState.maxTokens || maxTokens;
-		const diagPath = emit(options, model, requestLimit, undefined, "", providerOverflow ? "input_overflow" : "stream_error", message);
-		throw new RangePlanError(message, 1, "", providerOverflow, diagPath);
-	}
 
-	if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
-	const rawText = responseText(response);
-	let text = rawText;
-	if (response.stopReason === "error") {
-		const msg = response.errorMessage || "Compaction provider failed";
-		const providerOverflow = isContextOverflow(response, getEffectiveInputBudget(model));
-		const diagPath = emit(options, model, maxTokens, response, text, providerOverflow ? "input_overflow" : "provider_error", msg);
-		throw new RangePlanError(msg, 1, text.slice(0, 500), providerOverflow, diagPath);
+		if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
+		const rawText = responseText(response);
+		if (response.stopReason === "error") {
+			const message = response.errorMessage || "Compaction provider failed";
+			const providerOverflow = isContextOverflow(response, getEffectiveInputBudget(model));
+			lastFailure = {
+				message, category: providerOverflow ? "input_overflow" : "provider_error", providerOverflow,
+				response, raw: rawText, limit: fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0, attempts,
+			};
+			if (providerOverflow && index < projections.length - 1) {
+				if (fitState.payloadFingerprint) rejectedTransportFingerprints.add(fitState.payloadFingerprint);
+				if (fitState.inputFingerprint) rejectedInputFingerprints.add(fitState.inputFingerprint);
+				if (fitState.inputBytes !== undefined) {
+					smallerThanInputBytes = smallerThanInputBytes === undefined
+						? fitState.inputBytes : Math.min(smallerThanInputBytes, fitState.inputBytes);
+				}
+				continue;
+			}
+			return throwPlanFailure(options, model, lastFailure);
+		}
+
+		const outputLimited = response.stopReason === "length";
+		const text = outputLimited ? recoverCompleteLines(rawText) : rawText;
+		const telemetry = built.cacheReuse && fitState.finalPayloadProven
+			? normalizeCompactionCacheTelemetry(model, response.usage) : undefined;
+		try {
+			const ranges = built.cacheReuse ? requireKeepRecord(region, text) : validateCompactedSubsequence(region, text);
+			return telemetry ? { ranges, telemetry } : { ranges };
+		} catch (error) {
+			if (!(error instanceof SubsequenceValidationError)) throw error;
+			const sentLimit = fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0;
+			const category = outputLimited ? "output_limit" : rejectionCategory(error.reason);
+			const message = outputLimited
+				? sentLimit > 0 ? `Compaction output reached its ${sentLimit}-token limit before a valid result was complete` : "Compaction provider output ended at its limit before a valid result was complete"
+				: error.message;
+			return throwPlanFailure(options, model, { message, category, providerOverflow: false, response, raw: rawText, limit: sentLimit, attempts });
+		}
 	}
-	const outputLimited = response.stopReason === "length";
-	if (outputLimited) text = recoverCompleteLines(text);
-	const telemetry = cacheReuse && fitState.finalPayloadProven ? normalizeCompactionCacheTelemetry(model, response.usage) : undefined;
-	try {
-		const ranges = cacheReuse ? requireKeepRecord(region, text) : validateCompactedSubsequence(region, text);
-		return telemetry ? { ranges, telemetry } : { ranges };
-	} catch (error) {
-		if (!(error instanceof SubsequenceValidationError)) throw error;
-		const category = outputLimited ? "output_limit" : rejectionCategory(error.reason);
-		const message = outputLimited ? `Compaction output reached its ${maxTokens}-token limit before a valid result was complete` : error.message;
-		const diagPath = emit(options, model, fitState.maxTokens || maxTokens, response, rawText, category, message);
-		throw new RangePlanError(message, 1, rawText.slice(0, 500), false, diagPath);
-	}
+	return throwPlanFailure(options, model, lastFailure ?? {
+		message: "Compaction input could not be reduced to a changed provider payload",
+		category: "input_overflow", providerOverflow: false, raw: "", limit: 0, attempts: enteredProjections,
+	});
+}
+
+function throwPlanFailure(
+	options: CollapsePlannerOptions,
+	model: Model<Api>,
+	failure: { message: string; category: DiagnosticFailureCategory; providerOverflow: boolean; response?: AssistantMessage; raw: string; limit: number; attempts: number },
+): never {
+	const diagPath = emit(options, model, Math.max(0, failure.limit), failure.response, failure.raw, failure.category, failure.message);
+	throw new RangePlanError(failure.message, failure.attempts, failure.raw.slice(0, 500), failure.providerOverflow, diagPath);
 }
 
 function emit(

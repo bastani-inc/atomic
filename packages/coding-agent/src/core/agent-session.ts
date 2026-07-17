@@ -127,6 +127,8 @@ export class AgentSession {
 	protected _lastAssistantEntryId: string | undefined = undefined;
 	/** Last context/options actually handed to the provider stream abstraction. */
 	protected _activeRequestPrefix: CompactionRequestPrefix | undefined = undefined;
+	protected _normalRequestGeneration = 0;
+	protected _requestGenerationByAssistant = new WeakMap<object, number>();
 	protected _originatingStreamFn: StreamFn;
 	protected _capturingStreamFn: StreamFn;
 	protected _pendingPostCompactionContinuation: Promise<void> | undefined = undefined;
@@ -174,7 +176,11 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this._originatingStreamFn = this.agent.streamFn;
-		this._capturingStreamFn = (model, context, options) => {
+		this._capturingStreamFn = async (model, context, options) => {
+			const requestGeneration = ++this._normalRequestGeneration;
+			// A new normal request owns a new identity. Its payload/usage must be
+			// captured afresh; no prior request occupancy can leak forward.
+			this._activeRequestPrefix = undefined;
 			let semantic: { systemPrompt?: string; tools?: typeof context.tools; messages: typeof context.messages };
 			let warmEligible = true;
 			try {
@@ -194,8 +200,9 @@ export class AgentSession {
 				const marked = await createNormalRequestCachePayloadHook(payloadModel)?.(finalPayload, payloadModel);
 				if (marked !== undefined) finalPayload = marked;
 				try {
-					this._activeRequestPrefix = deepImmutableJsonClone({
+					const captured = deepImmutableJsonClone({
 						...semantic,
+						requestGeneration,
 						identity: compactionRequestIdentity(model, options),
 						finalPayload,
 						warmEligible,
@@ -203,10 +210,17 @@ export class AgentSession {
 						...(options?.cacheRetention !== undefined ? { cacheRetention: options.cacheRetention } : {}),
 						...(options?.transport !== undefined ? { transport: options.transport } : {}),
 					});
-				} catch { this._activeRequestPrefix = undefined; }
+					if (this._normalRequestGeneration === requestGeneration) this._activeRequestPrefix = captured;
+				} catch {
+					if (this._normalRequestGeneration === requestGeneration) this._activeRequestPrefix = undefined;
+				}
 				return finalPayload;
 			};
-			return this._originatingStreamFn(model, context, { ...options, onPayload: capturePayload });
+			const stream = await this._originatingStreamFn(model, context, { ...options, onPayload: capturePayload });
+			void stream.result().then((message) => {
+				this._requestGenerationByAssistant.set(message, requestGeneration);
+			});
+			return stream;
 		};
 		this.agent.streamFn = this._capturingStreamFn;
 		this.sessionManager = config.sessionManager;

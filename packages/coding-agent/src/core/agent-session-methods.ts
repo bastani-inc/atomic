@@ -351,6 +351,8 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_outputBudgetErrorContinuationAttempts: number;
 	_pendingInterruptDeliveries: number;
 	_activeRequestPrefix: CompactionRequestPrefix | undefined;
+	_normalRequestGeneration: number;
+	_requestGenerationByAssistant: WeakMap<object, number>;
 	_originatingStreamFn: StreamFn;
 	_capturingStreamFn: StreamFn;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;

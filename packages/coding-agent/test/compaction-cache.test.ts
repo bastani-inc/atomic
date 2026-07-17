@@ -23,9 +23,11 @@ import { runFullCollapseCompaction } from "../src/core/compaction/compaction-run
 import { prepareFullCollapseBoundary } from "../src/core/compaction/full-collapse-boundary.js";
 import { convertToLlm } from "../src/core/messages.js";
 import {
-	conservativePayloadTokenUpperBound,
 	createProviderPayloadFitHook,
 	FinalPayloadFitError,
+	providerAwarePayloadTokenEstimate,
+	ProviderPayloadRetryError,
+	type ProviderPayloadTokenCounter,
 } from "../src/core/compaction/provider-payload-fit.js";
 import { SessionManager } from "../src/core/session-manager.js";
 
@@ -75,8 +77,8 @@ function createCapturingStreamFn(responses: { text: string; usage?: Partial<Usag
 		const resp = responses[index % responses.length];
 		index++;
 		const native = model.api === "openai-responses" || model.api === "openai-codex-responses"
-			? nativeOpenAIResponsesPayload(context.messages, options?.sessionId)
-			: nativeAnthropicPayload(context.messages);
+			? nativeOpenAIResponsesPayload(context.messages, options?.sessionId, options?.maxTokens)
+			: nativeAnthropicPayload(context.messages, false, options?.maxTokens);
 		const transportPayload = await options?.onPayload?.(native, model) ?? native;
 		calls.push({ context, options, transportPayload });
 		const stream = createAssistantMessageEventStream();
@@ -244,7 +246,11 @@ describe("compaction cache-reuse request shape", () => {
 		const hugePrefix = prefixFor(manager, { systemPrompt: "z".repeat(100_000) });
 		const constrained = { ...anthropicModel, contextWindow: 20_000, maxTokens: 1_000 };
 		const capture = createCapturingStreamFn([{ text: validCollapseOutput(prep.region), usage: { cacheRead: 999 } }]);
-		const result = await runFullCollapseCompaction(prep, constrained, "key", undefined, undefined, "off", { streamFn: capture.streamFn, prefix: hugePrefix });
+		const providerTokenCounter: ProviderPayloadTokenCounter = async (payload) => ({
+			tokens: ((payload as { messages?: object[] }).messages?.length ?? 0) > 1 ? 20_000 : 1_000,
+			confidence: "exact", source: "test-provider",
+		});
+		const result = await runFullCollapseCompaction(prep, constrained, "key", undefined, undefined, "off", { streamFn: capture.streamFn, prefix: hugePrefix, providerTokenCounter });
 		expect(result.cache).toBeUndefined();
 		expect(capture.calls[0].context.messages).toHaveLength(1);
 		expect(capture.calls[0].options?.maxTokens).toBeGreaterThan(0);
@@ -256,7 +262,12 @@ describe("compaction cache-reuse request shape", () => {
 		const prep = prepareFullCollapseBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 2 })!;
 		const capture = createCapturingStreamFn([{ text: validCollapseOutput(prep.region) }]);
 		const capped = { ...anthropicModel, maxInputTokens: 50 };
-		await expect(runFullCollapseCompaction(prep, capped, "key", undefined, undefined, "off", { streamFn: capture.streamFn })).rejects.toThrow("input exhausted the provider budget");
+		const providerTokenCounter: ProviderPayloadTokenCounter = async () => ({ tokens: 51, confidence: "exact", source: "test-provider" });
+		let error: import("../src/core/compaction/range-planner.js").RangePlanError | undefined;
+		try { await runFullCollapseCompaction(prep, capped, "key", undefined, undefined, "off", { streamFn: capture.streamFn, providerTokenCounter }); }
+		catch (caught) { if (caught instanceof Error && caught.name === "RangePlanError") error = caught as import("../src/core/compaction/range-planner.js").RangePlanError; else throw caught; }
+		expect(error?.message).toContain("input exhausted the provider budget");
+		expect(error?.providerOverflow).toBe(false);
 		expect(capture.calls).toHaveLength(0);
 	});
 
@@ -268,33 +279,31 @@ describe("compaction cache-reuse request shape", () => {
 		expect(capture.calls).toHaveLength(1);
 	});
 
-	it("bounds output at the remaining total-context boundary", async () => {
+	it("bounds output at the independently counted remaining total-context boundary", async () => {
 		const manager = seedSession(40);
 		const prep = prepareFullCollapseBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 2 })!;
-		const probe = createCapturingStreamFn([{ text: validCollapseOutput(prep.region) }]);
-		await runFullCollapseCompaction(prep, anthropicModel, "key", undefined, undefined, "off", { streamFn: probe.streamFn });
-		const context = probe.calls[0].context;
-		const inputTokens = new TextEncoder().encode(JSON.stringify({ systemPrompt: context.systemPrompt ?? "", tools: context.tools ?? [], messages: context.messages })).length + 64;
+		const inputTokens = 10_000;
+		const providerTokenCounter: ProviderPayloadTokenCounter = async () => ({ tokens: inputTokens, confidence: "exact", source: "test-provider" });
 		const justFits = { ...anthropicModel, contextWindow: inputTokens + 500, maxTokens: 1_000 };
 		const fit = createCapturingStreamFn([{ text: validCollapseOutput(prep.region) }]);
-		await runFullCollapseCompaction(prep, justFits, "key", undefined, undefined, "off", { streamFn: fit.streamFn });
-		expect(fit.calls[0].options?.maxTokens).toBe(500);
+		await runFullCollapseCompaction(prep, justFits, "key", undefined, undefined, "off", { streamFn: fit.streamFn, providerTokenCounter });
+		expect((fit.calls[0].transportPayload as { max_tokens: number }).max_tokens).toBe(500);
 
 		const noHeadroom = { ...justFits, contextWindow: inputTokens };
 		const rejected = createCapturingStreamFn([{ text: validCollapseOutput(prep.region) }]);
-		await expect(runFullCollapseCompaction(prep, noHeadroom, "key", undefined, undefined, "off", { streamFn: rejected.streamFn })).rejects.toThrow("input exhausted");
+		await expect(runFullCollapseCompaction(prep, noHeadroom, "key", undefined, undefined, "off", { streamFn: rejected.streamFn, providerTokenCounter })).rejects.toThrow("input exhausted");
 		expect(rejected.calls).toHaveLength(0);
 	});
 });
 
-function nativeAnthropicPayload(messages: Context["messages"], marked = false): Record<string, unknown> {
+function nativeAnthropicPayload(messages: Context["messages"], marked = false, maxTokens?: number): Record<string, unknown> {
 	return { messages: messages.map((message, index) => {
 		const text = Array.isArray(message.content) && message.content.length === 1 && message.content[0].type === "text" ? message.content[0].text : "";
 		return { role: message.role, content: [{ type: "text", text,
 			...(marked && index === messages.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) }] };
-	}) };
+	}), ...(maxTokens !== undefined ? { max_tokens: maxTokens } : {}) };
 }
-function nativeOpenAIResponsesPayload(messages: Context["messages"], sessionId?: string): Record<string, unknown> {
+function nativeOpenAIResponsesPayload(messages: Context["messages"], sessionId?: string, maxTokens?: number): Record<string, unknown> {
 	return {
 		input: messages.map((message) => ({
 			role: message.role,
@@ -304,6 +313,7 @@ function nativeOpenAIResponsesPayload(messages: Context["messages"], sessionId?:
 			}],
 		})),
 		...(sessionId !== undefined ? { prompt_cache_key: sessionId } : {}),
+		...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
 	};
 }
 function anthropicPayload(): Record<string, unknown> {
@@ -425,7 +435,7 @@ describe("final provider payload fit and identity", () => {
 		const candidate = anthropicPayload();
 		(candidate.messages as unknown[]).push({ role: "user", content: [{ type: "text", text: "fresh-suffix" }] });
 		const state = { maxTokens: 0, inputUpperBound: 0, finalPayloadProven: false };
-		const result = await createProviderPayloadFitHook(anthropicModel, 100, state, prefix)(candidate, anthropicModel) as Record<string, unknown>;
+		const result = await createProviderPayloadFitHook(anthropicModel, 100, state, prefix)(candidate) as Record<string, unknown>;
 		const messages = result.messages as unknown[];
 		expect(messages.slice(0, (prior.messages as unknown[]).length)).toEqual(prior.messages);
 		expect(JSON.stringify(messages).split("fresh-suffix")).toHaveLength(2);
@@ -441,32 +451,50 @@ describe("final provider payload fit and identity", () => {
 		]) expect(compactionRequestIdentityMatches(identity, changed)).toBe(false);
 	});
 
-	it("applies the OpenAI Responses 16-token minimum at the exact final-payload boundary", async () => {
-		const payload = { input: [{ role: "user", content: [{ type: "input_text", text: "dense 🔥漢字" }] }], max_output_tokens: 100 };
-		const bound = conservativePayloadTokenUpperBound(payload);
-		const base: Model<Api> = { ...anthropicModel, api: "openai-responses", provider: "openai", id: "gpt-5.6", contextWindow: bound + 16, maxInputTokens: bound, maxTokens: 100 };
-		const state = { maxTokens: 0, inputUpperBound: 0, finalPayloadProven: false };
-		await expect(createProviderPayloadFitHook(base, 100, state)(structuredClone(payload), base)).resolves.toBeDefined();
-		expect(state.maxTokens).toBe(16);
-		const short = { ...base, contextWindow: bound + 15 };
-		await expect(createProviderPayloadFitHook(short, 100, { ...state })(structuredClone(payload), short)).rejects.toBeInstanceOf(FinalPayloadFitError);
-		const inputShort = { ...base, maxInputTokens: bound - 1 };
-		await expect(createProviderPayloadFitHook(inputShort, 100, { ...state })(structuredClone(payload), inputShort)).rejects.toBeInstanceOf(FinalPayloadFitError);
-
-		const cases = [
-			{ label: "remaining context -1", model: { ...base, contextWindow: bound + 15 }, desired: 100, failure: "input_headroom" },
-			{ label: "max input -1", model: { ...base, maxInputTokens: bound - 1 }, desired: 100, failure: "input_headroom" },
-			{ label: "reserve-derived output -1", model: base, desired: 15, failure: "output_budget" },
-			{ label: "model max -1", model: { ...base, maxTokens: 15 }, desired: 100, failure: "output_budget" },
-		] as const;
-		for (const testCase of cases) {
+	it("uses injected provider counts for exact input/output boundaries instead of serialized bytes", async () => {
+		const payload = { input: [{ role: "user", content: [{ type: "input_text", text: "🔥漢字".repeat(150_000) }] }], max_output_tokens: 100 };
+		expect(JSON.stringify(payload).length).toBeGreaterThan(372_000);
+		const exactCount = 81_000;
+		const counter: ProviderPayloadTokenCounter = async () => ({ tokens: exactCount, confidence: "exact", source: "test-provider" });
+		const base: Model<Api> = { ...anthropicModel, api: "openai-responses", provider: "openai", id: "gpt-5.6", contextWindow: exactCount + 16, maxInputTokens: exactCount, maxTokens: 100 };
+		const state = { maxTokens: 0, inputTokens: 0, countConfidence: "unavailable" as const, finalPayloadProven: false };
+		await expect(createProviderPayloadFitHook(base, 100, state, undefined, counter)(structuredClone(payload))).resolves.toBeDefined();
+		expect(state).toMatchObject({ maxTokens: 16, inputTokens: exactCount, countConfidence: "exact", finalPayloadProven: true });
+		for (const testCase of [
+			{ label: "remaining context 15", model: { ...base, contextWindow: exactCount + 15 }, desired: 100, failure: "input_headroom" },
+			{ label: "max input -1", model: { ...base, maxInputTokens: exactCount - 1 }, desired: 100, failure: "input_headroom" },
+			{ label: "reserve 15", model: base, desired: 15, failure: "output_budget" },
+			{ label: "model max 15", model: { ...base, maxTokens: 15 }, desired: 100, failure: "output_budget" },
+		] as const) {
 			let caught: FinalPayloadFitError | undefined;
-			try { await createProviderPayloadFitHook(testCase.model, testCase.desired, { ...state })(structuredClone(payload), testCase.model); }
+			try { await createProviderPayloadFitHook(testCase.model, testCase.desired, { ...state }, undefined, counter)(structuredClone(payload)); }
 			catch (error) { if (error instanceof FinalPayloadFitError) caught = error; else throw error; }
 			expect(caught?.failure, testCase.label).toBe(testCase.failure);
+			expect(caught?.requestMaxTokens, testCase.label).toBeGreaterThanOrEqual(0);
 		}
-		for (const desired of [16, 17]) {
-			await expect(createProviderPayloadFitHook(base, desired, { ...state })(structuredClone(payload), base)).resolves.toBeDefined();
-		}
+	});
+
+	it("uses an explicit uncertain provider-aware heuristic without bytes-as-token hard rejection", async () => {
+		const cyclic: Record<string, object | string> = { text: "é🔥漢字".repeat(100_000) };
+		cyclic.self = cyclic;
+		const estimate = await providerAwarePayloadTokenEstimate(cyclic, anthropicModel);
+		expect(estimate.confidence).toBe("unavailable");
+		const state = { maxTokens: 0, inputTokens: 0, countConfidence: "unavailable" as const, finalPayloadProven: false };
+		await expect(createProviderPayloadFitHook({ ...anthropicModel, contextWindow: 100 }, 16, state)(cyclic)).resolves.toBe(cyclic);
+		expect(state.finalPayloadProven).toBe(true);
+		expect(state.maxTokens).toBe(16);
+	});
+
+	it("suppresses an identical rejected final provider payload before transport", async () => {
+		const payload = { messages: [{ role: "user", content: [{ type: "text", text: "same" }] }], max_tokens: 16 };
+		const firstState = { maxTokens: 0, finalPayloadProven: false };
+		await createProviderPayloadFitHook(anthropicModel, 16, firstState)(structuredClone(payload));
+		const guard = {
+			rejectedTransportFingerprints: new Set([firstState.payloadFingerprint!]),
+			rejectedInputFingerprints: new Set([firstState.inputFingerprint!]),
+			strictlySmallerThanInputBytes: firstState.inputBytes,
+		};
+		await expect(createProviderPayloadFitHook(anthropicModel, 16, { maxTokens: 0, finalPayloadProven: false }, undefined, undefined, guard)(structuredClone(payload)))
+			.rejects.toBeInstanceOf(ProviderPayloadRetryError);
 	});
 });

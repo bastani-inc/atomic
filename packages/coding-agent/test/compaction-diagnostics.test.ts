@@ -160,6 +160,7 @@ describe("compaction diagnostics: metadata capture", () => {
 		expect(payload.providerError).toBeUndefined();
 		expect(payload.usage).toBeUndefined();
 		expect(payload.rawResponse).toBe("");
+		expect(buildDiagnosticPayload({ ...ctx, requestMaxTokens: -34 }).requestMaxTokens).toBe(0);
 	});
 
 	it("does not include API keys, headers, prompt, or transcript", () => {

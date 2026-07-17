@@ -1,4 +1,6 @@
 # PR #1844 real interactive E2E and cache benchmark
+> **LOOP-1 HISTORICAL EVIDENCE ONLY.** This bundle is tied to the pre-rebase LOOP-1 lineage at `65e9b233…`; it does not validate the current/rebased LOOP-2 tree. All measured values below are preserved exactly as historical observations.
+
 
 Status: **benchmark complete; evidence approved**. Product, tests, and docs were not edited by this benchmark worker. Nothing was committed, pushed, or posted to the PR. The recorded final evidence approval is `APPROVED — final tmux/cache evidence review`.
 

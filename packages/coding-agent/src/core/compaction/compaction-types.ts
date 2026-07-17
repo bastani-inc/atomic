@@ -48,6 +48,8 @@ export function compactionRequestIdentityMatches(
  * after this prefix (after the cache breakpoint), never before it.
  */
 export interface CompactionRequestPrefix {
+	/** Monotonic identity of the normal provider request that produced this snapshot. */
+	readonly requestGeneration?: number;
 	readonly identity: CompactionRequestIdentity;
 	readonly systemPrompt?: string;
 	readonly tools?: Tool[];
@@ -60,6 +62,8 @@ export interface CompactionRequestPrefix {
 	readonly transport?: Transport;
 	/** False when host semantic inputs were captured for diagnostics but cannot prove warm alignment. */
 	readonly warmEligible?: boolean;
+	/** Provider-reported prompt occupancy for the matching captured normal request, including cache partitions. */
+	readonly providerInputTokens?: number;
 }
 
 export const VERBATIM_COMPACTION_PROMPT_VERSION = 4 as const;

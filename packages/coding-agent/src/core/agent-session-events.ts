@@ -7,6 +7,7 @@ import type { AgentSessionInternalSurface as AgentSession } from "./agent-sessio
 import { customMessageExcludesContext, isSingleGenericAbortTextContent, replacementAbortContent, type AgentSessionEvent, type AgentSessionEventListener } from "./agent-session-types.ts";
 import type { MessageEndEvent, MessageStartEvent, MessageUpdateEvent, ToolExecutionEndEvent, ToolExecutionStartEvent, ToolExecutionUpdateEvent, TurnEndEvent, TurnStartEvent } from "./extensions/index.ts";
 import { normalizeMessageContent } from "./messages.ts";
+import { bindAssistantUsageToRequest } from "./agent-session-request-usage.ts";
 
 export function _emit(this: AgentSession, event: AgentSessionEvent): void {
 	for (const l of this._eventListeners) {
@@ -109,6 +110,14 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 
 	// Emit to extensions first
 	await this._emitExtensionEvent(event);
+
+	if (event.type === "message_end" && event.message.role === "assistant") {
+		const generation = this._requestGenerationByAssistant.get(event.message);
+		this._requestGenerationByAssistant.delete(event.message);
+		this._activeRequestPrefix = bindAssistantUsageToRequest(
+			this._activeRequestPrefix, generation, event.message, this.sessionManager.getSessionId(),
+		);
+	}
 
 	// Notify all listeners
 	this._emit(event);
@@ -337,6 +346,9 @@ export async function _emitExtensionEvent(this: AgentSession, event: AgentEvent)
 		};
 		const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
 		if (replacement) {
+			// Extension-replaced/synthetic assistants are not provider completions for
+			// request-bound usage, even when they copy provider metadata.
+			this._requestGenerationByAssistant.delete(event.message);
 			this._replaceMessageInPlace(event.message, normalizeMessageContent(replacement));
 		}
 	} else if (event.type === "tool_execution_start") {
