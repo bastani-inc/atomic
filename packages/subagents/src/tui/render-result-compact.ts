@@ -1,4 +1,4 @@
-import { keyHint } from "@bastani/atomic";
+import { keyHintIfBound } from "@bastani/atomic";
 import { Container, Text, type Component } from "@earendil-works/pi-tui";
 import type { AgentProgress, AsyncJobStep, Details } from "../shared/types.ts";
 import { shortenPath } from "../shared/formatters.ts";
@@ -46,7 +46,8 @@ export function renderSingleCompact(d: Details, r: Details["results"][number], t
 		c.addChild(new Text(truncLine(theme.fg("dim", `  ⎿  ${activity}`), width), 0, 0));
 		const liveStatus = buildLiveStatusLine(r.progress, progressSnapshotNow);
 		if (liveStatus && liveStatus !== activity) c.addChild(new Text(truncLine(theme.fg("dim", `     ${liveStatus}`), width), 0, 0));
-		c.addChild(new Text(truncLine(theme.fg("accent", `  Press ${keyHint("app.tools.expand", "for live detail")}`), width), 0, 0));
+		const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
+		if (expandHint) c.addChild(new Text(truncLine(theme.fg("accent", `  Press ${expandHint}`), width), 0, 0));
 		if (r.artifactPaths) c.addChild(new Text(truncLine(theme.fg("dim", `  output: ${shortenPath(r.artifactPaths.outputPath)}`), width), 0, 0));
 		return c;
 	}
@@ -142,7 +143,8 @@ export function renderMultiCompact(d: Details, theme: Theme, now?: number, pulse
 		if (rRunning && rProg && "status" in rProg) {
 			const activity = compactCurrentActivity(rProg, now);
 			c.addChild(new Text(truncLine(theme.fg("dim", `    ⎿  ${activity}`), width), 0, 0));
-			c.addChild(new Text(truncLine(theme.fg("accent", `    Press ${keyHint("app.tools.expand", "for live detail")}`), width), 0, 0));
+			const expandHint = keyHintIfBound("app.tools.expand", "for live detail");
+			if (expandHint) c.addChild(new Text(truncLine(theme.fg("accent", `    Press ${expandHint}`), width), 0, 0));
 		} else if (!rPending && (r.exitCode !== 0 || r.interrupted || r.detached || hasEmptyTextOutputWithoutOutputTarget(r.task, output))) {
 			c.addChild(new Text(truncLine(theme.fg(r.exitCode !== 0 ? "error" : "dim", `    ⎿  ${resultStatusLine(r, output)}`), width), 0, 0));
 		}

@@ -11,20 +11,24 @@
  * - Extension UI: Extension UI requests are emitted, client responds with extension_ui_response
  */
 
+import { setKeybindings } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { AgentSession } from "../../core/agent-session.ts";
+import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
-import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES } from "../interactive-engine/protocol.ts";
+import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
+import { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 
 // Re-export types for consumers
 export type {
@@ -43,19 +47,34 @@ export type {
 export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
 	takeOverStdout();
 
+	const interactiveEngineChild = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1";
+	const keybindings = interactiveEngineChild ? KeybindingsManager.create(runtimeHost.services.agentDir) : undefined;
+	if (keybindings) setKeybindings(keybindings);
+
 	const outputBuffer = new RpcOutputBuffer();
 	const output = outputBuffer.output;
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const signalCleanupHandlers: Array<() => void> = [];
 	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
-	const customUi = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
-		? new EngineCustomUiService(writeRawStdout)
+	const customUi = keybindings
+		? new EngineCustomUiService(writeRawStdout, keybindings)
 		: undefined;
-	const renderService = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+	const renderService = interactiveEngineChild
 		? new EngineRenderService(writeRawStdout)
 		: undefined;
-	const sessionPicker = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+	const sessionPicker = interactiveEngineChild
 		? new EngineSessionPickerService(writeRawStdout)
+		: undefined;
+	const reloadCoordinator = keybindings
+		? new KeybindingsReloadCoordinator<AgentSession>(
+				keybindings,
+				(state) => writeRawStdout(serializeInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state })),
+				(session, effectiveBindings) => [...session.extensionRunner.getShortcuts(effectiveBindings)]
+					.map(([key, shortcut]) => ({
+						key,
+						...(shortcut.description === undefined ? {} : { description: shortcut.description }),
+					})),
+			)
 		: undefined;
 
 	let shutdownRequested = false;
@@ -74,6 +93,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		customUi,
 		renderService,
 		sessionPicker,
+		reloadCoordinator,
 	});
 
 	runtimeHost.setRebindSession(async () => {
@@ -85,6 +105,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		getSession: () => sessionBinding.currentSession,
 		rebindSession: () => sessionBinding.rebindSession(),
 		output,
+		keybindings,
+		reloadCoordinator,
 	});
 
 	async function shutdown(exitCode = 0, signal?: NodeJS.Signals): Promise<never> {

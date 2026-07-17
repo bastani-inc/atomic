@@ -2168,22 +2168,24 @@ If a slot intentionally has no visible content, return an empty `Component` such
 
 #### Keybinding Hints
 
-Use `keyHint()` to display keybinding hints that respect the active keybinding configuration:
+Use `keyHintIfBound()` when an affordance should disappear if the action has no effective keybinding. Add surrounding punctuation only when the helper returns text:
 
 ```typescript
-import { keyHint } from "@bastani/atomic";
+import { keyHintIfBound } from "@bastani/atomic";
 
 renderResult(result, { expanded }, theme, context) {
   let text = theme.fg("success", "✓ Done");
-  if (!expanded) {
-    text += ` (${keyHint("app.tools.expand", "to expand")})`;
+  const expandHint = keyHintIfBound("app.tools.expand", "to expand");
+  if (!expanded && expandHint) {
+    text += ` (${expandHint})`;
   }
   return new Text(text, 0, 0);
 }
 ```
 
 Available functions:
-- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`
+- `keyHint(keybinding, description)` - Formats a configured keybinding id such as `"app.tools.expand"` or `"tui.select.confirm"`; use it when the binding is required by the surrounding UI
+- `keyHintIfBound(keybinding, description)` - Formats the hint only when the action has an effective key list; use it for optional affordances and conditionally compose parentheses or separators
 - `keyText(keybinding)` - Returns the raw configured key text for a keybinding id
 - `rawKeyHint(key, description)` - Format a raw key string
 

@@ -159,6 +159,12 @@ export interface ExtensionBindings {
 	onError?: ExtensionErrorListener;
 }
 
+export interface AgentSessionReloadOptions {
+	reason?: "startup" | "reload";
+	/** Runs after resources and the extension runtime are rebuilt, immediately before session_start. */
+	beforeSessionStart?: () => void | Promise<void>;
+}
+
 export interface PromptOptions {
 	expandPromptTemplates?: boolean;
 	images?: ImageContent[];

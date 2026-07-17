@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed collapsed MCP results showing a malformed or unavailable expand shortcut when `app.tools.expand` is remapped or unbound.
+
 ## [0.9.10-alpha.1] - 2026-07-15
 
 ### Changed

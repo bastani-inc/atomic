@@ -62,7 +62,7 @@ export { ExtensionInputComponent } from "./components/extension-input.ts";
 export { ExtensionSelectorComponent } from "./components/extension-selector.ts";
 export { FastModeSelectorComponent } from "./components/fast-mode-selector.ts";
 export { FooterComponent, UsageMeterComponent } from "./components/footer.ts";
-export { formatKeyText, keyDisplayText, keyText } from "./components/keybinding-hints.ts";
+export { formatKeyText, keyDisplayText, keyHintIfBound, keyText } from "./components/keybinding-hints.ts";
 export { LoginDialogComponent } from "./components/login-dialog.ts";
 export { ModelSelectorComponent } from "./components/model-selector.ts";
 export { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.ts";

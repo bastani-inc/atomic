@@ -336,7 +336,7 @@ Prefer `.mcp.json` for project-local shared MCP config. Use `.pi/mcp.json` only 
 | Connect | `mcp({ connect: "server-name" })` |
 | UI messages | `mcp({ action: "ui-messages" })` |
 
-MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `Ctrl+o Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
+MCP proxy and direct-tool results render compactly by default: long text shows the first three lines plus a `ctrl+o Expand` hint, while the full result remains available when expanded and is still returned unchanged to the model.
 
 Search includes both MCP tools and Pi tools (from extensions). Pi tools appear first with `[pi tool]` prefix. Space-separated words are OR'd.
 

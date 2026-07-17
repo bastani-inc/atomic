@@ -1,9 +1,10 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { AssistantMessage } from "@earendil-works/pi-ai/compat";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
-import { Text } from "@earendil-works/pi-tui";
+import { getKeybindings, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "../../../packages/coding-agent/src/core/extensions/types.js";
+import { formatKeyText, keyText } from "../../../packages/coding-agent/src/modes/interactive/components/keybinding-hints.js";
 import { trackDetachedChildPid } from "../../../packages/coding-agent/src/utils/shell.js";
 if (process.env.ATOMIC_BLOCKING_EXTENSION_INIT === "1") {
 	const deadline = performance.now() + 1_000;
@@ -73,7 +74,40 @@ export default function blockingToolExtension(api: ExtensionAPI): void {
 		return new Text("custom renderer parity", 0, 0);
 	});
 
-	api.on("session_start", async (_event, ctx) => {
+	if (process.env.ATOMIC_KEYBINDINGS_RELOAD_COMMAND === "1") {
+		api.registerCommand("reload-keybindings-fixture", {
+			description: "Reload keybindings through extension command context",
+			handler: async (_args, ctx) => ctx.reload(),
+		});
+	}
+
+	const shortcutConfigFile = process.env.ATOMIC_KEYBINDINGS_SHORTCUT_CONFIG_FILE;
+	if (shortcutConfigFile && existsSync(shortcutConfigFile)) {
+		const shortcuts = readFileSync(shortcutConfigFile, "utf8").split(/[\s,]+/).filter(Boolean);
+		for (const shortcut of shortcuts) {
+			api.registerShortcut(shortcut as Parameters<ExtensionAPI["registerShortcut"]>[0], {
+				description: "reloadable fixture shortcut",
+				handler: () => {
+					const logFile = process.env.ATOMIC_KEYBINDINGS_SHORTCUT_LOG_FILE;
+					if (logFile) appendFileSync(logFile, `${shortcut}:${process.pid}\n`);
+				},
+			});
+		}
+	}
+
+	api.on("session_start", async (event, ctx) => {
+		const sessionStartFile = process.env.ATOMIC_KEYBINDINGS_SESSION_START_FILE;
+		if (sessionStartFile) appendFileSync(sessionStartFile, `${event.reason}:${keyText("app.tools.expand")}\n`);
+		if (process.env.ATOMIC_KEYBINDINGS_CUSTOM_UI === "1") {
+			void ctx.ui.custom<void>((_tui, _theme, keybindings, done) => ({
+				render: () => {
+					const injected = formatKeyText(keybindings.getKeys("app.tools.expand").join("/"));
+					return [`same:${getKeybindings() === keybindings}|injected:${injected}|global:${keyText("app.tools.expand")}`];
+				},
+				handleInput: (data) => { if (data === "\r") done(); },
+				invalidate: () => {},
+			}));
+		}
 		if (process.env.ATOMIC_RENDERER_FIXTURE === "1") {
 			ctx.ui.setWidget("fixture-widget", () => {
 				const pidFile = process.env.ATOMIC_WIDGET_PID_FILE;

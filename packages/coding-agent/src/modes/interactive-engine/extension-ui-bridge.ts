@@ -1,7 +1,9 @@
 import { matchesKey, type KeyId } from "@earendil-works/pi-tui";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
+import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import { RemoteComponentController } from "./remote-component.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
@@ -52,28 +54,73 @@ async function handleRequest(
 	}
 }
 
+interface EngineMessageSource {
+	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void;
+	onKeybindingState?(listener: (state: EngineKeybindingState) => void): () => void;
+}
+
+export function attachInteractiveEngineKeybindingSync(
+	runtime: EngineMessageSource,
+	keybindings: KeybindingsManager,
+	onState?: (state: EngineKeybindingState) => void,
+): () => void {
+	const applyState = (state: EngineKeybindingState): void => {
+		keybindings.setUserBindings(state.userBindings);
+		onState?.(state);
+	};
+	if (runtime.onKeybindingState) return runtime.onKeybindingState(applyState);
+	return runtime.onEngineMessage((message) => {
+		if (message.type === "engine_keybindings_reloaded") applyState(message.state);
+	});
+}
+
 export function attachInteractiveEngineHost(
 	runtime: AgentSessionRuntime,
 	ui: ExtensionUIContext,
 	onDiagnostic: (diagnostic: ActivityWatchdogDiagnostic) => void,
-	setShortcutHandler?: (handler: (data: string) => boolean) => void,
-): void {
-	if (!(runtime instanceof IsolatedInteractiveRuntime)) return;
-	runtime.onDiagnostic(onDiagnostic);
-	runtime.setExtensionUIHandler((request) => handleRequest(ui, request));
-	new RemoteComponentController(runtime, ui);
-	new SessionPickerHostController(runtime, ui);
-	if (setShortcutHandler) {
-		void runtime.getRemoteShortcuts().then(({ shortcuts }) => {
-			setShortcutHandler((data) => {
-				const shortcut = shortcuts.find(({ key }) => matchesKey(data, key as KeyId));
-				if (!shortcut) return false;
-				void runtime.invokeRemoteShortcut(shortcut.key).catch((error: Error) =>
-					onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }));
-				return true;
-			});
+	setShortcutHandler?: (handler: (data: string) => boolean) => void | (() => void),
+	keybindings?: KeybindingsManager,
+): () => void {
+	if (!(runtime instanceof IsolatedInteractiveRuntime)) return () => {};
+	const disposeDiagnostic = runtime.onDiagnostic(onDiagnostic);
+	const disposeExtensionUi = runtime.setExtensionUIHandler((request) => handleRequest(ui, request));
+	let shortcuts: EngineExtensionShortcut[] = [];
+	const dispatchShortcut = (data: string): boolean => {
+		const shortcut = shortcuts.find(({ key }) => matchesKey(data, key as KeyId));
+		if (!shortcut) return false;
+		void runtime.invokeRemoteShortcut(shortcut.key).catch((error: Error) =>
+			onDiagnostic({ activity: undefined, elapsedMs: 0, level: "unresponsive", message: error.message }));
+		return true;
+	};
+	let disposeShortcutHandler: (() => void) | undefined;
+	const installShortcutHandler = (): void => {
+		disposeShortcutHandler?.();
+		const dispose = setShortcutHandler?.(dispatchShortcut);
+		disposeShortcutHandler = typeof dispose === "function" ? dispose : undefined;
+	};
+	const applyState = (state: EngineKeybindingState): void => {
+		shortcuts = [...state.shortcuts];
+		installShortcutHandler();
+	};
+	installShortcutHandler();
+	const disposeKeybindings = keybindings
+		? attachInteractiveEngineKeybindingSync(runtime, keybindings, applyState)
+		: runtime.onEngineMessage((message) => {
+			if (message.type === "engine_keybindings_reloaded") applyState(message.state);
 		});
-	}
+	const remoteComponents = new RemoteComponentController(runtime, ui);
+	const sessionPicker = new SessionPickerHostController(runtime, ui);
+	let disposed = false;
+	return () => {
+		if (disposed) return;
+		disposed = true;
+		disposeShortcutHandler?.();
+		disposeKeybindings();
+		remoteComponents.dispose();
+		sessionPicker.dispose();
+		disposeExtensionUi();
+		disposeDiagnostic();
+	};
 }
 
 export async function waitForInteractiveEngineBound(runtime: AgentSessionRuntime): Promise<void> {

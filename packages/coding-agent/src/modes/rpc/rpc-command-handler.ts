@@ -10,6 +10,7 @@ import {
 	parseRpcContextWindow,
 	type RpcOutput,
 } from "./rpc-responses.ts";
+import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
@@ -19,6 +20,8 @@ interface RpcCommandHandlerOptions {
 	getSession: () => AgentSession;
 	rebindSession: () => Promise<void>;
 	output: RpcOutput;
+	keybindings?: KeybindingsManager;
+	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 }
 
 export function createRpcCommandHandler({
@@ -26,7 +29,16 @@ export function createRpcCommandHandler({
 	getSession,
 	rebindSession,
 	output,
+	keybindings,
+	reloadCoordinator,
 }: RpcCommandHandlerOptions): RpcCommandHandler {
+	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
+	const getShortcutBindings = () => {
+		if (keybindings) return keybindings.getEffectiveConfig();
+		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
+		else fallbackShortcutKeybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
+		return fallbackShortcutKeybindings.getEffectiveConfig();
+	};
 	return async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 		const session = getSession();
@@ -307,12 +319,14 @@ export function createRpcCommandHandler({
 			}
 
 			case "reload": {
-				await session.reload();
+				if (reloadCoordinator) await reloadCoordinator.reload(session);
+				else await session.reload();
 				return createRpcSuccessResponse(id, "reload");
 			}
 
 			case "get_shortcuts": {
-				const shortcuts = session.extensionRunner.getShortcuts(KeybindingsManager.create().getEffectiveConfig());
+				const effectiveBindings = getShortcutBindings();
+				const shortcuts = session.extensionRunner.getShortcuts(effectiveBindings);
 				return createRpcSuccessResponse(id, "get_shortcuts", {
 					shortcuts: [...shortcuts].map(([key, shortcut]) => ({ key, description: shortcut.description })),
 				});
@@ -320,7 +334,7 @@ export function createRpcCommandHandler({
 
 			case "invoke_shortcut": {
 				const shortcut = session.extensionRunner
-					.getShortcuts(KeybindingsManager.create().getEffectiveConfig())
+					.getShortcuts(getShortcutBindings())
 					.get(command.key as KeyId);
 				if (!shortcut) return createRpcErrorResponse(id, "invoke_shortcut", `Shortcut not found: ${command.key}`);
 				await runCallback(

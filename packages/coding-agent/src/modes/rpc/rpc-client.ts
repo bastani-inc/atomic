@@ -5,7 +5,7 @@ import { BoundedWriter } from "./bounded-writer.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
-import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type EngineKeybindingState, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
 import { sleep } from "../../utils/sleep.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
@@ -89,6 +89,7 @@ export class RpcClient extends RpcClientApi {
 	private extensionUIListeners: Array<(request: RpcExtensionUIRequest) => void> = [];
 	private pendingExtensionUIRequests: RpcExtensionUIRequest[] = [];
 	private engineMessageListeners: Array<(message: InteractiveEngineMessage) => void> = [];
+	private latestEngineKeybindingState: EngineKeybindingState | undefined;
 	private pendingEngineMessages: InteractiveEngineMessage[] = [];
 	private pendingEngineMessageBytes = 0;
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
@@ -214,6 +215,7 @@ export class RpcClient extends RpcClientApi {
 	async stop(): Promise<void> {
 		const child = this.process;
 		if (!child) return;
+		this.invalidateEngineShortcuts();
 		const terminateTree = this.engineMonitor !== undefined;
 		this.stopReadingStdout?.();
 		this.engineMonitor?.stop();
@@ -261,6 +263,18 @@ export class RpcClient extends RpcClientApi {
 		this.pendingEngineMessageBytes = 0;
 		return () => {
 			const index = this.engineMessageListeners.indexOf(listener);
+			if (index !== -1) this.engineMessageListeners.splice(index, 1);
+		};
+	}
+
+	onInteractiveEngineKeybindingState(listener: (state: EngineKeybindingState) => void): () => void {
+		const messageListener = (message: InteractiveEngineMessage): void => {
+			if (message.type === "engine_keybindings_reloaded") listener(message.state);
+		};
+		this.engineMessageListeners.push(messageListener);
+		if (this.latestEngineKeybindingState) listener(this.latestEngineKeybindingState);
+		return () => {
+			const index = this.engineMessageListeners.indexOf(messageListener);
 			if (index !== -1) this.engineMessageListeners.splice(index, 1);
 		};
 	}
@@ -348,8 +362,15 @@ export class RpcClient extends RpcClientApi {
 	private createProcessExitError(code: number | null, signal: NodeJS.Signals | null): Error {
 		return new Error(`Agent process exited (code=${code} signal=${signal}). Stderr: ${this.stderr}`);
 	}
+	private invalidateEngineShortcuts(): void {
+		if (!this.latestEngineKeybindingState || this.latestEngineKeybindingState.shortcuts.length === 0) return;
+		const state: EngineKeybindingState = { ...this.latestEngineKeybindingState, shortcuts: [] };
+		this.latestEngineKeybindingState = state;
+		this.emitInteractiveEngineMessage({ type: "engine_keybindings_reloaded", state });
+	}
 	private observeInteractiveEngineMessage(message: InteractiveEngineMessage): void {
 		if (message.type === "engine_ready") this.enginePid = message.pid;
+		if (message.type === "engine_keybindings_reloaded") this.latestEngineKeybindingState = message.state;
 		if (message.type === "engine_activity_started") this.activeActivityIds.add(message.activity.id);
 		else if (message.type === "engine_activity_finished") this.activeActivityIds.delete(message.activityId);
 		this.options.interactiveEngine?.onActivityChange?.(this.activeActivityIds.size > 0);

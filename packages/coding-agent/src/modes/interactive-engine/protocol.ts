@@ -1,5 +1,6 @@
 import type { CallbackActivity, CallbackActivityKind } from "../../core/callback-activity.ts";
 import type { HostSessionPickerRow } from "../../core/extensions/ui-types.ts";
+import type { KeyId } from "../../core/keybindings.ts";
 
 export const INTERACTIVE_ENGINE_PROTOCOL_VERSION = 1;
 export const INTERACTIVE_ENGINE_MAX_FRAME_BYTES = 1_048_576;
@@ -34,9 +35,23 @@ export type EngineTerminalControl =
 	| { kind: "mouse-scroll-tracking"; enabled: boolean }
 	| { kind: "autowrap"; enabled: boolean };
 
+export interface EngineExtensionShortcut {
+	key: string;
+	description?: string;
+}
+
+export type SerializableKeybindingsConfig = Record<string, KeyId | KeyId[]>;
+
+export interface EngineKeybindingState {
+	userBindings: SerializableKeybindingsConfig;
+	effectiveBindings: SerializableKeybindingsConfig;
+	shortcuts: EngineExtensionShortcut[];
+}
+
 export type InteractiveEngineMessage =
 	| { type: "engine_ready"; protocolVersion: typeof INTERACTIVE_ENGINE_PROTOCOL_VERSION; pid: number }
 	| { type: "engine_bound" }
+	| { type: "engine_keybindings_reloaded"; state: EngineKeybindingState }
 	| { type: "engine_heartbeat"; at: number }
 	| { type: "engine_activity_started"; activity: CallbackActivity }
 	| { type: "engine_activity_finished"; activityId: string }
@@ -124,6 +139,32 @@ function parseSessionPickerRows(value: JsonValue | undefined): HostSessionPicker
 	return rows;
 }
 
+function parseKeybindingsConfig(value: JsonValue | undefined): SerializableKeybindingsConfig | undefined {
+	if (value === undefined || !isJsonObject(value)) return undefined;
+	const config: SerializableKeybindingsConfig = {};
+	for (const [key, binding] of Object.entries(value)) {
+		if (typeof binding === "string") config[key] = binding as SerializableKeybindingsConfig[string];
+		else if (Array.isArray(binding) && binding.every((entry) => typeof entry === "string")) {
+			config[key] = binding as SerializableKeybindingsConfig[string];
+		} else return undefined;
+	}
+	return config;
+}
+
+function parseKeybindingState(value: JsonValue | undefined): EngineKeybindingState | undefined {
+	if (value === undefined || !isJsonObject(value) || !Array.isArray(value.shortcuts)) return undefined;
+	const userBindings = parseKeybindingsConfig(value.userBindings);
+	const effectiveBindings = parseKeybindingsConfig(value.effectiveBindings);
+	if (!userBindings || !effectiveBindings) return undefined;
+	const shortcuts: EngineExtensionShortcut[] = [];
+	for (const shortcut of value.shortcuts) {
+		if (!isJsonObject(shortcut) || typeof shortcut.key !== "string" ||
+			(shortcut.description !== undefined && typeof shortcut.description !== "string")) return undefined;
+		shortcuts.push({ key: shortcut.key, ...(typeof shortcut.description === "string" ? { description: shortcut.description } : {}) });
+	}
+	return { userBindings, effectiveBindings, shortcuts };
+}
+
 function parseJsonObject(line: string): JsonObject | undefined {
 	if (Buffer.byteLength(line, "utf8") > INTERACTIVE_ENGINE_MAX_FRAME_BYTES) return undefined;
 	let value: JsonValue;
@@ -143,6 +184,10 @@ export function parseInteractiveEngineMessage(line: string): InteractiveEngineMe
 			return value.protocolVersion === INTERACTIVE_ENGINE_PROTOCOL_VERSION && typeof value.pid === "number"
 				? { type: value.type, protocolVersion: INTERACTIVE_ENGINE_PROTOCOL_VERSION, pid: value.pid } : undefined;
 		case "engine_bound": return { type: value.type };
+		case "engine_keybindings_reloaded": {
+			const state = parseKeybindingState(value.state);
+			return state ? { type: value.type, state } : undefined;
+		}
 		case "engine_heartbeat": return typeof value.at === "number" ? { type: value.type, at: value.at } : undefined;
 		case "engine_activity_started": return isCallbackActivity(value.activity) ? { type: value.type, activity: value.activity } : undefined;
 		case "engine_activity_finished": return typeof value.activityId === "string" ? { type: value.type, activityId: value.activityId } : undefined;

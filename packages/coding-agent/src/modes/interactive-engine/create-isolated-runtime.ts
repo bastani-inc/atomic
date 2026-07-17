@@ -30,7 +30,10 @@ export async function createIsolatedInteractiveRuntime(options: {
 		cwd: options.sessionManager.getCwd(),
 		runtimeExecutable: process.execPath,
 		args: buildInteractiveEngineArgs(options.parsed, options.sessionManager, options.resources),
-		env: options.parsed.apiKey ? { ATOMIC_INTERACTIVE_ENGINE_API_KEY: options.parsed.apiKey } : undefined,
+		env: {
+			ATOMIC_CODING_AGENT_DIR: options.localRuntime.services.agentDir,
+			...(options.parsed.apiKey ? { ATOMIC_INTERACTIVE_ENGINE_API_KEY: options.parsed.apiKey } : {}),
+		},
 		interactiveEngine: {
 			onDiagnostic: (diagnostic) => isolatedRuntime
 				? isolatedRuntime.emitDiagnostic(diagnostic)

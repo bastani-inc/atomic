@@ -1,7 +1,7 @@
 import type { Component, OverlayHandle, OverlayOptions, Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
 import { runCallback } from "../../core/callback-activity.ts";
-import { KeybindingsManager } from "../../core/keybindings.ts";
+import type { KeybindingsManager } from "../../core/keybindings.ts";
 import type { Theme } from "../interactive/theme/theme.ts";
 import { theme } from "../interactive/theme/theme.ts";
 import {
@@ -98,6 +98,7 @@ export class EngineCustomUiService {
 	private readonly active = new Map<string, ActiveComponent>();
 	private nextId = 0;
 	private readonly write: (line: string) => void;
+	private readonly keybindings: KeybindingsManager;
 	private readonly stateListeners = new Set<(state: { blockingInlineCustomUiDepth: number; blockingInlineCustomUiActive: boolean }) => void>();
 
 
@@ -136,7 +137,10 @@ export class EngineCustomUiService {
 			this.send({ type: "engine_custom_frame", componentId, requestId: 0, lines: [`Widget ${key} failed: ${error.message}`] });
 		});
 	}
-	constructor(write: (line: string) => void) { this.write = write; }
+	constructor(write: (line: string) => void, keybindings: KeybindingsManager) {
+		this.write = write;
+		this.keybindings = keybindings;
+	}
 
 	async custom<T>(
 		factory: (
@@ -165,7 +169,7 @@ export class EngineCustomUiService {
 			(control) => this.send({ type: "engine_custom_terminal", componentId, control }),
 		);
 		const tui = new TUI(terminal);
-		const component = await factory(tui, theme, KeybindingsManager.create(), done);
+		const component = await factory(tui, theme, this.keybindings, done);
 		tui.addChild(component);
 		tui.setFocus(component);
 		const record: ActiveComponent = {

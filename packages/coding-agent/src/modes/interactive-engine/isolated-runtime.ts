@@ -10,7 +10,7 @@ import type { RpcClient } from "../rpc/rpc-client.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "../rpc/rpc-types.ts";
 import type { RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
-import type { InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
+import type { EngineKeybindingState, InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
 import { sleep } from "../../utils/sleep.ts";
 
@@ -93,6 +93,9 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	onEngineMessage(listener: (message: InteractiveEngineMessage) => void): () => void {
 		return this.client.onInteractiveEngineMessage(listener);
 	}
+	onKeybindingState(listener: (state: EngineKeybindingState) => void): () => void {
+		return this.client.onInteractiveEngineKeybindingState(listener);
+	}
 
 	sendEngineCommand(command: InteractiveEngineCommand): void {
 		this.client.sendInteractiveEngineCommand(command);
@@ -101,9 +104,6 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	getRemoteCommands(): readonly RpcSlashCommand[] { return this.remoteCommands.getCommands(); }
 	onRemoteCommandsChanged(listener: RemoteCommandsListener): () => void { return this.remoteCommands.onChange(listener); }
 
-	getRemoteShortcuts(): Promise<{ shortcuts: Array<{ key: string; description?: string }> }> {
-		return this.client.requestInternal({ type: "get_shortcuts" });
-	}
 
 	async invokeRemoteShortcut(key: string): Promise<void> {
 		await this.client.requestInternal<void>({ type: "invoke_shortcut", key });

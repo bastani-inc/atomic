@@ -6,6 +6,7 @@ import { Readable } from "node:stream";
 import { join } from "node:path";
 import type { ActivityWatchdogDiagnostic } from "../../packages/coding-agent/src/modes/interactive-engine/activity-watchdog.ts";
 import { RpcClient } from "../../packages/coding-agent/src/modes/rpc/rpc-client.ts";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import { parseInteractiveEngineMessage, serializeInteractiveEngineFrame } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { attachJsonlLineReader } from "../../packages/coding-agent/src/modes/rpc/jsonl.ts";
@@ -75,7 +76,7 @@ test.serial("the real agent path isolates a blocking extension tool and reports 
 
 test("remote custom components render and receive input through the engine protocol", async () => {
 	const output: string[] = [];
-	const service = new EngineCustomUiService((line) => output.push(line));
+	const service = new EngineCustomUiService((line) => output.push(line), new KeybindingsManager());
 	const result = service.custom<string>((_tui, _theme, _keybindings, done) => ({
 		render: (width) => [`width:${width},rows:${_tui.terminal.rows}`],
 		handleInput: (data) => { if (data === "\r") done("accepted"); },

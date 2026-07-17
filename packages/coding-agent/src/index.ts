@@ -355,6 +355,7 @@ export {
 	FooterComponent,
 	UsageMeterComponent,
 	keyHint,
+	keyHintIfBound,
 	keyText,
 	LoginDialogComponent,
 	ModelSelectorComponent,

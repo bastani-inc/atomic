@@ -50,6 +50,9 @@ class RecordingTerminal implements Terminal {
 			enginePid: runtime instanceof IsolatedInteractiveRuntime ? runtime.getEnginePid() : undefined,
 			generation: runtime instanceof IsolatedInteractiveRuntime ? runtime.getEngineGeneration() : undefined,
 			sessionFile: mode?.session.sessionFile,
+			expandKeys: mode?.keybindings.getKeys("app.tools.expand"),
+			expandDisplay: mode?.getAppKeyDisplay("app.tools.expand"),
+			toolsExpanded: mode?.toolOutputExpanded,
 		});
 	}
 }
@@ -73,6 +76,11 @@ async function runHost(): Promise<void> {
 	const terminal = new RecordingTerminal();
 	let mode: InteractiveMode | undefined;
 	let buffer = "";
+	const reloadSession = async (): Promise<void> => {
+		if (!mode) return;
+		await mode.handleReloadCommand();
+		report({ type: "reload_done", expandKeys: mode.keybindings.getKeys("app.tools.expand") });
+	};
 	const mutateSession = async (): Promise<void> => {
 		if (!mode?.session.model || !(mode.runtimeHost instanceof IsolatedInteractiveRuntime)) return;
 		await mode.session.setModel(mode.session.model);
@@ -92,8 +100,16 @@ async function runHost(): Promise<void> {
 			try {
 				const command = JSON.parse(line) as { type?: string; data?: string };
 				if (command.type === "input" && typeof command.data === "string") terminal.inject(command.data);
+				else if (command.type === "shortcut" && typeof command.data === "string") {
+					report({
+						type: "shortcut",
+						data: command.data,
+						shortcutHandled: mode?.defaultEditor.onExtensionShortcut?.(command.data) ?? false,
+					});
+				}
 				else if (command.type === "state") terminal.snapshot(mode);
 				else if (command.type === "mutate") void mutateSession();
+				else if (command.type === "reload") void reloadSession();
 				else if (command.type === "autocomplete" && typeof command.data === "string") void reportAutocomplete(mode, command.data);
 			} catch {}
 		}
@@ -119,6 +135,10 @@ async function runHost(): Promise<void> {
 					mode = created;
 					if (created.runtimeHost instanceof IsolatedInteractiveRuntime) {
 						created.runtimeHost.onDiagnostic((diagnostic) => report({ type: "diagnostic", message: diagnostic.message }));
+						created.runtimeHost.onKeybindingState((state) => report({
+							type: "keybinding_state",
+							shortcutKeys: state.shortcuts.map((shortcut) => shortcut.key),
+						}));
 					}
 					created.session.subscribe((event) => report({ type: "session_event", eventType: event.type }));
 				},

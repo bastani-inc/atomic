@@ -216,7 +216,7 @@ InteractiveModeBase.prototype.resetExtensionUI = function(this: InteractiveModeB
     this.autocompleteProviderWrappers = [];
     this.setCustomEditorComponent(undefined);
     this.setupAutocompleteProvider();
-    this.defaultEditor.onExtensionShortcut = undefined;
+    this.defaultEditor.onExtensionShortcut = this.interactiveEngineShortcutHandler;
     this.updateTerminalTitle();
     this.workingMessage = undefined;
     this.workingVisible = true;

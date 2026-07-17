@@ -5,6 +5,7 @@ import type { EngineCustomUiService } from "../interactive-engine/engine-custom-
 import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
+import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
 interface RpcSessionBindingOptions {
@@ -15,6 +16,7 @@ interface RpcSessionBindingOptions {
 	renderService?: EngineRenderService;
 	sessionPicker?: EngineSessionPickerService;
 	requestShutdown: () => void;
+	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 }
 
 export class RpcSessionBinding {
@@ -28,8 +30,9 @@ export class RpcSessionBinding {
 	private readonly renderService: EngineRenderService | undefined;
 	private readonly sessionPicker: EngineSessionPickerService | undefined;
 	private readonly requestShutdown: () => void;
+	private readonly reloadCoordinator: KeybindingsReloadCoordinator<AgentSession> | undefined;
 
-	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker }: RpcSessionBindingOptions) {
+	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker, reloadCoordinator }: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
@@ -37,6 +40,7 @@ export class RpcSessionBinding {
 		this.customUi = customUi;
 		this.renderService = renderService;
 		this.sessionPicker = sessionPicker;
+		this.reloadCoordinator = reloadCoordinator;
 		this.session = runtimeHost.session;
 	}
 
@@ -79,7 +83,8 @@ export class RpcSessionBinding {
 				reload: async () => {
 					const steeringMode = this.session.steeringMode;
 					const followUpMode = this.session.followUpMode;
-					await this.session.reload();
+					if (this.reloadCoordinator) await this.reloadCoordinator.reload(this.session);
+					else await this.session.reload();
 					this.session.setSteeringMode(steeringMode);
 					this.session.setFollowUpMode(followUpMode);
 				},
@@ -97,6 +102,7 @@ export class RpcSessionBinding {
 		this.unsubscribeBackpressure = session.agent.subscribe(async () => {
 			await waitForRawStdoutBackpressure();
 		});
+		this.reloadCoordinator?.publishCurrentState(session);
 	}
 
 	disposeSubscriptions(): void {

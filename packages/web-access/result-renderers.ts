@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@bastani/atomic";
+import { keyHintIfBound, type ToolDefinition } from "@bastani/atomic";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { formatSeconds } from "./utils.js";
 
@@ -241,7 +241,9 @@ export const renderWebSearchResult: ToolResultRenderer = (result, { expanded, is
 		}
 		const moreLines = Math.max(0, totalLines - collapsedLines);
 		if (moreLines > 0) {
-			box.addChild(new Text(theme.fg("muted", `\n... (${moreLines} more lines, ${totalLines} total, CTRL+O Expand)`), 0, 0));
+			const expandHint = keyHintIfBound("app.tools.expand", "Expand");
+			const prefix = theme.fg("muted", `\n... (${moreLines} more lines, ${totalLines} total${expandHint ? ", " : ")"}`);
+			box.addChild(new Text(prefix + (expandHint ? expandHint + theme.fg("muted", ")") : ""), 0, 0));
 		}
 		return box;
 	}

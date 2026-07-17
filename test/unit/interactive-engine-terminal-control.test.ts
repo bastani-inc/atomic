@@ -21,6 +21,7 @@ import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionUIContext } from "../../packages/coding-agent/src/core/extensions/index.ts";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
 import { EngineCustomUiService } from "../../packages/coding-agent/src/modes/interactive-engine/engine-custom-ui.ts";
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
 import type { IsolatedInteractiveRuntime } from "../../packages/coding-agent/src/modes/interactive-engine/isolated-runtime.ts";
@@ -81,7 +82,7 @@ function makeBridge(): Bridge {
     if (!message) return;
     hostMessages.push(message);
     for (const listener of [...engineListeners]) listener(message);
-  });
+  }, new KeybindingsManager());
 
   const runtime = {
     onEngineMessage: (listener: (m: InteractiveEngineMessage) => void) => {

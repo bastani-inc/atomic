@@ -9,6 +9,7 @@ import type { EarlyInputSnapshot } from "../../main-early-input.ts";
 import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
 import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
 import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+import { KeybindingsReloadCoordinator } from "../rpc/rpc-keybindings-reload.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -96,6 +97,15 @@ export class InteractiveModeBase {
 
   // Stored so the same manager can be injected into custom editors, selectors, and extension UI.
   keybindings: KeybindingsManager;
+
+
+  reloadCoordinator: KeybindingsReloadCoordinator;
+
+
+  interactiveEngineShortcutHandler: ((data: string) => boolean) | undefined;
+
+
+  disposeInteractiveEngineHost: () => void = () => {};
 
 
   version: string;
@@ -411,7 +421,8 @@ export class InteractiveModeBase {
     this.statusContainer = new Container();
     this.widgetContainerAbove = new Container();
     this.widgetContainerBelow = new Container();
-    this.keybindings = KeybindingsManager.create();
+    this.keybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
+    this.reloadCoordinator = new KeybindingsReloadCoordinator(this.keybindings);
     setKeybindings(this.keybindings);
     const editorPaddingX = this.settingsManager.getEditorPaddingX();
     const autocompleteMaxVisible =
@@ -448,7 +459,7 @@ export class InteractiveModeBase {
       (message) => this.showError(message),
       () => this.updateEditorBorderColor(),
     );
-    attachInteractiveEngineHost(
+    this.disposeInteractiveEngineHost = attachInteractiveEngineHost(
       runtimeHost,
       this.createExtensionUIContext(),
 		(diagnostic) => {
@@ -459,7 +470,15 @@ export class InteractiveModeBase {
 			}
 			if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
 		},
-      (handler) => { this.defaultEditor.onExtensionShortcut = handler; },
+      (handler) => {
+        this.interactiveEngineShortcutHandler = handler;
+        this.defaultEditor.onExtensionShortcut = handler;
+        return () => {
+          if (this.interactiveEngineShortcutHandler === handler) this.interactiveEngineShortcutHandler = undefined;
+          if (this.defaultEditor.onExtensionShortcut === handler) this.defaultEditor.onExtensionShortcut = undefined;
+        };
+      },
+      this.keybindings,
     );
   }
 
