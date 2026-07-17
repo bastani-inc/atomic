@@ -177,7 +177,12 @@ InteractiveModeBase.prototype.recoverCookedStartupInput = function(this: Interac
     const cookedLines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const isCommandLike = (line: string | undefined) =>
       line !== undefined && (line.startsWith("/") || line.startsWith("!"));
-    const singleCommandLike = cookedLines.length === 1 && isCommandLike(cookedLines[0]);
+    // A raw startup capture distinguishes drafts from Enter-terminated submissions.
+    // Never reinterpret its visible command-like draft (including a bare "/") as
+    // submitted merely because header/chat initialization is now draining input.
+    const singleCommandLike = this.options.startupInputCapture === undefined
+      && cookedLines.length === 1
+      && isCommandLike(cookedLines[0]);
     if (cookedLines.length < 2 && !singleCommandLike) return false;
 
     this.startupCookedInputRecovered = true;
