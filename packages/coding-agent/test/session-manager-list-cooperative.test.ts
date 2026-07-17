@@ -62,22 +62,32 @@ describe("session listing cooperative scanning", () => {
 		expect(sessions[0]!.firstMessage).toBe("big session first user message");
 	});
 
-	it("keeps the event loop responsive (heartbeat fires) while scanning a large directory", async () => {
+	it("keeps the event loop responsive (concurrent macrotasks run) while scanning a large directory", async () => {
 		const dir = tempDir();
 		writeSession(dir, "big", 12_000, "large transcript");
 		for (let index = 0; index < 30; index += 1) {
 			writeSession(dir, `small-${index}`, 3, `small ${index}`);
 		}
 
+		// Probe event-loop turns with a self-rescheduling setImmediate pump
+		// instead of a 1ms interval: Windows timer resolution is ~15ms, so a
+		// fast scan can yield cooperatively yet still finish before a 1ms
+		// interval ever fires, failing a ticks>0 assertion spuriously.
 		let ticks = 0;
-		const heartbeat = setInterval(() => { ticks += 1; }, 1);
+		let pumping = true;
+		const pump = (): void => {
+			if (!pumping) return;
+			ticks += 1;
+			setImmediate(pump);
+		};
+		setImmediate(pump);
 		try {
 			const sessions = await listAllSessions(dir);
 			expect(sessions.length).toBe(31);
 		} finally {
-			clearInterval(heartbeat);
+			pumping = false;
 		}
-		// The scan yielded to the loop, so the concurrent timer got to run.
+		// The scan yielded to the loop, so the concurrent macrotask got turns.
 		expect(ticks).toBeGreaterThan(0);
 	});
 
