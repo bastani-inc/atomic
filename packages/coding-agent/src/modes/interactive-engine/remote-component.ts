@@ -56,6 +56,13 @@ class RemoteComponent implements Component {
 	handleInput(data: string): void {
 		if (this.disposed) return;
 		this.runtime.sendEngineCommand({ type: "engine_custom_input", componentId: this.componentId, data });
+		// Engine commands are delivered in order, so a frame requested now is
+		// rendered by the child only AFTER it has applied this input. Pipelining
+		// the request keeps keypress latency at a single round trip and repaints
+		// components that never self-invalidate, instead of waiting for a
+		// child-side invalidate (or an unrelated refresh) to trigger a frame.
+		this.dirty = true;
+		this.requestRender();
 	}
 
 	invalidate(): void {
