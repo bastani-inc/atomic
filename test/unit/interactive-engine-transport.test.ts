@@ -84,8 +84,8 @@ test("watchdog diagnostics are tagged with their source at both thresholds", asy
 	}
 });
 
-test("chat-error policy: only attributed watchdog stalls and concrete failures surface", () => {
-	const activity = { id: "a1", kind: "tool.execute" as const, name: "busy_loop", startedAt: 0 };
+test("chat-error policy: watchdog diagnostics stay internal while concrete failures surface", () => {
+	const activity = { id: "a1", kind: "extension.hook" as const, name: "tool_execution_end", startedAt: 0 };
 	const diagnostic = (
 		overrides: Partial<ActivityWatchdogDiagnostic>,
 	): ActivityWatchdogDiagnostic => ({
@@ -96,14 +96,17 @@ test("chat-error policy: only attributed watchdog stalls and concrete failures s
 		...overrides,
 	});
 
-	// Unattributed watchdog heartbeat gap: ordinary engine event-loop lag — suppressed.
+	// Heartbeat-watchdog gaps stay internal whether or not a callback was attributed.
 	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog" })), false);
-	// Attributed watchdog stall names the stuck callback — actionable, surfaced.
-	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", activity })), true);
+	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({
+		source: "watchdog",
+		activity,
+		message: "Engine callback extension.hook tool_execution_end has not yielded for 1011 ms; Esc interrupt · Ctrl+C terminate",
+	})), false);
 	// Early 250 ms blocking signals stay internal regardless of attribution.
 	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", level: "blocking" })), false);
 	assert.equal(shouldRenderEngineDiagnosticAsChatError(diagnostic({ source: "watchdog", activity, level: "blocking" })), false);
-	// Concrete engine failures are not watchdog-sourced and always surface.
+	// Concrete termination and RPC failures are not watchdog-sourced and always surface.
 	assert.equal(
 		shouldRenderEngineDiagnosticAsChatError(diagnostic({
 			elapsedMs: 0,

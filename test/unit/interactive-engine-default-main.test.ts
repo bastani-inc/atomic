@@ -218,7 +218,11 @@ serialTest("default main InteractiveMode survives Escape, restarts, and kills th
 		const grandchildPid = await waitForFile(grandchildPidFile);
 		assert.equal(toolPid, initial.enginePid);
 		assert.ok(isAlive(grandchildPid));
-		await driver.waitFor((report) => report.type === "render" && report.output?.includes("tool.execute busy_loop") === true);
+		await driver.waitFor((report) =>
+			report.type === "diagnostic"
+			&& report.message?.includes("tool.execute busy_loop") === true
+			&& report.message.includes("Esc interrupt"),
+		);
 		const beforeEscapeReports = driver.reports.length;
 		driver.send({ type: "input", data: "\u001b" });
 		await driver.waitFor((report) => report.type === "diagnostic" && report.message?.includes("result unknown; inspect side effects before retrying") === true);
