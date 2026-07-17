@@ -77,13 +77,27 @@ const SILENT_DBOS_LOGGER: DbosLogger = {
   error() {},
 };
 
+/**
+ * Effective system database URL: explicit config wins over
+ * `DBOS_SYSTEM_DATABASE_URL`. Values are trimmed so env-injected URLs
+ * (secrets managers, env files) with trailing whitespace/newlines connect
+ * cleanly, and a whitespace-only value means "not set".
+ */
+export function effectiveSystemDatabaseUrl(
+  configUrl: string | undefined,
+  envUrl: string | undefined = process.env.DBOS_SYSTEM_DATABASE_URL,
+): string | undefined {
+  const url = (configUrl ?? envUrl)?.trim();
+  return url === undefined || url.length === 0 ? undefined : url;
+}
+
 /** Configure and register DBOS workflows without launching the executor. */
 export async function configureDbosDurableBackend(config?: { readonly systemDatabaseUrl?: string }): Promise<ConfiguredDbosDurability> {
   const sdk = await importDbosSdk();
-  const url = config?.systemDatabaseUrl ?? process.env.DBOS_SYSTEM_DATABASE_URL;
+  const url = effectiveSystemDatabaseUrl(config?.systemDatabaseUrl);
   sdk.setConfig({
     name: "atomic-workflows",
-    ...(url === undefined || url.length === 0 ? {} : { systemDatabaseUrl: url }),
+    ...(url === undefined ? {} : { systemDatabaseUrl: url }),
     runAdminServer: false,
     // Unique per process: concurrent Atomic sessions share one database, and
     // DBOS-level pending-workflow recovery must stay scoped to the owner.

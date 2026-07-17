@@ -5,6 +5,7 @@
 import { afterEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { EMBEDDED_DBOS_SYSTEM_DATABASE_URL } from "../../packages/workflows/src/durable/dbos-embedded-postgres.js";
+import { effectiveSystemDatabaseUrl } from "../../packages/workflows/src/durable/dbos-backend.js";
 import {
   provisionResolvedLocalDbos,
   resetLocalDbosProvisioningForTests,
@@ -100,5 +101,38 @@ describe("shouldProvisionLocalDbos", () => {
 
     process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://user:pw@db.example:5432/dbos";
     assert.equal(shouldProvisionLocalDbos(new Error("connect ECONNREFUSED db.example:5432")), false);
+  });
+});
+
+describe("effectiveSystemDatabaseUrl", () => {
+  test("explicit config wins over the environment variable", () => {
+    assert.equal(
+      effectiveSystemDatabaseUrl("postgresql://config@db/one", "postgresql://env@db/two"),
+      "postgresql://config@db/one",
+    );
+  });
+
+  test("falls back to DBOS_SYSTEM_DATABASE_URL when no config URL is given", () => {
+    assert.equal(
+      effectiveSystemDatabaseUrl(undefined, "postgresql://env@db.example:5432/dbos"),
+      "postgresql://env@db.example:5432/dbos",
+    );
+  });
+
+  test("trims env-injected whitespace and trailing newlines", () => {
+    assert.equal(
+      effectiveSystemDatabaseUrl(undefined, "postgresql://env@db.example:5432/dbos\n"),
+      "postgresql://env@db.example:5432/dbos",
+    );
+    assert.equal(
+      effectiveSystemDatabaseUrl("  postgresql://config@db/one  ", undefined),
+      "postgresql://config@db/one",
+    );
+  });
+
+  test("treats unset, empty, and whitespace-only values as not set", () => {
+    assert.equal(effectiveSystemDatabaseUrl(undefined, undefined), undefined);
+    assert.equal(effectiveSystemDatabaseUrl(undefined, ""), undefined);
+    assert.equal(effectiveSystemDatabaseUrl(undefined, "  \n"), undefined);
   });
 });
