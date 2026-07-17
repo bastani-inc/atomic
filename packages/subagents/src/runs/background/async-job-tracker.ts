@@ -41,6 +41,31 @@ function shouldHydrateRunForCurrentUi(summary: AsyncRunSummary, currentSessionId
 	return cwdMatches(summary.cwd, currentCwd);
 }
 
+/**
+ * Extension contexts captured for timer-driven work (deferred hydration and
+ * state.lastUiContext) go stale after ctx.newSession(), ctx.fork(),
+ * ctx.switchSession(), or ctx.reload(); every accessor on a stale context
+ * throws. Probe defensively so an unref'd timer can never crash the host
+ * process with an unhandled stale-context error.
+ */
+function ctxHasUI(ctx: ExtensionContext | null | undefined): boolean {
+	if (!ctx) return false;
+	try {
+		return ctx.hasUI;
+	} catch {
+		return false;
+	}
+}
+
+function ctxCwd(ctx: ExtensionContext | null | undefined): string | undefined {
+	if (!ctx) return undefined;
+	try {
+		return ctx.cwd;
+	} catch {
+		return undefined;
+	}
+}
+
 function asyncRunSummaryToJobState(summary: AsyncRunSummary, existing?: AsyncJobState): AsyncJobState {
 	const chainStepCount = summary.chainStepCount ?? summary.steps.length;
 	const groups = normalizeParallelGroups(summary.parallelGroups, summary.steps.length, chainStepCount);
@@ -103,6 +128,18 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		renderWidget(ctx, jobs, pi);
 	};
+	/** Return the retained UI context when it is still usable; drop it once stale. */
+	const liveUiContext = (): ExtensionContext | undefined => {
+		const ctx = state.lastUiContext;
+		if (!ctx) return undefined;
+		try {
+			void ctx.hasUI;
+			return ctx;
+		} catch {
+			state.lastUiContext = null;
+			return undefined;
+		}
+	};
 	const cancelCleanup = (asyncId: string) => {
 		const existingTimer = state.cleanupTimers.get(asyncId);
 		if (!existingTimer) return;
@@ -114,8 +151,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		const timer = setTimeout(() => {
 			state.cleanupTimers.delete(asyncId);
 			state.asyncJobs.delete(asyncId);
-			if (state.lastUiContext) {
-				rerenderWidget(state.lastUiContext);
+			const uiCtx = liveUiContext();
+			if (uiCtx) {
+				rerenderWidget(uiCtx);
 			}
 		}, completionRetentionMs);
 		state.cleanupTimers.set(asyncId, timer);
@@ -180,7 +218,8 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		if (state.poller) return;
 		state.poller = setInterval(() => {
 			if (state.asyncJobs.size === 0) {
-				if (state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext, []);
+				const idleUiCtx = liveUiContext();
+				if (ctxHasUI(idleUiCtx)) rerenderWidget(idleUiCtx!, []);
 				if (state.poller) {
 					clearInterval(state.poller);
 					state.poller = null;
@@ -292,15 +331,17 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				if (widgetRenderKey(job) !== widgetStateBefore) widgetChanged = true;
 			}
 
-			if (widgetChanged && state.lastUiContext?.hasUI) rerenderWidget(state.lastUiContext);
+			const pollUiCtx = liveUiContext();
+			if (widgetChanged && ctxHasUI(pollUiCtx)) rerenderWidget(pollUiCtx!);
 		}, pollIntervalMs);
 		state.poller.unref?.();
 	};
 
 	const hydrateActiveJobs = (ctx?: ExtensionContext) => {
-		if (ctx?.hasUI) state.lastUiContext = ctx;
-		const renderCtx = state.lastUiContext?.hasUI ? state.lastUiContext : undefined;
-		const currentCwd = (ctx?.cwd ?? state.lastUiContext?.cwd ?? state.baseCwd) || undefined;
+		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
+		const retainedCtx = liveUiContext();
+		const renderCtx = ctxHasUI(retainedCtx) ? retainedCtx : undefined;
+		const currentCwd = (ctxCwd(ctx) ?? ctxCwd(retainedCtx) ?? state.baseCwd) || undefined;
 		let summaries: AsyncRunSummary[];
 		try {
 			summaries = listAsyncRuns(asyncDirRoot, {
@@ -363,8 +404,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			updatedAt: now,
 		});
 		ensurePoller();
-		if (state.lastUiContext) {
-			rerenderWidget(state.lastUiContext);
+		const startedUiCtx = liveUiContext();
+		if (startedUiCtx) {
+			rerenderWidget(startedUiCtx);
 		}
 	};
 
@@ -385,8 +427,9 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 				console.error(`Failed to refresh nested async descendants for '${job.asyncDir}':`, error);
 			}
 		}
-		if (state.lastUiContext) {
-			rerenderWidget(state.lastUiContext);
+		const completeUiCtx = liveUiContext();
+		if (completeUiCtx) {
+			rerenderWidget(completeUiCtx);
 		}
 		if (!nestedRefreshFailed && !hasLiveNestedDescendants(job?.nestedChildren)) scheduleCleanup(asyncId);
 	};
@@ -400,14 +443,14 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 		state.foregroundControls?.clear();
 		state.lastForegroundControlId = null;
 		state.resultFileCoalescer.clear();
-		if (ctx?.hasUI) state.lastUiContext = ctx;
+		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
 	};
 
 	// Hydration scans the async run root synchronously; deferring it off the
 	// session_start hot path keeps startup latency independent of run history.
 	let pendingDeferredHydration: ReturnType<typeof setTimeout> | null = null;
 	const hydrateActiveJobsDeferred = (ctx?: ExtensionContext) => {
-		if (ctx?.hasUI) state.lastUiContext = ctx;
+		if (ctxHasUI(ctx)) state.lastUiContext = ctx!;
 		if (pendingDeferredHydration !== null) clearTimeout(pendingDeferredHydration);
 		const timer = setTimeout(() => {
 			pendingDeferredHydration = null;
