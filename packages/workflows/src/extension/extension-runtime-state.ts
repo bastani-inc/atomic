@@ -152,8 +152,8 @@ export function createWorkflowExtensionRuntimeState(
     runDirect(args, options) { return runtimeRef.current.runDirect(args, options); },
     resumeFailedRun(sourceRunId, stageId, options) { return runtimeRef.current.resumeFailedRun(sourceRunId, stageId, options); },
     resumeDurableWorkflow(workflowIdOrPrefix, options) { return runtimeRef.current.resumeDurableWorkflow(workflowIdOrPrefix, options); },
-    listDurableResumable(sessionDir) { return runtimeRef.current.listDurableResumable(sessionDir); },
-    prepareDurableResumable(workflowIdOrPrefix, sessionDir) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix, sessionDir); },
+    listDurableResumable() { return runtimeRef.current.listDurableResumable(); },
+    prepareDurableResumable(workflowIdOrPrefix) { return runtimeRef.current.prepareDurableResumable(workflowIdOrPrefix); },
     prepareDurableResumableForIds(workflowIds) {
       const targeted = runtimeRef.current.prepareDurableResumableForIds;
       if (targeted !== undefined) return targeted.call(runtimeRef.current, workflowIds);

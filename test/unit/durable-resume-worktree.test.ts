@@ -106,7 +106,7 @@ describe("durable resume with reusable git worktrees", () => {
         adapters: { complete: { complete: async (text: string) => text } },
       };
 
-      const result = resumeDurableWorkflow("wf-worktree-resume", { ...depsFor(def), baseRunOpts });
+      const result = await resumeDurableWorkflow("wf-worktree-resume", { ...depsFor(def), baseRunOpts });
 
       assert.equal(result.ok, true);
       await jobs.get("wf-worktree-resume")?.promise;
@@ -159,7 +159,7 @@ describe("durable resume with reusable git worktrees", () => {
         adapters: { complete: { complete: async (text: string) => text } },
       };
 
-      const result = resumeDurableWorkflow("wf-worktree-partial-fails", { ...depsFor(def), baseRunOpts });
+      const result = await resumeDurableWorkflow("wf-worktree-partial-fails", { ...depsFor(def), baseRunOpts });
 
       assert.equal(result.ok, true);
       await jobs.get("wf-worktree-partial-fails")?.promise;

@@ -105,7 +105,7 @@ export async function handleDurableResume(
       return openCompletedTarget(resolved.workflowId, catalog.completed, ctx, reporter, deps, runtime);
     }
     if (resolved.kind === "durable") {
-      return resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
+      return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
     }
 
     const completedAttempt = openCompleted(runtime, target, catalog.completed);
@@ -113,7 +113,7 @@ export async function handleDurableResume(
       fail(completedAttempt.message);
       return true;
     }
-    const result = runtime.resumeDurableWorkflow(target, { policy });
+    const result = await runtime.resumeDurableWorkflow(target, { policy });
     fail(allOpenable.length === 0
       ? result.message
       : `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`);
@@ -194,14 +194,14 @@ function isExplicitResumeCandidate(run: RunSnapshot): boolean {
   return run.resumable === true && run.failureRecoverability === "recoverable";
 }
 
-function resumeDurableTarget(
+async function resumeDurableTarget(
   workflowId: string,
   ctx: PiCommandContext,
   reporter: WorkflowCommandReporter,
   deps: WorkflowRunControlDeps,
   runtime: ExtensionRuntime,
-): boolean {
-  const result = runtime.resumeDurableWorkflow(workflowId, { policy: workflowPolicyFromContext(ctx) });
+): Promise<boolean> {
+  const result = await runtime.resumeDurableWorkflow(workflowId, { policy: workflowPolicyFromContext(ctx) });
   if (!result.ok) reporter.error(result.message);
   else {
     reporter.info(result.message);

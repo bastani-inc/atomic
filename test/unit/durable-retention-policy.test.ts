@@ -8,7 +8,6 @@ import {
   type DurableWorkflowBackend,
 } from "../../packages/workflows/src/durable/backend.js";
 import { deleteDurableWorkflowIfSafe } from "../../packages/workflows/src/durable/retention-policy.js";
-import { WorkflowFileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
 
 function register(
   backend: DurableWorkflowBackend,
@@ -47,7 +46,7 @@ describe("durable workflow retention policy", () => {
   test("deletes only inactive durable state and leaves retained transcripts untouched", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atomic-retention-delete-"));
     try {
-      const backend = new WorkflowFileDurableBackend(join(dir, "durable"));
+      const backend = new InMemoryDurableBackend();
       const transcript = join(dir, "stage.jsonl");
       writeFileSync(transcript, "retained transcript\n");
       register(backend, "inactive", "paused");
@@ -85,9 +84,9 @@ describe("durable workflow retention policy", () => {
   test("serializes resume claims against inactive deletion", async () => {
     const dir = mkdtempSync(join(tmpdir(), "atomic-retention-race-"));
     try {
-      const backend = new WorkflowFileDurableBackend(join(dir, "durable"));
+      const backend = new InMemoryDurableBackend();
       register(backend, "resume-wins", "paused");
-      assert.equal(backend.transitionWorkflowStatus("resume-wins", ["paused"], "running"), true);
+      assert.equal(await backend.transitionWorkflowStatus("resume-wins", ["paused"], "running"), true);
       assert.deepEqual(await backend.deleteWorkflowIfInactive("resume-wins"), {
         ok: false,
         reason: "running",
@@ -95,7 +94,7 @@ describe("durable workflow retention policy", () => {
 
       register(backend, "delete-wins", "paused");
       assert.deepEqual(await backend.deleteWorkflowIfInactive("delete-wins"), { ok: true });
-      assert.equal(backend.transitionWorkflowStatus("delete-wins", ["paused"], "running"), false);
+      assert.equal(await backend.transitionWorkflowStatus("delete-wins", ["paused"], "running"), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

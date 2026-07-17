@@ -29,7 +29,7 @@ describe("executor.run — lifecycle persistence", () => {
     }
 
     function lifecycleTypes(calls: Array<{ type: string }>): string[] {
-        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+        return calls.map((c) => c.type);
     }
 
     test("appends ordered run.start → stage.start → stage.end → run.end on success", async () => {
@@ -67,7 +67,7 @@ describe("executor.run — lifecycle persistence", () => {
             "workflow.stage.end",
             "workflow.run.end",
         ]);
-        assert.equal(calls.some((c) => c.type === "workflow.durable.checkpoint"), true);
+        assert.equal(calls.every((call) => !call.type.includes("durable")), true);
     });
 
     test("run.start payload contains runId, name, inputs, ts", async () => {

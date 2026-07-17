@@ -1,10 +1,5 @@
 /**
- * Cross-session durable workflow resume adapter.
- *
- * Resumes a workflow whose durable checkpoints live in the durable backend
- * (and are mirrored to the session JSONL cache) but whose in-process run is no
- * longer live. This is the production path behind `/workflow resume <id>` when
- * the id names a durable workflow that is not present in the live run store.
+ * Cross-process workflow resume using DBOS as the sole source of state.
  *
  * Resume semantics (DBOS-aligned):
  *   1. Look up the durable catalog entry (workflow name + cached inputs).
@@ -31,7 +26,8 @@ import { resolveAndValidateInputs } from "../runs/foreground/executor-inputs.js"
 import { getDurableBackend } from "./factory.js";
 import { resumableEntryFromHandle, type DurableWorkflowBackend } from "./backend.js";
 import type { ResumableWorkflowEntry } from "./types.js";
-import { isDurableWorkflowResumable } from "./resume-eligibility.js";
+import { isDurableWorkflowResumable, isForeignLiveWorkflow } from "./resume-eligibility.js";
+import { getAtomicExecutorId } from "./dbos-sdk-handle.js";
 import { workflowDefinitionRequirementMessage } from "../runs/foreground/executor-child-helpers.js";
 import { isWorkflowDefinition } from "../runs/foreground/executor-child-helpers.js";
 import type { RunSnapshot } from "../shared/store-types.js";
@@ -48,42 +44,26 @@ export interface ResumeDurableDeps {
   readonly durableBackend?: DurableWorkflowBackend;
 }
 
-/**
- * Prepare a durable resume: hydrate the backend's in-memory mirror from the
- * persistent store (DBOS) so synchronous reads in {@link resumeDurableWorkflow}
- * find the workflow and its checkpoints. No-op for backends without hydration.
- *
- * Must be awaited before calling {@link resumeDurableWorkflow} when the backend
- * might be a fresh DBOS process.
- */
+/** Hydrate current DBOS metadata and checkpoints before synchronous replay reads. */
 export async function prepareDurableResume(
   workflowIdOrPrefix: string | undefined,
   deps: ResumeDurableDeps,
 ): Promise<readonly ResumableWorkflowEntry[]> {
   const backend = deps.durableBackend ?? getDurableBackend();
-  // Hydrate all resumable workflows first so the catalog is complete.
-  if (backend.hydrateResumableWorkflows !== undefined) {
-    await backend.hydrateResumableWorkflows();
-  }
+  await backend.hydrateResumableWorkflows();
   const catalog = backend.listResumableWorkflows();
   // If a specific target was requested, hydrate that workflow too (it might
   // be resumable but not yet in the resumable filter — e.g. recently failed).
   if (workflowIdOrPrefix !== undefined) {
     const resolved = resolveDurableEntry(workflowIdOrPrefix, catalog);
     if (resolved !== undefined && !("kind" in resolved)) {
-      if (backend.hydrateWorkflow !== undefined) {
-        await backend.hydrateWorkflow(resolved.workflowId);
-      }
+      await backend.hydrateWorkflow(resolved.workflowId);
     }
   }
   return backend.listResumableWorkflows();
 }
 
-/**
- * Resolve a durable catalog entry for a workflow id (full or prefix match).
- * Prefers the durable backend's resumable list; falls back to an explicit
- * session-scan catalog when provided by the caller.
- */
+/** Resolve a current DBOS catalog entry by full id or unique prefix. */
 export function resolveDurableEntry(
   workflowIdOrPrefix: string,
   catalog: readonly ResumableWorkflowEntry[],
@@ -96,32 +76,33 @@ export function resolveDurableEntry(
   return { kind: "ambiguous", matches: prefixMatches };
 }
 
-/**
- * Resume a durable workflow by top-level workflow id. Re-dispatches the workflow
- * with the cached inputs and the original workflow id so durable checkpoints
- * replay (skipping completed side effects).
- */
-export function resumeDurableWorkflow(
+/** Resume by DBOS workflow id and replay current persisted checkpoints. */
+export async function resumeDurableWorkflow(
   workflowIdOrPrefix: string,
   deps: ResumeDurableDeps,
   catalog?: readonly ResumableWorkflowEntry[],
-): ResumeDurableResult {
+): Promise<ResumeDurableResult> {
   const backend = deps.durableBackend ?? getDurableBackend();
   const resolvedCatalog = catalog ?? backend.listResumableWorkflows();
   const resolved = resolveDurableEntry(workflowIdOrPrefix, resolvedCatalog);
   if (resolved === undefined) {
-    if (!backend.isWorkflowLoadable(workflowIdOrPrefix)) {
-      return { ok: false, reason: "not_registered", message: `Durable workflow ${workflowIdOrPrefix.slice(0, 8)} uses an incompatible or unavailable persisted format and cannot be resumed.` };
-    }
-    // Not in the (filtered) resumable catalog. It may still be a workflow the
-    // backend knows about. Only surface "already running" when there is a live,
-    // actively-executing run for it in this session; otherwise a `running`
-    // durable handle is a crashed process and falls through to not-found.
     const direct = backend.getWorkflow(workflowIdOrPrefix);
-    if (direct !== undefined && direct.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
-      return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
+    if (direct !== undefined && direct.status === "running") {
+      if (hasActiveLiveRun(deps.baseRunOpts.store, direct.workflowId)) {
+        return alreadyRunningResult(direct.name, direct.workflowId, deps.baseRunOpts.store);
+      }
+      if (isForeignLiveWorkflow(direct, getAtomicExecutorId())) {
+        return foreignRunningResult(direct.name, direct.workflowId);
+      }
     }
-    return { ok: false, reason: "not_registered", message: `No durable workflow found for id/prefix: ${workflowIdOrPrefix}` };
+    if (!backend.isWorkflowLoadable(workflowIdOrPrefix)) {
+      return {
+        ok: false,
+        reason: "not_registered",
+        message: `Workflow ${workflowIdOrPrefix.slice(0, 8)} has no valid current DBOS state.`,
+      };
+    }
+    return { ok: false, reason: "not_registered", message: `No resumable workflow found for id/prefix: ${workflowIdOrPrefix}` };
   }
   if ("kind" in resolved) {
     return {
@@ -131,30 +112,30 @@ export function resumeDurableWorkflow(
     };
   }
   if (!backend.isWorkflowLoadable(resolved.workflowId)) {
-    // Selection-time revalidation (contract §4): the picker trusts indexed rows
-    // for speed, so a row whose authoritative state no longer loads is repaired
-    // (dropped) here before surfacing the failure.
-    backend.repairWorkflowCatalogEntry?.(resolved.workflowId);
-    return { ok: false, reason: "not_registered", message: `Durable workflow ${resolved.workflowId.slice(0, 8)} uses an incompatible or unavailable persisted format and cannot be resumed.` };
+    return {
+      ok: false,
+      reason: "not_registered",
+      message: `Workflow ${resolved.workflowId.slice(0, 8)} has no valid current DBOS state.`,
+    };
   }
-  // Authoritative backend-handle check: a cache-only entry (no handle) is
-  // "stale" regardless of its cached status. A `running` handle is only
-  // refused when there is a live, actively-executing run for it in THIS
-  // session — otherwise it is a crashed process and cross-session crash
-  // recovery should proceed.
+  // Revalidate the authoritative DBOS handle before resume. A running handle
+  // is refused when this process still has an actively executing run, or when
+  // fresh ownership metadata shows another Atomic session is executing it.
   const handle = backend.getWorkflow(resolved.workflowId);
   if (handle === undefined) {
-    // Missing authoritative handle is a stale index row: repair (drop) it so
-    // the picker stops offering a row that can only fail on selection.
-    backend.repairWorkflowCatalogEntry?.(resolved.workflowId);
     return {
       ok: false,
       reason: "stale",
-      message: `Workflow ${resolved.workflowId.slice(0, 8)} has only session-cache metadata and no durable checkpoint state; resume would re-run from scratch. Re-run the workflow to start fresh.`,
+      message: `Workflow ${resolved.workflowId.slice(0, 8)} has no current DBOS checkpoint state; re-run the workflow to start fresh.`,
     };
   }
-  if (handle.status === "running" && hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
-    return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
+  if (handle.status === "running") {
+    if (hasActiveLiveRun(deps.baseRunOpts.store, resolved.workflowId)) {
+      return alreadyRunningResult(handle.name, resolved.workflowId, deps.baseRunOpts.store);
+    }
+    if (isForeignLiveWorkflow(handle, getAtomicExecutorId())) {
+      return foreignRunningResult(handle.name, resolved.workflowId);
+    }
   }
   if (!isDurableWorkflowResumable(handle)) {
     return { ok: false, reason: "not_resumable", message: `Workflow ${resolved.workflowId.slice(0, 8)} is ${handle.status}, not resumable.` };
@@ -176,24 +157,18 @@ export function resumeDurableWorkflow(
   }
   removeDurableResumeShadowRuns(deps.baseRunOpts.store, resolved.workflowId);
 
-
-  // Backends that expose conditional deletion must claim resume atomically
-  // against it, so a confirmed delete and a resume cannot both succeed.
-  if (backend.deleteWorkflowIfInactive !== undefined && backend.transitionWorkflowStatus !== undefined) {
-    const claimed = backend.transitionWorkflowStatus(
-      resolved.workflowId,
-      [handle.status],
-      "running",
-    );
-    if (typeof claimed !== "boolean" || !claimed) {
-      return {
-        ok: false,
-        reason: "stale",
-        message: `Workflow ${resolved.workflowId.slice(0, 8)} changed while resume was pending; refresh the workflow list and try again.`,
-      };
-    }
-  } else {
-    backend.setWorkflowStatus(resolved.workflowId, "running");
+  // Claim resume against concurrent deletion through the required transition seam.
+  const claimed = await backend.transitionWorkflowStatus(
+    resolved.workflowId,
+    [handle.status],
+    "running",
+  );
+  if (!claimed) {
+    return {
+      ok: false,
+      reason: "stale",
+      message: `Workflow ${resolved.workflowId.slice(0, 8)} changed while resume was pending; refresh the workflow list and try again.`,
+    };
   }
 
   const resumeRunOpts: RunOpts = {
@@ -226,6 +201,15 @@ function removeDurableResumeShadowRuns(store: RunOpts["store"], workflowId: stri
     if (!store.removeRun(workflowId)) return;
   }
 }
+function foreignRunningResult(name: string, workflowId: string): ResumeDurableResult {
+  return {
+    ok: false,
+    reason: "not_resumable",
+    message: `Workflow "${name}" (${workflowId.slice(0, 8)}) is actively running in another Atomic session. `
+      + "Control it from that session; it becomes resumable here only after that session pauses, quits, or crashes.",
+  };
+}
+
 
 function alreadyRunningResult(name: string, workflowId: string, store: RunOpts["store"]): ResumeDurableResult {
   const here = store?.runs().some((r) => r.id === workflowId && r.endedAt === undefined) === true;
@@ -249,36 +233,7 @@ function hasActiveLiveRun(store: RunOpts["store"] | undefined, workflowId: strin
   return store.runs().some((r) => r.id === workflowId && r.endedAt === undefined && r.exitReason !== "quit");
 }
 
-/**
- * Check whether the durable backend records a TERMINAL (non-resumable) status
- * for the given workflow id. Terminal status suppresses stale session-cache
- * entries so a completed/cancelled workflow is not resurrected as resumable.
- *
- * Returns true only when the backend has a registered handle whose status is
- * definitively terminal (completed, cancelled, or failed-and-non-resumable).
- */
-export function isBackendTerminal(backend: DurableWorkflowBackend, workflowId: string): boolean {
-  const handle = backend.getWorkflow(workflowId);
-  if (handle === undefined) return false;
-  const status = handle.status;
-  if (status === "completed" || status === "cancelled") return true;
-  if (status === "failed" || status === "blocked") return handle.resumable === false;
-  return false;
-}
-
-
-/**
- * Runtime-facing async preparation: hydrate the durable backend from DBOS
- * (when supported) then list resumable workflows with optional session-dir
- * scan merge. Used by the ExtensionRuntime's `prepareDurableResumable`.
- *
- * Stale-cache suppression: when a session JSONL cache entry has no matching
- * durable backend handle, it came from an older/non-checkpointed workflow
- * engine and is hidden from selectors. When the backend knows a workflow is
- * terminal (completed/cancelled/non-resumable), stale cache rows for that id
- * are also suppressed. cross-ref: issue #1498.
- */
-/** Remove restored/live snapshots whose authoritative durable format is non-loadable. */
+/** Remove local snapshots that do not exist as valid current DBOS workflows. */
 export function purgeSuppressedWorkflowRuns(backend: DurableWorkflowBackend, store: RunOpts["store"]): readonly string[] {
   if (store === undefined) return [];
   const removed: string[] = [];
@@ -289,16 +244,7 @@ export function purgeSuppressedWorkflowRuns(backend: DurableWorkflowBackend, sto
   return removed;
 }
 
-/**
- * Targeted durable preparation: resolve ONLY the given workflow ids by reading
- * their per-workflow state files (O(ids)), never enumerating the durable
- * directory or scanning session transcripts. Used by `session_start` and
- * mid-run resume-shadow paths, which always know the concrete ids they need.
- *
- * cross-ref: startup performance — a full `~/.atomic/workflow-durable` scan on
- * every session start scaled with total workflow history (seconds to minutes),
- * not with the current session.
- */
+/** Hydrate a bounded set of known DBOS workflow ids. */
 export async function prepareTargetedDurableResumable(
   backend: DurableWorkflowBackend,
   workflowIds: readonly string[],
@@ -308,12 +254,8 @@ export async function prepareTargetedDurableResumable(
   for (const workflowId of workflowIds) {
     if (seen.has(workflowId)) continue;
     seen.add(workflowId);
-    if (backend.hydrateWorkflow !== undefined) {
-      await backend.hydrateWorkflow(workflowId);
-    }
-    const handle = backend.getLoadableWorkflow !== undefined
-      ? backend.getLoadableWorkflow(workflowId)
-      : backend.isWorkflowLoadable(workflowId) ? backend.getWorkflow(workflowId) : undefined;
+    await backend.hydrateWorkflow(workflowId);
+    const handle = backend.getLoadableWorkflow(workflowId);
     if (handle === undefined || !isDurableWorkflowResumable(handle)) continue;
     entries.push(resumableEntryFromHandle(handle));
   }
@@ -322,34 +264,13 @@ export async function prepareTargetedDurableResumable(
 
 export async function prepareRuntimeDurableResumable(
   getBackend: () => DurableWorkflowBackend,
-  resolveSessionDir: () => string | undefined,
   workflowIdOrPrefix?: string,
-  sessionDir?: string,
 ): Promise<readonly ResumableWorkflowEntry[]> {
   const backend = getBackend();
-  if (backend.hydrateResumableWorkflows !== undefined) {
-    await backend.hydrateResumableWorkflows();
+  await backend.hydrateResumableWorkflows();
+  if (workflowIdOrPrefix !== undefined) {
+    const resolved = resolveDurableEntry(workflowIdOrPrefix, backend.listResumableWorkflows());
+    if (resolved !== undefined && !("kind" in resolved)) await backend.hydrateWorkflow(resolved.workflowId);
   }
-  if (workflowIdOrPrefix !== undefined && backend.hydrateWorkflow !== undefined) {
-    const catalog = backend.listResumableWorkflows();
-    const resolved = resolveDurableEntry(workflowIdOrPrefix, catalog);
-    if (resolved !== undefined && !("kind" in resolved)) {
-      await backend.hydrateWorkflow(resolved.workflowId);
-    }
-  }
-  const live = backend.listResumableWorkflows();
-  const effectiveSessionDir = sessionDir ?? resolveSessionDir();
-  if (effectiveSessionDir === undefined) return live;
-  const { scanResumableWorkflows } = await import("./resume-catalog.js");
-  const scanned = scanResumableWorkflows(effectiveSessionDir);
-  const liveIds = new Set(live.map((e) => e.workflowId));
-  // Suppress cache-only entries from older workflow engines. Without a
-  // durable backend handle/checkpoint state, selecting the row can only fail
-  // as stale (or risk re-running from scratch), so it should not clutter the
-  // resume selector.
-  const suppressed = scanned.filter((entry) => {
-    const handle = backend.getWorkflow(entry.workflowId);
-    return !liveIds.has(entry.workflowId) && handle !== undefined && isDurableWorkflowResumable(handle);
-  });
-  return [...live, ...suppressed];
+  return backend.listResumableWorkflows();
 }

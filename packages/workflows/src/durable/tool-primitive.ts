@@ -119,12 +119,7 @@ export function createToolPrimitive(input: CreateToolPrimitiveInput): WorkflowTo
 }
 
 export async function recordCheckpointDurably(backend: DurableWorkflowBackend, checkpoint: DurableCheckpoint): Promise<void> {
-  if (backend.recordCheckpointAsync !== undefined) {
-    await backend.recordCheckpointAsync(checkpoint);
-    return;
-  }
-  backend.recordCheckpoint(checkpoint);
-  await backend.flush?.();
+  await backend.recordCheckpointAsync(checkpoint);
 }
 
 async function executeWithRetries<T>(

@@ -179,6 +179,8 @@ test("temporary direct and named tasks default to the runner invocation cwd", ()
     import { run, runTask } from ${JSON.stringify(join(projectRoot, "packages/workflows/src/runs/foreground/executor.ts"))};
     import { workflow } from ${JSON.stringify(join(projectRoot, "packages/workflows/src/authoring/workflow.ts"))};
     import { createStore } from ${JSON.stringify(join(projectRoot, "packages/workflows/src/shared/store.ts"))};
+    import { createInMemoryTestBackend, setDurableBackend } from ${JSON.stringify(join(projectRoot, "packages/workflows/src/durable/factory.ts"))};
+    setDurableBackend(createInMemoryTestBackend());
     const [mode, repo, cwdMode] = process.argv.slice(2);
     const relative = cwdMode === "relative";
     let observed;

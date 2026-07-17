@@ -1,12 +1,8 @@
-/**
- * Durable workflow backend — barrel export.
- *
- * cross-ref: issue #1498 — DBOS-backed cross-session resumability.
- */
+/** DBOS-only durable workflow API. */
 
 export type {
   DurableCheckpoint,
-  DurableCheckpointEntry,
+  DurableWorkflowMetadata,
   DurableStageCheckpoint,
   DurableToolCheckpoint,
   DurableUiCheckpoint,
@@ -17,17 +13,24 @@ export type {
   WorkflowSerializableObject,
 } from "./types.js";
 
-export type { DurableWorkflowBackend } from "./backend.js";
+export type { DurableWorkflowBackend, DurableWorkflowCatalogEntries } from "./backend.js";
 export { InMemoryDurableBackend, durableHash } from "./backend.js";
-export { FileDurableBackend, WorkflowFileDurableBackend, defaultDurableStateDir, durableStateFileFor } from "./file-backend.js";
 export {
-  isDbosConfigured,
   DbosDurableBackend,
-  createDbosDurableBackend,
+  configureDbosDurableBackend,
+  type ConfiguredDbosDurability,
   type DbosSdkHandle,
   type DbosWorkflowInfo,
   type DbosStepRecord,
 } from "./dbos-backend.js";
+export {
+  DbosDurabilityError,
+  DbosNotReadyError,
+  configureDbosOnce,
+  launchDbosOnce,
+  getReadyDbosBackend,
+  shutdownDbos,
+} from "./dbos-lifecycle.js";
 export {
   encodeCheckpoint,
   decodeToCheckpoint,
@@ -38,17 +41,10 @@ export {
 export {
   getDurableBackend,
   setDurableBackend,
-  createInMemoryBackend,
-  createDefaultFileBackend,
-  createWorkflowFileBackend,
-  initializeDbosDurableBackendFromEnv,
+  createInMemoryTestBackend,
+  initializeDurableBackend,
 } from "./factory.js";
-export {
-  scanResumableWorkflows,
-  listResumableFromBackend,
-  persistDurableCacheEntry,
-  formatResumableWorkflowList,
-} from "./resume-catalog.js";
+export { listResumableFromBackend, formatResumableWorkflowList } from "./resume-catalog.js";
 export {
   completedWorkflowSnapshot,
   listCompletedFromBackend,

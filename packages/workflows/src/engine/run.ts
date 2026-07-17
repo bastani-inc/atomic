@@ -38,7 +38,6 @@ import { isWorkflowDefinition, workflowDefinitionRequirementMessage } from "../r
 import { getDurableBackend } from "../durable/factory.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
-import { persistDurableCacheEntry } from "../durable/resume-catalog.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
 import type { DurableCompletedStageCheckpoint } from "../durable/stage-primitive.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
@@ -206,14 +205,10 @@ export async function run<
   const durableOnStageEnd = async (stageRunId: string, snapshot: StageSnapshot): Promise<void> => {
     if (stageRunId === runId && snapshot.status === "completed") {
       await recordStageCheckpoint(durableStageDeps, snapshot);
-      if (opts.persistence && durableBackend.persistent) {
-        const cacheEntry = durableBackend.toCacheEntry(runId);
-        if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
-      }
     }
     await userOnStageEnd?.(stageRunId, snapshot);
   };
-  const durableOnStageSession = createDurableStageSessionRecorder({ runId, deps: durableStageDeps, backend: durableBackend, persistence: opts.persistence, onStageSession: opts.onStageSession });
+  const durableOnStageSession = createDurableStageSessionRecorder({ runId, deps: durableStageDeps, onStageSession: opts.onStageSession });
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
     models: opts.models,
@@ -420,16 +415,12 @@ export async function run<
     const result = normalizeWorkflowRunOutput(def.name, rawResult);
     assertWorkflowRunOutputs(def.name, result, def.outputs);
     assertWorkflowCreatedStage(runSnapshot);
-    await durableBackend.flush?.();
+    await durableBackend.flush();
     const returned = classifyReturnedRunStatus(result, runSnapshot);
     const recorded = activeStore.recordRunEnd(runId, returned.status, result, returned.error, returned.metadata);
     appendRunEndWhenRecorded(opts.persistence, recorded, { runId, status: returned.status, result, ...(returned.error !== undefined ? { error: returned.error } : {}), ...(returned.metadata ?? {}), ...(runSnapshot.endedAt !== undefined ? { endedAt: runSnapshot.endedAt } : {}), ...(runSnapshot.durationMs !== undefined ? { durationMs: runSnapshot.durationMs } : {}), ts: Date.now() });
     durableBackend.setWorkflowStatus(runId, returned.status, undefined, returned.metadata?.resumable);
-    await durableBackend.flush?.();
-    if (opts.persistence && durableBackend.persistent) {
-      const cacheEntry = durableBackend.toCacheEntry(runId);
-      if (cacheEntry) persistDurableCacheEntry(opts.persistence, cacheEntry);
-    }
+    await durableBackend.flush();
     return reconcileTerminalRunResult(runId, runSnapshot, activeStore, { status: returned.status, result, error: returned.error }, opts.onRunEnd);
   } catch (err) {
     const selectedExit = findWorkflowExitSignal(err, exitScope) ?? findWorkflowExitSignal(ownController.signal.reason, exitScope);
@@ -489,7 +480,6 @@ export async function run<
         runSnapshot,
         isRoot: opts.parentRun === undefined,
         durableBackend,
-        persistence: opts.persistence,
       });
     } finally {
       gitWorktreeSetupCacheOwner.release(() => opts.cancellation?.unregister(runId));

@@ -240,7 +240,7 @@ async function resumeDurableShadow(
   } catch (error) {
     warning = formatWorkflowResourceLoadWarning(error);
   }
-  const resumed = runtime.resumeDurableWorkflow(runId, { policy: deps.policy });
+  const resumed = await runtime.resumeDurableWorkflow(runId, { policy: deps.policy });
   const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
   return {
     action: "resume",

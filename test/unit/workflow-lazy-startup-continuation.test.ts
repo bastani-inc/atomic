@@ -18,7 +18,7 @@ import { createExtensionRuntime, type ExtensionRuntime } from "../../packages/wo
 import { makeExecuteWorkflowTool } from "../../packages/workflows/src/extension/workflow-tool.js";
 import { WORKFLOW_STAGE_SUBAGENT_GUARD_ENV } from "@bastani/atomic";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { createInMemoryBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
+import { createInMemoryTestBackend, setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 
 interface SentMessage {
   customType?: string;
@@ -35,7 +35,7 @@ async function cleanupJobs(): Promise<void> {
 }
 
 beforeEach(() => {
-  setDurableBackend(createInMemoryBackend());
+  setDurableBackend(createInMemoryTestBackend());
 });
 
 afterEach(async () => {
@@ -123,7 +123,7 @@ export default workflow({
 }
 
 describe("workflow lazy-startup continuation fixes", () => {
-  test("session_start loads persistRuns config before restore without discovering workflow modules", async () => {
+  test("session_start ignores session workflow state without discovering workflow modules", async () => {
     const root = mkdtempSync(join(tmpdir(), "atomic-workflow-config-restore-"));
     try {
       mkdirSync(workflowConfigDir(root), { recursive: true });
@@ -143,7 +143,7 @@ describe("workflow lazy-startup continuation fixes", () => {
     }
   });
 
-  test("session_start loads resumeInFlight config before restore", async () => {
+  test("resumeInFlight cannot restore workflow state from session JSONL", async () => {
     const root = mkdtempSync(join(tmpdir(), "atomic-workflow-config-auto-"));
     try {
       mkdirSync(workflowConfigDir(root), { recursive: true });
@@ -151,9 +151,7 @@ describe("workflow lazy-startup continuation fixes", () => {
       process.chdir(root);
       const { handlers } = registerFactory({ disableAsyncDiscovery: true });
       await handlers.get("session_start")?.({}, { sessionManager: { getEntries: () => [inFlightEntry("auto-run")] } });
-      const restored = store.runs().find((run) => run.id === "auto-run");
-      assert.equal(restored?.status, "running");
-      assert.equal(restored?.endedAt, undefined);
+      assert.equal(store.runs().some((run) => run.id === "auto-run"), false);
     } finally {
       process.chdir(originalCwd);
       rmSync(root, { recursive: true, force: true });

@@ -262,7 +262,7 @@ describe("/workflow resume <runId> — exact live fast path", () => {
 
         await assert.rejects(
             handler(`resume ${runId}`, { hasUI: false, ui: { notify: () => undefined } }),
-            /No durable workflow found for id\/prefix/,
+            /No resumable workflow found for id\/prefix/,
         );
 
         assert.ok(backend.completedCatalogCalls > 0, "nested child must continue through the top-level resolver");

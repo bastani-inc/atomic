@@ -53,7 +53,7 @@ export async function markDurableResumed(runId: string): Promise<DurableResumeTr
       const authoritative = getLoadableDurableWorkflow(backend, runId);
       return authoritative?.status === "running" ? "not_needed" : "refused";
     }
-    await backend.flush?.();
+    await backend.flush();
     pending.delete(runId);
     return "transitioned";
   } catch (error) {

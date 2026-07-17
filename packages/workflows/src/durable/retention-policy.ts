@@ -18,11 +18,7 @@ export async function deleteDurableWorkflowIfSafe(
     return { ok: false, message: "Cannot delete an in-flight workflow run." };
   }
   try {
-    if (backend.deleteWorkflowIfInactive === undefined) {
-      return { ok: false, message: "This durable backend cannot safely delete workflow history while checking run activity." };
-    }
-    const handle = backend.getLoadableWorkflow?.(workflowId)
-      ?? (backend.isWorkflowLoadable(workflowId) ? backend.getWorkflow(workflowId) : undefined);
+    const handle = backend.getLoadableWorkflow(workflowId);
     if (handle === undefined) {
       return { ok: false, message: "Workflow durable state is stale or no longer available." };
     }

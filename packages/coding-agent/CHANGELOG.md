@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Bundled workflow durability now requires DBOS/Postgres and no longer provides local JSON/SQLite persistence, runtime opt-out/backend selection, session-transcript discovery, or conversion of prior durable data.
+
 ### Added
 
 - Added `/workflows [run-id]` as a retained workflow-run alias for `/workflow resume`, with confirmed backend-aware deletion for inactive durable/completed rows that protects in-flight runs and preserves independent session transcripts.
@@ -10,8 +14,13 @@
 
 ### Changed
 
+- Promoted the DBOS SDK and `embedded-postgres` to mandatory dependencies. Atomic configures and launches DBOS lazily on the first workflow action, awaits readiness before every workflow lifecycle path, and surfaces initialization or persistence failures for that action instead of continuing on another backend. Without `DBOS_SYSTEM_DATABASE_URL`, workflow durability runs on an embedded Postgres from npm-distributed binaries (detached daemon under `~/.atomic/postgres`, shared across sessions; Docker `dbos-db` container only as a platform fallback). Concurrent Atomic sessions sharing one database use per-process executor identities, owner/heartbeat metadata, and first-writer-wins resume claims so one session's live workflow cannot be double-dispatched from another.
+
 - Documented and enforced `/resume`-equivalent workflow-history retention: eligible runs are not filtered or garbage-collected by age/count, and the selector viewport does not limit search/navigation.
 - Kept the interactive-engine watchdog's early 250 ms blocking signal internal instead of rendering repetitive "has not yielded" warnings during ordinary slow extension/tool loading. Atomic still surfaces the actionable one-second unresponsive diagnostic with Escape/Ctrl+C recovery guidance.
+
+### Removed
+
 
 ### Fixed
 
@@ -22,7 +31,6 @@
 - Fixed a startup input race where typing a command-like draft such as a bare `/` before the header finished loading was reclassified as a submitted cooked-mode command and sent automatically. Raw startup capture now remains authoritative: only Enter-terminated submissions replay, while unfinished slash/bash drafts stay in the editor.
 - Fixed startup changelog and first-run onboarding notices being gated behind the deferred extension reload — and, when a prompt was typed immediately at launch, behind the entire first agent turn. They now render right after the input handler is ready (milliseconds after first paint), matching pi's behavior; the RESOURCES disclosure still waits for the actual extension load it reports on.
 - Reduced deferred extension-load stalls by yielding to the event loop between extension loads only when the current turn has actually run long (≥16 ms) instead of unconditionally — the previous unconditional yields cost a full macrotask turn (~100 ms each while the TUI is live) per bundled extension (~0.5 s of the deferred load).
-- Fixed `/workflow resume` and `/workflows` history opening at 100k+ file-backed durable runs by using an incremental SQLite/WAL catalog and lazy selected-row transcript hydration instead of whole-directory scans. The catalog atomically tracks normal writes and self-heals from authoritative per-run JSON when missing, stale, incomplete, or corrupt.
 - Hardened the isolated interactive engine's runtime and transport. Best-effort RPC rejections are now centrally contained so a fire-and-forget path can no longer crash the host; Escape/cancel recovery is generation-fenced so a cancelled turn survives, the host stays alive, and the engine child is cleanly restarted. The child is the sole authoritative writer of transcript/settings state (host snapshots are side-effect-free, and model/thinking/name operations persist exactly once), and a guardian tracks the full process tree so forced host death leaves no orphaned engine or detached grandchild.
 - Hardened the interactive-engine JSONL transport against unbounded growth and frame loss. Framing is UTF-8 byte-bounded (not UTF-16 char counts), writers in both directions are byte-accounted with backpressure, update coalescing happens before serialization, and terminal/correlated frames are either delivered or fail immediately with an explicit protocol error and same-id rejection instead of a 30-second timeout.
 - Fixed the isolated interactive engine omitting extension slash commands (`/workflow`, its `/workflows` alias, `/run`, `/mcp`, and others) from autocomplete. Because the host session loads no extensions in the interactive-engine child model, those commands live only in the engine child; the host now fetches the child's command catalog asynchronously after engine bind (never delaying first paint or input), merges it into autocomplete with built-in names reserved and locally-present prompts/skills deduped, and re-fetches after engine restart, reload, and new/resume/fork. Command execution continues to route through the child with no duplicate host handling.
