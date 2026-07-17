@@ -43,3 +43,16 @@ export function isForeignLiveWorkflow(
   if (candidate.ownerExecutorId === undefined || candidate.ownerExecutorId === localExecutorId) return false;
   return now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
 }
+
+/**
+ * Whether a running workflow appears genuinely live ANYWHERE (any owner).
+ * Live-running workflows are never resume targets: offering them would allow
+ * double-dispatch across sessions. Only stale-heartbeat (crashed) running
+ * workflows surface, presented as crashed rather than running.
+ */
+export function isLiveRunningWorkflow(
+  candidate: Pick<ForeignLivenessCandidate, "status" | "updatedAt">,
+  now: number = Date.now(),
+): boolean {
+  return candidate.status === "running" && now - candidate.updatedAt < FOREIGN_LIVE_WORKFLOW_WINDOW_MS;
+}

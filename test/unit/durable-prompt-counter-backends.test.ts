@@ -128,7 +128,9 @@ describe("durable pending-prompt counter backends", () => {
     const fresh = new DbosDurableBackend(sdk);
     await fresh.hydrateWorkflow(workflowId);
     assert.equal(fresh.getWorkflow(workflowId)?.pendingPrompts, 1);
-    assert.deepEqual(fresh.listResumableWorkflows().map((entry) => entry.workflowId), [workflowId]);
+    // A fresh-heartbeat running workflow is never a resume target; the prompt
+    // counter still hydrates on the handle itself.
+    assert.deepEqual(fresh.listResumableWorkflows(), []);
     fresh.adjustPendingPrompts(workflowId, -2);
     await fresh.flush();
     assert.equal(fresh.getWorkflow(workflowId)?.pendingPrompts, 0);

@@ -8,6 +8,11 @@ import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
+import {
+  collectResumePickerLiveRuns,
+  resumePickerLiveUpdateOptions,
+  type ResumePickerCatalogRows,
+} from "./workflow-resume-picker-rows.js";
 import type { PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
@@ -216,48 +221,21 @@ export async function handleRunControlCommand(
         return true;
       }
       if (action === "resume") {
-        // Only inactive workflows belong in the resume selector. Live runs:
-        // show paused (quit) or recoverably-failed runs; actively-running live
-        // runs are hidden (resuming one that is executing would double-dispatch).
-        const durableResumeShadows = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) => reconcileDurableResumeShadow(run, store))
-            .map((run) => run.id),
-        );
-        let liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
-          !durableResumeShadows.has(run.id) &&
-          (run.status === "paused" || (run.status === "failed" && run.resumable !== false)),
-        );
-        const activeLiveIds = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) =>
-              !durableResumeShadows.has(run.id) &&
-              run.endedAt === undefined &&
-              run.status === "running" &&
-              run.exitReason !== "quit"
-            )
-            .map((run) => run.id),
-        );
         // Mount the picker before any resource/catalog loading. Live rows seed the
         // first frame; durable/completed rows hydrate asynchronously and merge in.
         // The RPC prompt carrying this slash command no longer times out while the
         // picker awaits (long-lived command classification in RpcClient).
-        liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
+        const initial = collectResumePickerLiveRuns(store);
         const runtime = deps.runtimeForContext(ctx);
-        const hydrate = async (): Promise<{
-          durable: readonly ResumableWorkflowEntry[];
-          completed: readonly ResumableWorkflowEntry[];
-        }> => {
+        const hydrate = async (): Promise<ResumePickerCatalogRows> => {
           await ensureWorkflowResourcesVisible();
-          const catalog = await prepareWorkflowResumeCatalog(runtime, activeLiveIds);
+          const catalog = await prepareWorkflowResumeCatalog(runtime, initial.activeLiveIds);
           return { durable: catalog.resumable, completed: catalog.completed };
         };
-        const picked = await openWorkflowResumeSelector(
-          ctx.ui,
-          liveRuns,
-          hydrate,
-          { deleteWorkflow: deleteWorkflowResumeEntry },
-        );
+        const picked = await openWorkflowResumeSelector(ctx.ui, initial.liveRuns, hydrate, {
+          deleteWorkflow: deleteWorkflowResumeEntry,
+          ...resumePickerLiveUpdateOptions(store, runtime),
+        });
         const durableEntries = picked.catalog.durable;
         const completedEntries = picked.catalog.completed;
         if (picked.result.kind === "durable" || picked.result.kind === "completed") {

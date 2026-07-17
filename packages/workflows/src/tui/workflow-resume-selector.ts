@@ -22,7 +22,18 @@ export interface WorkflowResumeSelectorUiSurface {
 
 export interface WorkflowResumeSelectorOptions {
   readonly deleteWorkflow?: (workflowId: string) => Promise<DurableWorkflowDeleteOutcome>;
+  /** Subscribe to local run-store changes; returns an unsubscribe function. */
+  readonly watch?: (onChange: () => void) => () => void;
+  /** Recompute every row: fresh live runs plus a re-hydrated catalog. */
+  readonly refresh?: WorkflowResumeRefresh;
+  /** Cross-session polling cadence while the picker is open. 0 disables. */
+  readonly refreshIntervalMs?: number;
 }
+
+export type WorkflowResumeRefresh = () => Promise<{
+  readonly liveRuns: readonly RunSnapshot[];
+  readonly catalog: WorkflowResumeCatalogRows;
+}>;
 
 interface WorkflowResumeSelectorItem {
   readonly result: Exclude<WorkflowResumeSelectorResult, { kind: "close" }>;
@@ -42,11 +53,30 @@ function completedStageCount(run: RunSnapshot): number {
   return run.stages.filter((stage) => stage.status === "completed" || stage.status === "failed").length;
 }
 
+interface WorkflowStatusPresentation {
+  readonly label: string;
+  readonly color?: "success" | "warning" | "error";
+}
+
+/**
+ * Semantic row presentation: green completed, yellow paused, red failed and
+ * blocked. Durable `running` rows only reach the picker once their heartbeat
+ * is stale (nothing is executing them), so they present as crashed.
+ */
+function workflowStatusPresentation(status: string, kind: "live" | "durable" | "completed"): WorkflowStatusPresentation {
+  if (kind === "completed") return { label: "✓ completed", color: "success" };
+  if (status === "paused") return { label: "paused", color: "warning" };
+  if (status === "failed" || status === "blocked") return { label: status, color: "error" };
+  if (kind === "durable" && status === "running") return { label: "crashed", color: "error" };
+  return { label: status };
+}
+
 function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
   const completed = completedStageCount(run);
   const total = run.stages.length;
   const modified = new Date(latestRunTimestamp(run));
-  const firstMessage = `${run.name}  ${run.status}  ${completed}/${total} stages`;
+  const presentation = workflowStatusPresentation(run.status, "live");
+  const firstMessage = `${run.name}  ${presentation.label}  ${completed}/${total} stages`;
   return {
     result: { kind: "live", runId: run.id },
     session: {
@@ -57,7 +87,8 @@ function liveRunSession(run: RunSnapshot): WorkflowResumeSelectorItem {
       modified,
       messageCount: total,
       firstMessage,
-      allMessagesText: `${run.id} ${run.name} ${run.status} ${completed}/${total} stages`,
+      allMessagesText: `${run.id} ${run.name} ${presentation.label} ${completed}/${total} stages`,
+      ...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
     },
   };
 }
@@ -68,7 +99,7 @@ function durableWorkflowSession(
 ): WorkflowResumeSelectorItem {
   const checkpointText = `${entry.completedCheckpoints} checkpoints`;
   const promptText = `${entry.pendingPrompts} prompts`;
-  const statusText = kind === "completed" ? "✓ completed" : entry.status;
+  const presentation = workflowStatusPresentation(entry.status, kind);
   return {
     result: { kind, workflowId: entry.workflowId },
     session: {
@@ -78,9 +109,9 @@ function durableWorkflowSession(
       created: new Date(entry.createdAt),
       modified: new Date(entry.updatedAt),
       messageCount: entry.completedCheckpoints,
-      firstMessage: `${entry.name}  ${statusText}  ${checkpointText}  ${promptText}`,
-      allMessagesText: `${entry.workflowId} ${entry.name} ${statusText} ${checkpointText} ${promptText}`,
-      ...(kind === "completed" ? { messageColor: "success" as const } : {}),
+      firstMessage: `${entry.name}  ${presentation.label}  ${checkpointText}  ${promptText}`,
+      allMessagesText: `${entry.workflowId} ${entry.name} ${presentation.label} ${checkpointText} ${promptText}`,
+      ...(presentation.color !== undefined ? { messageColor: presentation.color } : {}),
     },
   };
 }
@@ -146,10 +177,18 @@ export function openWorkflowResumeSelector(
 
   // Frame-1 seed: cheap in-memory live rows only. Durable/completed rows merge in
   // once the async hydrate() resolves; errors keep the live rows on screen.
-  const liveItems = workflowResumeSelectorItems(liveRuns, [], []);
+  let currentLiveRuns = liveRuns;
+  const liveItems = workflowResumeSelectorItems(currentLiveRuns, [], []);
   let sessions = liveItems.map((item) => item.session);
   let resultByPath = new Map(liveItems.map((item) => [item.session.path, item.result]));
   let resolvedCatalog: WorkflowResumeCatalogRows = EMPTY_CATALOG;
+
+  const applyRows = (catalog: WorkflowResumeCatalogRows): void => {
+    resolvedCatalog = catalog;
+    const items = workflowResumeSelectorItems(currentLiveRuns, catalog.durable, catalog.completed);
+    sessions = items.map((item) => item.session);
+    resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
+  };
 
   // Hydrate at most once even though both scope loaders point at it.
   let hydratePromise: Promise<WorkflowResumeCatalogRows> | undefined;
@@ -158,11 +197,7 @@ export function openWorkflowResumeSelector(
   const loadSessions = async (
     onProgress?: (loaded: number, total: number) => void,
   ): Promise<SessionInfo[]> => {
-    const catalog = await hydrateOnce();
-    resolvedCatalog = catalog;
-    const items = workflowResumeSelectorItems(liveRuns, catalog.durable, catalog.completed);
-    sessions = items.map((item) => item.session);
-    resultByPath = new Map(items.map((item) => [item.session.path, item.result]));
+    applyRows(await hydrateOnce());
     onProgress?.(sessions.length, sessions.length);
     return [...sessions];
   };
@@ -170,9 +205,16 @@ export function openWorkflowResumeSelector(
   return new Promise<OpenWorkflowResumeSelectorResult>((resolve) => {
     let settled = false;
     let activeSelector: SessionSelectorComponent | undefined;
+    let stopWatching: (() => void) | undefined;
+    let refreshTimer: ReturnType<typeof setInterval> | undefined;
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    let requestPickerRender: (() => void) | undefined;
     const settle = (result: WorkflowResumeSelectorResult, done?: (result: undefined) => void): void => {
       if (settled) return;
       settled = true;
+      stopWatching?.();
+      if (refreshTimer !== undefined) clearInterval(refreshTimer);
+      if (debounceTimer !== undefined) clearTimeout(debounceTimer);
       // Cancel any late hydration/render and clear status timeouts.
       activeSelector?.dispose();
       try {
@@ -180,6 +222,36 @@ export function openWorkflowResumeSelector(
       } finally {
         resolve({ result, catalog: resolvedCatalog });
       }
+    };
+
+    // Live updates: the picker re-lists rows on local run-store changes and on
+    // a bounded cross-session poll, so a workflow that pauses, fails, or
+    // completes appears (and a freshly running one disappears) while open.
+    let refreshing = false;
+    const runRefresh = async (): Promise<void> => {
+      const refresh = options.refresh;
+      if (refresh === undefined || settled || refreshing) return;
+      refreshing = true;
+      try {
+        const next = await refresh();
+        if (settled) return;
+        currentLiveRuns = next.liveRuns;
+        applyRows(next.catalog);
+        activeSelector?.getSessionList().setSessions([...sessions], true);
+        requestPickerRender?.();
+      } catch {
+        // Keep the previous rows on a failed refresh; the next tick retries.
+      } finally {
+        refreshing = false;
+      }
+    };
+    const scheduleRefresh = (): void => {
+      if (settled || debounceTimer !== undefined) return;
+      debounceTimer = setTimeout(() => {
+        debounceTimer = undefined;
+        void runRefresh();
+      }, 250);
+      debounceTimer.unref?.();
     };
 
     const factory = (
@@ -225,6 +297,16 @@ export function openWorkflowResumeSelector(
         tui.requestRender?.();
       };
       selector.focused = true;
+
+      requestPickerRender = () => tui.requestRender?.();
+      if (options.watch !== undefined && options.refresh !== undefined) {
+        stopWatching = options.watch(scheduleRefresh);
+      }
+      const intervalMs = options.refreshIntervalMs ?? 5_000;
+      if (options.refresh !== undefined && intervalMs > 0) {
+        refreshTimer = setInterval(() => { void runRefresh(); }, intervalMs);
+        refreshTimer.unref?.();
+      }
 
       return {
         render: (width) => selector.render(width),

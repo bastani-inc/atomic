@@ -9,7 +9,7 @@ import { transitionDbosWorkflowStatus } from "./dbos-status-transition.js";
 import { claimMetadataStepName, classifyLatestMetadata, encodeMetadata, isMetadataStep, metadataStepName, parseCurrentMetadataRecord } from "./dbos-metadata.js";
 import { inactivePromptReservationToken, type PromptReservationToken } from "./prompt-reservation-state.js";
 import { DBOS_DELETION_STEP, classifyDbosDeletionTombstone, encodeDbosDeletionTombstone } from "./dbos-tombstone.js";
-import { isForeignLiveWorkflow } from "./resume-eligibility.js";
+import { isLiveRunningWorkflow } from "./resume-eligibility.js";
 import {
   DbosPromptReservationTracker,
   isDbosPromptStateStep,
@@ -268,14 +268,12 @@ export class DbosDurableBackend implements DurableWorkflowBackend {
     if (this.isWorkflowLoadable(workflowId)) this.promptReservations.release(workflowId, reservationId, token);
   }
   listResumableWorkflows(): readonly ResumableWorkflowEntry[] {
-    // A running workflow with fresh metadata owned by another Atomic process is
-    // genuinely executing in that session, not crashed; hide it from resume.
+    // A running workflow with a fresh heartbeat is genuinely executing in SOME
+    // session; it is never a resume target (double dispatch). Only crashed
+    // (stale-heartbeat) running workflows remain listed.
     return this.mem.listResumableWorkflows().filter((entry) =>
       !this.invalid.has(entry.workflowId)
-      && !isForeignLiveWorkflow(
-        { status: entry.status, updatedAt: entry.updatedAt, ownerExecutorId: this.mem.getWorkflow(entry.workflowId)?.ownerExecutorId },
-        this.executorId,
-      ));
+      && !isLiveRunningWorkflow({ status: entry.status, updatedAt: entry.updatedAt }));
   }
 
   listCompletedWorkflows(): readonly ResumableWorkflowEntry[] {

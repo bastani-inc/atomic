@@ -45,6 +45,7 @@ interface MountedSelector {
 function mountSelector(
   liveRuns: readonly RunSnapshot[],
   hydrate: () => Promise<WorkflowResumeCatalogRows>,
+  options: Parameters<typeof openWorkflowResumeSelector>[3] = {},
 ): MountedSelector {
   let mounted: PiCustomComponent | undefined;
   const custom: PiCustomOverlayFunction = (factory: PiCustomOverlayFactory) =>
@@ -54,7 +55,7 @@ function mountSelector(
       if (built instanceof Promise) void built.then((component) => { mounted = component; });
       else mounted = built;
     });
-  const promise = openWorkflowResumeSelector({ custom }, liveRuns, hydrate, {});
+  const promise = openWorkflowResumeSelector({ custom }, liveRuns, hydrate, options);
   return {
     promise,
     component: () => {
@@ -267,5 +268,115 @@ describe("workflow resume selector", () => {
     mounted.component().dispose?.();
     const outcome = await mounted.promise;
     assert.deepEqual(outcome.result, { kind: "close" });
+  });
+});
+
+describe("workflow resume selector row presentation", () => {
+  beforeAll(() => {
+    initTheme("dark");
+  });
+
+  test("colors paused yellow, failed and blocked red, completed green", () => {
+    const items = workflowResumeSelectorItems(
+      [pausedLiveRun("live-paused-run")],
+      [entry("d-paused", "paused"), entry("d-failed", "failed"), entry("d-blocked", "blocked")],
+      [entry("d-completed", "completed")],
+    );
+    const byId = new Map(items.map((item) => [item.session.id, item.session]));
+    assert.equal(byId.get("d-paused")?.messageColor, "warning");
+    assert.equal(byId.get("d-failed")?.messageColor, "error");
+    assert.equal(byId.get("d-blocked")?.messageColor, "error");
+    assert.equal(byId.get("d-completed")?.messageColor, "success");
+    assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
+  });
+
+  test("presents a stale-heartbeat running durable row as crashed, never running", () => {
+    const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
+    assert.match(item!.session.firstMessage, /repro-flow {2}crashed/);
+    assert.doesNotMatch(item!.session.firstMessage, /running/);
+    assert.equal(item!.session.messageColor, "error");
+    assert.match(item!.session.allMessagesText, /crashed/);
+  });
+});
+
+describe("workflow resume selector live updates", () => {
+  beforeAll(() => {
+    initTheme("dark");
+  });
+
+  test("watch-triggered refresh re-lists rows while the picker stays open", async () => {
+    let onChange: (() => void) | undefined;
+    let unsubscribed = 0;
+    let refreshCalls = 0;
+    let rows: WorkflowResumeCatalogRows = { durable: [], completed: [] };
+    const mounted = mountSelector(
+      [pausedLiveRun("live-a", 100)],
+      async () => rows,
+      {
+        refreshIntervalMs: 0,
+        watch: (change) => {
+          onChange = change;
+          return () => { unsubscribed += 1; };
+        },
+        refresh: async () => {
+          refreshCalls += 1;
+          return { liveRuns: [], catalog: rows };
+        },
+      },
+    );
+    await flush();
+    assert.ok(renderText(mounted.component()).includes("live-workflow"));
+    assert.ok(onChange, "watch registered after mount");
+
+    // A quit elsewhere pauses the workflow: the durable row must appear and the
+    // (now stale) live row must drop without reopening the picker.
+    rows = { durable: [entry("d-now-paused", "paused")], completed: [] };
+    onChange!();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await flush();
+
+    const rendered = renderText(mounted.component());
+    assert.ok(rendered.includes("paused-workflow"), "transitioned row appears live");
+    assert.ok(!rendered.includes("live-workflow"), "removed live row disappears");
+    assert.equal(refreshCalls, 1);
+
+    mounted.component().dispose?.();
+    await mounted.promise;
+    assert.equal(unsubscribed, 1, "watch unsubscribed on close");
+
+    // Late change events after close never refresh again.
+    onChange!();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(refreshCalls, 1);
+  });
+
+  test("interval polling refreshes cross-session changes", async () => {
+    let refreshCalls = 0;
+    const mounted = mountSelector(
+      [],
+      async () => ({ durable: [], completed: [] }),
+      {
+        refreshIntervalMs: 40,
+        refresh: async () => {
+          refreshCalls += 1;
+          return {
+            liveRuns: [],
+            catalog: { durable: [entry("d-from-poll", "paused")], completed: [] },
+          };
+        },
+      },
+    );
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 130));
+    await flush();
+
+    assert.ok(refreshCalls >= 2, `interval refresh ran (${refreshCalls})`);
+    assert.ok(renderText(mounted.component()).includes("paused-workflow"));
+
+    mounted.component().dispose?.();
+    await mounted.promise;
+    const settledCalls = refreshCalls;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(refreshCalls, settledCalls, "interval stops after close");
   });
 });

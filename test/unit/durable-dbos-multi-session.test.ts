@@ -153,6 +153,25 @@ describe("cross-process hydration of ordinary run checkpoints", () => {
   });
 });
 
+describe("running workflows are never resume targets", () => {
+  test("a fresh-heartbeat running workflow is hidden even from its own session", async () => {
+    const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
+    const owner = new DbosDurableBackend(createSharedSdk(state), { executorId: "atomic-session-a" });
+    owner.registerWorkflow({
+      workflowId: "wf-own-running",
+      name: "multi-session-flow",
+      inputs: {},
+      createdAt: 1,
+      status: "running",
+      completedCheckpoints: 3,
+    });
+    await owner.flush();
+
+    assert.deepEqual(owner.listResumableWorkflows(), []);
+    assert.equal(owner.getWorkflow("wf-own-running")?.status, "running");
+  });
+});
+
 describe("shared-database visibility across sessions", () => {
   test("hides another session's live running workflow from resume, surfaces it once its heartbeat ages out", async () => {
     const state: SharedDbosState = { workflows: new Map(), steps: new Map() };
