@@ -50,6 +50,18 @@ export async function recordStageCheckpoint(deps: DurableStageDeps, stage: Stage
   return true;
 }
 
+/**
+ * Debounce granularity for stage-session duration updates. `durationMs`
+ * differs on virtually every prompt/steer event, so comparing it exactly
+ * forced a full durable read-merge-rewrite per event; identity fields
+ * (session id/file/start) still force an immediate write when they change.
+ */
+const STAGE_SESSION_DURATION_BUCKET_MS = 30_000;
+
+function stageSessionDurationBucket(durationMs: number | undefined): number {
+  return Math.floor((durationMs ?? 0) / STAGE_SESSION_DURATION_BUCKET_MS);
+}
+
 export async function recordStageSessionCheckpoint(deps: DurableStageDeps, stage: StageSnapshot): Promise<boolean> {
   const replayKey = deps.replayKeyForCompletedStage?.(stage) ?? stage.replayKey ?? deps.nextReplayKey(stage.name);
   if (stage.sessionFile === undefined) return false;
@@ -60,7 +72,7 @@ export async function recordStageSessionCheckpoint(deps: DurableStageDeps, stage
     && current.sessionId === stage.sessionId
     && current.sessionFile === stage.sessionFile
     && current.startedAt === stage.startedAt
-    && current.durationMs === durationMs) return false;
+    && stageSessionDurationBucket(current.durationMs) === stageSessionDurationBucket(durationMs)) return false;
   const checkpoint: DurableStageCheckpoint = {
     kind: "stage",
     workflowId: deps.workflowId,

@@ -145,7 +145,7 @@ export async function extractContent(
 		return { url, title: "", content: "", error: "Aborted" };
 	}
 
-	const frameResult = await extractRequestedFrames(url, options);
+	const frameResult = await extractRequestedFrames(url, options, signal);
 	if (frameResult) return frameResult;
 
 	const localVideo = safeVideoInfo(url);
@@ -451,7 +451,7 @@ async function extractViaHttp(
 			};
 		}
 
-		const markdown = turndown.turndown(article.content);
+		const markdown = turndown.turndown(article.content ?? "");
 		activityMonitor.logComplete(activityId, response.status);
 
 		if (markdown.length < MIN_USEFUL_CONTENT) {

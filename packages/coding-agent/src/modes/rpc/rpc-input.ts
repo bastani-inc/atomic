@@ -9,6 +9,7 @@ interface RpcInputLineHandlerOptions {
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	handleCommand: RpcCommandHandler;
 	checkShutdownRequested: () => Promise<void>;
+	handleInteractiveEngineLine?: (line: string) => boolean;
 }
 
 interface CommandIdentity {
@@ -41,8 +42,10 @@ export function createRpcInputLineHandler({
 	pendingExtensionRequests,
 	handleCommand,
 	checkShutdownRequested,
+	handleInteractiveEngineLine,
 }: RpcInputLineHandlerOptions): (line: string) => Promise<void> {
 	return async (line: string): Promise<void> => {
+		if (handleInteractiveEngineLine?.(line)) return;
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(line);

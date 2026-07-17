@@ -8,5 +8,8 @@ linker = "hoisted"
 exact = true
 saveTextLockfile = true
 
+[test]
+preload = ["./test/setup-workflow-durability.ts"]
+
 [run]
 bun = true

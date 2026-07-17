@@ -8,6 +8,11 @@ import { renderSessionList } from "../tui/session-list.js";
 import { openSessionPicker } from "../tui/session-overlays.js";
 import { deriveGraphTheme } from "../tui/graph-theme.js";
 import { openWorkflowResumeSelector } from "../tui/workflow-resume-selector.js";
+import {
+  collectResumePickerLiveRuns,
+  resumePickerLiveUpdateOptions,
+  type ResumePickerCatalogRows,
+} from "./workflow-resume-picker-rows.js";
 import type { PiCommandContext } from "./public-types.js";
 import type { WorkflowCommandReporter } from "./workflow-command-utils.js";
 import { stripYesFlag } from "./workflow-command-utils.js";
@@ -22,6 +27,7 @@ import { formatWorkflowResourceLoadWarning } from "./workflow-command-surfaces.j
 import { classifyDurableResumeShadow, reconcileDurableResumeShadow } from "./workflow-resume-shadow.js";
 import { workflowHasPausedStages, workflowHasPausedState } from "../runs/background/workflow-lifecycle-aggregate.js";
 import {
+  deleteWorkflowResumeEntry,
   handleDurableResume,
   prepareWorkflowResumeCatalog,
   resolveWorkflowResumeTarget,
@@ -215,53 +221,41 @@ export async function handleRunControlCommand(
         return true;
       }
       if (action === "resume") {
-        // Only inactive workflows belong in the resume selector. Live runs:
-        // show paused (quit) or recoverably-failed runs; actively-running live
-        // runs are hidden (resuming one that is executing would double-dispatch).
-        const durableResumeShadows = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) => reconcileDurableResumeShadow(run, store))
-            .map((run) => run.id),
-        );
-        let liveRuns = topLevelWorkflowRuns(store.runs()).filter((run) =>
-          !durableResumeShadows.has(run.id) &&
-          (run.status === "paused" || (run.status === "failed" && run.resumable !== false)),
-        );
-        const activeLiveIds = new Set(
-          topLevelWorkflowRuns(store.runs())
-            .filter((run) =>
-              !durableResumeShadows.has(run.id) &&
-              run.endedAt === undefined &&
-              run.status === "running" &&
-              run.exitReason !== "quit"
-            )
-            .map((run) => run.id),
-        );
-        await ensureWorkflowResourcesVisible();
+        // Mount the picker before any resource/catalog loading. Live rows seed the
+        // first frame; durable/completed rows hydrate asynchronously and merge in.
+        // The RPC prompt carrying this slash command no longer times out while the
+        // picker awaits (long-lived command classification in RpcClient).
+        const initial = collectResumePickerLiveRuns(store);
         const runtime = deps.runtimeForContext(ctx);
-        let durableEntries: readonly ResumableWorkflowEntry[] = [];
-        let completedEntries: readonly ResumableWorkflowEntry[] = [];
+        const hydrate = async (): Promise<ResumePickerCatalogRows> => {
+          await ensureWorkflowResourcesVisible();
+          const catalog = await prepareWorkflowResumeCatalog(runtime, initial.activeLiveIds);
+          return { durable: catalog.resumable, completed: catalog.completed };
+        };
+        let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;
         try {
-          const catalog = await prepareWorkflowResumeCatalog(runtime, activeLiveIds);
-          durableEntries = catalog.resumable;
-          completedEntries = catalog.completed;
+          picked = await openWorkflowResumeSelector(ctx.ui, initial.liveRuns, hydrate, {
+            deleteWorkflow: deleteWorkflowResumeEntry,
+            ...resumePickerLiveUpdateOptions(store, runtime),
+          });
         } catch (error) {
-          liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          if (liveRuns.length === 0) {
-            fail(`Failed to list workflow resume targets: ${errorMessage}`);
-            return true;
-          }
+          // No fallback: a host without the session-picker capability fails
+          // the resume command with one actionable message.
+          fail(error instanceof Error ? error.message : String(error));
+          return true;
         }
-        liveRuns = liveRuns.filter((run) => getDurableBackend().isWorkflowLoadable(run.id));
-        const picked = await openWorkflowResumeSelector(ctx.ui, liveRuns, durableEntries, completedEntries);
-        if (picked.kind === "durable" || picked.kind === "completed") {
-          return await handleDurableResume(picked.workflowId, ctx, reporter, deps);
+        const durableEntries = picked.catalog.durable;
+        const completedEntries = picked.catalog.completed;
+        if (picked.result.kind === "durable" || picked.result.kind === "completed") {
+          return await handleDurableResume(picked.result.workflowId, ctx, reporter, deps, {
+            resumable: durableEntries,
+            completed: completedEntries,
+          });
         }
-        if (picked.kind === "live") {
-          const resolved = resolveRunIdPrefix(picked.runId);
+        if (picked.result.kind === "live") {
+          const resolved = resolveRunIdPrefix(picked.result.runId);
           if (resolved.kind !== "exact") {
-            fail(`Run not found: ${picked.runId}`);
+            fail(`Run not found: ${picked.result.runId}`);
             return true;
           }
           const run = store.runs().find((r) => r.id === resolved.runId);
@@ -281,7 +275,7 @@ export async function handleRunControlCommand(
                 fail(result.message ?? ("Partially resumed " + result.runId + "."));
               } else {
                 if (result.ok && policy.allowInputPicker) deps.overlay.open(result.runId, overlaySurfaceFromContext(ctx));
-                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.runId}`);
+                result.ok ? print(result.message ?? `Resumed ${result.runId.slice(0, 8)}`) : fail(`Run not found: ${picked.result.runId}`);
               }
             } catch (error) {
               fail(`Failed to resume run ${resolved.runId}: ${error instanceof Error ? error.message : String(error)}`);

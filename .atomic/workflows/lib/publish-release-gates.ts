@@ -28,7 +28,7 @@ export type ReleasePrCheckGateVerification =
     };
 
 type CheckGateOptions = {
-  readonly runCommand?: (args: readonly string[]) => CommandResult;
+  readonly runCommand?: (args: readonly string[]) => CommandResult | Promise<CommandResult>;
 };
 
 
@@ -54,12 +54,12 @@ type TagPublicationVerification =
       readonly summary: string;
     };
 
-export function captureReleasePrReference(
+export async function captureReleasePrReference(
   release: ValidatedRelease,
   expectedHeadRefOid: string,
   baseRef: string,
-): PullRequestReferenceVerification {
-  const prView = runCommand([
+): Promise<PullRequestReferenceVerification> {
+  const prView = await runCommand([
     "gh",
     "pr",
     "view",
@@ -94,7 +94,7 @@ export function captureReleasePrReference(
     };
   }
 
-  const remoteBranch = runCommand(["git", "ls-remote", "--heads", "origin", release.branch]);
+  const remoteBranch = await runCommand(["git", "ls-remote", "--heads", "origin", release.branch]);
   const remoteHeadOid = remoteBranch.stdout.split(/\s+/u)[0] ?? "";
   if (remoteBranch.exitCode !== 0 || remoteHeadOid !== expectedHeadRefOid) {
     return {
@@ -135,17 +135,17 @@ export async function verifyReleasePrChecksPassed(
   return verifyReleasePrChecksOnce(release, prReference, baseRef, options.runCommand ?? runCommand);
 }
 
-function verifyReleasePrChecksOnce(
+async function verifyReleasePrChecksOnce(
   release: ValidatedRelease,
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
-  execute: (args: readonly string[]) => CommandResult,
-): ReleasePrCheckGateVerification {
+  execute: (args: readonly string[]) => CommandResult | Promise<CommandResult>,
+): Promise<ReleasePrCheckGateVerification> {
   const prViewArgs = [
     "gh", "pr", "view", prReference.prUrl, "--json",
     "url,number,state,baseRefName,headRefName,headRefOid,mergedAt,mergeCommit,statusCheckRollup",
   ] as const;
-  const preflight = execute(prViewArgs);
+  const preflight = await execute(prViewArgs);
   const parsedPreflight = parseJsonCommand(preflight, "GitHub PR check preflight returned invalid JSON.");
   if (preflight.exitCode !== 0) {
     return { ok: false, summary: ["GitHub PR check preflight command failed.", commandSummary(preflight)].join("\n\n") };
@@ -168,7 +168,7 @@ function verifyReleasePrChecksOnce(
     return { ok: false, summary: "GitHub PR state regressed from captured MERGED state before required-check verification." };
   }
 
-  const checks = execute([
+  const checks = await execute([
     "gh", "pr", "checks", prReference.prUrl, "--required", "--json",
     "name,state,bucket,link,workflow,description",
   ]);
@@ -199,7 +199,7 @@ function verifyReleasePrChecksOnce(
     return { ok: false, summary: ["GitHub PR required checks command failed.", commandSummary(checks)].join("\n\n") };
   }
 
-  const postflight = execute(prViewArgs);
+  const postflight = await execute(prViewArgs);
   if (postflight.exitCode !== 0) {
     return { ok: false, summary: ["GitHub PR check postflight command failed.", commandSummary(postflight)].join("\n\n") };
   }
@@ -246,7 +246,7 @@ function verifyReleasePrChecksOnce(
   );
   if (!merged.ok) return { ok: false, summary: [merged.summary, ...summaries].join("\n\n") };
 
-  const branch = execute(["git", "ls-remote", "--heads", "origin", release.branch]);
+  const branch = await execute(["git", "ls-remote", "--heads", "origin", release.branch]);
   const remoteHeadOid = branch.stdout.split(/\s+/u)[0] ?? "";
   if (branch.exitCode !== 0 || remoteHeadOid !== prReference.headRefOid) {
     return {
@@ -267,12 +267,12 @@ function verifyReleasePrChecksOnce(
   };
 }
 
-export function verifyReleasePrMerged(
+export async function verifyReleasePrMerged(
   release: ValidatedRelease,
   prReference: Extract<PullRequestReferenceVerification, { readonly ok: true }>,
   baseRef: string,
-): PullRequestMergeVerification {
-  const prView = runCommand([
+): Promise<PullRequestMergeVerification> {
+  const prView = await runCommand([
     "gh",
     "pr",
     "view",
@@ -280,7 +280,6 @@ export function verifyReleasePrMerged(
     "--json",
     "state,mergedAt,mergeCommit,baseRefName,headRefName,headRefOid,url,number",
   ]);
-
   if (prView.exitCode !== 0) {
     return {
       ok: false,
@@ -306,7 +305,7 @@ export function verifyReleasePrMerged(
     };
   }
 
-  const branchCheck = runCommand(["git", "ls-remote", "--heads", "origin", release.branch]);
+  const branchCheck = await runCommand(["git", "ls-remote", "--heads", "origin", release.branch]);
   const remoteHeadOid = branchCheck.stdout.split(/\s+/u)[0] ?? "";
   if (branchCheck.exitCode !== 0 || remoteHeadOid !== prReference.headRefOid) {
     return {
@@ -336,12 +335,12 @@ export function verifyReleasePrMerged(
   };
 }
 
-export function verifyMainReadyForTag(_release: ValidatedRelease, mergeCommitOid: string, baseRef: string): MainReadyVerification {
-  const branch = runCommand(["git", "branch", "--show-current"]);
-  const head = runCommand(["git", "rev-parse", "HEAD"]);
-  const originMain = runCommand(["git", "rev-parse", `origin/${baseRef}`]);
-  const status = runCommand(["git", "status", "--short"]);
-  const mergeBase = runCommand(["git", "merge-base", "--is-ancestor", mergeCommitOid, "HEAD"]);
+export async function verifyMainReadyForTag(_release: ValidatedRelease, mergeCommitOid: string, baseRef: string): Promise<MainReadyVerification> {
+  const branch = await runCommand(["git", "branch", "--show-current"]);
+  const head = await runCommand(["git", "rev-parse", "HEAD"]);
+  const originMain = await runCommand(["git", "rev-parse", `origin/${baseRef}`]);
+  const status = await runCommand(["git", "status", "--short"]);
+  const mergeBase = await runCommand(["git", "merge-base", "--is-ancestor", mergeCommitOid, "HEAD"]);
   const failures: string[] = [];
 
   if (branch.exitCode !== 0 || branch.stdout !== baseRef) failures.push(`current branch was ${branch.stdout || "missing"}, expected ${baseRef}`);
@@ -371,30 +370,30 @@ export type TagPublicationOptions = {
   readonly allowIntegratedParent?: boolean;
   readonly requiredAncestorOid?: string;
   readonly expectedBaseRef: string;
-  readonly execute?: (args: readonly string[]) => CommandResult;
+  readonly execute?: (args: readonly string[]) => CommandResult | Promise<CommandResult>;
 };
 
-export function verifyReleaseTagPublished(
+export async function verifyReleaseTagPublished(
   release: ValidatedRelease,
   expectedParentOid: string,
   options: TagPublicationOptions,
-): TagPublicationVerification {
+): Promise<TagPublicationVerification> {
   // cut-release.ts tags a throwaway version-stamped commit. A newly-created
   // tag must parent the verified base tip exactly; recovery may also reuse a
   // prior tag whose parent is already integrated into the now-advanced base.
   const execute = options.execute ?? runCommand;
-  const localTag = execute(["git", "rev-parse", `${release.version}^{commit}`]);
+  const localTag = await execute(["git", "rev-parse", `${release.version}^{commit}`]);
   const releaseCommitOid = localTag.stdout;
-  const tagParent = execute(["git", "rev-parse", `${release.version}^{commit}^`]);
+  const tagParent = await execute(["git", "rev-parse", `${release.version}^{commit}^`]);
   const integratedParent = options.allowIntegratedParent === true
-    ? execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, expectedParentOid])
+    ? await execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, expectedParentOid])
     : undefined;
   const containsRequiredAncestor = options.requiredAncestorOid === undefined
     ? undefined
-    : execute(["git", "merge-base", "--is-ancestor", options.requiredAncestorOid, tagParent.stdout]);
-  const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
-  const tagMessage = execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
-  const remoteTag = execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
+    : await execute(["git", "merge-base", "--is-ancestor", options.requiredAncestorOid, tagParent.stdout]);
+  const taggedManifest = await execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const tagMessage = await execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
+  const remoteTag = await execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   const remoteTagTargetOid = remoteTag.stdout.split(/\s+/u)[0] ?? "";
   const failures: string[] = [];
 

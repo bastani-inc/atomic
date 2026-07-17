@@ -6,6 +6,10 @@ import { formatResumableWorkflowList } from "../durable/resume-catalog.js";
 import { getDurableBackend } from "../durable/factory.js";
 import { listOpenableCompletedWorkflows } from "../durable/completed-catalog.js";
 import { openCompletedDurableWorkflow } from "../durable/completed-inspection.js";
+import {
+  deleteDurableWorkflowIfSafe,
+  type DurableWorkflowDeleteOutcome,
+} from "../durable/retention-policy.js";
 import type { ResumableWorkflowEntry } from "../durable/types.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { ExtensionAPI, PiCommandContext } from "./public-types.js";
@@ -41,17 +45,28 @@ export async function prepareWorkflowResumeCatalog(
   activeLiveIds: ReadonlySet<string>,
   target?: string,
 ): Promise<WorkflowResumeCatalog> {
-  const prepared = await runtime.prepareDurableResumable(target);
+  const shared = await runtime.prepareDurableCatalog?.();
+  const prepared = shared?.resumable ?? await runtime.prepareDurableResumable(target);
   const backend = getDurableBackend();
+  const isDisplayLoadable = (entry: ResumableWorkflowEntry): boolean =>
+    shared !== undefined || backend.isWorkflowLoadable(entry.workflowId);
   const resumable = filterSelectorDurableEntries(runtime, prepared)
-    .filter((entry) => !activeLiveIds.has(entry.workflowId) && backend.isWorkflowLoadable(entry.workflowId));
-  const completed = runtime.prepareCompletedDurable !== undefined
+    .filter((entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry));
+  const completed = shared?.completed ?? (runtime.prepareCompletedDurable !== undefined
     ? await runtime.prepareCompletedDurable()
-    : listOpenableCompletedWorkflows(backend);
+    : listOpenableCompletedWorkflows(backend));
   return {
     resumable,
-    completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId) && backend.isWorkflowLoadable(entry.workflowId)),
+    completed: completed.filter((entry) => !activeLiveIds.has(entry.workflowId) && isDisplayLoadable(entry)),
   };
+}
+
+export function deleteWorkflowResumeEntry(workflowId: string): Promise<DurableWorkflowDeleteOutcome> {
+  return deleteDurableWorkflowIfSafe(getDurableBackend(), workflowId, (candidateId) => {
+    const run = store.runs().find((candidate) => candidate.id === candidateId);
+    return run !== undefined && run.status !== "completed"
+      && (run.endedAt === undefined || run.status === "paused");
+  });
 }
 
 export async function handleDurableResume(
@@ -59,6 +74,7 @@ export async function handleDurableResume(
   ctx: PiCommandContext,
   reporter: WorkflowCommandReporter,
   deps: WorkflowRunControlDeps,
+  preparedCatalog?: WorkflowResumeCatalog,
 ): Promise<boolean> {
   const print = (message: string): void => reporter.info(message);
   const fail = (message: string): void => reporter.error(message);
@@ -69,7 +85,7 @@ export async function handleDurableResume(
   }
   const runtime = deps.runtimeForContext(ctx);
   const policy = workflowPolicyFromContext(ctx);
-  const catalog = await prepareWorkflowResumeCatalog(runtime, new Set(), target);
+  const catalog = preparedCatalog ?? await prepareWorkflowResumeCatalog(runtime, new Set(), target);
   const allOpenable = [...catalog.resumable, ...catalog.completed];
 
   if (target !== undefined) {
@@ -77,7 +93,9 @@ export async function handleDurableResume(
       target,
       [],
       catalog.resumable,
-      getDurableBackend().listCompletedWorkflows(),
+      // Reuse the catalog prepared above instead of re-enumerating the durable
+      // directory a second time for the same command invocation.
+      catalog.completed,
     );
     if (resolved.kind === "ambiguous") {
       fail(`Ambiguous workflow prefix "${target}" matches: ${formatMatches(resolved.matches)}`);
@@ -87,7 +105,7 @@ export async function handleDurableResume(
       return openCompletedTarget(resolved.workflowId, catalog.completed, ctx, reporter, deps, runtime);
     }
     if (resolved.kind === "durable") {
-      return resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
+      return await resumeDurableTarget(resolved.workflowId, ctx, reporter, deps, runtime);
     }
 
     const completedAttempt = openCompleted(runtime, target, catalog.completed);
@@ -95,7 +113,7 @@ export async function handleDurableResume(
       fail(completedAttempt.message);
       return true;
     }
-    const result = runtime.resumeDurableWorkflow(target, { policy });
+    const result = await runtime.resumeDurableWorkflow(target, { policy });
     fail(allOpenable.length === 0
       ? result.message
       : `${result.message}\n\n${formatResumableWorkflowList(allOpenable)}`);
@@ -111,12 +129,26 @@ export async function handleDurableResume(
     print(`${formatResumableWorkflowList(allOpenable)}\n\n${instruction}: /workflow resume <id>`);
     return true;
   }
-  const picked = await openWorkflowResumeSelector(ctx.ui, [], catalog.resumable, catalog.completed);
-  if (picked.kind === "durable") {
-    return resumeDurableTarget(picked.workflowId, ctx, reporter, deps, runtime);
+  let picked: Awaited<ReturnType<typeof openWorkflowResumeSelector>>;
+  try {
+    picked = await openWorkflowResumeSelector(
+      ctx.ui,
+      [],
+      // Catalog already prepared above; resolve it immediately with no rescan.
+      () => Promise.resolve({ durable: catalog.resumable, completed: catalog.completed }),
+      { deleteWorkflow: deleteWorkflowResumeEntry },
+    );
+  } catch (error) {
+    // No fallback: a host without the session-picker capability fails the
+    // resume command with one actionable message.
+    fail(error instanceof Error ? error.message : String(error));
+    return true;
   }
-  if (picked.kind === "completed") {
-    return openCompletedTarget(picked.workflowId, catalog.completed, ctx, reporter, deps, runtime);
+  if (picked.result.kind === "durable") {
+    return resumeDurableTarget(picked.result.workflowId, ctx, reporter, deps, runtime);
+  }
+  if (picked.result.kind === "completed") {
+    return openCompletedTarget(picked.result.workflowId, catalog.completed, ctx, reporter, deps, runtime);
   }
   return true;
 }
@@ -170,14 +202,14 @@ function isExplicitResumeCandidate(run: RunSnapshot): boolean {
   return run.resumable === true && run.failureRecoverability === "recoverable";
 }
 
-function resumeDurableTarget(
+async function resumeDurableTarget(
   workflowId: string,
   ctx: PiCommandContext,
   reporter: WorkflowCommandReporter,
   deps: WorkflowRunControlDeps,
   runtime: ExtensionRuntime,
-): boolean {
-  const result = runtime.resumeDurableWorkflow(workflowId, { policy: workflowPolicyFromContext(ctx) });
+): Promise<boolean> {
+  const result = await runtime.resumeDurableWorkflow(workflowId, { policy: workflowPolicyFromContext(ctx) });
   if (!result.ok) reporter.error(result.message);
   else {
     reporter.info(result.message);

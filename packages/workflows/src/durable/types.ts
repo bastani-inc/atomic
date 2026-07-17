@@ -10,7 +10,6 @@
  */
 
 import type { WorkflowModelAttempt, WorkflowSerializableValue } from "../shared/types.js";
-import type { DURABLE_FORMAT_VERSION } from "./format-version.js";
 
 // ---------------------------------------------------------------------------
 // Top-level workflow identity
@@ -53,6 +52,8 @@ export interface DurableWorkflowHandle {
   readonly rootWorkflowId?: string;
   /** Explicit resumability flag for failed/blocked runs. */
   readonly resumable?: boolean;
+  /** Executor id of the Atomic process that last wrote this workflow's metadata. */
+  readonly ownerExecutorId?: string;
 }
 
 export type DurableWorkflowStatus =
@@ -157,28 +158,22 @@ export type UiPromptKind = "input" | "confirm" | "select" | "editor" | "custom";
 export type WorkflowSerializableObject = Readonly<Record<string, WorkflowSerializableValue>>;
 
 // ---------------------------------------------------------------------------
-// Resume catalog entry (cached on session JSONL)
+// DBOS metadata and resume catalog
 // ---------------------------------------------------------------------------
 
-/**
- * Durable workflow metadata cached as a `workflow.durable.checkpoint` session
- * entry. This is the session-file cache described by the issue — it lets a new
- * session discover resumable workflows without scanning the full DBOS system
- * database. DBOS remains the checkpoint source of truth; this cache mirrors
- * the minimal top-level metadata needed for `/workflow resume` discovery.
- */
-export interface DurableCheckpointEntry {
-  /** Durable metadata schema version used to reject incompatible discovery rows. */
-  readonly formatVersion: typeof DURABLE_FORMAT_VERSION;
-  readonly type: "workflow.durable.checkpoint";
+/** Current workflow metadata persisted in DBOS. */
+export interface DurableWorkflowMetadata {
   readonly workflowId: string;
   readonly name: string;
   readonly inputs: WorkflowSerializableObject;
   readonly status: DurableWorkflowStatus;
   readonly completedCheckpoints: number;
   readonly pendingPrompts: number;
-  /** DBOS prompt-ledger generation; omitted for pre-generation metadata. */
-  readonly promptReservationEpoch?: string;
+  readonly createdAt: number;
+  readonly promptReservationEpoch: string;
+  /** Executor id of the Atomic process that wrote this metadata generation. */
+  readonly ownerExecutorId?: string;
+  readonly sessionFile?: string;
   readonly label?: string;
   readonly rootWorkflowId?: string;
   readonly resumable?: boolean;
@@ -186,13 +181,10 @@ export interface DurableCheckpointEntry {
   readonly workflowCwd?: string;
   readonly repositoryRoot?: string;
   readonly gitWorktreeRoot?: string;
-  readonly ts: number;
+  readonly updatedAt: number;
 }
 
-/**
- * Resume catalog entry for the cross-session `/workflow resume` selector.
- * Built from durable checkpoint entries found across session files.
- */
+/** Resume catalog entry loaded directly from DBOS metadata. */
 export interface ResumableWorkflowEntry {
   readonly workflowId: string;
   readonly name: string;

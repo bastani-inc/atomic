@@ -69,6 +69,18 @@ export function registerWorkflowSlashCommand(
     },
     workflowCommands,
   );
+  registerWorkflowCommand(
+    pi,
+    "workflows",
+    {
+      description: "List retained workflow runs or open one by id. Usage: /workflows [run-id]",
+      handler: (args, ctx) => {
+        const target = args.trim();
+        return workflowSlashHandler(target.length === 0 ? "resume" : `resume ${target}`, ctx, pi, deps);
+      },
+    },
+    workflowCommands,
+  );
 }
 
 async function workflowSlashHandler(

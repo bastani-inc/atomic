@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai/compat";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
+import { runCallback } from "../callback-activity.ts";
 import type {
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
@@ -115,7 +116,10 @@ export async function runGenericHandlers<TEvent extends RunnerEmitEvent>(
 
 		for (const handler of handlers) {
 			try {
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				);
 				if (isSessionBeforeEvent(event) && handlerResult) {
 					result = handlerResult as SessionBeforeEventResult;
 					if (result.cancel) return result as RunnerEmitResult<TEvent>;
@@ -145,7 +149,10 @@ export async function runMessageEndHandlers(
 		for (const handler of handlers) {
 			try {
 				const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
-				const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
+				const handlerResult = (await runCallback(
+					{ kind: "extension.hook", name: currentEvent.type, sourcePath: ext.path },
+					() => handler(currentEvent, ctx),
+				)) as MessageEndEventResult | undefined;
 				if (!handlerResult?.message) continue;
 
 				if (handlerResult.message.role !== currentMessage.role) {
@@ -183,7 +190,10 @@ export async function runToolResultHandlers(
 
 		for (const handler of handlers) {
 			try {
-				const handlerResult = (await handler(currentEvent, ctx)) as ToolResultEventResult | undefined;
+				const handlerResult = (await runCallback(
+					{ kind: "extension.hook", name: currentEvent.type, sourcePath: ext.path },
+					() => handler(currentEvent, ctx),
+				)) as ToolResultEventResult | undefined;
 				if (!handlerResult) continue;
 				if (handlerResult.content !== undefined) {
 					currentEvent.content = handlerResult.content;
@@ -220,7 +230,10 @@ export async function runToolCallHandlers(
 		if (!handlers || handlers.length === 0) continue;
 
 		for (const handler of handlers) {
-			const handlerResult = await handler(event, ctx);
+			const handlerResult = await runCallback(
+				{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+				() => handler(event, ctx),
+			);
 			if (handlerResult) {
 				result = handlerResult as ToolCallEventResult;
 				if (result.block) return result;
@@ -243,7 +256,10 @@ export async function runUserBashHandlers(
 
 		for (const handler of handlers) {
 			try {
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				);
 				if (handlerResult) return handlerResult as UserBashEventResult;
 			} catch (error) {
 				emitCaughtError(emitError, ext.path, "user_bash", error);
@@ -269,7 +285,10 @@ export async function runContextHandlers(
 		for (const handler of handlers) {
 			try {
 				const event: ContextEvent = { type: "context", messages: currentMessages };
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				);
 				if (handlerResult && (handlerResult as ContextEventResult).messages) {
 					currentMessages = (handlerResult as ContextEventResult).messages!;
 				}
@@ -297,7 +316,10 @@ export async function runBeforeProviderRequestHandlers(
 		for (const handler of handlers) {
 			try {
 				const event: BeforeProviderRequestEvent = { type: "before_provider_request", payload: currentPayload };
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				);
 				if (handlerResult !== undefined) currentPayload = handlerResult;
 			} catch (error) {
 				emitCaughtError(emitError, ext.path, "before_provider_request", error);
@@ -340,7 +362,10 @@ export async function runBeforeAgentStartHandlers(
 					systemPrompt: currentSystemPrompt,
 					systemPromptOptions,
 				};
-				const handlerResult = await handler(event, ctx);
+				const handlerResult = await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				);
 				if (!handlerResult) continue;
 
 				const result = handlerResult as BeforeAgentStartEventResult;
@@ -381,7 +406,10 @@ export async function runResourcesDiscoverHandlers(
 		for (const handler of handlers) {
 			try {
 				const event: ResourcesDiscoverEvent = { type: "resources_discover", cwd, reason };
-				const result = (await handler(event, ctx)) as ResourcesDiscoverResult | undefined;
+				const result = (await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				)) as ResourcesDiscoverResult | undefined;
 				if (result?.skillPaths?.length) {
 					skillPaths.push(...result.skillPaths.map((path) => ({ path, extensionPath: ext.path })));
 				}
@@ -422,7 +450,10 @@ export async function runInputHandlers(
 					source,
 					streamingBehavior,
 				};
-				const result = (await handler(event, ctx)) as InputEventResult | undefined;
+				const result = (await runCallback(
+					{ kind: "extension.hook", name: event.type, sourcePath: ext.path },
+					() => handler(event, ctx),
+				)) as InputEventResult | undefined;
 				if (result?.action === "handled") return result;
 				if (result?.action === "transform") {
 					currentText = result.text;

@@ -21,7 +21,7 @@ describe("executor.run — lifecycle persistence", () => {
     }
 
     function lifecycleTypes(calls: Array<{ type: string }>): string[] {
-        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+        return calls.map((c) => c.type);
     }
 
     test("run.end not appended when recordRunEnd returns false (terminal guard)", async () => {

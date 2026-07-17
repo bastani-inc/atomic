@@ -1,16 +1,12 @@
 import { afterEach, beforeEach, describe, mock, spyOn, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { Type } from "typebox";
 import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/backend.js";
-import { FileDurableBackend } from "../../packages/workflows/src/durable/file-backend.js";
 import { createCheckpointIdGenerator } from "../../packages/workflows/src/durable/tool-primitive.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, createStageReplayKeyGenerator, recordStageCheckpoint, recordStageSessionCheckpoint, stageCheckpointWithOutput } from "../../packages/workflows/src/durable/stage-primitive.js";
 import { RESUME_CONTINUATION_PROMPT } from "../../packages/workflows/src/runs/foreground/executor.js";
 import type { StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 import { elapsedStageMs, rebasedStageStartedAt } from "../../packages/workflows/src/shared/timing.js";
-import { createStore, run, Type, workflow } from "./executor-shared.js";
 
 afterEach(() => mock.restore());
 const WORKFLOW_ID = "wf-stage-session-resume";
@@ -93,19 +89,23 @@ describe("durable stage session resume", () => {
     assert.equal(backend.listResumableWorkflows().length, 1);
   });
 
-  test("refreshes accumulated active duration for repeated checkpoints of one session", async () => {
+  test("refreshes accumulated active duration across debounce buckets of one session", async () => {
     const replayKey = "stage:analyze:1";
     const stage = makeStage({ replayKey, sessionId: "sid-1", sessionFile: "/tmp/stage.jsonl" });
 
     assert.equal(await recordStageSessionCheckpoint(deps(1400), stage), true);
-    assert.equal(await recordStageSessionCheckpoint(deps(1750), stage), true);
+    // Duration-only changes inside one 30 s bucket are debounced: they no
+    // longer force a durable read-merge-rewrite on every prompt/steer event.
     assert.equal(await recordStageSessionCheckpoint(deps(1750), stage), false);
+    // Crossing the bucket boundary refreshes the accumulated duration.
+    assert.equal(await recordStageSessionCheckpoint(deps(32_000), stage), true);
+    assert.equal(await recordStageSessionCheckpoint(deps(32_000), stage), false);
 
     assert.deepEqual(backend.getStageSession(WORKFLOW_ID, replayKey), {
       sessionId: "sid-1",
       sessionFile: "/tmp/stage.jsonl",
       startedAt: 1000,
-      durationMs: 750,
+      durationMs: 31_000,
     });
     assert.equal(backend.listCheckpoints(WORKFLOW_ID).length, 2);
   });
@@ -238,78 +238,6 @@ describe("durable stage session resume", () => {
     });
   });
 
-  test("preserves pause-adjusted duration across two process-boundary resumes", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "atomic-stage-repeated-resume-"));
-    try {
-      const runId = "wf-stage-repeated-resume";
-      const replayKey = "stage:analyze:1";
-      const stateFile = join(dir, "durable.json");
-      const firstProcess = new FileDurableBackend(stateFile);
-      firstProcess.registerWorkflow({ workflowId: runId, name: "repeated-resume", inputs: {}, createdAt: 1000, status: "paused" });
-      await recordStageSessionCheckpoint({
-        workflowId: runId,
-        backend: firstProcess,
-        nextCheckpointId: createCheckpointIdGenerator(),
-        nextReplayKey: () => replayKey,
-        now: () => 1800,
-      }, makeStage({ replayKey, sessionFile: "/tmp/process-a.jsonl", pausedDurationMs: 100 }));
-
-      const secondProcess = new FileDurableBackend(stateFile);
-      const secondBaseline = secondProcess.getStageSession(runId, replayKey)?.durationMs;
-      assert.equal(secondBaseline, 700);
-      await recordStageSessionCheckpoint({
-        workflowId: runId,
-        backend: secondProcess,
-        nextCheckpointId: createCheckpointIdGenerator(),
-        nextReplayKey: () => replayKey,
-        now: () => 5600,
-      }, makeStage({
-        replayKey,
-        sessionFile: "/tmp/process-b.jsonl",
-        startedAt: rebasedStageStartedAt(secondBaseline, 5000),
-        pausedDurationMs: 200,
-      }));
-
-      const thirdProcess = new FileDurableBackend(stateFile);
-      const thirdBaseline = thirdProcess.getStageSession(runId, replayKey)?.durationMs;
-      assert.equal(thirdBaseline, 1100);
-      const completed = makeStage({
-        replayKey,
-        sessionFile: "/tmp/process-c.jsonl",
-        status: "completed",
-        result: "done",
-        startedAt: rebasedStageStartedAt(thirdBaseline, 9000),
-        endedAt: 9500,
-        pausedDurationMs: 300,
-        durationMs: 1300,
-      });
-      await recordStageSessionCheckpoint({
-        workflowId: runId,
-        backend: thirdProcess,
-        nextCheckpointId: createCheckpointIdGenerator(),
-        nextReplayKey: () => replayKey,
-        now: () => 9500,
-      }, completed);
-      await recordStageCheckpoint({
-        workflowId: runId,
-        backend: thirdProcess,
-        nextCheckpointId: createCheckpointIdGenerator(),
-        nextReplayKey: () => replayKey,
-      }, completed);
-
-      const replayBackend = new FileDurableBackend(stateFile);
-      assert.equal(replayBackend.getStageSession(runId, replayKey)?.durationMs, 1300);
-      const replayed = createDurableStagePrimitive({
-        workflowId: runId,
-        backend: replayBackend,
-        nextReplayKey: () => replayKey,
-        stage: () => { throw new Error("completed stage must not run after repeated resume"); },
-      });
-      assert.equal(await replayed("analyze").prompt("ignored"), "done");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 
   test("completed output wins over later session metadata", async () => {
     const replayKey = "stage:analyze:1";
@@ -338,7 +266,9 @@ describe("durable stage session resume", () => {
     const replayKey = "stage:analyze:1";
     let clock = 1300;
     spyOn(Date, "now").mockImplementation(() => clock);
-    const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl" });
+    // startedAt straddles a 30 s debounce bucket boundary between the two
+    // checkpoints so the second (latest) duration is durably refreshed.
+    const active = makeStage({ replayKey, sessionFile: "/tmp/schema-stage.jsonl", startedAt: -28_839 });
     await recordStageSessionCheckpoint(deps(1111), active);
     await recordStageSessionCheckpoint(deps(1222), active);
 
@@ -359,7 +289,7 @@ describe("durable stage session resume", () => {
 
     const activeHydration = stageCheckpointWithOutput(backend, WORKFLOW_ID, replayKey);
     assert.deepEqual(activeHydration?.output, { answer: "done" });
-    assert.equal(activeHydration?.durationMs, 222);
+    assert.equal(activeHydration?.durationMs, 30_061);
 
     clock = 1400;
     await recordStageCheckpoint(deps(), makeStage({
@@ -383,85 +313,4 @@ describe("durable stage session resume", () => {
     assert.equal(liveStageCalls, 1);
   });
 
-  test("file process-boundary completion preserves duration across concurrent tracked calls and replay", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "atomic-stage-duration-"));
-    try {
-      const runId = "wf-stage-duration-resume";
-      const replayKey = "stage:analyze:1";
-      const stateFile = join(dir, "durable.json");
-      const writer = new FileDurableBackend(stateFile);
-      writer.registerWorkflow({ workflowId: runId, name: "duration-resume", inputs: {}, createdAt: 1000, status: "paused" });
-      await recordStageSessionCheckpoint({
-        workflowId: runId,
-        backend: writer,
-        nextCheckpointId: createCheckpointIdGenerator(),
-        nextReplayKey: () => replayKey,
-        now: () => 1700,
-      }, makeStage({ replayKey, sessionFile: "/tmp/durable-stage-duration.jsonl" }));
-
-      let clock = 5000;
-      let liveStageCalls = 0;
-      let releaseCalls: () => void = () => {};
-      const bothCallsStarted = new Promise<void>((resolve) => { releaseCalls = resolve; });
-      spyOn(Date, "now").mockImplementation(() => clock);
-      let lifecycleDurationMs: number | undefined;
-      const store = createStore();
-      const def = workflow({
-        name: "duration-resume",
-        description: "",
-        inputs: {},
-        outputs: { result: Type.String() },
-        run: async (ctx) => {
-          const stage = ctx.stage("analyze");
-          await Promise.allSettled([
-            stage.complete("first"),
-            stage.complete("second"),
-          ]);
-          return { result: "done" };
-        },
-      });
-      const resumedBackend = new FileDurableBackend(stateFile);
-      const first = await run(def, {}, {
-        runId,
-        store,
-        durableBackend: resumedBackend,
-        adapters: { complete: { complete: async (text) => {
-          liveStageCalls += 1;
-          if (liveStageCalls === 1) {
-            clock = 5100;
-            await bothCallsStarted;
-          } else {
-            clock = 5300;
-            releaseCalls();
-          }
-          return text;
-        } } },
-        onStageEnd: (_stageRunId, snapshot) => { lifecycleDurationMs = snapshot.durationMs; },
-      });
-
-      const storedStage = store.runs()[0]?.stages.find((stage) => stage.name === "analyze");
-      const durableStage = resumedBackend.listCheckpoints(runId).find((checkpoint) =>
-        checkpoint.kind === "stage" && checkpoint.replayKey === replayKey && checkpoint.output !== undefined,
-      );
-      assert.equal(first.status, "completed");
-      assert.equal(liveStageCalls, 2);
-      assert.equal(storedStage?.durationMs, 1000);
-      assert.equal(lifecycleDurationMs, 1000);
-      assert.equal(durableStage?.kind === "stage" ? durableStage.durationMs : undefined, 1000);
-
-      const replay = await run(def, {}, {
-        runId,
-        store: createStore(),
-        durableBackend: new FileDurableBackend(stateFile),
-        adapters: { complete: { complete: async () => {
-          liveStageCalls += 1;
-          throw new Error("completed stage replay must not execute again");
-        } } },
-      });
-      assert.equal(replay.status, "completed");
-      assert.equal(liveStageCalls, 2);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
 });

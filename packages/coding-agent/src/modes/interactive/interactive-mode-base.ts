@@ -6,6 +6,9 @@ import type {} from "./interactive-mode-surface.ts";
 import { type AssistantMessage, type AutocompleteProvider, type EditorComponent, type Component, type LoaderIndicatorOptions, type AgentSession, type AgentSessionRuntime, type AutocompleteProviderFactory, type EditorFactory, type HostCustomUiStateListener, Container, Loader, ProcessTerminal, Spacer, setKeybindings, Text, TUI, VERSION, FooterDataProvider, KeybindingsManager, AssistantMessageComponent, BashExecutionComponent, CountdownTimer, CustomEditor, ExtensionEditorComponent, ExtensionInputComponent, ExtensionSelectorComponent, FooterComponent, UsageMeterComponent, ToolExecutionComponent, getEditorTheme, setRegisteredThemes, InteractiveThemeController } from "./interactive-mode-deps.ts";
 import type { CompactionQueuedMessage, InteractiveModeOptions } from "./interactive-mode-types.ts";
 import type { EarlyInputSnapshot } from "../../main-early-input.ts";
+import { shouldRenderEngineDiagnosticAsChatError } from "../interactive-engine/activity-watchdog.ts";
+import { attachInteractiveEngineHost } from "../interactive-engine/extension-ui-bridge.ts";
+import type { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 
 function isCommandLikeStartupInput(text: string): boolean {
   const trimmed = text.trimStart();
@@ -193,7 +196,7 @@ export class InteractiveModeBase {
 
 
   // Tool execution tracking: toolCallId -> component
-  pendingTools = new Map<string, ToolExecutionComponent>();
+  pendingTools = new Map<string, ToolExecutionComponent | RemoteToolExecutionComponent>();
 
 
 
@@ -397,7 +400,7 @@ export class InteractiveModeBase {
     });
     this.version = VERSION;
     this.ui = new TUI(
-      new ProcessTerminal(),
+      options.terminal ?? new ProcessTerminal(),
       this.settingsManager.getShowHardwareCursor(),
     );
     this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
@@ -444,6 +447,19 @@ export class InteractiveModeBase {
       this.settingsManager,
       (message) => this.showError(message),
       () => this.updateEditorBorderColor(),
+    );
+    attachInteractiveEngineHost(
+      runtimeHost,
+      this.createExtensionUIContext(),
+		(diagnostic) => {
+			if (diagnostic.message.startsWith("Engine terminated;")) {
+				this.stopWorkingLoader();
+				this.ui.setFocus(this.editor);
+				this.ui.requestRender();
+			}
+			if (shouldRenderEngineDiagnosticAsChatError(diagnostic)) this.showError(diagnostic.message);
+		},
+      (handler) => { this.defaultEditor.onExtensionShortcut = handler; },
     );
   }
 

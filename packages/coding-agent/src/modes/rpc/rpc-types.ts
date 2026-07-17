@@ -30,7 +30,7 @@ export type RpcCommand =
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
-	| { id?: string; type: "cycle_model" }
+	| { id?: string; type: "cycle_model"; direction?: "forward" | "backward" }
 	| { id?: string; type: "get_available_models" }
 
 	// Thinking
@@ -48,19 +48,23 @@ export type RpcCommand =
 	// Compaction
 	| { id?: string; type: "compact" }
 	| { id?: string; type: "set_auto_compaction"; enabled: boolean }
+	| { id?: string; type: "abort_compaction" }
 
 	// Retry
 	| { id?: string; type: "set_auto_retry"; enabled: boolean }
 	| { id?: string; type: "abort_retry" }
+	| { id?: string; type: "clear_queue" }
 
 	// Bash
 	| { id?: string; type: "bash"; command: string; excludeFromContext?: boolean }
+	| { id?: string; type: "user_bash"; command: string; excludeFromContext?: boolean }
 	| { id?: string; type: "abort_bash" }
 
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
 	| { id?: string; type: "switch_session"; sessionPath: string }
+	| { id?: string; type: "import_session"; inputPath: string; cwdOverride?: string }
 	| { id?: string; type: "fork"; entryId: string }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
@@ -68,6 +72,11 @@ export type RpcCommand =
 	| { id?: string; type: "get_tree" }
 	| { id?: string; type: "get_last_assistant_text" }
 	| { id?: string; type: "set_session_name"; name: string }
+	| { id?: string; type: "navigate_tree"; targetId: string; options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string } }
+	| { id?: string; type: "set_label"; entryId: string; label?: string }
+	| { id?: string; type: "reload" }
+	| { id?: string; type: "get_shortcuts" }
+	| { id?: string; type: "invoke_shortcut"; key: string }
 
 	// Messages
 	| { id?: string; type: "get_messages" }
@@ -152,7 +161,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_available_models";
 			success: true;
-			data: { models: Model<Api>[] };
+			data: { models: Model<Api>[]; scopedModels?: Array<{ model: Model<Api>; thinkingLevel?: ThinkingLevel }> };
 	  }
 
 	// Thinking
@@ -182,17 +191,21 @@ export type RpcResponse =
 	// Compaction
 	| { id?: string; type: "response"; command: "compact"; success: true; data: VerbatimCompactionResult }
 	| { id?: string; type: "response"; command: "set_auto_compaction"; success: true }
+	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 
 	// Retry
 	| { id?: string; type: "response"; command: "set_auto_retry"; success: true }
 	| { id?: string; type: "response"; command: "abort_retry"; success: true }
+	| { id?: string; type: "response"; command: "clear_queue"; success: true; data: { steering: string[]; followUp: string[] } }
 
 	// Bash
 	| { id?: string; type: "response"; command: "bash"; success: true; data: BashResult }
+	| { id?: string; type: "response"; command: "user_bash"; success: true; data: BashResult }
 	| { id?: string; type: "response"; command: "abort_bash"; success: true }
 
 	// Session
 	| { id?: string; type: "response"; command: "get_session_stats"; success: true; data: SessionStats }
+	| { id?: string; type: "response"; command: "import_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "export_html"; success: true; data: { path: string } }
 	| { id?: string; type: "response"; command: "switch_session"; success: true; data: { cancelled: boolean } }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
@@ -226,6 +239,11 @@ export type RpcResponse =
 			data: { text: string | null };
 	  }
 	| { id?: string; type: "response"; command: "set_session_name"; success: true }
+	| { id?: string; type: "response"; command: "navigate_tree"; success: true; data: { cancelled: boolean; editorText?: string } }
+	| { id?: string; type: "response"; command: "set_label"; success: true }
+	| { id?: string; type: "response"; command: "reload"; success: true }
+	| { id?: string; type: "response"; command: "get_shortcuts"; success: true; data: { shortcuts: Array<{ key: string; description?: string }> } }
+	| { id?: string; type: "response"; command: "invoke_shortcut"; success: true }
 
 	// Messages
 	| { id?: string; type: "response"; command: "get_messages"; success: true; data: { messages: AgentMessage[] } }

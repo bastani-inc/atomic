@@ -55,6 +55,8 @@ In the picker you can:
 
 When available, Atomic uses the `trash` CLI for deletion instead of permanently removing files.
 
+The picker opens instantly: its header, search field, and loading indicator paint on the first frame, then sessions are discovered and parsed off the terminal's UI loop. Large session directories are scanned in cooperative batches and a single very large transcript is parsed in yielding chunks, so search, navigation, and cancel stay responsive and no individual session can freeze the picker while it loads. Closing the picker cancels any in-flight scan and discards stale results, so a slow load that finishes after you leave never updates the list.
+
 ### Internal (workflow) sessions
 
 Sessions created by workflow stage execution are marked as **internal** and are excluded from the standard `/resume`, `atomic -r`, and `--continue` history by default. This keeps the resume picker focused on your interactive coding sessions. Workflow stage sessions remain fully discoverable and resumable through the workflow-specific path: use `/workflow resume <runId>` (or the workflow tool's resume/status actions) to inspect and continue a workflow run and its stages. A workflow stage session can still be opened directly by passing its file path to `--session`.

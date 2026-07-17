@@ -125,7 +125,7 @@ async function markDurableQuit(runId: string): Promise<"transitioned" | "not_nee
     backend, runId, ["running", "paused"], "paused", undefined, true,
   );
   if (!transitioned) return "refused";
-  await backend.flush?.();
+  await backend.flush();
   return "transitioned";
 }
 

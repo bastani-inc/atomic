@@ -10,8 +10,8 @@
  */
 import { describe, test, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
-import { DbosDurableBackend, isDbosConfigured, type DbosSdkHandle, type DbosWorkflowInfo, type DbosStepRecord } from "../../packages/workflows/src/durable/dbos-backend.js";
-import { InMemoryDurableBackend, durableHash } from "../../packages/workflows/src/durable/backend.js";
+import { DbosDurableBackend, type DbosSdkHandle, type DbosWorkflowInfo, type DbosStepRecord } from "../../packages/workflows/src/durable/dbos-backend.js";
+import { durableHash } from "../../packages/workflows/src/durable/backend.js";
 import { encodeCheckpoint, decodeToCheckpoint, isCheckpointEnvelope, type DbosCheckpointEnvelope } from "../../packages/workflows/src/durable/dbos-envelope.js";
 import type { DurableCheckpoint, DurableToolCheckpoint, DurableUiCheckpoint, DurableStageCheckpoint } from "../../packages/workflows/src/durable/types.js";
 import type { WorkflowSerializableValue } from "../../packages/workflows/src/shared/types.js";
@@ -79,13 +79,24 @@ function seedMockWorkflow(sdk: ReturnType<typeof createMockSdk>, info: Partial<D
     createdAt: info.createdAt ?? Date.now(),
     ...(info.inputs !== undefined ? { inputs: info.inputs } : {}),
   });
-  const ts = info.createdAt ?? Date.now();
-  const entry = { formatVersion: 2, type: "workflow.durable.checkpoint", workflowId: info.workflowId, name: info.name ?? "test-workflow", inputs: info.inputs ?? {}, status: info.status === "SUCCESS" ? "completed" : info.status === "ERROR" ? "failed" : "running", completedCheckpoints: 0, pendingPrompts: 0, ts };
-  sdk.state.steps.set(`${info.workflowId}:checkpoint:__atomic_metadata:${ts}:seed`, { __atomicDurableMetadata: true, version: 2, entry });
+  const timestamp = info.createdAt ?? Date.now();
+  const metadata = {
+    workflowId: info.workflowId, name: info.name ?? "test-workflow", inputs: info.inputs ?? {},
+    status: info.status === "SUCCESS" ? "completed" : info.status === "ERROR" ? "failed" : "running",
+    completedCheckpoints: 0, pendingPrompts: 0, createdAt: timestamp,
+    promptReservationEpoch: "seed-epoch", updatedAt: timestamp,
+  };
+  sdk.state.steps.set(
+    `${info.workflowId}:checkpoint:__atomic_metadata:${timestamp}:seed`,
+    { __atomicDurableMetadata: true, version: 3, metadata },
+  );
 }
 
 function seedMockCheckpoint(sdk: ReturnType<typeof createMockSdk>, workflowId: string, cp: DurableCheckpoint): void {
-  const envelope = encodeCheckpoint(cp);
+  const current = cp.kind === "stage" && cp.topology === undefined
+    ? { ...cp, topology: { version: 1 as const, stageId: cp.checkpointId, parentIds: [] } }
+    : cp;
+  const envelope = encodeCheckpoint(current);
   sdk.state.steps.set(`${workflowId}:checkpoint:${cp.checkpointId}`, envelope);
 }
 
@@ -134,6 +145,25 @@ describe("DbosDurableBackend (mock SDK)", () => {
     assert.equal(env.output, "result");
   });
 
+  test("deleteWorkflow removes DBOS data and suppresses the handle", async () => {
+    backend.registerWorkflow({ workflowId: "wf-delete", name: "delete", inputs: {}, createdAt: 1, status: "paused" });
+    await backend.flush();
+    await backend.deleteWorkflow("wf-delete");
+    await backend.flush();
+    assert.deepEqual(sdk.state.deletions, ["wf-delete"]);
+    assert.equal(backend.getWorkflow("wf-delete"), undefined);
+    assert.equal(backend.isWorkflowLoadable("wf-delete"), false);
+  });
+
+  test("deleteWorkflowIfInactive refuses running state and deletes paused state", async () => {
+    backend.registerWorkflow({ workflowId: "wf-running", name: "running", inputs: {}, createdAt: 1, status: "running" });
+    backend.registerWorkflow({ workflowId: "wf-paused", name: "paused", inputs: {}, createdAt: 1, status: "paused" });
+    await backend.flush();
+    assert.deepEqual(await backend.deleteWorkflowIfInactive("wf-running"), { ok: false, reason: "running" });
+    assert.deepEqual(await backend.deleteWorkflowIfInactive("wf-paused"), { ok: true });
+    assert.equal(backend.getWorkflow("wf-paused"), undefined);
+  });
+
   test("stage checkpoint envelope round-trips hydration metadata", () => {
     const cp: DurableStageCheckpoint = {
       kind: "stage", workflowId: "wf-stage-meta", checkpointId: "stage:review:1", name: "review",
@@ -141,6 +171,7 @@ describe("DbosDurableBackend (mock SDK)", () => {
       startedAt: 1000, endedAt: 3000, durationMs: 2000, result: "review passed",
       sessionId: "sid", sessionFile: "/tmp/review.jsonl", model: "gpt-test", fastMode: true,
       attemptedModels: ["gpt-test"], modelAttempts: [{ model: "gpt-test", success: true }],
+      topology: { version: 1, stageId: "review", parentIds: [] },
     };
 
     const env = encodeCheckpoint(cp);
@@ -324,15 +355,14 @@ describe("DbosDurableBackend hydration (fresh process)", () => {
     assert.equal(fresh.listCheckpoints("wf-h3").length, 2);
   });
 
-  test("hydrateWorkflow handles legacy/simple payloads gracefully", async () => {
-    // Simulate an old DBOS record with a plain output value (no envelope).
-    seedMockWorkflow(sdk, { workflowId: "wf-legacy", name: "test", status: "SUCCESS" });
-    sdk.state.steps.set("wf-legacy:checkpoint:legacy-step", "plain-output" as WorkflowSerializableValue);
+  test("hydrateWorkflow rejects an unmarked checkpoint payload", async () => {
+    seedMockWorkflow(sdk, { workflowId: "wf-unmarked", name: "test", status: "SUCCESS" });
+    sdk.state.steps.set("wf-unmarked:checkpoint:plain-step", "plain-output" as WorkflowSerializableValue);
 
     const fresh = new DbosDurableBackend(sdk);
-    await fresh.hydrateWorkflow("wf-legacy");
-    // Legacy payload becomes a generic stage checkpoint keyed by stepName.
-    assert.equal(fresh.getStageOutput("wf-legacy", "legacy-step"), "plain-output");
+    await fresh.hydrateWorkflow("wf-unmarked");
+    assert.equal(fresh.getWorkflow("wf-unmarked"), undefined);
+    assert.equal(fresh.isWorkflowLoadable("wf-unmarked"), false);
   });
 
   test("hydrateResumableWorkflows uses Atomic metadata status instead of DBOS helper completion", async () => {
@@ -445,6 +475,7 @@ describe("DBOS checkpoint envelope", () => {
   test("encode → decode round-trip preserves all fields", () => {
     const cp: DurableStageCheckpoint = {
       kind: "stage", workflowId: "w", checkpointId: "cp3", name: "build", replayKey: "stage:build:1", output: "ok", completedAt: 300,
+      topology: { version: 1, stageId: "build", parentIds: [] },
     };
     const env = encodeCheckpoint(cp);
     const decoded = decodeToCheckpoint("w", "cp3", env);
@@ -461,40 +492,5 @@ describe("DBOS checkpoint envelope", () => {
     assert.equal(isCheckpointEnvelope(42), false);
     assert.equal(isCheckpointEnvelope({ foo: 1 }), false);
     assert.equal(isCheckpointEnvelope(null), false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// isDbosConfigured + export/import (existing)
-// ---------------------------------------------------------------------------
-
-describe("isDbosConfigured", () => {
-  test("returns false when DBOS_SYSTEM_DATABASE_URL is not set", () => {
-    const saved = process.env.DBOS_SYSTEM_DATABASE_URL;
-    delete process.env.DBOS_SYSTEM_DATABASE_URL;
-    assert.equal(isDbosConfigured(), false);
-    if (saved) process.env.DBOS_SYSTEM_DATABASE_URL = saved;
-  });
-
-  test("returns true when DBOS_SYSTEM_DATABASE_URL is set", () => {
-    const saved = process.env.DBOS_SYSTEM_DATABASE_URL;
-    process.env.DBOS_SYSTEM_DATABASE_URL = "postgresql://localhost/test";
-    assert.equal(isDbosConfigured(), true);
-    if (saved) process.env.DBOS_SYSTEM_DATABASE_URL = saved;
-    else delete process.env.DBOS_SYSTEM_DATABASE_URL;
-  });
-});
-
-describe("InMemoryDurableBackend export/import round-trip", () => {
-  test("exportAll + importAll preserves all checkpoints", () => {
-    const src = new InMemoryDurableBackend();
-    src.registerWorkflow({ workflowId: "wf-exp", name: "export-test", inputs: { a: 1 }, createdAt: Date.now(), status: "running" });
-    const hash = durableHash({ name: "t", args: {} });
-    src.recordCheckpoint({ kind: "tool", workflowId: "wf-exp", checkpointId: "cp-1", name: "t", argsHash: hash, output: "val", completedAt: Date.now() });
-
-    const dst = new InMemoryDurableBackend();
-    dst.importAll(src.exportAll());
-    assert.equal(dst.getToolOutput("wf-exp", hash), "val");
-    assert.equal(dst.getWorkflow("wf-exp")!.completedCheckpoints, 1);
   });
 });

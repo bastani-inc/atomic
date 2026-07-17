@@ -14,11 +14,16 @@
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
-import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
+import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
+import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
+import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
+import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES } from "../interactive-engine/protocol.ts";
+import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
-import type { RpcOutput } from "./rpc-responses.ts";
+import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
 
 // Re-export types for consumers
@@ -38,11 +43,20 @@ export type {
 export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<never> {
 	takeOverStdout();
 
-	const output: RpcOutput = (obj) => {
-		writeRawStdout(serializeJsonLine(obj));
-	};
+	const outputBuffer = new RpcOutputBuffer();
+	const output = outputBuffer.output;
 	const pendingExtensionRequests: RpcPendingExtensionRequests = new Map();
 	const signalCleanupHandlers: Array<() => void> = [];
+	const engineLiveness = startInteractiveEngineLiveness(writeRawStdout);
+	const customUi = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+		? new EngineCustomUiService(writeRawStdout)
+		: undefined;
+	const renderService = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+		? new EngineRenderService(writeRawStdout)
+		: undefined;
+	const sessionPicker = process.env.ATOMIC_INTERACTIVE_ENGINE_CHILD === "1"
+		? new EngineSessionPickerService(writeRawStdout)
+		: undefined;
 
 	let shutdownRequested = false;
 	let shuttingDown = false;
@@ -57,6 +71,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		output,
 		pendingExtensionRequests,
 		requestShutdown,
+		customUi,
+		renderService,
+		sessionPicker,
 	});
 
 	runtimeHost.setRebindSession(async () => {
@@ -79,6 +96,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			cleanup();
 		}
 		sessionBinding.disposeSubscriptions();
+		engineLiveness.stop();
+		customUi?.dispose();
+		renderService?.dispose();
+		sessionPicker?.dispose();
+		outputBuffer.dispose();
 		await runtimeHost.dispose();
 		detachInput();
 		process.stdin.pause();
@@ -109,14 +131,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		}
 	};
 
-	await sessionBinding.rebindSession();
-	registerSignalHandlers();
 
 	const handleInputLine = createRpcInputLineHandler({
 		output,
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
+		handleInteractiveEngineLine: customUi || renderService || sessionPicker
+			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true || sessionPicker?.handleLine(line) === true
+			: undefined,
 	});
 
 	const onInputEnd = () => {
@@ -125,14 +148,24 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	process.stdin.on("end", onInputEnd);
 
 	detachInput = (() => {
+		let inputTail = Promise.resolve();
 		const detachJsonl = attachJsonlLineReader(process.stdin, (line) => {
-			void handleInputLine(line);
+			inputTail = inputTail.then(() => handleInputLine(line), () => handleInputLine(line));
+			void inputTail.catch(() => {});
+		}, {
+			maxBytesPerTurn: 256 * 1024,
+			maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
+			onOversizedLine: () => output({ type: "response", command: "parse", success: false, error: "RPC command exceeded the 1 MiB frame limit" }),
 		});
 		return () => {
 			detachJsonl();
 			process.stdin.off("end", onInputEnd);
 		};
 	})();
+	registerSignalHandlers();
+	engineLiveness.ready();
+	await sessionBinding.rebindSession();
+	engineLiveness.bound();
 
 	// Keep process alive forever
 	return new Promise(() => {});

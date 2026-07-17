@@ -248,7 +248,7 @@ describe("/workflow resume — overlay integration", () => {
     assert.match(joined, /\/workflow connect/);
   });
 
-  test("resume uses real command ctx.ui.custom when top-level pi.ui is absent", async () => {
+  test("resume uses the real command ctx.ui when top-level pi.ui is absent", async () => {
     singletonStore.clear();
 
     const { pi, commands } = buildMockPi();
@@ -258,8 +258,8 @@ describe("/workflow resume — overlay integration", () => {
     const wfCmd = commands["workflow"]!;
     const { ctx, customCalls } = buildPrintCtxWithRealCustom();
 
-    // No-arg resume opens the shared /resume-style selector through ctx.ui.custom
-    // even when the top-level pi.ui surface is absent.
+    // No-arg resume opens the shared /resume-style selector host-natively
+    // through ctx.ui.hostSessionPicker even when top-level pi.ui is absent.
     const handlerPromise = wfCmd.options.handler("resume", ctx) as Promise<unknown>;
     await delay(5);
     assert.ok(customCalls.length >= 1);
@@ -334,7 +334,7 @@ describe("/workflow resume — paused vs non-paused branching", () => {
     const { ctx, messages } = buildPrintCtx();
     await commands["workflow"]!.options.handler(`resume ${runId}`, ctx);
     assert.equal(customCalls.length, 0);
-    assert.match(messages.join("\n"), /No durable workflow|No completed durable workflow|stale/);
+    assert.match(messages.join("\n"), /No resumable workflow|No durable workflow|No completed durable workflow|stale/);
   });
 });
 

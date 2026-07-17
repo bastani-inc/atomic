@@ -1,6 +1,9 @@
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
+import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import type { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
+import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { createRpcExtensionUIContext, type RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
@@ -8,6 +11,9 @@ interface RpcSessionBindingOptions {
 	runtimeHost: AgentSessionRuntime;
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
+	customUi?: EngineCustomUiService;
+	renderService?: EngineRenderService;
+	sessionPicker?: EngineSessionPickerService;
 	requestShutdown: () => void;
 }
 
@@ -18,13 +24,19 @@ export class RpcSessionBinding {
 	private readonly runtimeHost: AgentSessionRuntime;
 	private readonly output: RpcOutput;
 	private readonly pendingExtensionRequests: RpcPendingExtensionRequests;
+	private readonly customUi: EngineCustomUiService | undefined;
+	private readonly renderService: EngineRenderService | undefined;
+	private readonly sessionPicker: EngineSessionPickerService | undefined;
 	private readonly requestShutdown: () => void;
 
-	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown }: RpcSessionBindingOptions) {
+	constructor({ runtimeHost, output, pendingExtensionRequests, requestShutdown, customUi, renderService, sessionPicker }: RpcSessionBindingOptions) {
 		this.runtimeHost = runtimeHost;
 		this.output = output;
 		this.pendingExtensionRequests = pendingExtensionRequests;
 		this.requestShutdown = requestShutdown;
+		this.customUi = customUi;
+		this.renderService = renderService;
+		this.sessionPicker = sessionPicker;
 		this.session = runtimeHost.session;
 	}
 
@@ -35,13 +47,16 @@ export class RpcSessionBinding {
 	async rebindSession(): Promise<void> {
 		this.session = this.runtimeHost.session;
 		const session = this.session;
+		this.renderService?.bindSession(session);
 
 		await session.bindExtensions({
 			uiContext: createRpcExtensionUIContext({
 				output: this.output,
 				pendingExtensionRequests: this.pendingExtensionRequests,
+				customUi: this.customUi,
+				sessionPicker: this.sessionPicker,
 			}),
-			mode: "rpc",
+			mode: this.customUi ? "tui" : "rpc",
 			commandContextActions: {
 				waitForIdle: () => this.session.agent.waitForIdle(),
 				newSession: async (options) => this.runtimeHost.newSession(options),

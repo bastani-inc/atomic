@@ -234,11 +234,13 @@ async function resumeDurableShadow(
   let warning: string | undefined;
   try {
     await deps.ensureWorkflowResourcesLoaded();
-    await runtime.prepareDurableResumable(runId);
+    // Targeted read: the shadow run id is exact, so avoid a full catalog scan.
+    if (runtime.prepareDurableResumableForIds !== undefined) await runtime.prepareDurableResumableForIds([runId]);
+    else await runtime.prepareDurableResumable(runId);
   } catch (error) {
     warning = formatWorkflowResourceLoadWarning(error);
   }
-  const resumed = runtime.resumeDurableWorkflow(runId, { policy: deps.policy });
+  const resumed = await runtime.resumeDurableWorkflow(runId, { policy: deps.policy });
   const message = warning === undefined ? resumed.message : `${warning}\n\n${resumed.message}`;
   return {
     action: "resume",
@@ -271,7 +273,9 @@ export async function workflowResumeAction(
   if (!backend.isWorkflowLoadable(target.runId)) {
     try {
       await deps.ensureWorkflowResourcesLoaded();
-      await deps.getRuntime().prepareDurableResumable(target.runId);
+      const runtime = deps.getRuntime();
+      if (runtime.prepareDurableResumableForIds !== undefined) await runtime.prepareDurableResumableForIds([target.runId]);
+      else await runtime.prepareDurableResumable(target.runId);
     } catch {
       // Compatibility preparation remains best-effort before the authoritative check.
     }

@@ -9,7 +9,7 @@ import {
   type PublishWorkflowRunVerification,
 } from "./publish-release.js";
 
-type RunCommand = (args: readonly string[]) => CommandResult;
+type RunCommand = (args: readonly string[]) => CommandResult | Promise<CommandResult>;
 type JsonObject = { readonly [key: string]: JsonValue };
 
 const runJsonFields = "databaseId,status,conclusion,url,headBranch,event,workflowName,displayTitle,createdAt,headSha";
@@ -53,7 +53,7 @@ export async function verifyPublishRunSucceeded(
   expectedReleaseSha: string,
   execute: RunCommand = defaultRunCommand,
 ): Promise<PublishWorkflowRunVerification> {
-  const runList = execute([
+  const runList = await execute([
     "gh", "run", "list", "--workflow", "publish.yml", "--event", "create",
     "--json", runJsonFields, "--limit", "50",
   ]);
@@ -76,7 +76,7 @@ export async function verifyPublishRunSucceeded(
     };
   }
 
-  const runView = execute(["gh", "run", "view", String(selected.runId), "--json", runJsonFields]);
+  const runView = await execute(["gh", "run", "view", String(selected.runId), "--json", runJsonFields]);
   if (runView.exitCode !== 0) {
     return { ok: false, runId: selected.runId, runUrl: selected.runUrl, summary: ["GitHub Actions publish run verification command failed.", commandSummary(runView)].join("\n\n") };
   }
@@ -105,7 +105,7 @@ export async function verifyPublishRunSucceeded(
     return { ...verified, summary: [verified.summary, commandSummary(runView)].join("\n\n") };
   }
 
-  const runJobs = execute(["gh", "run", "view", String(viewed.runId), "--json", "jobs"]);
+  const runJobs = await execute(["gh", "run", "view", String(viewed.runId), "--json", "jobs"]);
   if (runJobs.exitCode !== 0) {
     return { ok: false, runId: viewed.runId, runUrl: viewed.runUrl, summary: ["GitHub Actions job lookup failed.", commandSummary(runJobs)].join("\n\n") };
   }
@@ -116,7 +116,7 @@ export async function verifyPublishRunSucceeded(
     return { ok: false, runId: viewed.runId, runUrl: viewed.runUrl, summary: ["Successful protected release-integrity job was not uniquely identified.", commandSummary(runJobs)].join("\n\n") };
   }
 
-  const integrityLog = execute(["gh", "run", "view", String(viewed.runId), "--job", String(integrityJobId), "--log"]);
+  const integrityLog = await execute(["gh", "run", "view", String(viewed.runId), "--job", String(integrityJobId), "--log"]);
   const integrityFailure = verifyIntegrityLog(integrityLog, expectedReleaseSha);
   if (integrityFailure !== undefined) {
     return { ok: false, runId: viewed.runId, runUrl: viewed.runUrl, summary: [integrityFailure, commandSummary(integrityLog)].join("\n\n") };

@@ -43,7 +43,7 @@ import { runDetached, workflowConnectGuidance } from "../runs/background/runner.
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { appendRunEnd } from "../shared/persistence-session-entries.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
-import { initializeDbosDurableBackendFromEnv } from "../durable/factory.js";
+import { initializeDurableBackend } from "../durable/factory.js";
 import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
 import {
   createDurableResumeRuntime,
@@ -152,8 +152,11 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
   const jobs = opts.jobs;
   const runtimeCwd = opts.cwd ?? process.cwd();
   const resolveDefaultStageSessionDir = opts.resolveDefaultStageSessionDir;
-  const dbosReady = initializeDbosDurableBackendFromEnv().catch((err) => process.emitWarning(`Atomic workflow DBOS durability unavailable; using file-backed durability: ${err instanceof Error ? err.message : String(err)}`));
-  const ensureDbosReady = async (): Promise<void> => { await dbosReady; };
+  let dbosReady: Promise<void> | undefined;
+  const ensureDbosReady = async (): Promise<void> => {
+    dbosReady ??= initializeDurableBackend().then(() => undefined);
+    await dbosReady;
+  };
 
   function runOptions(args: WorkflowToolArgs, policy?: WorkflowExecutionPolicy): RunOpts {
     const argConcurrency =

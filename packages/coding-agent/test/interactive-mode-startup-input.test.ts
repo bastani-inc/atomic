@@ -36,8 +36,8 @@ type SubmitContext = {
 	startupReplayInputs: string[];
 	startupReplayActiveInput?: string;
 	startupDraftText?: string;
+	options: { startupInputCapture?: { consume(): { text: string; submissions: string[] } } };
 };
-
 type InputContext = {
 	defaultEditor?: { onSubmit?: (text: string) => void | Promise<void> };
 	onInputCallback?: (text: string) => void;
@@ -71,6 +71,7 @@ function createSubmitContext(): SubmitContext {
 			isBashRunning: false,
 			prompt: vi.fn(async () => {}),
 		},
+		options: {},
 		deferredStartupPending: false,
 		handleBashCommand: vi.fn(async () => {}),
 		ensureDeferredStartupComplete: vi.fn(async () => {}),
@@ -467,6 +468,7 @@ describe("InteractiveMode startup input", () => {
 		expect(context.editor.setText).toHaveBeenCalledWith("");
 		expect(context.startupReplayActiveInput).toBeUndefined();
 	});
+
 
 	it("queues cooked submissions behind an active raw-captured command", async () => {
 		const context = createSubmitContext();

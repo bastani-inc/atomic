@@ -224,7 +224,7 @@ export default workflow({
 
     // Final PR merge and retained-branch evidence is mutable and must be
     // revalidated on every durable resume.
-    const mergeVerification = verifyReleasePrMerged(release, prReference, baseRef);
+    const mergeVerification = await verifyReleasePrMerged(release, prReference, baseRef);
     if (!mergeVerification.ok) {
       return blockedOutput(
         release,
@@ -254,7 +254,7 @@ export default workflow({
       ].join("\n"),
     });
 
-    const mainReady = verifyMainReadyForTag(release, mergeVerification.mergeCommitOid, baseRef);
+    const mainReady = await verifyMainReadyForTag(release, mergeVerification.mergeCommitOid, baseRef);
     if (!mainReady.ok) {
       return blockedOutput(
         release,
@@ -264,7 +264,7 @@ export default workflow({
       );
     }
 
-    const tagRecovery = inspectReleaseTagRecovery(release, mainReady.mainOid, mergeVerification.mergeCommitOid, releaseBaseRef);
+    const tagRecovery = await inspectReleaseTagRecovery(release, mainReady.mainOid, mergeVerification.mergeCommitOid, releaseBaseRef);
     if (!tagRecovery.ok) {
       return blockedOutput(release, "inspect-release-tag", "any existing release tag matches the verified base parent and stamped version", tagRecovery.summary, "failed");
     }
@@ -312,7 +312,7 @@ export default workflow({
       tagStageText = tagStage.text;
     }
 
-    const tagVerification = verifyReleaseTagPublished(release, mainReady.mainOid, {
+    const tagVerification = await verifyReleaseTagPublished(release, mainReady.mainOid, {
       expectedBaseRef: releaseBaseRef,
       allowIntegratedParent: tagRecovery.state !== "absent",
       requiredAncestorOid: mergeVerification.mergeCommitOid,

@@ -19,6 +19,8 @@ type InputContext = {
 	inputHandlerReadyRecorded?: boolean;
 	drainStartupReplayCommands?: () => Promise<void>;
 	recoverCookedStartupInput?: () => boolean;
+	showStartupNoticesIfNeeded?: (container: unknown) => void;
+	startupNoticesContainer?: unknown;
 	footerDataProvider: { startGitWatcher: () => void };
 	deferredStartupPending?: boolean;
 	ensureDeferredStartupComplete?: () => Promise<void>;
@@ -133,6 +135,8 @@ describe("InteractiveMode startup latency hooks", () => {
 			startupCookedInputRecovered: true,
 			inputHandlerReadyRecorded: false,
 			footerDataProvider: { startGitWatcher: vi.fn() },
+			showStartupNoticesIfNeeded: vi.fn(),
+			startupNoticesContainer: {},
 		};
 
 		const inputPromise = interactiveModePrototype.getUserInput.call(context);
@@ -158,6 +162,8 @@ describe("InteractiveMode startup latency hooks", () => {
 			startupCookedInputRecovered: true,
 			inputHandlerReadyRecorded: false,
 			footerDataProvider: { startGitWatcher: vi.fn() },
+			showStartupNoticesIfNeeded: vi.fn(),
+			startupNoticesContainer: {},
 			deferredStartupPending: true,
 			ensureDeferredStartupComplete: vi.fn(async () => {
 				markDeferredStarted?.();
@@ -233,10 +239,10 @@ describe("InteractiveMode startup latency hooks", () => {
 		void interactiveModePrototype.init.call(context);
 
 		expect(context.ui.start).toHaveBeenCalledTimes(1);
-		expect(context.footerDataProvider.onBranchChange).toHaveBeenCalledTimes(1);
 		expect(context.footerDataProvider.startGitWatcher).not.toHaveBeenCalled();
 
 		await waitForImmediate();
+		expect(context.footerDataProvider.onBranchChange).toHaveBeenCalledTimes(1);
 		expect(context.footerDataProvider.startGitWatcher).not.toHaveBeenCalled();
 	});
 

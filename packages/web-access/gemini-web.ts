@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { type CookieMap, getGoogleCookies } from "./chrome-cookies.js";
 import { getChromeProfileFromConfig, isBrowserCookieAccessAllowed, normalizeChromeProfile } from "./gemini-web-config.ts";

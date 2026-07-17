@@ -107,10 +107,10 @@ export async function verifyReleasePreparation(
   sourceHeadOid: string,
   checkManifestVersions = true,
 ): Promise<PreparationVerification> {
-  const branch = runCommand(["git", "branch", "--show-current"]);
-  const head = runCommand(["git", "rev-parse", "HEAD"]);
-  const status = runCommand(["git", "status", "--short"]);
-  const changedFiles = runCommand(["git", "diff", "--name-only", `${sourceHeadOid}..HEAD`]);
+  const branch = await runCommand(["git", "branch", "--show-current"]);
+  const head = await runCommand(["git", "rev-parse", "HEAD"]);
+  const status = await runCommand(["git", "status", "--short"]);
+  const changedFiles = await runCommand(["git", "diff", "--name-only", `${sourceHeadOid}..HEAD`]);
   const failures: string[] = [];
 
   if (branch.exitCode !== 0 || branch.stdout !== release.branch) {
@@ -180,13 +180,13 @@ export async function verifyReleasePreparation(
   return { ok: true, summary, releaseCommitOid: head.stdout };
 }
 
-export function runLocalReleaseChecks(release: ValidatedRelease): GateVerification {
-  const branch = runCommand(["git", "branch", "--show-current"]);
-  const head = runCommand(["git", "rev-parse", "HEAD"]);
-  const statusBefore = runCommand(["git", "status", "--short"]);
-  const typecheck = runCommand(["bun", "run", "typecheck"]);
-  const unitTests = typecheck.exitCode === 0 ? runCommand(["bun", "run", "test:unit"]) : undefined;
-  const statusAfter = runCommand(["git", "status", "--short"]);
+export async function runLocalReleaseChecks(release: ValidatedRelease): Promise<GateVerification> {
+  const branch = await runCommand(["git", "branch", "--show-current"]);
+  const head = await runCommand(["git", "rev-parse", "HEAD"]);
+  const statusBefore = await runCommand(["git", "status", "--short"]);
+  const typecheck = await runCommand(["bun", "run", "typecheck"]);
+  const unitTests = typecheck.exitCode === 0 ? await runCommand(["bun", "run", "test:unit"]) : undefined;
+  const statusAfter = await runCommand(["git", "status", "--short"]);
   const failures: string[] = [];
 
   if (branch.exitCode !== 0 || branch.stdout !== release.branch) {

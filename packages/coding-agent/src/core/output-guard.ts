@@ -118,6 +118,18 @@ export function isStdoutTakenOver(): boolean {
 	return stdoutTakeoverState !== undefined;
 }
 
+/** Hand a small control frame directly to the OS pipe before synchronous user code begins. */
+export function writeRawStdoutControl(text: string): void {
+	if (text.length === 0) return;
+	try {
+		getRawStdoutWrite()(text, (error) => {
+			if (error) process.exit(1);
+		});
+	} catch {
+		process.exit(1);
+	}
+}
+
 export function writeRawStdout(text: string): void {
 	if (text.length === 0) {
 		return;

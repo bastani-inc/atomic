@@ -209,7 +209,7 @@ export interface SessionInfo {
 	firstMessage: string;
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
-	messageColor?: "success" | "warning" | "accent";
+	messageColor?: "success" | "warning" | "accent" | "error";
 }
 
 

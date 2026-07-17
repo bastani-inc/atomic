@@ -1,4 +1,5 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
+import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
 import { type ExtensionUIContext, type HostCustomUiState, type HostCustomUiStateListener, type ProjectTrustContext, getAvailableThemesWithPaths, getThemeByName, Theme, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.addExtensionTerminalInputListener = function(this: InteractiveModeBase, handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void {
@@ -139,6 +140,18 @@ InteractiveModeBase.prototype.createExtensionUIContext = function(this: Interact
       setHeader: (factory) => this.setExtensionHeader(factory),
       setTitle: (title) => this.ui.terminal.setTitle(title),
       custom: (factory, options) => this.showExtensionCustom(factory, options),
+      // In-process host session picker: extensions already run in the terminal
+      // process here, so the selector mounts directly with no IPC. Isolated
+      // mode exposes the same capability from the engine child over the
+      // session-picker protocol channel; callers never branch.
+      hostSessionPicker: (request) =>
+        openLocalHostSessionPicker(
+          {
+            custom: (factory, options) => this.showExtensionCustom(factory, options),
+            requestRender: () => this.ui.requestRender(),
+          },
+          request,
+        ),
       pasteToEditor: (text) =>
         this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
       setEditorText: (text) => this.editor.setText(text),

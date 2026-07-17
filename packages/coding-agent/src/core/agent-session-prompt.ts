@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai/compat";
+import { runCallback } from "./callback-activity.ts";
 import { ATOMIC_GUIDE_COMMAND_NAME, ATOMIC_GUIDE_HELP_CHOICES, atomicGuideModeForChoice, getAtomicGuideMessage, isAtomicGuideHelpChoice, normalizeAtomicGuideMode } from "./atomic-guide-command.ts";
 import { formatAuthStorageLoadFailedMessage, formatNoApiKeyFoundMessage, formatNoModelSelectedMessage, formatUnresolvedModelMessage } from "./auth-guidance.ts";
 import { expandPromptTemplate } from "./prompt-templates.ts";
@@ -264,7 +265,10 @@ export async function _tryExecuteExtensionCommand(this: AgentSession, text: stri
 	const ctx = this._extensionRunner.createCommandContext();
 
 	try {
-		await command.handler(args, ctx);
+		await runCallback(
+			{ kind: "extension.hook", name: `command:${commandName}`, sourcePath: command.sourceInfo.path },
+			() => command.handler(args, ctx),
+		);
 		return true;
 	} catch (err) {
 		// Emit error via extension runner

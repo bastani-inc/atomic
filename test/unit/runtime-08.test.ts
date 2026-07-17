@@ -151,7 +151,7 @@ describe("WorkflowPersistencePort — runtime persistence forwarding", () => {
     }
 
     function lifecycleTypes(calls: Array<{ type: string }>): string[] {
-        return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+        return calls.map((c) => c.type);
     }
 
     const persistWorkflow = workflow({
