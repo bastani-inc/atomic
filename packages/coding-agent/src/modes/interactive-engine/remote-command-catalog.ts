@@ -23,7 +23,11 @@ export class RemoteCommandCatalog {
 	private readonly listeners = new Set<RemoteCommandsListener>();
 	private generation = 0;
 
-	constructor(private readonly client: RpcClient) {}
+	private readonly client: RpcClient;
+
+	constructor(client: RpcClient) {
+		this.client = client;
+	}
 
 	getCommands(): readonly RpcSlashCommand[] {
 		return this.commands;

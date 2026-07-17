@@ -12,6 +12,7 @@ import type { RpcEvent, RpcSlashCommand } from "../rpc/rpc-types.ts";
 import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { InteractiveEngineCommand, InteractiveEngineMessage } from "./protocol.ts";
 import { RemoteCommandCatalog, type RemoteCommandsListener } from "./remote-command-catalog.ts";
+import { sleep } from "../../utils/sleep.ts";
 
 export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private readonly client: RpcClient;
@@ -366,7 +367,7 @@ export class IsolatedInteractiveRuntime extends AgentSessionRuntime {
 	private async abortAndRecover(): Promise<void> {
 		if (this.restartPromise) return this.restartPromise;
 		const cooperativeAbort = this.client.abort().then(() => true, () => false);
-		if (await Promise.race([cooperativeAbort, Bun.sleep(250).then(() => false)])) {
+		if (await Promise.race([cooperativeAbort, sleep(250).then(() => false)])) {
 			this.engineCallbackActive = false;
 			return;
 		}

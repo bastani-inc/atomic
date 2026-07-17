@@ -21,7 +21,10 @@ class RenderTerminal implements Terminal {
 	columns = 80;
 	rows = 24;
 	kittyProtocolActive = false;
-	constructor(private readonly requestRender: () => void) {}
+	private readonly requestRender: () => void;
+	constructor(requestRender: () => void) {
+		this.requestRender = requestRender;
+	}
 	start(): void {}
 	stop(): void {}
 	async drainInput(): Promise<void> {}
@@ -52,8 +55,11 @@ function boundedLines(lines: string[]): string[] {
 export class EngineRenderService {
 	private readonly records = new Map<string, RenderRecord>();
 	private session: AgentSession | undefined;
+	private readonly write: (line: string) => void;
 
-	constructor(private readonly write: (line: string) => void) {}
+	constructor(write: (line: string) => void) {
+		this.write = write;
+	}
 
 	bindSession(session: AgentSession): void {
 		this.dispose();

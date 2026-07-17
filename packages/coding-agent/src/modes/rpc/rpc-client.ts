@@ -6,6 +6,7 @@ import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { InteractiveEngineMonitor } from "../interactive-engine/engine-monitor.ts";
 import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineFrame, type InteractiveEngineCommand, type InteractiveEngineMessage } from "../interactive-engine/protocol.ts";
+import { sleep } from "../../utils/sleep.ts";
 import { createInteractiveJsonlOptions, spawnRpcClientProcess, terminateRpcClientProcess } from "./rpc-client-process.ts";
 import { RpcClientApi, type RpcCommandBody } from "./rpc-client-api.ts";
 import { RpcEventBuffer } from "./rpc-event-buffer.ts";
@@ -203,7 +204,7 @@ export class RpcClient extends RpcClientApi {
 			},
 		});
 		if (this.engineMonitor) await this.engineMonitor.waitUntilReady();
-		else await Bun.sleep(100);
+		else await sleep(100);
 
 		if (generation !== this.generation || this.process?.exitCode !== null) {
 			throw new Error(`Agent process exited immediately. Stderr: ${this.stderr}`);

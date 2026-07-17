@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { rm } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killProcessTree, trackDetachedChildPid, untrackDetachedChildPid } from "../../utils/shell.ts";
+import { sleep } from "../../utils/sleep.ts";
 import type { ActivityWatchdogDiagnostic } from "../interactive-engine/activity-watchdog.ts";
 import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES } from "../interactive-engine/protocol.ts";
 
@@ -55,20 +56,20 @@ export async function terminateRpcClientProcess(child: ChildProcess, processTree
 	child.once("exit", resolveExit);
 	const guardianFile = guardianFiles.get(child);
 	child.kill("SIGTERM");
-	if (await Promise.race([exited.then(() => true), Bun.sleep(250).then(() => false)])) {
+	if (await Promise.race([exited.then(() => true), sleep(250).then(() => false)])) {
 		if (guardianFile) await rm(guardianFile, { force: true });
 		return;
 	}
 	if (processTree && guardianFile) {
-		await Bun.write(guardianFile, "stop");
-		if (await Promise.race([exited.then(() => true), Bun.sleep(500).then(() => false)])) {
+		await writeFile(guardianFile, "stop");
+		if (await Promise.race([exited.then(() => true), sleep(500).then(() => false)])) {
 			await rm(guardianFile, { force: true });
 			return;
 		}
 	}
 	if (processTree && child.pid) killProcessTree(child.pid);
 	else child.kill("SIGKILL");
-	if (!(await Promise.race([exited.then(() => true), Bun.sleep(250).then(() => false)]))) {
+	if (!(await Promise.race([exited.then(() => true), sleep(250).then(() => false)]))) {
 		throw new Error(`Agent process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
 	}
 	if (guardianFile) await rm(guardianFile, { force: true });

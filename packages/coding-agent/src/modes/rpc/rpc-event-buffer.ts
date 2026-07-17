@@ -3,7 +3,10 @@ import type { RpcEvent } from "./rpc-types.ts";
 export class RpcEventBuffer {
 	private readonly updates = new Map<string, RpcEvent>();
 	private timer: ReturnType<typeof setTimeout> | undefined;
-	constructor(private readonly emit: (event: RpcEvent) => void) {}
+	private readonly emit: (event: RpcEvent) => void;
+	constructor(emit: (event: RpcEvent) => void) {
+		this.emit = emit;
+	}
 
 	enqueue(event: RpcEvent): void {
 		const key = event.type === "message_update"

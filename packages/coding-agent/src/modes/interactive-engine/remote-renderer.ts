@@ -24,10 +24,15 @@ abstract class RemoteRenderer implements Component {
 	private disposed = false;
 	private readonly unsubscribe: () => void;
 
+	protected readonly runtime: IsolatedInteractiveRuntime;
+	private readonly requestRender: () => void;
+
 	constructor(
-		protected readonly runtime: IsolatedInteractiveRuntime,
-		private readonly requestRender: () => void,
+		runtime: IsolatedInteractiveRuntime,
+		requestRender: () => void,
 	) {
+		this.runtime = runtime;
+		this.requestRender = requestRender;
 		this.unsubscribe = runtime.onEngineMessage((message) => {
 			if (!("componentId" in message) || message.componentId !== this.componentId) return;
 			if (message.type === "engine_custom_frame") {
@@ -70,6 +75,9 @@ abstract class RemoteRenderer implements Component {
 }
 
 export class RemoteToolExecutionComponent extends RemoteRenderer {
+	private readonly toolName: string;
+	private readonly toolCallId: string;
+	private args: unknown;
 	private result: RenderableToolResult | undefined;
 	private executionStarted = false;
 	private argsComplete = false;
@@ -79,14 +87,17 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 	private imageWidthCells: number;
 
 	constructor(
-		private readonly toolName: string,
-		private readonly toolCallId: string,
-		private args: unknown,
+		toolName: string,
+		toolCallId: string,
+		args: unknown,
 		options: { showImages?: boolean; imageWidthCells?: number },
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
 	) {
 		super(runtime, requestRender);
+		this.toolName = toolName;
+		this.toolCallId = toolCallId;
+		this.args = args;
 		this.showImages = options.showImages ?? true;
 		this.imageWidthCells = options.imageWidthCells ?? 60;
 	}
@@ -124,12 +135,16 @@ export class RemoteToolExecutionComponent extends RemoteRenderer {
 }
 
 export class RemoteCustomMessageComponent extends RemoteRenderer {
+	private readonly message: CustomMessage<unknown>;
 	private expanded = false;
 	constructor(
-		private readonly message: CustomMessage<unknown>,
+		message: CustomMessage<unknown>,
 		runtime: IsolatedInteractiveRuntime,
 		requestRender: () => void,
-	) { super(runtime, requestRender); }
+	) {
+		super(runtime, requestRender);
+		this.message = message;
+	}
 
 	setExpanded(expanded: boolean): void { this.expanded = expanded; this.changed(); }
 

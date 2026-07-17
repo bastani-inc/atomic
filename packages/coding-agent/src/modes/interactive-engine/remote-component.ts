@@ -21,12 +21,22 @@ class RemoteComponent implements Component {
 	private dirty = true;
 	private disposed = false;
 
+	private readonly componentId: string;
+	private readonly runtime: IsolatedInteractiveRuntime;
+	private readonly requestRender: () => void;
+	private readonly getRows: () => number;
+
 	constructor(
-		private readonly componentId: string,
-		private readonly runtime: IsolatedInteractiveRuntime,
-		private readonly requestRender: () => void,
-		private readonly getRows: () => number,
-	) {}
+		componentId: string,
+		runtime: IsolatedInteractiveRuntime,
+		requestRender: () => void,
+		getRows: () => number,
+	) {
+		this.componentId = componentId;
+		this.runtime = runtime;
+		this.requestRender = requestRender;
+		this.getRows = getRows;
+	}
 
 	render(width: number): string[] {
 		if (!this.disposed && (this.dirty || width !== this.width)) {
@@ -93,10 +103,15 @@ export class RemoteComponentController {
 	private readonly unsubscribe: () => void;
 	private readonly terminalModes = new TerminalModeController();
 
+	private readonly runtime: IsolatedInteractiveRuntime;
+	private readonly ui: ExtensionUIContext;
+
 	constructor(
-		private readonly runtime: IsolatedInteractiveRuntime,
-		private readonly ui: ExtensionUIContext,
+		runtime: IsolatedInteractiveRuntime,
+		ui: ExtensionUIContext,
 	) {
+		this.runtime = runtime;
+		this.ui = ui;
 		this.unsubscribe = runtime.onEngineMessage((message) => this.handleMessage(message));
 	}
 

@@ -21,10 +21,16 @@ export class BoundedWriter {
 	private pumping = false;
 	private closedError: Error | undefined;
 
+	private readonly stream: Writable;
+	private readonly options: BoundedWriterOptions;
+
 	constructor(
-		private readonly stream: Writable,
-		private readonly options: BoundedWriterOptions,
-	) {}
+		stream: Writable,
+		options: BoundedWriterOptions,
+	) {
+		this.stream = stream;
+		this.options = options;
+	}
 
 	get pendingBytes(): number { return this.queuedBytes; }
 
