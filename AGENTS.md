@@ -141,10 +141,10 @@ If a user asks to publish a release or prerelease, execute the release process d
 4. Create `[release|prerelease]/<version>` without a leading `v` from the selected base.
 5. Update every relevant `packages/*/CHANGELOG.md` according to the Changelog rules below. Keep the selected base versionless; do not run `scripts/bump-version.ts` on the branch.
 6. Run local validation, commit all intended release-notes changes, push the branch, and open a PR to the selected base.
-7. Inspect required CI checks once. Never use `--watch`, sleeps, polling loops, or another workflow as a waiter. If checks are pending, report the PR/run and wait for a lifecycle notice or user follow-up; if checks fail, ask what to do.
+7. Inspect required CI checks. If checks fail, ask what to do.
 8. After checks pass, merge the exact verified head commit, switch to the selected base, and pull `origin/<base_ref>`.
 9. Run `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`. This stamps the real version only on the detached release commit, records canonical base metadata, and pushes the tag, which automatically starts protected publishing.
-10. Inspect the matching `Publish <version>` action once. If it is pending, report its URL and wait for a lifecycle notice or user follow-up rather than blocking. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
+10. Inspect the matching `Publish <version>` action. If it fails, report the failing job and ask what to do. If it succeeds, verify npm and GitHub Release state and summarize the release evidence.
 
 ## Docs
 
