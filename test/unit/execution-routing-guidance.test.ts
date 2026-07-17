@@ -4,6 +4,8 @@ import { DEFAULT_PROMPT_GUIDANCE as workflowGuidance, WORKFLOW_TOOL_DESCRIPTION 
 import { WorkflowParametersSchema } from "../../packages/workflows/src/extension/workflow-schema.js";
 import { DEFAULT_PROMPT_GUIDANCE as subagentGuidance } from "../../packages/subagents/src/extension/prompt-guidance.js";
 import { SUBAGENT_TOOL_DESCRIPTION } from "../../packages/subagents/src/extension/tool-description.js";
+import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
+import { CHILD_FANOUT_BOUNDARY_INSTRUCTIONS } from "../../packages/subagents/src/runs/shared/subagent-prompt-runtime.js";
 
 const repositoryRoot = resolve(import.meta.dir, "../..");
 
@@ -13,6 +15,7 @@ async function readRepositoryFile(path: string): Promise<string> {
 
 const combinedGuidance = [...workflowGuidance, ...subagentGuidance].join("\n");
 const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n${SUBAGENT_TOOL_DESCRIPTION}`;
+const orchestrationResourcePrompts = `${modelVisibleRouting}\n${JSON.stringify(SubagentParams)}\n${CHILD_FANOUT_BOUNDARY_INSTRUCTIONS}`;
 
 const workflowDocumentationPaths = [
   "packages/coding-agent/docs/workflows.md",
@@ -36,13 +39,10 @@ describe("workflow-first execution routing", () => {
     }
   });
 
-  test("requires an early routing decision and prevents inline drift", () => {
+  test("requires an early routing decision", () => {
     for (const phrase of [
       "Decide the execution mode before your first tool call",
       "Reconnaissance counts as inline execution",
-      "Budget reconnaissance",
-      "roughly ten exploratory tool calls",
-      "Sunk inline research transfers through files",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
     }
@@ -85,9 +85,6 @@ describe("workflow-first execution routing", () => {
       "Workflow definitions are normal TypeScript modules",
       "@bastani/workflows/builtin",
       "ctx.workflow(childDefinition, { inputs, stageName })",
-      "Imported children may nest more workflows",
-      "maxDepth",
-      "expanded parent graph",
       "Pass definitions, not registry-name strings or paths",
       "deepResearchCodebase",
       "conditionally nest `goal` or `ralph`",
@@ -110,7 +107,6 @@ describe("workflow-first execution routing", () => {
       "fan out per package",
       "fresh-context verifiers",
       "tournament-rank",
-      "max-iteration escape hatch",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
     }
@@ -121,7 +117,6 @@ describe("workflow-first execution routing", () => {
       "Natural-language instructions to create or use a worktree do not enable runner isolation",
       "`cwd` only selects the starting directory",
       "set `worktree: true` or `gitWorktreeDir`",
-      "one run per independent item",
     ]) {
       expect(combinedGuidance).toContain(phrase);
     }
@@ -195,24 +190,37 @@ describe("workflow-first execution routing", () => {
     expect(launchGuidance).not.toMatch(/attach|detach/i);
   });
 
-  test("keeps subagents complementary without universal delegation", () => {
+  test("keeps subagent execution modes without prompt-level resource caps", () => {
     for (const phrase of [
-      "focused specialist work inside workflows",
-      "workflows are the default for non-trivial structured work",
-      "single subagent",
-      "chain",
-      "parallel tasks",
-      "debugger subagent for actual failures",
+      "Delegate specialist work",
+      "SINGLE",
+      "CHAIN",
+      "PARALLEL",
     ]) {
       expect(modelVisibleRouting).toContain(phrase);
     }
 
-    for (const obsoletePolicy of [
-      "all non-trivial operations should be delegated",
-      "spawn a debugger subagent first",
-      "Prefer async mode for every subagent launch",
+    for (const removedPolicy of [
+      "bounded delegation",
+      "bounded sequential",
+      "Keep substantial-overlap tasks together",
+      "do not duplicate a delegated job",
+      "Budget reconnaissance",
+      "roughly ten exploratory tool calls",
+      "one run per independent item",
+      "configured maxDepth",
+      "up to `maxDepth`",
+      "respecting `maxDepth`",
+      "max-iteration escape hatch",
+      "Required fanout bound unless configured globally",
+      "Maximum 50 tasks after count expansion",
+      "max concurrent tasks",
+      "maxSubagentDepth cap still applies",
+      "async:true is selective",
+      "fanout work explicitly requested",
+      "Do not launch follow-up workers unless",
     ]) {
-      expect(modelVisibleRouting).not.toContain(obsoletePolicy);
+      expect(orchestrationResourcePrompts).not.toContain(removedPolicy);
     }
   });
 
