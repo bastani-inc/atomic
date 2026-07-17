@@ -23,6 +23,7 @@ import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import { parseSubagentNotifyContent } from "./notification-content.ts";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT } from "../shared/types.ts";
@@ -97,37 +98,6 @@ function createSlashResultComponent(
 		return Container.prototype.render.call(container, width);
 	};
 	return container;
-}
-function parseSubagentNotifyContent(content: string): SubagentNotifyDetails | undefined {
-	const lines = content.split("\n");
-	const header = lines[0] ?? "";
-	const match = header.match(/^Background task (completed|failed|paused): \*\*(.+?)\*\*(?:\s+(\([^)]*\)))?$/);
-	if (!match) return undefined;
-	const body = lines.slice(2);
-	let sessionIndex = -1;
-	for (let i = body.length - 1; i >= 1; i--) {
-		if (body[i - 1]?.trim() === "" && /^(Session|Session file|Session share error):\s+/.test(body[i]!)) {
-			sessionIndex = i;
-			break;
-		}
-	}
-	const sessionLine = sessionIndex >= 0 ? body[sessionIndex] : undefined;
-	const resultLines = sessionIndex >= 0 ? body.slice(0, sessionIndex) : body;
-	const resultPreview = resultLines.join("\n").trim() || "(no output)";
-	let sessionLabel: string | undefined;
-	let sessionValue: string | undefined;
-	if (sessionLine) {
-		const separator = sessionLine.indexOf(":");
-		sessionLabel = sessionLine.slice(0, separator).toLowerCase();
-		sessionValue = sessionLine.slice(separator + 1).trim();
-	}
-	return {
-		agent: match[2]!,
-		status: match[1] as SubagentNotifyDetails["status"],
-		...(match[3] ? { taskInfo: match[3] } : {}),
-		resultPreview,
-		...(sessionLabel && sessionValue ? { sessionLabel, sessionValue } : {}),
-	};
 }
 export function renderSubagentNotification(
 	message: { content: unknown; details?: unknown },

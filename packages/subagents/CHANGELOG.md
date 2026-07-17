@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed subagent live-detail and full-notification hints to use the effective `app.tools.expand` binding and omit the shortcut affordance when it is unbound.
+- Fixed completion-notification header parsing to avoid polynomial regular-expression behavior on long malformed agent/task text while preserving accepted notification formats.
 - Fixed session startup stalling on background-job hydration when the subagents run directory has accumulated many historical runs. Active-job hydration is now deferred off the `session_start` hot path and only eagerly reconciles runs touched within the last 7 days (older runs are skipped with two `stat` calls instead of a full per-run status read and reconciliation), so the jobs widget populates moments after startup without blocking first input.
 - Fixed a host-process crash from the background-job tracker's timers using a stale extension context. Deferred hydration, poller ticks, and cleanup timers hold onto contexts that become invalid after `ctx.newSession()`, `ctx.fork()`, `ctx.switchSession()`, or `ctx.reload()`; every context read in those timer paths is now probed defensively and a stale retained UI context is dropped instead of throwing an unhandled "extension ctx is stale" error out of an unref'd timer.
 

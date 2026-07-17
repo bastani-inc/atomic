@@ -89,7 +89,7 @@ function progressBar(progress: number): string {
 	return "\u2588".repeat(filled) + "\u2591".repeat(10 - filled);
 }
 
-export const renderWebSearchResult: ToolResultRenderer = (result, { expanded, isPartial }, theme) => {
+export const renderWebSearchResult = ((result, { expanded, isPartial }, theme) => {
 	const details = result.details as WebSearchResultDetails | undefined;
 
 	if (isPartial) {
@@ -249,7 +249,7 @@ export const renderWebSearchResult: ToolResultRenderer = (result, { expanded, is
 	}
 
 	return new Text(lines.join("\n"), 0, 0);
-};
+}) satisfies ToolResultRenderer;
 
 export const renderCodeSearchResult: ToolResultRenderer = (result, { expanded }, theme) => {
 	const details = result.details as CodeSearchResultDetails | undefined;
@@ -351,7 +351,7 @@ export const renderGetSearchContentResult: ToolResultRenderer = (result, { expan
 export function renderWebAccessToolResult(name: string, args: ToolRenderResultArgs): ToolRenderResult {
 	switch (name) {
 		case "web_search":
-			return renderWebSearchResult(...args);
+			return renderWebSearchResult(args[0], args[1], args[2]);
 		case "code_search":
 			return renderCodeSearchResult(...args);
 		case "fetch_content":

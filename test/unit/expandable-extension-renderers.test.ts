@@ -2,27 +2,12 @@ import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { getKeybindings, setKeybindings, type KeyId } from "@earendil-works/pi-tui";
 import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
-import type { ToolRenderContext } from "../../packages/coding-agent/src/core/extensions/tool-types.ts";
 import { initTheme, theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../packages/coding-agent/src/utils/ansi.ts";
 import { renderSubagentNotification } from "../../packages/subagents/src/extension/index.ts";
 import { renderWebSearchResult } from "../../packages/web-access/result-renderers.ts";
 
 const originalKeybindings = getKeybindings();
-const renderContext: ToolRenderContext<Record<string, never>, Record<string, never>> = {
-	args: {},
-	toolCallId: "web-search-renderer-test",
-	invalidate: () => {},
-	lastComponent: undefined,
-	state: {},
-	cwd: process.cwd(),
-	executionStarted: true,
-	argsComplete: true,
-	isPartial: false,
-	expanded: false,
-	showImages: false,
-	isError: false,
-};
 
 function installExpandBinding(binding?: KeyId | KeyId[]): void {
 	setKeybindings(binding === undefined
@@ -42,7 +27,7 @@ function renderWebSearch(): string {
 	const component = renderWebSearchResult({
 		content: [{ type: "text", text: "one\ntwo\nthree\nfour" }],
 		details: { queryCount: 1, successfulQueries: 1, totalResults: 4 },
-	}, { expanded: false, isPartial: false }, theme, renderContext);
+	}, { expanded: false, isPartial: false }, theme);
 	return stripAnsi(component.render(100).join("\n"));
 }
 
