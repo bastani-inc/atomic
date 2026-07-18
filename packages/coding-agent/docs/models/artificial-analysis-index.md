@@ -1,45 +1,80 @@
 ---
-title: "Artificial Analysis Index"
-description: "How the Artificial Analysis index informs Atomic's static model-selection docs, which benchmark dimensions matter, and how to keep the data fresh."
+title: "Benchmark Sources"
+description: "The external benchmarks that inform Atomic model selection — Artificial Analysis and DeepSWE — broken down per benchmark: what each measures and when to reference it."
 ---
 
-# Artificial Analysis Index
+# Benchmark Sources
 
-The [Artificial Analysis](https://artificialanalysis.ai/) index is one external benchmark source that can inform Atomic's static model-selection docs. This page summarizes how to read it for Atomic's purposes and, importantly, how **not** to over-rely on it.
+Atomic's model-selection docs are keyed to two live external benchmark sources rather than a hand-maintained table of scores. This page lists each benchmark, what it measures, and **when to reference it** for a given workflow role — so the docs stay useful as new models ship without a manual rewrite every time.
 
 <Warning>
-The Artificial Analysis index is **one static input**, not the source of truth. Atomic's routing decisions should be validated against workflow-specific evals, because public benchmarks rarely match the distribution of real engineering-loop tasks. **Last reviewed: 2026-07-17.**
+No single benchmark is the source of truth. Use these as inputs and validate against Atomic's own workflow evals — public suites test different task distributions than real engineering loops. When Atomic's numbers disagree with a public index, Atomic's evals win. **Last reviewed: 2026-07-17.**
 </Warning>
 
-## Why it is useful
+## The two sources at a glance
 
-- It provides cross-provider, cross-model comparisons on a consistent set of public benchmarks, which is a reasonable first filter when a new model appears.
-- It tracks both quality and cost/latency dimensions, which maps loosely onto the `pass@1 / $ per task` framing used in [Model Selection](/models/model-selection) and [Pareto Efficiency](/models/pareto-efficiency).
-- It updates as providers ship, so it is a useful signal for when a static page has gone stale.
+| Source | URL | What it is | Reference it for |
+| --- | --- | --- | --- |
+| DeepSWE | [deepswe.datacurve.ai](https://deepswe.datacurve.ai/) | Long-horizon, contamination-free software-engineering tasks (113 tasks, 91 repos, 5 languages), all run on `mini-swe-agent` for consistency | The primary signal for coding-agent routing: real `pass@1`, cost, output tokens, and agent steps on engineering-loop work |
+| Artificial Analysis | [artificialanalysis.ai](https://artificialanalysis.ai/) | Cross-provider intelligence, coding, and agentic indices plus per-capability breakdowns | Cross-domain intelligence, tool use, knowledge reliability, long context, and non-coding capabilities |
 
-## Relevant benchmark dimensions
+## DeepSWE — coding-agent performance
 
-When mapping the index onto Atomic model selection, the dimensions that matter most are:
+DeepSWE is the closest public proxy for what Atomic actually does. Tasks are written from scratch (not scraped from PRs), so no model has seen the solutions; solutions require substantially more code than SWE-bench-style suites; and verifiers test behavior rather than implementation.
 
-- **Quality / accuracy** — the closest public proxy for Atomic's `pass@1`, though public suites test different task distributions than engineering loops.
-- **Price** — input/output token pricing, which feeds the `$ per task` axis once combined with Atomic's typical token and step counts.
-- **Throughput / latency** — secondary for batch workflows, but relevant for interactive coding sessions.
-- **Context window** — matters for long-context niches (e.g., the opus 1M-context role).
+- **Metric:** `pass@1`, plus average cost per task, output tokens, and agent steps.
+- **When to reference:** default weighting for debugger, worker, and any code-writing role. This is the table that drives [Model Selection](/models/model-selection) and [Pareto Efficiency](/models/pareto-efficiency).
+- **Watch:** cost and step count, not just score — a model that passes but takes 268 steps (e.g. sonnet-5) is a poor worker even at a good pass rate.
 
-## Caveats
+## Artificial Analysis — intelligence and capability breakdown
 
-- **Benchmark drift** — public suites are periodically saturated or revised; a score's meaning changes over time.
-- **Pricing drift** — provider prices change without notice, which can move a model on or off the Pareto frontier independently of any accuracy change.
-- **Distribution mismatch** — a high public score does not guarantee good behavior on Atomic's workflow tasks (step efficiency, tool use, gate discipline). Atomic's own numbers can disagree with the index, and when they do, Atomic's workflow evals win.
-- **Harness differences** — `pass@1` and `$ per task` here come from Atomic's harness; public indices use their own. Do not compare the two as if they were the same measurement.
-- **Unmeasured models** — families in use on `main` without comparable data (e.g., gpt-5.6 Sol, gpt-5.6 Terra) should be marked unmeasured rather than assigned an index-derived score, since the index number would not be harness-comparable.
+Artificial Analysis separates performance by benchmark, which lets a workflow pick the model that is strong at the *specific* thing a role needs. Reference the individual evaluations, not just the composite index.
+
+### Composite indices
+
+- **Intelligence Index (v4.1)** — composite of the nine evaluations below. Use as a first-pass filter when a new model appears.
+- **Coding Index** — coding-weighted sub-index. Cross-check against DeepSWE.
+- **Agentic Index** — tool use, planning, autonomy, complex problem solving. The best AA signal for orchestrator and reviewer roles.
+
+### Individual evaluations — what each measures and when to reference
+
+| Benchmark | Measures | Reference it for |
+| --- | --- | --- |
+| GDPval-AA v2 | Agentic real-world work tasks | Orchestrator / planner roles doing economically realistic work |
+| τ³-Banking | Agentic tool use | Tool-heavy workflows and function-calling reliability |
+| Terminal-Bench v2.1 | Agentic coding & terminal use | Debugger and shell-driven workers |
+| SciCode | Coding (scientific) | Code-writing roles in technical domains |
+| Humanity's Last Exam | Reasoning & knowledge | Hard planning / judgment gates |
+| GPQA Diamond | Scientific reasoning | Research roles in technical domains |
+| CritPt | Physics reasoning | Physics/engineering-heavy tasks |
+| AA-Omniscience | Knowledge accuracy & non-hallucination | Research and any role where a confident wrong answer is costly |
+| AA-LCR | Long-context reasoning | Large-codebase research and long-session work |
+
+### Capability indices
+
+Artificial Analysis also publishes per-domain capability indices — **Agentic, Coding, Finance & Accounting, Strategy & Ops, Legal, Healthcare & Medical, Engineering, Economics**. When a workflow is domain-specific, pick by the matching capability index rather than the general Intelligence Index.
+
+## Role → benchmark map
+
+A quick lookup for which benchmark to weight per role:
+
+| Role | Primary benchmark | Secondary |
+| --- | --- | --- |
+| Debugger | DeepSWE pass@1 | Terminal-Bench v2.1 |
+| Worker / cheap loop | DeepSWE cost & steps | — |
+| Reviewer / judgment gate | DeepSWE pass@1 | AA Agentic Index |
+| Planner / orchestrator | AA Agentic Index, GDPval-AA v2 | τ³-Banking (tool use) |
+| Research | AA-LCR (long context) | AA-Omniscience (reliability) |
+| Domain-specific work | Matching AA capability index | — |
 
 ## Keeping the docs fresh
 
-1. Treat the model-selection pages as timestamped snapshots. Each carries a "Last compiled / Last reviewed" date.
-2. When the index shows a materially new model or a large price/quality move, re-run Atomic's own evals before editing the frontier.
-3. Prefer generating the docs and any future routing policy from the **same underlying data file**, so documentation and routing cannot drift apart.
-4. Record the benchmark source and collection date whenever numbers are updated.
+flora131's guidance on this issue: point the model at the live benchmark URLs and describe what each measures and when to reference it, rather than hardcoding scores that go stale on every release.
+
+1. Treat the model-selection pages as timestamped snapshots that read *from* the live sources above.
+2. When a new model appears on DeepSWE or Artificial Analysis, add it by pulling its numbers from the source — the frontier may move (as the gpt-5.6 family did).
+3. Mark a model **unmeasured** only if it is absent from both sources; unmeasured models may still be operational defaults.
+4. Prefer generating the docs and any future routing policy from the same underlying data, so documentation and routing cannot drift apart.
 
 ## Related
 
