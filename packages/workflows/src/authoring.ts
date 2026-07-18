@@ -36,6 +36,7 @@ export type {
   StageUserMessageDelivery,
   StageSessionCreateOptions,
   StageSessionCreateResult,
+  StageSessionEvent,
   StageSessionRuntime,
   WorkflowAction,
   WorkflowArtifact,

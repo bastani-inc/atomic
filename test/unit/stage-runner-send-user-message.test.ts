@@ -1,10 +1,14 @@
 import { describe, test } from "bun:test";
 import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type {
+    AgentSessionAdapter as PublicAgentSessionAdapter,
+    StageSessionEvent as PublicStageSessionEvent,
+    StageSessionRuntime as PublicStageSessionRuntime,
+} from "../../packages/workflows/src/authoring.js";
+import type {
     AgentSessionAdapter,
     InternalStageContext,
     StageSessionCreateOptions,
-    StageSessionRuntime,
 } from "./stage-runner-helpers.js";
 import {
     Type,
@@ -175,12 +179,13 @@ describe("createStageContext — sendUserMessage", () => {
         let streaming = false;
         let promptStarts = 0;
         const consumed: string[] = [];
-        const listeners = new Set<Parameters<StageSessionRuntime["subscribe"]>[0]>();
+        const listeners = new Set<(event: PublicStageSessionEvent) => void>();
         const { session } = makeMockSession({
             get isStreaming() { return streaming; },
             subscribe(listener) {
-                listeners.add(listener);
-                return () => listeners.delete(listener);
+                const publicListener = listener as (event: PublicStageSessionEvent) => void;
+                listeners.add(publicListener);
+                return () => listeners.delete(publicListener);
             },
             async sendUserMessage(text) {
                 if (typeof text !== "string") throw new Error("expected string content");
@@ -197,12 +202,14 @@ describe("createStageContext — sendUserMessage", () => {
                 firstStarted.resolve();
                 await firstTurn.promise;
                 streaming = false;
-                for (const listener of listeners) listener({ type: "agent_end", messages: [] });
             },
         });
         Object.defineProperty(session, "isStreaming", { get: () => streaming });
+        const publicAdapter = {
+            async create() { return session as unknown as PublicStageSessionRuntime; },
+        } satisfies PublicAgentSessionAdapter;
         const ctx = createStageContext(makeOpts({
-            adapters: { agentSession: { async create() { return session; } } },
+            adapters: { agentSession: publicAdapter as unknown as AgentSessionAdapter },
         })) as InternalStageContext;
 
         await ctx.__ensureSession();
@@ -226,16 +233,12 @@ describe("createStageContext — sendUserMessage", () => {
         assert.equal(listeners.size, baselineListeners);
     });
 
-    test("releases admission after a lifecycle gate rejects prompt startup", async () => {
-        const admitted: string[] = [];
+    test("authorizes before a custom adapter can perform handling side effects", async () => {
+        const handled: string[] = [];
         const { session } = makeMockSession({
-            sendUserMessage(text, options) {
+            async sendUserMessage(text) {
                 if (typeof text !== "string") throw new Error("expected string content");
-                admitted.push(text);
-                options?.__workflowDelivery?.beforeDelivery?.();
-                options?.__workflowDelivery?.promptStarted?.();
-                options?.__workflowDelivery?.delivered?.("prompt");
-                return Promise.resolve();
+                handled.push(text);
             },
         });
         const ctx = createStageContext(makeOpts({
@@ -249,34 +252,32 @@ describe("createStageContext — sendUserMessage", () => {
 
         await assert.rejects(rejected, /workflow exited/);
         assert.equal(await accepted, "prompt");
-        assert.deepEqual(admitted, ["rejected", "accepted"]);
+        assert.deepEqual(handled, ["accepted"]);
     });
-    test("rechecks lifecycle after asynchronous preflight before admitting a prompt", async () => {
-        const preflight = Promise.withResolvers<void>();
+    test("does not retroactively reject delivery authorized before asynchronous handling", async () => {
+        const handling = Promise.withResolvers<void>();
         let blocked = false;
-        let prompts = 0;
+        let handled = 0;
         const { session } = makeMockSession({
-            async sendUserMessage(_text, options) {
-                await preflight.promise;
-                options?.__workflowDelivery?.beforeDelivery?.();
-                options?.__workflowDelivery?.delivered?.("prompt");
-                prompts += 1;
+            async sendUserMessage() {
+                await handling.promise;
+                handled += 1;
             },
         });
 
         const deliveryPromise = sendStageUserMessage(
             session,
-            "must not become late prompt",
+            "accepted before terminal transition",
             undefined,
             () => {
                 if (blocked) throw new DOMException("workflow exited", "AbortError");
             },
         );
         blocked = true;
-        preflight.resolve();
+        handling.resolve();
 
-        await assert.rejects(deliveryPromise, /workflow exited/);
-        assert.equal(prompts, 0);
+        assert.equal(await deliveryPromise, "prompt");
+        assert.equal(handled, 1);
     });
 
     test("passes multimodal content through native sendUserMessage", async () => {

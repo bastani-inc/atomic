@@ -233,12 +233,18 @@ export interface WorkflowPersistencePort {
   appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
 }
 
+/** Public lifecycle event emitted by stage session adapters. */
+export interface StageSessionEvent {
+  readonly type: "agent_start";
+}
+
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
   sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  subscribe(listener: (event: never) => void): () => void;
+  /** Must emit `agent_start` when an asynchronously-started user-message turn takes ownership. */
+  subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   setModel(model: WorkflowSerializableValue): Promise<void>;
@@ -310,7 +316,7 @@ export interface StageContext<TSchemaDef extends TSchema | undefined = undefined
   sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  subscribe(listener: (event: never) => void): () => void;
+  subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;
   readonly sessionId: string;
   setModel(model: WorkflowModelValue): Promise<void>;

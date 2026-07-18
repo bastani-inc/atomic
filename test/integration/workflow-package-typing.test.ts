@@ -88,7 +88,7 @@ import type { Component, OverlayHandle, OverlayOptions, TUI } from "@earendil-wo
 import type {
   AgentSessionAdapter,
   StageAdapters,
-  StageOptions, StageSendUserMessageOptions, StageStatus, StageUserMessageContent,
+  StageOptions, StageSendUserMessageOptions, StageSessionEvent, StageStatus, StageUserMessageContent,
   WorkflowDefinition, WorkflowExecutionPolicy, WorkflowInputBindings, WorkflowInputSchemaMap,
   WorkflowMcpPort, WorkflowModelCatalogPort, WorkflowOutputSchemaMap, WorkflowPersistencePort, WorkflowRunOutput,
   WorkflowRuntimeConfig, WorkflowTaskSessionOptions, WorkflowUIAdapter,
@@ -389,7 +389,7 @@ const adapter: AgentSessionAdapter = {
       const invalidDelivery: StageSendUserMessageOptions = { deliverAs: "nextTurn" }; void content; void delivery; void invalidDelivery; },
       async steer() {},
       async followUp() {},
-      subscribe() { return () => {}; },
+      subscribe(listener) { const event: StageSessionEvent = { type: "agent_start" }; listener(event); return () => {}; },
       sessionFile: undefined,
       sessionId: "fixture-session",
       async setModel() {},

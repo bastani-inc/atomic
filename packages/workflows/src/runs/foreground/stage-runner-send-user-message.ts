@@ -15,6 +15,7 @@ export async function sendStageUserMessage(
   const streaming = activeSession.isStreaming;
   const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
   if (activeSession.sendUserMessage !== undefined) {
+    beforeDelivery?.();
     let reportedAction: StageUserMessageDeliveryAction | undefined;
     let unsubscribe: (() => void) | undefined;
     let ownershipObserved = false;
@@ -34,7 +35,6 @@ export async function sendStageUserMessage(
       const delivery = activeSession.sendUserMessage(content, {
         ...(deliverAs === undefined ? {} : { deliverAs }),
         __workflowDelivery: {
-          beforeDelivery,
           promptStarted: observePromptOwnership,
           delivered(action) { reportedAction = action; },
         },
