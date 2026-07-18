@@ -179,13 +179,17 @@ export async function _processAgentEvent(this: AgentSession, event: AgentEvent):
 	if (event.type === "agent_end" && this._lastAssistantMessage) {
 		const msg = this._lastAssistantMessage;
 		this._lastAssistantMessage = undefined;
+		const postToolPreflightFailed =
+			this._postToolCompactionPreflightError !== undefined &&
+			msg.errorMessage === this._postToolCompactionPreflightError;
 
 		// Check for retryable errors first (overloaded, rate limit, server errors,
 		// transient provider finish_reason errors, degenerate empty completions,
 		// or intercepted canned safety refusals)
-		const retryableError = this._isRetryableError(msg);
-		const emptyCompletion = !retryableError && this._isEmptyCompletion(msg);
-		const safetyRefusal = !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
+		const retryableError = !postToolPreflightFailed && this._isRetryableError(msg);
+		const emptyCompletion = !postToolPreflightFailed && !retryableError && this._isEmptyCompletion(msg);
+		const safetyRefusal =
+			!postToolPreflightFailed && !retryableError && !emptyCompletion && this._isSafetyRefusal(msg);
 		if (retryableError || emptyCompletion || safetyRefusal) {
 			if (emptyCompletion && !msg.errorMessage) {
 				// Surface a clear reason in the retry banner; empty completions carry no
