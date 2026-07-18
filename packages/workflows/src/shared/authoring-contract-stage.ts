@@ -233,10 +233,13 @@ export interface WorkflowPersistencePort {
   appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
 }
 
+/** Stable public identifier used to correlate replayed/overlapping turn lifecycle events. */
+export type StageSessionTurnId = string | number;
+
 /** Public lifecycle events emitted by stage session adapters for turn ownership. */
 export type StageSessionEvent =
-  | { readonly type: "agent_start" }
-  | { readonly type: "agent_end"; readonly messages?: readonly WorkflowSerializableValue[] };
+  | { readonly type: "agent_start"; readonly turnId?: StageSessionTurnId }
+  | { readonly type: "agent_end"; readonly turnId?: StageSessionTurnId; readonly messages?: readonly WorkflowSerializableValue[] };
 
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
@@ -246,7 +249,10 @@ export interface StageSessionRuntime {
   /**
    * Must emit `agent_start` when a submitted user-message turn takes ownership and
    * `agent_end` when that owned turn terminates. Registration may replay state
-   * synchronously; after return, starts must represent new turns.
+   * synchronously; synchronous untagged replays are snapshots only. An adapter
+   * that can emit a later end for a replayed turn while a newer turn is active
+   * must provide the same stable `turnId` on that replayed start and its end.
+   * After registration returns, starts must represent new turns.
    */
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;

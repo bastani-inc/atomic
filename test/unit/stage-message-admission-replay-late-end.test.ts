@@ -3,15 +3,71 @@ import assert from "node:assert/strict";
 import { StageMessageAdmission } from "../../packages/workflows/src/runs/foreground/stage-runner-message-admission.js";
 import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type { StageSessionEvent } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
-import { flushMicrotasks, makeMockSession } from "./stage-runner-helpers.js";
+import { makeMockSession } from "./stage-runner-helpers.js";
 
-test("a late end for a synchronously replayed start cannot clear current ownership", async () => {
+test("a tagged late replay end cannot clear current ownership", async () => {
   const listeners = new Set<(event: StageSessionEvent) => void>();
-  const firstTurn = Promise.withResolvers<void>();
-  const secondTurn = Promise.withResolvers<void>();
+  const turns = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const starts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
   let promptStarts = 0;
   const actions: string[] = [];
   const consumed: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) {
+      listener({ type: "agent_start", turnId: "replayed-turn" });
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    async prompt(text) {
+      const index = promptStarts++;
+      consumed.push(text);
+      actions.push("prompt");
+      emit({ type: "agent_start", turnId: `current-${index}` });
+      starts[index]?.resolve();
+      await turns[index]?.promise;
+    },
+    async followUp(text) { actions.push("followUp"); consumed.push(text); },
+    async steer(text) { actions.push("steer"); consumed.push(text); },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  await starts[0]!.promise;
+  assert.equal(await send("second"), "followUp");
+
+  emit({ type: "agent_end", turnId: "replayed-turn", messages: [] });
+  assert.equal(await send("third"), "followUp");
+
+  emit({ type: "agent_end", turnId: "current-0", messages: [] });
+  const fourth = send("fourth");
+  await starts[1]!.promise;
+  turns[0]!.resolve();
+  assert.equal(await first, "prompt");
+  assert.equal(await send("during fourth"), "followUp");
+  emit({ type: "agent_end", turnId: "current-1", messages: [] });
+  turns[1]!.resolve();
+
+  assert.equal(await fourth, "prompt");
+  assert.equal(promptStarts, 2);
+  assert.deepEqual(actions, ["prompt", "followUp", "followUp", "prompt", "followUp"]);
+  assert.deepEqual(consumed, ["first", "second", "third", "fourth", "during fourth"]);
+});
+
+test("an untagged replay without a later old end cannot consume the current end", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const allowCurrentEnd = Promise.withResolvers<void>();
+  const currentEnded = Promise.withResolvers<void>();
+  const finishBookkeeping = Promise.withResolvers<void>();
+  const secondTurn = Promise.withResolvers<void>();
+  const starts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let promptStarts = 0;
+  const actions: string[] = [];
   const emit = (event: StageSessionEvent): void => {
     for (const listener of listeners) listener(event);
   };
@@ -22,42 +78,40 @@ test("a late end for a synchronously replayed start cannot clear current ownersh
       listeners.add(listener);
       return () => { listeners.delete(listener); };
     },
-    async prompt(text) {
-      promptStarts += 1;
-      consumed.push(text);
+    async prompt() {
+      const index = promptStarts++;
       actions.push("prompt");
       emit({ type: "agent_start" });
-      await (promptStarts === 1 ? firstTurn.promise : secondTurn.promise);
+      starts[index]?.resolve();
+      if (index === 0) {
+        await allowCurrentEnd.promise;
+        emit({ type: "agent_end" } as StageSessionEvent);
+        currentEnded.resolve();
+        await finishBookkeeping.promise;
+        return;
+      }
+      await secondTurn.promise;
+      emit({ type: "agent_end" } as StageSessionEvent);
     },
-    async followUp(text) {
-      actions.push("followUp");
-      consumed.push(text);
-    },
-    async steer(text) {
-      actions.push("steer");
-      consumed.push(text);
-    },
+    async followUp() { actions.push("followUp"); },
   });
   const admission = new StageMessageAdmission();
   const send = (text: string) => admission.run((release) =>
     sendStageUserMessage(session, text, undefined, undefined, release, admission));
 
   const first = send("first");
-  const second = send("second");
-  assert.equal(await second, "followUp");
-  emit({ type: "agent_end", messages: [] });
-  const third = send("third");
-  let thirdOutcome: string | undefined;
-  void third.then((action) => { thirdOutcome = action; });
-  await flushMicrotasks();
+  await starts[0]!.promise;
+  assert.equal(await send("during"), "followUp");
+  allowCurrentEnd.resolve();
+  await currentEnded.promise;
 
-  const promptStartsWhileFirstActive = promptStarts;
-  firstTurn.resolve();
+  const afterEnd = send("after-end");
+  await starts[1]!.promise;
+  assert.equal(promptStarts, 2);
+  finishBookkeeping.resolve();
   secondTurn.resolve();
-  await Promise.all([first, third]);
 
-  assert.equal(promptStartsWhileFirstActive, 1);
-  assert.equal(thirdOutcome, "followUp");
-  assert.deepEqual(actions, ["prompt", "followUp", "followUp"]);
-  assert.deepEqual(consumed, ["first", "second", "third"]);
+  assert.equal(await first, "prompt");
+  assert.equal(await afterEnd, "prompt");
+  assert.deepEqual(actions, ["prompt", "followUp", "prompt"]);
 });

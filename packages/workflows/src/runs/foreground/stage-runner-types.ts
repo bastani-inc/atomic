@@ -15,7 +15,8 @@ import type {
   WorkflowModelCatalogPort,
 } from "../../shared/types.js";
 
-export type StageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
+type AgentStageSessionEvent = Parameters<AgentSession["subscribe"]>[0] extends (event: infer T) => void ? T : never;
+export type StageSessionEvent = AgentStageSessionEvent & { readonly turnId?: string | number };
 
 export type WorkflowFastModeSettings = {
   readonly chat: boolean;
