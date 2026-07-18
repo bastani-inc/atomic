@@ -95,26 +95,44 @@ describe("createStageContext — sendUserMessage", () => {
         assert.deepEqual(calls, ["prompt"]);
     });
 
-    test("serializes concurrent idle admission so the second message queues behind the started prompt", async () => {
+    test("keeps a second idle send behind admission until the first prompt has entered its turn", async () => {
         const firstPreflight = Promise.withResolvers<void>();
+        const firstBeforeDelivery = Promise.withResolvers<void>();
+        const allowFirstPromptStartup = Promise.withResolvers<void>();
+        const firstPromptStarted = Promise.withResolvers<void>();
         const firstTurn = Promise.withResolvers<void>();
         let streaming = false;
-        const calls: string[] = [];
+        let promptStarts = 0;
+        const admittedMessages: string[] = [];
+        const consumedMessages: string[] = [];
+        const actions: string[] = [];
         const { session } = makeMockSession({
             async sendUserMessage(text, options) {
+                if (typeof text !== "string") throw new Error("expected string content");
+                admittedMessages.push(text);
                 if (text === "first") {
                     await firstPreflight.promise;
-                    streaming = true;
+                    firstBeforeDelivery.resolve();
                     options?.__workflowDelivery?.beforeDelivery?.();
+                    await allowFirstPromptStartup.promise;
+                    streaming = true;
+                    promptStarts += 1;
+                    firstPromptStarted.resolve();
+                    options?.__workflowDelivery?.promptStarted?.();
                     options?.__workflowDelivery?.delivered?.("prompt");
-                    calls.push("prompt:first");
+                    actions.push("prompt");
+                    consumedMessages.push(text);
                     await firstTurn.promise;
                     streaming = false;
                     return;
                 }
                 options?.__workflowDelivery?.beforeDelivery?.();
-                options?.__workflowDelivery?.delivered?.("followUp");
-                calls.push(`followUp:${String(text)}:${options?.deliverAs}`);
+                const action = options?.deliverAs ?? "prompt";
+                if (action === "prompt") promptStarts += 1;
+                if (action === "prompt") options?.__workflowDelivery?.promptStarted?.();
+                options?.__workflowDelivery?.delivered?.(action);
+                actions.push(action);
+                consumedMessages.push(text);
             },
         });
         Object.defineProperty(session, "isStreaming", { get: () => streaming });
@@ -125,13 +143,54 @@ describe("createStageContext — sendUserMessage", () => {
         const first = ctx.__sendUserMessage("first");
         const second = ctx.__sendUserMessage("second");
         firstPreflight.resolve();
+        await firstBeforeDelivery.promise;
+        await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
 
+        let earlyAdmissionError: Error | undefined;
+        try {
+            assert.deepEqual(admittedMessages, ["first"]);
+            assert.equal(promptStarts, 0);
+        } catch (error) {
+            earlyAdmissionError = error instanceof Error ? error : new Error(String(error));
+        }
+
+        allowFirstPromptStartup.resolve();
+        await firstPromptStarted.promise;
         assert.equal(await second, "followUp");
-        assert.deepEqual(calls, ["prompt:first", "followUp:second:followUp"]);
         firstTurn.resolve();
         assert.equal(await first, "prompt");
+        if (earlyAdmissionError) throw earlyAdmissionError;
+
+        assert.equal(promptStarts, 1);
+        assert.deepEqual(actions, ["prompt", "followUp"]);
+        assert.deepEqual(consumedMessages, ["first", "second"]);
     });
 
+    test("releases admission after a lifecycle gate rejects prompt startup", async () => {
+        const admitted: string[] = [];
+        const { session } = makeMockSession({
+            sendUserMessage(text, options) {
+                if (typeof text !== "string") throw new Error("expected string content");
+                admitted.push(text);
+                options?.__workflowDelivery?.beforeDelivery?.();
+                options?.__workflowDelivery?.promptStarted?.();
+                options?.__workflowDelivery?.delivered?.("prompt");
+                return Promise.resolve();
+            },
+        });
+        const ctx = createStageContext(makeOpts({
+            adapters: { agentSession: { async create() { return session; } } },
+        })) as InternalStageContext;
+
+        const rejected = ctx.__sendUserMessage("rejected", undefined, () => {
+            throw new DOMException("workflow exited", "AbortError");
+        });
+        const accepted = ctx.__sendUserMessage("accepted");
+
+        await assert.rejects(rejected, /workflow exited/);
+        assert.equal(await accepted, "prompt");
+        assert.deepEqual(admitted, ["rejected", "accepted"]);
+    });
     test("rechecks lifecycle after asynchronous preflight before admitting a prompt", async () => {
         const preflight = Promise.withResolvers<void>();
         let blocked = false;

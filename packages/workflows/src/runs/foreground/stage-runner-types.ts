@@ -30,6 +30,8 @@ export type StageUserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "
 
 export interface StageUserMessageDeliveryHooks {
   readonly beforeDelivery?: () => void;
+  /** Releases serialized admission once an idle prompt synchronously owns the turn. */
+  readonly promptStarted?: () => void;
   readonly delivered?: (action: StageUserMessageDeliveryAction) => void;
 }
 

@@ -10,6 +10,7 @@ export async function sendStageUserMessage(
   content: StageUserMessageContent,
   options?: StageSendUserMessageOptions,
   beforeDelivery?: () => void,
+  promptStarted?: () => void,
 ): Promise<StageUserMessageDeliveryAction> {
   const streaming = activeSession.isStreaming;
   const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
@@ -19,6 +20,7 @@ export async function sendStageUserMessage(
       ...(deliverAs === undefined ? {} : { deliverAs }),
       __workflowDelivery: {
         beforeDelivery,
+        promptStarted,
         delivered(action) { reportedAction = action; },
       },
     });
@@ -31,6 +33,8 @@ export async function sendStageUserMessage(
     else await activeSession.followUp(content);
     return deliverAs ?? "followUp";
   }
-  await activeSession.prompt(content);
+  const turn = activeSession.prompt(content);
+  if (activeSession.isStreaming) promptStarted?.();
+  await turn;
   return "prompt";
 }

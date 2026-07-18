@@ -14,6 +14,8 @@ type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
 type PromptOptionsWithWorkflowDelivery = PromptOptions & {
 	readonly __workflowDelivery?: {
 		readonly beforeDelivery?: () => void;
+		/** Called only after an idle prompt has synchronously entered the agent turn. */
+		readonly promptStarted?: () => void;
 		readonly delivered?: (action: UserMessageDeliveryAction) => void;
 	};
 };
@@ -196,15 +198,22 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	}
 
 	workflowDelivery?.beforeDelivery?.();
-	workflowDelivery?.delivered?.("prompt");
 	preflightResult?.(true);
-	await this._runAgentPrompt(messages);
+	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted);
+	workflowDelivery?.delivered?.("prompt");
+	await turn;
 }
 
 
-export async function _runAgentPrompt(this: AgentSession, messages: AgentMessage | AgentMessage[]): Promise<void> {
+export async function _runAgentPrompt(
+	this: AgentSession,
+	messages: AgentMessage | AgentMessage[],
+	promptStarted?: () => void,
+): Promise<void> {
 	try {
-		await this.agent.prompt(messages);
+		const turn = this.agent.prompt(messages);
+		if (this.isStreaming) promptStarted?.();
+		await turn;
 		await this.waitForRetry();
 		await this._continueQueuedAgentMessages();
 		await this._awaitPendingPostCompactionContinuation();

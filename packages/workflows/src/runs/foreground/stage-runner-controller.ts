@@ -111,7 +111,7 @@ export class StageSessionController {
   async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions, beforeDelivery?: () => void):
     Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
     return this.messageAdmission.run(async (release) => sendStageUserMessage(
-      await this.ensureSession("prompt"), content, options, () => { beforeDelivery?.(); release(); },
+      await this.ensureSession("prompt"), content, options, beforeDelivery, release,
     ));
   }
 
