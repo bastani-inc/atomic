@@ -349,7 +349,7 @@ describe("renderResult — all action branches", () => {
   });
 
   test("action='status' empty snapshots renders empty band", () => {
-    const out = renderResult({ action: "status", snapshots: [] });
+    const out = renderResult({ action: "status", filter: "all", runs: [], snapshots: [] });
     assert.match(out, /BACKGROUND/);
     assert.match(out, /0 runs/);
     assert.match(out, /no workflow runs in current session/);
@@ -358,6 +358,8 @@ describe("renderResult — all action branches", () => {
   test("action='status' with snapshots renders cards", () => {
     const out = renderResult({
       action: "status",
+      filter: "all",
+      runs: [],
       snapshots: [
         {
           id: "r1-uuid",

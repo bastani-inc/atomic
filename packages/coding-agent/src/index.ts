@@ -124,6 +124,12 @@ export {
 } from "./core/context-window.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.ts";
 export { areExperimentalFeaturesEnabled } from "./core/experimental.ts";
+export {
+	runCallback,
+	runSynchronousCallback,
+	type CallbackActivityDescriptor,
+	type CallbackActivityKind,
+} from "./core/callback-activity.ts";
 export * from "./index-extensions.js";
 // Builtin tool definitions reusable by first-party extensions (e.g. workflows
 // invoking the structured ask_user_question UI deterministically).
@@ -349,6 +355,7 @@ export {
 	FooterComponent,
 	UsageMeterComponent,
 	keyHint,
+	keyHintIfBound,
 	keyText,
 	LoginDialogComponent,
 	ModelSelectorComponent,

@@ -6,7 +6,7 @@ import {
   type ValidatedRelease,
 } from "./publish-release.js";
 
-type Execute = (args: readonly string[]) => CommandResult;
+type Execute = (args: readonly string[]) => CommandResult | Promise<CommandResult>;
 
 export type ReleaseTagRecovery =
   | {
@@ -18,15 +18,15 @@ export type ReleaseTagRecovery =
   | { readonly ok: false; readonly summary: string };
 
 
-export function inspectReleaseTagRecovery(
+export async function inspectReleaseTagRecovery(
   release: ValidatedRelease,
   currentBaseOid: string,
   requiredMergeOid: string,
   expectedBaseRef: string,
   execute: Execute = runCommand,
-): ReleaseTagRecovery {
-  const localTag = execute(["git", "rev-parse", `${release.version}^{commit}`]);
-  const remoteTag = execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
+): Promise<ReleaseTagRecovery> {
+  const localTag = await execute(["git", "rev-parse", `${release.version}^{commit}`]);
+  const remoteTag = await execute(["git", "ls-remote", "--tags", "origin", `refs/tags/${release.version}`]);
   if (remoteTag.exitCode !== 0) {
     return { ok: false, summary: ["Remote release tag lookup failed.", commandSummary(remoteTag)].join("\n\n") };
   }
@@ -45,11 +45,11 @@ export function inspectReleaseTagRecovery(
     };
   }
 
-  const tagParent = execute(["git", "rev-parse", `${release.version}^{commit}^`]);
-  const taggedManifest = execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
-  const tagMessage = execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
-  const integratedParent = execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, currentBaseOid]);
-  const containsMerge = execute(["git", "merge-base", "--is-ancestor", requiredMergeOid, tagParent.stdout]);
+  const tagParent = await execute(["git", "rev-parse", `${release.version}^{commit}^`]);
+  const taggedManifest = await execute(["git", "show", `${release.version}:packages/coding-agent/package.json`]);
+  const tagMessage = await execute(["git", "show", "-s", "--format=%B", `${release.version}^{commit}`]);
+  const integratedParent = await execute(["git", "merge-base", "--is-ancestor", tagParent.stdout, currentBaseOid]);
+  const containsMerge = await execute(["git", "merge-base", "--is-ancestor", requiredMergeOid, tagParent.stdout]);
   let stampedVersion: string | undefined;
   if (taggedManifest.exitCode === 0) {
     try {

@@ -21,6 +21,12 @@ async function handoff(bus: ReturnType<typeof eventBus>, route: { requestId: str
 }
 
 const bridgedAgent = () => ({ ...agentConfig(), systemPrompt: "Intercom orchestration channel:\nCoordinate." });
+
+// Fake-CLI children pay real runtime process startup (often 100ms+) before
+// their scripted output delay, which lands too close to the default 250ms
+// idle watchdog on slower or loaded machines. None of these tests assert
+// watchdog behavior, so run them with generous timeouts to stay deterministic.
+const DETACH_TIMEOUTS = { idleMs: 4000, wallMs: 10_000 };
 describe("foreground intercom detach routing", () => {
 
   test("reports the eventual result exactly once and finalizes artifacts after detach", async () => {
@@ -93,7 +99,7 @@ const timer = setInterval(() => {
       assert.equal(a.exitCode, -2);
       assert.equal(b.detached, undefined);
       assert.equal(b.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("lifecycle cancellation still terminates a detached child and cleans listeners once", async () => {
@@ -115,7 +121,7 @@ const timer = setInterval(() => {
       assert.equal(recovered.length, 1);
       assert.notEqual(recovered[0]?.exitCode, 0);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("abort before detach terminates normally and leaves no detach listener", async () => {
@@ -132,7 +138,7 @@ const timer = setInterval(() => {
       assert.notEqual(result.exitCode, 0);
       assert.equal(result.detached, undefined);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("background-style execution ignores targeted detach requests", async () => {
@@ -150,7 +156,7 @@ const timer = setInterval(() => {
       assert.equal(result.exitCode, 0);
       assert.match(result.finalOutput ?? "", /background result/);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("duplicate targeted delivery detaches and recovers the child only once", async () => {
@@ -173,7 +179,7 @@ const timer = setInterval(() => {
       assert.equal(recovered.length, 1);
       assert.match(recovered[0]?.finalOutput ?? "", /once/);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("rejects commit without a matching probe and rejects generation reuse", async () => {
@@ -191,7 +197,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
   test("legacy unscoped delivery still requires observed intercom tool start", async () => {
     await withFakeCliEvent(successEvent("normal"), 100, async (dir) => {
@@ -205,7 +211,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("rejects missing and incorrect exact targets", async () => {
@@ -221,7 +227,7 @@ const timer = setInterval(() => {
       const result = await pending;
       assert.equal(result.detached, undefined);
       assert.equal(result.exitCode, 0);
-    });
+    }, DETACH_TIMEOUTS);
   });
 
   test("treats hostile-looking event content as inert fixture data", async () => {
@@ -233,6 +239,6 @@ const timer = setInterval(() => {
       });
       assert.equal(result.exitCode, 0);
       assert.equal(result.finalOutput, hostileText);
-    });
+    }, DETACH_TIMEOUTS);
   });
 });

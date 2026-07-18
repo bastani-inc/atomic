@@ -331,6 +331,18 @@ describe("renderWidgetLines — standard form", () => {
     assert.equal(nextWidgetRefreshDelayMs(makeSnap([paused]), now), undefined);
   });
 
+  test("active runs schedule the next exact elapsed-second refresh", () => {
+    const now = 1_000_000;
+    const active = makeRun("r1xxxxxx", "wf-a", "running", [], now - 5_000);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([active]), now), 1_000);
+
+    const offsetActive = makeRun("r3xxxxxx", "wf-b", "running", [], now - 5_250);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive]), now), 750);
+
+    const ended = makeRun("r2xxxxxx", "wf-d", "completed", [], now - 20_000, now - 10_000);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive, ended]), now), 750);
+  });
+
   test("standard panel scales to the provided terminal width", () => {
     const width = 120;
     const snap = makeSnap([makeRun("abc123uuid", "my-wf", "running")]);

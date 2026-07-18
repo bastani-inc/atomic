@@ -1,4 +1,7 @@
-import { describe, test } from "bun:test";
+import { afterEach, beforeEach, describe, test } from "bun:test";
+import { getKeybindings, setKeybindings } from "@earendil-works/pi-tui";
+import { KeybindingsManager } from "../../packages/coding-agent/src/core/keybindings.ts";
+import { theme } from "../../packages/coding-agent/src/modes/interactive/theme/theme.ts";
 import {
     assert,
     createStore,
@@ -11,10 +14,15 @@ import {
 } from "./stage-chat-view-helpers.js";
 import type { AgentSession, AgentSessionEvent, ChatMessageEntry, ToolDefinition } from "@bastani/atomic";
 import type { TSchema } from "typebox";
-import { renderLiveSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
+import { renderLiveSubagentResult, renderSubagentResult, stopResultAnimations } from "../../packages/subagents/src/tui/render.js";
 import { SubagentParams } from "../../packages/subagents/src/extension/schemas.js";
 import { makeFakeKeybindings } from "../support/fake-keybindings.js";
 import type { AgentProgress, Details } from "../../packages/subagents/src/shared/types.js";
+
+const originalKeybindings = getKeybindings();
+
+beforeEach(() => setKeybindings(new KeybindingsManager()));
+afterEach(() => setKeybindings(originalKeybindings));
 
 type ToolChatEntry = Extract<ChatMessageEntry, { kind: "tool" }>;
 
@@ -347,6 +355,31 @@ describe("StageChatView terminal subagent cleanup regressions", () => {
         assert.match(rendered, /Press .*live detail/);
         assert.match(rendered, /⎿\s+bash: echo alpha/);
         view.dispose();
+    });
+
+    test("unbound tool expansion omits the unavailable live-detail affordance", () => {
+        const previousKeybindings = getKeybindings();
+        setKeybindings(new KeybindingsManager({ "app.tools.expand": [] }));
+        const store = createStore();
+        setupRun(store, "run-1", "stage-a", "running");
+        const { handle, emit } = makeHandle(undefined, subagentToolCallMessages("parallel"));
+        const view = new StageChatView({
+            store, graphTheme: deriveGraphTheme({}), runId: "run-1", stageId: "stage-a", workflowName: "test-wf",
+            handle, onDetach: () => {}, onClose: () => {}, getChatRenderSettings: () => subagentRenderSettings(false),
+        });
+        try {
+            emitRunningMultiSubagent(emit, "parallel");
+            const rendered = stripAnsi(renderSubagentResult(
+                { content: [{ type: "text", text: "running" }], details: runningMultiSubagentDetails("parallel") },
+                { expanded: false },
+                theme,
+            ).render(96).join("\n"));
+            assert.doesNotMatch(rendered, /Press|live detail/);
+            assert.match(rendered, /alpha/);
+        } finally {
+            view.dispose();
+            setKeybindings(previousKeybindings);
+        }
     });
 
     test("rendering a running subagent installs no animation interval (update-driven pulse)", () => {

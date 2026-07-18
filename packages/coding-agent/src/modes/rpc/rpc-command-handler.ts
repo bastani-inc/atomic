@@ -1,3 +1,6 @@
+import type { KeyId } from "@earendil-works/pi-tui";
+import { runCallback } from "../../core/callback-activity.ts";
+import { KeybindingsManager } from "../../core/keybindings.ts";
 import type { AgentSession } from "../../core/agent-session.ts";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import {
@@ -7,6 +10,7 @@ import {
 	parseRpcContextWindow,
 	type RpcOutput,
 } from "./rpc-responses.ts";
+import type { KeybindingsReloadCoordinator } from "./rpc-keybindings-reload.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 
 export type RpcCommandHandler = (command: RpcCommand) => Promise<RpcResponse | undefined>;
@@ -16,6 +20,8 @@ interface RpcCommandHandlerOptions {
 	getSession: () => AgentSession;
 	rebindSession: () => Promise<void>;
 	output: RpcOutput;
+	keybindings?: KeybindingsManager;
+	reloadCoordinator?: KeybindingsReloadCoordinator<AgentSession>;
 }
 
 export function createRpcCommandHandler({
@@ -23,7 +29,16 @@ export function createRpcCommandHandler({
 	getSession,
 	rebindSession,
 	output,
+	keybindings,
+	reloadCoordinator,
 }: RpcCommandHandlerOptions): RpcCommandHandler {
+	let fallbackShortcutKeybindings: KeybindingsManager | undefined;
+	const getShortcutBindings = () => {
+		if (keybindings) return keybindings.getEffectiveConfig();
+		if (fallbackShortcutKeybindings) fallbackShortcutKeybindings.reload();
+		else fallbackShortcutKeybindings = KeybindingsManager.create(runtimeHost.services.agentDir);
+		return fallbackShortcutKeybindings.getEffectiveConfig();
+	};
 	return async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 		const session = getSession();
@@ -104,13 +119,13 @@ export function createRpcCommandHandler({
 			}
 
 			case "cycle_model": {
-				const result = await session.cycleModel();
+				const result = await session.cycleModel(command.direction);
 				return createRpcSuccessResponse(id, "cycle_model", result ?? null);
 			}
 
 			case "get_available_models": {
 				const models = await session.modelRegistry.getAvailable();
-				return createRpcSuccessResponse(id, "get_available_models", { models });
+				return createRpcSuccessResponse(id, "get_available_models", { models, scopedModels: session.scopedModels });
 			}
 
 			case "set_thinking_level": {
@@ -158,6 +173,11 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "set_auto_compaction");
 			}
 
+			case "abort_compaction": {
+				session.abortCompaction();
+				return createRpcSuccessResponse(id, "abort_compaction");
+			}
+
 			case "set_auto_retry": {
 				session.setAutoRetryEnabled(command.enabled);
 				return createRpcSuccessResponse(id, "set_auto_retry");
@@ -168,11 +188,33 @@ export function createRpcCommandHandler({
 				return createRpcSuccessResponse(id, "abort_retry");
 			}
 
+			case "clear_queue": {
+				return createRpcSuccessResponse(id, "clear_queue", session.clearQueue());
+			}
+
 			case "bash": {
 				const result = await session.executeBash(command.command, undefined, {
 					excludeFromContext: command.excludeFromContext,
 				});
 				return createRpcSuccessResponse(id, "bash", result);
+			}
+
+			case "user_bash": {
+				const intercepted = await session.extensionRunner.emitUserBash({
+					type: "user_bash",
+					command: command.command,
+					excludeFromContext: command.excludeFromContext === true,
+					cwd: session.sessionManager.getCwd(),
+				});
+				if (intercepted?.result) {
+					session.recordBashResult(command.command, intercepted.result, { excludeFromContext: command.excludeFromContext });
+					return createRpcSuccessResponse(id, "user_bash", intercepted.result);
+				}
+				const result = await session.executeBash(command.command, undefined, {
+					excludeFromContext: command.excludeFromContext,
+					operations: intercepted?.operations,
+				});
+				return createRpcSuccessResponse(id, "user_bash", result);
 			}
 
 			case "abort_bash": {
@@ -195,6 +237,12 @@ export function createRpcCommandHandler({
 					await rebindSession();
 				}
 				return createRpcSuccessResponse(id, "switch_session", result);
+			}
+
+			case "import_session": {
+				const result = await runtimeHost.importFromJsonl(command.inputPath, command.cwdOverride);
+				if (!result.cancelled) await rebindSession();
+				return createRpcSuccessResponse(id, "import_session", result);
 			}
 
 			case "fork": {
@@ -255,6 +303,45 @@ export function createRpcCommandHandler({
 				}
 				session.setSessionName(name);
 				return createRpcSuccessResponse(id, "set_session_name");
+			}
+
+			case "navigate_tree": {
+				const result = await session.navigateTree(command.targetId, command.options);
+				return createRpcSuccessResponse(id, "navigate_tree", {
+					cancelled: result.cancelled,
+					editorText: result.editorText,
+				});
+			}
+
+			case "set_label": {
+				session.sessionManager.appendLabelChange(command.entryId, command.label);
+				return createRpcSuccessResponse(id, "set_label");
+			}
+
+			case "reload": {
+				if (reloadCoordinator) await reloadCoordinator.reload(session);
+				else await session.reload();
+				return createRpcSuccessResponse(id, "reload");
+			}
+
+			case "get_shortcuts": {
+				const effectiveBindings = getShortcutBindings();
+				const shortcuts = session.extensionRunner.getShortcuts(effectiveBindings);
+				return createRpcSuccessResponse(id, "get_shortcuts", {
+					shortcuts: [...shortcuts].map(([key, shortcut]) => ({ key, description: shortcut.description })),
+				});
+			}
+
+			case "invoke_shortcut": {
+				const shortcut = session.extensionRunner
+					.getShortcuts(getShortcutBindings())
+					.get(command.key as KeyId);
+				if (!shortcut) return createRpcErrorResponse(id, "invoke_shortcut", `Shortcut not found: ${command.key}`);
+				await runCallback(
+					{ kind: "extension.hook", name: `shortcut:${command.key}`, sourcePath: shortcut.extensionPath },
+					() => shortcut.handler(session.extensionRunner.createContext()),
+				);
+				return createRpcSuccessResponse(id, "invoke_shortcut");
 			}
 
 			case "get_messages": {

@@ -2,7 +2,7 @@ import { Box, Spacer, Text } from "@earendil-works/pi-tui";
 import type { VerbatimCompactionDetails, VerbatimCompactionResult, VerbatimCompactionStats } from "../../../core/compaction/index.ts";
 import { VERBATIM_COMPACTION_PREFIX, type CustomMessage } from "../../../core/messages.ts";
 import { theme } from "../theme/theme.ts";
-import { keyText } from "./keybinding-hints.ts";
+import { parenthesizedKeyHint } from "./keybinding-hints.ts";
 
 interface BoundaryView {
 	text: string;
@@ -39,15 +39,12 @@ export class CompactionBoundaryMessageComponent extends Box {
 			this.addChild(new Text(rendered, 0, 0));
 			return;
 		}
-		this.addChild(
-			new Text(
-				theme.fg("customMessageText", `Compacted from ${tokenStr} tokens (`) +
-					theme.fg("dim", keyText("app.tools.expand")) +
-					theme.fg("customMessageText", " to expand)"),
-				0,
-				0,
-			),
-		);
+		const hint = parenthesizedKeyHint("app.tools.expand", "to expand");
+		this.addChild(new Text(
+			theme.fg("customMessageText", `Compacted from ${tokenStr} tokens`) + (hint ? ` ${hint}` : ""),
+			0,
+			0,
+		));
 	}
 }
 

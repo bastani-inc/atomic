@@ -5,6 +5,10 @@ import {
 } from "./prompt-card.js";
 import { APP_ACTION, isKeybindingsLike, matchesAction } from "./keybindings-adapter.js";
 import {
+  parseTerminalMouseInput,
+  terminalMouseWheelDirection,
+} from "./mouse-input.js";
+import {
   setComponentFocused,
   setEditorFocused,
 } from "./stage-chat-view-render-helpers.js";
@@ -182,12 +186,18 @@ function handlePromptScrollInput(
   data: string,
   includeKeyboard = true,
 ): boolean {
-  const wheelDeltaRows = mouseWheelDeltaRows(data);
+  const mouse = parseTerminalMouseInput(data);
+  const wheelDirection = mouse ? terminalMouseWheelDirection(mouse) : null;
+  const wheelDeltaRows = wheelDirection === "up"
+    ? -PROMPT_SCROLL_STEP_ROWS
+    : wheelDirection === "down"
+      ? PROMPT_SCROLL_STEP_ROWS
+      : 0;
   if (wheelDeltaRows !== 0) {
     scrollPromptBy(ctx, wheelDeltaRows);
     return true;
   }
-  if (isMouseSequence(data)) return true;
+  if (mouse) return true;
   if (!includeKeyboard) return false;
   if (matchesKey(data, "pageUp")) {
     scrollPromptBy(ctx, -promptPageSize(ctx));
@@ -216,25 +226,4 @@ function scrollPromptBy(ctx: StageChatViewContext, deltaRows: number): void {
     Math.min(ctx.promptMaxScroll, ctx.promptScrollOffset + deltaRows),
   );
   ctx.requestRender?.();
-}
-
-function mouseWheelDeltaRows(data: string): number {
-  const sgr = data.match(/^\x1b\[<(\d+);\d+;\d+M$/);
-  if (sgr) return wheelDeltaForButtonCode(Number.parseInt(sgr[1]!, 10));
-  if (data.startsWith("\x1b[M") && data.length >= 6) {
-    return wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
-  }
-  return 0;
-}
-
-function wheelDeltaForButtonCode(code: number): number {
-  if ((code & 64) === 0) return 0;
-  const direction = code & 3;
-  if (direction === 0) return -PROMPT_SCROLL_STEP_ROWS;
-  if (direction === 1) return PROMPT_SCROLL_STEP_ROWS;
-  return 0;
-}
-
-function isMouseSequence(data: string): boolean {
-  return /^\x1b\[<\d+;\d+;\d+[mM]$/.test(data) || data.startsWith("\x1b[M");
 }

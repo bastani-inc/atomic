@@ -28,6 +28,8 @@ export interface ChatMessageRenderOptions {
   hideThinkingBlock?: boolean; hiddenThinkingLabel?: string; toolOutputExpanded?: boolean;
   showImages?: boolean; imageWidthCells?: number; outputPad?: number; getToolDefinition?: (toolName: string) => ToolDefinition<TSchema, unknown> | undefined;
   getCustomMessageRenderer?: (customType: string) => MessageRenderer | undefined;
+  createToolComponent?: (entry: Extract<ChatMessageEntry, { kind: "tool" }>) => Component;
+  createCustomMessageComponent?: (message: CustomMessage<unknown>) => Component;
 }
 export function chatEntriesFromAgentMessages(
   messages: readonly AgentMessage[],
@@ -422,6 +424,7 @@ export function renderChatMessageEntry(
         options.outputPad ?? 1,
       );
     case "tool": {
+      if (options.createToolComponent) return options.createToolComponent(messageEntry);
       const component = new ToolExecutionComponent(
         messageEntry.toolName,
         messageEntry.toolCallId,
@@ -463,6 +466,7 @@ export function renderChatMessageEntry(
       if (isVerbatimCompactionMessage(messageEntry.message)) {
         return compactionBoundaryFromMessage(messageEntry.message, options.toolOutputExpanded ?? false);
       }
+      if (options.createCustomMessageComponent) return options.createCustomMessageComponent(messageEntry.message);
       const component = new CustomMessageComponent(messageEntry.message, options.getCustomMessageRenderer?.(messageEntry.message.customType), markdownTheme);
       component.setExpanded(options.toolOutputExpanded ?? false);
       return component;

@@ -26,13 +26,13 @@ export function inactivePromptReservationToken(reservationId: string): PromptRes
   return promptReservationToken({ reservationId, generation: 1, tokenId: `inactive:${crypto.randomUUID()}` });
 }
 
-function nextLegacyToken(existing: ReadonlySet<string>, index: number): string {
-  let candidate = `legacy:${index}`;
-  while (existing.has(candidate)) candidate = `legacy:${++index}`;
+function nextPendingToken(existing: ReadonlySet<string>, index: number): string {
+  let candidate = `pending:${index}`;
+  while (existing.has(candidate)) candidate = `pending:${++index}`;
   return candidate;
 }
 
-/** Identity-owned prompt tokens with generation tombstones for memory/file stores. */
+/** Identity-owned prompt tokens with generation tombstones for current backends. */
 export class PromptReservationState {
   private readonly active = new Map<string, PromptReservationEntry>();
   private readonly released = new Map<string, number>();
@@ -67,7 +67,7 @@ export class PromptReservationState {
     }
     let index = 0;
     while (this.availableTokens.size < Math.max(0, Math.trunc(pendingPrompts))) {
-      const tokenId = nextLegacyToken(this.availableTokens, index++);
+      const tokenId = nextPendingToken(this.availableTokens, index++);
       this.anonymousTokens.add(tokenId);
       this.availableTokens.add(tokenId);
     }

@@ -1,7 +1,7 @@
 export const WORKFLOW_TOOL_DESCRIPTION =
   "Run named builtin, project, user, or package workflows, or direct one-off task/tasks/chain workflows; custom definitions may import reusable project/package workflows or builtin definitions from @bastani/workflows/builtin and nest them with ctx.workflow(...), including deeper composition within the configured maxDepth; " +
   "when workflow execution fits but another shape would better achieve the task, author a custom TypeScript workflow({...}) inline with normal coding tools, reload it, and run it; " +
-  "discover with list/get/inputs, inspect status/stages/stage details, " +
+  "discover with list/get/inputs, list session runs with status (no runId; statusFilter narrows the list), inspect status/stages/stage details, " +
   "send prompt answers or steering, pause/resume/interrupt/quit runs, and reload workflow resources. " +
   "For large stage handoffs, write context to files/artifacts, pass paths via reads, and prompt downstream agents to 'Read the file at <path>...' instead of injecting large previous text. " +
   "For transcripts, prefer status/stages/stage to get sessionFile/transcriptPath, " +

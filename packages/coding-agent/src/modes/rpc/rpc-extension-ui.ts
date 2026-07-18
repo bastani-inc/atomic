@@ -1,11 +1,15 @@
 import * as crypto from "node:crypto";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HostSessionPickerRequest,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
+import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
 
@@ -19,6 +23,8 @@ export type RpcPendingExtensionRequests = Map<string, RpcPendingExtensionRequest
 interface CreateRpcExtensionUIContextOptions {
 	output: RpcOutput;
 	pendingExtensionRequests: RpcPendingExtensionRequests;
+	customUi?: EngineCustomUiService;
+	sessionPicker?: EngineSessionPickerService;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -79,7 +85,19 @@ function emitExtensionUIRequest(output: RpcOutput, request: Record<string, unkno
 export function createRpcExtensionUIContext({
 	output,
 	pendingExtensionRequests,
+	customUi,
+	sessionPicker,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
+	const unsupportedWarnings = new Set<string>();
+	const warnUnsupported = (method: string): void => {
+		if (!customUi || unsupportedWarnings.has(method)) return;
+		unsupportedWarnings.add(method);
+		emitExtensionUIRequest(output, {
+			method: "notify",
+			message: `${method} is unavailable in isolated interactive mode because it requires a synchronous host callback`,
+			notifyType: "warning",
+		});
+	};
 	return {
 		select: (title, options, opts) =>
 			createDialogPromise({
@@ -118,12 +136,17 @@ export function createRpcExtensionUIContext({
 			emitExtensionUIRequest(output, { method: "notify", message, notifyType: type });
 		},
 
-		requestRender(): void {
-			// RPC mode does not own a local TUI renderer.
+		requestRender(): void { customUi?.requestRender(); },
+
+		getHostCustomUiState: () => customUi?.getHostCustomUiState() ?? {
+			blockingInlineCustomUiDepth: 0,
+			blockingInlineCustomUiActive: false,
 		},
+		onHostCustomUiStateChange: (listener) => customUi?.onHostCustomUiStateChange(listener) ?? (() => {}),
+		focusHostInlineCustomUi: () => customUi?.focusHostInlineCustomUi() ?? false,
 
 		onTerminalInput(): () => void {
-			// Raw terminal input not supported in RPC mode
+			warnUnsupported("ctx.ui.onTerminalInput");
 			return () => {};
 		},
 
@@ -148,33 +171,43 @@ export function createRpcExtensionUIContext({
 		},
 
 		setWidget(key: string, content: unknown, options?: ExtensionWidgetOptions): void {
-			// Only support string arrays in RPC mode - factory functions are ignored
-			if (content === undefined || Array.isArray(content)) {
+			if (content === undefined) {
+				customUi?.setWidget(key, undefined, options?.placement);
 				emitExtensionUIRequest(output, {
-					method: "setWidget",
-					widgetKey: key,
-					widgetLines: content as string[] | undefined,
-					widgetPlacement: options?.placement,
+					method: "setWidget", widgetKey: key, widgetLines: undefined, widgetPlacement: options?.placement,
 				});
+				return;
 			}
+			if (Array.isArray(content)) {
+				emitExtensionUIRequest(output, {
+					method: "setWidget", widgetKey: key, widgetLines: content as string[], widgetPlacement: options?.placement,
+				});
+				return;
+			}
+			if (customUi && typeof content === "function") {
+				customUi.setWidget(key, content as (tui: TUI, theme: Theme) => Component & { dispose?(): void }, options?.placement);
+				return;
+			}
+			warnUnsupported("component-factory widgets");
 		},
 
-		setFooter(_factory: unknown): void {
-			// Custom footer not supported in RPC mode - requires TUI access
-		},
+		setFooter(): void { warnUnsupported("ctx.ui.setFooter"); },
 
-		setHeader(_factory: unknown): void {
-			// Custom header not supported in RPC mode - requires TUI access
-		},
+		setHeader(): void { warnUnsupported("ctx.ui.setHeader"); },
 
 		setTitle(title: string): void {
 			emitExtensionUIRequest(output, { method: "setTitle", title });
 		},
 
-		async custom() {
-			// Custom UI not supported in RPC mode
-			return undefined as never;
-		},
+		custom: (factory, options) => customUi
+			? customUi.custom(factory, options)
+			: Promise.resolve(undefined as never),
+
+		// Exposed in the isolated engine child, where the terminal host mounts
+		// the real session selector natively so picker navigation never crosses
+		// the process boundary. Absent in plain headless RPC (no interactive
+		// host); callers must fail with an actionable error, not degrade.
+		...(sessionPicker ? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) } : {}),
 
 		pasteToEditor(text: string): void {
 			// Paste handling not supported in RPC mode - falls back to setEditorText
@@ -186,7 +219,7 @@ export function createRpcExtensionUIContext({
 		},
 
 		getEditorText(): string {
-			// Synchronous method can't wait for RPC response; host should track editor state locally if needed.
+			warnUnsupported("ctx.ui.getEditorText");
 			return "";
 		},
 
@@ -209,13 +242,9 @@ export function createRpcExtensionUIContext({
 			});
 		},
 
-		addAutocompleteProvider(): void {
-			// Autocomplete provider composition is not supported in RPC mode
-		},
+		addAutocompleteProvider(): void { warnUnsupported("ctx.ui.addAutocompleteProvider"); },
 
-		setEditorComponent(): void {
-			// Custom editor components not supported in RPC mode
-		},
+		setEditorComponent(): void { warnUnsupported("ctx.ui.setEditorComponent"); },
 
 		getEditorComponent() {
 			// Custom editor components not supported in RPC mode

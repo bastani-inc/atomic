@@ -5,11 +5,11 @@
 <p align="center">
   <b>The verifiable runtime for coding agents.</b><br>
   <b>Run verifiable engineering loops with control, alignment, and confidence. Build your own software factory with verification built in.</b><br>
-  <i>Define the work as stages, checks, gates, tools, artifacts, and approvals. Atomic runs the process so agent work is verifiable by design. Leverage Atomic to start building your software factory.</i>
+  <i>Define work as an execution graph of bounded stages and gates, with scoped tools, enforced checks, auditable artifacts, and human approvals. Atomic runs and records that graph so agent work is verifiable by design.</i>
 </p>
 
 <p align="center">
-  Atomic enforces controlled, instruction-following agent runs you can trust: instructions are explicit, stages are bounded, checks are enforced, approvals can block progress, and every run leaves auditable artifacts.
+  Atomic turns agent work into controlled, directed acyclic workflow graphs you can trust: instructions are explicit, dependencies are visible, stages are bounded, checks are enforced, approvals can block progress, and every run leaves auditable artifacts.
 </p>
 
 <p align="center">
@@ -312,7 +312,7 @@ The docs are open source in this repository under [`packages/coding-agent/docs`]
 
 ## What happens during a run?
 
-An Atomic run is one execution of a loop on the Atomic runtime:
+An Atomic workflow run is a directed acyclic execution graph. Stages become nodes, dependencies become edges, parallel work becomes branches, and checks and approvals control what may proceed.
 
 ```text
 issue or goal -> research -> plan -> agent stages -> artifacts -> checks -> review gate -> final output
@@ -320,7 +320,7 @@ issue or goal -> research -> plan -> agent stages -> artifacts -> checks -> revi
 
 Each stage can prompt an agent, run tools, call MCP servers, save artifacts, pass selected output forward, branch, retry, run in parallel, or pause for approval.
 
-The loop structure is deterministic and inspectable. Model output can vary; the stage order, inputs, handoffs, checks, gates, and artifacts are explicit.
+The graph structure is deterministic and inspectable. Model output can vary; the stage order, inputs, handoffs, checks, gates, and artifacts are explicit.
 
 ---
 

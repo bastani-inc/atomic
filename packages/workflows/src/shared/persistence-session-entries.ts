@@ -43,6 +43,8 @@ export interface RunStartPayload {
   readonly rootRunId?: string;
   readonly resumedFromRunId?: string;
   readonly resumeFromStageId?: string;
+  /** Elapsed ms inherited from prior sessions of a resumed run. */
+  readonly accumulatedDurationMs?: number;
   readonly ts: number;
 }
 
@@ -150,6 +152,7 @@ export function appendRunStart(api: PersistenceAPI, payload: RunStartPayload): v
     ...(payload.rootRunId !== undefined ? { rootRunId: payload.rootRunId } : {}),
     ...(payload.resumedFromRunId !== undefined ? { resumedFromRunId: payload.resumedFromRunId } : {}),
     ...(payload.resumeFromStageId !== undefined ? { resumeFromStageId: payload.resumeFromStageId } : {}),
+    ...(payload.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: payload.accumulatedDurationMs } : {}),
     ts: payload.ts,
   });
   if (entryId && typeof api.setLabel === "function") {

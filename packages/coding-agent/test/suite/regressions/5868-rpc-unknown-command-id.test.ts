@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import type { AgentSessionRuntime } from "../../../src/core/agent-session-runtime.ts";
 import { runRpcMode } from "../../../src/modes/rpc/rpc-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
+import { withNormalRpcEnvironment } from "../../normal-rpc-environment.ts";
 
 // Regression for https://github.com/earendil-works/pi/issues/5868
 
@@ -91,7 +92,7 @@ describe("RPC unknown command responses (#5868)", () => {
 		const harness = await createHarness();
 
 		try {
-			void runRpcMode(createRuntimeHost(harness));
+			withNormalRpcEnvironment(() => { void runRpcMode(createRuntimeHost(harness)); });
 			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
 
 			rpcIo.lineHandler?.(JSON.stringify({ id: "test", type: command }));

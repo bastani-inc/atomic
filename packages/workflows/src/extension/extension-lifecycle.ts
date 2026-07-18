@@ -3,22 +3,25 @@ import { quitAllRuns } from "../runs/background/quit.js";
 import { cancellationRegistry } from "../runs/background/cancellation-registry.js";
 import { stageControlRegistry } from "../runs/foreground/stage-control-registry.js";
 import { store } from "../shared/store.js";
-import { restoreOnSessionStart } from "../shared/persistence-restore.js";
-import { findResumableWorkflowNotices } from "../shared/resumable-workflow-notices.js";
 import { installCompactionHook } from "../shared/persistence-compaction-policy.js";
 import { clearForms } from "../tui/inline-form-store.js";
 import { installStoreWidget } from "../tui/store-widget-installer.js";
 import { registerIntercomParentSession } from "../intercom/intercom-bridge.js";
-import {
-  resetWorkflowLifecycleNotificationState,
-  seedWorkflowLifecycleNotificationState,
-  withWorkflowLifecycleNotificationsSuppressed,
-} from "./lifecycle-notifications.js";
+import { resetWorkflowLifecycleNotificationState } from "./lifecycle-notifications.js";
 import { resetWorkflowHilAnswerNotificationState } from "./hil-answer-notifications.js";
 import type { ExtensionAPI } from "./public-types.js";
 import type { WorkflowExtensionRuntimeState } from "./extension-runtime-state.js";
 import { deAdvertiseAskUserQuestionWhenHeadless, formatStartupDiagnostics } from "./workflow-command-surfaces.js";
 import { inFlightRunCount } from "./workflow-targets.js";
+import { shutdownDbos } from "../durable/dbos-lifecycle.js";
+
+let processShutdownInstalled = false;
+
+function installDbosProcessShutdown(): void {
+  if (processShutdownInstalled) return;
+  processShutdownInstalled = true;
+  process.once("beforeExit", () => shutdownDbos());
+}
 
 export interface WorkflowLifecycleRegistrationDeps {
   runtimeState: WorkflowExtensionRuntimeState;
@@ -31,6 +34,7 @@ export function registerWorkflowLifecycleHandlers(
   deps: WorkflowLifecycleRegistrationDeps,
 ): void {
   if (typeof pi.on !== "function") return;
+  installDbosProcessShutdown();
   const { runtimeState } = deps;
   pi.on("session_before_switch", async (event, ctx) => {
     const reason = typeof event === "object" && event !== null && "reason" in event
@@ -58,7 +62,7 @@ export function registerWorkflowLifecycleHandlers(
     return { cancel: true };
   });
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     runtimeState.resetWorkflowDiscoveryForSession();
     deAdvertiseAskUserQuestionWhenHeadless(pi, ctx?.hasUI);
     await runtimeState.ensureWorkflowConfigLoaded();
@@ -81,51 +85,9 @@ export function registerWorkflowLifecycleHandlers(
       deps.storeWidgetRef.current?.();
       deps.storeWidgetRef.current = installStoreWidget({ ui: ctx.ui }, store);
     }
-    const sessionManager = ctx?.sessionManager ?? pi.sessionManager;
-    runtimeState.updateHostStageSessionDir(sessionManager);
-    if (sessionManager) {
-      const cfg = runtimeState.configLoadRef.current?.config;
-      withWorkflowLifecycleNotificationsSuppressed(runtimeState.lifecycleNotificationState, () => {
-        try {
-          restoreOnSessionStart(
-            sessionManager,
-            {
-              resumeInFlight: cfg?.resumeInFlight ?? "ask",
-              persistRuns: cfg?.persistRuns ?? true,
-            },
-            store,
-          );
-        } catch {
-          // Host session-entry failures must not prevent the session from starting.
-        }
-        seedWorkflowLifecycleNotificationState(runtimeState.lifecycleNotificationState, store.snapshot());
-      });
-      const reason = typeof event === "object" && event !== null && "reason" in event
-        ? (event as { readonly reason?: string }).reason
-        : undefined;
-      if (reason === "startup" || reason === "resume") {
-        const getEntries = sessionManager.getEntries;
-        if (typeof getEntries === "function") {
-          let authoritativeCatalog: Awaited<ReturnType<typeof runtimeState.runtimeProxy.prepareDurableResumable>> = [];
-          try {
-            authoritativeCatalog = await runtimeState.runtimeProxy.prepareDurableResumable();
-          } catch {
-            // A resume-catalog failure must not prevent the host session from starting.
-          }
-          try {
-            const resumable = findResumableWorkflowNotices(getEntries.call(sessionManager), authoritativeCatalog);
-            if (resumable.length > 0) {
-              const commands = resumable
-                .map((workflow) => `\`${workflow.name}\` (${workflow.workflowId.slice(0, 8)}): /workflow resume ${workflow.workflowId}`)
-                .join("\n");
-              ctx?.ui?.notify?.(`This session has resumable workflows:\n${commands}`, "info");
-            }
-          } catch {
-            // Host session-entry failures must not prevent the session from starting.
-          }
-        }
-      }
-    }
+    // Session JSONL contains chat transcripts only. Workflow state is loaded
+    // from DBOS on the first workflow command or run, never during startup.
+    runtimeState.updateHostStageSessionDir(ctx?.sessionManager ?? pi.sessionManager);
   });
 
   installCompactionHook(pi, store);
@@ -162,5 +124,6 @@ export function registerWorkflowLifecycleHandlers(
     deps.storeWidgetRef.current = null;
     runtimeState.resetWorkflowDiscoveryForSession();
     runtimeState.setNotificationsActive(false);
+    await shutdownDbos();
   });
 }

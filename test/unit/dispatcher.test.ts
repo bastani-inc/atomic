@@ -269,7 +269,7 @@ describe("dispatch run forwards persistence", () => {
   }
 
   function lifecycleTypes(calls: Array<{ type: string }>): string[] {
-    return calls.map((c) => c.type).filter((type) => type !== "workflow.durable.checkpoint");
+    return calls.map((c) => c.type);
   }
 
   const stageWorkflow = workflow({

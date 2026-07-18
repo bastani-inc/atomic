@@ -60,9 +60,10 @@ export function resolveCompletedWorkflow(
   if (resolved !== undefined) {
     if ("kind" in resolved) return { kind: "ambiguous", matches: resolved.matches };
     const snapshot = completedWorkflowSnapshot(backend, resolved);
-    return snapshot === undefined
-      ? { kind: "stale", entry: resolved }
-      : { kind: "found", entry: resolved, snapshot };
+    if (snapshot === undefined) {
+      return { kind: "stale", entry: resolved };
+    }
+    return { kind: "found", entry: resolved, snapshot };
   }
 
   const authoritative = resolveDurableEntry(workflowIdOrPrefix, listCompletedFromBackend(backend));
@@ -153,27 +154,17 @@ function valueOrExisting<
 function stageSnapshotsFromDrafts(drafts: readonly StageDraft[]): StageSnapshot[] {
   const reconstructedIds = drafts.map((_, index) => `completed-stage-${index + 1}`);
   const sourceToReconstructed = new Map<string, string>();
-  let topologyAvailable = drafts.every((draft) => draft.topology?.version === DURABLE_STAGE_TOPOLOGY_VERSION);
-  for (let index = 0; topologyAvailable && index < drafts.length; index += 1) {
-    const sourceId = drafts[index]!.topology!.stageId;
-    if (sourceToReconstructed.has(sourceId)) {
-      topologyAvailable = false;
-      break;
-    }
-    sourceToReconstructed.set(sourceId, reconstructedIds[index]!);
+  for (let index = 0; index < drafts.length; index += 1) {
+    const topology = drafts[index]!.topology;
+    if (topology?.version !== DURABLE_STAGE_TOPOLOGY_VERSION
+      || sourceToReconstructed.has(topology.stageId)) return [];
+    sourceToReconstructed.set(topology.stageId, reconstructedIds[index]!);
   }
-  if (topologyAvailable) {
-    topologyAvailable = drafts.every((draft) =>
-      draft.topology!.parentIds.every((parentId) => sourceToReconstructed.has(parentId)),
-    );
-  }
+  if (drafts.some((draft) => draft.topology!.parentIds.some((parentId) => !sourceToReconstructed.has(parentId)))) return [];
   return drafts.map((draft, index) => stageSnapshotFromDraft(
     draft,
     reconstructedIds[index]!,
-    topologyAvailable
-      ? draft.topology!.parentIds.map((parentId) => sourceToReconstructed.get(parentId)!)
-      : [],
-    topologyAvailable,
+    draft.topology!.parentIds.map((parentId) => sourceToReconstructed.get(parentId)!),
   ));
 }
 
@@ -181,7 +172,6 @@ function stageSnapshotFromDraft(
   draft: StageDraft,
   id: string,
   parentIds: readonly string[],
-  topologyAvailable: boolean,
 ): StageSnapshot {
   const startedAt = draft.startedAt ?? draft.firstCompletedAt;
   const endedAt = draft.endedAt ?? draft.firstCompletedAt;
@@ -190,7 +180,6 @@ function stageSnapshotFromDraft(
     name: draft.name,
     status: "completed",
     parentIds,
-    ...(!topologyAvailable ? { topologyState: "unavailable" as const } : {}),
     startedAt,
     endedAt,
     durationMs: draft.durationMs ?? Math.max(0, endedAt - startedAt),

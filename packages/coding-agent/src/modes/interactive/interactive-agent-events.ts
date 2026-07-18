@@ -1,6 +1,25 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type Message, type AgentSessionEvent, Loader, Spacer, Text, pickWhimsicalWorkingMessage, AssistantMessageComponent, CountdownTimer, keyText, ToolExecutionComponent, theme } from "./interactive-mode-deps.ts";
 import { appendNewChildrenBeforeAttachedChild } from "./interactive-child-ordering.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
+
+function createToolComponent(
+  mode: InteractiveModeBase,
+  toolName: string,
+  toolCallId: string,
+  args: unknown,
+): ToolExecutionComponent | RemoteToolExecutionComponent {
+  const options = {
+    showImages: mode.settingsManager.getShowImages(),
+    imageWidthCells: mode.settingsManager.getImageWidthCells(),
+  };
+  return mode.runtimeHost instanceof IsolatedInteractiveRuntime
+    ? new RemoteToolExecutionComponent(toolName, toolCallId, args, options, mode.runtimeHost, () => mode.ui.requestRender())
+    : new ToolExecutionComponent(
+        toolName, toolCallId, args, options, mode.getRegisteredToolDefinition(toolName), mode.ui, mode.sessionManager.getCwd(),
+      );
+}
 
 InteractiveModeBase.prototype.subscribeToAgent = function(this: InteractiveModeBase): void {
     this.unsubscribe = this.session.subscribe(async (event) => {
@@ -128,18 +147,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           for (const content of this.streamingMessage.content) {
             if (content.type === "toolCall") {
               if (!this.pendingTools.has(content.id)) {
-                const component = new ToolExecutionComponent(
-                  content.name,
-                  content.id,
-                  content.arguments,
-                  {
-                    showImages: this.settingsManager.getShowImages(),
-                    imageWidthCells: this.settingsManager.getImageWidthCells(),
-                  },
-                  this.getRegisteredToolDefinition(content.name),
-                  this.ui,
-                  this.sessionManager.getCwd(),
-                );
+                const component = createToolComponent(this, content.name, content.id, content.arguments);
                 component.setExpanded(this.toolOutputExpanded);
                 this.chatContainer.addChild(component);
                 this.pendingTools.set(content.id, component);
@@ -205,18 +213,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
       case "tool_execution_start": {
         let component = this.pendingTools.get(event.toolCallId);
         if (!component) {
-          component = new ToolExecutionComponent(
-            event.toolName,
-            event.toolCallId,
-            event.args,
-            {
-              showImages: this.settingsManager.getShowImages(),
-              imageWidthCells: this.settingsManager.getImageWidthCells(),
-            },
-            this.getRegisteredToolDefinition(event.toolName),
-            this.ui,
-            this.sessionManager.getCwd(),
-          );
+          component = createToolComponent(this, event.toolName, event.toolCallId, event.args);
           component.setExpanded(this.toolOutputExpanded);
           this.chatContainer.addChild(component);
           this.pendingTools.set(event.toolCallId, component);

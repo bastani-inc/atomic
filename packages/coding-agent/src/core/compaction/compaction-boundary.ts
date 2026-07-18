@@ -82,17 +82,7 @@ function latestActiveBoundary(entries: SessionEntry[]): { entry: CompactionEntry
 	return undefined;
 }
 
-function selectCut(visible: VisibleEntry[], preserveRecent: number): VisibleEntry | undefined {
-	if (visible.length === 0) return undefined;
-	const candidate = preserveRecent >= visible.length ? 0 : Math.max(0, visible.length - preserveRecent);
-	const searchStart = preserveRecent === 0 ? visible.length - 1 : candidate;
-	for (let index = searchStart; index >= 0; index--) {
-		if (messageStartsLlmUserTurn(visible[index].message)) return visible[index];
-	}
-	return undefined;
-}
-
-/** Prepare a compactable region and a structurally valid, user-turn-aligned tail. */
+/** Prepare the complete compactable transcript and its exact context-visible message tail. */
 export function prepareCompactionBoundary(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
@@ -102,25 +92,25 @@ export function prepareCompactionBoundary(
 	const previous = latestActiveBoundary(entries);
 	let regionStart = 0;
 	if (previous) {
-		const keptIndex = entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
+		const keptIndex = previous.entry.firstKeptEntryId === null
+			? -1
+			: entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
 		regionStart = keptIndex >= 0 ? keptIndex : previous.index + 1;
 	}
 
 	const visible = visibleEntries(entries, regionStart);
 	const parameters = normalizeCompactionParameters({ ...settings, ...options }, autoDetectCompactionQuery(entries));
-	const cut = selectCut(visible, parameters.preserve_recent);
-	if (!cut) return undefined;
-	const regionMessages = visible.filter((item) => item.index < cut.index);
-	if (regionMessages.length < 2) return undefined;
+	const tailStart = Math.max(0, visible.length - parameters.preserve_recent);
+	const regionMessages = visible.slice(0, tailStart);
+	const tailMessages = visible.slice(tailStart);
 
 	const serialized = serializeConversationForCompaction(convertToLlm(regionMessages.map((item) => item.message)));
-	const regionText = previous?.entry.summary ? `${previous.entry.summary}\n${serialized}` : serialized;
+	const regionText = [previous?.entry.summary, serialized].filter((text): text is string => typeof text === "string" && text.length > 0).join("\n");
 	const region = createNumberedRegion(regionText);
 	if (region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 
-	const tailMessages = visible.filter((item) => item.index >= cut.index).map((item) => item.message);
 	const preparation: VerbatimCompactionPreparation = {
-		firstKeptEntryId: cut.entry.id,
+		firstKeptEntryId: tailMessages[0]?.entry.id ?? null,
 		region,
 		regionEntryIds: regionMessages.map((item) => item.entry.id),
 		keptTailMessageCount: tailMessages.length,
@@ -128,6 +118,6 @@ export function prepareCompactionBoundary(
 		parameters,
 		settings,
 	};
-	keptTailTokensByPreparation.set(preparation, tailMessages.reduce((sum, message) => sum + estimateTokens(message), 0));
+	keptTailTokensByPreparation.set(preparation, tailMessages.reduce((sum, item) => sum + estimateTokens(item.message), 0));
 	return preparation;
 }

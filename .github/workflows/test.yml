@@ -22,10 +22,23 @@ jobs:
                       binary_platform: windows-x64
             fail-fast: false
         runs-on: ${{ matrix.os }}
+        # Strict wall-clock budget: without an explicit limit a single hung test
+        # process burns the 360-minute GitHub default (observed: a wedged
+        # windows-x64 unit step ran 6h before cancellation). Green jobs finish in
+        # ~3.5m (linux) / ~9m (windows); anything beyond 10m is a hang or a
+        # regression worth failing fast on.
+        timeout-minutes: 10
         steps:
             - uses: useblacksmith/checkout@v1
               with:
+                  # LFS fixtures are required by the coding-agent test suite.
                   lfs: true
+                  # Full history + tags are load-bearing: the test:ci-contracts
+                  # step executes scripts/verify-release-integrity.ts against a
+                  # real historical release tag, including a merge-base
+                  # ancestry check against origin/main that a shallow clone
+                  # cannot answer. Blacksmith's git-mirror keeps the full clone
+                  # cached; only the standard-clone fallback pays for history.
                   fetch-depth: 0
             - uses: oven-sh/setup-bun@v2
               with:

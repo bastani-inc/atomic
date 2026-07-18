@@ -26,6 +26,7 @@ export async function selectSession(
 			(path: string) => {
 				if (!resolved) {
 					resolved = true;
+					selector.dispose();
 					ui.stop();
 					resolve(path);
 				}
@@ -33,11 +34,13 @@ export async function selectSession(
 			() => {
 				if (!resolved) {
 					resolved = true;
+					selector.dispose();
 					ui.stop();
 					resolve(null);
 				}
 			},
 			() => {
+				selector.dispose();
 				ui.stop();
 				process.exit(0);
 			},

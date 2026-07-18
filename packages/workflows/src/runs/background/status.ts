@@ -10,7 +10,7 @@
 
 import type { Store } from "../../shared/store.js";
 import type { RunSnapshot, RunStatus, StageSnapshot } from "../../shared/store-types.js";
-import type { WorkflowInputValues, WorkflowOutputValues, WorkflowPersistencePort } from "../../shared/types.js";
+import type { WorkflowPersistencePort } from "../../shared/types.js";
 import type { CancellationRegistry } from "./cancellation-registry.js";
 import type { StageControlRegistry } from "../foreground/stage-control-registry.js";
 import { store as defaultStore } from "../../shared/store.js";
@@ -18,7 +18,7 @@ import { stageControlRegistry as defaultStageControlRegistry } from "../foregrou
 import { appendRunEnd } from "../../shared/persistence-session-entries.js";
 import { expandWorkflowGraph } from "../../shared/expanded-workflow-graph.js";
 import { topLevelWorkflowRuns } from "../../shared/run-visibility.js";
-import { actionableReturnedStatusText, effectiveRunStatus, structuredRecoverableWorkflowFailureText } from "../../shared/returned-run-status.js";
+import { effectiveRunStatus } from "../../shared/returned-run-status.js";
 import { markDurableResumed } from "./durable-resume-transition.js";
 import { resumeAcknowledgementMessage, settleResumeAcknowledgements, waitForResumeReconciliation } from "./resume-acknowledgements.js";
 import { aggregateWorkflowRootRunId, expandedControlRunIds, workflowHasPausedStages } from "./workflow-lifecycle-aggregate.js";
@@ -63,42 +63,8 @@ export type PauseResult =
     };
 
 export type InterruptRunResult = PauseResult;
-/**
- * Per-run detail returned by {@link inspectRun}. A read-only view over the
- * store snapshot suitable for the "  RUN" detail surface — same data the
- * resume snapshot carries, plus a normalised `mode` field derived from
- * stage shape so renderers don't have to recompute it.
- */
-export interface RunDetail {
-  readonly runId: string;
-  readonly name: string;
-  readonly status: RunStatus;
-  readonly mode: "single" | "chain";
-  readonly startedAt: number;
-  readonly endedAt?: number;
-  readonly durationMs?: number;
-  readonly pausedDurationMs?: number;
-  readonly pausedAt?: number;
-  readonly resumedAt?: number;
-  readonly inputs: Readonly<WorkflowInputValues>;
-  readonly stages: readonly RunSnapshot["stages"][number][];
-  readonly result?: WorkflowOutputValues;
-  readonly error?: string;
-  readonly exited?: boolean;
-  readonly exitReason?: string;
-  readonly failureKind?: RunSnapshot["failureKind"];
-  readonly failureCode?: RunSnapshot["failureCode"];
-  readonly failureRecoverability?: RunSnapshot["failureRecoverability"];
-  readonly failureDisposition?: RunSnapshot["failureDisposition"];
-  readonly failedStageId?: string;
-  readonly resumable?: boolean;
-  readonly retryAfterMs?: number;
-  readonly blockedAt?: number;
-}
 
-export type InspectRunResult =
-  | { ok: true; runId: string; detail: RunDetail }
-  | { ok: false; runId: string; reason: "not_found" };
+export { inspectRun, type InspectRunResult, type RunDetail } from "./run-inspect.js";
 // ---------------------------------------------------------------------------
 // statusRuns
 // ---------------------------------------------------------------------------
@@ -439,62 +405,4 @@ export async function interruptAllRuns(opts?: {
   return Promise.all(inFlight.map((run) =>
     interruptRun(run.id, { store: activeStore, stageControlRegistry: opts?.stageControlRegistry })
   ));
-}
-// ---------------------------------------------------------------------------
-// inspectRun
-// ---------------------------------------------------------------------------
-
-/**
- * Look up a single run by id (full UUID or unique prefix) and return a
- * normalised {@link RunDetail} for the per-run text/TUI surfaces.
- *
- * Returns ok:false "not_found" when no run matches, "ambiguous" when a
- * prefix matches multiple. Read-only: does not mutate the store.
- */
-export function inspectRun(
-  runId: string,
-  opts?: { store?: Store },
-): InspectRunResult {
-  const activeStore = opts?.store ?? defaultStore;
-  const runs = activeStore.runs();
-
-  const exact = runs.find((r) => r.id === runId);
-  const candidate = exact ?? (runs.length > 0 ? runs.find((r) => r.id.startsWith(runId)) : undefined);
-
-  if (!candidate) {
-    return { ok: false, runId, reason: "not_found" };
-  }
-
-  // Deep copy so callers cannot mutate the store via the snapshot.
-  const copy = structuredClone(candidate);
-  const expandedStages = expandWorkflowGraph(activeStore.snapshot(), copy.id).stages;
-
-  const detail: RunDetail = {
-    runId: copy.id,
-    name: copy.name,
-    status: effectiveRunStatus(copy),
-    mode: expandedStages.length > 1 ? "chain" : "single",
-    startedAt: copy.startedAt,
-    endedAt: copy.endedAt,
-    durationMs: copy.durationMs,
-    pausedDurationMs: copy.pausedDurationMs,
-    pausedAt: copy.pausedAt,
-    resumedAt: copy.resumedAt,
-    inputs: copy.inputs,
-    stages: expandedStages.map((stage) => structuredClone(stage)),
-    result: copy.result,
-    error: copy.error ?? (effectiveRunStatus(copy) === copy.status ? undefined : (structuredRecoverableWorkflowFailureText(copy) ?? actionableReturnedStatusText(copy.result))),
-    exited: copy.exited,
-    exitReason: copy.exitReason,
-    failureKind: copy.failureKind,
-    failureCode: copy.failureCode,
-    failureRecoverability: copy.failureRecoverability,
-    failureDisposition: copy.failureDisposition,
-    failedStageId: copy.failedStageId,
-    resumable: copy.resumable,
-    retryAfterMs: copy.retryAfterMs,
-    blockedAt: copy.blockedAt,
-  };
-
-  return { ok: true, runId: copy.id, detail };
 }

@@ -12,6 +12,7 @@
  */
 
 import type { PendingPrompt, RunSnapshot, StageInputRequest, StageSnapshot, StageStatus } from "../shared/store-types.js";
+import type { WorkflowRunStatusFilter, WorkflowRunStatusSummary } from "./workflow-status-summary.js";
 import type { WorkflowDetails } from "../shared/types.js";
 import type { RunDetail } from "../runs/background/status.js";
 import { renderInputsSchema } from "../shared/render-inputs-schema.js";
@@ -64,7 +65,11 @@ type ListResult = {
 };
 type StatusResult = {
   action: "status";
-  /** Live snapshots from the in-process store. */
+  /** Applied run-status filter; "all" when unfiltered. */
+  filter: WorkflowRunStatusFilter;
+  /** Concise per-run summaries (in-flight runs first) for agent consumption. */
+  runs: WorkflowRunStatusSummary[];
+  /** Live snapshots from the in-process store, filtered like `runs`. */
   snapshots: RunSnapshot[];
 };
 type StatusDetailResult =

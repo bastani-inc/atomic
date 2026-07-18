@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { APP_NAME, getEnvValue } from "@bastani/atomic";
+import { APP_NAME, getEnvValue, keyHintIfBound } from "@bastani/atomic";
 import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@bastani/atomic";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
@@ -23,6 +23,7 @@ import registerFanoutChildSubagentExtension from "./fanout-child.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
 import { DEFAULT_PROMPT_GUIDANCE } from "./prompt-guidance.ts";
+import { parseSubagentNotifyContent } from "./notification-content.ts";
 import { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 export { SUBAGENT_TOOL_DESCRIPTION } from "./tool-description.ts";
 import { type Details, type SubagentState, ASYNC_DIR, DEFAULT_ARTIFACT_CONFIG, RESULTS_DIR, SLASH_RESULT_TYPE, SUBAGENT_ASYNC_COMPLETE_EVENT, SUBAGENT_ASYNC_STARTED_EVENT, SUBAGENT_CONTROL_EVENT } from "../shared/types.ts";
@@ -98,36 +99,39 @@ function createSlashResultComponent(
 	};
 	return container;
 }
-function parseSubagentNotifyContent(content: string): SubagentNotifyDetails | undefined {
-	const lines = content.split("\n");
-	const header = lines[0] ?? "";
-	const match = header.match(/^Background task (completed|failed|paused): \*\*(.+?)\*\*(?:\s+(\([^)]*\)))?$/);
-	if (!match) return undefined;
-	const body = lines.slice(2);
-	let sessionIndex = -1;
-	for (let i = body.length - 1; i >= 1; i--) {
-		if (body[i - 1]?.trim() === "" && /^(Session|Session file|Session share error):\s+/.test(body[i]!)) {
-			sessionIndex = i;
-			break;
-		}
+export function renderSubagentNotification(
+	message: { content: unknown; details?: unknown },
+	options: { expanded: boolean },
+	theme: ExtensionContext["ui"]["theme"],
+): Text {
+	const content = typeof message.content === "string" ? message.content : "";
+	const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
+	if (!details) return new Text(content, 0, 0);
+	const icon = details.status === "completed"
+		? theme.fg("success", "✓")
+		: details.status === "paused"
+			? theme.fg("warning", "■")
+			: theme.fg("error", "✗");
+	const parts: string[] = [];
+	if (details.taskInfo) parts.push(details.taskInfo);
+	if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
+	let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
+	if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
+	const trimmedPreview = details.resultPreview.trim();
+	const previewLines = options.expanded
+		? trimmedPreview.split("\n").filter((line) => line.trim())
+		: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
+	for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
+		text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
 	}
-	const sessionLine = sessionIndex >= 0 ? body[sessionIndex] : undefined;
-	const resultLines = sessionIndex >= 0 ? body.slice(0, sessionIndex) : body;
-	const resultPreview = resultLines.join("\n").trim() || "(no output)";
-	let sessionLabel: string | undefined;
-	let sessionValue: string | undefined;
-	if (sessionLine) {
-		const separator = sessionLine.indexOf(":");
-		sessionLabel = sessionLine.slice(0, separator).toLowerCase();
-		sessionValue = sessionLine.slice(separator + 1).trim();
+	if (!options.expanded && trimmedPreview.includes("\n")) {
+		const expandHint = keyHintIfBound("app.tools.expand", "full notification");
+		if (expandHint) text += `\n  ${expandHint}`;
 	}
-	return {
-		agent: match[2]!,
-		status: match[1] as SubagentNotifyDetails["status"],
-		...(match[3] ? { taskInfo: match[3] } : {}),
-		resultPreview,
-		...(sessionLabel && sessionValue ? { sessionLabel, sessionValue } : {}),
-	};
+	if (details.sessionLabel && details.sessionValue) {
+		text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
+	}
+	return new Text(text, 0, 0);
 }
 class SubagentControlNoticeComponent implements Component {
 	constructor(
@@ -197,7 +201,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		registrationFailureCleanups.push(() => maintenance.stop());
 		maintenance.startResultWatcherDeferred();
 		maintenance.primeExistingResultsDeferred();
-		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+		const { ensurePoller, handleStarted, handleComplete, resetJobs, hydrateActiveJobsDeferred } = createAsyncJobTracker(pi, state, ASYNC_DIR);
 		const executor = createSubagentExecutor({
 			pi,
 			state,
@@ -213,35 +217,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!details) return undefined;
 			return createSlashResultComponent(details, options, theme, pi);
 		});
-		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
-			const content = typeof message.content === "string" ? message.content : "";
-			const details = (message.details as SubagentNotifyDetails | undefined) ?? parseSubagentNotifyContent(content);
-			if (!details) return new Text(content, 0, 0);
-			const icon = details.status === "completed"
-				? theme.fg("success", "✓")
-				: details.status === "paused"
-					? theme.fg("warning", "■")
-					: theme.fg("error", "✗");
-			const parts: string[] = [];
-			if (details.taskInfo) parts.push(details.taskInfo);
-			if (details.durationMs !== undefined) parts.push(formatDuration(details.durationMs));
-			let text = `${icon} ${theme.bold(details.agent)} ${theme.fg("dim", details.status)}`;
-			if (parts.length > 0) text += ` ${theme.fg("dim", "·")} ${parts.map((part) => theme.fg("dim", part)).join(` ${theme.fg("dim", "·")} `)}`;
-			const trimmedPreview = details.resultPreview.trim();
-			const previewLines = options.expanded
-				? trimmedPreview.split("\n").filter((line) => line.trim())
-				: [trimmedPreview.split("\n", 1)[0] ?? ""].filter((line) => line.trim());
-			for (const line of previewLines.length > 0 ? previewLines : ["(no output)"]) {
-				text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
-			}
-			if (!options.expanded && trimmedPreview.includes("\n")) {
-				text += `\n  ${theme.fg("dim", "ctrl+o full notification")}`;
-			}
-			if (details.sessionLabel && details.sessionValue) {
-				text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
-			}
-			return new Text(text, 0, 0);
-		});
+		pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", renderSubagentNotification);
 		pi.registerMessageRenderer<SubagentControlMessageDetails>(SUBAGENT_CONTROL_MESSAGE_TYPE, (message, _options, theme) => {
 			const details = message.details as SubagentControlMessageDetails | undefined;
 			if (!details?.event) return undefined;
@@ -422,7 +398,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			if (!lifecycle.isCurrent() || event.toolName !== "subagent") return;
 			if (!ctx.hasUI) return;
 			state.lastUiContext = ctx;
-			hydrateActiveJobs(ctx);
+			hydrateActiveJobsDeferred(ctx);
 			if (state.asyncJobs.size > 0) ensurePoller();
 		});
 		const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
@@ -435,7 +411,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			cleanupSessionArtifacts(ctx);
 			clearPendingForegroundControlNotices(state);
 			resetJobs(ctx);
-			hydrateActiveJobs(ctx);
+			hydrateActiveJobsDeferred(ctx);
 			restoreSlashFinalSnapshots(ctx.sessionManager.getEntries(), pi);
 			maintenance.primeExistingResultsDeferred();
 		};

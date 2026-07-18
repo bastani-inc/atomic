@@ -1,14 +1,21 @@
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, getKeybindings, setKeybindings, Text } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { VerbatimCompactionResult } from "../src/core/compaction/index.ts";
+import { KeybindingsManager } from "../src/core/keybindings.ts";
 import { createVerbatimCompactionMessage, VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.ts";
 import { CompactionBoundaryMessageComponent } from "../src/modes/interactive/components/compaction-boundary-message.ts";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { getMarkdownTheme, initTheme, theme } from "../src/modes/interactive/theme/theme.ts";
 
-beforeAll(() => initTheme("dark"));
+const previousKeybindings = getKeybindings();
+
+beforeAll(() => {
+	initTheme("dark");
+	setKeybindings(new KeybindingsManager());
+});
+afterAll(() => setKeybindings(previousKeybindings));
 
 const result: VerbatimCompactionResult = {
 	compactedText: "[User]: retained\n(filtered 1 lines)",

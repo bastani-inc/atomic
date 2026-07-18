@@ -200,20 +200,21 @@ describe("partial resume command surfaces", () => {
     const runtime = createExtensionRuntime({ definitions: [], store });
     const info: string[] = [];
     const errors: string[] = [];
-    const custom = (factory: (
-      tui: { requestRender(): void },
-      theme: object,
-      keybindings: object,
-      done: () => void,
-    ) => { handleInput(input: string): void }): void => {
-      const component = factory({ requestRender() {} }, {}, {}, () => undefined);
-      setTimeout(() => component.handleInput("\n"), 10);
-    };
+    // Host session-picker seam: auto-select the first (live) row shortly
+    // after open, mirroring a user hitting Enter on the seeded top row.
+    const hostSessionPicker = (request: { sessions: Array<{ path: string }> }) => ({
+      result: new Promise<string | undefined>((resolve) => {
+        setTimeout(() => resolve(request.sessions[0]?.path), 10);
+      }),
+      update: () => undefined,
+      error: () => undefined,
+      close: () => undefined,
+    });
 
     await handleRunControlCommand(
       "resume",
       [],
-      { hasUI: true, ui: { notify: () => undefined, custom } } as never,
+      { hasUI: true, ui: { notify: () => undefined, custom: () => undefined, hostSessionPicker } } as never,
       { info: (message) => info.push(message), error: (message) => errors.push(message) },
       {
         pi: {},

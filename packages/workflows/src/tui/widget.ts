@@ -43,7 +43,6 @@ import { statusIcon } from "./status-helpers.js";
 const SHORT_ID_LEN = 6;
 const MAX_VISIBLE_RUNS = 4;
 export const RECENT_ENDED_WINDOW_MS = 30_000;
-const WIDGET_CLOCK_REFRESH_MS = 1_000;
 const COLLAPSED_BREAKPOINT_COLS = 80;
 
 // ---------------------------------------------------------------------------
@@ -125,11 +124,13 @@ function countRuns(
   return counts;
 }
 
-function msUntilNextClockTick(now: number): number {
-  const remainder = now % WIDGET_CLOCK_REFRESH_MS;
-  return remainder === 0 ? WIDGET_CLOCK_REFRESH_MS : WIDGET_CLOCK_REFRESH_MS - remainder;
-}
-
+/**
+ * Returns the next wall-clock boundary that can change the visible widget.
+ * Running elapsed labels tick on exact one-second boundaries; paused runs stay
+ * frozen. Recently ended cards retain their independent one-shot expiry.
+ * Reactive-widget updates the existing mounted component in place, so these
+ * ticks repaint the visible panel without disposing or remounting it.
+ */
 export function nextWidgetRefreshDelayMs(
   snap: StoreSnapshot,
   now = Date.now(),
@@ -137,12 +138,14 @@ export function nextWidgetRefreshDelayMs(
   const display = selectDisplayRuns(snap, now);
   if (display.length === 0) return undefined;
 
-  const hasLiveClock = display.some((run) => run.endedAt === undefined && run.status !== "paused");
-  const clockDelay = hasLiveClock ? msUntilNextClockTick(now) : undefined;
-  const expiryDelays = display
+  const delays: number[] = display
     .filter((run) => run.endedAt !== undefined)
     .map((run) => Math.max(1, run.endedAt! + RECENT_ENDED_WINDOW_MS - now + 1));
-  const delays = [clockDelay, ...expiryDelays].filter((delay): delay is number => delay !== undefined);
+  for (const run of display) {
+    if (run.endedAt !== undefined || run.status === "paused" || run.pausedAt !== undefined) continue;
+    const remainder = elapsedRunMs(run, now) % 1_000;
+    delays.push(remainder === 0 ? 1_000 : 1_000 - remainder);
+  }
   return delays.length === 0 ? undefined : Math.min(...delays);
 }
 

@@ -27,6 +27,7 @@ import type { BashOperations } from "./tools/bash.ts";
 import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	AgentSessionReloadOptions,
 	ContextWindowReplayRequest,
 	ContextWindowReplaySource,
 	DrainedAgentQueues,
@@ -217,7 +218,7 @@ export interface AgentSessionMethodSurface {
 	_bindExtensionCore(runner: ExtensionRunner): void;
 	_refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void;
 	_buildRuntime(options: RuntimeBuildOptions): void;
-	reload(options?: { reason?: "startup" | "reload" }): Promise<void>;
+	reload(options?: AgentSessionReloadOptions): Promise<void>;
 
 	_isRetryableError(message: AssistantMessage): boolean;
 	_normalizePersistedGeminiToolArgs(message: AssistantMessage): void;

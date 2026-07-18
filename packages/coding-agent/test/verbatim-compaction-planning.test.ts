@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_COMPACTION_SETTINGS, estimateContextTokens, estimateTokens } from "../src/core/compaction/compaction.js";
+import { DEFAULT_COMPACTION_SETTINGS, estimateContextTokens } from "../src/core/compaction/compaction.js";
 import { getKeptTailTokenEstimate, prepareCompactionBoundary } from "../src/core/compaction/compaction-boundary.js";
 import { runVerbatimCompaction, targetKeepLines } from "../src/core/compaction/compaction-runner.js";
 import type { VerbatimCompactionPreparation } from "../src/core/compaction/compaction-types.js";
@@ -73,7 +73,7 @@ function preparation(): VerbatimCompactionPreparation {
 }
 
 describe("compaction boundary preparation", () => {
-	it("widens the tail to a user turn and keeps the final turn at preserve_recent zero", () => {
+	it("compacts the entire transcript when preserve_recent is zero", () => {
 		const long = Array.from({ length: 12 }, (_, index) => `line ${index}`).join("\n");
 		const entries = [
 			entry("m1", user(long, 1), null),
@@ -81,26 +81,30 @@ describe("compaction boundary preparation", () => {
 			entry("m3", user("final", 3), "m2"),
 		];
 		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
-		expect(result?.firstKeptEntryId).toBe("m3");
-		expect(result?.regionEntryIds).toEqual(["m1", "m2"]);
-		expect(result?.keptTailMessageCount).toBe(1);
+		expect(result?.firstKeptEntryId).toBeNull();
+		expect(result?.regionEntryIds).toEqual(["m1", "m2", "m3"]);
+		expect(result?.keptTailMessageCount).toBe(0);
 	});
 
-	it("counts visible messages and widens assistant/tool-result recency to its user-turn start", () => {
+	it.each([
+		["the default", {}],
+		["an explicit value", { preserve_recent: 2 }],
+	] as const)("retains exactly two visible messages for %s without user-turn alignment", (_label, options) => {
 		const long = Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n");
-		const entries = [
+		const entries: SessionEntry[] = [
 			entry("m1", user(long, 1), null),
 			entry("m2", assistant("answer one", 2), "m1"),
 			entry("m3", toolResult("result one", 3), "m2"),
 			entry("m4", user(long, 4), "m3"),
 			entry("m5", assistant("answer two", 5), "m4"),
 			entry("m6", toolResult("result two", 6), "m5"),
-			entry("m7", user("final", 7), "m6"),
+			{ type: "custom_message", id: "x6", parentId: "m6", timestamp: new Date(6_500).toISOString(), customType: "hidden", content: "not context-visible", display: false, excludeFromContext: true },
+			entry("m7", user("final", 7), "x6"),
 		];
-		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 2 });
-		expect(result?.firstKeptEntryId).toBe("m4");
-		expect(result?.keptTailMessageCount).toBe(4);
-		expect(result?.regionEntryIds).toEqual(["m1", "m2", "m3"]);
+		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, options);
+		expect(result?.firstKeptEntryId).toBe("m6");
+		expect(result?.keptTailMessageCount).toBe(2);
+		expect(result?.regionEntryIds).toEqual(["m1", "m2", "m3", "m4", "m5"]);
 	});
 
 	it("prepends a previous active compacted string raw", () => {
@@ -117,8 +121,10 @@ describe("compaction boundary preparation", () => {
 			entry("m5", user(long, 5), "c4"),
 			entry("m6", user("final", 6), "m5"),
 		];
-		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
+		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 1 });
 		expect(result?.region.lines.slice(0, 2)).toEqual(["[User]: prior", "(filtered 12 lines)"]);
+		expect(result?.region.lines.join("\n")).toContain("tail one");
+		expect(result?.region.lines.join("\n")).toContain(long);
 		expect(result?.firstKeptEntryId).toBe("m6");
 	});
 
@@ -138,7 +144,15 @@ describe("compaction boundary preparation", () => {
 		];
 		const result = prepareCompactionBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
 		expect(result?.tokensBefore).toBe(estimateContextTokens(buildSessionContext(entries).messages).tokens);
-		expect(result && getKeptTailTokenEstimate(result)).toBe(estimateTokens(user("final protected turn", 6)));
+		expect(result && getKeptTailTokenEstimate(result)).toBe(0);
+		expect(result?.firstKeptEntryId).toBeNull();
+	});
+
+	it("allows one context-visible message when its complete region meets the line minimum", () => {
+		const long = Array.from({ length: 20 }, (_, index) => `line ${index}`).join("\n");
+		const result = prepareCompactionBoundary([entry("m1", user(long, 1), null)], DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 0 });
+		expect(result?.regionEntryIds).toEqual(["m1"]);
+		expect(result?.firstKeptEntryId).toBeNull();
 	});
 
 	it("returns undefined below the region minimum", () => {

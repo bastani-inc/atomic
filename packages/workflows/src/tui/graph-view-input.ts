@@ -6,18 +6,17 @@ import {
 import { GraphViewRenderer } from "./graph-view-render.js";
 import { isKeybindingsLike, type KeybindingsLike } from "./keybindings-adapter.js";
 import {
+  isTerminalLeftMousePress,
+  parseTerminalMouseInput,
+  terminalMouseWheelDirection,
+} from "./mouse-input.js";
+import {
   defaultResponseFor,
   handlePromptCardInput,
 } from "./prompt-card.js";
 import { filterStages, type SwitcherState } from "./switcher.js";
 import { Key, matchesKey } from "./text-helpers.js";
 
-interface SgrMouseEvent {
-  buttonCode: number;
-  col: number;
-  row: number;
-  final: "M" | "m";
-}
 
 interface MouseWheelDelta {
   cols: number;
@@ -328,50 +327,21 @@ export abstract class GraphViewInputController extends GraphViewRenderer {
     return null;
   }
 
-  private _parseSgrMouse(data: string): SgrMouseEvent | null {
-    const sgr = data.match(/^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/);
-    if (!sgr) return null;
-    const oneBasedCol = Number.parseInt(sgr[2]!, 10);
-    const oneBasedRow = Number.parseInt(sgr[3]!, 10);
-    const final = sgr[4];
-    if (oneBasedCol < 1 || oneBasedRow < 1) return null;
-    if (final !== "M" && final !== "m") return null;
-    return {
-      buttonCode: Number.parseInt(sgr[1]!, 10),
-      col: oneBasedCol - 1,
-      row: oneBasedRow - 1,
-      final,
-    };
-  }
-
   private _sgrLeftMousePress(data: string): { col: number; row: number } | null {
-    const sgr = this._parseSgrMouse(data);
-    if (!sgr || sgr.final !== "M") return null;
-    const buttonCode = sgr.buttonCode;
-    if ((buttonCode & 64) !== 0 || (buttonCode & 32) !== 0 || (buttonCode & 3) !== 0) {
-      return null;
-    }
-    return { col: sgr.col, row: sgr.row };
+    const event = parseTerminalMouseInput(data);
+    if (!event || event.protocol !== "sgr" || !isTerminalLeftMousePress(event)) return null;
+    return { col: event.col, row: event.row };
   }
 
   private _mouseWheelDelta(data: string): MouseWheelDelta | null {
-    const sgr = this._parseSgrMouse(data);
-    if (sgr && sgr.final === "M") {
-      return this._wheelDeltaForButtonCode(sgr.buttonCode);
-    }
-    if (data.startsWith("\x1b[M") && data.length >= 6) {
-      return this._wheelDeltaForButtonCode(data.charCodeAt(3) - 32);
-    }
+    const event = parseTerminalMouseInput(data);
+    if (!event) return null;
+    const direction = terminalMouseWheelDirection(event);
+    if (direction === "up") return { cols: 0, rows: -GRAPH_SCROLL_STEP_ROWS };
+    if (direction === "down") return { cols: 0, rows: GRAPH_SCROLL_STEP_ROWS };
+    if (direction === "left") return { cols: -GRAPH_SCROLL_STEP_COLS, rows: 0 };
+    if (direction === "right") return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
     return null;
-  }
-
-  private _wheelDeltaForButtonCode(code: number): MouseWheelDelta | null {
-    if ((code & 64) === 0) return null;
-    const direction = code & 3;
-    if (direction === 0) return { cols: 0, rows: -GRAPH_SCROLL_STEP_ROWS };
-    if (direction === 1) return { cols: 0, rows: GRAPH_SCROLL_STEP_ROWS };
-    if (direction === 2) return { cols: -GRAPH_SCROLL_STEP_COLS, rows: 0 };
-    return { cols: GRAPH_SCROLL_STEP_COLS, rows: 0 };
   }
 
   // ---- test seams ----

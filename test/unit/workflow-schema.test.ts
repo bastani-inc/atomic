@@ -58,10 +58,14 @@ describe("WorkflowParametersSchema stage options", () => {
   });
 
   test("accepts stage introspection and control actions", () => {
-    for (const statusFilter of ["pending", "running", "awaiting_input", "paused", "blocked", "completed", "failed", "skipped", "all"] as const) {
+    for (const statusFilter of ["pending", "running", "awaiting_input", "paused", "blocked", "completed", "failed", "skipped", "cancelled", "killed", "all"] as const) {
       assert.equal(Value.Check(WorkflowParametersSchema, {
         action: "stages",
         runId: "abc123",
+        statusFilter,
+      }), true);
+      assert.equal(Value.Check(WorkflowParametersSchema, {
+        action: "status",
         statusFilter,
       }), true);
     }
@@ -152,7 +156,8 @@ describe("WorkflowParametersSchema stage options", () => {
   });
 
   test("rejects invalid stage-control enum values and transcript counts", () => {
-    assert.equal(Value.Check(WorkflowParametersSchema, { action: "stages", statusFilter: "cancelled" }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, { action: "stages", statusFilter: "bogus" }), false);
+    assert.equal(Value.Check(WorkflowParametersSchema, { action: "status", statusFilter: "bogus" }), false);
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", format: "markdown" }), false);
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", limit: -1 }), false);
     assert.equal(Value.Check(WorkflowParametersSchema, { action: "transcript", limit: 1.5 }), false);

@@ -389,7 +389,7 @@ describe("graceful workflow quit acknowledgement", () => {
   });
   test("durable transition failure propagates instead of claiming a resumable pause", async () => {
     class TransitionFailingBackend extends InMemoryDurableBackend {
-      override transitionWorkflowStatus(): boolean {
+      override async transitionWorkflowStatus(): Promise<boolean> {
         throw new Error("durable transition write failed");
       }
     }

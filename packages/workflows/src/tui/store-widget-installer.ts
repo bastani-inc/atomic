@@ -3,14 +3,13 @@
  * workflow store using a single long-lived component that is updated in
  * place (issue #1109).
  *
- * Placement note (belowEditor, not aboveEditor): the widget renders a live
- * elapsed clock that re-renders every second. pi-tui full-clears the screen +
- * scrollback whenever a changed line is above the viewport fold. An
+ * Placement note (belowEditor, not aboveEditor): pi-tui full-clears the
+ * screen + scrollback whenever a changed line is above the viewport fold. An
  * aboveEditor widget gets pushed above the fold once the bottom region grows
- * tall, so each clock tick repainted the whole screen (the resize flicker in
+ * tall, so each repaint cleared the whole screen (the resize flicker in
  * #1109). belowEditor keeps the widget among the last rendered lines (always
- * within the bottom viewport), so the clock tick is a clean differential
- * redraw. See the `setWidget` call site for the full rationale.
+ * within the bottom viewport), so a repaint is a clean differential redraw.
+ * See the `setWidget` call site for the full rationale.
  *
  * Pattern:
  *   1. The widget mounts once (`ui.setWidget(WIDGET_KEY, factory)`) on the
@@ -21,23 +20,19 @@
  *      container, and redraws — so re-issuing `setWidget` on each store
  *      mutation or clock tick produces a visible flicker. We therefore call
  *      it only on real mount/unmount transitions.
- *   2. For every other refresh — store mutations that change content and
- *      the one-shot clock-refresh timer alike — we call `ui.requestRender()`
- *      only. Pi re-invokes the *same* mounted component's `render(width)`
- *      with no dispose/remount, so the elapsed-time label keeps ticking
- *      smoothly without flicker.
- *   3. The long-lived component reads the *latest* store snapshot through a
- *      live getter (`() => currentSnap`) at render time, so it is never
- *      visually stale — including after `up-arrow` history recall and other
- *      editor events that force a host re-render without a `setWidget` call.
+ *   2. Semantic store mutations, visible elapsed-clock ticks, and the one-shot
+ *      recent-ended expiry call `ui.requestRender()` only. Pi re-invokes the
+ *      *same* mounted component's `render(width)` with no dispose/remount, so
+ *      elapsed labels advance continuously without lifecycle flicker.
+ *   3. The long-lived component reads the *latest* store snapshot and captured
+ *      clock through live getters at render time, so it is never visually
+ *      stale — including after `up-arrow` history recall and other host renders.
  *   4. The mount / unmount / update / none decision is extracted into the
  *      pure, unit-testable `decideWidgetAction`, keeping this module a thin
  *      orchestration layer over a pure policy (SRP).
- *   5. The widget contents are static per snapshot (no spinner), but the
- *      rendered lines include wall-clock labels (`3s`, `complete · 4s ago`)
- *      and recent-ended visibility. We therefore keep one lightweight
- *      one-shot refresh timer while the widget is visible, matching other
- *      live Atomic widgets without reintroducing a high-frequency spinner.
+ *   5. Running workflows schedule the next exact elapsed-second boundary.
+ *      Paused workflows stay timer-free, and terminal cards use only the
+ *      one-shot recent-ended expiry (`nextWidgetRefreshDelayMs`).
  */
 
 import {
@@ -124,6 +119,10 @@ export function installStoreWidget(
     render: (snap, { theme, width, now }) =>
       buildThemedWidgetLines(snap, theme as PiTheme | undefined, width, now),
     getNextRefreshDelayMs: (snap, now) => nextWidgetRefreshDelayMs(snap, now),
+    // #1856: a store mutation that leaves the rendered card byte-identical
+    // must not broadcast a host-wide render (each one becomes terminal
+    // writes that fight native main-chat scrollback).
+    requestRenderOnStateNoop: false,
     isStaleError: isStale,
   });
 

@@ -12,7 +12,7 @@ import {
 import { stripAnsi } from "../../../utils/ansi.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint, keyText } from "./keybinding-hints.ts";
+import { keyText, parenthesizedKeyHint } from "./keybinding-hints.ts";
 import { truncateToVisualLines } from "./visual-truncate.ts";
 
 // Preview line limit when not expanded (matches tool execution behavior)
@@ -175,14 +175,11 @@ export class BashExecutionComponent extends Container {
 
 			// Show how many lines are hidden (collapsed preview)
 			if (hiddenLineCount > 0) {
+				const hint = parenthesizedKeyHint("app.tools.expand", this.expanded ? "Collapse" : "Expand");
 				if (this.expanded) {
-					statusParts.push(
-						`${theme.fg("muted", "(")}${keyHint("app.tools.expand", "Collapse")}${theme.fg("muted", ")")}`,
-					);
+					if (hint) statusParts.push(hint);
 				} else {
-					statusParts.push(
-						`${theme.fg("muted", `... ${hiddenLineCount} more lines (`)}${keyHint("app.tools.expand", "Expand")}${theme.fg("muted", ")")}`,
-					);
+					statusParts.push(theme.fg("muted", `... ${hiddenLineCount} more lines`) + (hint ? ` ${hint}` : ""));
 				}
 			}
 

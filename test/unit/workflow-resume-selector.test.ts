@@ -1,9 +1,13 @@
+/**
+ * Row building, ordering, and presentation for the `/workflow resume` picker
+ * (`workflowResumeSelectorItems`). Picker interaction is covered by
+ * `workflow-resume-selector-host-picker.test.ts` — the selector mounts
+ * exclusively through the host session-picker capability; there is no
+ * remote-rendered path.
+ */
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import {
-  openWorkflowResumeSelector,
-  workflowResumeSelectorItems,
-} from "../../packages/workflows/src/tui/workflow-resume-selector.js";
+import { workflowResumeSelectorItems } from "../../packages/workflows/src/tui/workflow-resume-selector.js";
 import type { ResumableWorkflowEntry } from "../../packages/workflows/src/durable/types.js";
 import type { RunSnapshot, StageSnapshot } from "../../packages/workflows/src/shared/store-types.js";
 
@@ -48,7 +52,7 @@ function pausedLiveRun(id = "live-paused", activityAt = 100): RunSnapshot {
   };
 }
 
-describe("workflow resume selector", () => {
+describe("workflow resume selector rows", () => {
   test("globally orders mixed rows and renders completed rows with a green semantic", () => {
     const items = workflowResumeSelectorItems(
       [pausedLiveRun()],
@@ -133,16 +137,28 @@ describe("workflow resume selector", () => {
     assert.deepEqual(items.map((item) => item.session.id), ["same-id", "live-paused"]);
     assert.deepEqual(items.map((item) => item.result.kind), ["durable", "live"]);
   });
+});
 
-  test("closes when the custom selector mount throws or rejects", async () => {
-    const thrown = await openWorkflowResumeSelector({
-      custom: () => { throw new Error("mount failed"); },
-    }, [pausedLiveRun()], []);
-    const rejected = await openWorkflowResumeSelector({
-      custom: async () => { throw new Error("async mount failed"); },
-    }, [pausedLiveRun()], []);
+describe("workflow resume selector row presentation", () => {
+  test("colors paused yellow, failed and blocked red, completed green", () => {
+    const items = workflowResumeSelectorItems(
+      [pausedLiveRun("live-paused-run")],
+      [entry("d-paused", "paused"), entry("d-failed", "failed"), entry("d-blocked", "blocked")],
+      [entry("d-completed", "completed")],
+    );
+    const byId = new Map(items.map((item) => [item.session.id, item.session]));
+    assert.equal(byId.get("d-paused")?.messageColor, "warning");
+    assert.equal(byId.get("d-failed")?.messageColor, "error");
+    assert.equal(byId.get("d-blocked")?.messageColor, "error");
+    assert.equal(byId.get("d-completed")?.messageColor, "success");
+    assert.equal(byId.get("live-paused-run")?.messageColor, "warning");
+  });
 
-    assert.deepEqual(thrown, { kind: "close" });
-    assert.deepEqual(rejected, { kind: "close" });
+  test("presents a stale-heartbeat running durable row as crashed, never running", () => {
+    const [item] = workflowResumeSelectorItems([], [{ ...entry("d-crashed", "running"), name: "repro-flow" }], []);
+    assert.match(item!.session.firstMessage, /repro-flow {2}crashed/);
+    assert.doesNotMatch(item!.session.firstMessage, /running/);
+    assert.equal(item!.session.messageColor, "error");
+    assert.match(item!.session.allMessagesText, /crashed/);
   });
 });

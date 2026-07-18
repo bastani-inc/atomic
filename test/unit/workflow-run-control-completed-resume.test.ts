@@ -113,7 +113,7 @@ describe("/workflow resume completed target", () => {
 
     const result = await resume("missing-workflow", createExtensionRuntime({ store }));
 
-    assert.match(result.errors.join("\n"), /No durable workflow found for id\/prefix: missing-workflow/);
+    assert.match(result.errors.join("\n"), /No resumable workflow found for id\/prefix: missing-workflow/);
   });
 
   test("reports a stale completed target instead of dispatching it", async () => {
@@ -191,7 +191,7 @@ describe("/workflow resume completed target", () => {
       ...baseRuntime,
       resumeDurableWorkflow() {
         durableResumeCalls += 1;
-        return { ok: true, runId: "quit-shadow", workflowId: "quit-shadow", name: "quit-flow", message: "resumed quit shadow" };
+        return Promise.resolve({ ok: true, runId: "quit-shadow", workflowId: "quit-shadow", name: "quit-flow", message: "resumed quit shadow" });
       },
     };
 

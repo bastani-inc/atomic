@@ -22,6 +22,7 @@ import {
 } from "../../packages/workflows/src/shared/workflow-failures.js";
 import { workflow } from "../../packages/workflows/src/authoring/workflow.js";
 import { createRegistry } from "../../packages/workflows/src/workflows/registry.js";
+import { setDurableBackend, createInMemoryTestBackend } from "../../packages/workflows/src/durable/factory.js";
 import type { AgentSession, CreateAgentSessionOptions, ToolDefinition } from "@bastani/atomic";
 import type {
     WorkflowCustomUiFactory,
@@ -116,6 +117,9 @@ function callThroughStack<T>(depth: number, fn: () => Promise<T>): Promise<T> {
 let savedGitEnv: Map<string, string | undefined> | undefined;
 
 beforeEach(() => {
+    // DBOS-only durability throws before readiness; inject an internal
+    // in-memory test backend so executor tests run without a live DBOS.
+    setDurableBackend(createInMemoryTestBackend());
     savedGitEnv = new Map<string, string | undefined>();
     for (const key of Object.keys(process.env).filter((candidate) =>
         candidate.startsWith("GIT_"),

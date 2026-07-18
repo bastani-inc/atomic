@@ -12,6 +12,8 @@ interface RunTimerSnapshot {
   readonly durationMs?: number;
   readonly pausedDurationMs?: number;
   readonly pausedAt?: number;
+  /** Elapsed ms inherited from prior sessions of a resumed durable run. */
+  readonly accumulatedDurationMs?: number;
 }
 
 function nonNegative(ms: number): number {
@@ -52,5 +54,6 @@ export function elapsedStageMs(stage: StageTimerSnapshot, now = Date.now()): num
 export function elapsedRunMs(run: RunTimerSnapshot, now = Date.now()): number {
   if (run.durationMs !== undefined) return nonNegative(run.durationMs);
   const effectiveNow = run.endedAt ?? now;
-  return elapsedFromStart(run.startedAt, effectiveNow, run.pausedDurationMs, run.pausedAt);
+  return nonNegative(run.accumulatedDurationMs ?? 0)
+    + elapsedFromStart(run.startedAt, effectiveNow, run.pausedDurationMs, run.pausedAt);
 }

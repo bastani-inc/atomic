@@ -69,7 +69,8 @@ export interface ModelChangeEntry extends SessionEntryBase {
 export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	type: "compaction";
 	summary: string;
-	firstKeptEntryId: string;
+	/** First context-visible tail entry, or null when the durable summary replaces the entire pre-boundary transcript. */
+	firstKeptEntryId: string | null;
 	tokensBefore: number;
 	details?: T;
 	/** True when the compacted text was supplied by an extension hook. */
@@ -209,7 +210,7 @@ export interface SessionInfo {
 	firstMessage: string;
 	allMessagesText: string;
 	/** Optional semantic color for synthetic selector rows. */
-	messageColor?: "success" | "warning" | "accent";
+	messageColor?: "success" | "warning" | "accent" | "error";
 }
 
 

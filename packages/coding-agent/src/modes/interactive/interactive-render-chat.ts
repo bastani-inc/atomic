@@ -2,6 +2,8 @@ import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { type AgentMessage, type Component, type VerbatimCompactionResult, type SessionContext, type TruncationResult, type ChatMessageEntry, type ChatMessageRenderOptions, Spacer, Text, parseSkillBlock, AssistantMessageComponent, BashExecutionComponent, BranchSummaryMessageComponent, chatEntriesFromAgentMessages, renderChatMessageEntry, addChatTranscriptEntry, CompactionBoundaryMessageComponent, CustomMessageComponent, SkillInvocationMessageComponent, ToolExecutionComponent, UserMessageComponent, recordTimeSinceReset, theme } from "./interactive-mode-deps.ts";
 import { yieldToEventLoop } from "../../utils/event-loop.ts";
 import { VERBATIM_COMPACTION_PREFIX } from "../../core/messages.ts";
+import { IsolatedInteractiveRuntime } from "../interactive-engine/isolated-runtime.ts";
+import { RemoteCustomMessageComponent, RemoteToolExecutionComponent } from "../interactive-engine/remote-renderer.ts";
 
 InteractiveModeBase.prototype.showStatus = function(this: InteractiveModeBase, message: string): void {
     const children = this.chatContainer.children;
@@ -71,6 +73,7 @@ InteractiveModeBase.prototype.discardDeferredRenderedUserInput = function(this: 
   };
 
 InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: InteractiveModeBase): ChatMessageRenderOptions {
+    const isolated = this.runtimeHost instanceof IsolatedInteractiveRuntime;
     return {
       ui: this.ui,
       cwd: this.sessionManager.getCwd(),
@@ -81,9 +84,26 @@ InteractiveModeBase.prototype.chatMessageRenderOptions = function(this: Interact
       showImages: this.settingsManager.getShowImages(),
       imageWidthCells: this.settingsManager.getImageWidthCells(),
       outputPad: this.outputPad,
-      getToolDefinition: (toolName) => this.getRegisteredToolDefinition(toolName),
-      getCustomMessageRenderer: (customType) =>
-        this.session.extensionRunner.getMessageRenderer(customType),
+      getToolDefinition: isolated ? undefined : (toolName) => this.getRegisteredToolDefinition(toolName),
+      getCustomMessageRenderer: isolated ? undefined : (customType) => this.session.extensionRunner.getMessageRenderer(customType),
+      createToolComponent: isolated ? (entry) => {
+        const component = new RemoteToolExecutionComponent(
+          entry.toolName,
+          entry.toolCallId,
+          entry.args,
+          { showImages: this.settingsManager.getShowImages(), imageWidthCells: this.settingsManager.getImageWidthCells() },
+          this.runtimeHost as IsolatedInteractiveRuntime,
+          () => this.ui.requestRender(),
+        );
+        component.setExpanded(this.toolOutputExpanded);
+        if (entry.result) component.updateResult(entry.result, entry.isPartial ?? false);
+        return component;
+      } : undefined,
+      createCustomMessageComponent: isolated ? (message) => {
+        const component = new RemoteCustomMessageComponent(message, this.runtimeHost as IsolatedInteractiveRuntime, () => this.ui.requestRender());
+        component.setExpanded(this.toolOutputExpanded);
+        return component;
+      } : undefined,
     };
   };
 
@@ -124,14 +144,13 @@ InteractiveModeBase.prototype.addMessageToChat = function(this: InteractiveModeB
       }
       case "custom": {
         if (message.display) {
-          const renderer = this.session.extensionRunner.getMessageRenderer(
-            message.customType,
-          );
-          const component = new CustomMessageComponent(
-            message,
-            renderer,
-            this.getMarkdownThemeWithSettings(),
-          );
+          const component = this.runtimeHost instanceof IsolatedInteractiveRuntime
+            ? new RemoteCustomMessageComponent(message, this.runtimeHost, () => this.ui.requestRender())
+            : new CustomMessageComponent(
+                message,
+                this.session.extensionRunner.getMessageRenderer(message.customType),
+                this.getMarkdownThemeWithSettings(),
+              );
           component.setExpanded(this.toolOutputExpanded);
           this.chatContainer.addChild(component);
         }
@@ -284,6 +303,11 @@ InteractiveModeBase.prototype.getUserInput = async function(this: InteractiveMod
           recordTimeSinceReset("interactive-input-handler-ready");
           void (async () => {
             await yieldToEventLoop();
+            // pi parity: the changelog/first-run notices need nothing from
+            // extensions — render them right after the input handler is ready
+            // instead of gating them behind the deferred extension reload (or,
+            // when the user types immediately, behind the whole agent turn).
+            this.showStartupNoticesIfNeeded(this.startupNoticesContainer);
             this.footerDataProvider.startGitWatcher();
             if (this.deferredStartupPending) {
               await this.ensureDeferredStartupComplete();

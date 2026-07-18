@@ -357,6 +357,7 @@ export function restoreTerminalRuns(entries: readonly SessionEntry[], store: Sto
       ...(runMeta.rootRunId !== undefined ? { rootRunId: runMeta.rootRunId } : {}),
       ...(runMeta.resumedFromRunId !== undefined ? { resumedFromRunId: runMeta.resumedFromRunId } : {}),
       ...(runMeta.resumeFromStageId !== undefined ? { resumeFromStageId: runMeta.resumeFromStageId } : {}),
+      ...(runMeta.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: runMeta.accumulatedDurationMs } : {}),
     });
 
     const error = end["error"];
@@ -425,6 +426,7 @@ export function findRunStartMetadata(
   readonly rootRunId?: string;
   readonly resumedFromRunId?: string;
   readonly resumeFromStageId?: string;
+  readonly accumulatedDurationMs?: number;
 } {
   for (const entry of entries) {
     if (entry.type !== "workflow.run.start" || entry.payload["runId"] !== runId) continue;
@@ -433,12 +435,16 @@ export function findRunStartMetadata(
     const rootRunId = entry.payload["rootRunId"];
     const resumedFromRunId = entry.payload["resumedFromRunId"];
     const resumeFromStageId = entry.payload["resumeFromStageId"];
+    const accumulatedDurationMs = entry.payload["accumulatedDurationMs"];
     return {
       ...(typeof parentRunId === "string" ? { parentRunId } : {}),
       ...(typeof parentStageId === "string" ? { parentStageId } : {}),
       ...(typeof rootRunId === "string" ? { rootRunId } : {}),
       ...(typeof resumedFromRunId === "string" ? { resumedFromRunId } : {}),
       ...(typeof resumeFromStageId === "string" ? { resumeFromStageId } : {}),
+      ...(typeof accumulatedDurationMs === "number" && Number.isFinite(accumulatedDurationMs) && accumulatedDurationMs > 0
+        ? { accumulatedDurationMs }
+        : {}),
     };
   }
   return {};

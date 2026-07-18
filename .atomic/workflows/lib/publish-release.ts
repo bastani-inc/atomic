@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createGitEnvironment } from "../../../packages/coding-agent/src/utils/git-env.js";
 
 import type {
@@ -55,7 +54,11 @@ export function validateReleaseRequest(kind: ReleaseKind, version: string): Vali
 
 // Sanitize repository-local Git environment variables so release subprocesses
 // always target this checkout rather than an inherited hook/worktree context.
-export function runCommand(args: readonly string[]): CommandResult {
+//
+// Async on purpose: this runs inside `ctx.tool` bodies on the TUI event loop.
+// A synchronous exec here (e.g. a full `bun run typecheck` + `test:unit`)
+// froze the entire TUI for the duration of the command.
+export async function runCommand(args: readonly string[]): Promise<CommandResult> {
   const [command, ...commandArgs] = args;
   if (command === undefined) {
     return {
@@ -67,34 +70,30 @@ export function runCommand(args: readonly string[]): CommandResult {
   }
 
   try {
-    const stdout = execFileSync(command, commandArgs, {
-      encoding: "utf8",
+    const proc = Bun.spawn([command, ...commandArgs], {
       env: createGitEnvironment(),
-      maxBuffer: 1024 * 1024 * 20,
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
 
     return {
       command: args.join(" "),
-      exitCode: 0,
-      stdout,
-      stderr: "",
+      exitCode,
+      stdout: stdout.trim(),
+      stderr: stderr.trim(),
     };
   } catch (error) {
-    const failure = error as {
-      readonly status?: number;
-      readonly stdout?: Buffer | string;
-      readonly stderr?: Buffer | string;
-      readonly message?: string;
-    };
-    const stdout = String(failure.stdout ?? "").trim();
-    const stderr = String(failure.stderr ?? failure.message ?? "").trim();
-
     return {
       command: args.join(" "),
-      exitCode: failure.status ?? 1,
-      stdout,
-      stderr,
+      exitCode: 1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
     };
   }
 }
