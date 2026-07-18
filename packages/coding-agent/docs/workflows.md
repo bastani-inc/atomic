@@ -1019,8 +1019,11 @@ Human-in-the-loop prompts from `ctx.ui.input`, `ctx.ui.confirm`, `ctx.ui.select`
 The workflow tool exposes lifecycle controls for non-interactive use:
 
 ```ts
-workflow({ action: "status" })
-workflow({ action: "status", runId: "<id-or-prefix>" })
+workflow({ action: "status" })                                  // list every session run, in-flight first
+workflow({ action: "status", statusFilter: "running" })         // filter the run listing by status
+workflow({ action: "status", statusFilter: "awaiting_input" })  // runs with a pending human prompt
+workflow({ action: "status", format: "json" })                  // structured listing for programmatic use
+workflow({ action: "status", runId: "<id-or-prefix>" })         // full detail for one run
 
 workflow({ action: "stages", runId: "<id-or-prefix>", statusFilter: "all" })
 workflow({ action: "stage", runId: "<id-or-prefix>", stageId: "review" })
@@ -1052,6 +1055,9 @@ workflow({ action: "reload", reason: "added team workflow" })
 Control behavior:
 
 - `runId` accepts full run ids or unique prefixes for every lifecycle and inspection action, including `status`. The abbreviated IDs printed by status surfaces are valid inputs. Exact IDs take precedence; a prefix shared by multiple runs returns an ambiguity diagnostic with longer matching prefixes instead of selecting the first run. Status lists and run pickers show top-level user-launched workflows; nested child runs are implementation details of the expanded parent graph.
+- `status` without `runId` lists every top-level run in the session with a concise per-run summary: run id plus abbreviated prefix, workflow name, run status, started/ended timing with pause-adjusted elapsed time, currently active stages, and awaiting-input details (count plus the stage, prompt id, kind, and message for each pending human prompt). In-flight runs are listed first. The summaries carry the exact identifiers that `pause`/`resume`/`interrupt`/`quit`/`send` accept, so an orchestrating agent can list runs and act on them directly.
+- `statusFilter` narrows the `status` run listing: run statuses (`pending`, `running`, `paused`, `blocked`, `completed`, `failed`, `skipped`, `cancelled`, `killed`) match runs directly, `awaiting_input` selects runs with at least one stage awaiting input or pending human prompt, and `all` (the default) includes everything.
+- `format: "json"` on data-bearing inspection actions (`status`, `stages`, `stage`, `transcript`) returns the full structured result; the default text output for `status` is the concise per-run summary list.
 - `status` / `status <runId>` show terminal `ctx.exit(...)` statuses (`completed`, `skipped`, `cancelled`, or `blocked`) and the optional exit reason when one was supplied.
 - `stages` lists stage summaries, including flattened stages from nested `ctx.workflow(...)` imports and `sessionFile`/`transcriptPath` when a stage has a persisted session. Use `statusFilter: "all"` to include completed, failed, skipped, and pending stages.
 - `stage` returns details for one stage by stage id, unique prefix, or stage name, including nested child stages shown in the expanded graph and the persisted `sessionFile` when available. Abbreviated stage IDs printed in graph/control messages use this same unique-prefix resolver; collisions return an ambiguity diagnostic rather than selecting a stage.

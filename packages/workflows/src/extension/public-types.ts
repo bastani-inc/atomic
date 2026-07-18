@@ -4,7 +4,7 @@ import type {
 } from "@bastani/atomic";
 import type { SessionManager } from "../shared/persistence-restore.js";
 import type { StageSessionRuntime } from "../runs/foreground/stage-runner.js";
-import type { StageStatus } from "../shared/store-types.js";
+import type { RunStatus, StageStatus } from "../shared/store-types.js";
 import type {
   StageOptions,
   WorkflowChainStep,
@@ -246,7 +246,7 @@ export interface WorkflowToolArgs extends StageOptions {
   all?: boolean;
   stageId?: string;
   message?: string;
-  statusFilter?: StageStatus | "all";
+  statusFilter?: StageStatus | RunStatus | "all";
   format?: "text" | "json";
   limit?: number;
   tail?: number;

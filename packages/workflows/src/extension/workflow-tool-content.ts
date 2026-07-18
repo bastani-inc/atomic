@@ -1,8 +1,13 @@
 import { deriveInputFields } from "../shared/schema-introspection.js";
 import type { WorkflowSerializableValue } from "../shared/types.js";
+import { fmtDuration } from "../tui/status-helpers.js";
 import type { ExtensionRuntime } from "./runtime.js";
 import type { WorkflowToolResult } from "./render-result.js";
 import type { WorkflowToolArgs } from "./public-types.js";
+import type {
+  WorkflowRunStatusSummary,
+  WorkflowStatusAwaitingInput,
+} from "./workflow-status-summary.js";
 
 function stringifyWorkflowToolResult(result: WorkflowToolResult): string {
   return JSON.stringify(result, null, 2);
@@ -22,6 +27,75 @@ function compactWorkflowToolMessage(
   ].filter((part): part is string => part !== undefined && part.length > 0)
     .join("/");
   return `${result.action}:${target ? ` ${target}` : ""} ${result.status} — ${result.message}`;
+}
+
+const STATUS_MESSAGE_CHAR_LIMIT = 120;
+
+function truncateStatusText(text: string): string {
+  const flattened = text.replace(/\s+/g, " ").trim();
+  return flattened.length > STATUS_MESSAGE_CHAR_LIMIT
+    ? `${flattened.slice(0, STATUS_MESSAGE_CHAR_LIMIT - 1)}…`
+    : flattened;
+}
+
+function statusRunHint(run: WorkflowRunStatusSummary): string | undefined {
+  if (run.awaitingInputCount > 0) {
+    const stages = run.awaitingInput
+      .map((entry) => entry.stageName ?? entry.stageId)
+      .filter((name): name is string => name !== undefined && name.length > 0);
+    const suffix = stages.length > 0 ? `: ${stages.join(", ")}` : "";
+    return `awaiting input (${run.awaitingInputCount})${suffix}`;
+  }
+  if (run.status === "paused") return "awaiting resume";
+  if (run.activeStages.length > 0) {
+    return `stage: ${run.activeStages.map((stage) => stage.name).join(", ")}`;
+  }
+  if (run.error !== undefined && run.error.length > 0) return truncateStatusText(run.error);
+  if (run.exitReason !== undefined && run.exitReason.length > 0) {
+    return truncateStatusText(run.exitReason);
+  }
+  return undefined;
+}
+
+function statusAwaitingInputLine(entry: WorkflowStatusAwaitingInput): string {
+  const target = entry.stageId !== undefined
+    ? `stage ${entry.stageName ?? entry.stageId} (${entry.stageId})`
+    : "run-level prompt";
+  const prompt = entry.promptId !== undefined ? ` promptId: ${entry.promptId}` : "";
+  const message = entry.message !== undefined ? ` — "${truncateStatusText(entry.message)}"` : "";
+  return `    awaiting input: ${target}${prompt}${message}`;
+}
+
+function renderStatusToolContent(
+  result: Extract<WorkflowToolResult, { action: "status" }>,
+): string {
+  const lines = ["action: status", `filter: ${result.filter}`];
+  if (result.runs.length === 0) {
+    lines.push(
+      result.filter === "all" ? "runs: none" : `runs: none (statusFilter: ${result.filter})`,
+    );
+    return lines.join("\n");
+  }
+  const inFlight = result.runs.filter((run) => run.endedAt === undefined).length;
+  lines.push(`runs: ${result.runs.length} (${inFlight} in flight)`);
+  result.runs.forEach((run, index) => {
+    const hint = statusRunHint(run);
+    const summaryLine = [
+      `[${index + 1}]`,
+      run.runIdPrefix,
+      run.name,
+      run.status,
+      fmtDuration(run.elapsedMs),
+      ...(hint !== undefined ? [hint] : []),
+    ].join("  ");
+    lines.push(summaryLine);
+    lines.push(`    runId: ${run.runId}`);
+    for (const entry of run.awaitingInput) lines.push(statusAwaitingInputLine(entry));
+  });
+  lines.push(
+    "hint: status with runId returns full run detail; pause/resume/interrupt/quit/send accept the same runId (send also takes stageId/promptId).",
+  );
+  return lines.join("\n");
 }
 
 function renderTranscriptToolContent(
@@ -138,8 +212,9 @@ export function renderWorkflowToolContent(
     case "quit":
     case "resume":
       return compactWorkflowToolMessage(result);
-    case "list":
     case "status":
+      return renderStatusToolContent(result);
+    case "list":
     case "statusDetail":
     case "inputs":
     case "get":

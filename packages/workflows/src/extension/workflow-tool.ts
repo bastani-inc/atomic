@@ -25,6 +25,7 @@ import {
   workflowTranscriptResult,
 } from "./workflow-tool-inspection.js";
 import { workflowSendAction, type WorkflowSendDeps } from "./workflow-tool-send.js";
+import { buildWorkflowStatusListing } from "./workflow-status-summary.js";
 import {
   ambiguousRunMessage,
   isWorkflowStageToolContext,
@@ -106,7 +107,16 @@ export function makeExecuteWorkflowTool(
             ? { action: "statusDetail", runId: result.runId, detail: result.detail }
             : { action: "statusDetail", runId: target, error: `run not found: ${target}` };
         }
-        return { action: "status", snapshots: topLevelExpandedSnapshots() };
+        const listing = buildWorkflowStatusListing(
+          topLevelExpandedSnapshots(),
+          args.statusFilter ?? "all",
+        );
+        return {
+          action: "status",
+          filter: listing.filter,
+          runs: listing.runs,
+          snapshots: listing.snapshots,
+        };
       }
       case "stages":
         return workflowStagesResult(args);
