@@ -39,6 +39,7 @@ import { getDurableBackend } from "../durable/factory.js";
 import { classifyReturnedRunStatus } from "./run-returned-status.js";
 import { createToolPrimitive, createCheckpointIdGenerator } from "../durable/tool-primitive.js";
 import { createDurableStagePrimitive, createDurableTaskPrimitive, recordStageCheckpoint, createStageReplayKeyGenerator, recordCachedStageWithTracker } from "../durable/stage-primitive.js";
+import { inheritedRunElapsedMs } from "../durable/run-timing.js";
 import type { DurableCompletedStageCheckpoint } from "../durable/stage-primitive.js";
 import { createDurableChildWorkflowPrimitive } from "../durable/child-primitive.js";
 import { ScopedDurableBackend, type DurableScope } from "../durable/scoped-backend.js";
@@ -96,6 +97,19 @@ export async function run<
     else callerSignal.addEventListener("abort", () => { ownController.abort(callerSignal.reason); }, { once: true });
   }
   const exit = createWorkflowExitManager({ runId, exitScope, controller: ownController });
+  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
+  // Declared early so the stage-end recorder can attach to stageOptions and so
+  // resume can seed inherited elapsed time. Child runs with a durable scope
+  // route their internal side-effect checkpoints under the root workflow so
+  // interrupted children do not re-execute completed side effects on parent
+  // resume. cross-ref: issue #1498 — DBOS-backed cross-session resumability.
+  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
+  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
+    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
+    : rootBackend;
+  const inheritedElapsedMs = opts.parentRun === undefined
+    ? inheritedRunElapsedMs({ backend: durableBackend, runId, continuationSource: opts.continuation?.source })
+    : undefined;
 
   const runSnapshot: RunSnapshot = {
     id: runId,
@@ -113,6 +127,7 @@ export async function run<
       resumedFromRunId: opts.continuation.source.id,
       resumeFromStageId: opts.continuation.resumeFromStageId,
     } : {}),
+    ...(inheritedElapsedMs !== undefined ? { accumulatedDurationMs: inheritedElapsedMs } : {}),
   };
 
   const classifiedFailures = new Map<unknown, WorkflowFailure>();
@@ -142,6 +157,7 @@ export async function run<
       ...(runSnapshot.rootRunId !== undefined ? { rootRunId: runSnapshot.rootRunId } : {}),
       ...(runSnapshot.resumedFromRunId !== undefined ? { resumedFromRunId: runSnapshot.resumedFromRunId } : {}),
       ...(runSnapshot.resumeFromStageId !== undefined ? { resumeFromStageId: runSnapshot.resumeFromStageId } : {}),
+      ...(runSnapshot.accumulatedDurationMs !== undefined ? { accumulatedDurationMs: runSnapshot.accumulatedDurationMs } : {}),
       ts: runSnapshot.startedAt,
     });
   }
@@ -181,16 +197,6 @@ export async function run<
     classifyExecutorFailure,
     drainWorkflowExitCleanups: exit.drainWorkflowExitCleanups,
   });
-  // Durable workflow backend — registers this run and wires ctx.tool/ui/stage.
-  // Declared early so the stage-end recorder can attach to stageOptions.
-  // cross-ref: issue #1498 — DBOS-backed cross-session resumability.
-  // Child runs with a durable scope route their internal side-effect
-  // checkpoints under the root workflow so interrupted children do not
-  // re-execute completed side effects on parent resume.
-  const rootBackend: DurableWorkflowBackend = opts.durableBackend ?? getDurableBackend();
-  const durableBackend: DurableWorkflowBackend = opts.durableScope !== undefined
-    ? new ScopedDurableBackend(rootBackend, opts.durableScope)
-    : rootBackend;
   const checkpointIdGenerator = createCheckpointIdGenerator();
   const stageReplayKeyGenerator = createStageReplayKeyGenerator(runId);
   const completedStageReplayKeys = new Map<string, string>();
@@ -208,7 +214,10 @@ export async function run<
     }
     await userOnStageEnd?.(stageRunId, snapshot);
   };
-  const durableOnStageSession = createDurableStageSessionRecorder({ runId, deps: durableStageDeps, onStageSession: opts.onStageSession });
+  const durableOnStageSession = createDurableStageSessionRecorder({
+    runId, deps: durableStageDeps, onStageSession: opts.onStageSession,
+    ...(opts.parentRun === undefined ? { runSnapshot } : {}),
+  });
   const stageOptions: EngineStageRuntimeOptions = {
     continuation: opts.continuation,
     models: opts.models,

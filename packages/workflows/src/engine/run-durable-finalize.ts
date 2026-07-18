@@ -12,6 +12,7 @@
 import type { RunSnapshot } from "../shared/store-types.js";
 import type { DurableWorkflowBackend } from "../durable/backend.js";
 import type { DurableWorkflowStatus } from "../durable/types.js";
+import { recordRunTimingCheckpoint } from "../durable/run-timing.js";
 
 export interface DurableTerminalFinalizeInput {
   readonly runId: string;
@@ -30,6 +31,12 @@ export async function finalizeDurableTerminalStatus(input: DurableTerminalFinali
 
   const durableStatus = toDurableStatus(status);
   if (durableStatus !== undefined) {
+    // Failed/blocked runs may be resumed cross-session by workflow id; persist
+    // the exact accumulated elapsed so the resumed dashboard total continues
+    // from the prior sessions instead of restarting at zero.
+    if (durableStatus === "failed" || durableStatus === "blocked") {
+      recordRunTimingCheckpoint(input.durableBackend, input.runSnapshot);
+    }
     input.durableBackend.setWorkflowStatus(input.runId, durableStatus, undefined, input.runSnapshot.resumable);
   }
   await input.durableBackend.flush();
