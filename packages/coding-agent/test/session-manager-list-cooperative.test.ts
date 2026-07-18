@@ -1,8 +1,24 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { listAllSessions, listSessionsFromDir } from "../src/core/session-manager-list.ts";
+
+// The cooperative scanner only yields when a chunk crosses a wall-clock
+// threshold (16ms), so on fast machines a whole scan can legitimately finish
+// without ever yielding — which made the event-loop probe below flaky
+// (deterministically failing on fast Linux CI runners). Force every
+// cooperative checkpoint to actually yield so the probe measures the
+// checkpoint wiring, not machine speed.
+vi.mock("../src/utils/event-loop.ts", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/utils/event-loop.ts")>();
+	return {
+		...actual,
+		yieldToEventLoopIfSlow: async () => {
+			await actual.yieldToEventLoop();
+		},
+	};
+});
 
 const tempDirs: string[] = [];
 
@@ -72,7 +88,9 @@ describe("session listing cooperative scanning", () => {
 		// Probe event-loop turns with a self-rescheduling setImmediate pump
 		// instead of a 1ms interval: Windows timer resolution is ~15ms, so a
 		// fast scan can yield cooperatively yet still finish before a 1ms
-		// interval ever fires, failing a ticks>0 assertion spuriously.
+		// interval ever fires, failing a ticks>0 assertion spuriously. The
+		// yield helper is mocked above to always yield at each checkpoint,
+		// so at least one pump turn is guaranteed regardless of scan speed.
 		let ticks = 0;
 		let pumping = true;
 		const pump = (): void => {
