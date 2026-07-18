@@ -1,5 +1,6 @@
 import type { StageControlHandle, AgentSessionEventListener } from "./stage-control-registry.js";
 import type { LiveStageRuntime } from "./executor-stage-types.js";
+import type { StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 import { isTerminalStage } from "./executor-scheduler.js";
 import { StageToolExecutionBuffer } from "./stage-tool-execution-buffer.js";
 
@@ -75,8 +76,9 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async prompt(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      let action: StageUserMessageDeliveryAction | undefined;
       try {
-        await runtime.innerCtx.__sendUserMessage(
+        action = await runtime.innerCtx.__sendUserMessage(
           text,
           undefined,
           runtime.throwIfStageMutationBlocked,
@@ -84,7 +86,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       } finally {
         runtime.captureStageSessionMeta();
       }
-      runtime.throwIfStageMutationBlocked();
+      if (action !== "handled") runtime.throwIfStageMutationBlocked();
     },
     async steer(text: string) {
       runtime.throwIfStageMutationBlocked();

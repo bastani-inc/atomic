@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type { InternalStageContext, StageSessionRuntime } from "../../packages/workflows/src/runs/foreground/stage-runner.js";
 import type { StageSessionEvent } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
-import { createStageContext, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
+import { createStageContext, flushMicrotasks, makeMockSession, makeOpts } from "./stage-runner-helpers.js";
 
 function listenerTrackingSession(overrides: Partial<StageSessionRuntime>): {
   session: StageSessionRuntime;
@@ -60,6 +60,54 @@ describe("public AgentSessionAdapter prompt ownership", () => {
 
     firstTurn.resolve();
     assert.equal(await first, "prompt");
+  });
+
+  test("observes asynchronous prompt ownership when sendUserMessage is omitted", async () => {
+    const allowPromptStart = Promise.withResolvers<void>();
+    const promptStarted = Promise.withResolvers<void>();
+    const firstTurn = Promise.withResolvers<void>();
+    let streaming = false;
+    let promptStarts = 0;
+    let secondSettled = false;
+    const consumed: string[] = [];
+    const listeners = new Set<(event: StageSessionEvent) => void>();
+    const { session } = makeMockSession({
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      async prompt(text) {
+        await allowPromptStart.promise;
+        promptStarts += 1;
+        streaming = true;
+        consumed.push(text);
+        for (const listener of listeners) listener({ type: "agent_start" });
+        promptStarted.resolve();
+        await firstTurn.promise;
+        streaming = false;
+      },
+      async followUp(text) { consumed.push(text); },
+    });
+    Object.defineProperty(session, "isStreaming", { get: () => streaming });
+    const ctx = createStageContext(makeOpts({
+      adapters: { agentSession: { async create() { return session; } } },
+    })) as InternalStageContext;
+
+    const first = ctx.__sendUserMessage("first");
+    const second = ctx.__sendUserMessage("second");
+    void second.then(() => { secondSettled = true; });
+    allowPromptStart.resolve();
+    await promptStarted.promise;
+    await flushMicrotasks();
+    const settledBeforeTurnEnd = secondSettled;
+
+    firstTurn.resolve();
+    const outcomes = await Promise.all([first, second]);
+
+    assert.equal(settledBeforeTurnEnd, true);
+    assert.deepEqual(outcomes, ["prompt", "followUp"]);
+    assert.equal(promptStarts, 1);
+    assert.deepEqual(consumed, ["first", "second"]);
   });
 
   test("deduplicates private and public ownership signals", async () => {

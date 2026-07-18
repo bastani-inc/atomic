@@ -1,6 +1,38 @@
 import type { StageSendUserMessageOptions, StageUserMessageContent } from "../../shared/types.js";
 import type { StageSessionRuntime, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
+interface PromptOwnershipObserver {
+  arm(): void;
+  observe(): void;
+  observeStreaming(): void;
+  dispose(): void;
+}
+
+function createPromptOwnershipObserver(
+  session: StageSessionRuntime,
+  promptStarted: (() => void) | undefined,
+): PromptOwnershipObserver {
+  let armed = false;
+  let observed = false;
+  let unsubscribe: (() => void) | undefined;
+  const observe = (): void => {
+    if (observed) return;
+    observed = true;
+    unsubscribe?.();
+    unsubscribe = undefined;
+    promptStarted?.();
+  };
+  unsubscribe = session.subscribe((event) => {
+    if (armed && event.type === "agent_start") observe();
+  });
+  return {
+    arm() { armed = true; },
+    observe,
+    observeStreaming() { if (session.isStreaming) observe(); },
+    dispose() { unsubscribe?.(); },
+  };
+}
+
 function unsupportedContentError(): Error {
   return new Error("atomic-workflows: this stage session adapter does not support non-string sendUserMessage content; provide a runtime sendUserMessage implementation for text/image blocks.");
 }
@@ -17,35 +49,21 @@ export async function sendStageUserMessage(
   if (activeSession.sendUserMessage !== undefined) {
     beforeDelivery?.();
     let reportedAction: StageUserMessageDeliveryAction | undefined;
-    let unsubscribe: (() => void) | undefined;
-    let ownershipObserved = false;
-    let deliveryArmed = false;
-    const observePromptOwnership = (): void => {
-      if (ownershipObserved) return;
-      ownershipObserved = true;
-      unsubscribe?.();
-      unsubscribe = undefined;
-      promptStarted?.();
-    };
-    if (!streaming) {
-      unsubscribe = activeSession.subscribe((event) => {
-        if (deliveryArmed && event.type === "agent_start") observePromptOwnership();
-      });
-    }
-    deliveryArmed = true;
+    const ownership = streaming ? undefined : createPromptOwnershipObserver(activeSession, promptStarted);
+    ownership?.arm();
     try {
       const delivery = activeSession.sendUserMessage(content, {
         ...(deliverAs === undefined ? {} : { deliverAs }),
         __workflowDelivery: {
-          promptStarted: observePromptOwnership,
+          promptStarted: ownership?.observe ?? promptStarted,
           delivered(action) { reportedAction = action; },
         },
       });
-      if (!streaming && activeSession.isStreaming) observePromptOwnership();
+      ownership?.observeStreaming();
       await delivery;
       return reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
     } finally {
-      unsubscribe?.();
+      ownership?.dispose();
     }
   }
   if (typeof content !== "string") throw unsupportedContentError();
@@ -55,8 +73,14 @@ export async function sendStageUserMessage(
     else await activeSession.followUp(content);
     return deliverAs ?? "followUp";
   }
-  const turn = activeSession.prompt(content);
-  if (activeSession.isStreaming) promptStarted?.();
-  await turn;
-  return "prompt";
+  const ownership = createPromptOwnershipObserver(activeSession, promptStarted);
+  ownership.arm();
+  try {
+    const turn = activeSession.prompt(content);
+    ownership.observeStreaming();
+    await turn;
+    return "prompt";
+  } finally {
+    ownership.dispose();
+  }
 }
