@@ -227,6 +227,7 @@ describe("createStageContext — sendUserMessage", () => {
         assert.equal(adapterEntries, 1);
         allowTurnStart.resolve();
         await firstStarted.promise;
+        for (const listener of listeners) listener({ type: "agent_end", messages: [] });
 
         assert.equal(await second, "followUp");
         assert.equal(streaming, true);

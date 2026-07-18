@@ -108,12 +108,23 @@ export class StageMessageAdmission {
     if (this.session === session) return;
     this.reset();
     this.session = session;
+    let subscribing = true;
     this.unsubscribe = session.subscribe((event) => {
       if (event.type === "agent_start") {
-        this.observePublicStart();
+        if (subscribing) this.recordReplayedStart();
+        else this.observePublicStart();
         return;
       }
-      if (event.type === "agent_end") this.endOldestStartedTurn();
+      if (event.type === "agent_end") this.endOldestStartedTurn(!subscribing);
+    });
+    subscribing = false;
+  }
+
+  private recordReplayedStart(): void {
+    this.startedGenerations.push({
+      id: ++this.nextGeneration,
+      state: "terminal",
+      publicStarted: true,
     });
   }
 
@@ -126,12 +137,12 @@ export class StageMessageAdmission {
     this.startedGenerations.push(generation);
   }
 
-  private endOldestStartedTurn(): void {
+  private endOldestStartedTurn(releaseIfIdle = true): void {
     const generation = this.startedGenerations.shift();
     if (generation === undefined) return;
     generation.state = "terminal";
     if (this.owned === generation) this.owned = undefined;
-    this.releaseBindingIfIdle();
+    if (releaseIfIdle) this.releaseBindingIfIdle();
   }
 
   private releaseBindingIfIdle(): void {
