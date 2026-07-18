@@ -164,9 +164,11 @@ const timer = setInterval(() => {
       const emitter = new EventEmitter();
       const bus = eventBus(emitter);
       const recovered: Array<{ finalOutput?: string }> = [];
+      const recoveredExit = Promise.withResolvers<void>();
       const pending = runSync(dir, [bridgedAgent()], "fake-worker", "A", {
         cwd: dir, runId: "duplicate", index: 0, intercomSessionName: "child-a",
-        allowIntercomDetach: true, intercomEvents: bus, onDetachedExit: result => recovered.push(result),
+        allowIntercomDetach: true, intercomEvents: bus,
+        onDetachedExit: result => { recovered.push(result); recoveredExit.resolve(); },
       });
       await Bun.sleep(20);
       const request = { requestId: "same", messageId: "same", senderId: "child-id", childIntercomTarget: "child-a", runtimeGeneration: 4 };
@@ -175,7 +177,8 @@ const timer = setInterval(() => {
       bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
       bus.emit(INTERCOM_DETACH_REQUEST_EVENT, { ...request, phase: "commit" });
       assert.equal((await pending).detached, true);
-      for (let i = 0; i < 20 && recovered.length === 0; i++) await Bun.sleep(10);
+      await recoveredExit.promise;
+      await Bun.sleep(0);
       assert.equal(recovered.length, 1);
       assert.match(recovered[0]?.finalOutput ?? "", /once/);
       assert.equal(emitter.listenerCount(INTERCOM_DETACH_REQUEST_EVENT), 0);
