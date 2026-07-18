@@ -24,6 +24,7 @@ import { retryStableDelivery } from "./stable-delivery-retry.js";
 import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
+import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -171,12 +172,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
     return Promise.resolve(pi.sendMessage(buildIncomingCustomMessage(entry), options));
   }
-  function routeClosedStageMessage(entry: InboundMessageEntry, generation: number): void {
-    void retryStableDelivery({
-      deliver: () => sendIncomingMessage(entry, "trigger", generation, false),
-      isCurrent: () => Boolean(getLiveContext(runtimeContext, generation)),
-    }).catch(() => {});
-  }
   const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
     queue: pendingIdleMessages,
     toMessage: buildIncomingCustomMessage,
@@ -249,7 +244,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
     if (stageClosed) {
-      routeClosedStageMessage(entry, messageGeneration);
+      routeClosedWorkflowStageMessage(
+        entry, inboundDeliveries, replyTracker, replyWaiters.current(),
+        () => sendIncomingMessage(entry, "trigger", messageGeneration, false),
+        () => client,
+        () => Boolean(getLiveContext(liveContext, messageGeneration)),
+      );
       return;
     }
     const admission = inboundDeliveries.admit(from, message);

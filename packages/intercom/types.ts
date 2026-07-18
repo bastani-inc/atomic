@@ -14,6 +14,8 @@ export interface Message {
   timestamp: number;
   replyTo?: string;
   expectsReply?: boolean;
+  /** Actionable remote failure for a correlated ask reply. */
+  replyError?: string;
   source?: {
     subagentRunId: string;
     subagentAgent?: string;

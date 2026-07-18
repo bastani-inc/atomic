@@ -277,6 +277,13 @@ Usage:
               messageId: replyMessage.id,
               timestamp: replyMessage.timestamp,
             });
+            if (replyMessage.replyError !== undefined) {
+              return {
+                content: [{ type: "text", text: `Failed: ${replyMessage.replyError}` }],
+                isError: true,
+                details: { error: true, replyTo: replyMessage.replyTo },
+              };
+            }
             return {
               content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
               isError: false,

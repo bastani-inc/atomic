@@ -10,6 +10,8 @@ type LateStageMessageEvent = {
   completion?: Promise<void>;
   batch: boolean;
   messages: LateStageMessage[];
+  workflowRunId?: string;
+  workflowStageId?: string;
   options?: Parameters<ExtensionAPI["sendMessage"]>[1];
 };
 
@@ -28,6 +30,10 @@ export function registerLateStageMessageRouter(
     if (!data || typeof data !== "object") return;
     const event = data as Partial<LateStageMessageEvent>;
     if (!Array.isArray(event.messages) || typeof event.batch !== "boolean") return;
+    // The workflow extension owns blocking asks to a completed stage so it can
+    // schedule a post-mortem turn in that exact retained conversation. Leaving
+    // the event unhandled here also makes listener registration order irrelevant.
+    if (isCompletedStageAskRoute(event)) return;
     const tracker = getReplyTracker();
     const accepted: LateStageMessage[] = [];
     const reservations: LateStageReservation[] = [];
@@ -55,6 +61,17 @@ export function registerLateStageMessageRouter(
     event.completion = Promise.all([ownedCompletion, ...joined]).then(() => {});
     return event.completion;
   });
+}
+
+function isCompletedStageAskRoute(event: Partial<LateStageMessageEvent>): boolean {
+  return typeof event.workflowRunId === "string"
+    && typeof event.workflowStageId === "string"
+    && event.messages?.length !== 0
+    && event.messages?.every((message) => {
+      if (message.customType !== "intercom_message") return false;
+      const entry = message.details as InboundMessageEntry | undefined;
+      return entry?.message.expectsReply === true;
+    }) === true;
 }
 
 function deliverAtomicBatch(

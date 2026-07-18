@@ -122,6 +122,8 @@ See auth.ts:142-156.
 
 The reply hint (enabled by default) points to `intercom({ action: "reply", ... })`, so recipients do not need raw sender or `replyTo` IDs. Idle recipients get a new turn immediately; busy interactive recipients receive the message once they go idle. Attachment content is included in the agent-visible body, and messages are rendered inline and stored in Pi session history.
 
+When a blocking `intercom.ask` targets a workflow stage that has already completed, Atomic uses the stage's retained conversation as a post-mortem chat. It automatically schedules a new turn in that exact conversation, preserving the original ask text and sender/thread correlation, so the target can answer with ordinary `intercom.reply` and the waiting sibling continues without a manual workflow follow-up. The completed stage and workflow DAG remain terminal. Parent and unrelated sessions cannot satisfy the child-to-child waiter. Deleted, unavailable, non-resumable, or failed-to-reopen targets return a bounded actionable ask error.
+
 For delegated background children, queued messages and terminal lifecycle notices are ordered per child. Intercom claims the terminal child’s pre-terminal ordinary entries in FIFO order and atomically admits that prelude together with the paused, completed, or failed notice. A process-local companion bridge covers lazily loaded extensions whose event buses are distinct, while exact terminal-identity deduplication prevents double admission even when the successful terminal dispatch has no queued prelude. Failed dispatches remain retryable, and pause/resume/completion identities remain distinct. Other children’s entries remain independently queued, messages are not discarded, terminal admission does not wait for a separate model turn, and correlated ask replies still bypass unrelated queued sends.
 
 ## Workflow: Planner-Worker Coordination
@@ -215,7 +217,7 @@ This matters because the agent receiving the message doesn't need to reconstruct
 
 `send` is fire-and-forget — the tool returns immediately after delivery. By default, it sends immediately even in interactive sessions. If you want an approval dialog before non-reply sends, set `confirmSend: true` in config. Replies that include `replyTo` still skip confirmation so reply-hint flows can continue without an extra approval step.
 
-`ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear.
+`ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear. A completed workflow-stage target with a retained conversation is automatically reopened for one post-mortem turn; unavailable or non-resumable completed targets fail actionably without consuming the full reply timeout.
 
 `reply` is receiver-side sugar for replying to an inbound ask. In the turn triggered by an incoming intercom ask, `intercom({ action: "reply", message: "..." })` targets that exact sender and message automatically. If you reply later, it falls back to the single unresolved inbound ask. If multiple asks are pending, use `intercom({ action: "pending" })` to inspect them and then call `reply` with `to` to disambiguate.
 

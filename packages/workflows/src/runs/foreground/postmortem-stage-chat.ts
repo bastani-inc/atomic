@@ -81,12 +81,12 @@ export function ensurePostMortemStageHandle(
   stage: StageSnapshot,
   deps: PostMortemStageChatDeps,
 ): EnsurePostMortemStageHandleResult {
+  if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
   const existing = deps.registry.get(runId, stage.id);
   if (existing !== undefined && existing.isDisposed !== true) {
     return { ok: true, handle: existing };
   }
   if (deps.adapters?.agentSession === undefined) return { ok: false, reason: "no_adapter" };
-  if (!TERMINAL_POSTMORTEM_STATUSES.has(stage.status)) return { ok: false, reason: "not_terminal" };
   const sessionFile = stage.sessionFile;
   if (typeof sessionFile !== "string" || sessionFile.length === 0) return { ok: false, reason: "no_session" };
   if (!isReopenableSessionTranscript(sessionFile)) return { ok: false, reason: "invalid_session" };

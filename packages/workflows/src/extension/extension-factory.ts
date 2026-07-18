@@ -15,6 +15,7 @@ import { registerWorkflowLifecycleHandlers } from "./extension-lifecycle.js";
 import { dynamicTextRenderComponent } from "./render-component.js";
 import { makeExecuteWorkflowTool } from "./workflow-tool.js";
 import { createPostMortemHandleResolver, postMortemDepsForRun } from "./postmortem-deps.js";
+import { registerCompletedStageIntercomAskRouter } from "./completed-stage-intercom-ask.js";
 import type { PostMortemHandleResolution } from "../tui/workflow-attach-pane-types.js";
 import { registerWorkflowTool } from "./workflow-tool-registration.js";
 import { registerWorkflowSlashCommand } from "./workflow-command-registration.js";
@@ -78,7 +79,9 @@ function factory(pi: ExtensionAPI): void {
     adapters,
     resolveDefaultStageSessionDir: runtimeState.resolveDefaultStageSessionDir,
   };
-  const overlay = buildWorkflowOverlay(pi, createPostMortemHandleResolver(postMortemResolverDeps));
+  const postMortemHandleResolver = createPostMortemHandleResolver(postMortemResolverDeps);
+  const overlay = buildWorkflowOverlay(pi, postMortemHandleResolver);
+  registerCompletedStageIntercomAskRouter(pi, postMortemHandleResolver);
   const workflowCommands = new Map<string, WorkflowCommandHandler>();
   const storeWidgetRef: { current: (() => void) | null } = { current: null };
   const intercomControlRef: { current: (() => void) | null } = { current: null };

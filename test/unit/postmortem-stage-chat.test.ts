@@ -224,6 +224,22 @@ describe("ensurePostMortemStageHandle", () => {
     const second = ensurePostMortemStageHandle("run-1", stage, deps);
     assert.equal(first.ok && second.ok && first.handle === second.handle, true);
   });
+
+  test("does not reuse a retained handle after the authoritative stage becomes non-resumable", () => {
+    const registry = createStageControlRegistry();
+    const sessionFile = retainedSession("became-failed");
+    const completed = completedStage({ sessionFile });
+    const deps = {
+      registry,
+      adapters: adaptersRecording({ ...mockSession(), sessionFile }, { creates: 0 }),
+    };
+    assert.equal(ensurePostMortemStageHandle("run-1", completed, deps).ok, true);
+
+    const failed = ensurePostMortemStageHandle("run-1", { ...completed, status: "failed" }, deps);
+    assert.equal(failed.ok, false);
+    if (failed.ok) return;
+    assert.equal(failed.reason, "not_terminal");
+  });
 });
 
 describe("isPostMortemEligibleStage", () => {

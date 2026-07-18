@@ -207,6 +207,8 @@ message, treat it as a `contact_supervisor` escalation.
 | `list` | Returns all sessions with actionable short IDs and live status | You need to discover targets or choose an idle peer |
 | `status` | Returns your connection state | Troubleshooting |
 
+Inside workflows, `ask` may target a sibling stage that has already completed. If that stage retains a valid conversation, Atomic automatically schedules a post-mortem turn there and preserves the exact child-to-child reply thread; do not send a separate workflow follow-up. Missing, deleted, non-resumable, or failed-to-reopen completed targets return an actionable error. A parent or unrelated session cannot satisfy the pending ask.
+
 ## Optional: Visible Peer Sessions via cmux, tmux, or psmux (Windows rewrite of tmux that has fully parity with tmux)
 
 If no suitable intercom-connected peer session already exists and the task benefits from a long-lived visible conversation, you may spawn a new `atomic` session.

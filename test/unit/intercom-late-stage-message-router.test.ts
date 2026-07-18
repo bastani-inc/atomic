@@ -34,3 +34,27 @@ test("fallback batch commits successful members and retries only the failed suff
   await route();
   assert.deepEqual(delivered, ["first", "second"]);
 });
+
+test("completed-stage asks are left for the workflow post-mortem router regardless of listener order", () => {
+  let handler: ((payload: unknown) => void | Promise<void>) | undefined;
+  let parentDeliveries = 0;
+  const pi = {
+    events: { on(_name: string, next: typeof handler) { handler = next; return () => {}; } },
+    async sendMessage() { parentDeliveries += 1; },
+  };
+  registerLateStageMessageRouter(pi as never, new InboundMessageAdmission(), () => new ReplyTracker());
+  const message = intercomMessage("ask-1");
+  (message.details.message as { expectsReply?: boolean }).expectsReply = true;
+  const payload = {
+    handled: false,
+    batch: false,
+    workflowRunId: "run-1",
+    workflowStageId: "stage-a",
+    messages: [message],
+    options: { triggerTurn: true },
+  };
+
+  void handler?.(payload);
+  assert.equal(payload.handled, false);
+  assert.equal(parentDeliveries, 0);
+});

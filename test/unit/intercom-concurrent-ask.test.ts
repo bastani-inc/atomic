@@ -225,6 +225,13 @@ describe("concurrent blocking intercom requests", () => {
 			content: { text: "Wrong thread" },
 		});
 		assert.equal(misrouted, false, "replies to other threads never resolve the waiter");
+    const wrongSender = routeIncomingReply(waiter, { ...from, id: "parent-or-unrelated-session" }, {
+      id: "wrong-sender",
+      timestamp: Date.now(),
+      replyTo: waiter.replyTo,
+      content: { text: "Right thread, wrong session" },
+    });
+    assert.equal(wrongSender, false, "parent or unrelated sessions cannot resolve a child-to-child ask");
 		current.replyToPending();
 		assert.match((await winner).content[0]?.text ?? "", /Approved/);
 	});

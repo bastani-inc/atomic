@@ -307,11 +307,19 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
     test("late Intercom traffic is handed to the parent extension event before generic routing", async () => {
         let orchestration: CreateAgentSessionOptions["orchestrationContext"];
         const routed: string[] = [];
+        const targets: Array<{ runId: string; stageId: string; stageName: string }> = [];
         const adapters = buildRuntimeAdapters({
             events: {
                 emit(_channel, payload) {
-                    const event = payload as { handled: boolean; messages: Array<{ content?: string }> };
+                    const event = payload as {
+                        handled: boolean;
+                        messages: Array<{ content?: string }>;
+                        workflowRunId: string;
+                        workflowStageId: string;
+                        workflowStageName: string;
+                    };
                     event.handled = true;
+                    targets.push({ runId: event.workflowRunId, stageId: event.workflowStageId, stageName: event.workflowStageName });
                     if (typeof event.messages[0]?.content === "string") routed.push(event.messages[0].content);
                 },
             },
@@ -329,6 +337,7 @@ describe("buildRuntimeAdapters — SDK AgentSession adapter", () => {
             display: true,
         });
         assert.deepEqual(routed, ["late reviewer message"]);
+        assert.deepEqual(targets, [{ runId: "run-1", stageId: "stage-1", stageName: "Implement" }]);
     });
 
     test("late stage routing fails when the host has no external message route", async () => {

@@ -55,10 +55,16 @@ function fixture(kind: "intercom" | "supervisor") {
     waiterCalls,
     get waiter() { return slot.current() ?? undefined; },
     get tool() { assert.ok(tool); return tool; },
-    reply(text: string) {
+    reply(text: string, replyError?: string) {
       const current = slot.current();
       assert.ok(current);
-      current.resolve({ id: "reply", timestamp: 2, replyTo: current.replyTo, content: { text } });
+      current.resolve({
+        id: "reply",
+        timestamp: 2,
+        replyTo: current.replyTo,
+        ...(replyError !== undefined ? { replyError } : {}),
+        content: { text },
+      });
     },
   };
 }
@@ -82,6 +88,16 @@ describe("registered blocking intercom tools", () => {
     assert.equal(result.isError, false);
     assert.match(result.content[0]?.text ?? "", /Approved/);
     assert.equal(context.sessionManager.getSessionId(), "child-session", "the same foreground child continues after its reply");
+  });
+
+  test("intercom ask surfaces a correlated completed-target revival failure as a tool error", async () => {
+    const current = fixture("intercom");
+    const execution = current.tool.execute("call", { action: "ask", to: "parent", message: "Choose" }, undefined, undefined, context);
+    await Bun.sleep(0);
+    current.reply("Completed workflow stage could not process intercom ask", "Completed workflow stage is not resumable");
+    const result = await execution;
+    assert.equal(result.isError, true);
+    assert.equal(result.content[0]?.text, "Failed: Completed workflow stage is not resumable");
   });
 
   test("contact_supervisor need_decision uses the same threaded waiter path", async () => {
@@ -136,6 +152,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
       const piForHandoff = { events: bus };
       const childTarget = "subagent-worker-joined-1";
       const recovered: Array<{ finalOutput?: string; exitCode: number }> = [];
+      const recoveredExit = Promise.withResolvers<{ finalOutput?: string; exitCode: number }>();
       const foreground = runSync(dir, [{ ...agentConfig(), systemPrompt: "Intercom orchestration channel" }], "fake-worker", "task", {
         cwd: dir,
         runId: "joined",
@@ -143,7 +160,7 @@ for (const kind of ["intercom", "supervisor"] as const) {
         intercomSessionName: childTarget,
         allowIntercomDetach: true,
         intercomEvents: bus,
-        onDetachedExit: (value) => recovered.push(value),
+        onDetachedExit: (value) => { recovered.push(value); recoveredExit.resolve(value); },
       });
 
       let registered: Tool | undefined;
@@ -195,11 +212,11 @@ for (const kind of ["intercom", "supervisor"] as const) {
       assert.match(resumed.content[0]?.text ?? "", /Approved/);
       order.push("continued");
 		writeFileSync(join(dir, gateName), "reply received");
-      for (let attempt = 0; attempt < 40 && recovered.length === 0; attempt++) await Bun.sleep(10);
+      const recoveredResult = await recoveredExit.promise;
       assert.equal(recovered.length, 1);
-      assert.equal(recovered[0]?.exitCode, 0);
-      assert.match(recovered[0]?.finalOutput ?? "", /eventual recovered child result/);
+      assert.equal(recoveredResult.exitCode, 0);
+      assert.match(recoveredResult.finalOutput ?? "", /eventual recovered child result/);
       assert.ok(order.indexOf("continued") > order.indexOf("reply"));
-    });
+    }, { idleMs: 4_000, wallMs: 4_000 });
   });
 }
