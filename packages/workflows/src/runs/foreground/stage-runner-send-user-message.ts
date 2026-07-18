@@ -1,14 +1,16 @@
 import type { StageSendUserMessageOptions, StageUserMessageContent } from "../../shared/types.js";
+import type { StageMessageAdmission, StageMessageTurn } from "./stage-runner-message-admission.js";
 import type { StageSessionRuntime, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 interface PromptOwnershipObserver {
   arm(): void;
   observe(): void;
   observeStreaming(): void;
+  settle(action?: StageUserMessageDeliveryAction): void;
   dispose(): void;
 }
 
-function createPromptOwnershipObserver(
+function createLocalPromptOwnershipObserver(
   session: StageSessionRuntime,
   promptStarted: (() => void) | undefined,
 ): PromptOwnershipObserver {
@@ -29,7 +31,20 @@ function createPromptOwnershipObserver(
     arm() { armed = true; },
     observe,
     observeStreaming() { if (session.isStreaming) observe(); },
+    settle() {},
     dispose() { unsubscribe?.(); },
+  };
+}
+
+function coordinatedPromptOwnershipObserver(
+  turn: StageMessageTurn,
+): PromptOwnershipObserver {
+  return {
+    arm: () => turn.arm(),
+    observe: () => turn.observe(),
+    observeStreaming: () => turn.observeStreaming(),
+    settle: (action) => turn.settle(action),
+    dispose() {},
   };
 }
 
@@ -43,13 +58,18 @@ export async function sendStageUserMessage(
   options?: StageSendUserMessageOptions,
   beforeDelivery?: () => void,
   promptStarted?: () => void,
+  admission?: StageMessageAdmission,
 ): Promise<StageUserMessageDeliveryAction> {
-  const streaming = activeSession.isStreaming;
+  const streaming = activeSession.isStreaming || admission?.isOwned(activeSession) === true;
   const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
   if (activeSession.sendUserMessage !== undefined) {
     beforeDelivery?.();
     let reportedAction: StageUserMessageDeliveryAction | undefined;
-    const ownership = streaming ? undefined : createPromptOwnershipObserver(activeSession, promptStarted);
+    const ownership = streaming
+      ? undefined
+      : admission === undefined
+        ? createLocalPromptOwnershipObserver(activeSession, promptStarted)
+        : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
     ownership?.arm();
     try {
       const delivery = activeSession.sendUserMessage(content, {
@@ -61,7 +81,12 @@ export async function sendStageUserMessage(
       });
       ownership?.observeStreaming();
       await delivery;
-      return reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
+      const action = reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
+      ownership?.settle(action);
+      return action;
+    } catch (error) {
+      ownership?.settle();
+      throw error;
     } finally {
       ownership?.dispose();
     }
@@ -73,13 +98,19 @@ export async function sendStageUserMessage(
     else await activeSession.followUp(content);
     return deliverAs ?? "followUp";
   }
-  const ownership = createPromptOwnershipObserver(activeSession, promptStarted);
+  const ownership = admission === undefined
+    ? createLocalPromptOwnershipObserver(activeSession, promptStarted)
+    : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
   ownership.arm();
   try {
     const turn = activeSession.prompt(content);
     ownership.observeStreaming();
     await turn;
+    ownership.settle("prompt");
     return "prompt";
+  } catch (error) {
+    ownership.settle();
+    throw error;
   } finally {
     ownership.dispose();
   }

@@ -204,6 +204,7 @@ describe("createStageContext — sendUserMessage", () => {
                 for (const listener of listeners) listener({ type: "agent_start" });
                 firstStarted.resolve();
                 await firstTurn.promise;
+                for (const listener of listeners) listener({ type: "agent_end", messages: [] });
                 streaming = false;
             },
         });

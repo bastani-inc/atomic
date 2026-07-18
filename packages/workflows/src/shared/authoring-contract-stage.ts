@@ -233,10 +233,10 @@ export interface WorkflowPersistencePort {
   appendCustomMessageEntry?(content: string, meta?: Record<string, unknown>): string | undefined;
 }
 
-/** Public lifecycle event emitted by stage session adapters. */
-export interface StageSessionEvent {
-  readonly type: "agent_start";
-}
+/** Public lifecycle events emitted by stage session adapters for turn ownership. */
+export type StageSessionEvent =
+  | { readonly type: "agent_start" }
+  | { readonly type: "agent_end"; readonly messages?: readonly WorkflowSerializableValue[] };
 
 export interface StageSessionRuntime {
   prompt(text: string, options?: PromptOptions): Promise<string | void>;
@@ -244,8 +244,9 @@ export interface StageSessionRuntime {
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
   /**
-   * Must emit `agent_start` when an asynchronously-started user-message turn takes ownership.
-   * Registration may replay state synchronously; after return, starts must represent new turns.
+   * Must emit `agent_start` when a submitted user-message turn takes ownership and
+   * `agent_end` when that owned turn terminates. Registration may replay state
+   * synchronously; after return, starts must represent new turns.
    */
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;

@@ -111,7 +111,7 @@ export class StageSessionController {
   async sendUserMessage(content: StageUserMessageContent, options?: StageSendUserMessageOptions, beforeDelivery?: () => void):
     Promise<Awaited<ReturnType<typeof sendStageUserMessage>>> {
     return this.messageAdmission.run(async (release) => sendStageUserMessage(
-      await this.ensureSession("prompt"), content, options, beforeDelivery, release,
+      await this.ensureSession("prompt"), content, options, beforeDelivery, release, this.messageAdmission,
     ));
   }
 
@@ -194,7 +194,7 @@ export class StageSessionController {
     this.pendingListeners.clear();
     this.unsubscribeTerminateWatcher?.();
     this.unsubscribeTerminateWatcher = undefined;
-    this.terminatingToolCallIds.clear();
+    this.terminatingToolCallIds.clear(); this.messageAdmission.dispose();
     await this.replacement.dispose();
     await disposeStageSession(this.session);
   }
@@ -350,7 +350,7 @@ export class StageSessionController {
   }
 
   private async disposeCurrentSession(): Promise<void> {
-    const current = this.session;
+    const current = this.session; this.messageAdmission.reset();
     this.replacement.retire(current);
     this.session = undefined;
     this.sessionPromise = undefined;
