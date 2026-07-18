@@ -191,7 +191,7 @@ Atomic documentation (read only when the user asks about customizing Atomic itse
 - Additional docs: ${docsPath}
 - Examples: ${examplesPath} (extensions, custom tools, SDK)
 - Docs/examples references above must be resolved against these absolute roots; e.g. docs/foo.md means ${docsPath}/foo.md and examples/bar means ${examplesPath}/bar.
-- When asked about: atomic workflows (docs/workflows.md), extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), atomic packages (docs/packages.md)
+- When asked about: atomic workflows (start with docs/workflows.md, then follow its task-specific links such as docs/workflow-authoring.md, docs/workflow-running.md, docs/workflow-composition.md, docs/workflow-durability.md, docs/workflow-context.md, docs/workflow-reference.md, docs/workflow-builtins.md, or docs/workflow-migration.md), extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), atomic packages (docs/packages.md)
 - When working on Atomic topics, read the docs and examples, and follow .md cross-references before implementing
 - Always read Atomic .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
 

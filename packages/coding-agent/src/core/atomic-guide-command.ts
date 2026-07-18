@@ -216,7 +216,7 @@ Workflows run as background tasks. Use F2 or \`/workflow connect <run-id>\` for 
 
 ## Author your own
 
-Describe your workflow in plain chat — say what you want the workflow to accomplish, what inputs it should accept, what stages should run, and what final output or decision it should return. Atomic will use the workflow docs to scaffold a reusable definition under \`.atomic/workflows/\`, ask clarifying questions when stage purpose, models, or handoffs are ambiguous, and run \`/workflow reload\` so you can launch it immediately.
+Describe your workflow in plain chat — say what you want the workflow to accomplish, what inputs it should accept, what stages should run, and what final output or decision it should return. Atomic starts from \`docs/workflows.md\`, then uses the canonical \`docs/workflow-authoring.md\`, \`docs/workflow-when-to-use.md\` starter patterns, and related task-specific pages to scaffold a reusable definition under \`.atomic/workflows/\`, ask clarifying questions when stage purpose, models, or handoffs are ambiguous, and run \`/workflow reload\` so you can launch it immediately.
 
 ─────────────────────────────────────────────────────────────────
 

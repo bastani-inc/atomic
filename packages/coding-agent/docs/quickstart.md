@@ -137,7 +137,7 @@ Named workflow runs execute in the background. After launch you get a run id; us
 
 Human-in-the-loop prompts (`ctx.ui.input`, `confirm`, `select`, `editor`) surface in the graph viewer, not as chat modals — connect to the run to answer them.
 
-Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Workflows](/workflows) for the full reference and authoring guide.
+Atomic also posts main-chat lifecycle notices when a run completes, fails, or awaits input. If you answer a workflow prompt in the graph or attached stage chat, the main chat receives a display-only answer summary for audit; it does not wake the model, enter LLM context, or answer later prompts. See [Running and controlling workflows](/workflow-running#lifecycle-notices-and-human-input) for the exact lifecycle and HIL behavior.
 
 ### Top skills to invoke directly
 
@@ -157,7 +157,7 @@ Use `/skill:research-codebase` for a focused area and `/workflow deep-research-c
 
 ### Create your own workflow in natural language
 
-Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using the [Workflows](/workflows) reference as the source of truth:
+Named workflows may be builtin, project, user, or package supplied. You do not have to hand-write TypeScript to add a new workflow. Describe what you want in plain chat and Atomic will design and write it for you using [Author workflows](/workflow-authoring) as the canonical authoring reference:
 
 ```text
 Create a reusable Atomic workflow called review-changes. It takes one
@@ -174,7 +174,7 @@ Atomic will:
 - write a `.atomic/workflows/<name>.ts` definition that uses `workflow({ ... })` and imports `Type` from `typebox`,
 - and run `/workflow reload` so the generated workflow is rediscovered and can be launched with `/workflow <name>`.
 
-The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Workflows](/workflows). The authoring guide also covers [workflow composition](/workflows#workflow-composition), including calling user-defined workflows or builtin workflows such as `deep-research-codebase`, `goal`, and `ralph` from `@bastani/workflows/builtin`.
+The same plain-chat approach works for editing or hardening an existing workflow — ask Atomic to add a stage, switch a model, save artifacts, or wire in a human approval gate. For the full authoring reference, see [Author workflows](/workflow-authoring). The [composition guide](/workflow-composition) covers calling user-defined workflows or builtins such as `deep-research-codebase`, `goal`, and `ralph` from `@bastani/workflows/builtin`.
 
 ### Default tools and prompts
 

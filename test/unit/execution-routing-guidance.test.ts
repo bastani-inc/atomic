@@ -16,6 +16,16 @@ const modelVisibleRouting = `${combinedGuidance}\n${WORKFLOW_TOOL_DESCRIPTION}\n
 
 const workflowDocumentationPaths = [
   "packages/coding-agent/docs/workflows.md",
+  "packages/coding-agent/docs/workflow-when-to-use.md",
+  "packages/coding-agent/docs/workflow-authoring.md",
+  "packages/coding-agent/docs/workflow-running.md",
+  "packages/coding-agent/docs/workflow-composition.md",
+  "packages/coding-agent/docs/workflow-durability.md",
+  "packages/coding-agent/docs/workflow-context.md",
+  "packages/coding-agent/docs/workflow-best-practices.md",
+  "packages/coding-agent/docs/workflow-discovery.md",
+  "packages/coding-agent/docs/workflow-reference.md",
+  "packages/coding-agent/docs/workflow-builtins.md",
   "packages/coding-agent/docs/quickstart.md",
   "packages/coding-agent/src/core/atomic-guide-command.ts",
   "packages/workflows/README.md",

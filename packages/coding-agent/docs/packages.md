@@ -186,7 +186,7 @@ Atomic bundles core packages for extensions and skills. If you import any of the
 
 Workflow packages should author workflow files with `import { workflow } from "@bastani/workflows"`, `import { Type } from "typebox"`, and export definitions produced by `workflow({ ... })`. Do not use the removed `runWorkflow` object-form API, and do not hand-roll objects with `__piWorkflow: true`; discovery accepts only definitions minted by `workflow({ ... })`. `@bastani/workflows` is not a separate npm package: its types resolve through `@bastani/atomic`, so list `@bastani/atomic` and `typebox` in `peerDependencies`. A pure workflow-only package also adds the one-line ambient opt-in noted above; a package that imports `@bastani/atomic` elsewhere picks the types up automatically.
 
-Package-authored workflows should follow the same guiding principles as project workflows mentioned in docs/workflows.md.
+Package-authored workflows should follow the same [guiding principles](/workflow-authoring#guiding-principles) and [context-engineering guidance](/workflow-context) as project workflows.
 
 Other Atomic packages must be bundled in your tarball. Add them to `dependencies` and `bundledDependencies`, then reference their resources through `node_modules/` paths. Atomic loads packages with separate module roots, so separate installs do not collide or share modules.
 

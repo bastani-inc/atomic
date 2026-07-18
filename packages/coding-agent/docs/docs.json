@@ -32,7 +32,32 @@
           "extensions",
           "skills",
           "subagents",
-          "workflows",
+          {
+            "group": "Workflows",
+            "pages": [
+              "workflows",
+              "workflow-when-to-use",
+              "workflow-authoring",
+              "workflow-running",
+              "workflow-composition",
+              "workflow-durability",
+              "workflow-context",
+              "workflow-best-practices",
+              "workflow-discovery",
+              "workflow-reference",
+              "workflow-migration",
+              {
+                "group": "Built-in workflows",
+                "pages": [
+                  "workflow-builtins",
+                  "workflow-builtin-deep-research-codebase",
+                  "workflow-builtin-goal",
+                  "workflow-builtin-ralph",
+                  "workflow-builtin-open-claude-design"
+                ]
+              }
+            ]
+          },
           "prompt-templates",
           "themes",
           "packages",
