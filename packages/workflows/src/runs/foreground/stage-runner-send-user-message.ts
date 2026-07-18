@@ -16,15 +16,35 @@ export async function sendStageUserMessage(
   const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
   if (activeSession.sendUserMessage !== undefined) {
     let reportedAction: StageUserMessageDeliveryAction | undefined;
-    await activeSession.sendUserMessage(content, {
-      ...(deliverAs === undefined ? {} : { deliverAs }),
-      __workflowDelivery: {
-        beforeDelivery,
-        promptStarted,
-        delivered(action) { reportedAction = action; },
-      },
-    });
-    return reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
+    let unsubscribe: (() => void) | undefined;
+    let ownershipObserved = false;
+    const observePromptOwnership = (): void => {
+      if (ownershipObserved) return;
+      ownershipObserved = true;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      promptStarted?.();
+    };
+    if (!streaming) {
+      unsubscribe = activeSession.subscribe((event) => {
+        if (event.type === "agent_start") observePromptOwnership();
+      });
+    }
+    try {
+      const delivery = activeSession.sendUserMessage(content, {
+        ...(deliverAs === undefined ? {} : { deliverAs }),
+        __workflowDelivery: {
+          beforeDelivery,
+          promptStarted: observePromptOwnership,
+          delivered(action) { reportedAction = action; },
+        },
+      });
+      if (!streaming && activeSession.isStreaming) observePromptOwnership();
+      await delivery;
+      return reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
+    } finally {
+      unsubscribe?.();
+    }
   }
   if (typeof content !== "string") throw unsupportedContentError();
   beforeDelivery?.();

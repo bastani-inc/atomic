@@ -1,6 +1,6 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { _runAgentPrompt } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
+import { _runAgentPrompt, prompt } from "../../packages/coding-agent/src/core/agent-session-prompt.js";
 
 describe("AgentSession prompt-start handshake", () => {
   test("reports prompt ownership only after agent.prompt is invoked and before the turn settles", async () => {
@@ -75,5 +75,52 @@ describe("AgentSession prompt-start handshake", () => {
     );
     assert.equal(promptStarted, false);
     assert.equal(session._systemPromptOverride, undefined);
+  });
+});
+
+describe("AgentSession workflow delivery authorization", () => {
+  test("authorizes before async input handling and never rejects an already handled message", async () => {
+    const handlerStarted = Promise.withResolvers<void>();
+    const finishHandler = Promise.withResolvers<void>();
+    let terminal = false;
+    let sideEffects = 0;
+    const delivered: string[] = [];
+    const session = {
+      isStreaming: false,
+      promptTemplates: [],
+      _extensionRunner: {
+        hasHandlers: (event: string) => event === "input",
+        async emitInput() {
+          handlerStarted.resolve();
+          await finishHandler.promise;
+          sideEffects += 1;
+          return { action: "handled" as const };
+        },
+      },
+    };
+    const options = {
+      __workflowDelivery: {
+        beforeDelivery() {
+          if (terminal) throw new DOMException("workflow exited", "AbortError");
+        },
+        delivered(action: string) { delivered.push(action); },
+      },
+    };
+
+    const accepted = prompt.call(session as never, "accepted", options as never);
+    await handlerStarted.promise;
+    terminal = true;
+    finishHandler.resolve();
+
+    await accepted;
+    assert.equal(sideEffects, 1);
+    assert.deepEqual(delivered, ["handled"]);
+
+    await assert.rejects(
+      prompt.call(session as never, "retry", options as never),
+      /workflow exited/,
+    );
+    assert.equal(sideEffects, 1);
+    assert.deepEqual(delivered, ["handled"]);
   });
 });

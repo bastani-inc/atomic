@@ -4,6 +4,7 @@ import type {
     AgentSessionAdapter,
     InternalStageContext,
     StageSessionCreateOptions,
+    StageSessionRuntime,
 } from "./stage-runner-helpers.js";
 import {
     Type,
@@ -164,6 +165,65 @@ describe("createStageContext — sendUserMessage", () => {
         assert.equal(promptStarts, 1);
         assert.deepEqual(actions, ["prompt", "followUp"]);
         assert.deepEqual(consumedMessages, ["first", "second"]);
+    });
+
+    test("uses public turn-start signals when an adapter ignores private delivery hooks", async () => {
+        const firstTurn = Promise.withResolvers<void>();
+        const sendEntered = Promise.withResolvers<void>();
+        const allowTurnStart = Promise.withResolvers<void>();
+        const firstStarted = Promise.withResolvers<void>();
+        let streaming = false;
+        let promptStarts = 0;
+        const consumed: string[] = [];
+        const listeners = new Set<Parameters<StageSessionRuntime["subscribe"]>[0]>();
+        const { session } = makeMockSession({
+            get isStreaming() { return streaming; },
+            subscribe(listener) {
+                listeners.add(listener);
+                return () => listeners.delete(listener);
+            },
+            async sendUserMessage(text) {
+                if (typeof text !== "string") throw new Error("expected string content");
+                if (streaming) {
+                    consumed.push(text);
+                    return;
+                }
+                sendEntered.resolve();
+                await allowTurnStart.promise;
+                promptStarts += 1;
+                streaming = true;
+                consumed.push(text);
+                for (const listener of listeners) listener({ type: "agent_start" });
+                firstStarted.resolve();
+                await firstTurn.promise;
+                streaming = false;
+                for (const listener of listeners) listener({ type: "agent_end", messages: [] });
+            },
+        });
+        Object.defineProperty(session, "isStreaming", { get: () => streaming });
+        const ctx = createStageContext(makeOpts({
+            adapters: { agentSession: { async create() { return session; } } },
+        })) as InternalStageContext;
+
+        await ctx.__ensureSession();
+        const baselineListeners = listeners.size;
+
+        const first = ctx.__sendUserMessage("first");
+        const second = ctx.__sendUserMessage("second");
+        await sendEntered.promise;
+        await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+        assert.deepEqual(consumed, []);
+        allowTurnStart.resolve();
+        await firstStarted.promise;
+
+        assert.equal(await second, "followUp");
+        assert.equal(streaming, true);
+        assert.equal(promptStarts, 1);
+        assert.deepEqual(consumed, ["first", "second"]);
+
+        firstTurn.resolve();
+        assert.equal(await first, "prompt");
+        assert.equal(listeners.size, baselineListeners);
     });
 
     test("releases admission after a lifecycle gate rejects prompt startup", async () => {

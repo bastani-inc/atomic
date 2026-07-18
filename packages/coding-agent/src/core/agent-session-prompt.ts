@@ -27,12 +27,14 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 	let messages: AgentMessage[] | undefined;
 
 	try {
+		// Authorize workflow delivery before commands or input extensions can perform side effects.
+		// A later terminal transition cannot retroactively reject input accepted at this boundary.
+		workflowDelivery?.beforeDelivery?.();
 		// Handle slash commands first (execute immediately, even during streaming).
 		// Builtin and extension commands manage their own LLM interaction via custom messages.
 		if (expandPromptTemplates && text.startsWith("/")) {
 			const handledBuiltin = await this._tryExecuteBuiltinSlashCommand(text);
 			if (handledBuiltin) {
-				workflowDelivery?.beforeDelivery?.();
 				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
@@ -40,7 +42,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 
 			const handledExtension = await this._tryExecuteExtensionCommand(text);
 			if (handledExtension) {
-				workflowDelivery?.beforeDelivery?.();
 				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
@@ -58,7 +59,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 				this.isStreaming ? options?.streamingBehavior : undefined,
 			);
 			if (inputResult.action === "handled") {
-				workflowDelivery?.beforeDelivery?.();
 				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
@@ -83,7 +83,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
-			workflowDelivery?.beforeDelivery?.();
 			if (options.streamingBehavior === "followUp") {
 				await this._queueFollowUp(expandedText, currentImages);
 			} else {
@@ -197,7 +196,6 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw error;
 	}
 
-	workflowDelivery?.beforeDelivery?.();
 	preflightResult?.(true);
 	const turn = this._runAgentPrompt(messages, workflowDelivery?.promptStarted);
 	workflowDelivery?.delivered?.("prompt");
