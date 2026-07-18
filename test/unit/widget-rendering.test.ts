@@ -331,6 +331,24 @@ describe("renderWidgetLines — standard form", () => {
     assert.equal(nextWidgetRefreshDelayMs(makeSnap([paused]), now), undefined);
   });
 
+  test("active runs schedule no per-second clock refresh (#1856)", () => {
+    // The companion widget's once-per-second elapsed repaint caused steady
+    // main-chat terminal writes and native-scrollback snap-to-bottom while a
+    // workflow streamed in the background. Active runs must not request any
+    // timer-driven refresh; elapsed labels advance on semantic store updates.
+    const now = 1_000_000;
+    const active = makeRun("r1xxxxxx", "wf-a", "running", [], now - 5_000);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([active]), now), undefined);
+
+    // An active run alongside a recently-ended one keeps only the one-shot
+    // expiry refresh for the ended card.
+    const ended = makeRun("r2xxxxxx", "wf-d", "completed", [], now - 20_000, now - 10_000);
+    assert.equal(
+      nextWidgetRefreshDelayMs(makeSnap([active, ended]), now),
+      RECENT_ENDED_WINDOW_MS - 10_000 + 1,
+    );
+  });
+
   test("standard panel scales to the provided terminal width", () => {
     const width = 120;
     const snap = makeSnap([makeRun("abc123uuid", "my-wf", "running")]);

@@ -30,6 +30,13 @@ interface ActiveComponent {
 	terminal: RemoteTerminal;
 	tui: TUI;
 	widgetKey?: string;
+	/**
+	 * Overlay visibility as last driven through the remote OverlayHandle.
+	 * Hidden components are skipped by the extension-level `requestRender()`
+	 * broadcast (#1856) — invalidating a hidden overlay only produced host
+	 * render work and terminal writes for frames the user cannot see.
+	 */
+	hidden?: boolean;
 }
 
 class RemoteTerminal implements Terminal {
@@ -216,7 +223,10 @@ export class EngineCustomUiService {
 
 
 	requestRender(): void {
-		for (const componentId of this.active.keys()) this.send({ type: "engine_custom_invalidate", componentId });
+		for (const [componentId, record] of this.active) {
+			if (record.hidden === true) continue;
+			this.send({ type: "engine_custom_invalidate", componentId });
+		}
 	}
 
 	handleLine(line: string): boolean {
@@ -280,15 +290,21 @@ export class EngineCustomUiService {
 
 
 	private remoteHandle(componentId: string): OverlayHandle {
-		let hidden = false;
 		let focused = true;
+		const setHiddenFlag = (value: boolean): void => {
+			const record = this.active.get(componentId);
+			if (record) record.hidden = value;
+		};
 		return {
-			hide: () => this.send({ type: "engine_custom_control", componentId, action: "hide" }),
+			hide: () => {
+				setHiddenFlag(true);
+				this.send({ type: "engine_custom_control", componentId, action: "hide" });
+			},
 			setHidden: (value) => {
-				hidden = value;
+				setHiddenFlag(value);
 				this.send({ type: "engine_custom_control", componentId, action: value ? "hide" : "show" });
 			},
-			isHidden: () => hidden,
+			isHidden: () => this.active.get(componentId)?.hidden === true,
 			focus: () => {
 				focused = true;
 				this.send({ type: "engine_custom_control", componentId, action: "focus" });

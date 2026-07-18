@@ -263,10 +263,15 @@ describe("installStoreWidget", () => {
     assert.ok(lines.some((line) => line.includes("complete")));
   });
 
-  test("updates in place (no remount) when the clock-refresh timer fires for an active run", async () => {
-    // Flicker regression (#1109): a once-per-second elapsed-label refresh must
-    // update the long-lived widget in place (requestRender only) and MUST NOT
-    // re-issue setWidget (which would dispose+remount the host component).
+  test("schedules no clock timer for active runs; semantic updates repaint in place (#1856)", async () => {
+    // Flicker regression (#1856): a once-per-second elapsed-clock repaint of
+    // the companion widget produced steady main-chat terminal writes while a
+    // workflow streamed in the background, and could snap native scrollback
+    // back to the live bottom after the user wheel-scrolled away. Active runs
+    // therefore schedule NO refresh timer: wall-clock advancement alone must
+    // not request renders. Elapsed labels advance on semantic store
+    // transitions, which update the long-lived component in place
+    // (requestRender only, never a setWidget dispose/remount — #1109).
     const originalNow = Date.now;
     let now = 1_000_000;
     Date.now = () => now;
@@ -275,6 +280,7 @@ describe("installStoreWidget", () => {
       const { pi, widgetCalls, renderRequests } = makeMockPi();
       installStoreWidget(pi, storeInstance, timers);
       storeInstance.recordRunStart(makeRun("r1", "my-wf"));
+      await Promise.resolve();
       // Capture the originally-mounted long-lived component.
       const mountCall = widgetCalls.findLast((c) => typeof c.factory === "function")!;
       const component = mountCall.factory!(null, undefined) as { render(w: number): string[] };
@@ -283,23 +289,34 @@ describe("installStoreWidget", () => {
       const labelBefore = component.render(120).join("\n");
       assert.match(labelBefore, /single · 0s/);
 
-      const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-      assert.ok(timer, "expected active widget refresh timer");
-      assert.ok(timer.delayMs > 0 && timer.delayMs <= 1_000);
+      assert.equal(
+        timers.scheduled.filter((entry) => !entry.cleared).length,
+        0,
+        "an active-only widget must not keep a live clock timer (#1856)",
+      );
 
-      now += timer.delayMs;
-      timer.handler();
+      // Pure wall-clock advancement: no timer fires, nothing repaints.
+      now += 5_000;
       await Promise.resolve();
+      assert.equal(widgetCalls.length, setWidgetCallsAfterStart);
+      assert.equal(
+        renderRequests.count,
+        requestsAfterStart,
+        "clock advancement alone must not produce render requests",
+      );
 
+      // A semantic store transition repaints in place with the fresh label.
+      storeInstance.recordStageStart("r1", makeStage("s1", "stage-1"));
+      await Promise.resolve();
       assert.equal(
         widgetCalls.length,
         setWidgetCallsAfterStart,
-        "clock tick must NOT re-issue setWidget (no dispose/remount)",
+        "semantic update must NOT re-issue setWidget (no dispose/remount)",
       );
-      assert.ok(renderRequests.count > requestsAfterStart, "clock tick must request an in-place render");
+      assert.ok(renderRequests.count > requestsAfterStart, "semantic update must request an in-place render");
       const labelAfter = component.render(120).join("\n");
       assert.notEqual(labelAfter, labelBefore, "long-lived component must reflect the advanced elapsed label");
-      assert.match(labelAfter, /single · 1s/);
+      assert.match(labelAfter, /5s/);
     } finally {
       Date.now = originalNow;
     }
@@ -337,14 +354,12 @@ describe("installStoreWidget", () => {
       const requestsAfterStart = host.renderRequests;
       assert.ok(requestsAfterStart > 0, "mount should request a render through the TUI fallback");
 
-      const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-      assert.ok(timer, "expected active widget refresh timer");
-      now += timer.delayMs;
-      timer.handler();
+      now += 2_000;
+      storeInstance.recordStageStart("r1", makeStage("s1", "stage-1"));
       await Promise.resolve();
 
       assert.equal(widgetCalls.filter((c) => typeof c.factory === "function").length, 1);
-      assert.ok(host.renderRequests > requestsAfterStart, "clock tick should repaint through the TUI fallback");
+      assert.ok(host.renderRequests > requestsAfterStart, "semantic update should repaint through the TUI fallback");
     } finally {
       Date.now = originalNow;
     }
@@ -400,10 +415,13 @@ describe("installStoreWidget", () => {
     const timers = makeFakeTimers();
     const { pi } = makeMockPi();
     const unsubscribe = installStoreWidget(pi, storeInstance, timers);
+    // Only ended runs schedule a (recent-ended expiry) timer — active runs
+    // deliberately keep no clock timer (#1856).
     storeInstance.recordRunStart(makeRun("r1", "my-wf"));
+    storeInstance.recordRunEnd("r1", "completed");
 
     const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-    assert.ok(timer, "expected refresh timer before dispose");
+    assert.ok(timer, "expected recent-ended expiry timer before dispose");
     unsubscribe();
 
     assert.equal(timer.cleared, true);
@@ -431,10 +449,12 @@ describe("installStoreWidget", () => {
     assert.doesNotThrow(() => installStoreWidget(piNoSetWidget, storeNoWidget));
   });
 
-  test("uses a low-frequency clock timer, not a high-frequency spinner timer", () => {
-    // Regression: the widget used to keep an 80ms setInterval re-issuing
-    // setWidget so the braille spinner glyph could advance. The glyph is
-    // static now; elapsed-time labels use one-shot second-boundary refreshes.
+  test("schedules no per-second clock or spinner timer for active runs (#1856)", () => {
+    // Regression history: an 80ms spinner interval (#1109) became a 1s clock
+    // tick, which still caused steady main-chat terminal writes and native
+    // scrollback snap-to-bottom while workflows streamed (#1856). Active runs
+    // now schedule no timer at all; the only remaining timer is the one-shot
+    // recent-ended expiry unmount, and it must be unref'd.
     const originalNow = Date.now;
     let now = 1_000_000;
     Date.now = () => now;
@@ -446,9 +466,16 @@ describe("installStoreWidget", () => {
       (run.stages as StageSnapshot[]).push(makeStage("s1", "stage-1"));
       storeInstance.recordRunStart(run);
 
+      assert.equal(
+        timers.scheduled.filter((entry) => !entry.cleared).length,
+        0,
+        "active run must not schedule any refresh timer",
+      );
+
+      storeInstance.recordRunEnd("r1", "completed");
       const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-      assert.ok(timer, "expected clock refresh timer");
-      assert.equal(timer.delayMs, 1_000);
+      assert.ok(timer, "expected one-shot recent-ended expiry timer");
+      assert.ok(timer.delayMs > 29_000, "expiry timer fires near the recent-ended window, not per second");
       assert.equal(timer.handle.unrefCalls, 1);
       unsubscribe();
     } finally {

@@ -43,7 +43,6 @@ import { statusIcon } from "./status-helpers.js";
 const SHORT_ID_LEN = 6;
 const MAX_VISIBLE_RUNS = 4;
 export const RECENT_ENDED_WINDOW_MS = 30_000;
-const WIDGET_CLOCK_REFRESH_MS = 1_000;
 const COLLAPSED_BREAKPOINT_COLS = 80;
 
 // ---------------------------------------------------------------------------
@@ -125,11 +124,21 @@ function countRuns(
   return counts;
 }
 
-function msUntilNextClockTick(now: number): number {
-  const remainder = now % WIDGET_CLOCK_REFRESH_MS;
-  return remainder === 0 ? WIDGET_CLOCK_REFRESH_MS : WIDGET_CLOCK_REFRESH_MS - remainder;
-}
-
+/**
+ * Next refresh the companion widget genuinely needs.
+ *
+ * Issue #1856: the widget deliberately has NO per-second elapsed-clock
+ * cadence. While a workflow streams in the background, a once-per-second
+ * "clock tick" repaint caused steady terminal writes in main chat, visible
+ * flicker at the tail, and native-scrollback snap-to-bottom after the user
+ * wheel-scrolled away. Elapsed labels now advance only on semantic store
+ * transitions (stage/run status changes) and when the graph/stage overlay
+ * opens, which re-renders from a fresh snapshot anyway.
+ *
+ * The only timer-driven refresh left is the recent-ended expiry: an ended
+ * run's card must unmount ~30s after completion even when the store goes
+ * silent, so we schedule a one-shot refresh just past that window.
+ */
 export function nextWidgetRefreshDelayMs(
   snap: StoreSnapshot,
   now = Date.now(),
@@ -137,13 +146,10 @@ export function nextWidgetRefreshDelayMs(
   const display = selectDisplayRuns(snap, now);
   if (display.length === 0) return undefined;
 
-  const hasLiveClock = display.some((run) => run.endedAt === undefined && run.status !== "paused");
-  const clockDelay = hasLiveClock ? msUntilNextClockTick(now) : undefined;
   const expiryDelays = display
     .filter((run) => run.endedAt !== undefined)
     .map((run) => Math.max(1, run.endedAt! + RECENT_ENDED_WINDOW_MS - now + 1));
-  const delays = [clockDelay, ...expiryDelays].filter((delay): delay is number => delay !== undefined);
-  return delays.length === 0 ? undefined : Math.min(...delays);
+  return expiryDelays.length === 0 ? undefined : Math.min(...expiryDelays);
 }
 
 function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {
