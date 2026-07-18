@@ -358,7 +358,6 @@ export async function planFullCollapse(
 	let enteredProjections = 0;
 	for (let index = 0; index < projections.length; index++) {
 		const projection = projections[index];
-		let attempts = enteredProjections + 1;
 		const fitState: PayloadFitState = { maxTokens: configuredOutput, inputTokens: 0, countConfidence: "unavailable", finalPayloadProven: false };
 		const retryGuard: ProviderPayloadRetryGuard | undefined = rejectedInputFingerprints.size > 0 || rejectedTransportFingerprints.size > 0
 			? {
@@ -373,7 +372,7 @@ export async function planFullCollapse(
 		);
 		if (!built) continue;
 		enteredProjections++;
-		attempts = enteredProjections;
+		const attempts = enteredProjections;
 		built.request.maxTokens = configuredOutput;
 		let response: AssistantMessage;
 		try {

@@ -129,7 +129,7 @@ describe("bounded full-collapse projection retries", () => {
 		{ source: "signal and assistant", abortSignal: true },
 		{ source: "assistant stop reason only", abortSignal: false },
 	])("prioritizes cancellation from $source over an async adapter-caught fit failure", async ({ abortSignal }) => {
-		const { manager, region } = session();
+		const { manager } = session();
 		const prep = prepareFullCollapseBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 1 })!;
 		const entriesBefore = manager.getEntries().map((entry) => entry.id);
 		const controller = new AbortController();
@@ -283,7 +283,7 @@ describe("bounded full-collapse projection retries", () => {
 	});
 
 	it("preserves the provider-observed length response and cap when the smaller projection is locally blocked", async () => {
-		const { manager, region } = session();
+		const { manager } = session();
 		const prep = prepareFullCollapseBoundary(manager.getBranch(), DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 1 })!;
 		let call = 0;
 		const raw = "complete-but-invalid-line\nunterminated provider tail";

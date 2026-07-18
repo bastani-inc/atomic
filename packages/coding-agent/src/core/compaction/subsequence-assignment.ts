@@ -58,14 +58,12 @@ function assignProtected(
 	}
 
 	const sourceMiddle = sourceStart + Math.floor(sourceLength / 2);
-	let left = feasibilityVector(source, sourceStart, sourceMiddle, output, outputStart, outputEnd, protectedLines);
-	let right = feasibilityVector(source, sourceMiddle, sourceEnd, output, outputStart, outputEnd, protectedLines, true);
+	const left = feasibilityVector(source, sourceStart, sourceMiddle, output, outputStart, outputEnd, protectedLines);
+	const right = feasibilityVector(source, sourceMiddle, sourceEnd, output, outputStart, outputEnd, protectedLines, true);
 	let split = -1;
 	for (let consumed = outputLength; consumed >= 0; consumed--) {
 		if (left[consumed] === 1 && right[outputLength - consumed] === 1) { split = consumed; break; }
 	}
-	left = new Uint8Array(0);
-	right = new Uint8Array(0);
 	if (split < 0) return undefined;
 	const leftAssignment = assignProtected(
 		source, sourceStart, sourceMiddle, output, outputStart, outputStart + split, protectedLines,

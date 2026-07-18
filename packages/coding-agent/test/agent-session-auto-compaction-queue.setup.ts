@@ -1,10 +1,10 @@
-import { mock } from "bun:test";
+import { vi } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.js";
 import type { SessionManager } from "../src/core/session-manager.js";
 
 const stats = { linesBefore: 2, linesDeleted: 1, linesKept: 1, rangeCount: 1, tokensBefore: 100, tokensAfter: 50, percentReduction: 50 };
 export const compactionMocks = {
-	runVerbatimCompaction: mock(async (..._args: unknown[]) => ({
+	runVerbatimCompaction: vi.fn(async (..._args: unknown[]) => ({
 		text: "[User]: retained test context\n(filtered 1 lines)", ranges: [{ start: 2, end: 2 }], stats, rung: "planned" as const,
 	})),
 };
@@ -29,7 +29,6 @@ export function installCompactionMock(session: AgentSession, manager: SessionMan
 }
 
 export async function advanceTimers(milliseconds: number): Promise<void> {
-	const { jest } = await import("bun:test");
-	jest.advanceTimersByTime(milliseconds);
+	vi.advanceTimersByTime(milliseconds);
 	for (let index = 0; index < 5; index++) await Promise.resolve();
 }
