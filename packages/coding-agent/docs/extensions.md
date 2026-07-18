@@ -328,8 +328,9 @@ user sends prompt ────────────────────�
   │   │     ├─► tool_result (can modify)           │       │
   │   │     └─► tool_execution_end                 │       │
   │   │                                            │       │
-  │   └─► turn_end                                 │       │
-  │                                                        │
+  │   ├─► turn_end                                 │       │
+  │   └─► post-tool threshold preflight            │       │
+  │       (may compact before the next provider request)   │
   └─► agent_end                                            │
                                                            │
 user sends another prompt ◄────────────────────────────────┘
@@ -469,7 +470,7 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
+Fired by `/compact` and auto-compaction, including a threshold crossing detected after tool results enter the prospective next-turn context. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials. A successful post-tool compaction returns its rebuilt context directly to the already-active Pi loop; it does not start a separate continuation. Cancellation or failure prevents that loop's follow-up provider request.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
@@ -658,7 +659,7 @@ pi.on("tool_execution_end", async (event, ctx) => {
 
 #### context
 
-Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types.
+Fired before each LLM call. Modify messages non-destructively. See [Session Format](/session-format) for message types. When tool output crosses the buffered compaction threshold, the post-tool compaction preflight finishes before this hook runs for the follow-up call, so `event.messages` contains the rebuilt compacted context.
 
 ```typescript
 pi.on("context", async (event, ctx) => {

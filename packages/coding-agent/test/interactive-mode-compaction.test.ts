@@ -55,6 +55,7 @@ type CompactionEndEvent = {
 	aborted: boolean;
 	willRetry: boolean;
 	errorMessage?: string;
+	midTurn?: boolean;
 };
 
 const persistedContextMessages = [
@@ -156,6 +157,21 @@ describe("InteractiveMode compaction events", () => {
 			expect(mode.addCompactionBoundaryToChat).not.toHaveBeenCalled();
 			expect(renderedText(chatContainer)).not.toContain("✻ Context compacted");
 		}
+	});
+
+	it("does not flush queued input as a separate prompt during mid-turn compaction", async () => {
+		const { mode } = makeMode();
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: false,
+			willRetry: false,
+			midTurn: true,
+		});
+
+		expect(mode.flushCompactionQueue).not.toHaveBeenCalled();
 	});
 
 	it("suppresses the synthesized leading boundary without removing a retained same-name custom message", async () => {
