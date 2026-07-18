@@ -96,6 +96,7 @@ export interface AgentSessionAdapter {
 
 export interface StageModelFallbackMeta {
   readonly model?: string;
+  readonly thinkingLevel?: string;
   readonly fastMode?: boolean;
   readonly attemptedModels?: readonly string[];
   readonly modelAttempts?: readonly WorkflowModelAttempt[];
