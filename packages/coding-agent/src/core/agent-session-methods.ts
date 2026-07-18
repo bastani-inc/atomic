@@ -1,5 +1,6 @@
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
+import type { PendingPostToolCompactionGuard } from "./agent-session-post-tool-compaction.ts";
 import type { BashResult } from "./bash-executor.ts";
 import type { VerbatimCompactionParameters, VerbatimCompactionResult } from "./compaction/index.ts";
 import type {
@@ -206,6 +207,8 @@ export interface AgentSessionMethodSurface {
 	_resumeAfterAutoCompaction(): Promise<void>;
 	_resumeAfterLengthTruncation(): void;
 	_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+	_preflightPostToolContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]>;
+	_finishPostToolCompactionPreflight(messages: AgentMessage[]): AgentMessage[];
 	setAutoCompactionEnabled(enabled: boolean): void;
 
 	bindExtensions(bindings: ExtensionBindings): Promise<void>;
@@ -348,6 +351,9 @@ export interface AgentSessionInternalSurface extends AgentSessionMethodSurface, 
 	_postCompactionContinuationToken: number;
 	_lengthContinuationAttempts: number;
 	_outputBudgetErrorContinuationAttempts: number;
+	_postToolCompactionPreflightError: string | undefined;
+	_pendingPostToolCompactionGuard: PendingPostToolCompactionGuard | undefined;
+	_terminatingToolCallIds: Set<string>;
 	_pendingInterruptDeliveries: number;
 	_activeInterruptQueueHold: InterruptQueueHold | undefined;
 	_activeInterruptAbortMessage: string | undefined;

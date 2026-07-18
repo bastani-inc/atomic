@@ -83,18 +83,20 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 ## When compaction runs
 
 - **Manual:** `/compact`, `ctx.compact()`, `session.compact()`, or RPC `{ "type": "compact" }`.
-- **Threshold:** automatic compaction starts when estimated context usage reaches the effective input budget minus `reserveTokens`.
+- **Threshold:** automatic compaction starts when estimated context usage exceeds the effective input budget minus `reserveTokens`. Atomic checks both completed responses and the prospective next-turn context after tool results have been appended. A post-tool crossing is compacted before the active Pi tool loop sends its follow-up provider request.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 
 Exactly the configured recent-message tail is outside the compactable region; Atomic does not force the final logical turn to remain outside it. Pressing Escape while compaction is active cancels it like other session operations. In isolated interactive mode, cancellation and host UI response frames use an independent RPC control lane, so they can reach the engine while the ordinary `compact` request is still pending instead of waiting behind it. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+
+The post-tool check stays inside the active Pi loop: it runs at most one ordinary verbatim compaction attempt for that completed tool turn, returns the rebuilt context to the loop, and never calls or schedules `agent.continue()`. Normal context reconstruction preserves provider tool-call/result protocol validity. Below-threshold tool turns follow the unchanged request path.
 
 ## One-pass planning and failure behavior
 
 Atomic asks the active session model, at the active reasoning level and through the normal session stream/provider wrapper, to rank every eligible line in one global pass and apply one threshold. The entire compactable region is sent in exactly one classifier request; it is never split into chunks. Manual, threshold, and overflow compaction all calculate the line target directly from the prepared `compression_ratio`. Explicit protected lines form a hard keep floor.
 
-The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
+The request uses the same provider path and failure handling as pi's summary compaction. Provider/API errors, overflow, abort, malformed output, or empty/unusable safe ranges fail after that one request. These failures write no compaction entry and schedule no continuation. During the post-tool preflight, failure or cancellation also stops the active loop before its follow-up provider request, is surfaced through the normal compaction lifecycle, and is not admitted to ordinary provider retry or model fallback. There is no semantic retry, critical rung, deterministic fallback, or deterministic target correction.
 
-A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally.
+A syntactically valid usable result is accepted once after safety-only normalization, even when it deletes fewer lines or tokens than requested. Atomic never adds or restores model-selected deletions to force a target. During overflow recovery, the existing one-shot compact-and-retry continuation may therefore surface unresolved overflow naturally. During a post-tool preflight, Atomic likewise does not add a second compaction strategy or attempt; if the rebuilt context is still known to exceed the provider's hard input limit, it refuses to send the follow-up request and reports the limit failure clearly.
 
 ### Length-truncated response recovery
 
@@ -379,7 +381,7 @@ Configure compaction in `~/.atomic/agent/settings.json` or `<project-dir>/.atomi
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable automatic Verbatim Compaction. |
-| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when context usage exceeds the model's effective input budget minus this reserve. |
+| `reserveTokens` | `16384` | Tokens to reserve for the next LLM response; threshold auto-compaction starts when completed-response usage or a prospective post-tool context exceeds the model's effective input budget minus this reserve. |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 

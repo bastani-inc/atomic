@@ -260,6 +260,9 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
           this.streamingMessage = undefined;
         }
         this.pendingTools.clear();
+        if (this.compactionQueuedMessages.length > 0) {
+          void this.session.agent.waitForIdle().then(() => this.flushCompactionQueue({ willRetry: false }));
+        }
 
 		if (this.pendingLoadedResourcesDisclosure) {
 			this.pendingLoadedResourcesDisclosure = false;
@@ -335,7 +338,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
             );
           }
         }
-        void this.flushCompactionQueue({ willRetry: event.willRetry });
+        if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
         this.ui.requestRender();
         break;
       }

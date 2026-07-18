@@ -156,6 +156,10 @@ export function applyChatSessionAgentEvent<
       state.liveChat.clearPendingTools();
       state.statusMessage = "";
       changed = true;
+      if (state.compactionQueuedMessages.length > 0) {
+        const idle = state.getAgentSession?.()?.agent.waitForIdle() ?? Promise.resolve();
+        void idle.then(() => flushChatSessionCompactionQueue(state));
+      }
       break;
     case "turn_start":
       state.workingMessage = pickWhimsicalWorkingMessage();
@@ -198,12 +202,17 @@ export function applyChatSessionAgentEvent<
     case "compaction_end": {
       const compaction = event as Extract<AgentSessionEvent, { type: "compaction_end" }>;
       state.compacting = false;
-      state.sdkBusy = false;
+      state.sdkBusy = compaction.midTurn === true;
       state.statusMessage = compaction.errorMessage ?? "";
       if (!compaction.aborted && !compaction.errorMessage && compaction.result) {
         refreshCompactedTranscript(state, compaction.result);
       }
-      if (!compaction.aborted && !compaction.errorMessage && state.compactionQueuedMessages.length > 0) {
+      if (
+        !compaction.midTurn &&
+        !compaction.aborted &&
+        !compaction.errorMessage &&
+        state.compactionQueuedMessages.length > 0
+      ) {
         void flushChatSessionCompactionQueue(state);
       }
       changed = true;

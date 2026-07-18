@@ -66,6 +66,8 @@ export function _installAgentToolHooks(this: AgentSession): void {
 			maxResultSizeChars: this.getToolDefinition(toolCall.name)?.maxResultSizeChars,
 		});
 
+		if (result.terminate === true) this._terminatingToolCallIds.add(toolCall.id);
+		else this._terminatingToolCallIds.delete(toolCall.id);
 		return redirectReplacement ?? extensionReplacement;
 	};
 }
@@ -81,14 +83,31 @@ export function _installAgentNextTurnRefresh(this: AgentSession): void {
 		(this.agent.prepareNextTurn
 			? async (_turn: PrepareNextTurnContext, signal?: AbortSignal) => await this.agent.prepareNextTurn?.(signal)
 			: undefined);
+	const previousTransformContext = this.agent.transformContext;
+	this.agent.transformContext = async (messages, signal) => {
+		const transformed = previousTransformContext
+			? await previousTransformContext(messages, signal)
+			: messages;
+		return this._finishPostToolCompactionPreflight(transformed);
+	};
 	this.agent.prepareNextTurnWithContext = async (turn, signal) => {
 		const previousSnapshot = await previousPrepareNextTurnWithContext?.(turn, signal);
 		const previousContext = previousSnapshot?.context ?? turn.context;
+		const toolCallIds = turn.message.content
+			.filter((part) => part.type === "toolCall")
+			.map((part) => part.id);
+		const terminatingBatch =
+			toolCallIds.length > 0 && toolCallIds.every((id) => this._terminatingToolCallIds.has(id));
+		for (const id of toolCallIds) this._terminatingToolCallIds.delete(id);
+		const messages = turn.toolResults.length > 0 && !terminatingBatch
+			? await this._preflightPostToolContext(previousContext.messages, signal)
+			: previousContext.messages;
 
 		return {
 			...previousSnapshot,
 			context: {
 				...previousContext,
+				messages,
 				systemPrompt: this._systemPromptOverride ?? this._baseSystemPrompt,
 				tools: this.agent.state.tools.slice(),
 			},
