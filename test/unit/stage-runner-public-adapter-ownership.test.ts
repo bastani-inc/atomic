@@ -119,7 +119,7 @@ describe("public AgentSessionAdapter prompt ownership", () => {
     assert.deepEqual(consumed, ["first", "second"]);
   });
 
-  test("correlates late public ends without clearing a newer owned generation", async () => {
+  test("does not let older promise settlement clear a newer owned generation", async () => {
     const firstTurn = Promise.withResolvers<void>();
     const secondTurn = Promise.withResolvers<void>();
     const fourthTurn = Promise.withResolvers<void>();
@@ -144,12 +144,12 @@ describe("public AgentSessionAdapter prompt ownership", () => {
 
     const first = ctx.__sendUserMessage("first");
     await promptStarted[0]!.promise;
-    firstTurn.resolve();
-    assert.equal(await first, "prompt");
+    tracked.emit({ type: "agent_end", messages: [] });
 
     const second = ctx.__sendUserMessage("second");
     await promptStarted[1]!.promise;
-    tracked.emit({ type: "agent_end", messages: [] });
+    firstTurn.resolve();
+    assert.equal(await first, "prompt");
     assert.equal(await ctx.__sendUserMessage("third"), "followUp");
 
     tracked.emit({ type: "agent_end", messages: [] });

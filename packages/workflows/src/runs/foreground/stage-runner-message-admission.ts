@@ -87,6 +87,7 @@ export class StageMessageAdmission {
           this.releaseBindingIfIdle();
           return;
         }
+        if (action === "prompt" && generation.publicStarted) return;
         generation.state = "terminal";
         if (action === "handled") {
           const queuedIndex = this.startedGenerations.findIndex((entry) => entry.id === generation.id);
@@ -176,7 +177,11 @@ export class StageMessageAdmission {
         ? this.startedGenerations.findIndex((entry) => entry.publicTurnId === undefined)
         : this.startedGenerations.findIndex((entry) => entry.publicTurnId === turnId);
     }
-    if (generationIndex < 0 && this.startedGenerations.length === 1) generationIndex = 0;
+    if (
+      generationIndex < 0
+      && this.startedGenerations.length === 1
+      && (turnId === undefined || this.startedGenerations[0]?.publicTurnId === undefined)
+    ) generationIndex = 0;
     if (generationIndex < 0) return;
     const [generation] = this.startedGenerations.splice(generationIndex, 1);
     if (generation === undefined) return;

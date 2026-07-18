@@ -303,3 +303,66 @@ test("a tagged end clears the sole current generation when its start omitted tur
   turns[1]!.resolve();
   await Promise.all([first, afterEnd]);
 });
+
+test("successful delivery settlement retains publicly owned turn until agent_end", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const actions: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    async sendUserMessage(_content, options) {
+      const action = options?.deliverAs ?? "prompt";
+      actions.push(action);
+      options?.__workflowDelivery?.delivered?.(action);
+      if (action === "prompt") emit({ type: "agent_start", turnId: "current" });
+    },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  assert.equal(await send("first"), "prompt");
+  assert.equal(await send("second"), "followUp");
+  assert.deepEqual(actions, ["prompt", "followUp"]);
+  emit({ type: "agent_end", turnId: "current", messages: [] });
+  admission.dispose();
+});
+
+test("a mismatched tagged stale end cannot clear the sole tagged owner", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turn = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  let promptStarts = 0;
+  const actions: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    async prompt() {
+      promptStarts += 1;
+      actions.push("prompt");
+      emit({ type: "agent_start", turnId: "new-owner" });
+      started.resolve();
+      await turn.promise;
+    },
+    async followUp() { actions.push("followUp"); },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  await started.promise;
+  emit({ type: "agent_end", turnId: "old-owner", messages: [] });
+  assert.equal(await send("during"), "followUp");
+  assert.equal(promptStarts, 1);
+  assert.deepEqual(actions, ["prompt", "followUp"]);
+  emit({ type: "agent_end", turnId: "new-owner", messages: [] });
+  turn.resolve();
+  await first;
+});
