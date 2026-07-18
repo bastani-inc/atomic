@@ -37,7 +37,7 @@ Subagents now run and return their results directly. Atomic does not infer accep
 
 ## Foreground supervisor coordination
 
-When a foreground child sends `intercom.ask`, `intercom.send`, or `contact_supervisor` coordination, Atomic first probes for the exact foreground owner. Only an exact live child reserves the request; Atomic then sends a generation-scoped detach commit and waits for that child to acknowledge it before placing the message in the parent's model-visible steering queue. Unmatched and background-child messages retain the existing queued-until-idle behavior. Blocking `need_decision` and `interview_request` calls remain actionable through Intercom's pending/reply tracker, and the exact threaded reply resumes the retained child without delayed duplicate delivery.
+When a foreground child sends `intercom.ask`, `intercom.send`, or `contact_supervisor` coordination, Atomic first probes for the exact foreground owner. Only an exact live child reserves the request; Atomic then sends a generation-scoped detach commit and waits for that child to acknowledge it before placing the message in the parent's model-visible steering queue. Unmatched and background-child messages retain the existing queued-until-idle behavior. Blocking `need_decision` and `interview_request` calls remain actionable through [Intercom](/intercom)'s pending/reply tracker, and the exact threaded reply resumes the retained child without delayed duplicate delivery.
 
 Only the matching foreground child releases the parent `subagent` tool. It stays alive under the normal watchdog, cancellation, drain, and stdio cleanup lifecycle; its eventual completion replaces the detached placeholder. Fire-and-forget `intercom.send` and `progress_update` also release foreground supervision promptly, but do not create a reply waiter.
 
@@ -259,5 +259,6 @@ Because the effort travels with each model string, every primary and fallback ca
 ## Related docs
 
 - [Workflows](/workflows) for multi-stage reusable automation.
+- [Intercom](/intercom) for cross-session messaging and supervisor escalation.
 - [Skills](/skills) for reusable instructions invoked with `/skill:<name>`.
 - [Settings](/settings) for user and project configuration.
