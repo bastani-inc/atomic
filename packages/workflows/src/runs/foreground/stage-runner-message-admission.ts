@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { StageSessionRuntime, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 type TurnState = "starting" | "owned" | "terminal";
@@ -16,6 +17,7 @@ export interface StageMessageTurn {
   observe(): void;
   observeStreaming(): void;
   settle(action?: StageUserMessageDeliveryAction): void;
+  invoke<T>(operation: () => T): T;
 }
 
 export class StageMessageAdmission {
@@ -27,7 +29,9 @@ export class StageMessageAdmission {
   private starting: TurnGeneration | undefined;
   private owned: TurnGeneration | undefined;
   private readonly startedGenerations: TurnGeneration[] = [];
+  private readonly turnContext = new AsyncLocalStorage<TurnGeneration>();
   private readonly replayedTurnIds = new Set<PublicTurnId>();
+  private untaggedReplayCount = 0;
 
   run<T>(operation: (release: () => void) => Promise<T>): Promise<T> {
     const admission = this.acquire();
@@ -91,6 +95,7 @@ export class StageMessageAdmission {
         if (this.owned === generation) this.owned = undefined;
         this.releaseBindingIfIdle();
       },
+      invoke: (operation) => this.turnContext.run(generation, operation),
     };
   }
 
@@ -103,6 +108,7 @@ export class StageMessageAdmission {
     this.owned = undefined;
     this.startedGenerations.length = 0;
     this.replayedTurnIds.clear();
+    this.untaggedReplayCount = 0;
   }
 
   dispose(): void {
@@ -126,13 +132,13 @@ export class StageMessageAdmission {
   }
 
   private recordReplayedStart(turnId: PublicTurnId | undefined): void {
-    // Untagged synchronous callbacks are snapshots only. Recording them would
-    // make a future current-turn end indistinguishable from an old replay end.
-    if (turnId !== undefined) this.replayedTurnIds.add(turnId);
+    if (turnId === undefined) this.untaggedReplayCount += 1;
+    else this.replayedTurnIds.add(turnId);
   }
 
   private observePublicStart(turnId: PublicTurnId | undefined): void {
-    const generation = this.starting ?? this.owned;
+    const contextual = this.turnContext.getStore();
+    const generation = contextual?.state !== "terminal" ? contextual : this.starting ?? this.owned;
     if (generation === undefined || generation.state === "terminal") return;
     this.observeStarting?.();
     if (generation.publicStarted) return;
@@ -149,9 +155,20 @@ export class StageMessageAdmission {
       if (releaseIfIdle) this.releaseBindingIfIdle();
       return;
     }
-    const generationIndex = turnId === undefined
-      ? this.startedGenerations.findIndex((entry) => entry.publicTurnId === undefined)
-      : this.startedGenerations.findIndex((entry) => entry.publicTurnId === turnId);
+    const contextual = turnId === undefined ? this.turnContext.getStore() : undefined;
+    let generationIndex = contextual === undefined
+      ? -1
+      : this.startedGenerations.findIndex((entry) => entry.id === contextual.id);
+    if (generationIndex < 0 && turnId === undefined && this.untaggedReplayCount > 0) {
+      this.untaggedReplayCount -= 1;
+      return;
+    }
+    if (generationIndex < 0) {
+      generationIndex = turnId === undefined
+        ? this.startedGenerations.findIndex((entry) => entry.publicTurnId === undefined)
+        : this.startedGenerations.findIndex((entry) => entry.publicTurnId === turnId);
+    }
+    if (generationIndex < 0 && turnId === undefined && this.startedGenerations.length === 1) generationIndex = 0;
     if (generationIndex < 0) return;
     const [generation] = this.startedGenerations.splice(generationIndex, 1);
     if (generation === undefined) return;
@@ -166,6 +183,7 @@ export class StageMessageAdmission {
     this.unsubscribe = undefined;
     this.session = undefined;
     this.replayedTurnIds.clear();
+    this.untaggedReplayCount = 0;
   }
 
   private acquire(): (() => void) | Promise<() => void> {

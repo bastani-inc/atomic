@@ -59,6 +59,50 @@ test("a tagged late replay end cannot clear current ownership", async () => {
   assert.deepEqual(consumed, ["first", "second", "third", "fourth", "during fourth"]);
 });
 
+test("an untagged late replay end cannot clear current ownership", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turns = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let promptStarts = 0;
+  const actions: string[] = [];
+  const consumed: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) {
+      listener({ type: "agent_start" });
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    async prompt(text) {
+      const index = promptStarts++;
+      actions.push("prompt");
+      consumed.push(text);
+      emit({ type: "agent_start" });
+      await turns[index]?.promise;
+    },
+    async followUp(text) { actions.push("followUp"); consumed.push(text); },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  assert.equal(await send("second"), "followUp");
+  emit({ type: "agent_end", messages: [] });
+  const third = send("third");
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(promptStarts, 1);
+  assert.deepEqual(actions, ["prompt", "followUp", "followUp"]);
+  turns[0]!.resolve();
+  turns[1]!.resolve();
+  await Promise.all([first, third]);
+  assert.deepEqual(consumed, ["first", "second", "third"]);
+});
+
 test("an untagged replay without a later old end cannot consume the current end", async () => {
   const listeners = new Set<(event: StageSessionEvent) => void>();
   const allowCurrentEnd = Promise.withResolvers<void>();
@@ -114,4 +158,46 @@ test("an untagged replay without a later old end cannot consume the current end"
   assert.equal(await first, "prompt");
   assert.equal(await afterEnd, "prompt");
   assert.deepEqual(actions, ["prompt", "followUp", "prompt"]);
+});
+
+test("an untagged end clears the sole tagged current generation", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turns = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const starts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let promptStarts = 0;
+  const actions: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    async prompt() {
+      const index = promptStarts++;
+      actions.push("prompt");
+      emit(index === 0 ? { type: "agent_start", turnId: "current" } : { type: "agent_start" });
+      starts[index]?.resolve();
+      await turns[index]?.promise;
+    },
+    async followUp() { actions.push("followUp"); },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  await starts[0]!.promise;
+  assert.equal(await send("during"), "followUp");
+  emit({ type: "agent_end", messages: [] });
+  const afterEnd = send("after-end");
+  await starts[1]!.promise;
+
+  assert.equal(promptStarts, 2);
+  assert.deepEqual(actions, ["prompt", "followUp", "prompt"]);
+  turns[0]!.resolve();
+  turns[1]!.resolve();
+  await Promise.all([first, afterEnd]);
 });

@@ -249,10 +249,9 @@ export interface StageSessionRuntime {
   /**
    * Must emit `agent_start` when a submitted user-message turn takes ownership and
    * `agent_end` when that owned turn terminates. Registration may replay state
-   * synchronously; synchronous untagged replays are snapshots only. An adapter
-   * that can emit a later end for a replayed turn while a newer turn is active
-   * must provide the same stable `turnId` on that replayed start and its end.
-   * After registration returns, starts must represent new turns.
+   * synchronously; replayed starts do not own the current send. `turnId` improves
+   * direct correlation when supplied, but remains optional independently on starts
+   * and ends. After registration returns, starts must represent new turns.
    */
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;

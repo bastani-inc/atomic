@@ -8,6 +8,7 @@ interface PromptOwnershipObserver {
   observeStreaming(): void;
   settle(action?: StageUserMessageDeliveryAction): void;
   dispose(): void;
+  invoke<T>(operation: () => T): T;
 }
 
 function createLocalPromptOwnershipObserver(
@@ -33,6 +34,7 @@ function createLocalPromptOwnershipObserver(
     observeStreaming() { if (session.isStreaming) observe(); },
     settle() {},
     dispose() { unsubscribe?.(); },
+    invoke: (operation) => operation(),
   };
 }
 
@@ -45,6 +47,7 @@ function coordinatedPromptOwnershipObserver(
     observeStreaming: () => turn.observeStreaming(),
     settle: (action) => turn.settle(action),
     dispose() {},
+    invoke: (operation) => turn.invoke(operation),
   };
 }
 
@@ -72,13 +75,14 @@ export async function sendStageUserMessage(
         : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
     ownership?.arm();
     try {
-      const delivery = activeSession.sendUserMessage(content, {
+      const invokeDelivery = () => activeSession.sendUserMessage!(content, {
         ...(deliverAs === undefined ? {} : { deliverAs }),
         __workflowDelivery: {
           promptStarted: ownership?.observe ?? promptStarted,
           delivered(action) { reportedAction = action; },
         },
       });
+      const delivery = ownership === undefined ? invokeDelivery() : ownership.invoke(invokeDelivery);
       ownership?.observeStreaming();
       await delivery;
       const action = reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
@@ -103,7 +107,7 @@ export async function sendStageUserMessage(
     : coordinatedPromptOwnershipObserver(admission.startTurn(activeSession, promptStarted ?? (() => {})));
   ownership.arm();
   try {
-    const turn = activeSession.prompt(content);
+    const turn = ownership.invoke(() => activeSession.prompt(content));
     ownership.observeStreaming();
     await turn;
     ownership.settle("prompt");
