@@ -21,6 +21,13 @@ import type { QuestionParams } from "../../packages/coding-agent/src/core/tools/
 
 const EXPLORE_LABEL = "I have more to explore or ask about.";
 
+test("readiness gate asks the deterministic question verbatim", () => {
+  assert.equal(
+    READINESS_GATE_QUESTION_PARAMS.questions[0]?.question,
+    "Are you ready to move on to the next stage?",
+  );
+});
+
 describe("readinessResultMeansAdvance", () => {
   test("exact advance label → advance", () => {
     assert.equal(

@@ -56,12 +56,11 @@ describe("executor — stage-control registry integration", () => {
         );
     });
 
-    test("readiness gate bypasses confirmation for a chat answer and waits for the user's next turn", async () => {
+    test("readiness gate follows the conversational response for a chat answer", async () => {
         const events: string[] = [];
         const gateStages: string[] = [];
         const registry = createStageControlRegistry();
         const store = createStore();
-        let activeStage: { runId: string; stageId: string } | undefined;
         const def = workflow({
           name: "readiness-gate-chat-bypass-wf",
           description: "",
@@ -111,13 +110,11 @@ describe("executor — stage-control registry integration", () => {
                             },
                         });
                         emit({ type: "agent_end", messages: [] });
-                        setTimeout(() => {
-                            if (activeStage) {
-                                void registry
-                                    .get(activeStage.runId, activeStage.stageId)
-                                    ?.prompt("follow-up");
-                            }
-                        }, 0);
+                        // The ask_user_question turn has already delivered its
+                        // conversational response before this agent_end. A later
+                        // event keeps the pre-fix implicit-stay path from hanging,
+                        // so the gate assertion below exposes the regression.
+                        setTimeout(() => emit({ type: "agent_end", messages: [] }), 0);
                     } else {
                         events.push(`turn:${text}`);
                         emit({ type: "agent_end", messages: [] });
@@ -154,11 +151,6 @@ describe("executor — stage-control registry integration", () => {
                 },
                 store,
                 stageControlRegistry: registry,
-                onStageStart: (runId, stage) => {
-                    if (stage.name === "first") {
-                        activeStage = { runId, stageId: stage.id };
-                    }
-                },
                 confirmStageReadiness: async ({ stageName }) => {
                     gateStages.push(stageName);
                     return true;
@@ -167,11 +159,11 @@ describe("executor — stage-control registry integration", () => {
         );
 
         assert.equal(result.status, "completed");
-        assert.deepEqual(gateStages, []);
-        assert.deepEqual(events, ["ask:chat", "turn:follow-up", "turn:second work"]);
+        assert.deepEqual(gateStages, ["first"]);
+        assert.deepEqual(events, ["ask:chat", "turn:second work"]);
     });
 
-    test("readiness gate returns control to the user on stay and re-checks after their turn", async () => {
+    test("structured Not ready behavior remains unchanged after the next turn", async () => {
         const events: string[] = [];
         const gateStages: string[] = [];
         const registry = createStageControlRegistry();
@@ -187,7 +179,7 @@ describe("executor — stage-control registry integration", () => {
             },
         });
         const store = createStore();
-        const decisions = [false]; // first gate: stay
+        const decisions = [false];
         let gi = 0;
         const result = await run(
             def,
@@ -202,21 +194,12 @@ describe("executor — stage-control registry integration", () => {
                 },
                 store,
                 stageControlRegistry: registry,
-                confirmStageReadiness: async ({
-                    runId,
-                    stageId,
-                    stageName,
-                }) => {
+                confirmStageReadiness: async ({ runId, stageId, stageName }) => {
                     gateStages.push(stageName);
                     const advance = decisions[gi++] ?? true;
                     if (!advance) {
-                        // Simulate the user typing a follow-up in the composer after the gate
-                        // hands control back. setTimeout lets the executor arm its turn-end
-                        // waiter first.
                         setTimeout(() => {
-                            void registry
-                                .get(runId, stageId)
-                                ?.prompt("follow-up");
+                            void registry.get(runId, stageId)?.prompt("follow-up");
                         }, 0);
                     }
                     return advance;
@@ -225,19 +208,13 @@ describe("executor — stage-control registry integration", () => {
         );
 
         assert.equal(result.status, "completed");
-        // "first" asked -> gate (stay) -> the user's follow-up turn asked nothing ->
-        // auto-advance. So the gate engages only once for "first".
+        // The ordinary structured path preserves #1099 behavior: a follow-up
+        // turn that asks no new question completes without an extra gate.
         assert.deepEqual(gateStages, ["first"]);
         assert.deepEqual(events, ["ask", "turn:follow-up", "turn:second work"]);
         const stages = store.runs()[0]!.stages;
-        assert.equal(
-            stages.find((s) => s.name === "first")?.status,
-            "completed",
-        );
-        assert.equal(
-            stages.find((s) => s.name === "second")?.status,
-            "completed",
-        );
+        assert.equal(stages.find((s) => s.name === "first")?.status, "completed");
+        assert.equal(stages.find((s) => s.name === "second")?.status, "completed");
     });
 
     test("readiness gate re-gates when the user's follow-up turn asks again, then advances", async () => {
