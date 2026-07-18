@@ -19,6 +19,7 @@ export async function sendStageUserMessage(
     let reportedAction: StageUserMessageDeliveryAction | undefined;
     let unsubscribe: (() => void) | undefined;
     let ownershipObserved = false;
+    let deliveryArmed = false;
     const observePromptOwnership = (): void => {
       if (ownershipObserved) return;
       ownershipObserved = true;
@@ -28,9 +29,10 @@ export async function sendStageUserMessage(
     };
     if (!streaming) {
       unsubscribe = activeSession.subscribe((event) => {
-        if (event.type === "agent_start") observePromptOwnership();
+        if (deliveryArmed && event.type === "agent_start") observePromptOwnership();
       });
     }
+    deliveryArmed = true;
     try {
       const delivery = activeSession.sendUserMessage(content, {
         ...(deliverAs === undefined ? {} : { deliverAs }),

@@ -243,7 +243,10 @@ export interface StageSessionRuntime {
   sendUserMessage?(content: StageUserMessageContent, options?: StageSendUserMessageOptions): Promise<void>;
   steer(text: string): Promise<void>;
   followUp(text: string): Promise<void>;
-  /** Must emit `agent_start` when an asynchronously-started user-message turn takes ownership. */
+  /**
+   * Must emit `agent_start` when an asynchronously-started user-message turn takes ownership.
+   * Registration may replay state synchronously; after return, starts must represent new turns.
+   */
   subscribe(listener: (event: StageSessionEvent) => void): () => void;
   readonly sessionFile: string | undefined;
   readonly sessionId: string;

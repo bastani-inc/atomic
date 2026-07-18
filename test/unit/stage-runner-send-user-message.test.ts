@@ -171,24 +171,27 @@ describe("createStageContext — sendUserMessage", () => {
         assert.deepEqual(consumedMessages, ["first", "second"]);
     });
 
-    test("uses public turn-start signals when an adapter ignores private delivery hooks", async () => {
+    test("ignores replayed public starts before a hook-ignoring adapter owns the turn", async () => {
         const firstTurn = Promise.withResolvers<void>();
         const sendEntered = Promise.withResolvers<void>();
         const allowTurnStart = Promise.withResolvers<void>();
         const firstStarted = Promise.withResolvers<void>();
         let streaming = false;
         let promptStarts = 0;
+        let adapterEntries = 0;
         const consumed: string[] = [];
         const listeners = new Set<(event: PublicStageSessionEvent) => void>();
         const { session } = makeMockSession({
             get isStreaming() { return streaming; },
             subscribe(listener) {
                 const publicListener = listener as (event: PublicStageSessionEvent) => void;
+                publicListener({ type: "agent_start" });
                 listeners.add(publicListener);
                 return () => listeners.delete(publicListener);
             },
             async sendUserMessage(text) {
                 if (typeof text !== "string") throw new Error("expected string content");
+                adapterEntries += 1;
                 if (streaming) {
                     consumed.push(text);
                     return;
@@ -220,6 +223,7 @@ describe("createStageContext — sendUserMessage", () => {
         await sendEntered.promise;
         await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
         assert.deepEqual(consumed, []);
+        assert.equal(adapterEntries, 1);
         allowTurnStart.resolve();
         await firstStarted.promise;
 
