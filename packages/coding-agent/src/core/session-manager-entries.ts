@@ -112,7 +112,7 @@ export function createModelChangeEntry(
 
 export function createCompactionEntry(
 	compactedText: string,
-	firstKeptEntryId: string,
+	firstKeptEntryId: string | null,
 	tokensBefore: number,
 	details: VerbatimCompactionDetails,
 	byId: { has(id: string): boolean },

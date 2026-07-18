@@ -469,14 +469,14 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Atomic prepares a protected recent tail and a numbered compactable region. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
+Fired by `/compact` and auto-compaction. Atomic prepares the complete active transcript except for the exact newest `preserve_recent` context-visible messages. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
   const { preparation, branchEntries, parameters, reason, signal } = event;
 
   // preparation.region.lines - unnumbered compactable transcript lines
-  // preparation.firstKeptEntryId - fixed start of the verbatim tail
+  // preparation.firstKeptEntryId - fixed start of the exact tail, or null when the tail is empty
   // preparation.tokensBefore - whole-context token estimate
   // parameters - compression_ratio, preserve_recent, query
   // branchEntries - raw entries on the active branch
@@ -1054,12 +1054,12 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
+Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent` (an exact context-visible message count), and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
   compression_ratio: 0.5, // fraction of compactable lines to keep
-  preserve_recent: 2,    // keep recent messages and widen to a user-turn start
+  preserve_recent: 2,    // protect exactly the newest two context-visible messages
   query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");

@@ -73,6 +73,45 @@ describe("verbatim compaction extension hooks", () => {
 		expect(after[0].fromExtension).toBe(true);
 	});
 
+	it("persists zero retention and includes that durable summary on repeated compaction", async () => {
+		const compactedText = "[User]: retained exactly\n(filtered 30 lines)";
+		create(extension(() => ({ compactedText })));
+
+		const first = await session.compact({ preserve_recent: 0 });
+		expect(first.firstKeptEntryId).toBeNull();
+		expect(session.sessionManager.buildSessionContext().messages).toHaveLength(1);
+
+		const long = Array.from({ length: 20 }, (_, index) => `new line ${index}`).join("\n");
+		session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
+		const tailId = session.sessionManager.appendMessage(assistant("new tail", Date.now() + 1));
+		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+
+		const second = await session.compact({ preserve_recent: 1 });
+		expect(second.firstKeptEntryId).toBe(tailId);
+		expect(before[1].preparation.keptTailMessageCount).toBe(1);
+		expect(before[1].preparation.region.lines.slice(0, 2)).toEqual(compactedText.split("\n"));
+		expect(before[1].preparation.region.lines.join("\n")).toContain(long);
+	});
+
+	it("sends the prior durable summary through the planner on repeated compaction", async () => {
+		const faux = createFauxStreamFn(["2,2\n", "2,2\n"]);
+		create(extension(() => undefined), faux.streamFn);
+
+		await session.compact({ preserve_recent: 0 });
+		const long = Array.from({ length: 20 }, (_, index) => `planner line ${index}`).join("\n");
+		session.sessionManager.appendMessage({ role: "user", content: long, timestamp: Date.now() });
+		session.sessionManager.appendMessage(assistant("planner tail", Date.now() + 1));
+		session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
+
+		await session.compact({ preserve_recent: 1 });
+		expect(faux.state.callCount).toBe(2);
+		const secondRequest = JSON.stringify(faux.state.contexts[1]);
+		expect(secondRequest).toContain("1→[User]: task 0");
+		expect(secondRequest).toContain("2→(filtered 1 lines)");
+		expect(secondRequest).toContain("planner line 19");
+		expect(secondRequest).not.toContain("[Assistant]: planner tail");
+	});
+
 	it("cancels without persistence", async () => {
 		create(extension(() => ({ cancel: true })));
 		await expect(session.compact()).rejects.toThrow("Compaction cancelled");

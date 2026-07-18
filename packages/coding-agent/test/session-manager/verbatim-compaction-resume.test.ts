@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -75,6 +75,35 @@ describe("verbatim compaction persistence and resume", () => {
 		const resumedContext = resumed.buildSessionContext();
 		expect(isVerbatimCompactionMessage(resumedContext.messages[0] as CustomMessage)).toBe(true);
 		expect(convertToLlm(resumedContext.messages)).toEqual(beforeResume);
+	});
+
+	it("durably rebuilds a zero-retention boundary without restoring a hidden message", () => {
+		const cwd = mkdtempSync(join(tmpdir(), "atomic-verbatim-zero-tail-"));
+		tempDirs.push(cwd);
+		const manager = SessionManager.create(cwd, cwd);
+		manager.appendMessage(userMsg("fully compacted user"));
+		manager.appendMessage(assistantMsg("fully compacted answer"));
+		const compactedText = "[User]: fully compacted user\n(filtered 8 lines)";
+		const compactionId = manager.appendCompaction(compactedText, null, 100, {
+			...details(),
+			parameters: { compression_ratio: 0.5, preserve_recent: 0, query: "task" },
+		});
+		manager.appendMessage(userMsg("after boundary"));
+
+		const persisted = manager.getEntry(compactionId);
+		expect(persisted?.type === "compaction" && persisted.firstKeptEntryId).toBeNull();
+		const file = manager.getSessionFile();
+		expect(file).toBeDefined();
+		expect(readFileSync(file!, "utf8")).toContain('"firstKeptEntryId":null');
+		const resumed = SessionManager.open(file!);
+		const rebuiltMessages = convertToLlm(resumed.buildSessionContext().messages);
+		expect(rebuiltMessages[0]).toMatchObject({
+			role: "user",
+			content: [{ type: "text", text: VERBATIM_COMPACTION_PREFIX + compactedText }],
+		});
+		const rebuilt = JSON.stringify(rebuiltMessages);
+		expect(rebuilt).toContain("after boundary");
+		expect(rebuilt).not.toContain("fully compacted answer");
 	});
 
 	it("treats legacy deletion and non-verbatim compaction records as inert", () => {

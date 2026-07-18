@@ -34,7 +34,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Compact older transcript lines verbatim while preserving recent logical turns; see [Compaction](/compaction) |
+| `/compact` | Compact transcript lines verbatim while preserving exactly the configured number of newest context-visible messages; see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -42,7 +42,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
-When Atomic reconstructs a resumed session, the latest active verbatim `compaction` entry supplies a durable compacted transcript string followed by the original kept tail. Resume does not rerun a planner or re-derive omissions. Legacy logical-deletion `context_compaction` entries are inert archival records, so previously hidden content can re-enter context in sessions created by older versions.
+When Atomic reconstructs a resumed session, the latest active verbatim `compaction` entry supplies a durable compacted transcript string followed by the exact original kept tail. A zero-retention boundary stores `firstKeptEntryId: null` and replays no pre-boundary ordinary message. Resume does not rerun a planner or re-derive omissions. Legacy logical-deletion `context_compaction` entries are inert archival records, so previously hidden content can re-enter context in sessions created by older versions.
 
 In the picker you can:
 

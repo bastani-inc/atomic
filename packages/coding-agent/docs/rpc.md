@@ -414,7 +414,7 @@ Response:
 
 #### compact
 
-Run Atomic's verbatim line compactor. The selected session model receives a numbered transcript and returns JSON deleted ranges; Atomic validates them and mechanically reconstructs retained lines with `(filtered N lines)` markers. The command appends a durable `compaction` entry with `details.strategy: "verbatim-lines"`. Recent logical turns remain ordinary messages.
+Run Atomic's verbatim line compactor. The selected session model receives the complete active numbered transcript except for exactly the newest `preserve_recent` context-visible messages and returns bare `start,end` deletion records; Atomic validates them and mechanically reconstructs retained lines with `(filtered N lines)` markers. The default tail is two messages, with no user-turn alignment. A value of zero sends the entire active transcript and persists `firstKeptEntryId: null`. The command appends a durable `compaction` entry with `details.strategy: "verbatim-lines"`.
 
 ```json
 {"type": "compact"}
@@ -430,13 +430,13 @@ Response:
     "compactedText": "[User]: fix the test\n(filtered 42 lines)\n[Assistant]: Fixed.",
     "firstKeptEntryId": "m7",
     "tokensBefore": 150000,
-    "promptVersion": 2,
+    "promptVersion": 3,
     "parameters": {
       "compression_ratio": 0.5,
       "preserve_recent": 2,
       "query": "fix the test"
     },
-    "rung": "standard",
+    "rung": "planned",
     "stats": {
       "linesBefore": 812,
       "linesDeleted": 417,
@@ -450,6 +450,8 @@ Response:
   }
 }
 ```
+
+`firstKeptEntryId` is a string when at least one ordinary message remains outside compaction and `null` when none does. RPC clients must accept both values.
 
 #### set_auto_compaction
 
@@ -1068,9 +1070,9 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
     "compactedText": "[User]: fix the test\n(filtered 42 lines)",
     "firstKeptEntryId": "m7",
     "tokensBefore": 150000,
-    "promptVersion": 2,
+    "promptVersion": 3,
     "parameters": {"compression_ratio": 0.5, "preserve_recent": 2, "query": "fix the test"},
-    "rung": "standard",
+    "rung": "planned",
     "stats": {
       "linesBefore": 812,
       "linesDeleted": 417,

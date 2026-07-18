@@ -21,8 +21,8 @@ export function getLatestCompactionBoundaryEntry(
  * Build the session context from entries using tree traversal.
  * If leafId is provided, walks from that entry to root.
  * Emits the latest verbatim compaction boundary (compacted string as a custom-role
- * boundary message) followed by the kept tail from firstKeptEntryId, and includes
- * branch summaries along the path.
+ * boundary message) followed by the kept tail when firstKeptEntryId is non-null,
+ * and includes branch summaries along the path.
  */
 export function buildSessionContext(
 	entries: SessionEntry[],

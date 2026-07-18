@@ -20,6 +20,7 @@
 
 - Documented and enforced `/resume`-equivalent workflow-history retention: eligible runs are not filtered or garbage-collected by age/count, and the selector viewport does not limit search/navigation.
 - Kept the interactive-engine watchdog's early 250 ms blocking signal internal instead of rendering repetitive "has not yielded" warnings during ordinary slow extension/tool loading. One-second unresponsive heartbeat-watchdog diagnostics are likewise always kept internal, whether or not they attribute a callback (for example, `extension.hook tool_execution_end`); the isolated host remains responsive and still provides Escape/Ctrl+C recovery controls. Concrete engine failures such as termination and RPC errors continue to surface as chat errors.
+- Changed verbatim compaction to classify the complete active transcript except for exactly the newest `preserve_recent` context-visible messages (default `2`). The protected tail is no longer widened to a user-turn boundary, `preserve_recent: 0` now retains no ordinary message, and repeated compaction includes the prior durable verbatim summary while preserving resumable session boundaries.
 
 ### Removed
 
