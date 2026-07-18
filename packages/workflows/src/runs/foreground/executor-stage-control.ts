@@ -54,11 +54,33 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
       runtime.throwIfStageMutationBlocked();
       runtime.captureStageSessionMeta();
     },
+    async sendUserMessage(text, options) {
+      runtime.throwIfStageMutationBlocked();
+      await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
+      try {
+        const action = await runtime.innerCtx.__sendUserMessage(
+          text,
+          options,
+          runtime.throwIfStageMutationBlocked,
+        );
+        if (action === "steer" || action === "followUp") {
+          runtime.state.resumeContinuationPending = "queued-user-message";
+        }
+        return action;
+      } finally {
+        runtime.captureStageSessionMeta();
+      }
+    },
     async prompt(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
       try {
-        await runtime.innerCtx.prompt(text);
+        await runtime.innerCtx.__sendUserMessage(
+          text,
+          undefined,
+          runtime.throwIfStageMutationBlocked,
+        );
       } finally {
         runtime.captureStageSessionMeta();
       }
@@ -67,6 +89,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async steer(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
       // A user message queued into an in-flight turn should nudge the stage
       // back to its objective once that turn ends: arm the pending flag so
       // drainResumeContinuations injects RESUME_CONTINUATION_PROMPT after the
@@ -83,6 +106,7 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async followUp(text: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
       // Same in-flight continuation arming as steer(): see comment above.
       const queuedIntoInFlightTurn = runtime.innerCtx.isStreaming;
       try {
@@ -112,14 +136,16 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
     async resume(message?: string) {
       runtime.throwIfStageMutationBlocked();
       await ensureMessagingSession();
+      runtime.throwIfStageMutationBlocked();
       const wasPausedBeforeResume = runtime.innerCtx.__isPaused();
-      const shouldContinueInterruptedTurn = message === undefined ||
-        (typeof message === "string" && message.trim().length > 0);
-      const queuedResumeContinuation = wasPausedBeforeResume && shouldContinueInterruptedTurn;
+      const resumesIdleStageChat = wasPausedBeforeResume && runtime.state.waitingForStageChatTurn;
+      const hasMessage = typeof message === "string" && message.trim().length > 0;
+      const resumeMessage = hasMessage ? message : undefined;
+      const queuedResumeContinuation = wasPausedBeforeResume && !resumesIdleStageChat;
       const addedResumeContinuation = queuedResumeContinuation && runtime.state.resumeContinuationPending === false;
       if (addedResumeContinuation) runtime.state.resumeContinuationPending = "resume";
       try {
-        await runtime.innerCtx.__resume(message);
+        await runtime.innerCtx.__resume(resumesIdleStageChat ? undefined : resumeMessage);
         const changed = runtime.activeStore.recordStageResumed(runtime.runId, runtime.stageId);
         if (changed) {
           runtime.scheduler.releaseStageBarrier(runtime.stageId);
@@ -127,6 +153,14 @@ export function createStageControlHandle(runtime: LiveStageRuntime): StageContro
           // Preserve manual per-stage semantics: once this acknowledged
           // resume succeeds, the run is active even if sibling stages remain paused.
           runtime.activeStore.recordRunResumed(runtime.runId);
+        }
+        if (resumesIdleStageChat && hasMessage) {
+          runtime.throwIfStageMutationBlocked();
+          return await runtime.innerCtx.__sendUserMessage(
+            message,
+            undefined,
+            runtime.throwIfStageMutationBlocked,
+          );
         }
       } catch (err) {
         if (addedResumeContinuation && runtime.state.resumeContinuationPending === "resume") {

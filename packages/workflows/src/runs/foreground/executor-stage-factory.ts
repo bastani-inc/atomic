@@ -147,6 +147,7 @@ export function createWorkflowStageFactory(input: {
       askUserQuestionObservedThisTurn: false,
       chatAnswerObservedThisTurn: false,
       resumeContinuationPending: false,
+      waitingForStageChatTurn: false,
       liveHandleReleased: false,
       stageClosedByWorkflowExit: false,
       stageFinalized: false,
@@ -220,6 +221,9 @@ export function createWorkflowStageFactory(input: {
         throw new Error(`atomic-workflows: stage "${name}" skipped by workflow exit`);
       }
       input.exit.throwIfWorkflowExitSelected();
+      if (input.signal.aborted) {
+        throw input.signal.reason ?? new DOMException("workflow killed", "AbortError");
+      }
     };
 
     let stageStartEntryAppended = false;

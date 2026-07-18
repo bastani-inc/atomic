@@ -96,6 +96,7 @@ export function createReplayStageContext(input: {
     prompt: replayText,
     complete: replayText,
     sendUserMessage: async () => rejectReplayMutation("send a user message"),
+    __sendUserMessage: async () => rejectReplayMutation("send a user message"),
     steer: async () => rejectReplayMutation("steer"),
     followUp: async () => rejectReplayMutation("follow up"),
     subscribe: () => () => {},

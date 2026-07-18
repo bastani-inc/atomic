@@ -184,7 +184,12 @@ export function createTrackedStageCaller(input: {
               if (runtime.signal.aborted) break;
               runtime.state.askUserQuestionObservedThisTurn = false;
               runtime.state.chatAnswerObservedThisTurn = false;
-              await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+              runtime.state.waitingForStageChatTurn = true;
+              try {
+                await raceAbort(new Promise<void>((resolve) => { resolveNextTurnEnd = resolve; }), runtime.signal);
+              } finally {
+                runtime.state.waitingForStageChatTurn = false;
+              }
               if (runtime.signal.aborted) break;
               result = (runtime.innerCtx.__getLastAssistantText() ?? result) as T;
               const continuationDrain = await drainResumeContinuations(result);

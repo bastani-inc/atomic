@@ -362,7 +362,7 @@ describe("tool run-control actions", () => {
         }
     });
 
-    test.serial("makeExecuteWorkflowTool auto delivery without a targeted prompt still queues a live followUp", async () => {
+    test.serial("makeExecuteWorkflowTool auto delivery without a targeted prompt starts an idle live prompt", async () => {
         const runId = `stage-tool-send-auto-live-${Date.now()}`;
         store.recordRunStart(makeInflightRun(runId));
         store.recordStageStart(runId, {
@@ -372,7 +372,7 @@ describe("tool run-control actions", () => {
             parentIds: [],
             toolEvents: [],
         });
-        const { followUps, dispose } = registerLiveStageHandle(
+        const { followUps, prompts, dispose } = registerLiveStageHandle(
             runId,
             "stage-auto-live",
         );
@@ -391,9 +391,11 @@ describe("tool run-control actions", () => {
                 status: string;
                 message: string;
             };
-            assert.equal(send.delivery, "followUp");
+            assert.equal(send.delivery, "prompt");
             assert.equal(send.status, "ok");
-            assert.deepEqual(followUps, ["next"]);
+            assert.equal(send.message, "Prompt started for stage.");
+            assert.deepEqual(prompts, ["next"]);
+            assert.deepEqual(followUps, []);
         } finally {
             dispose();
         }

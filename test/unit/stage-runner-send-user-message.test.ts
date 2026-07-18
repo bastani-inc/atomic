@@ -1,4 +1,5 @@
 import { describe, test } from "bun:test";
+import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type {
     AgentSessionAdapter,
     InternalStageContext,
@@ -36,7 +37,7 @@ describe("createStageContext — sendUserMessage", () => {
         ) as InternalStageContext;
 
         assert.equal(await ctx.prompt("initial"), "ok");
-        await ctx.sendUserMessage("continue after idle");
+        assert.equal(await ctx.__sendUserMessage("continue after idle"), "prompt");
 
         assert.deepEqual(prompts, ["initial"]);
         assert.deepEqual(userMessages, [{ text: "continue after idle", deliverAs: undefined }]);
@@ -61,13 +62,102 @@ describe("createStageContext — sendUserMessage", () => {
         ) as InternalStageContext;
 
         await ctx.__ensureSession();
-        await ctx.sendUserMessage("queued while streaming");
-        await ctx.sendUserMessage("steer while streaming", { deliverAs: "steer" });
+        assert.equal(await ctx.__sendUserMessage("queued while streaming"), "followUp");
+        assert.equal(await ctx.__sendUserMessage("steer while streaming", { deliverAs: "steer" }), "steer");
 
         assert.deepEqual(userMessages, [
             { text: "queued while streaming", deliverAs: "followUp" },
             { text: "steer while streaming", deliverAs: "steer" },
         ]);
+    });
+
+    test("reports the post-preflight delivery branch instead of the initial streaming snapshot", async () => {
+        const preflight = Promise.withResolvers<void>();
+        let streaming = true;
+        const calls: string[] = [];
+        const { session } = makeMockSession({
+            get isStreaming() { return streaming; },
+            async sendUserMessage(text, options) {
+                assert.equal(text, "race-safe delivery");
+                await preflight.promise;
+                streaming = false;
+                options?.__workflowDelivery?.beforeDelivery?.();
+                options?.__workflowDelivery?.delivered?.("prompt");
+                calls.push("prompt");
+            },
+        });
+
+        const deliveryPromise = sendStageUserMessage(session, "race-safe delivery");
+        streaming = false;
+        preflight.resolve();
+
+        assert.equal(await deliveryPromise, "prompt");
+        assert.deepEqual(calls, ["prompt"]);
+    });
+
+    test("serializes concurrent idle admission so the second message queues behind the started prompt", async () => {
+        const firstPreflight = Promise.withResolvers<void>();
+        const firstTurn = Promise.withResolvers<void>();
+        let streaming = false;
+        const calls: string[] = [];
+        const { session } = makeMockSession({
+            async sendUserMessage(text, options) {
+                if (text === "first") {
+                    await firstPreflight.promise;
+                    streaming = true;
+                    options?.__workflowDelivery?.beforeDelivery?.();
+                    options?.__workflowDelivery?.delivered?.("prompt");
+                    calls.push("prompt:first");
+                    await firstTurn.promise;
+                    streaming = false;
+                    return;
+                }
+                options?.__workflowDelivery?.beforeDelivery?.();
+                options?.__workflowDelivery?.delivered?.("followUp");
+                calls.push(`followUp:${String(text)}:${options?.deliverAs}`);
+            },
+        });
+        Object.defineProperty(session, "isStreaming", { get: () => streaming });
+        const ctx = createStageContext(makeOpts({
+            adapters: { agentSession: { async create() { return session; } } },
+        })) as InternalStageContext;
+
+        const first = ctx.__sendUserMessage("first");
+        const second = ctx.__sendUserMessage("second");
+        firstPreflight.resolve();
+
+        assert.equal(await second, "followUp");
+        assert.deepEqual(calls, ["prompt:first", "followUp:second:followUp"]);
+        firstTurn.resolve();
+        assert.equal(await first, "prompt");
+    });
+
+    test("rechecks lifecycle after asynchronous preflight before admitting a prompt", async () => {
+        const preflight = Promise.withResolvers<void>();
+        let blocked = false;
+        let prompts = 0;
+        const { session } = makeMockSession({
+            async sendUserMessage(_text, options) {
+                await preflight.promise;
+                options?.__workflowDelivery?.beforeDelivery?.();
+                options?.__workflowDelivery?.delivered?.("prompt");
+                prompts += 1;
+            },
+        });
+
+        const deliveryPromise = sendStageUserMessage(
+            session,
+            "must not become late prompt",
+            undefined,
+            () => {
+                if (blocked) throw new DOMException("workflow exited", "AbortError");
+            },
+        );
+        blocked = true;
+        preflight.resolve();
+
+        await assert.rejects(deliveryPromise, /workflow exited/);
+        assert.equal(prompts, 0);
     });
 
     test("passes multimodal content through native sendUserMessage", async () => {

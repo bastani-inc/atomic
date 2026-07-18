@@ -1,5 +1,5 @@
 import type { StageSendUserMessageOptions, StageUserMessageContent } from "../../shared/types.js";
-import type { StageSessionRuntime } from "./stage-runner-types.js";
+import type { StageSessionRuntime, StageUserMessageDeliveryAction } from "./stage-runner-types.js";
 
 function unsupportedContentError(): Error {
   return new Error("atomic-workflows: this stage session adapter does not support non-string sendUserMessage content; provide a runtime sendUserMessage implementation for text/image blocks.");
@@ -9,17 +9,28 @@ export async function sendStageUserMessage(
   activeSession: StageSessionRuntime,
   content: StageUserMessageContent,
   options?: StageSendUserMessageOptions,
-): Promise<void> {
-  const deliverAs = activeSession.isStreaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
+  beforeDelivery?: () => void,
+): Promise<StageUserMessageDeliveryAction> {
+  const streaming = activeSession.isStreaming;
+  const deliverAs = streaming ? options?.deliverAs ?? "followUp" : options?.deliverAs;
   if (activeSession.sendUserMessage !== undefined) {
-    await activeSession.sendUserMessage(content, deliverAs === undefined ? undefined : { deliverAs });
-    return;
+    let reportedAction: StageUserMessageDeliveryAction | undefined;
+    await activeSession.sendUserMessage(content, {
+      ...(deliverAs === undefined ? {} : { deliverAs }),
+      __workflowDelivery: {
+        beforeDelivery,
+        delivered(action) { reportedAction = action; },
+      },
+    });
+    return reportedAction ?? (streaming ? deliverAs ?? "followUp" : "prompt");
   }
   if (typeof content !== "string") throw unsupportedContentError();
-  if (activeSession.isStreaming) {
+  beforeDelivery?.();
+  if (streaming) {
     if (deliverAs === "steer") await activeSession.steer(content);
     else await activeSession.followUp(content);
-    return;
+    return deliverAs ?? "followUp";
   }
   await activeSession.prompt(content);
+  return "prompt";
 }

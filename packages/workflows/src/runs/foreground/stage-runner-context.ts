@@ -102,6 +102,10 @@ export function createStageContext(opts: StageRunnerOpts): InternalStageContext 
       await controller.sendUserMessage(text, options);
     },
 
+    async __sendUserMessage(text, options, beforeDelivery) {
+      return controller.sendUserMessage(text, options, beforeDelivery);
+    },
+
     async steer(text) {
       await (await controller.ensureSession()).steer(text);
     },

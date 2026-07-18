@@ -9,9 +9,19 @@ import { stripFrontmatter } from "../utils/frontmatter.ts";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import type { PromptOptions } from "./agent-session-types.ts";
 
+type UserMessageDeliveryAction = "prompt" | "steer" | "followUp" | "handled";
+
+type PromptOptionsWithWorkflowDelivery = PromptOptions & {
+	readonly __workflowDelivery?: {
+		readonly beforeDelivery?: () => void;
+		readonly delivered?: (action: UserMessageDeliveryAction) => void;
+	};
+};
+
 export async function prompt(this: AgentSession, text: string, options?: PromptOptions): Promise<void> {
 	const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 	const preflightResult = options?.preflightResult;
+	const workflowDelivery = (options as PromptOptionsWithWorkflowDelivery | undefined)?.__workflowDelivery;
 	let messages: AgentMessage[] | undefined;
 
 	try {
@@ -20,12 +30,16 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		if (expandPromptTemplates && text.startsWith("/")) {
 			const handledBuiltin = await this._tryExecuteBuiltinSlashCommand(text);
 			if (handledBuiltin) {
+				workflowDelivery?.beforeDelivery?.();
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
 
 			const handledExtension = await this._tryExecuteExtensionCommand(text);
 			if (handledExtension) {
+				workflowDelivery?.beforeDelivery?.();
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
@@ -42,6 +56,8 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 				this.isStreaming ? options?.streamingBehavior : undefined,
 			);
 			if (inputResult.action === "handled") {
+				workflowDelivery?.beforeDelivery?.();
+				workflowDelivery?.delivered?.("handled");
 				preflightResult?.(true);
 				return;
 			}
@@ -65,11 +81,13 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 				);
 			}
+			workflowDelivery?.beforeDelivery?.();
 			if (options.streamingBehavior === "followUp") {
 				await this._queueFollowUp(expandedText, currentImages);
 			} else {
 				await this._queueSteer(expandedText, currentImages);
 			}
+			workflowDelivery?.delivered?.(options.streamingBehavior);
 			preflightResult?.(true);
 			return;
 		}
@@ -177,6 +195,8 @@ export async function prompt(this: AgentSession, text: string, options?: PromptO
 		throw error;
 	}
 
+	workflowDelivery?.beforeDelivery?.();
+	workflowDelivery?.delivered?.("prompt");
 	preflightResult?.(true);
 	await this._runAgentPrompt(messages);
 }
@@ -360,9 +380,12 @@ export async function followUp(this: AgentSession, text: string, images?: ImageC
  * Internal: Queue a steering message (already expanded, no extension command check).
  */
 
-export async function sendUserMessage(this: AgentSession, 
+export async function sendUserMessage(this: AgentSession,
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp" },
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		__workflowDelivery?: PromptOptionsWithWorkflowDelivery["__workflowDelivery"];
+	},
 ): Promise<void> {
 	// Normalize content to text string + optional images
 	let text: string;
@@ -384,13 +407,16 @@ export async function sendUserMessage(this: AgentSession,
 		if (images.length === 0) images = undefined;
 	}
 
-	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
+	// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion.
+	// The private delivery hook lets workflow routing report and gate the branch
+	// selected after asynchronous input/compaction extension preflight.
 	await this.prompt(text, {
 		expandPromptTemplates: false,
 		streamingBehavior: options?.deliverAs,
 		images,
 		source: "extension",
-	});
+		__workflowDelivery: options?.__workflowDelivery,
+	} as PromptOptionsWithWorkflowDelivery);
 }
 
 /**
