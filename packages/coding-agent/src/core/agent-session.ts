@@ -217,9 +217,10 @@ export class AgentSession {
 				return finalPayload;
 			};
 			const stream = await this._originatingStreamFn(model, context, { ...options, onPayload: capturePayload });
-			void stream.result().then((message) => {
-				this._requestGenerationByAssistant.set(message, requestGeneration);
-			});
+			void stream.result().then(
+				(message) => { this._requestGenerationByAssistant.set(message, requestGeneration); },
+				() => undefined,
+			);
 			return stream;
 		};
 		this.agent.streamFn = this._capturingStreamFn;

@@ -95,7 +95,7 @@ describe("provider-visible input projection", () => {
 		["tools", [{ type: "function", name: "changed_tool", parameters: { type: "object", properties: { value: { type: "string" } } } }]],
 		["text", { format: { type: "json_schema", name: "changed", schema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } } } }],
 		["reasoning", { effort: "minimal", summary: "detailed" }],
-	] as const)("estimates the whole current projection when %s changes outside the input sequence", async (field, changed) => {
+	] as const)("restores captured %s when the generated candidate drifts outside the sequence", async (field, changed) => {
 		const historical: Record<string, unknown> = {
 			instructions: "stable", input: [{ role: "user", content: [{ type: "input_text", text: "old" }] }],
 			tools: [{ type: "function", name: "read", parameters: { type: "object" } }], text: { verbosity: "low" },
@@ -112,8 +112,9 @@ describe("provider-visible input projection", () => {
 		const state: PayloadFitState = { maxTokens: 0, finalPayloadProven: false };
 		const returned = await createProviderPayloadFitHook(baseModel, 64, state, prefix)(candidate) as Record<string, unknown>;
 
-		expect(returned[field]).toEqual(changed);
-		expect(state).toMatchObject({ countConfidence: "heuristic", countSource: "openai-responses-provider-visible-input" });
+		expect(returned[field]).toEqual(historical[field]);
+		expect(returned[field]).not.toEqual(changed);
+		expect(state).toMatchObject({ countConfidence: "projection", countSource: "captured-provider-usage-plus-suffix" });
 	});
 
 	it("fingerprints the exact post-hook transport and does not count output-only changes as smaller input", async () => {

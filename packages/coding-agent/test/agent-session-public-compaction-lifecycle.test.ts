@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +18,9 @@ import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CACHE_REUSE_COLLAPSE_DIRECTIVE, COLLAPSE_PLANNER_SYSTEM_PROMPT } from "../src/core/compaction/collapse-planner.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
+import { buildSessionContext, SessionManager, type CompactionEntry } from "../src/core/session-manager.ts";
+import { convertToLlm } from "../src/core/messages.ts";
+import type { VerbatimCompactionDetails } from "../src/core/compaction/compaction-types.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createTestResourceLoader } from "./utilities.ts";
 
@@ -48,6 +51,16 @@ function message(stage: NormalStage, timestamp: number): AssistantMessage {
 		stopReason: stage.error ? "error" : stage.toolCall ? "toolUse" : "stop",
 		...(stage.error ? { errorMessage: stage.error } : {}), timestamp,
 	};
+}
+
+function textFromMessages(messages: readonly object[]): string {
+	const text: string[] = [];
+	for (const message of messages) {
+		const content = (message as { content?: string | Array<{ type?: string; text?: string }> }).content;
+		if (typeof content === "string") text.push(content);
+		else if (Array.isArray(content)) for (const block of content) if (block.type === "text" && typeof block.text === "string") text.push(block.text);
+	}
+	return text.join("\n");
 }
 
 function textOfLast(context: Context): string {
@@ -108,16 +121,17 @@ interface LifecycleHarness {
 	file?: string; cleanup(): void;
 }
 
-function createLifecycleHarness(stages: NormalStage[], options: { disk?: boolean; tool?: AgentTool; plannerGate?: Promise<void> } = {}): LifecycleHarness {
+function createLifecycleHarness(stages: NormalStage[], options: { disk?: boolean; tool?: AgentTool; plannerGate?: Promise<void>; requestModel?: Model<"anthropic-messages">; preserveRecent?: number } = {}): LifecycleHarness {
 	const dir = join(tmpdir(), `atomic-public-lifecycle-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 	mkdirSync(dir, { recursive: true });
 	const captures: TransportCapture[] = [];
 	const streamFn = stagedStream(stages, captures, options.plannerGate);
 	const tools = options.tool ? [options.tool] : [];
-	const agent = new Agent({ getApiKey: () => "key", initialState: { model, systemPrompt: "system", tools }, streamFn });
+	const requestModel = options.requestModel ?? model;
+	const agent = new Agent({ getApiKey: () => "key", initialState: { model: requestModel, systemPrompt: "system", tools }, streamFn });
 	const manager = options.disk ? SessionManager.create(dir, dir) : SessionManager.inMemory();
 	const settings = SettingsManager.create(dir, dir);
-	settings.applyOverrides({ retry: { enabled: false }, compaction: { enabled: true, reserveTokens: 16_384, compression_ratio: 0.5, preserve_recent: 0 } });
+	settings.applyOverrides({ retry: { enabled: false }, compaction: { enabled: true, reserveTokens: 16_384, compression_ratio: 0.5, preserve_recent: options.preserveRecent ?? 0 } });
 	const auth = AuthStorage.create(join(dir, "auth.json"));
 	auth.setRuntimeApiKey(model.provider, "key");
 	const session = new AgentSession({ agent, sessionManager: manager, settingsManager: settings, cwd: dir,
@@ -142,7 +156,7 @@ describe("public auto-compaction lifecycle", () => {
 			{ text: "first completion", usage: { input: 112_000, output: 1 } },
 			{ text: "second completion", usage: { input: 112_000, output: 1 } },
 			{ text: Array.from({ length: 30 }, (_, index) => `second-final-${index}`).join("\n"), usage: { input: 112_000, output: 1 } },
-		], { tool, plannerGate });
+		], { tool, plannerGate, preserveRecent: 2 });
 		active.push(harness);
 		let resolveFirstStart!: () => void;
 		const firstCompactionStarted = new Promise<void>((resolve) => { resolveFirstStart = resolve; });
@@ -169,9 +183,94 @@ describe("public auto-compaction lifecycle", () => {
 		const boundaries = harness.manager.getEntries().filter((entry) => entry.type === "compaction");
 		expect(boundaries).toHaveLength(2);
 		expect(harness.events.filter((event) => event.type === "compaction_end" && event.reason === "threshold")).toHaveLength(2);
-		expect(harness.events.filter((event) => event.type === "message_end" && event.message.role === "toolResult")).toHaveLength(1);
+		const toolEvents = harness.events.filter((event) => event.type === "message_end" && event.message.role === "toolResult");
+		expect(toolEvents).toHaveLength(1);
+		const publicToolText = toolEvents[0].type === "message_end" && toolEvents[0].message.role === "toolResult" && toolEvents[0].message.content[0]?.type === "text"
+			? toolEvents[0].message.content[0].text : "";
+		expect(publicToolText).toBe(large);
 		expect(harness.session.pendingMessageCount).toBe(0);
 		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it("publicly compacts a 108%-reported protected tool result while keeping raw disk bytes append-only and active context bounded", async () => {
+		const prefixLines = Array.from({ length: 200 }, (_, index) => `raw-line-${index}-${"r".repeat(90)}`).join("\n");
+		const raw = prefixLines + "z".repeat(503_999 - prefixLines.length);
+		expect(raw).toHaveLength(503_999);
+		const rawHash = createHash("sha256").update(raw).digest("hex");
+		const expectedCanonical = `${raw.slice(0, 16_000)}\n\n[... ${raw.length - 16_000} more characters truncated]`;
+		const largeModel = { ...model, contextWindow: 372_000, maxInputTokens: 372_000 } as Model<"anthropic-messages">;
+		const tool: AgentTool = {
+			name: "oversized_result", label: "oversized_result", description: "returns the protected oversized result", parameters: Type.Object({}),
+			maxResultSizeChars: Infinity,
+			execute: async () => ({ content: [{ type: "text", text: raw }], details: { hash: rawHash } }),
+		};
+		const overflow = "prompt is too long: public 401760/372000 staged overflow";
+		const harness = createLifecycleHarness([
+			{ toolCall: { id: "public-large-call", name: "oversized_result" } },
+			{ error: overflow, usage: { input: 401_760, output: 0, totalTokens: 401_760 } },
+			{ text: "continuation after automatic overflow", usage: { input: 1_000, output: 20 } },
+		], { disk: true, tool, requestModel: largeModel, preserveRecent: 2 });
+		active.push(harness);
+
+		await harness.session.prompt(Array.from({ length: 30 }, (_, index) => `public-overflow-source-${index}`).join("\n"));
+		const boundaries = harness.manager.getEntries().filter((entry) => entry.type === "compaction") as Array<CompactionEntry<VerbatimCompactionDetails>>;
+		expect(boundaries).toHaveLength(1);
+		const boundary = boundaries[0];
+		expect(boundary.details).toMatchObject({ format: "full-collapse", promptVersion: 4 });
+		expect(boundary.summary).toContain(expectedCanonical);
+		expect(boundary.summary.split("more characters truncated")).toHaveLength(2);
+		expect(boundary.summary).not.toContain(raw);
+
+		const durableTool = harness.manager.getEntries().find((entry) => entry.type === "message" && entry.message.role === "toolResult");
+		expect(durableTool?.type).toBe("message");
+		if (!durableTool || durableTool.type !== "message" || durableTool.message.role !== "toolResult") throw new Error("missing durable tool result");
+		const durableText = durableTool.message.content[0]?.type === "text" ? durableTool.message.content[0].text : "";
+		expect(durableText).toHaveLength(raw.length);
+		expect(createHash("sha256").update(durableText).digest("hex")).toBe(rawHash);
+		const rawToolTextOnDisk = (file: string): string => {
+			for (const line of readFileSync(file, "utf8").trim().split("\n")) {
+				const entry = JSON.parse(line) as { type?: string; message?: { role?: string; content?: Array<{ type?: string; text?: string }> } };
+				if (entry.type === "message" && entry.message?.role === "toolResult" && entry.message.content?.[0]?.type === "text") return entry.message.content[0].text ?? "";
+			}
+			return "";
+		};
+		const activeDiskRaw = rawToolTextOnDisk(harness.file!);
+		expect(activeDiskRaw).toHaveLength(503_999);
+		expect(createHash("sha256").update(activeDiskRaw).digest("hex")).toBe(rawHash);
+		const backupPath = boundary.details?.backupPath;
+		expect(backupPath && existsSync(backupPath)).toBe(true);
+		const backupRaw = rawToolTextOnDisk(backupPath!);
+		expect(backupRaw).toHaveLength(503_999);
+		expect(createHash("sha256").update(backupRaw).digest("hex")).toBe(rawHash);
+
+		const activeText = textFromMessages(harness.session.agent.state.messages);
+		expect(activeText).toContain(raw.slice(0, 16_000));
+		expect(activeText).toContain("more characters truncated");
+		expect(activeText).not.toContain(raw);
+		const reopened = SessionManager.open(harness.file!);
+		expect(convertToLlm(reopened.buildSessionContext().messages)).toEqual(convertToLlm(harness.manager.buildSessionContext().messages));
+		expect(textFromMessages(reopened.buildSessionContext().messages)).not.toContain(raw);
+		const rawBranch = convertToLlm(buildSessionContext(harness.manager.getEntries(), durableTool.id).messages);
+		expect(textFromMessages(rawBranch)).toContain(raw);
+		expect(harness.events.filter((event) => event.type === "compaction_end" && event.reason === "overflow")).toHaveLength(1);
+		const overflowEvent = harness.events.find((event) => event.type === "message_end" && event.message.role === "assistant" && event.message.errorMessage === overflow);
+		expect(overflowEvent?.type === "message_end" && overflowEvent.message.role === "assistant" ? overflowEvent.message.usage.input : 0).toBe(401_760);
+		expect(401_760 / 372_000).toBeCloseTo(1.08, 5);
+		expect(harness.events.some((event) => event.type === "message_end" && event.message.role === "assistant" && textFromMessages([event.message]).includes("continuation after automatic overflow"))).toBe(true);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
+		await harness.session.prompt("continuation remains publicly usable");
+		const repeated = await harness.session.compact({ preserve_recent: 1 });
+		expect(repeated.format).toBe("full-collapse");
+		const repeatedBoundaries = harness.manager.getEntries().filter((entry) => entry.type === "compaction");
+		expect(repeatedBoundaries).toHaveLength(2);
+		const repeatedPlannerText = textFromMessages(harness.captures.filter((capture) => capture.planner).at(-1)!.context.messages);
+		expect(repeatedPlannerText).not.toContain(raw);
+		expect(repeatedPlannerText.split("more characters truncated").length - 1).toBeLessThanOrEqual(1);
+		expect(textFromMessages(harness.session.agent.state.messages)).not.toContain(raw);
+		expect(createHash("sha256").update(rawToolTextOnDisk(harness.file!)).digest("hex")).toBe(rawHash);
+		expect(textFromMessages(SessionManager.open(harness.file!).buildSessionContext().messages)).not.toContain(raw);
+		expect(harness.session.isStreaming).toBe(false);
 	});
 
 	it("allows only one compact-and-retry for two consecutive provider overflows", async () => {

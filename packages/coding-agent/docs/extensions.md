@@ -1054,12 +1054,12 @@ if (usage && usage.tokens > 100_000) {
 
 ### ctx.compact()
 
-Trigger Atomic's verbatim line compactor without awaiting completion. The planner emits numbered deleted-line ranges only; Atomic validates them and reconstructs retained text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), client-side `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
+Trigger Atomic's verbatim full-collapse compactor without awaiting completion. The current isolated planner emits a byte-identical retained-line subsequence; a mechanically proven warm-cache request emits one `KEEP` record. Atomic validates either selection and reconstructs retained canonical text mechanically. Use `compression_ratio` (fraction of compactable lines to keep), `preserve_recent`, and `query` to tune the run, and `onComplete`/`onError` for follow-up actions.
 
 ```typescript
 ctx.compact({
   compression_ratio: 0.5, // fraction of compactable lines to keep
-  preserve_recent: 2,    // keep recent messages and widen to a user-turn start
+  preserve_recent: 2,    // protect exactly the last 2 visible messages; no turn widening
   query: "keep active migration details",
   onComplete: (result) => {
     ctx.ui.notify(`Compaction kept ${result.stats.linesKept}/${result.stats.linesBefore} lines`, "info");
@@ -1070,7 +1070,7 @@ ctx.compact({
 });
 ```
 
-The planner cannot author context text: only validated line ranges enter the mechanical reconstruction path. The `query` parameter guides relevance selection inside the fixed prompt; it is not replacement prose. Extensions that need an offline replacement can return `compactedText` from `session_before_compact`.
+The planner cannot author context text: only validated retained source lines or warm `KEEP` identifiers enter the mechanical reconstruction path. The `query` parameter guides relevance selection inside the fixed prompt; it is not replacement prose. Extensions that need an offline replacement can return `compactedText` from `session_before_compact`.
 
 ### ctx.getSystemPrompt()
 

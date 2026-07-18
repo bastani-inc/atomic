@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import type { Api, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 import { getEffectiveInputBudget } from "../context-window.js";
 import { MIN_RESPONSES_MAX_OUTPUT_TOKENS } from "../openai-responses-payload-sanitizer.js";
-import { createCompactionCachePayloadHook, isOpenAIResponsesCacheApi } from "./compaction-cache.js";
+import { isOpenAIResponsesCacheApi } from "./compaction-cache.js";
 import type { CompactionRequestPrefix } from "./compaction-types.js";
 import { projectProviderVisibleInput } from "./provider-visible-input.js";
+import { restoreCapturedProviderPrefix } from "./provider-payload-restoration.js";
 
 type JsonRecord = Record<string, unknown>;
 type PayloadHook = NonNullable<SimpleStreamOptions["onPayload"]>;
@@ -32,6 +33,15 @@ export class ProviderPayloadRetryError extends Error {
 	constructor(message: string) { super(message); this.name = "ProviderPayloadRetryError"; }
 }
 
+export class ProviderPayloadRestorationError extends Error {
+	constructor(message: string) { super(message); this.name = "ProviderPayloadRestorationError"; }
+}
+
+export type PayloadFitLocalFailure =
+	| { kind: "fit"; error: FinalPayloadFitError }
+	| { kind: "retry_guard"; error: ProviderPayloadRetryError }
+	| { kind: "warm_restoration"; error: ProviderPayloadRestorationError };
+
 export interface PayloadFitState {
 	maxTokens: number;
 	inputTokens?: number;
@@ -47,6 +57,8 @@ export interface PayloadFitState {
 	inputFingerprint?: string;
 	inputBytes?: number;
 	finalPayloadProven: boolean;
+	/** Request-local failure survives adapters that resolve hook throws as assistant errors. */
+	localFailure?: PayloadFitLocalFailure;
 }
 
 export type FinalPayloadFitFailure = "input_headroom" | "output_budget";
@@ -160,24 +172,6 @@ function outputMinimum(model: Pick<Model<Api>, "api">): number {
 		? MIN_RESPONSES_MAX_OUTPUT_TOKENS : 1;
 }
 
-function semanticPayloadEqual(left: unknown, right: unknown, pairs = new WeakMap<object, object>()): boolean {
-	if (Object.is(left, right)) return true;
-	if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
-	if (Array.isArray(left) !== Array.isArray(right)) return false;
-	const priorPair = pairs.get(left);
-	if (priorPair !== undefined) return priorPair === right;
-	pairs.set(left, right);
-	if (Array.isArray(left) && Array.isArray(right)) {
-		return left.length === right.length && left.every((item, index) => semanticPayloadEqual(item, right[index], pairs));
-	}
-	if (!isRecord(left) || !isRecord(right)) return false;
-	const ignored = new Set(["cache_control", "prompt_cache_breakpoint"]);
-	const leftKeys = Object.keys(left).filter((key) => !ignored.has(key) && left[key] !== undefined).sort();
-	const rightKeys = Object.keys(right).filter((key) => !ignored.has(key) && right[key] !== undefined).sort();
-	return leftKeys.length === rightKeys.length
-		&& leftKeys.every((key, index) => key === rightKeys[index] && semanticPayloadEqual(left[key], right[key], pairs));
-}
-
 function exactPayloadEqual(left: unknown, right: unknown, pairs = new WeakMap<object, object>()): boolean {
 	if (Object.is(left, right)) return true;
 	if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
@@ -240,35 +234,6 @@ function payloadItems(payload: JsonRecord, model: Pick<Model<Api>, "api">): { ke
 	return Array.isArray(items) ? { key, items } : undefined;
 }
 
-function clonePayload<T>(value: T, clones = new WeakMap<object, object>()): T {
-	if (!value || typeof value !== "object") return value;
-	const prior = clones.get(value);
-	if (prior !== undefined) return prior as T;
-	if (Array.isArray(value)) {
-		const copied: unknown[] = [];
-		clones.set(value, copied);
-		for (const item of value) copied.push(clonePayload(item, clones));
-		return copied as T;
-	}
-	const copied: JsonRecord = {};
-	clones.set(value, copied);
-	for (const key of Reflect.ownKeys(value)) Reflect.set(copied, key, clonePayload(Reflect.get(value, key), clones));
-	return copied as T;
-}
-
-function reuseCapturedPrefix(candidate: unknown, prefix: CompactionRequestPrefix, model: Model<Api>): { payload: unknown; reused: boolean } {
-	if (!isRecord(candidate) || !isRecord(prefix.finalPayload)) return { payload: candidate, reused: false };
-	const prior = payloadItems(prefix.finalPayload, model);
-	const next = payloadItems(candidate, model);
-	if (!prior || !next || next.items.length !== prior.items.length + 1) return { payload: candidate, reused: false };
-	if (!prior.items.every((item, index) => semanticPayloadEqual(item, next.items[index]))) {
-		return { payload: candidate, reused: false };
-	}
-	const merged = clonePayload(candidate) as JsonRecord;
-	merged[next.key] = [...clonePayload(prior.items), clonePayload(next.items[next.items.length - 1])];
-	return { payload: merged, reused: true };
-}
-
 function setPayloadOutputLimit(payload: unknown, maxTokens: number): boolean {
 	if (!isRecord(payload)) return false;
 	let sent = false;
@@ -287,14 +252,21 @@ export function createProviderPayloadFitHook(
 	counter?: ProviderPayloadTokenCounter,
 	retryGuard?: ProviderPayloadRetryGuard,
 ): PayloadHook {
-	const cacheHook = prefix ? createCompactionCachePayloadHook(model) : undefined;
 	return async (candidate) => {
-		const reused = prefix ? reuseCapturedPrefix(candidate, prefix, model) : { payload: candidate, reused: false };
-		let payload = reused.payload;
-		const cacheShaped = await cacheHook?.(payload, model);
-		if (cacheShaped !== undefined) payload = cacheShaped;
+		let payload = candidate;
+		let prefixReused = false;
+		if (prefix) {
+			const restored = restoreCapturedProviderPrefix(candidate, prefix, model);
+			if (!restored.ok) {
+				const error = new ProviderPayloadRestorationError(`Warm captured-prefix restoration declined: ${restored.reason}`);
+				state.localFailure = { kind: "warm_restoration", error };
+				throw error;
+			}
+			payload = restored.payload;
+			prefixReused = true;
+		}
 		const count = !counter && prefix
-			? capturedPrefixProjection(payload, prefix, model, reused.reused) ?? await providerAwarePayloadTokenEstimate(payload, model)
+			? capturedPrefixProjection(payload, prefix, model, prefixReused) ?? await providerAwarePayloadTokenEstimate(payload, model)
 			: await providerAwarePayloadTokenEstimate(payload, model, counter);
 		const inputBudget = getEffectiveInputBudget(model);
 		const minimum = outputMinimum(model);
@@ -319,19 +291,27 @@ export function createProviderPayloadFitHook(
 			retryGuard?.rejectedInputFingerprints.has(inputFingerprint.fingerprint)
 			|| retryGuard?.rejectedTransportFingerprints.has(transportFingerprint.fingerprint)
 		) {
-			throw new ProviderPayloadRetryError("Compaction retry suppressed an identical rejected provider input or transport payload");
+			const error = new ProviderPayloadRetryError("Compaction retry suppressed an identical rejected provider input or transport payload");
+			state.localFailure = { kind: "retry_guard", error };
+			throw error;
 		}
 		if (
 			retryGuard?.strictlySmallerThanInputBytes !== undefined
 			&& inputFingerprint.bytes >= retryGuard.strictlySmallerThanInputBytes
 		) {
-			throw new ProviderPayloadRetryError("Compaction retry provider input was not strictly smaller than the rejected provider input");
+			const error = new ProviderPayloadRetryError("Compaction retry provider input was not strictly smaller than the rejected provider input");
+			state.localFailure = { kind: "retry_guard", error };
+			throw error;
 		}
 		if (configuredOutput < minimum) {
-			throw new FinalPayloadFitError(count.tokens, inputBudget, model.contextWindow, "output_budget", state.maxTokens);
+			const error = new FinalPayloadFitError(count.tokens, inputBudget, model.contextWindow, "output_budget", state.maxTokens);
+			state.localFailure = { kind: "fit", error };
+			throw error;
 		}
 		if (exact && (count.tokens > inputBudget || state.maxTokens < minimum)) {
-			throw new FinalPayloadFitError(count.tokens, inputBudget, model.contextWindow, "input_headroom", state.maxTokens);
+			const error = new FinalPayloadFitError(count.tokens, inputBudget, model.contextWindow, "input_headroom", state.maxTokens);
+			state.localFailure = { kind: "fit", error };
+			throw error;
 		}
 		state.finalPayloadProven = true;
 		return payload;

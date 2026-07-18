@@ -6,6 +6,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Usage } from "@earendil-works/pi-ai/compat";
 import type { SessionEntry } from "../session-manager.ts";
 import { messageIsLlmVisible, userLikeContentBlockIsLlmVisible } from "../messages.ts";
+import { normalizedPromptUsage, normalizedUsagePart } from "../provider-usage-accounting.ts";
 
 export interface CompactionSettings {
 	enabled: boolean;
@@ -36,17 +37,11 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
  * components that must always be summed.
  */
 export function calculateContextTokens(usage: Usage, api?: Api): number {
-	const input = Math.max(0, usage.input || 0);
-	const output = Math.max(0, usage.output || 0);
-	const cacheRead = Math.max(0, usage.cacheRead || 0);
-	const cacheWrite = Math.max(0, usage.cacheWrite || 0);
-	const cacheTokens = cacheRead + cacheWrite;
-	const hasComponents = input > 0 || output > 0 || cacheTokens > 0;
-	if (!hasComponents) return Math.max(0, usage.totalTokens || 0);
-
-	const cacheMirrorsInput = api === "anthropic-messages" && input > 0 && cacheTokens > 0 && cacheTokens >= input * 0.9 && cacheTokens <= input * 1.1;
-	const promptTokens = cacheMirrorsInput ? input : input + cacheTokens;
-	return promptTokens + output;
+	const prompt = normalizedPromptUsage(usage, api);
+	const output = normalizedUsagePart(usage.output);
+	const hasComponents = prompt.input > 0 || output > 0 || prompt.cacheTokens > 0;
+	if (!hasComponents) return normalizedUsagePart(usage.totalTokens);
+	return prompt.promptTokens + output;
 }
 
 /**

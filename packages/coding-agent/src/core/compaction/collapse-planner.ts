@@ -17,10 +17,12 @@ import { outputTokenLimit, RangePlanError, responseText } from "./range-planner.
 import { type DiagnosticFailureCategory, writeDiagnosticSidecar } from "./range-planner-diagnostics.js";
 import { SubsequenceValidationError, validateCompactedSubsequence } from "./subsequence.js";
 import { numberRegionLines, serializeConversationForCompaction } from "./transcript-serialization.js";
+import { capturedProviderMessageOffset } from "./provider-payload-restoration.js";
 import {
 	createProviderPayloadFitHook,
 	FinalPayloadFitError,
 	providerOutputMinimum,
+	ProviderPayloadRestorationError,
 	ProviderPayloadRetryError,
 	type PayloadFitState,
 	type ProviderPayloadRetryGuard,
@@ -115,26 +117,30 @@ function providerPayloadMatchesCanonicalMessages(prefix: CompactionRequestPrefix
 	if (prefix.warmEligible === false || !plainRecord(prefix.finalPayload) || prefix.messages.length === 0) return false;
 	const key = isOpenAIResponsesCacheApi(model.api) ? "input" : "messages";
 	const items = prefix.finalPayload[key];
-	if (!Array.isArray(items) || items.length !== prefix.messages.length) return false;
+	const offset = capturedProviderMessageOffset(prefix, model);
+	if (!Array.isArray(items) || offset === undefined) return false;
 	for (let index = 0; index < prefix.messages.length; index++) {
 		const host = prefix.messages[index];
-		const item = items[index];
+		const item = items[index + offset];
 		if ((host.role !== "user" && host.role !== "assistant") || !plainRecord(item) || item.role !== host.role) return false;
 		if (index > 0 && prefix.messages[index - 1].role === host.role) return false;
 		if (!Array.isArray(host.content) || host.content.length !== 1 || host.content[0].type !== "text" || !host.content[0].text) return false;
-		if (!Array.isArray(item.content) || item.content.length !== 1 || !plainRecord(item.content[0])) return false;
-		const block = item.content[0];
-		if (block.text !== host.content[0].text) return false;
-		const validType = isAnthropicCacheApi(model.api) ? block.type === "text"
-			: host.role === "user" ? block.type === "input_text" : block.type === "output_text";
-		if (!validType) return false;
-		if (index === items.length - 1) {
-			if (isAnthropicCacheApi(model.api) && !plainRecord(block.cache_control)) return false;
-			if (supportsOpenAIExplicitCacheBreakpoint(model) && !plainRecord(block.prompt_cache_breakpoint)) return false;
-			// Responses APIs with no explicit-breakpoint support (notably Codex)
-			// still reuse the exact prefix through provider-native automatic caching.
+		let block: Record<string, unknown> | undefined;
+		if (model.api === "openai-completions" && typeof item.content === "string") {
+			if (item.content !== host.content[0].text) return false;
+		} else {
+			if (!Array.isArray(item.content) || item.content.length !== 1 || !plainRecord(item.content[0])) return false;
+			block = item.content[0];
+			if (block.text !== host.content[0].text) return false;
+			const validType = isAnthropicCacheApi(model.api) || model.api === "openai-completions" ? block.type === "text"
+				: host.role === "user" ? block.type === "input_text" : block.type === "output_text";
+			if (!validType) return false;
+		}
+		if (index === prefix.messages.length - 1) {
+			if (isAnthropicCacheApi(model.api) && !plainRecord(block?.cache_control)) return false;
+			if (supportsOpenAIExplicitCacheBreakpoint(model) && !plainRecord(block?.prompt_cache_breakpoint)) return false;
 			if (!isAnthropicCacheApi(model.api) && !isOpenAIResponsesCacheApi(model.api)
-				&& !supportsOpenAIExplicitCacheBreakpoint(model)) return false;
+				&& model.api !== "openai-completions" && !supportsOpenAIExplicitCacheBreakpoint(model)) return false;
 		}
 	}
 	return true;
@@ -291,6 +297,24 @@ function buildCollapseRequest(
 	return { context, request: { ...base, ...reasoning, onPayload: createProviderPayloadFitHook(model, desiredOutput, fitState, undefined, providerTokenCounter, retryGuard) }, cacheReuse: false };
 }
 
+function consumeLocalFailure(state: PayloadFitState): NonNullable<PayloadFitState["localFailure"]> | undefined {
+	const failure = state.localFailure;
+	state.localFailure = undefined;
+	return failure;
+}
+
+function recordRejectedPayload(
+	state: PayloadFitState,
+	transportFingerprints: Set<string>,
+	inputFingerprints: Set<string>,
+	priorCeiling: number | undefined,
+): number | undefined {
+	if (state.payloadFingerprint) transportFingerprints.add(state.payloadFingerprint);
+	if (state.inputFingerprint) inputFingerprints.add(state.inputFingerprint);
+	if (state.inputBytes === undefined) return priorCeiling;
+	return priorCeiling === undefined ? state.inputBytes : Math.min(priorCeiling, state.inputBytes);
+}
+
 function providerErrorMessage(model: Model<Api>, message: string): AssistantMessage {
 	return {
 		role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
@@ -330,7 +354,10 @@ export async function planFullCollapse(
 	const rejectedTransportFingerprints = new Set<string>();
 	const rejectedInputFingerprints = new Set<string>();
 	let smallerThanInputBytes: number | undefined;
-	let lastFailure: { message: string; category: DiagnosticFailureCategory; providerOverflow: boolean; response?: AssistantMessage; raw: string; limit: number; attempts: number } | undefined;
+	type PlanFailure = { message: string; category: DiagnosticFailureCategory; providerOverflow: boolean; response?: AssistantMessage; raw: string; limit: number; attempts: number };
+	let lastFailure: PlanFailure | undefined;
+	let lastOutputLimitFailure: PlanFailure | undefined;
+	let lastProviderOverflowFailure: PlanFailure | undefined;
 	let enteredProjections = 0;
 	for (let index = 0; index < projections.length; index++) {
 		const projection = projections[index];
@@ -356,29 +383,42 @@ export async function planFullCollapse(
 			response = await (await options.streamFn(model, built.context, built.request)).result();
 		} catch (error) {
 			if (signal?.aborted) throw new Error("Compaction cancelled");
-			const message = error instanceof Error ? error.message : String(error);
-			const localFit = error instanceof FinalPayloadFitError || error instanceof ProviderPayloadRetryError;
+			const recorded = consumeLocalFailure(fitState);
+			const localError = recorded?.error ?? (error instanceof FinalPayloadFitError || error instanceof ProviderPayloadRetryError || error instanceof ProviderPayloadRestorationError ? error : undefined);
+			const message = localError?.message ?? (error instanceof Error ? error.message : String(error));
+			const localFit = localError instanceof FinalPayloadFitError || localError instanceof ProviderPayloadRetryError || localError instanceof ProviderPayloadRestorationError;
 			const providerOverflow = !localFit && isContextOverflow(providerErrorMessage(model, message), getEffectiveInputBudget(model));
-			const category: DiagnosticFailureCategory = error instanceof FinalPayloadFitError && error.failure === "output_budget" ? "output_limit"
-				: providerOverflow || (error instanceof FinalPayloadFitError && error.failure === "input_headroom") ? "input_overflow" : "stream_error";
+			const category: DiagnosticFailureCategory = localError instanceof FinalPayloadFitError && localError.failure === "output_budget" ? "output_limit"
+				: providerOverflow || localError instanceof ProviderPayloadRetryError || localError instanceof ProviderPayloadRestorationError
+					|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom") ? "input_overflow" : "stream_error";
 			const limit = localFit ? 0 : fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0;
 			lastFailure = { message, category, providerOverflow, raw: "", limit, attempts };
+			if (providerOverflow) lastProviderOverflowFailure = lastFailure;
 			const mayAdvance = index < projections.length - 1 && (providerOverflow
-				|| error instanceof ProviderPayloadRetryError
-				|| (error instanceof FinalPayloadFitError && error.failure === "input_headroom"));
+				|| localError instanceof ProviderPayloadRestorationError
+				|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom"));
 			if (mayAdvance) {
-				if (fitState.payloadFingerprint) rejectedTransportFingerprints.add(fitState.payloadFingerprint);
-				if (fitState.inputFingerprint) rejectedInputFingerprints.add(fitState.inputFingerprint);
-				if (fitState.inputBytes !== undefined) {
-					smallerThanInputBytes = smallerThanInputBytes === undefined
-						? fitState.inputBytes : Math.min(smallerThanInputBytes, fitState.inputBytes);
-				}
 				continue;
 			}
-			return throwPlanFailure(options, model, lastFailure);
+			return throwPlanFailure(options, model, lastOutputLimitFailure ?? lastProviderOverflowFailure ?? lastFailure);
 		}
 
 		if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
+
+		const asyncLocalFailure = consumeLocalFailure(fitState);
+		if (asyncLocalFailure) {
+			const localError = asyncLocalFailure.error;
+			const category: DiagnosticFailureCategory = localError instanceof FinalPayloadFitError && localError.failure === "output_budget"
+				? "output_limit" : "input_overflow";
+			lastFailure = { message: localError.message, category, providerOverflow: false, raw: "", limit: 0, attempts };
+			const mayAdvance = index < projections.length - 1 && (localError instanceof ProviderPayloadRestorationError
+				|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom"));
+			if (mayAdvance) {
+				continue;
+			}
+			return throwPlanFailure(options, model, lastOutputLimitFailure ?? lastProviderOverflowFailure ?? lastFailure);
+		}
+
 		const rawText = responseText(response);
 		if (response.stopReason === "error") {
 			const message = response.errorMessage || "Compaction provider failed";
@@ -387,13 +427,9 @@ export async function planFullCollapse(
 				message, category: providerOverflow ? "input_overflow" : "provider_error", providerOverflow,
 				response, raw: rawText, limit: fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0, attempts,
 			};
+			if (providerOverflow) lastProviderOverflowFailure = lastFailure;
 			if (providerOverflow && index < projections.length - 1) {
-				if (fitState.payloadFingerprint) rejectedTransportFingerprints.add(fitState.payloadFingerprint);
-				if (fitState.inputFingerprint) rejectedInputFingerprints.add(fitState.inputFingerprint);
-				if (fitState.inputBytes !== undefined) {
-					smallerThanInputBytes = smallerThanInputBytes === undefined
-						? fitState.inputBytes : Math.min(smallerThanInputBytes, fitState.inputBytes);
-				}
+				smallerThanInputBytes = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
 				continue;
 			}
 			return throwPlanFailure(options, model, lastFailure);
@@ -413,7 +449,17 @@ export async function planFullCollapse(
 			const message = outputLimited
 				? sentLimit > 0 ? `Compaction output reached its ${sentLimit}-token limit before a valid result was complete` : "Compaction provider output ended at its limit before a valid result was complete"
 				: error.message;
-			return throwPlanFailure(options, model, { message, category, providerOverflow: false, response, raw: rawText, limit: sentLimit, attempts });
+			const failure: PlanFailure = { message, category, providerOverflow: false, response, raw: rawText, limit: sentLimit, attempts };
+			const countSupportsHeadroom = fitState.countConfidence === "exact" || fitState.countConfidence === "projection";
+			const mayAdvanceLength = outputLimited && index < projections.length - 1
+				&& fitState.outputLimitSent === true && countSupportsHeadroom && sentLimit < configuredOutput;
+			if (mayAdvanceLength) {
+				lastFailure = failure;
+				lastOutputLimitFailure = failure;
+				smallerThanInputBytes = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
+				continue;
+			}
+			return throwPlanFailure(options, model, failure);
 		}
 	}
 	return throwPlanFailure(options, model, lastFailure ?? {

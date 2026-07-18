@@ -1,0 +1,81 @@
+{
+  "scope": "PROVISIONAL PRE-REPAIR product tree 03157e16ba1e06aee9614ceb487b85038931fb1d; not final repaired-SHA validation",
+  "commands": [
+    {
+      "command": "AGENT=1 bun test <targeted post-rebase compaction/cache files>",
+      "outcome": "pass",
+      "testsPassed": 173,
+      "testsFailed": 0,
+      "assertions": 1303
+    },
+    {
+      "command": "AGENT=1 bun run test:unit",
+      "outcome": "pass",
+      "testsPassed": 3718,
+      "testsFailed": 0,
+      "files": 449
+    },
+    {
+      "command": "AGENT=1 bun run test:integration",
+      "outcome": "pass",
+      "testsPassed": 250,
+      "testsFailed": 0,
+      "files": 25
+    },
+    {
+      "command": "bun run typecheck",
+      "outcome": "pass"
+    },
+    {
+      "command": "bun run lint",
+      "outcome": "pass"
+    },
+    {
+      "command": "bun run check:file-length",
+      "outcome": "pass",
+      "filesChecked": 2234,
+      "violations": 0
+    },
+    {
+      "command": "bun run --cwd packages/coding-agent build",
+      "outcome": "pass"
+    },
+    {
+      "command": "bun run --cwd packages/coding-agent docs:check",
+      "outcome": "pass",
+      "pages": 32
+    },
+    {
+      "command": "bun run check:shrinkwrap",
+      "outcome": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "outcome": "pass"
+    },
+    {
+      "command": "bun run hooks:run",
+      "outcome": "pass",
+      "hooksPassed": 12,
+      "hooksFailed": 0
+    }
+  ],
+  "codeReviews": {
+    "round": 2,
+    "overflowSessionTool": "APPROVED",
+    "exactOncePromptCache": "APPROVED",
+    "invalidFinding1851": {
+      "disposition": "invalid / not applicable to the exact post-rebase product tree",
+      "status": "closed as a review finding; no product change required"
+    },
+    "applicability": "pre-repair SHA only; not approval of the repaired tree"
+  },
+  "evidenceReview": {
+    "status": "NOT_APPLICABLE_PRE_REPAIR",
+    "verdict": null,
+    "finalShaRerun": "PENDING",
+    "note": "Measured LOOP-2 values are retained, but independent approval is not applicable to the repaired tree until every scenario and gate is rerun at its final commit SHA."
+  },
+  "provisional": true,
+  "finalShaRerunRequired": true
+}

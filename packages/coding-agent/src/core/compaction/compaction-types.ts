@@ -62,7 +62,7 @@ export interface CompactionRequestPrefix {
 	readonly transport?: Transport;
 	/** False when host semantic inputs were captured for diagnostics but cannot prove warm alignment. */
 	readonly warmEligible?: boolean;
-	/** Provider-reported prompt occupancy for the matching captured normal request, including cache partitions. */
+	/** API-aware provider prompt occupancy for the matching normal request; excludes output. */
 	readonly providerInputTokens?: number;
 }
 

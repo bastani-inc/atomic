@@ -1,0 +1,166 @@
+{
+  "runRoot": ".atomic/evidence/pr-1844-loop2-20260717",
+  "attribution": {
+    "head": "03157e16ba1e06aee9614ceb487b85038931fb1d",
+    "originMainAtStart": "a870f3f6feee4d52af5debab6b696908ea1dd4df",
+    "remotePrHeadAtStart": "65e9b233ead4b53c89b3ca27d1d87ee1ed0a11e1",
+    "compiledCliSha256": "222f4d1a9493043055bbca61d4f1e183a79f19741c8af56694d3cab7e4cd245e",
+    "bun": "1.3.14",
+    "tmux": "3.7b",
+    "model": "openai-codex/gpt-5.6-sol:off",
+    "providerContextWindow": 372000
+  },
+  "preflight": {
+    "build": "pass",
+    "modelListing": "pass",
+    "authSmokeExit": 0,
+    "authSmokeExact": "AUTH_OK",
+    "trackedAndIndexCleanAtStart": true
+  },
+  "scenarioA": {
+    "tmuxSession": "pr1844-loop2-a-final",
+    "identity": {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol",
+      "api": "openai-codex-responses"
+    },
+    "blob": {
+      "lines": 9000,
+      "width": 48,
+      "chars": 503999,
+      "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+    },
+    "providerMeasuredTokens": 283121,
+    "localContextWindow": 262130,
+    "localPercent": 108.00785869606683,
+    "providerInputUnderHardCap": true,
+    "projection": {
+      "lines": 292,
+      "tokens": 126636,
+      "durableToolPhysicalLines": 9000
+    },
+    "autoCompaction": {
+      "reason": "overflow",
+      "format": "full-collapse",
+      "promptVersion": 4,
+      "rung": "planned",
+      "backupBasename": "2026-07-18T00-43-24-106Z_a2184400-0000-4000-8000-000000000002.jsonl.2026-07-18T00-46-18-055Z.overflow-auto-compact.bak",
+      "stats": {
+        "linesBefore": 292,
+        "linesDeleted": 2,
+        "linesKept": 290,
+        "rangeCount": 1,
+        "tokensBefore": 126636,
+        "tokensAfter": 4033,
+        "percentReduction": 96.8
+      },
+      "backupExists": true,
+      "failureDiagnosticCount": 0
+    },
+    "rawPreservation": {
+      "session": {
+        "file": "2026-07-18T00-43-24-106Z_a2184400-0000-4000-8000-000000000002.jsonl",
+        "bytes": 533975,
+        "mode": "0600",
+        "sha256": "fe0ba764b9b3e26f9cd86c9dc8d2833ea6426a4e953795d28ee7b2ff710a4180",
+        "large": {
+          "chars": 503999,
+          "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+        },
+        "toolCalls": 1,
+        "toolResults": 1,
+        "unmatchedCalls": 0,
+        "unmatchedResults": 0,
+        "continuation": true,
+        "compactionBoundaryCount": 1
+      },
+      "backup": {
+        "file": "2026-07-18T00-43-24-106Z_a2184400-0000-4000-8000-000000000002.jsonl.2026-07-18T00-46-18-055Z.overflow-auto-compact.bak",
+        "bytes": 515720,
+        "mode": "0600",
+        "sha256": "f5d3920118604df09169b25dbe30b3ca7f276d746d699a3f06107f54bba9c57b",
+        "large": {
+          "chars": 503999,
+          "sha256": "81eb940995a647f577e03ca3b6e59fd7078290e1c573c822a5707a9a74c715d3"
+        },
+        "toolCalls": 1,
+        "toolResults": 1,
+        "unmatchedCalls": 0,
+        "unmatchedResults": 0,
+        "continuation": false,
+        "compactionBoundaryCount": 0
+      },
+      "backupIsBytePrefixOfSession": true,
+      "durableLargeResultMatches": true,
+      "plannerViewLines": 292,
+      "durableToolPhysicalLines": 9000,
+      "diagnosticCount": 0
+    },
+    "continuationExact": "CONTINUATION_OK pr1844-loop2-functional"
+  },
+  "scenarioB": {
+    "successfulSamples": {
+      "warm": 3,
+      "cold": 3
+    },
+    "sampleIds": [
+      "1",
+      "2",
+      "3"
+    ],
+    "workload": {
+      "alternatingPairs": 8,
+      "physicalLinesPerMessage": 40,
+      "compressionRatio": 0.05
+    },
+    "source": "fresh raw/b-{warm,cold}-{1,2,3}-events.jsonl",
+    "timingBoundary": "session_compact.atNs - before_compact.atNs",
+    "sampleCount": 6,
+    "elapsedNsIdentityVerified": true,
+    "semanticHistoryMatchAllPairs": true,
+    "warm": {
+      "elapsedMs": [
+        3546.25625,
+        5783.256042,
+        7735.189583
+      ],
+      "medianMs": 5783.256042,
+      "minMs": 3546.25625,
+      "maxMs": 7735.189583,
+      "cacheReadTokens": [
+        22272,
+        22272,
+        22272
+      ],
+      "cacheHit": [
+        true,
+        true,
+        true
+      ]
+    },
+    "cold": {
+      "elapsedMs": [
+        23391.437458,
+        27176.501166,
+        23357.163959
+      ],
+      "medianMs": 23391.437458,
+      "minMs": 23357.163959,
+      "maxMs": 27176.501166,
+      "cacheTelemetry": "absent; never coerced to zero"
+    },
+    "rangesOverlap": false,
+    "medianDeltaMsColdMinusWarm": 17608.181416,
+    "warmOverColdMedianRatio": 0.24723816363932327,
+    "coldOverWarmMedianRatio": 4.044683010422384,
+    "medianLatencyReductionPercent": 75.27618363606767,
+    "requestProofScope": "The normal request hook exposes safe input-item hashes/counts and request-bound usage. The direct compaction planner transport does not re-emit that extension hook; no hidden suffix telemetry is invented. One persisted compaction boundary per retained session and native cache-hit telemetry are separately verified.",
+    "conclusion": "No retained warm/cold latency overlap; this run supports a warm latency benefit, subject to provider variance."
+  },
+  "failures": [
+    "Scenario A first attempt disabled the extension tool with --no-tools and timed out; preserved privately, corrected final session used an extension-only allowlist.",
+    "Malformed warm planner output occurred in pair 2's initial attempt, a pair 3 attempt, and pair 1's first payload-proof attempt; preserved panes/events identify each and retries used the identical declared workload without relabeling.",
+    "Payload-proof rollout initially expected a second extension hook from direct compaction transport; successful superseded samples and the mistaken criterion are preserved. Retained samples use available normal-request scalar proofs only.",
+    "Retry collection replaced failed session directories after preserving panes/events, so provider-generated diagnostic JSON named in those panes is not retained; no diagnostic content or outcome is reconstructed."
+  ]
+}

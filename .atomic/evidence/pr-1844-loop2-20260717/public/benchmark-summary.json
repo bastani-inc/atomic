@@ -1,0 +1,48 @@
+{
+  "source": "fresh raw/b-{warm,cold}-{1,2,3}-events.jsonl",
+  "timingBoundary": "session_compact.atNs - before_compact.atNs",
+  "sampleIds": [
+    "1",
+    "2",
+    "3"
+  ],
+  "sampleCount": 6,
+  "elapsedNsIdentityVerified": true,
+  "semanticHistoryMatchAllPairs": true,
+  "warm": {
+    "elapsedMs": [
+      3546.25625,
+      5783.256042,
+      7735.189583
+    ],
+    "medianMs": 5783.256042,
+    "minMs": 3546.25625,
+    "maxMs": 7735.189583,
+    "cacheReadTokens": [
+      22272,
+      22272,
+      22272
+    ],
+    "cacheHit": [
+      true,
+      true,
+      true
+    ]
+  },
+  "cold": {
+    "elapsedMs": [
+      23391.437458,
+      27176.501166,
+      23357.163959
+    ],
+    "medianMs": 23391.437458,
+    "minMs": 23357.163959,
+    "maxMs": 27176.501166,
+    "cacheTelemetry": "absent; never coerced to zero"
+  },
+  "rangesOverlap": false,
+  "medianDeltaMsColdMinusWarm": 17608.181416,
+  "warmOverColdMedianRatio": 0.24723816363932327,
+  "coldOverWarmMedianRatio": 4.044683010422384,
+  "medianLatencyReductionPercent": 75.27618363606767
+}

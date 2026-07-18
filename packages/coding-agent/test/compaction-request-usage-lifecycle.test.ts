@@ -1,7 +1,9 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import {
 	createAssistantMessageEventStream,
+	EventStream,
 	type Api,
+	type AssistantMessageEvent,
 	type AssistantMessage,
 	type Context,
 	type Model,
@@ -49,6 +51,8 @@ function streamWithUsage(requestModel: Model<Api>, context: Context, options?: S
 	return stream;
 }
 
+type AssistantMessageEventStreamWithLate = Awaited<ReturnType<AgentSession["agent"]["streamFn"]>> & { late: () => AssistantMessage };
+
 describe("request-bound compaction occupancy", () => {
 	const sessions: AgentSession[] = [];
 	afterEach(() => { while (sessions.length > 0) sessions.pop()!.dispose(); });
@@ -76,7 +80,7 @@ describe("request-bound compaction occupancy", () => {
 
 		await session.prompt("trigger threshold compaction");
 
-		expect(prefixAtCompaction?.providerInputTokens).toBe(100_000);
+		expect(prefixAtCompaction?.providerInputTokens).toBe(50_000);
 	});
 	it("invalidates prior occupancy when a new request starts and ignores a mismatched assistant", async () => {
 		const auth = AuthStorage.inMemory();
@@ -113,16 +117,121 @@ describe("request-bound compaction occupancy", () => {
 		(session as unknown as { _applyVerbatimCompaction: () => Promise<undefined> })._applyVerbatimCompaction = async () => undefined;
 
 		await session.prompt("first request");
-		expect((session as unknown as { _activeRequestPrefix?: CompactionRequestPrefix })._activeRequestPrefix?.providerInputTokens).toBe(100_000);
+		expect((session as unknown as { _activeRequestPrefix?: CompactionRequestPrefix })._activeRequestPrefix?.providerInputTokens).toBe(50_000);
 		await session.prompt("second request");
 
 		expect(prefixDuringTransport[1]?.providerInputTokens).toBeUndefined();
 		expect((session as unknown as { _activeRequestPrefix?: CompactionRequestPrefix })._activeRequestPrefix?.providerInputTokens).toBeUndefined();
 	});
 
-	it("normalizes and sums each prompt cache partition exactly once while excluding output", () => {
-		expect(providerPromptOccupancy(usage({ input: 10.9, cacheRead: 20.8, cacheWrite: 30.7, output: 999_999 }))).toBe(60);
+	it("uses shared Anthropic mirror accounting while OpenAI keeps disjoint cache partitions", () => {
+		expect(providerPromptOccupancy(usage({ input: 50_000, cacheRead: 50_000, cacheWrite: 0 }), "anthropic-messages")).toBe(50_000);
+		expect(providerPromptOccupancy(usage({ input: 50_000, cacheRead: 50_000, cacheWrite: 0 }), "openai-responses")).toBe(100_000);
+		expect(providerPromptOccupancy(usage({ input: 50_000, cacheRead: 45_000, cacheWrite: 0 }), "anthropic-messages")).toBe(50_000);
+		expect(providerPromptOccupancy(usage({ input: 50_000, cacheRead: 55_000, cacheWrite: 0 }), "anthropic-messages")).toBe(50_000);
+		expect(providerPromptOccupancy(usage({ input: 10, cacheRead: 3, cacheWrite: 2 }), "anthropic-messages")).toBe(15);
 		expect(providerPromptOccupancy(usage({ input: -1, cacheRead: Number.NaN, cacheWrite: Number.POSITIVE_INFINITY, output: 999_999 }))).toBe(0);
+	});
+
+	it("observes a caller-handled rejected custom result without an unhandled rejection", async () => {
+		const auth = AuthStorage.inMemory();
+		auth.setRuntimeApiKey(model.provider, "test-key");
+		const manager = SessionManager.inMemory();
+		const failure = new Error("custom result rejection");
+		let call = 0;
+		const streamFn = async (requestModel: Model<Api>) => {
+			if (call++ === 0) {
+				return new class extends EventStream<AssistantMessageEvent, AssistantMessage> {
+					constructor() { super(() => false, () => { throw new Error("unused"); }); }
+					override result(): Promise<AssistantMessage> { return Promise.reject(failure); }
+				}();
+			}
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				const done: AssistantMessage = {
+					role: "assistant", content: [{ type: "text", text: "next prompt works" }], api: requestModel.api,
+					provider: requestModel.provider, model: requestModel.id, usage: usage({ input: 1, cacheRead: 0 }), stopReason: "stop", timestamp: Date.now(),
+				};
+				stream.push({ type: "start", partial: { ...done, content: [] } });
+				stream.push({ type: "done", reason: "stop", message: done });
+			});
+			return stream;
+		};
+		const session = new AgentSession({
+			agent: new Agent({ getApiKey: () => "test-key", sessionId: manager.getSessionId(), initialState: { model, systemPrompt: "active", tools: [] }, streamFn }),
+			sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(),
+			modelRegistry: ModelRegistry.create(auth), resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+		const unhandled: unknown[] = [];
+		const listener = (reason: unknown): void => { unhandled.push(reason); };
+		process.on("unhandledRejection", listener);
+		try {
+			const rejected = await session.agent.streamFn(model, { messages: [] });
+			await expect(rejected.result()).rejects.toBe(failure);
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+			expect(unhandled).toEqual([]);
+			expect((session as unknown as { _activeRequestPrefix?: CompactionRequestPrefix })._activeRequestPrefix).toBeUndefined();
+			await expect(session.prompt("continue publicly")).resolves.toBeUndefined();
+			expect(session.isStreaming).toBe(false);
+		} finally {
+			process.off("unhandledRejection", listener);
+		}
+	});
+
+	it("never attaches a late generation-1 result to the newer generation-2 captured prefix", async () => {
+		const auth = AuthStorage.inMemory();
+		auth.setRuntimeApiKey(model.provider, "test-key");
+		const manager = SessionManager.inMemory();
+		let call = 0;
+		let releaseFirst!: (message: AssistantMessage) => void;
+		const streamFn = async (requestModel: Model<Api>, context: Context, options?: SimpleStreamOptions) => {
+			const current = ++call;
+			await options?.onPayload?.({ messages: context.messages, max_tokens: requestModel.maxTokens }, requestModel);
+			const stream = createAssistantMessageEventStream();
+			const emit = (message: AssistantMessage) => {
+				stream.push({ type: "start", partial: { ...message, content: [] } });
+				stream.push({ type: "done", reason: "stop", message });
+			};
+			const message = (input: number): AssistantMessage => ({
+				role: "assistant", content: [{ type: "text", text: `gen-${current}` }], api: requestModel.api,
+				provider: requestModel.provider, model: requestModel.id,
+				usage: usage({ input, cacheRead: 0, cacheWrite: 0, totalTokens: input }), stopReason: "stop", timestamp: Date.now(),
+			});
+			if (current === 1) releaseFirst = emit;
+			else queueMicrotask(() => emit(message(2_000)));
+			return Object.assign(stream, { late: () => message(999_999) });
+		};
+		const session = new AgentSession({
+			agent: new Agent({ getApiKey: () => "test-key", sessionId: manager.getSessionId(), initialState: { model, systemPrompt: "active", tools: [] }, streamFn }),
+			sessionManager: manager, settingsManager: SettingsManager.inMemory(), cwd: process.cwd(),
+			modelRegistry: ModelRegistry.create(auth), resourceLoader: createTestResourceLoader(),
+		});
+		sessions.push(session);
+		const internals = session as unknown as {
+			_activeRequestPrefix?: CompactionRequestPrefix;
+			_requestGenerationByAssistant: WeakMap<object, number>;
+		};
+		const first = await session.agent.streamFn(model, { messages: [] }, { sessionId: manager.getSessionId() }) as AssistantMessageEventStreamWithLate;
+		const second = await session.agent.streamFn(model, { messages: [] }, { sessionId: manager.getSessionId() });
+		const secondMessage = await second.result();
+		const lateFirstMessage = first.late();
+		releaseFirst(lateFirstMessage);
+		await first.result();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+		const generationTwoPrefix = internals._activeRequestPrefix!;
+		expect(generationTwoPrefix.requestGeneration).toBe(2);
+		const lateGeneration = internals._requestGenerationByAssistant.get(lateFirstMessage);
+		expect(lateGeneration).toBe(1);
+		// The exact binding the session event path performs: a late generation-1
+		// result must leave the generation-2 prefix untouched.
+		const afterLate = bindAssistantUsageToRequest(generationTwoPrefix, lateGeneration, lateFirstMessage, manager.getSessionId());
+		expect(afterLate).toBe(generationTwoPrefix);
+		expect(afterLate?.providerInputTokens).toBeUndefined();
+		const generationTwo = internals._requestGenerationByAssistant.get(secondMessage);
+		const afterOwn = bindAssistantUsageToRequest(generationTwoPrefix, generationTwo, secondMessage, manager.getSessionId());
+		expect(afterOwn?.providerInputTokens).toBe(2_000);
 	});
 
 	it("ignores stale generations and synthetic assistants without a captured stream identity", () => {
@@ -170,7 +279,7 @@ describe("request-bound compaction occupancy", () => {
 		};
 
 		await session.prompt("trigger overflow compaction");
-		expect(prefixAtCompaction?.providerInputTokens).toBe(100_000);
+		expect(prefixAtCompaction?.providerInputTokens).toBe(50_000);
 	});
 
 });
