@@ -3909,19 +3909,16 @@ Prepare a `[release kind]` release for `[version]`. Do not publish unless valida
 
 **Validation:** Require changelog review, tests, build/package checks, and a clear publish/no-publish decision.
 
-**Atomic repository `publish-release` reconciliation.** The repository-local release workflow captures one release PR by URL, number, base ref, head ref, and exact head SHA before inspecting required checks. It never calls `gh ... --watch`, sleeps, polls, scans workflow history exhaustively, or dispatches another workflow. Instead, each mutable gate performs one current-state observation. Pending PR checks or an active/not-yet-observable publish action produce a resumable blocked result; resume the workflow after GitHub advances the external state.
+**Atomic repository `publish-release` workflow.** The repository-local workflow is intentionally a thin, prompt-led sequence over the existing Git, GitHub CLI, `cut-release.ts`, and protected `publish.yml` release path:
 
-If an administrator or another actor merges the PR between observations, the deterministic gate accepts the advanced state only when the same captured PR remains on the expected refs and SHA and every required result matches the `statusCheckRollup` returned atomically with that SHA. Workflow-qualified Actions reruns are correlated by check name plus workflow identity. When `gh pr checks` leaves workflow empty—for external statuses and GitHub App checks—the exact passing name/link evidence infers whether linked required results are a `StatusContext` or `CheckRun`; linked reruns group by that kind plus name across URL changes.
+1. create `release/<version>` or `prerelease/<version>` from the selected versionless base and update relevant changelogs only;
+2. validate, commit, push, and open or reuse the exact release PR;
+3. inspect required CI once and, when it is pending or failed, pause at a durable **Reinspect after external state changes / Stop this release** choice;
+4. merge the exact verified PR head, switch to the selected base, and fast-forward it from origin;
+5. run `scripts/cut-release.ts <version> --base <base_ref> --push --yes` to stamp the detached release commit and push its tag; and
+6. inspect the automatically triggered `Publish <version>` action once, using the same reinspect-or-stop choice until it succeeds or the user stops.
 
-Linkless rows inspect both same-name `StatusContext` and empty-workflow `CheckRun` attempts, accepting one or both kinds when all candidates pass while blocking any pending/failure and excluding nonempty-workflow Actions. Duplicate required-check aliases may reuse the same exact passing rollup result. GitHub must also report a semantically valid RFC3339 `mergedAt`, a full merge commit OID, and the remote release branch retained at the captured SHA. `CLOSED`, stale or substituted identity/refs/SHA, failing required checks, malformed merge evidence, and missing or moved retained branches are rejected.
-
-When exact evidence proves the PR is already `MERGED`, `publish-release` skips the merge command. The normal `OPEN` path uses an explicit selector plus `--match-head-commit`; both paths re-query required checks after the merge stage before final `MERGED` acceptance. Immutable evidence uses durable `ctx.tool` checkpoints, while mutable PR/check/branch/publish evidence refreshes on resume. The existing `base_ref` input remains supported as a short branch name and defaults to `main`; it selects the PR target, merge/readiness evidence, synchronized branch, and `cut-release.ts --base <base_ref>` argument.
-
-Prior tags are reused only when their required release-base trailers match the requested workstream and `verified merge → tag parent → current base` ancestry; new tags require the exact current base parent. `cut-release.ts` resolves the exact remote branch and records canonical `Release-base-ref: refs/heads/<base_ref>` plus exact `Release-base-sha` trailers on the release commit. Missing trailers are rejected without a legacy fallback. Pushing the tag is the sole publish signal: GitHub's native `create` event starts `publish.yml`, which must exist on the protected default branch.
-
-The publisher verifies the pinned workflow source and event tag/SHA, permits `refs/heads/main` by default and non-main bases only through exact comma-separated `RELEASE_BASE_REFS` repository-variable entries, fetches that exact branch into a fixed local remote-tracking ref, proves the recorded SHA equals the sole release parent and remains contained in the current remote branch, and verifies deterministic integrity against the fetched ref. It never uses a tag-sourced privileged workflow, branch-containment inference to choose a base, workflow dispatch, history scan, wait, sleep, or polling loop.
-
-Final verification observes the matching `Publish <version>` run once and requires its protected `Verify release integrity` job log to name the exact verified tag SHA.
+The workflow never bumps package versions on the release branch, dispatches `publish.yml`, watches Actions, sleeps, polls, force-pushes, or moves a tag. The base remains at `0.0.0`; the detached release commit records the immutable base trailers; and the existing tag-created GitHub workflow retains responsibility for integrity checks, npm OIDC provenance, and GitHub Release creation.
 
 ---
 

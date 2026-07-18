@@ -6,24 +6,20 @@ import { join } from "node:path";
 const repoFile = (path: string): string => readFileSync(join(process.cwd(), path), "utf8");
 
 describe("repo-local release workflow discovery imports", () => {
-  test("helpers avoid the @bastani/atomic package root during discovery", () => {
-    for (const path of [
-      ".atomic/workflows/lib/publish-release.ts",
-      ".atomic/workflows/lib/release-docs.ts",
-    ]) {
-      const source = repoFile(path);
+  test("release-docs avoids the @bastani/atomic package root during discovery", () => {
+    const path = ".atomic/workflows/lib/release-docs.ts";
+    const source = repoFile(path);
 
-      assert.doesNotMatch(
-        source,
-        /from\s+["']@bastani\/atomic["']/,
-        `${path} must not import @bastani/atomic because workspace discovery resolves that package root to missing dist/index.js`,
-      );
-      assert.match(
-        source,
-        /packages\/coding-agent\/src\/utils\/git-env\.js/,
-        `${path} should import the Git environment helper from the workspace source file`,
-      );
-    }
+    assert.doesNotMatch(
+      source,
+      /from\s+["']@bastani\/atomic["']/,
+      `${path} must not import @bastani/atomic because workspace discovery resolves that package root to missing dist/index.js`,
+    );
+    assert.match(
+      source,
+      /packages\/coding-agent\/src\/utils\/git-env\.js/,
+      `${path} should import the Git environment helper from the workspace source file`,
+    );
   });
 
   test("release-docs imports builtin child workflows through the virtual workflow SDK", () => {
