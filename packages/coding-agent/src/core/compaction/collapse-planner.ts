@@ -28,7 +28,6 @@ import {
 	type ProviderPayloadRetryGuard,
 	type ProviderPayloadTokenCounter,
 } from "./provider-payload-fit.js";
-
 export interface CollapsePlannerOptions {
 	streamFn: StreamFn;
 	/** Absolute path of the persisted session file. Undefined for in-memory sessions. */
@@ -44,14 +43,12 @@ export interface CollapsePlannerOptions {
 	/** Optional exact provider counter; production safely falls back when unavailable. */
 	providerTokenCounter?: ProviderPayloadTokenCounter;
 }
-
 /** Result of a full-collapse plan: validated deletions plus cache telemetry. */
 export interface FullCollapsePlan {
 	ranges: ValidatedRanges;
 	/** Present only on the cache-reuse path; gated so a hit needs nonzero cache-read usage. */
 	telemetry?: CompactionCacheTelemetry;
 }
-
 /**
  * System prompt for the LEGACY isolated collapse request (used only when no
  * active-request prefix is supplied, e.g. in-memory/extension callers). The
@@ -247,7 +244,6 @@ interface BuiltCollapseRequest {
 	cacheReuse: boolean;
 }
 
-
 type CollapseProjection = "warm" | "isolated-full" | "isolated-elided";
 function buildCollapseRequest(
 	region: NumberedRegion,
@@ -308,11 +304,13 @@ function recordRejectedPayload(
 	transportFingerprints: Set<string>,
 	inputFingerprints: Set<string>,
 	priorCeiling: number | undefined,
-): number | undefined {
-	if (state.payloadFingerprint) transportFingerprints.add(state.payloadFingerprint);
-	if (state.inputFingerprint) inputFingerprints.add(state.inputFingerprint);
-	if (state.inputBytes === undefined) return priorCeiling;
-	return priorCeiling === undefined ? state.inputBytes : Math.min(priorCeiling, state.inputBytes);
+): { recorded: boolean; ceiling: number | undefined } {
+	if (!state.finalPayloadProven || !state.payloadFingerprint || !state.inputFingerprint || state.inputBytes === undefined) {
+		return { recorded: false, ceiling: priorCeiling };
+	}
+	transportFingerprints.add(state.payloadFingerprint);
+	inputFingerprints.add(state.inputFingerprint);
+	return { recorded: true, ceiling: priorCeiling === undefined ? state.inputBytes : Math.min(priorCeiling, state.inputBytes) };
 }
 
 function providerErrorMessage(model: Model<Api>, message: string): AssistantMessage {
@@ -355,9 +353,8 @@ export async function planFullCollapse(
 	const rejectedInputFingerprints = new Set<string>();
 	let smallerThanInputBytes: number | undefined;
 	type PlanFailure = { message: string; category: DiagnosticFailureCategory; providerOverflow: boolean; response?: AssistantMessage; raw: string; limit: number; attempts: number };
-	let lastFailure: PlanFailure | undefined;
-	let lastOutputLimitFailure: PlanFailure | undefined;
-	let lastProviderOverflowFailure: PlanFailure | undefined;
+	let lastLocalFailure: PlanFailure | undefined;
+	let lastRetryOriginFailure: PlanFailure | undefined;
 	let enteredProjections = 0;
 	for (let index = 0; index < projections.length; index++) {
 		const projection = projections[index];
@@ -392,15 +389,19 @@ export async function planFullCollapse(
 				: providerOverflow || localError instanceof ProviderPayloadRetryError || localError instanceof ProviderPayloadRestorationError
 					|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom") ? "input_overflow" : "stream_error";
 			const limit = localFit ? 0 : fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0;
-			lastFailure = { message, category, providerOverflow, raw: "", limit, attempts };
-			if (providerOverflow) lastProviderOverflowFailure = lastFailure;
-			const mayAdvance = index < projections.length - 1 && (providerOverflow
+			const failure = { message, category, providerOverflow, raw: "", limit, attempts };
+			if (providerOverflow) lastRetryOriginFailure = failure;
+			else if (localFit) lastLocalFailure = failure;
+			const hasLaterProjection = index < projections.length - 1;
+			const mayAdvanceLocal = hasLaterProjection && (localError instanceof ProviderPayloadRetryError
 				|| localError instanceof ProviderPayloadRestorationError
 				|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom"));
-			if (mayAdvance) {
-				continue;
+			if (mayAdvanceLocal) continue;
+			if (providerOverflow && hasLaterProjection) {
+				const rejected = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
+				if (rejected.recorded) { smallerThanInputBytes = rejected.ceiling; continue; }
 			}
-			return throwPlanFailure(options, model, lastOutputLimitFailure ?? lastProviderOverflowFailure ?? lastFailure);
+			return throwPlanFailure(options, model, { ...(lastRetryOriginFailure ?? lastLocalFailure ?? failure), attempts: enteredProjections });
 		}
 
 		if (response.stopReason === "aborted" || signal?.aborted) throw new Error("Compaction cancelled");
@@ -410,29 +411,29 @@ export async function planFullCollapse(
 			const localError = asyncLocalFailure.error;
 			const category: DiagnosticFailureCategory = localError instanceof FinalPayloadFitError && localError.failure === "output_budget"
 				? "output_limit" : "input_overflow";
-			lastFailure = { message: localError.message, category, providerOverflow: false, raw: "", limit: 0, attempts };
-			const mayAdvance = index < projections.length - 1 && (localError instanceof ProviderPayloadRestorationError
+			const failure = { message: localError.message, category, providerOverflow: false, raw: "", limit: 0, attempts };
+			lastLocalFailure = failure;
+			const mayAdvance = index < projections.length - 1 && (localError instanceof ProviderPayloadRetryError
+				|| localError instanceof ProviderPayloadRestorationError
 				|| (localError instanceof FinalPayloadFitError && localError.failure === "input_headroom"));
-			if (mayAdvance) {
-				continue;
-			}
-			return throwPlanFailure(options, model, lastOutputLimitFailure ?? lastProviderOverflowFailure ?? lastFailure);
+			if (mayAdvance) continue;
+			return throwPlanFailure(options, model, { ...(lastRetryOriginFailure ?? failure), attempts: enteredProjections });
 		}
 
 		const rawText = responseText(response);
 		if (response.stopReason === "error") {
 			const message = response.errorMessage || "Compaction provider failed";
 			const providerOverflow = isContextOverflow(response, getEffectiveInputBudget(model));
-			lastFailure = {
+			const failure: PlanFailure = {
 				message, category: providerOverflow ? "input_overflow" : "provider_error", providerOverflow,
 				response, raw: rawText, limit: fitState.outputLimitSent ? Math.max(0, fitState.maxTokens) : 0, attempts,
 			};
-			if (providerOverflow) lastProviderOverflowFailure = lastFailure;
+			lastRetryOriginFailure = failure;
 			if (providerOverflow && index < projections.length - 1) {
-				smallerThanInputBytes = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
-				continue;
+				const rejected = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
+				if (rejected.recorded) { smallerThanInputBytes = rejected.ceiling; continue; }
 			}
-			return throwPlanFailure(options, model, lastFailure);
+			return throwPlanFailure(options, model, failure);
 		}
 
 		const outputLimited = response.stopReason === "length";
@@ -454,18 +455,18 @@ export async function planFullCollapse(
 			const mayAdvanceLength = outputLimited && index < projections.length - 1
 				&& fitState.outputLimitSent === true && countSupportsHeadroom && sentLimit < configuredOutput;
 			if (mayAdvanceLength) {
-				lastFailure = failure;
-				lastOutputLimitFailure = failure;
-				smallerThanInputBytes = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
-				continue;
+				lastRetryOriginFailure = failure;
+				const rejected = recordRejectedPayload(fitState, rejectedTransportFingerprints, rejectedInputFingerprints, smallerThanInputBytes);
+				if (rejected.recorded) { smallerThanInputBytes = rejected.ceiling; continue; }
 			}
 			return throwPlanFailure(options, model, failure);
 		}
 	}
-	return throwPlanFailure(options, model, lastFailure ?? {
+	const terminal = lastRetryOriginFailure ?? lastLocalFailure ?? {
 		message: "Compaction input could not be reduced to a changed provider payload",
-		category: "input_overflow", providerOverflow: false, raw: "", limit: 0, attempts: enteredProjections,
-	});
+		category: "input_overflow" as const, providerOverflow: false, raw: "", limit: 0, attempts: enteredProjections,
+	};
+	return throwPlanFailure(options, model, { ...terminal, attempts: enteredProjections });
 }
 
 function throwPlanFailure(

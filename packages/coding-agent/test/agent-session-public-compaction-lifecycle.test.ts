@@ -15,6 +15,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { Type } from "typebox";
 import { AgentSession, type AgentSessionEvent } from "../src/core/agent-session.ts";
+import { StaleCompactionPlanError } from "../src/core/agent-session-compaction.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { CACHE_REUSE_COLLAPSE_DIRECTIVE, COLLAPSE_PLANNER_SYSTEM_PROMPT } from "../src/core/compaction/collapse-planner.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -46,7 +47,7 @@ function message(stage: NormalStage, timestamp: number): AssistantMessage {
 		role: "assistant",
 		content: stage.toolCall
 			? [{ type: "toolCall", id: stage.toolCall.id, name: stage.toolCall.name, arguments: {} }]
-			: stage.error ? [] : [{ type: "text", text: stage.text ?? "ok" }],
+			: stage.error && stage.text === undefined ? [] : [{ type: "text", text: stage.text ?? "ok" }],
 		api: model.api, provider: model.provider, model: model.id, usage: usage(stage.usage),
 		stopReason: stage.error ? "error" : stage.toolCall ? "toolUse" : "stop",
 		...(stage.error ? { errorMessage: stage.error } : {}), timestamp,
@@ -273,6 +274,97 @@ describe("public auto-compaction lifecycle", () => {
 		expect(harness.session.isStreaming).toBe(false);
 	});
 
+	it("retains a successful silent-overflow completion through boundary rebuild and reopen without retry", async () => {
+		const marker = "UNIQUE_SUCCESSFUL_SILENT_OVERFLOW_COMPLETION";
+		const harness = createLifecycleHarness([
+			{ text: `${marker}\ncompleted response tail`, usage: { input: 128_001, output: 20, totalTokens: 128_021 } },
+		], { disk: true, preserveRecent: 1 });
+		active.push(harness);
+
+		await harness.session.prompt(Array.from({ length: 30 }, (_, index) => `silent-overflow-source-${index}`).join("\n"));
+
+		const ends = harness.events.filter((event) => event.type === "compaction_end" && event.reason === "overflow");
+		expect(ends).toHaveLength(1);
+		expect(ends[0]).toMatchObject({ willRetry: false, result: expect.objectContaining({ format: "full-collapse" }) });
+		const boundaries = harness.manager.getEntries().filter((entry) => entry.type === "compaction") as Array<CompactionEntry<VerbatimCompactionDetails>>;
+		expect(boundaries).toHaveLength(1);
+		const boundary = boundaries[0];
+		const assistantEntry = harness.manager.getEntries().find((entry) => entry.type === "message"
+			&& entry.message.role === "assistant" && textFromMessages([entry.message]).includes(marker));
+		expect(assistantEntry?.type).toBe("message");
+		if (!assistantEntry || assistantEntry.type !== "message") throw new Error("missing successful overflow assistant");
+		expect(boundary.parentId).toBe(assistantEntry.id);
+		expect(boundary.firstKeptEntryId).toBe(assistantEntry.id);
+		expect(harness.manager.getLeafId()).toBe(boundary.id);
+		expect(boundary.summary.split(marker)).toHaveLength(2);
+		expect(textFromMessages(harness.session.agent.state.messages).split(marker)).toHaveLength(2);
+		expect(textFromMessages(convertToLlm(harness.session.agent.state.messages)).split(marker)).toHaveLength(2);
+
+		const file = harness.file!;
+		expect(readFileSync(file, "utf8").split(marker)).toHaveLength(3);
+		const reopened = SessionManager.open(file);
+		expect(reopened.getLeafId()).toBe(boundary.id);
+		expect(textFromMessages(reopened.buildSessionContext().messages).split(marker)).toHaveLength(2);
+		expect(textFromMessages(convertToLlm(reopened.buildSessionContext().messages)).split(marker)).toHaveLength(2);
+		expect(harness.captures.filter((capture) => !capture.planner)).toHaveLength(1);
+		expect(harness.captures.filter((capture) => capture.planner)).toHaveLength(1);
+		expect(harness.events.filter((event) => event.type === "message_end" && event.message.role === "assistant"
+			&& textFromMessages([event.message]).includes(marker))).toHaveLength(1);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
+		expect(harness.session.isStreaming).toBe(false);
+	});
+
+	it("does not exclude a stale retryable-overflow assistant that is no longer the current leaf", async () => {
+		const harness = createLifecycleHarness([], { disk: true });
+		active.push(harness);
+		const staleAssistantId = harness.manager.appendMessage(message({ text: "stale overflow artifact" }, Date.now()));
+		const currentLeaf = harness.manager.appendMessage({ role: "user", content: "new current leaf", timestamp: Date.now() + 1 });
+		const applyCalls: Array<{ excludeEntryId?: string }> = [];
+		const internal = harness.session as unknown as {
+			_lastAssistantEntryId?: string;
+			_applyVerbatimCompaction(options: { excludeEntryId?: string }): Promise<undefined>;
+			_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+		};
+		internal._lastAssistantEntryId = staleAssistantId;
+		internal._applyVerbatimCompaction = async (options) => { applyCalls.push(options); return undefined; };
+
+		await internal._runAutoCompaction("overflow", true);
+
+		expect(applyCalls).toHaveLength(1);
+		expect(applyCalls[0].excludeEntryId).toBeUndefined();
+		expect(harness.manager.getLeafId()).toBe(currentLeaf);
+	});
+
+	it("rechecks retryable-overflow leaf identity before a stale-plan retry", async () => {
+		const harness = createLifecycleHarness([], { disk: true });
+		active.push(harness);
+		const overflowAssistantId = harness.manager.appendMessage(message({ text: "current overflow artifact" }, Date.now()));
+		const applyCalls: Array<{ excludeEntryId?: string }> = [];
+		let replacementLeaf: string | undefined;
+		const internal = harness.session as unknown as {
+			_lastAssistantEntryId?: string;
+			_applyVerbatimCompaction(options: { excludeEntryId?: string }): Promise<undefined>;
+			_runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<void>;
+		};
+		internal._lastAssistantEntryId = overflowAssistantId;
+		internal._applyVerbatimCompaction = async (options) => {
+			applyCalls.push(options);
+			if (applyCalls.length === 1) {
+				replacementLeaf = harness.manager.appendMessage({ role: "user", content: "concurrent leaf", timestamp: Date.now() + 1 });
+				throw new StaleCompactionPlanError();
+			}
+			return undefined;
+		};
+
+		await internal._runAutoCompaction("overflow", true);
+
+		expect(applyCalls).toHaveLength(2);
+		expect(applyCalls[0].excludeEntryId).toBe(overflowAssistantId);
+		expect(applyCalls[1].excludeEntryId).toBeUndefined();
+		expect(harness.manager.getLeafId()).toBe(replacementLeaf);
+	});
+
 	it("allows only one compact-and-retry for two consecutive provider overflows", async () => {
 		const overflow = "prompt is too long: staged-overflow";
 		const harness = createLifecycleHarness([{ error: overflow }, { error: overflow }]);
@@ -290,30 +382,68 @@ describe("public auto-compaction lifecycle", () => {
 		expect(harness.session.isStreaming).toBe(false);
 	});
 
-	it("archives one overflow error while excluding it from compaction and retry transport", async () => {
-		const overflow = "prompt is too long: UNIQUE_ARCHIVED_OVERFLOW_TEXT";
-		const harness = createLifecycleHarness([{ error: overflow }, { text: "retry succeeded" }], { disk: true });
+	it("archives retryable overflow text once but excludes it from planning, boundary, retry, and reopen", async () => {
+		const errorContentMarker = "UNIQUE_RETRYABLE_OVERFLOW_ERROR_CONTENT";
+		const overflow = "prompt is too long: recognized retryable staged overflow";
+		const toolResultMarker = "USEFUL_PRECEDING_TOOL_RESULT_TAIL";
+		const tool: AgentTool = {
+			name: "retry_context", label: "retry_context", description: "provides useful retry context", parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: toolResultMarker }], details: {} }),
+		};
+		const harness = createLifecycleHarness([
+			{ toolCall: { id: "retry-context-call", name: "retry_context" } },
+			{ error: overflow, text: errorContentMarker },
+			{ text: "retry succeeded" },
+		], { disk: true, preserveRecent: 1, tool });
 		active.push(harness);
 		await harness.session.prompt(Array.from({ length: 40 }, (_, index) => `durable-source-${index}`).join("\n"));
+
 		const plannerCapture = harness.captures.find((capture) => capture.planner)!;
 		const normalCaptures = harness.captures.filter((capture) => !capture.planner);
-		expect(JSON.stringify(plannerCapture.context)).not.toContain(overflow);
-		expect(JSON.stringify(plannerCapture.payload)).not.toContain(overflow);
-		expect(JSON.stringify(normalCaptures[1].context)).not.toContain(overflow);
-		expect(JSON.stringify(normalCaptures[1].payload)).not.toContain(overflow);
+		expect(normalCaptures).toHaveLength(3);
+		expect(JSON.stringify(plannerCapture.context)).not.toContain(errorContentMarker);
+		expect(JSON.stringify(plannerCapture.payload)).not.toContain(errorContentMarker);
+		expect(JSON.stringify(normalCaptures[2].context)).not.toContain(errorContentMarker);
+		expect(JSON.stringify(normalCaptures[2].payload)).not.toContain(errorContentMarker);
+
+		const boundaries = harness.manager.getEntries().filter((entry) => entry.type === "compaction") as Array<CompactionEntry<VerbatimCompactionDetails>>;
+		expect(boundaries).toHaveLength(1);
+		const boundary = boundaries[0];
+		expect(boundary.summary).not.toContain(errorContentMarker);
+		expect(boundary.summary).toContain(toolResultMarker);
+		const errorEntry = harness.manager.getEntries().find((entry) => entry.type === "message"
+			&& entry.message.role === "assistant" && textFromMessages([entry.message]).includes(errorContentMarker));
+		expect(errorEntry?.type).toBe("message");
+		if (!errorEntry || errorEntry.type !== "message") throw new Error("missing archived overflow assistant");
+		expect(errorEntry.message.role === "assistant" ? errorEntry.message.errorMessage : undefined).toBe(overflow);
+		expect(boundary.parentId).toBe(errorEntry.id);
+		expect(boundary.firstKeptEntryId).toBe(errorEntry.id);
+		const retryEntry = harness.manager.getEntries().find((entry) => entry.type === "message"
+			&& entry.message.role === "assistant" && textFromMessages([entry.message]).includes("retry succeeded"));
+		expect(retryEntry?.parentId).toBe(boundary.id);
+		expect(harness.manager.getLeafId()).toBe(retryEntry?.id);
+
 		const file = harness.file!;
-		const diskText = readFileSync(file, "utf8");
-		expect(diskText.split(overflow)).toHaveLength(2);
+		expect(readFileSync(file, "utf8").split(errorContentMarker)).toHaveLength(2);
+		expect(textFromMessages(harness.session.agent.state.messages)).not.toContain(errorContentMarker);
+		expect(textFromMessages(harness.session.agent.state.messages)).toContain(toolResultMarker);
 		const reopened = SessionManager.open(file);
-		expect(JSON.stringify(reopened.getEntries()).split(overflow)).toHaveLength(2);
-		expect(harness.events.some((event) => event.type === "message_end" && event.message.role === "assistant" && event.message.errorMessage === overflow)).toBe(true);
-		expect(harness.events.some((event) => event.type === "agent_end")).toBe(true);
-		expect(harness.events.filter((event) => event.type === "compaction_end" && event.reason === "overflow")).toHaveLength(1);
-		const archivedMessageIndex = harness.events.findIndex((event) => event.type === "message_end" && event.message.role === "assistant" && event.message.errorMessage === overflow);
-		const agentEndIndex = harness.events.findIndex((event, index) => index > archivedMessageIndex && event.type === "agent_end");
-		expect(archivedMessageIndex).toBeGreaterThanOrEqual(0);
-		expect(agentEndIndex).toBeGreaterThan(archivedMessageIndex);
-		await harness.session.prompt("public continuation after recovered overflow");
+		expect(JSON.stringify(reopened.getEntries()).split(errorContentMarker)).toHaveLength(2);
+		expect(textFromMessages(reopened.buildSessionContext().messages)).not.toContain(errorContentMarker);
+		expect(textFromMessages(reopened.buildSessionContext().messages)).toContain(toolResultMarker);
+		expect(textFromMessages(convertToLlm(reopened.buildSessionContext().messages))).not.toContain(errorContentMarker);
+		expect(reopened.getLeafId()).toBe(retryEntry?.id);
+
+		const ends = harness.events.filter((event) => event.type === "compaction_end" && event.reason === "overflow");
+		expect(ends).toHaveLength(1);
+		expect(ends[0]).toMatchObject({ willRetry: true, result: expect.objectContaining({ format: "full-collapse" }) });
+		expect(harness.captures.filter((capture) => capture.planner)).toHaveLength(1);
+		expect(harness.events.filter((event) => event.type === "message_end" && event.message.role === "assistant"
+			&& textFromMessages([event.message]).includes(errorContentMarker))).toHaveLength(1);
+		expect(harness.events.some((event) => event.type === "message_end" && event.message.role === "toolResult"
+			&& textFromMessages([event.message]).includes(toolResultMarker))).toBe(true);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
 		expect(harness.session.isStreaming).toBe(false);
 	});
 });

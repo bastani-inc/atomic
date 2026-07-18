@@ -3,6 +3,7 @@ import type { AgentSessionInternalSurface as AgentSession, VerbatimCompactionApp
 import {
 	compactionRequestIdentityMatches,
 	getKeptTailTokenEstimate,
+	prepareCompactionBoundary,
 	prepareFullCollapseBoundary,
 	runFullCollapseCompaction,
 	VERBATIM_COMPACTION_FORMAT_FULL,
@@ -76,51 +77,52 @@ export async function _applyVerbatimCompaction(
 	const model = this.model;
 	const pathEntries = this.sessionManager.getBranch();
 	const settings = this.settingsManager.getCompactionSettings();
-	const preparation = prepareFullCollapseBoundary(pathEntries, settings, {
+	const planningLeafId = this.sessionManager.getLeafId();
+	const parameterOptions = {
 		...(options.compression_ratio === undefined ? {} : { compression_ratio: options.compression_ratio }),
 		...(options.preserve_recent === undefined ? {} : { preserve_recent: options.preserve_recent }),
 		...(options.query === undefined ? {} : { query: options.query }),
-		...(options.excludeEntryId ? {
-			excludedEntryIds: new Set([options.excludeEntryId]),
-			anchorId: this.sessionManager.getLeafId() ?? undefined,
-		} : {}),
+	};
+	const compatiblePathEntries = options.excludeEntryId
+		? pathEntries.filter((entry) => entry.id !== options.excludeEntryId) : pathEntries;
+	const fullPreparation = prepareFullCollapseBoundary(compatiblePathEntries, settings, {
+		...parameterOptions,
+		...(options.excludeEntryId && planningLeafId ? { anchorId: planningLeafId } : {}),
 	});
-	if (!preparation) {
+	if (!fullPreparation) {
 		if (options.reason === "overflow") throw new Error("Context compaction found no compactable transcript entries; nothing more was safely deletable");
 		return undefined;
 	}
-	// Reuse only a request captured at the actual pre-dispatch stream boundary.
-	// With no preceding request (for example a manual compact before any prompt),
-	// the planner deliberately uses its isolated request rather than claiming a
-	// post-response reconstruction is cache-identical.
+	const hasBeforeHook = this._extensionRunner.hasHandlers("session_before_compact");
+	const legacyPreparation = hasBeforeHook
+		? prepareCompactionBoundary(compatiblePathEntries, settings, parameterOptions) : undefined;
+	const extensionPreparation = legacyPreparation ?? fullPreparation;
 	const capturedPrefix = this._activeRequestPrefix
 		&& compactionRequestIdentityMatches(this._activeRequestPrefix.identity, model)
 		&& this._activeRequestPrefix.identity.sessionId === this.sessionManager.getSessionId()
-		? this._activeRequestPrefix
-		: undefined;
-	const reusablePrefix = capturedPrefix;
+		? this._activeRequestPrefix : undefined;
 	const plan: CompactionPlanOptions = {
-		// Compaction-internal dispatch must not replace the normal request snapshot.
 		streamFn: this._originatingStreamFn,
 		sessionFilePath: this.sessionManager.getSessionFile(),
-		...(reusablePrefix ? { prefix: reusablePrefix } : {}),
+		...(capturedPrefix ? { prefix: capturedPrefix } : {}),
 	};
 	let fromExtension = false;
+	let boundaryPreparation: VerbatimCompactionPreparation = fullPreparation;
 	let compacted:
 		| { text: string; stats: VerbatimCompactionStats; rung: VerbatimCompactionResult["rung"]; cache?: CompactionCacheTelemetry }
 		| undefined;
 
-	if (this._extensionRunner.hasHandlers("session_before_compact")) {
+	if (hasBeforeHook) {
 		let snapshot: VerbatimCompactionPreparation;
 		try {
-			snapshot = deepFreeze(structuredClone(preparation));
+			snapshot = deepFreeze(structuredClone(extensionPreparation));
 		} catch (error) {
 			throw new Error(`Failed to snapshot transcript for compaction extensions: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		const hookResult = (await this._extensionRunner.emit({
 			type: "session_before_compact",
 			reason: options.reason,
-			parameters: preparation.parameters,
+			parameters: extensionPreparation.parameters,
 			preparation: snapshot,
 			branchEntries: pathEntries,
 			signal: options.abortController.signal,
@@ -128,7 +130,15 @@ export async function _applyVerbatimCompaction(
 		if (hookResult?.cancel) throw new Error("Compaction cancelled");
 		if (hookResult?.compactedText !== undefined) {
 			if (hookResult.compactedText.trim().length === 0) throw new Error("No compacted text provided by extension");
-			compacted = { text: hookResult.compactedText, stats: extensionStats(preparation, hookResult.compactedText), rung: "extension" };
+			if (!legacyPreparation) {
+				throw new Error("Extension compactedText requires a compatible legacy kept-tail boundary");
+			}
+			boundaryPreparation = legacyPreparation;
+			compacted = {
+				text: hookResult.compactedText,
+				stats: extensionStats(legacyPreparation, hookResult.compactedText),
+				rung: "extension",
+			};
 			fromExtension = true;
 		}
 	}
@@ -137,7 +147,7 @@ export async function _applyVerbatimCompaction(
 		const auth = await options.resolvePlannerAuth();
 		if (!auth) throw new Error("Compaction provider authentication is unavailable");
 		compacted = await runFullCollapseCompaction(
-			preparation,
+			fullPreparation,
 			model,
 			auth.apiKey,
 			auth.headers,
@@ -145,39 +155,54 @@ export async function _applyVerbatimCompaction(
 			this.thinkingLevel,
 			plan,
 		);
+		boundaryPreparation = fullPreparation;
 	}
 	if (options.abortController.signal.aborted) throw new Error("Compaction cancelled");
-	if (this.sessionManager.getLeafId() !== preparation.firstKeptEntryId) throw new StaleCompactionPlanError();
+	if (this.sessionManager.getLeafId() !== planningLeafId) throw new StaleCompactionPlanError();
 
-	// Retain this recovery artifact if the transactional boundary append fails.
 	const backupPath = this.sessionManager.writeBackupSnapshot(options.backupLabel);
+	const promptVersion = fromExtension ? 3 : VERBATIM_COMPACTION_PROMPT_VERSION;
 	const details: VerbatimCompactionDetails = {
 		strategy: VERBATIM_COMPACTION_STRATEGY,
-		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		format: VERBATIM_COMPACTION_FORMAT_FULL,
-		parameters: preparation.parameters,
+		promptVersion,
+		...(fromExtension ? {} : { format: VERBATIM_COMPACTION_FORMAT_FULL }),
+		parameters: boundaryPreparation.parameters,
 		stats: compacted.stats,
 		rung: compacted.rung,
 		...(compacted.cache ? { cache: compacted.cache } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
-	const entryId = this.sessionManager.appendCompaction(compacted.text, preparation.firstKeptEntryId, preparation.tokensBefore, details);
+	const excludedParentId = fromExtension && options.excludeEntryId
+		? this.sessionManager.getEntry(options.excludeEntryId)?.parentId : undefined;
+	if (excludedParentId) this.sessionManager.branch(excludedParentId);
+	let entryId: string;
+	try {
+		entryId = this.sessionManager.appendCompaction(
+			compacted.text, boundaryPreparation.firstKeptEntryId, boundaryPreparation.tokensBefore, details,
+		);
+	} catch (error) {
+		if (excludedParentId && planningLeafId) this.sessionManager.branch(planningLeafId);
+		throw error;
+	}
 	this.agent.state.messages = this.sessionManager.buildSessionContext().messages;
 	const result: VerbatimCompactionResult = {
 		compactedText: compacted.text,
-		firstKeptEntryId: preparation.firstKeptEntryId,
-		tokensBefore: preparation.tokensBefore,
+		firstKeptEntryId: boundaryPreparation.firstKeptEntryId,
+		tokensBefore: boundaryPreparation.tokensBefore,
 		stats: compacted.stats,
-		parameters: preparation.parameters,
-		promptVersion: VERBATIM_COMPACTION_PROMPT_VERSION,
-		format: VERBATIM_COMPACTION_FORMAT_FULL,
+		parameters: boundaryPreparation.parameters,
+		promptVersion,
+		...(fromExtension ? {} : { format: VERBATIM_COMPACTION_FORMAT_FULL }),
 		rung: compacted.rung,
 		...(compacted.cache ? { cache: compacted.cache } : {}),
 		...(backupPath ? { backupPath } : {}),
 	};
 	const compactionEntry = this.sessionManager.getEntry(entryId) as CompactionEntry<VerbatimCompactionDetails>;
 	try {
-		await this._extensionRunner.emit({ type: "session_compact", reason: options.reason, parameters: preparation.parameters, result, compactionEntry, fromExtension } satisfies SessionCompactEvent);
+		await this._extensionRunner.emit({
+			type: "session_compact", reason: options.reason, parameters: boundaryPreparation.parameters,
+			result, compactionEntry, fromExtension,
+		} satisfies SessionCompactEvent);
 	} catch (error) {
 		this._extensionRunner.emitError({ extensionPath: "<session_compact>", event: "session_compact", error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined });
 	}

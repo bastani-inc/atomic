@@ -1,3 +1,4 @@
+import type { Message } from "@earendil-works/pi-ai/compat";
 import { convertToLlm } from "../messages.js";
 import { normalizeDerivedSessionEntries } from "../session-entry-normalization.js";
 import { buildSessionContext } from "../session-manager-history.js";
@@ -7,7 +8,6 @@ import {
 	latestActiveBoundary,
 	setKeptTailTokenEstimate,
 	visibleEntries,
-	type VisibleEntry,
 } from "./compaction-boundary.js";
 import { estimateContextTokens, type CompactionSettings } from "./compaction.js";
 import { normalizeCompactionParameters } from "./compaction-parameters.js";
@@ -27,17 +27,14 @@ interface ProtectedTail {
 }
 
 /**
- * Map the trailing `preserve_recent` visible messages to the physical line
- * numbers they occupy at the end of `regionText`. Because
- * `serializeConversationForCompaction` is a pure per-message transform joined by
- * `"\n\n"`, serializing the last N messages alone yields the exact byte-identical
- * suffix of the full region; the `endsWith` guard makes the mapping robust.
+ * Map the trailing `preserve_recent` normalized provider-visible messages to
+ * their physical line suffix. The complete sequence has already undergone
+ * orphan repair; slicing this canonical sequence must not repair the tail again.
  */
-function mapProtectedRecentLines(visible: VisibleEntry[], regionText: string, n: number): ProtectedTail {
-	if (n <= 0 || visible.length === 0) return { lineNumbers: new Set(), count: 0 };
-	const count = Math.min(n, visible.length);
-	const lastN = visible.slice(visible.length - count).map((item) => item.message);
-	const tailText = serializeConversationForCompaction(convertToLlm(lastN));
+function mapProtectedRecentLines(messages: Message[], regionText: string, n: number): ProtectedTail {
+	if (n <= 0 || messages.length === 0) return { lineNumbers: new Set(), count: 0 };
+	const count = Math.min(n, messages.length);
+	const tailText = serializeConversationForCompaction(messages.slice(messages.length - count));
 	if (tailText.length === 0 || !regionText.endsWith(tailText)) return { lineNumbers: new Set(), count: 0 };
 	const totalLines = regionText.split("\n").length;
 	const tailLines = tailText.split("\n").length;
@@ -93,11 +90,12 @@ export function prepareFullCollapseBoundary(
 	const parameterInput = { ...settings, ...parameterOptions };
 	const parameters = normalizeCompactionParameters(parameterInput, autoDetectCompactionQuery(entries));
 
-	const serialized = serializeConversationForCompaction(convertToLlm(visible.map((item) => item.message)));
+	const normalizedMessages = convertToLlm(visible.map((item) => item.message));
+	const serialized = serializeConversationForCompaction(normalizedMessages);
 	const regionText = previous?.entry.summary ? `${previous.entry.summary}\n${serialized}` : serialized;
 	if (regionText.length === 0) return undefined;
 
-	const preserved = mapProtectedRecentLines(visible, regionText, parameters.preserve_recent);
+	const preserved = mapProtectedRecentLines(normalizedMessages, regionText, parameters.preserve_recent);
 	const region = createNumberedRegion(regionText, preserved.lineNumbers);
 	if (region.lines.length < MIN_COMPACTABLE_REGION_LINES) return undefined;
 	if (allLinesProtected(region)) return undefined;

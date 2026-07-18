@@ -23,6 +23,19 @@ function assistant(text: string, timestamp: number): AgentMessage {
 	};
 }
 
+function toolCallingAssistant(toolCallId: string, timestamp: number): AgentMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "toolCall", id: toolCallId, name: "read", arguments: { path: "protected.txt" } }],
+		api: "anthropic-messages",
+		provider: "test",
+		model: "test",
+		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		stopReason: "toolUse",
+		timestamp,
+	};
+}
+
 function toolResult(text: string, timestamp: number): AgentMessage {
 	return { role: "toolResult", toolCallId: `tc-${timestamp}`, toolName: "read", content: [{ type: "text", text }], isError: false, timestamp };
 }
@@ -57,7 +70,7 @@ describe("prepareFullCollapseBoundary", () => {
 		expect((prep?.region.lines.length ?? 0)).toBeGreaterThanOrEqual(20);
 	});
 
-	it("protects the last two visible messages byte-identically inside the region string", () => {
+	it("protects the last two normalized provider-visible messages in canonical order after omissions", () => {
 		const entries = incidentEntries(40);
 		const prep = prepareFullCollapseBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 2 });
 		expect(prep).toBeDefined();
@@ -65,8 +78,42 @@ describe("prepareFullCollapseBoundary", () => {
 		const protectedLines = [...(region.protectedLineNumbers ?? [])].sort((a, b) => a - b);
 		expect(protectedLines.length).toBeGreaterThan(0);
 		const protectedText = protectedLines.map((line) => region.lines[line - 1]).join("\n");
-		const lastTwo = [entries[entries.length - 2], entries[entries.length - 1]].map((e) => (e as { message: AgentMessage }).message);
-		expect(protectedText).toBe(serializeConversationForCompaction(convertToLlm(lastTwo)));
+		const normalized = convertToLlm(entries.map((item) => (item as { message: AgentMessage }).message));
+		const lastTwo = normalized.slice(-2);
+		expect(lastTwo.map((message) => message.role)).toEqual(["assistant", "assistant"]);
+		expect(protectedText).toBe(serializeConversationForCompaction(lastTwo));
+		expect(protectedText.indexOf("step 36")).toBeLessThan(protectedText.indexOf("step 38"));
+		expect(protectedText).not.toContain("result 39");
+	});
+
+	it("protects a canonical trailing tool result normalized with its preceding call", () => {
+		const raw = `PROTECTED_TOOL_RESULT_PREFIX:${"x".repeat(16_100)}`;
+		const entries: SessionEntry[] = [
+			entry("m1", user(Array.from({ length: 24 }, (_, index) => `compactable ${index}`).join("\n"), 1), null),
+			entry("m2", assistant("earlier assistant", 2), "m1"),
+			entry("m3", toolCallingAssistant("tc-4", 3), "m2"),
+			entry("m4", toolResult(raw, 4), "m3"),
+		];
+		const prep = prepareFullCollapseBoundary(entries, DEFAULT_COMPACTION_SETTINGS, { preserve_recent: 1 });
+		expect(prep).toBeDefined();
+		expect(prep?.protectedMessageCount).toBe(1);
+		const protectedLines = [...(prep?.region.protectedLineNumbers ?? [])].sort((a, b) => a - b);
+		const protectedText = protectedLines.map((line) => prep!.region.lines[line - 1]).join("\n");
+		const normalized = convertToLlm(entries.map((item) => (item as { message: AgentMessage }).message));
+		expect(normalized.map((message) => message.role)).toEqual(["user", "assistant", "assistant", "toolResult"]);
+		expect(prep?.regionEntryIds).toEqual(["m1", "m2", "m3", "m4"]);
+		expect(prep!.region.lines.join("\n")).toBe(serializeConversationForCompaction(normalized));
+		const canonicalCall = serializeConversationForCompaction([normalized.at(-2)!]);
+		const expected = serializeConversationForCompaction([normalized.at(-1)!]);
+		expect(protectedText).toBe(expected);
+		expect(protectedText.split("PROTECTED_TOOL_RESULT_PREFIX:")).toHaveLength(2);
+		expect(protectedText).toContain(`[Tool result]: ${raw.slice(0, 16_000)}`);
+		expect(protectedText.split(`[... ${raw.length - 16_000} more characters truncated]`)).toHaveLength(2);
+		const callLine = prep!.region.lines.indexOf(canonicalCall) + 1;
+		expect(callLine).toBeGreaterThan(0);
+		expect(callLine).toBeLessThan(protectedLines[0]);
+		expect(prep!.region.protectedLineNumbers?.has(callLine)).toBe(false);
+		expect(prep!.region.lines.length).toBeGreaterThan(protectedLines.length);
 	});
 
 	it("returns undefined below the region minimum", () => {

@@ -345,7 +345,8 @@ function overflowUnresolved(reason: "overflow" | "threshold", aborted = false): 
 
 export async function _runAutoCompaction(this: AgentSession, reason: "overflow" | "threshold", willRetry: boolean): Promise<void> {
 	this._emit({ type: "compaction_start", reason });
-	this._autoCompactionAbortController = new AbortController();
+	const abortController = new AbortController();
+	this._autoCompactionAbortController = abortController;
 
 	try {
 		if (!this.model) {
@@ -365,25 +366,33 @@ export async function _runAutoCompaction(this: AgentSession, reason: "overflow" 
 		// require provider credentials. Missing auth then fails model-driven compaction
 		// before persistence or continuation, matching other provider-call failures.
 		const model = this.model;
-		const applyOptions = {
-			resolvePlannerAuth: async () => {
-				const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
-				if (!authResult.ok || !authResult.apiKey) {
-					return undefined;
-				}
-				return { apiKey: authResult.apiKey, headers: authResult.headers };
-			},
-			abortController: this._autoCompactionAbortController,
-			backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
-			reason,
-			...(reason === "overflow" && this._lastAssistantEntryId ? { excludeEntryId: this._lastAssistantEntryId } : {}),
-		} as const;
+		const createApplyOptions = () => {
+			const retryableOverflowAssistantEntryId = reason === "overflow"
+				&& willRetry
+				&& this._lastAssistantEntryId
+				&& this.sessionManager.getLeafId() === this._lastAssistantEntryId
+				? this._lastAssistantEntryId
+				: undefined;
+			return {
+				resolvePlannerAuth: async () => {
+					const authResult = await this._modelRegistry.getApiKeyAndHeaders(model);
+					if (!authResult.ok || !authResult.apiKey) {
+						return undefined;
+					}
+					return { apiKey: authResult.apiKey, headers: authResult.headers };
+				},
+				abortController,
+				backupLabel: reason === "overflow" ? "overflow-auto-compact" : "auto-compact",
+				reason,
+				...(retryableOverflowAssistantEntryId ? { excludeEntryId: retryableOverflowAssistantEntryId } : {}),
+			} as const;
+		};
 		let result;
 		try {
-			result = await this._applyVerbatimCompaction(applyOptions);
+			result = await this._applyVerbatimCompaction(createApplyOptions());
 		} catch (error) {
 			if (!(error instanceof StaleCompactionPlanError)) throw error;
-			result = await this._applyVerbatimCompaction(applyOptions);
+			result = await this._applyVerbatimCompaction(createApplyOptions());
 		}
 		if (!result) {
 			this._emit({

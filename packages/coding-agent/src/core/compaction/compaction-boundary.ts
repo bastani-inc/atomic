@@ -12,6 +12,7 @@ import {
 import { compactionQueryProvenance, setCompactionQueryProvenance } from "./compaction-query-provenance.js";
 import {
 	MIN_COMPACTABLE_REGION_LINES,
+	VERBATIM_COMPACTION_FORMAT_FULL,
 	VERBATIM_COMPACTION_STRATEGY,
 	type VerbatimCompactionDetails,
 	type VerbatimCompactionParameters,
@@ -112,7 +113,8 @@ export function prepareCompactionBoundary(
 	const previous = latestActiveBoundary(entries);
 	let regionStart = 0;
 	if (previous) {
-		const keptIndex = entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
+		const keptIndex = previous.entry.details?.format === VERBATIM_COMPACTION_FORMAT_FULL
+			? -1 : entries.findIndex((entry) => entry.id === previous.entry.firstKeptEntryId);
 		regionStart = keptIndex >= 0 ? keptIndex : previous.index + 1;
 	}
 

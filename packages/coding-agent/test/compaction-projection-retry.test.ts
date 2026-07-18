@@ -399,6 +399,7 @@ describe("bounded full-collapse projection retries", () => {
 			});
 		} catch (caught) { if (caught instanceof RangePlanError) error = caught; else throw caught; }
 		expect(dispatched).toBe(false);
+		expect(error?.attempts).toBe(1);
 		expect(error?.providerOverflow).toBe(false);
 		expect(error?.message).toContain("output budget");
 	});

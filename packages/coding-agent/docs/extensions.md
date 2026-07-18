@@ -469,7 +469,7 @@ Do cleanup work in `session_shutdown`, then reestablish any in-memory state in `
 
 #### session_before_compact / session_compact
 
-Fired by `/compact` and auto-compaction. Atomic prepares a protected recent tail and a numbered compactable region. Extensions may cancel or provide a complete, non-empty `compactedText` replacement for that region; they cannot move `firstKeptEntryId`. The override is persisted verbatim and works without provider credentials.
+Fired by `/compact` and auto-compaction. Model-driven compaction uses the validated full-collapse preparation. For extension compatibility, Atomic derives a legacy kept-tail preparation from the same branch, exclusions, settings, and parameter overrides and presents it to the hook when available. Extensions may cancel or return arbitrary non-whitespace `compactedText`; trusted override bytes are persisted exactly as a format-absent legacy hybrid with the prepared structured tail and require no provider credentials. If no compatible legacy region exists, the hook still observes the full-collapse preparation and may cancel or return no override, but replacement text is rejected before backup/persistence.
 
 ```typescript
 pi.on("session_before_compact", async (event) => {
@@ -488,14 +488,14 @@ pi.on("session_before_compact", async (event) => {
   // Cancel compaction:
   return { cancel: true };
 
-  // Or replace only the prepared region. Whitespace-only text is rejected.
-  return {
-    compactedText: preparation.region.lines.slice(0, 40).join("\n"),
-  };
+  // Or provide trusted replacement bytes. Whitespace-only text is rejected.
+  // This writes a format-absent legacy hybrid and replays the structured tail.
+  return { compactedText: renderWithMyOwnCompactor(preparation) };
 });
 
 pi.on("session_compact", async (event) => {
   // event.result - VerbatimCompactionResult (text, boundary, stats, parameters, rung)
+  // result/details.format selects reconstruction: "full-collapse" or absent legacy hybrid
   // event.compactionEntry - saved CompactionEntry with strategy "verbatim-lines"
   // event.fromExtension - true when session_before_compact provided compactedText
   // Observe-only: errors are isolated after persistence.

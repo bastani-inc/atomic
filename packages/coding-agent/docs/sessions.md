@@ -34,7 +34,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 | `/tree` | Navigate the current session tree |
 | `/fork` | Create a new session from a previous user message |
 | `/clone` | Duplicate the current active branch into a new session |
-| `/compact` | Compact older transcript lines verbatim while preserving recent logical turns; see [Compaction](/compaction) |
+| `/compact` | Compact context through validated full-collapse selection (or a trusted extension legacy hybrid); see [Compaction](/compaction) |
 | `/export [file]` | Export session to HTML |
 | `/share` | Upload as private GitHub gist with shareable HTML link |
 
@@ -42,7 +42,7 @@ For the JSONL file format and SessionManager API, see [Session Format](/session-
 
 `/resume` opens an interactive session picker for the current project. `atomic -r` opens the same picker at startup.
 
-When Atomic reconstructs a resumed session, the latest active verbatim `compaction` entry supplies a durable compacted transcript string followed by the original kept tail. Resume does not rerun a planner or re-derive omissions. Legacy logical-deletion `context_compaction` entries are inert archival records, so previously hidden content can re-enter context in sessions created by older versions.
+When Atomic reconstructs a resumed session, the latest active verbatim `compaction` entry supplies its durable compacted transcript string. Reconstruction is selected by the persisted format, not by the planner/extension rung: `details.format: "full-collapse"` replays only entries appended after the boundary, while a format-absent legacy hybrid replays its original structured tail from `firstKeptEntryId`. Resume does not rerun a planner or re-derive omissions. Legacy logical-deletion `context_compaction` entries are inert archival records, so previously hidden content can re-enter context in sessions created by older versions.
 
 In the picker you can:
 
@@ -150,7 +150,7 @@ When prompted, choose one of:
 2. summarize with the default prompt
 3. summarize with custom focus instructions
 
-Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while Verbatim Compaction lets a model select numbered line ranges and reconstructs retained text mechanically.
+Branch summaries are separate from `/compact`: branch navigation can generate summary prose (optionally with focus instructions), while model-driven Verbatim Compaction selects retained canonical lines and reconstructs them mechanically. Trusted extension overrides use the documented format-absent legacy-hybrid compatibility boundary.
 
 See [Compaction](/compaction) for Verbatim Compaction, branch summarization internals, and extension hooks.
 

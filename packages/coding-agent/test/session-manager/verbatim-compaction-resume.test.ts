@@ -169,11 +169,11 @@ describe("verbatim compaction persistence and resume", () => {
 		const anchor = messageEntry("m2", "m1", "folded assistant");
 		const boundary: SessionEntry = {
 			type: "compaction", id: "c1", parentId: "m2", timestamp: "2026-01-01T00:00:02.000Z",
-			summary: "[User]: folded user\n(filtered 4 lines)", firstKeptEntryId: "m2", tokensBefore: 100, details: fullDetails(),
+			summary: "[User]: folded user\n(filtered 4 lines)", firstKeptEntryId: "m2", tokensBefore: 100, details: { ...fullDetails(), rung: "extension" },
 		};
 		const after = messageEntry("m3", "c1", "after boundary");
 		const messages = buildSessionContext([before, anchor, boundary, after]).messages;
-		// v2: no kept tail is replayed even though firstKeptEntryId ("m2") is on the path.
+		// Format, not the extension rung, suppresses the pre-boundary kept tail.
 		expect(messages).toHaveLength(2);
 		const serialized = JSON.stringify(convertToLlm(messages));
 		expect(serialized).toContain("[User]: folded user");
@@ -185,11 +185,11 @@ describe("verbatim compaction persistence and resume", () => {
 		const root = messageEntry("m1", null, "kept root");
 		const legacy: SessionEntry = {
 			type: "compaction", id: "c1", parentId: "m1", timestamp: "2026-01-01T00:00:01.000Z",
-			summary: "[User]: durable", firstKeptEntryId: "m1", tokensBefore: 20, details: details(),
+			summary: "[User]: durable", firstKeptEntryId: "m1", tokensBefore: 20, details: details("planned"),
 		};
 		const after = messageEntry("m2", "c1", "after legacy");
 		const serialized = JSON.stringify(buildSessionContext([root, legacy, after]).messages);
-		// Legacy hybrid still replays the structured kept tail from firstKeptEntryId.
+		// Format absence, not the planned rung, replays the structured kept tail.
 		expect(serialized).toContain("kept root");
 		expect(serialized).toContain("after legacy");
 	});

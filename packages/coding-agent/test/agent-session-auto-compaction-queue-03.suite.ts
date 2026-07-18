@@ -171,6 +171,24 @@ describe("AgentSession auto-compaction length-stop resume", () => {
 		expect(runAutoCompactionSpy).toHaveBeenCalledWith("threshold", false);
 	});
 
+	it("uses retryable overflow recovery for a zero-output length stop at the context limit", async () => {
+		const assistant = lengthStoppedAssistant();
+		assistant.usage = {
+			...assistant.usage,
+			input: 198_000,
+			output: 0,
+			totalTokens: 198_000,
+		};
+		const runAutoCompactionSpy = vi
+			.spyOn(session as unknown as { _runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<void> }, "_runAutoCompaction")
+			.mockResolvedValue();
+		const checkCompaction = (session as unknown as { _checkCompaction: (message: AssistantMessage) => Promise<void> })._checkCompaction.bind(session);
+
+		await checkCompaction(assistant);
+
+		expect(runAutoCompactionSpy).toHaveBeenCalledWith("overflow", true);
+	});
+
 	it("compacts and retries the reported OpenAI Responses output-budget underflow shape", async () => {
 		const previousAssistant = previousHighUsageAssistant();
 		const assistant = outputBudgetErrorAssistant();

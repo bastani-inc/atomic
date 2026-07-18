@@ -1,6 +1,7 @@
 import type { LineRange, NumberedRegion, ValidatedRanges } from "./compaction-types.js";
 import { FILTERED_MARKER_RE } from "./transcript-serialization.js";
 import { VERBATIM_COMPACTION_PREFIX } from "../messages.js";
+import { earliestProtectedSubsequenceAssignment, earliestSubsequenceAssignment } from "./subsequence-assignment.js";
 
 /** Minimum number of source lines a valid compaction must delete. */
 export const MIN_USEFUL_DELETED_LINES = 1;
@@ -63,37 +64,22 @@ export function validateCompactedSubsequence(region: NumberedRegion, output: str
 	const total = source.length;
 	const outputLines = prepareOutputLines(output);
 
-	const kept = new Set<number>();
-	let pointer = 1; // 1-based index into source; only advances forward.
-	for (const line of outputLines) {
-		let matched = -1;
-		for (let candidate = pointer; candidate <= total; candidate++) {
-			if (source[candidate - 1] === line) {
-				matched = candidate;
-				break;
-			}
-		}
-		if (matched === -1) {
-			throw new SubsequenceValidationError(
-				"unmatched-line",
-				"Compacted output contains a line that is not an in-order verbatim copy of the source (rewrite, reorder, duplication, or hallucination)",
-			);
-		}
-		kept.add(matched);
-		pointer = matched + 1;
+	if (!earliestSubsequenceAssignment(source, outputLines)) {
+		throw new SubsequenceValidationError(
+			"unmatched-line",
+			"Compacted output contains a line that is not an in-order verbatim copy of the source (rewrite, reorder, duplication, or hallucination)",
+		);
 	}
-
-	const protectedLines = region.protectedLineNumbers;
-	if (protectedLines) {
-		for (const line of protectedLines) {
-			if (!kept.has(line)) {
-				throw new SubsequenceValidationError(
-					"dropped-protected-line",
-					`Compacted output dropped protected line ${line}`,
-				);
-			}
-		}
+	const protectedLines = region.protectedLineNumbers ?? new Set<number>();
+	const assignment = earliestProtectedSubsequenceAssignment(source, outputLines, protectedLines);
+	if (!assignment) {
+		const firstProtected = [...protectedLines].sort((left, right) => left - right)[0];
+		throw new SubsequenceValidationError(
+			"dropped-protected-line",
+			`Compacted output dropped protected line ${firstProtected}`,
+		);
 	}
+	const kept = new Set(assignment);
 
 	if (kept.size === 0) {
 		throw new SubsequenceValidationError("empty-reproduction", "Compacted output reproduced no source lines");

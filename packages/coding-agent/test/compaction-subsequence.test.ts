@@ -5,6 +5,7 @@ import {
 	validateCompactedSubsequence,
 } from "../src/core/compaction/subsequence.js";
 import { createNumberedRegion } from "../src/core/compaction/transcript-serialization.js";
+import { VERBATIM_COMPACTION_PREFIX } from "../src/core/messages.js";
 
 const SOURCE = "[User]: task one\nkeep me\ndrop me 1\ndrop me 2\n[Assistant]: answer\nfinal line";
 
@@ -65,4 +66,35 @@ describe("validateCompactedSubsequence", () => {
 		const region = createNumberedRegion(SOURCE);
 		expect(reason(() => validateCompactedSubsequence(region, "(filtered 4 lines)"))).toBe("empty-reproduction");
 	});
+
+	it("assigns a duplicate output line to the later protected source occurrence", () => {
+		const region = createNumberedRegion("duplicate\ndrop\nduplicate\nfinal", new Set([3, 4]));
+		expect([...validateCompactedSubsequence(region, "duplicate\nfinal")]).toEqual([{ start: 1, end: 2 }]);
+	});
+
+	it("assigns a blank output line to the later protected blank occurrence", () => {
+		const region = createNumberedRegion("\ndrop\n\nfinal", new Set([3, 4]));
+		expect([...validateCompactedSubsequence(region, "\nfinal")]).toEqual([{ start: 1, end: 2 }]);
+	});
+
+	it("assigns repeated output lines to both later protected duplicate occurrences", () => {
+		const region = createNumberedRegion("duplicate\nduplicate\nduplicate\nfinal", new Set([2, 3, 4]));
+		expect([...validateCompactedSubsequence(region, "duplicate\nduplicate\nfinal")]).toEqual([{ start: 1, end: 1 }]);
+	});
+
+	it("classifies an impossible protected occurrence assignment as dropped-protected-line", () => {
+		const region = createNumberedRegion("duplicate\nmiddle\nduplicate", new Set([1, 3]));
+		expect(reason(() => validateCompactedSubsequence(region, "duplicate"))).toBe("dropped-protected-line");
+	});
+
+	it("selects the earliest valid occurrence when multiple protected-valid assignments tie", () => {
+		const region = createNumberedRegion("duplicate\nduplicate\nprotected", new Set([3]));
+		expect([...validateCompactedSubsequence(region, "duplicate\nprotected")]).toEqual([{ start: 2, end: 2 }]);
+	});
+
+	it("accepts a real verbatim boundary prefix echo without changing occurrence assignment", () => {
+		const region = createNumberedRegion("drop\nprotected", new Set([2]));
+		expect([...validateCompactedSubsequence(region, `${VERBATIM_COMPACTION_PREFIX}protected`)]).toEqual([{ start: 1, end: 1 }]);
+	});
+
 });
