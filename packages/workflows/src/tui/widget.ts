@@ -24,7 +24,7 @@
 import { effectiveRunStatus } from "../shared/returned-run-status.js";
 import { runIndicatorStatus } from "../shared/run-indicator-status.js";
 import { topLevelWorkflowRuns } from "../shared/run-visibility.js";
-import type { RunSnapshot, StoreSnapshot } from "../shared/store-types.js";
+import type { RunSnapshot, StageSnapshot, StoreSnapshot } from "../shared/store-types.js";
 import { elapsedRunMs } from "../shared/timing.js";
 import type { FlatBandBadge } from "./chat-surface.js";
 import { renderRoundedBoxLines } from "./chat-surface.js";
@@ -215,6 +215,34 @@ function elapsedLabel(run: RunSnapshot, now: number): string {
 	return "";
 }
 
+/**
+ * The stage whose model best answers "which model is running right now".
+ * Prefer the actively running stage; otherwise fall back to the most recent
+ * stage that recorded an effective model (covers a chain paused between
+ * stages, and single-stage direct tasks).
+ */
+function activeModelStage(run: RunSnapshot): StageSnapshot | undefined {
+	const running = run.stages.find((stage) => stage.status === "running" && stage.model);
+	if (running) return running;
+	for (let index = run.stages.length - 1; index >= 0; index--) {
+		if (run.stages[index]!.model) return run.stages[index];
+	}
+	return undefined;
+}
+
+/**
+ * `<model> <thinking>` for the active stage, mirroring the main-session footer
+ * (thinking level is omitted when off/absent). Returns undefined when no stage
+ * has recorded a model yet, so the widget simply skips the segment.
+ */
+function runModelLabel(run: RunSnapshot): string | undefined {
+	const stage = activeModelStage(run);
+	const model = stage?.model;
+	if (!model) return undefined;
+	const level = stage?.thinkingLevel;
+	return level && level !== "off" ? `${model} ${level}` : model;
+}
+
 function metaLine(run: RunSnapshot, now: number): string {
 	if (run.endedAt !== undefined) {
 		return elapsedLabel(run, now);
@@ -222,6 +250,8 @@ function metaLine(run: RunSnapshot, now: number): string {
 	if (isQuitRun(run)) return "quit · resumable via /workflow resume";
 	if (effectiveRunStatus(run) === "blocked") return "blocked · resumable via /workflow resume";
 	const parts: string[] = [modeLabel(run)];
+	const model = runModelLabel(run);
+	if (model) parts.push(model);
 	const prog = progressLabel(run);
 	if (prog) parts.push(prog);
 	const elapsed = elapsedLabel(run, now);
