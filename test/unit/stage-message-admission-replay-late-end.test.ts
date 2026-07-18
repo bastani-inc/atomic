@@ -1,5 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { StageMessageAdmission } from "../../packages/workflows/src/runs/foreground/stage-runner-message-admission.js";
 import { sendStageUserMessage } from "../../packages/workflows/src/runs/foreground/stage-runner-send-user-message.js";
 import type { StageSessionEvent } from "../../packages/workflows/src/runs/foreground/stage-runner-types.js";
@@ -197,6 +198,107 @@ test("an untagged end clears the sole tagged current generation", async () => {
 
   assert.equal(promptStarts, 2);
   assert.deepEqual(actions, ["prompt", "followUp", "prompt"]);
+  turns[0]!.resolve();
+  turns[1]!.resolve();
+  await Promise.all([first, afterEnd]);
+});
+
+test("an authoritative start from a pre-existing async source releases admission", async () => {
+  const source = new AsyncResource("adapter-events");
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turn = Promise.withResolvers<void>();
+  let promptStarts = 0;
+  const actions: string[] = [];
+  const emit = (event: StageSessionEvent): void => {
+    source.runInAsyncScope(() => { for (const listener of listeners) listener(event); });
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    async prompt() { promptStarts += 1; actions.push("prompt"); await turn.promise; },
+    async followUp() { actions.push("followUp"); },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  emit({ type: "agent_start", turnId: "current" });
+  assert.equal(await send("second"), "followUp");
+  assert.equal(promptStarts, 1);
+  assert.deepEqual(actions, ["prompt", "followUp"]);
+  turn.resolve();
+  await first;
+  source.emitDestroy();
+});
+
+test("an external untagged current end outranks an unmatched replay when current start is tagged", async () => {
+  const source = new AsyncResource("adapter-events");
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turns = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const starts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let promptStarts = 0;
+  const emit = (event: StageSessionEvent): void => {
+    source.runInAsyncScope(() => { for (const listener of listeners) listener(event); });
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) {
+      listener({ type: "agent_start" });
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    async prompt() {
+      const index = promptStarts++;
+      emit(index === 0 ? { type: "agent_start", turnId: "current" } : { type: "agent_start" });
+      starts[index]?.resolve();
+      await turns[index]?.promise;
+    },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  await starts[0]!.promise;
+  emit({ type: "agent_end", messages: [] });
+  const afterEnd = send("after-end");
+  await starts[1]!.promise;
+  assert.equal(promptStarts, 2);
+  turns[0]!.resolve();
+  turns[1]!.resolve();
+  await Promise.all([first, afterEnd]);
+  source.emitDestroy();
+});
+
+test("a tagged end clears the sole current generation when its start omitted turnId", async () => {
+  const listeners = new Set<(event: StageSessionEvent) => void>();
+  const turns = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const starts = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  let promptStarts = 0;
+  const emit = (event: StageSessionEvent): void => {
+    for (const listener of listeners) listener(event);
+  };
+  const { session } = makeMockSession({
+    get isStreaming() { return false; },
+    subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    async prompt() {
+      const index = promptStarts++;
+      emit({ type: "agent_start" });
+      starts[index]?.resolve();
+      await turns[index]?.promise;
+    },
+  });
+  const admission = new StageMessageAdmission();
+  const send = (text: string) => admission.run((release) =>
+    sendStageUserMessage(session, text, undefined, undefined, release, admission));
+
+  const first = send("first");
+  await starts[0]!.promise;
+  emit({ type: "agent_end", turnId: "current", messages: [] });
+  const afterEnd = send("after-end");
+  await starts[1]!.promise;
+  assert.equal(promptStarts, 2);
   turns[0]!.resolve();
   turns[1]!.resolve();
   await Promise.all([first, afterEnd]);

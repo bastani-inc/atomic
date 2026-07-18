@@ -138,7 +138,9 @@ export class StageMessageAdmission {
 
   private observePublicStart(turnId: PublicTurnId | undefined): void {
     const contextual = this.turnContext.getStore();
-    const generation = contextual?.state !== "terminal" ? contextual : this.starting ?? this.owned;
+    const generation = contextual !== undefined && contextual.state !== "terminal"
+      ? contextual
+      : this.starting ?? this.owned;
     if (generation === undefined || generation.state === "terminal") return;
     this.observeStarting?.();
     if (generation.publicStarted) return;
@@ -159,6 +161,12 @@ export class StageMessageAdmission {
     let generationIndex = contextual === undefined
       ? -1
       : this.startedGenerations.findIndex((entry) => entry.id === contextual.id);
+    if (
+      generationIndex < 0
+      && turnId === undefined
+      && this.startedGenerations.length === 1
+      && this.startedGenerations[0]?.publicTurnId !== undefined
+    ) generationIndex = 0;
     if (generationIndex < 0 && turnId === undefined && this.untaggedReplayCount > 0) {
       this.untaggedReplayCount -= 1;
       return;
@@ -168,7 +176,7 @@ export class StageMessageAdmission {
         ? this.startedGenerations.findIndex((entry) => entry.publicTurnId === undefined)
         : this.startedGenerations.findIndex((entry) => entry.publicTurnId === turnId);
     }
-    if (generationIndex < 0 && turnId === undefined && this.startedGenerations.length === 1) generationIndex = 0;
+    if (generationIndex < 0 && this.startedGenerations.length === 1) generationIndex = 0;
     if (generationIndex < 0) return;
     const [generation] = this.startedGenerations.splice(generationIndex, 1);
     if (generation === undefined) return;
