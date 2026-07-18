@@ -55,7 +55,10 @@ function eventHarness() {
   };
 }
 
-function completedHandle(prompt: (text: string) => Promise<void>): StageControlHandle {
+function completedHandle(
+  prompt: (text: string) => Promise<void>,
+  ensureAttached: () => Promise<void> = async () => {},
+): StageControlHandle {
   return {
     runId: "run-1",
     stageId: "stage-a",
@@ -65,7 +68,7 @@ function completedHandle(prompt: (text: string) => Promise<void>): StageControlH
     sessionFile: "/tmp/stage-a.jsonl",
     isStreaming: false,
     messages: [],
-    ensureAttached: async () => {},
+    ensureAttached,
     prompt,
     steer: async () => {},
     followUp: async () => {},
@@ -112,18 +115,25 @@ test("concurrent duplicate wakeups serialize onto the retained completed convers
   assert.deepEqual(order, ["start:first", "end:first", "start:second", "end:second"]);
 });
 
-test("unknown, non-resumable, and failed-to-resume targets reject promptly and actionably", async () => {
-  for (const result of [
-    undefined,
-    { ok: false as const, reason: "not_terminal" as const },
-    { ok: true as const, handle: completedHandle(async () => { throw new Error("session reopen failed"); }) },
-  ]) {
+test("deleted, invalid, non-resumable, and failed-to-attach targets reject promptly and actionably", async () => {
+  const failedAttach = completedHandle(async () => {}, async () => { throw new Error("session reopen failed"); });
+  const disposed = { ...completedHandle(async () => {}), isDisposed: true };
+  const cases = [
+    { result: undefined, expected: /deleted or is no longer retained/ },
+    { result: { ok: false as const, reason: "not_terminal" as const }, expected: /not resumable/ },
+    { result: { ok: false as const, reason: "no_session" as const }, expected: /has no retained conversation/ },
+    { result: { ok: false as const, reason: "invalid_session" as const }, expected: /missing, deleted, or invalid/ },
+    { result: { ok: false as const, reason: "no_adapter" as const }, expected: /not resumable/ },
+    { result: { ok: true as const, handle: disposed }, expected: /not resumable/ },
+    { result: { ok: true as const, handle: failedAttach }, expected: /session reopen failed/ },
+  ];
+  for (const { result, expected } of cases) {
     const harness = eventHarness();
     registerCompletedStageIntercomAskRouter(harness.pi as never, () => result);
     const started = performance.now();
     const event = harness.emit(askEvent());
     assert.equal(event.handled, true);
-    await assert.rejects(event.completion!, /completed workflow stage|not resumable|session reopen failed/);
+    await assert.rejects(event.completion!, expected);
     assert.ok(performance.now() - started < 1_000, "failure must be bounded rather than waiting for ask timeout");
   }
 });

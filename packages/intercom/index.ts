@@ -36,6 +36,33 @@ interface LightweightIntercomOptions {
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
+const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
+
+interface WorkflowStageLateMessageEvent {
+	handled?: boolean;
+	completion?: Promise<void>;
+	workflowRunId?: string;
+	workflowStageId?: string;
+	messages?: Array<{
+		customType?: string;
+		content?: string;
+		details?: { message?: { expectsReply?: boolean } };
+	}>;
+}
+
+function isCompletedStageAskRoute(event: WorkflowStageLateMessageEvent): boolean {
+	return typeof event.workflowRunId === "string"
+		&& event.workflowRunId.length > 0
+		&& typeof event.workflowStageId === "string"
+		&& event.workflowStageId.length > 0
+		&& Array.isArray(event.messages)
+		&& event.messages.length > 0
+		&& event.messages.every((message) =>
+			message.customType === "intercom_message"
+			&& typeof message.content === "string"
+			&& message.details?.message?.expectsReply === true,
+		);
+}
 const SUBAGENT_RESULT_INTERCOM_EVENT = "subagent:result-intercom";
 
 const SUBAGENT_ENV_PREFIX = `${APP_NAME.toUpperCase()}_SUBAGENT_`;
@@ -318,13 +345,17 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			});
 		});
 	}
-	pi.events.on("atomic:workflow-stage-late-message", (payload) => {
+	pi.events.on(WORKFLOW_STAGE_LATE_MESSAGE_EVENT, (payload) => {
 		if (!payload || typeof payload !== "object") return;
-		const event = payload as { handled?: boolean; completion?: Promise<void> };
+		const event = payload as WorkflowStageLateMessageEvent;
+		// A completed-stage blocking ask belongs to the workflow post-mortem
+		// router. It must remain unclaimed when Intercom registers first, while
+		// every event already claimed by an earlier listener keeps its owner.
+		if (event.handled === true || isCompletedStageAskRoute(event)) return;
 		event.handled = true;
 		event.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
 			handle.assertCurrent();
-			await dispatchEventHandlers(handle.heavy, "atomic:workflow-stage-late-message", payload);
+			await dispatchEventHandlers(handle.heavy, WORKFLOW_STAGE_LATE_MESSAGE_EVENT, payload);
 			handle.assertCurrent();
 		});
 	});

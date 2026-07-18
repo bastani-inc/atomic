@@ -50,7 +50,7 @@ export function registerCompletedStageIntercomAskRouter(
   const queues = new Map<string, Promise<void>>();
   let disposed = false;
   const unsubscribe = pi.events?.on?.(LATE_STAGE_MESSAGE_EVENT, (payload) => {
-    if (disposed || !isCompletedStageAskEvent(payload)) return;
+    if (disposed || !isCompletedStageAskEvent(payload) || payload.handled === true) return;
     payload.handled = true;
     payload.completion = enqueueTargetTurn(
       queues,

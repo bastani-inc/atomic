@@ -6,7 +6,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ### Fixed
 
-- Fixed `intercom.ask` hanging when one workflow stage targeted a sibling stage that had already completed. Blocking late asks now retain their exact sender/thread correlation while the workflow runtime schedules the target's retained conversation for a post-mortem turn; only that target's correlated `intercom.reply` resolves the caller. Missing, deleted, non-resumable, or failed-to-reopen targets return a bounded actionable tool error instead of waiting for the normal ask timeout, while ordinary late notifications retain their existing parent-chat route ([#1854](https://github.com/bastani-inc/atomic/issues/1854)).
+- Fixed `intercom.ask` hanging when one workflow stage targeted a sibling stage that had already completed. Blocking late asks now retain their exact sender/thread correlation while the workflow runtime schedules the target's retained conversation for a post-mortem turn; only that target's correlated `intercom.reply` resolves the caller. The production workflow and Intercom listeners now preserve the first owner's completion promise regardless of registration order, preventing the lightweight Intercom relay or duplicate listeners from replacing or double-delivering a claimed revival. Missing, deleted, non-resumable, or failed-to-reopen targets return a bounded actionable tool error instead of waiting for the normal ask timeout, while ordinary late notifications retain their existing parent-chat route ([#1854](https://github.com/bastani-inc/atomic/issues/1854)).
 
 ## [0.9.10-alpha.1] - 2026-07-15
 
