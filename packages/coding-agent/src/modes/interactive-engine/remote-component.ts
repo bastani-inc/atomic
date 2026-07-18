@@ -3,6 +3,7 @@ import type { ExtensionUIContext } from "../../core/extensions/index.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineMessage, JsonValue, SerializableOverlayOptions } from "./protocol.ts";
 import { TerminalModeController } from "./terminal-mode-controller.ts";
+import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 
 interface MountedRemoteComponent {
 	component: RemoteComponent;
@@ -20,6 +21,7 @@ class RemoteComponent implements Component {
 	private appliedRequestId = 0;
 	private dirty = true;
 	private disposed = false;
+	private readonly frameClamp = new RemoteFrameWidthClamp();
 
 	private readonly componentId: string;
 	private readonly runtime: IsolatedInteractiveRuntime;
@@ -50,7 +52,11 @@ class RemoteComponent implements Component {
 				rows: this.getRows(),
 			});
 		}
-		return this.lines;
+		// The engine child re-renders asynchronously; until the fresh frame
+		// arrives, the previous frame may be wrapped for an older terminal
+		// width. Clamp so a resize never replays overflowing lines (pi-tui
+		// crashes on any rendered line wider than the terminal).
+		return this.frameClamp.clamp(this.lines, width);
 	}
 
 	handleInput(data: string): void {

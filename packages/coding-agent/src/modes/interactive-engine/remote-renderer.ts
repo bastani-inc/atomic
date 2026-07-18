@@ -3,6 +3,7 @@ import type { CustomMessage } from "../../core/messages.ts";
 import type { ToolExecutionComponent } from "../interactive/components/tool-execution.ts";
 import type { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import type { InteractiveEngineCommand, JsonObject, JsonValue } from "./protocol.ts";
+import { RemoteFrameWidthClamp } from "./remote-frame-clamp.ts";
 
 type RenderableToolResult = Parameters<ToolExecutionComponent["updateResult"]>[0];
 
@@ -22,6 +23,7 @@ abstract class RemoteRenderer implements Component {
 	private appliedRequestId = 0;
 	private dirty = true;
 	private disposed = false;
+	private readonly frameClamp = new RemoteFrameWidthClamp();
 	private readonly unsubscribe: () => void;
 
 	protected readonly runtime: IsolatedInteractiveRuntime;
@@ -52,7 +54,11 @@ abstract class RemoteRenderer implements Component {
 			this.dirty = false;
 			this.runtime.sendEngineCommand(this.command(++this.requestId, width));
 		}
-		return this.lines;
+		// The engine child re-renders asynchronously; until the fresh frame
+		// arrives, the previous frame may be wrapped for an older terminal
+		// width. Clamp so a resize never replays overflowing lines (pi-tui
+		// crashes on any rendered line wider than the terminal).
+		return this.frameClamp.clamp(this.lines, width);
 	}
 
 	invalidate(): void { this.markDirty(); }
