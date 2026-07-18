@@ -58,12 +58,13 @@ export async function withFakeCliEvent<T>(
   event: string,
   delayMs: number,
   fn: (dir: string) => Promise<T>,
+  timeouts: { idleMs?: number; wallMs?: number } = {},
 ): Promise<T> {
   return withFakeCli(delayedEventScript, async (dir) => {
     const fixture = { delayMs, event } satisfies FakeCliEventFixture;
     writeFileSync(join(dir, "fake-cli-event.json"), JSON.stringify(fixture));
     return fn(dir);
-  });
+  }, timeouts);
 }
 
 /** Runs `fn` with process.argv[1] pointed at a fake pi CLI script and bounded
