@@ -125,6 +125,21 @@ function metaText(stage: StageSnapshot): string {
   return stage.fastMode === true ? `${dependencyText} · fast` : dependencyText;
 }
 
+/**
+ * Compact model label for the card's dedicated model row. The card is only
+ * ~22 cells wide, so the provider prefix is dropped (`anthropic/claude-opus-4.8`
+ * → `claude-opus-4.8`) and the thinking level is appended when set (omitted when
+ * off), mirroring the main-session footer. `—` when no model is resolved yet.
+ */
+function modelText(stage: StageSnapshot): string {
+  const model = stage.model;
+  if (model === undefined || model === "") return "—";
+  const slash = model.lastIndexOf("/");
+  const short = slash >= 0 ? model.slice(slash + 1) : model;
+  const level = stage.thinkingLevel;
+  return level !== undefined && level !== "" && level !== "off" ? `${short} · ${level}` : short;
+}
+
 function shortRunId(runId: string): string {
   return runId.length <= 8 ? runId : runId.slice(0, 8);
 }
@@ -301,6 +316,10 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
     `${bg}${bc}│${RESET}` +
     centreColored(workflowChildMetaText(stage), innerWidth, theme.dim, bg) +
     `${bg}${bc}│${RESET}`;
+  const modelLine =
+    `${bg}${bc}│${RESET}` +
+    centreColored(modelText(stage), innerWidth, theme.textMuted, bg) +
+    `${bg}${bc}│${RESET}`;
 
   const interior: string[] =
     stage.status === "awaiting_input"
@@ -312,8 +331,9 @@ export function renderNodeCard(stage: StageSnapshot, opts: NodeCardOpts): string
           `${bg}${bc}│${RESET}` +
             centreColored("↵ enter to respond", innerWidth, theme.dim, bg) +
             `${bg}${bc}│${RESET}`,
+          modelLine,
         ]
-      : [durLine, statusLine, metaLine];
+      : [durLine, statusLine, modelLine, metaLine];
 
   // Pad / clip to exactly `height` lines.
   const contentRows = Math.max(0, height - 2);

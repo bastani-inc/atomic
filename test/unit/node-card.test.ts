@@ -44,6 +44,7 @@ function makeStage(opts: Partial<StageSnapshot> = {}): StageSnapshot {
     resumedAt: opts.resumedAt,
     blockedByStageId: opts.blockedByStageId,
     model: opts.model,
+    thinkingLevel: opts.thinkingLevel,
     workflowChild: opts.workflowChild,
     fastMode: opts.fastMode,
   };
@@ -271,15 +272,15 @@ describe("renderNodeCard — status border colours", () => {
 });
 
 describe("renderNodeCard — metadata line", () => {
-  test("stages hide model metadata and keep fallback geometry", () => {
+  test("stages show a compact model row and keep geometry", () => {
     const lines = renderNodeCard(
       makeStage({ status: "completed", durationMs: 1200, model: "gpt-5-mini" }),
       { theme },
     );
-    const rendered = stripAnsi(lines.join("\n"));
 
-    assert.doesNotMatch(rendered, /gpt-5-mini/);
-    assert.match(stripAnsi(lines[3]!), /root/);
+    // Model sits on its own row; dependency metadata moves one row down.
+    assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
+    assert.match(stripAnsi(lines[4]!), /root/);
     assert.equal(lines.length, NODE_H);
     for (const line of lines) {
       assert.equal(stripAnsi(line).length, NODE_W);
@@ -291,11 +292,11 @@ describe("renderNodeCard — metadata line", () => {
       makeStage({ status: "completed", topologyState: "unavailable", fastMode: true }),
       { theme },
     );
-    const metadata = stripAnsi(lines[3]!).slice(1, -1).trim();
+    const metadata = stripAnsi(lines[4]!).slice(1, -1).trim();
     assert.equal(metadata, "topology unavailable");
   });
 
-  test("running stages use dependency metadata instead of model metadata", () => {
+  test("running stages show both a model row and dependency metadata", () => {
     const lines = renderNodeCard(
       makeStage({
         status: "running",
@@ -306,9 +307,8 @@ describe("renderNodeCard — metadata line", () => {
       { theme },
     );
 
-    const rendered = stripAnsi(lines.join("\n"));
-    assert.doesNotMatch(rendered, /gpt-5-mini/);
-    assert.match(stripAnsi(lines[3]!), /1 dep/);
+    assert.match(stripAnsi(lines[3]!), /gpt-5-mini/);
+    assert.match(stripAnsi(lines[4]!), /1 dep/);
   });
 
   test("child workflow boundaries show child workflow and run summary", () => {
@@ -335,15 +335,35 @@ describe("renderNodeCard — metadata line", () => {
     assert.doesNotMatch(stripAnsi(lines[1]!), /0ms|—/);
   });
 
-  test("stages show a visible fast marker without mutating model metadata", () => {
+  test("shows a fast marker on the deps row while the model row stays separate", () => {
     const lines = renderNodeCard(
       makeStage({ status: "completed", model: "openai/gpt-5.1-codex", fastMode: true }),
       { theme },
     );
-    const rendered = stripAnsi(lines.join("\n"));
 
-    assert.doesNotMatch(rendered, /openai\/gpt-5\.1-codex fast/);
-    assert.match(stripAnsi(lines[3]!), /root · fast/);
+    // Model row drops the provider prefix; the fast marker rides the deps row.
+    assert.match(stripAnsi(lines[3]!), /gpt-5\.1-codex/);
+    assert.doesNotMatch(stripAnsi(lines[3]!), /openai\//);
+    assert.match(stripAnsi(lines[4]!), /root · fast/);
+  });
+
+  test("model row appends thinking level and shows an em-dash when absent", () => {
+    const withThinking = renderNodeCard(
+      makeStage({ status: "running", startedAt: Date.now() - 500, model: "anthropic/claude-opus-4.8", thinkingLevel: "high" }),
+      { theme },
+    );
+    assert.match(stripAnsi(withThinking[3]!), /claude-opus-4\.8 · high/);
+
+    const offThinking = renderNodeCard(
+      makeStage({ status: "completed", durationMs: 10, model: "openai/gpt-5", thinkingLevel: "off" }),
+      { theme },
+    );
+    // "off" is omitted, mirroring the main footer.
+    assert.match(stripAnsi(offThinking[3]!), /gpt-5/);
+    assert.doesNotMatch(stripAnsi(offThinking[3]!), /off/);
+
+    const noModel = renderNodeCard(makeStage({ status: "pending" }), { theme });
+    assert.equal(stripAnsi(noModel[3]!).slice(1, -1).trim(), "—");
   });
 });
 
