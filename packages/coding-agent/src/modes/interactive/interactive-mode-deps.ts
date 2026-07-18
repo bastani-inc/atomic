@@ -51,7 +51,7 @@ export { CountdownTimer } from "./components/countdown-timer.ts";
 export { CustomEditor } from "./components/custom-editor.ts";
 export { CustomMessageComponent } from "./components/custom-message.ts";
 export { DaxnutsComponent } from "./components/daxnuts.ts";
-export { renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
+export { composeStartupIdentity, renderAtomicAnsiBanner } from "./components/atomic-banner.ts";
 export { DynamicBorder } from "./components/dynamic-border.ts";
 export { ContextWindowSelectorComponent } from "./components/context-window-selector.ts";
 export { formatContextWindow } from "../../core/context-window.ts";

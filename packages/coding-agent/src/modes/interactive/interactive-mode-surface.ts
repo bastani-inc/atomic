@@ -32,7 +32,7 @@ declare module "./interactive-mode-base.ts" {
   formatExtensionDisplayPath(path: string): string;
   formatContextPath(p: string): string;
   getStartupModelLabel(): string;
-  getStartupIdentityText(): string;
+  getStartupIdentityText(maxWidth?: number): string;
   getAtomicAnsiMarkLines(): string[];
   getStartupExpansionState(): boolean;
   getShortPath(fullPath: string, sourceInfo?: SourceInfo): string;
