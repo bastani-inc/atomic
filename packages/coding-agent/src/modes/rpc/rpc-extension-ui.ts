@@ -4,11 +4,13 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	HostInputFormRequest,
 	HostSessionPickerRequest,
 	WorkingIndicatorOptions,
 } from "../../core/extensions/index.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import type { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import type { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import type { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "./rpc-types.ts";
 import type { RpcOutput } from "./rpc-responses.ts";
@@ -25,6 +27,7 @@ interface CreateRpcExtensionUIContextOptions {
 	pendingExtensionRequests: RpcPendingExtensionRequests;
 	customUi?: EngineCustomUiService;
 	sessionPicker?: EngineSessionPickerService;
+	inputForm?: EngineInputFormService;
 }
 
 interface DialogPromiseOptions<T> extends CreateRpcExtensionUIContextOptions {
@@ -87,6 +90,7 @@ export function createRpcExtensionUIContext({
 	pendingExtensionRequests,
 	customUi,
 	sessionPicker,
+	inputForm,
 }: CreateRpcExtensionUIContextOptions): ExtensionUIContext {
 	const unsupportedWarnings = new Set<string>();
 	const warnUnsupported = (method: string): void => {
@@ -208,6 +212,7 @@ export function createRpcExtensionUIContext({
 		// the process boundary. Absent in plain headless RPC (no interactive
 		// host); callers must fail with an actionable error, not degrade.
 		...(sessionPicker ? { hostSessionPicker: (request: HostSessionPickerRequest) => sessionPicker.open(request) } : {}),
+		...(inputForm ? { hostInputForm: (request: HostInputFormRequest) => inputForm.open(request) } : {}),
 
 		pasteToEditor(text: string): void {
 			// Paste handling not supported in RPC mode - falls back to setEditorText

@@ -1,5 +1,6 @@
 import { InteractiveModeBase } from "./interactive-mode-base.ts";
 import { openLocalHostSessionPicker } from "./components/host-session-picker.ts";
+import { openLocalHostInputForm } from "./components/host-input-form-mount.ts";
 import { type ExtensionUIContext, type HostCustomUiState, type HostCustomUiStateListener, type ProjectTrustContext, getAvailableThemesWithPaths, getThemeByName, Theme, theme } from "./interactive-mode-deps.ts";
 
 InteractiveModeBase.prototype.addExtensionTerminalInputListener = function(this: InteractiveModeBase, handler: (data: string) => { consume?: boolean; data?: string } | undefined): () => void {
@@ -149,6 +150,14 @@ InteractiveModeBase.prototype.createExtensionUIContext = function(this: Interact
           {
             custom: (factory, options) => this.showExtensionCustom(factory, options),
             requestRender: () => this.ui.requestRender(),
+          },
+          request,
+        ),
+      hostInputForm: (request) =>
+        openLocalHostInputForm(
+          {
+            custom: (factory, options) => this.showExtensionCustom(factory, options),
+            setWorkingVisible: (visible) => this.setWorkingVisible(visible),
           },
           request,
         ),

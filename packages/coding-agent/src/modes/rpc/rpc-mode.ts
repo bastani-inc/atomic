@@ -18,6 +18,7 @@ import { KeybindingsManager } from "../../core/keybindings.ts";
 import { flushRawStdout, takeOverStdout, writeRawStdout } from "../../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { EngineCustomUiService } from "../interactive-engine/engine-custom-ui.ts";
+import { EngineInputFormService } from "../interactive-engine/engine-input-form.ts";
 import { EngineRenderService } from "../interactive-engine/engine-render-service.ts";
 import { EngineSessionPickerService } from "../interactive-engine/engine-session-picker.ts";
 import { startInteractiveEngineLiveness } from "../interactive-engine/engine-child-liveness.ts";
@@ -66,6 +67,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	const sessionPicker = interactiveEngineChild
 		? new EngineSessionPickerService(writeRawStdout)
 		: undefined;
+	const inputForm = interactiveEngineChild
+		? new EngineInputFormService(writeRawStdout)
+		: undefined;
 	const reloadCoordinator = keybindings
 		? new KeybindingsReloadCoordinator<AgentSession>(
 				keybindings,
@@ -94,6 +98,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		customUi,
 		renderService,
 		sessionPicker,
+		inputForm,
 		reloadCoordinator,
 	});
 
@@ -123,6 +128,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		customUi?.dispose();
 		renderService?.dispose();
 		sessionPicker?.dispose();
+		inputForm?.dispose();
 		outputBuffer.dispose();
 		await runtimeHost.dispose();
 		detachInput();
@@ -160,8 +166,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		pendingExtensionRequests,
 		handleCommand,
 		checkShutdownRequested,
-		handleInteractiveEngineLine: customUi || renderService || sessionPicker
-			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true || sessionPicker?.handleLine(line) === true
+		handleInteractiveEngineLine: customUi || renderService || sessionPicker || inputForm
+			? (line) => customUi?.handleLine(line) === true || renderService?.handleLine(line) === true || sessionPicker?.handleLine(line) === true || inputForm?.handleLine(line) === true
 			: undefined,
 	});
 

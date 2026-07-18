@@ -6,6 +6,7 @@ import type { ActivityWatchdogDiagnostic } from "./activity-watchdog.ts";
 import type { EngineExtensionShortcut, EngineKeybindingState, InteractiveEngineMessage } from "./protocol.ts";
 import { IsolatedInteractiveRuntime } from "./isolated-runtime.ts";
 import { RemoteComponentController } from "./remote-component.ts";
+import { InputFormHostController } from "./input-form-host.ts";
 import { SessionPickerHostController } from "./session-picker-host.ts";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse, RpcSlashCommand } from "../rpc/rpc-types.ts";
 
@@ -110,6 +111,7 @@ export function attachInteractiveEngineHost(
 		});
 	const remoteComponents = new RemoteComponentController(runtime, ui);
 	const sessionPicker = new SessionPickerHostController(runtime, ui);
+	const inputForm = new InputFormHostController(runtime, ui);
 	let disposed = false;
 	return () => {
 		if (disposed) return;
@@ -118,6 +120,7 @@ export function attachInteractiveEngineHost(
 		disposeKeybindings();
 		remoteComponents.dispose();
 		sessionPicker.dispose();
+		inputForm.dispose();
 		disposeExtensionUi();
 		disposeDiagnostic();
 	};

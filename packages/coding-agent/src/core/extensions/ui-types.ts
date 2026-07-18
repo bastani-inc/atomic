@@ -67,6 +67,27 @@ export interface HostCustomUiState {
 
 export type HostCustomUiStateListener = (state: HostCustomUiState) => void;
 
+/** Supported field kinds for the host-native input form. */
+export type HostInputFormFieldType = "string" | "text" | "number" | "integer" | "boolean" | "select";
+
+/** JSON-safe field descriptor for {@link ExtensionUIContext.hostInputForm}. */
+export interface HostInputFormField {
+	name: string;
+	type: HostInputFormFieldType;
+	description?: string;
+	required?: boolean;
+	choices?: string[];
+	placeholder?: string;
+	/** Raw, display-ready initial value. */
+	initialValue: string;
+}
+
+/** Request for a host-owned inline input form. */
+export interface HostInputFormRequest {
+	title: string;
+	fields: HostInputFormField[];
+}
+
 /**
  * JSON-safe session-selector row for the host-native session picker.
  * Mirrors `SessionInfo` with `created`/`modified` flattened to epoch millis so
@@ -226,6 +247,12 @@ export interface ExtensionUIContext {
 	 * than degrade.
 	 */
 	hostSessionPicker?(request: HostSessionPickerRequest): HostSessionPickerHandle;
+
+	/**
+	 * Open an inline form whose component, focus, and editing state live in the
+	 * terminal host. Resolves raw field values, or undefined on cancellation.
+	 */
+	hostInputForm?(request: HostInputFormRequest): Promise<Record<string, string> | undefined>;
 
 	/** Paste text into the editor, triggering paste handling (collapse for large content). */
 	pasteToEditor(text: string): void;
