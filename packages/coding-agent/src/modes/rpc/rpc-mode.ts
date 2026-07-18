@@ -25,6 +25,7 @@ import { INTERACTIVE_ENGINE_MAX_FRAME_BYTES, serializeInteractiveEngineMessage }
 import { attachJsonlLineReader } from "./jsonl.ts";
 import { createRpcCommandHandler } from "./rpc-command-handler.ts";
 import { createRpcInputLineHandler } from "./rpc-input.ts";
+import { createRpcInputScheduler } from "./rpc-input-scheduler.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import { RpcOutputBuffer } from "./rpc-output-buffer.ts";
 import { RpcSessionBinding } from "./rpc-session-binding.ts";
@@ -170,11 +171,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	process.stdin.on("end", onInputEnd);
 
 	detachInput = (() => {
-		let inputTail = Promise.resolve();
-		const detachJsonl = attachJsonlLineReader(process.stdin, (line) => {
-			inputTail = inputTail.then(() => handleInputLine(line), () => handleInputLine(line));
-			void inputTail.catch(() => {});
-		}, {
+		const scheduleInputLine = createRpcInputScheduler(handleInputLine);
+		const detachJsonl = attachJsonlLineReader(process.stdin, scheduleInputLine, {
 			maxBytesPerTurn: 256 * 1024,
 			maxFrameBytes: INTERACTIVE_ENGINE_MAX_FRAME_BYTES,
 			onOversizedLine: () => output({ type: "response", command: "parse", success: false, error: "RPC command exceeded the 1 MiB frame limit" }),

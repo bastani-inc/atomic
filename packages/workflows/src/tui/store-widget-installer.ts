@@ -20,25 +20,19 @@
  *      container, and redraws — so re-issuing `setWidget` on each store
  *      mutation or clock tick produces a visible flicker. We therefore call
  *      it only on real mount/unmount transitions.
- *   2. For every other refresh — semantic store mutations that change
- *      content and the one-shot recent-ended expiry timer — we call
- *      `ui.requestRender()` only. Pi re-invokes the *same* mounted
- *      component's `render(width)` with no dispose/remount, so content
- *      updates land without flicker.
- *   3. The long-lived component reads the *latest* store snapshot through a
- *      live getter (`() => currentSnap`) at render time, so it is never
- *      visually stale — including after `up-arrow` history recall and other
- *      editor events that force a host re-render without a `setWidget` call.
+ *   2. Semantic store mutations, visible elapsed-clock ticks, and the one-shot
+ *      recent-ended expiry call `ui.requestRender()` only. Pi re-invokes the
+ *      *same* mounted component's `render(width)` with no dispose/remount, so
+ *      elapsed labels advance continuously without lifecycle flicker.
+ *   3. The long-lived component reads the *latest* store snapshot and captured
+ *      clock through live getters at render time, so it is never visually
+ *      stale — including after `up-arrow` history recall and other host renders.
  *   4. The mount / unmount / update / none decision is extracted into the
  *      pure, unit-testable `decideWidgetAction`, keeping this module a thin
  *      orchestration layer over a pure policy (SRP).
- *   5. There is deliberately NO per-second elapsed-clock cadence (issue
- *      #1856): clock-only ticks caused steady main-chat terminal writes,
- *      tail flicker, and native-scrollback snap-to-bottom while a workflow
- *      streamed in the background. Elapsed labels (`3s`, `complete · 4s
- *      ago`) advance on semantic store transitions and overlay opens; the
- *      only timer left is the one-shot recent-ended expiry unmount
- *      (`nextWidgetRefreshDelayMs`).
+ *   5. Running workflows schedule the next exact elapsed-second boundary.
+ *      Paused workflows stay timer-free, and terminal cards use only the
+ *      one-shot recent-ended expiry (`nextWidgetRefreshDelayMs`).
  */
 
 import {

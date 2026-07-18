@@ -331,22 +331,16 @@ describe("renderWidgetLines — standard form", () => {
     assert.equal(nextWidgetRefreshDelayMs(makeSnap([paused]), now), undefined);
   });
 
-  test("active runs schedule no per-second clock refresh (#1856)", () => {
-    // The companion widget's once-per-second elapsed repaint caused steady
-    // main-chat terminal writes and native-scrollback snap-to-bottom while a
-    // workflow streamed in the background. Active runs must not request any
-    // timer-driven refresh; elapsed labels advance on semantic store updates.
+  test("active runs schedule the next exact elapsed-second refresh", () => {
     const now = 1_000_000;
     const active = makeRun("r1xxxxxx", "wf-a", "running", [], now - 5_000);
-    assert.equal(nextWidgetRefreshDelayMs(makeSnap([active]), now), undefined);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([active]), now), 1_000);
 
-    // An active run alongside a recently-ended one keeps only the one-shot
-    // expiry refresh for the ended card.
+    const offsetActive = makeRun("r3xxxxxx", "wf-b", "running", [], now - 5_250);
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive]), now), 750);
+
     const ended = makeRun("r2xxxxxx", "wf-d", "completed", [], now - 20_000, now - 10_000);
-    assert.equal(
-      nextWidgetRefreshDelayMs(makeSnap([active, ended]), now),
-      RECENT_ENDED_WINDOW_MS - 10_000 + 1,
-    );
+    assert.equal(nextWidgetRefreshDelayMs(makeSnap([offsetActive, ended]), now), 750);
   });
 
   test("standard panel scales to the provided terminal width", () => {

@@ -125,19 +125,11 @@ function countRuns(
 }
 
 /**
- * Next refresh the companion widget genuinely needs.
- *
- * Issue #1856: the widget deliberately has NO per-second elapsed-clock
- * cadence. While a workflow streams in the background, a once-per-second
- * "clock tick" repaint caused steady terminal writes in main chat, visible
- * flicker at the tail, and native-scrollback snap-to-bottom after the user
- * wheel-scrolled away. Elapsed labels now advance only on semantic store
- * transitions (stage/run status changes) and when the graph/stage overlay
- * opens, which re-renders from a fresh snapshot anyway.
- *
- * The only timer-driven refresh left is the recent-ended expiry: an ended
- * run's card must unmount ~30s after completion even when the store goes
- * silent, so we schedule a one-shot refresh just past that window.
+ * Returns the next wall-clock boundary that can change the visible widget.
+ * Running elapsed labels tick on exact one-second boundaries; paused runs stay
+ * frozen. Recently ended cards retain their independent one-shot expiry.
+ * Reactive-widget updates the existing mounted component in place, so these
+ * ticks repaint the visible panel without disposing or remounting it.
  */
 export function nextWidgetRefreshDelayMs(
   snap: StoreSnapshot,
@@ -146,10 +138,15 @@ export function nextWidgetRefreshDelayMs(
   const display = selectDisplayRuns(snap, now);
   if (display.length === 0) return undefined;
 
-  const expiryDelays = display
+  const delays: number[] = display
     .filter((run) => run.endedAt !== undefined)
     .map((run) => Math.max(1, run.endedAt! + RECENT_ENDED_WINDOW_MS - now + 1));
-  return expiryDelays.length === 0 ? undefined : Math.min(...expiryDelays);
+  for (const run of display) {
+    if (run.endedAt !== undefined || run.status === "paused" || run.pausedAt !== undefined) continue;
+    const remainder = elapsedRunMs(run, now) % 1_000;
+    delays.push(remainder === 0 ? 1_000 : 1_000 - remainder);
+  }
+  return delays.length === 0 ? undefined : Math.min(...delays);
 }
 
 function selectDisplayRuns(snap: StoreSnapshot, now: number): RunSnapshot[] {

@@ -115,6 +115,8 @@ Then list and run it like any other workflow:
 
 Named workflow runs are background-oriented. After launch, expect a run id and monitor it with `/workflow status <run-id>`, F2, or `/workflow connect <run-id>`.
 
+While a workflow is running, the visible below-editor `BACKGROUND` panel advances its elapsed label every second from the moment the run starts; it does not require opening or switching to the orchestrator. Updates repaint the existing mounted panel in place, paused timers stay frozen, and terminal cards retain their short recent-run expiry.
+
 ### Or hand-write the TypeScript
 
 Workflow files are plain TypeScript modules. Create `.atomic/workflows/explain-file.ts`:

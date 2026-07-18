@@ -2,7 +2,8 @@ import { waitForRawStdoutBackpressure } from "../../core/output-guard.ts";
 import type { RpcCommandHandler } from "./rpc-command-handler.ts";
 import type { RpcPendingExtensionRequests } from "./rpc-extension-ui.ts";
 import { createRpcErrorResponse, formatRpcErrorMessage, type RpcOutput } from "./rpc-responses.ts";
-import type { RpcCommand, RpcExtensionUIResponse } from "./rpc-types.ts";
+import { isRpcExtensionUIResponse } from "./rpc-input-scheduler.ts";
+import type { RpcCommand } from "./rpc-types.ts";
 
 interface RpcInputLineHandlerOptions {
 	output: RpcOutput;
@@ -15,17 +16,6 @@ interface RpcInputLineHandlerOptions {
 interface CommandIdentity {
 	id: string | undefined;
 	type: string;
-}
-
-function isRpcExtensionUIResponse(value: unknown): value is RpcExtensionUIResponse {
-	return (
-		typeof value === "object" &&
-		value !== null &&
-		"type" in value &&
-		value.type === "extension_ui_response" &&
-		"id" in value &&
-		typeof value.id === "string"
-	);
 }
 
 function getCommandIdentity(command: unknown): CommandIdentity {

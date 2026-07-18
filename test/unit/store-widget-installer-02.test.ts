@@ -263,15 +263,7 @@ describe("installStoreWidget", () => {
     assert.ok(lines.some((line) => line.includes("complete")));
   });
 
-  test("schedules no clock timer for active runs; semantic updates repaint in place (#1856)", async () => {
-    // Flicker regression (#1856): a once-per-second elapsed-clock repaint of
-    // the companion widget produced steady main-chat terminal writes while a
-    // workflow streamed in the background, and could snap native scrollback
-    // back to the live bottom after the user wheel-scrolled away. Active runs
-    // therefore schedule NO refresh timer: wall-clock advancement alone must
-    // not request renders. Elapsed labels advance on semantic store
-    // transitions, which update the long-lived component in place
-    // (requestRender only, never a setWidget dispose/remount — #1109).
+  test("updates active elapsed time continuously without remounting or switching panels", async () => {
     const originalNow = Date.now;
     let now = 1_000_000;
     Date.now = () => now;
@@ -281,42 +273,30 @@ describe("installStoreWidget", () => {
       installStoreWidget(pi, storeInstance, timers);
       storeInstance.recordRunStart(makeRun("r1", "my-wf"));
       await Promise.resolve();
-      // Capture the originally-mounted long-lived component.
       const mountCall = widgetCalls.findLast((c) => typeof c.factory === "function")!;
       const component = mountCall.factory!(null, undefined) as { render(w: number): string[] };
       const setWidgetCallsAfterStart = widgetCalls.length;
-      const requestsAfterStart = renderRequests.count;
-      const labelBefore = component.render(120).join("\n");
-      assert.match(labelBefore, /single · 0s/);
+      assert.match(component.render(120).join("\n"), /single · 0s/);
 
-      assert.equal(
-        timers.scheduled.filter((entry) => !entry.cleared).length,
-        0,
-        "an active-only widget must not keep a live clock timer (#1856)",
-      );
-
-      // Pure wall-clock advancement: no timer fires, nothing repaints.
-      now += 5_000;
+      const firstTick = timers.scheduled.findLast((entry) => !entry.cleared);
+      assert.ok(firstTick, "visible active workflow must schedule its first elapsed-time tick");
+      assert.equal(firstTick.delayMs, 1_000);
+      const requestsBeforeTick = renderRequests.count;
+      now += firstTick.delayMs;
+      firstTick.handler();
       await Promise.resolve();
-      assert.equal(widgetCalls.length, setWidgetCallsAfterStart);
-      assert.equal(
-        renderRequests.count,
-        requestsAfterStart,
-        "clock advancement alone must not produce render requests",
-      );
 
-      // A semantic store transition repaints in place with the fresh label.
-      storeInstance.recordStageStart("r1", makeStage("s1", "stage-1"));
+      assert.equal(widgetCalls.length, setWidgetCallsAfterStart, "clock tick must update the mounted component in place");
+      assert.ok(renderRequests.count > requestsBeforeTick, "clock tick must request a visible repaint");
+      assert.match(component.render(120).join("\n"), /single · 1s/);
+
+      const secondTick = timers.scheduled.findLast((entry) => !entry.cleared);
+      assert.ok(secondTick && secondTick !== firstTick, "active cadence must reschedule continuously");
+      now += secondTick.delayMs;
+      secondTick.handler();
       await Promise.resolve();
-      assert.equal(
-        widgetCalls.length,
-        setWidgetCallsAfterStart,
-        "semantic update must NOT re-issue setWidget (no dispose/remount)",
-      );
-      assert.ok(renderRequests.count > requestsAfterStart, "semantic update must request an in-place render");
-      const labelAfter = component.render(120).join("\n");
-      assert.notEqual(labelAfter, labelBefore, "long-lived component must reflect the advanced elapsed label");
-      assert.match(labelAfter, /5s/);
+      assert.match(component.render(120).join("\n"), /single · 2s/);
+      assert.equal(widgetCalls.length, setWidgetCallsAfterStart, "continuous ticks must never remount the widget");
     } finally {
       Date.now = originalNow;
     }
@@ -415,13 +395,10 @@ describe("installStoreWidget", () => {
     const timers = makeFakeTimers();
     const { pi } = makeMockPi();
     const unsubscribe = installStoreWidget(pi, storeInstance, timers);
-    // Only ended runs schedule a (recent-ended expiry) timer — active runs
-    // deliberately keep no clock timer (#1856).
     storeInstance.recordRunStart(makeRun("r1", "my-wf"));
-    storeInstance.recordRunEnd("r1", "completed");
 
     const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-    assert.ok(timer, "expected recent-ended expiry timer before dispose");
+    assert.ok(timer, "expected active elapsed timer before dispose");
     unsubscribe();
 
     assert.equal(timer.cleared, true);
@@ -449,12 +426,7 @@ describe("installStoreWidget", () => {
     assert.doesNotThrow(() => installStoreWidget(piNoSetWidget, storeNoWidget));
   });
 
-  test("schedules no per-second clock or spinner timer for active runs (#1856)", () => {
-    // Regression history: an 80ms spinner interval (#1109) became a 1s clock
-    // tick, which still caused steady main-chat terminal writes and native
-    // scrollback snap-to-bottom while workflows streamed (#1856). Active runs
-    // now schedule no timer at all; the only remaining timer is the one-shot
-    // recent-ended expiry unmount, and it must be unref'd.
+  test("transitions from active cadence to one-shot ended expiry", () => {
     const originalNow = Date.now;
     let now = 1_000_000;
     Date.now = () => now;
@@ -466,17 +438,17 @@ describe("installStoreWidget", () => {
       (run.stages as StageSnapshot[]).push(makeStage("s1", "stage-1"));
       storeInstance.recordRunStart(run);
 
-      assert.equal(
-        timers.scheduled.filter((entry) => !entry.cleared).length,
-        0,
-        "active run must not schedule any refresh timer",
-      );
+      const activeTimer = timers.scheduled.findLast((entry) => !entry.cleared);
+      assert.ok(activeTimer, "active run must schedule an elapsed refresh timer");
+      assert.ok(activeTimer.delayMs <= 1_000, "active timer must target the next elapsed-second boundary");
+      assert.equal(activeTimer.handle.unrefCalls, 1);
 
       storeInstance.recordRunEnd("r1", "completed");
-      const timer = timers.scheduled.findLast((entry) => !entry.cleared);
-      assert.ok(timer, "expected one-shot recent-ended expiry timer");
-      assert.ok(timer.delayMs > 29_000, "expiry timer fires near the recent-ended window, not per second");
-      assert.equal(timer.handle.unrefCalls, 1);
+      assert.equal(activeTimer.cleared, true, "ending the run must clear its active cadence");
+      const expiryTimer = timers.scheduled.findLast((entry) => !entry.cleared);
+      assert.ok(expiryTimer, "expected one-shot recent-ended expiry timer");
+      assert.ok(expiryTimer.delayMs > 29_000, "ended run should refresh near expiry, not every second");
+      assert.equal(expiryTimer.handle.unrefCalls, 1);
       unsubscribe();
     } finally {
       Date.now = originalNow;

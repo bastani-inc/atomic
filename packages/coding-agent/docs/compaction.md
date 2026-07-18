@@ -86,7 +86,7 @@ Configure defaults in `~/.atomic/agent/settings.json` or `.atomic/settings.json`
 - **Threshold:** automatic compaction starts when estimated context usage reaches the effective input budget minus `reserveTokens`.
 - **Overflow:** an actual provider context overflow compacts and then retries the interrupted turn.
 
-The in-flight/final logical turn is outside the compactable region. Cancellation and abort behavior remains consistent with normal session operations. Atomic writes a backup snapshot immediately before appending a compaction boundary.
+The in-flight/final logical turn is outside the compactable region. Pressing Escape while compaction is active cancels it like other session operations. In isolated interactive mode, cancellation and host UI response frames use an independent RPC control lane, so they can reach the engine while the ordinary `compact` request is still pending instead of waiting behind it. Atomic writes a backup snapshot immediately before appending a compaction boundary.
 
 ## One-pass planning and failure behavior
 
