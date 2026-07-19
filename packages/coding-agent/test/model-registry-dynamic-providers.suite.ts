@@ -375,22 +375,42 @@ describeModelRegistry((context) => {
 				expect(registry.find("dynamic", "resurrected")).toBeUndefined();
 			});
 
-			test("stale refresh completion cannot overwrite a re-registered provider", async () => {
+			test("stale refresh completion cannot overwrite a re-registered provider or its cache", async () => {
 				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
 				const initial = providerConfig("https://dynamic.test/v1", [{ id: "old" }]);
-				let resolveRefresh!: (models: NonNullable<typeof initial.models>) => void;
-				const pending = new Promise<NonNullable<typeof initial.models>>((resolve) => (resolveRefresh = resolve));
-				registry.registerProvider("dynamic", { ...initial, refreshModels: () => pending });
+				let releaseStale!: () => void;
+				let markStaleStarted!: () => void;
+				const staleGate = new Promise<void>((resolve) => { releaseStale = resolve; });
+				const staleStarted = new Promise<void>((resolve) => { markStaleStarted = resolve; });
+				let persistedAfterStale: string[] | undefined;
+				registry.registerProvider("dynamic", {
+					...initial,
+					refreshModels: async ({ store }) => {
+						markStaleStarted();
+						await staleGate;
+						const staleModels = providerConfig("https://dynamic.test/v1", [{ id: "stale-store" }]).models!;
+						await store.write({ models: staleModels, checkedAt: Date.now() });
+						persistedAfterStale = (await store.read())?.models.map((model) => model.id);
+						return staleModels;
+					},
+				});
 				const staleRefresh = registry.refresh();
+				await staleStarted;
 
+				const freshModels = providerConfig("https://manual.test/v1", [{ id: "manual" }]).models!;
 				registry.registerProvider("dynamic", {
 					...providerConfig("https://manual.test/v1", [{ id: "manual" }]),
-					refreshModels: async () => providerConfig("https://manual.test/v1", [{ id: "manual" }]).models!,
+					refreshModels: async ({ store }) => {
+						await store.write({ models: freshModels, checkedAt: Date.now() });
+						return freshModels;
+					},
 				});
-				resolveRefresh(providerConfig("https://dynamic.test/v1", [{ id: "stale" }]).models!);
+				await registry.refresh();
+				releaseStale();
 				await staleRefresh;
 
 				expect(getModelsForProvider(registry, "dynamic").map((model) => model.id)).toEqual(["manual"]);
+				expect(persistedAfterStale).toEqual(["manual"]);
 			});
 
 			test("async catalog refresh times out and retains the stale snapshot", async () => {
@@ -405,6 +425,33 @@ describeModelRegistry((context) => {
 
 				expect(result.aborted).toBe(true);
 				expect(getModelsForProvider(registry, "slow").map((model) => model.id)).toEqual(["cached"]);
+			});
+
+			test("aborted extension refresh cannot mutate its persisted cache", async () => {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				const initial = providerConfig("https://slow.test/v1", [{ id: "cached" }]);
+				let releaseCallback!: () => void;
+				let callbackFinished!: () => void;
+				const callbackGate = new Promise<void>((resolve) => { releaseCallback = resolve; });
+				const finished = new Promise<void>((resolve) => { callbackFinished = resolve; });
+				let persistedAfterAbort: string[] | undefined;
+				registry.registerProvider("slow", {
+					...initial,
+					refreshModels: async ({ store }) => {
+						await callbackGate;
+						await store.write({ models: initial.models!, checkedAt: Date.now() });
+						persistedAfterAbort = (await store.read())?.models.map((model) => model.id);
+						callbackFinished();
+						return initial.models!;
+					},
+				});
+
+				const result = await registry.refresh({ timeoutMs: 5 });
+				releaseCallback();
+				await finished;
+
+				expect(result.aborted).toBe(true);
+				expect(persistedAfterAbort).toBeUndefined();
 			});
 
 			test("pre-aborted refresh returns without invoking providers", async () => {

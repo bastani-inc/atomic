@@ -5,7 +5,12 @@ import { FileAuthStorageBackend, type AuthStorageBackend } from "./auth-storage-
 
 type StoredModels = Record<string, ModelsStoreEntry>;
 
-export class InMemoryCodingAgentModelsStore implements ModelsStore {
+export interface CodingAgentModelsStore extends ModelsStore {
+	writeIf(providerId: string, entry: ModelsStoreEntry, predicate: () => boolean): Promise<void>;
+	deleteIf(providerId: string, predicate: () => boolean): Promise<void>;
+}
+
+export class InMemoryCodingAgentModelsStore implements CodingAgentModelsStore {
 	private readonly entries = new Map<string, ModelsStoreEntry>();
 
 	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
@@ -19,10 +24,18 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 	async delete(providerId: string): Promise<void> {
 		this.entries.delete(providerId);
 	}
+
+	async writeIf(providerId: string, entry: ModelsStoreEntry, predicate: () => boolean): Promise<void> {
+		if (predicate()) await this.write(providerId, entry);
+	}
+
+	async deleteIf(providerId: string, predicate: () => boolean): Promise<void> {
+		if (predicate()) await this.delete(providerId);
+	}
 }
 
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */
-export class FileModelsStore implements ModelsStore {
+export class FileModelsStore implements CodingAgentModelsStore {
 	private readonly storage: AuthStorageBackend;
 
 	constructor(path: string = join(getAgentDir(), "models-store.json")) {
@@ -49,6 +62,24 @@ export class FileModelsStore implements ModelsStore {
 
 	async delete(providerId: string): Promise<void> {
 		await this.storage.withLockAsync(async (content) => {
+			const current = this.parse(content);
+			delete current[providerId];
+			return { result: undefined, next: JSON.stringify(current, null, 2) };
+		});
+	}
+
+	async writeIf(providerId: string, entry: ModelsStoreEntry, predicate: () => boolean): Promise<void> {
+		await this.storage.withLockAsync(async (content) => {
+			if (!predicate()) return { result: undefined };
+			const current = this.parse(content);
+			current[providerId] = structuredClone(entry);
+			return { result: undefined, next: JSON.stringify(current, null, 2) };
+		});
+	}
+
+	async deleteIf(providerId: string, predicate: () => boolean): Promise<void> {
+		await this.storage.withLockAsync(async (content) => {
+			if (!predicate()) return { result: undefined };
 			const current = this.parse(content);
 			delete current[providerId];
 			return { result: undefined, next: JSON.stringify(current, null, 2) };

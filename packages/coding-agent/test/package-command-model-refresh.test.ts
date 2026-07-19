@@ -57,6 +57,33 @@ describe("atomic update --models", () => {
 		expect(init?.signal?.aborted).toBe(false);
 	});
 
+	it("loads and force-refreshes Atomic extension providers", async () => {
+		let factoryCalls = 0;
+		let refreshCalls = 0;
+		let observedOptions: { allowNetwork: boolean; force?: boolean } | undefined;
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+		await expect(handlePackageCommand(["update", "--models"], {
+			extensionFactories: [
+				(pi) => {
+					factoryCalls += 1;
+					pi.registerProvider("extension-catalog", {
+						refreshModels: async ({ allowNetwork, force }) => {
+							refreshCalls += 1;
+							observedOptions = { allowNetwork, force };
+							return [];
+						},
+					});
+				},
+			],
+		})).resolves.toBe(true);
+
+		expect(factoryCalls).toBeGreaterThanOrEqual(1);
+		expect(refreshCalls).toBe(1);
+		expect(observedOptions).toEqual({ allowNetwork: true, force: true });
+		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
+	});
+
 	it("enforces the forced refresh timeout when a provider ignores abort", async () => {
 		writeFileSync(
 			join(agentDir, "auth.json"),

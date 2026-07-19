@@ -132,6 +132,23 @@ describeModelRegistry((context) => {
 				expect(context.authStorage.get("dynamic-probe")).toBeUndefined();
 			});
 
+			test("passes configured API keys to extension catalog refresh", async () => {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				let observedCredential: Credential | undefined;
+				registry.registerProvider("configured-catalog", {
+					apiKey: "literal-secret",
+					refreshModels: async ({ credential }) => {
+						observedCredential = credential;
+						return [];
+					},
+				});
+
+				const result = await registry.refresh({ allowNetwork: true });
+
+				expect(result.errors.size).toBe(0);
+				expect(observedCredential).toEqual({ type: "api_key", key: "literal-secret" });
+			});
+
 			test("ignores undefined fields in partial provider updates", async () => {
 				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
 				registry.registerProvider(

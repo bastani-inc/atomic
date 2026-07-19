@@ -8,7 +8,6 @@ import {
 	type CredentialStore,
 	type ModelAuth,
 	type ModelsRefreshResult,
-	type ModelsStore,
 	type MutableModels,
 } from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
@@ -24,7 +23,7 @@ import { loadModelRegistryModels } from "./model-registry-loader.ts";
 import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } from "./model-registry-types.ts";
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
-import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { type CodingAgentModelsStore, FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import { getLegacyOAuthProvider, oauthCredentialToAuth } from "./oauth-provider-bridge.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
@@ -86,7 +85,7 @@ export class ModelRegistry {
 	private loadError: string | undefined = undefined;
 	private refreshGeneration = 0;
 	private readonly registrationSource = `atomic:model-registry:${++nextRegistryRegistrationId}`;
-	declare private readonly modelsStore: ModelsStore;
+	declare private readonly modelsStore: CodingAgentModelsStore;
 	declare private readonly credentialStore: CredentialStore;
 	declare private readonly providerModels: MutableModels;
 
@@ -162,11 +161,12 @@ export class ModelRegistry {
 			await Promise.race([restore, aborted]);
 
 			if (options.allowNetwork !== false && !controller.signal.aborted) {
-				const legacyOAuthProviders = new Set(
-					this.models
-						.map((model) => model.provider)
-						.filter((providerId) => getLegacyOAuthProvider(providerId) !== undefined),
-				);
+				const legacyOAuthProviders = new Set([
+					...this.models.map((model) => model.provider),
+					...[...this.registeredProviders]
+						.filter(([, config]) => config.oauth !== undefined)
+						.map(([providerId]) => providerId),
+				].filter((providerId) => getLegacyOAuthProvider(providerId) !== undefined));
 				const refreshLegacyOAuth = Promise.all([...legacyOAuthProviders].map(async (providerId) => {
 					const credential = this.authStorage.get(providerId);
 					if (credential?.type !== "oauth" || Date.now() < credential.expires) return;
@@ -177,18 +177,29 @@ export class ModelRegistry {
 
 			const extensionRefreshes = controller.signal.aborted ? [] : [...this.registeredProviders].map(async ([providerName, config]) => {
 				if (!config.refreshModels) return;
+				const isCurrentExtensionRefresh = () => !controller.signal.aborted
+					&& generation === this.refreshGeneration
+					&& this.registeredProviders.get(providerName) === config;
 				const store = {
 					read: () => this.modelsStore.read(providerName),
-					write: (entry: Parameters<typeof this.modelsStore.write>[1]) => this.modelsStore.write(providerName, entry),
-					delete: () => this.modelsStore.delete(providerName),
+					write: (entry: Parameters<typeof this.modelsStore.write>[1]) =>
+						this.modelsStore.writeIf(providerName, entry, isCurrentExtensionRefresh),
+					delete: () => this.modelsStore.deleteIf(providerName, isCurrentExtensionRefresh),
 				};
 				try {
-					const credential = await this.credentialStore.read(providerName);
-					if (
-						controller.signal.aborted ||
-						generation !== this.refreshGeneration ||
-						this.registeredProviders.get(providerName) !== config
-					) return;
+					let credential = await this.credentialStore.read(providerName);
+					if (credential?.type === "api_key") {
+						const effectiveApiKey = await this.authStorage.getApiKey(providerName, { includeFallback: false });
+						if (effectiveApiKey !== undefined) credential = { type: "api_key", key: effectiveApiKey };
+					} else if (credential === undefined) {
+						const configuredApiKey = await getApiKeyForProviderFromConfig(
+							providerName,
+							this.authStorage,
+							this.providerRequestConfigs,
+						);
+						if (configuredApiKey !== undefined) credential = { type: "api_key", key: configuredApiKey };
+					}
+					if (!isCurrentExtensionRefresh()) return;
 					const models = await config.refreshModels({
 						credential,
 						store,
@@ -196,11 +207,7 @@ export class ModelRegistry {
 						force: options.force,
 						signal: controller.signal,
 					});
-					if (
-						controller.signal.aborted ||
-						generation !== this.refreshGeneration ||
-						this.registeredProviders.get(providerName) !== config
-					) return;
+					if (!isCurrentExtensionRefresh()) return;
 					const refreshed = { ...config, models };
 					this.registeredProviders.set(providerName, refreshed);
 					this.rebuildProviderModels();
@@ -280,7 +287,10 @@ export class ModelRegistry {
 			const extension = this.registeredProviders.get(provider.id);
 			if (!provider.filterModels || extension?.models || extension?.oauth) continue;
 			const providerModels = configured.filter((model) => model.provider === provider.id);
-			const credential = this.authStorage.get(provider.id) as Credential | undefined;
+			const runtimeApiKey = this.authStorage.getRuntimeApiKey(provider.id);
+			const credential: Credential | undefined = runtimeApiKey === undefined
+				? this.authStorage.get(provider.id) as Credential | undefined
+				: { type: "api_key", key: runtimeApiKey };
 			allowedByProvider.set(
 				provider.id,
 				new Set(provider.filterModels(providerModels, credential).map((model) => model.id)),

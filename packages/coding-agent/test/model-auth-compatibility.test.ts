@@ -1,7 +1,9 @@
+import type { Credential } from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { FileAuthStorageBackend } from "../src/core/auth-storage-backends.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getModelRequestAuth } from "../src/core/model-registry-auth.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
@@ -96,6 +98,15 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 			ok: true,
 			apiKey: "runtime-wins",
 		});
+	});
+
+	test("runtime API-key overrides stored API-key request auth", async () => {
+		const storage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "stored-key" } });
+		storage.setRuntimeApiKey("anthropic", "runtime-key");
+		const registry = ModelRegistry.inMemory(storage);
+		const model = registry.getAll().find((candidate) => candidate.provider === "anthropic")!;
+
+		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({ ok: true, apiKey: "runtime-key" });
 	});
 
 	test("legacy OAuth replacement for a built-in provider bypasses built-in auth", async () => {
@@ -276,6 +287,56 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		});
 	});
 
+	test("filters Copilot models with the effective runtime credential", () => {
+		const baseline = ModelRegistry.inMemory(AuthStorage.inMemory()).getAll()
+			.filter((model) => model.provider === "github-copilot");
+		expect(baseline.length).toBeGreaterThan(1);
+		const storage = AuthStorage.inMemory({
+			"github-copilot": {
+				type: "oauth",
+				refresh: "github-token",
+				access: "stored-token",
+				expires: Date.now() + 60_000,
+				availableModelIds: [baseline[0]!.id],
+			},
+		});
+		storage.setRuntimeApiKey("github-copilot", "runtime-key");
+		const registry = ModelRegistry.inMemory(storage);
+
+		expect(registry.getAvailable().filter((model) => model.provider === "github-copilot")).toHaveLength(baseline.length);
+	});
+
+	test("refreshes OAuth for an extension provider with an initially empty catalog", async () => {
+		const storage = AuthStorage.inMemory({
+			"catalog-only": { type: "oauth", refresh: "old-refresh", access: "old-access", expires: 0 },
+		});
+		const registry = ModelRegistry.inMemory(storage);
+		const refreshToken = vi.fn(async () => ({
+			refresh: "new-refresh",
+			access: "new-access",
+			expires: Date.now() + 60_000,
+		}));
+		let observedCredential: Credential | undefined;
+		registry.registerProvider("catalog-only", {
+			oauth: {
+				name: "Catalog only",
+				login: async () => ({ refresh: "r", access: "a", expires: 1 }),
+				refreshToken,
+				getApiKey: (credential) => credential.access,
+			},
+			refreshModels: async ({ credential }) => {
+				observedCredential = credential;
+				return [];
+			},
+		});
+
+		const result = await registry.refresh({ force: true });
+
+		expect(result.errors.size).toBe(0);
+		expect(refreshToken).toHaveBeenCalledOnce();
+		expect(observedCredential).toMatchObject({ type: "oauth", access: "new-access" });
+	});
+
 	test("prefers a runtime Copilot proxy endpoint over the stored OAuth endpoint", async () => {
 		const storage = AuthStorage.inMemory({
 			"github-copilot": {
@@ -316,11 +377,60 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(auth).toEqual({
 			ok: true,
 			apiKey: "provider-key",
-			headers: { "x-removed": null, "X-Auth": "oauth", "X-Config": "config" },
+			headers: { "x-removed": null, "X-Static": "kept-by-provider-auth", "X-Auth": "oauth", "X-Config": "config" },
 			baseUrl: "https://auth.example/v1",
 		});
 	});
 
+
+	test("rechecks conditional file catalog writes after acquiring the persistence lock", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "atomic-conditional-model-store-"));
+		try {
+			const path = join(directory, "models-store.json");
+			const store = new FileModelsStore(path);
+			const model = ModelRegistry.inMemory(AuthStorage.inMemory()).getAll()[0]!;
+			await store.write("conditional", { models: [{ ...model, id: "seed" }] });
+			let releaseLock!: () => void;
+			let markLocked!: () => void;
+			const lockGate = new Promise<void>((resolve) => { releaseLock = resolve; });
+			const locked = new Promise<void>((resolve) => { markLocked = resolve; });
+			const blocker = new FileAuthStorageBackend(path).withLockAsync(async () => {
+				markLocked();
+				await lockGate;
+				return { result: undefined };
+			});
+			await locked;
+			let current = true;
+			const attemptedWrite = store.writeIf(
+				"conditional",
+				{ models: [{ ...model, id: "late" }] },
+				() => current,
+			);
+
+			current = false;
+			releaseLock();
+			await Promise.all([blocker, attemptedWrite]);
+			expect((await store.read("conditional"))?.models.map((entry) => entry.id)).toEqual(["seed"]);
+			let releaseDeleteLock!: () => void;
+			let markDeleteLocked!: () => void;
+			const deleteLockGate = new Promise<void>((resolve) => { releaseDeleteLock = resolve; });
+			const deleteLocked = new Promise<void>((resolve) => { markDeleteLocked = resolve; });
+			const deleteBlocker = new FileAuthStorageBackend(path).withLockAsync(async () => {
+				markDeleteLocked();
+				await deleteLockGate;
+				return { result: undefined };
+			});
+			await deleteLocked;
+			current = true;
+			const attemptedDelete = store.deleteIf("conditional", () => current);
+			current = false;
+			releaseDeleteLock();
+			await Promise.all([deleteBlocker, attemptedDelete]);
+			expect((await store.read("conditional"))?.models.map((entry) => entry.id)).toEqual(["seed"]);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
 	test("restores persisted provider catalogs before dependent reads", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "atomic-model-runtime-"));
 		try {

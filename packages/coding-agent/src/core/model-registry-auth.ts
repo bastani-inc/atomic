@@ -39,8 +39,8 @@ export async function getModelRequestAuth(
 		const providerConfig = providerRequestConfigs.get(model.provider);
 		const storedAuth = await authStorage.getModelAuth(model.provider, { includeFallback: false });
 		const apiKey =
-			storedAuth?.apiKey ??
 			providerAuth?.apiKey ??
+			storedAuth?.apiKey ??
 			(providerConfig?.apiKey
 				? resolveConfigValueOrThrow(providerConfig.apiKey, `API key for provider "${model.provider}"`)
 				: undefined);
@@ -52,7 +52,7 @@ export async function getModelRequestAuth(
 		);
 
 		let headers = providerAuth
-			? mergeHeaders(providerAuth.headers, undefined)
+			? mergeHeaders(model.headers, providerAuth.headers)
 			: mergeHeaders(storedAuth?.headers, model.headers);
 		headers = mergeHeaders(headers, providerHeaders);
 		headers = mergeHeaders(headers, modelHeaders);
@@ -70,7 +70,7 @@ export async function getModelRequestAuth(
 			ok: true,
 			apiKey,
 			headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
-			baseUrl: storedAuth?.baseUrl ?? providerAuth?.baseUrl,
+			baseUrl: providerAuth?.baseUrl ?? storedAuth?.baseUrl,
 		};
 	} catch (error) {
 		return {
