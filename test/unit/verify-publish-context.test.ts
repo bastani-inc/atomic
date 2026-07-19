@@ -1,15 +1,23 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { $ } from "bun";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   EXPECTED_REPOSITORY,
   EXPECTED_REPOSITORY_ID,
-  LEGACY_WORKFLOW_PATH,
   PROTECTED_PUBLISH_WORKFLOW_PATH,
-  RECOVERY_WORKFLOW_ID,
+  RECOVERY_FAILED_PUBLISHER_RUN_ID,
+  RECOVERY_MARKER_CONTENT,
+  RECOVERY_MARKER_PATH,
+  RECOVERY_SHA,
+  RECOVERY_TAG,
   SIGNAL_WORKFLOW_ID,
   SIGNAL_WORKFLOW_PATH,
   validatePublishContext,
   verifyProtectedWorkflowAncestry,
+  verifyRecoveryMarker,
   type PublishContext,
 } from "../../scripts/verify-publish-context.js";
 
@@ -36,14 +44,19 @@ type RecoveryFixture = {
 
 const fixture = await Bun.file("test/fixtures/release/0.9.10-alpha.1-recovery.json").json() as RecoveryFixture;
 const protectedSha = "0123456789abcdef0123456789abcdef01234567";
+const protectedWorkflowRef = `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@refs/heads/main`;
 const validSignal: PublishContext = {
   eventName: "workflow_run",
   eventAction: "completed",
-  workflowRef: `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@refs/heads/main`,
+  workflowRef: protectedWorkflowRef,
   workflowSha: protectedSha,
   repository: EXPECTED_REPOSITORY,
   repositoryId: EXPECTED_REPOSITORY_ID,
   defaultBranch: "main",
+  gitRef: "refs/heads/main",
+  eventBefore: undefined,
+  eventSha: undefined,
+  runAttempt: "1",
   signalEvent: "create",
   signalStatus: "completed",
   signalConclusion: "success",
@@ -58,86 +71,87 @@ const validSignal: PublishContext = {
   releaseTag: "1.2.3-alpha.1",
   triggerSha: "89abcdef0123456789abcdef0123456789abcdef",
 };
-const recoverySignal: PublishContext = {
+const recoveryPush: PublishContext = {
   ...validSignal,
-  signalConclusion: fixture.conclusion,
-  signalPath: fixture.workflowPath,
-  signalWorkflowId: fixture.workflowId,
-  signalRunId: fixture.runId,
-  signalRunAttempt: fixture.permittedRunAttempt,
-  releaseTag: fixture.tag,
-  triggerSha: fixture.sha,
+  eventName: "push",
+  eventAction: undefined,
+  workflowSha: protectedSha,
+  gitRef: "refs/heads/main",
+  eventBefore: "1111111111111111111111111111111111111111",
+  eventSha: protectedSha,
+  runAttempt: "1",
+  signalEvent: undefined,
+  signalStatus: undefined,
+  signalConclusion: undefined,
+  signalPath: undefined,
+  signalWorkflowId: undefined,
+  signalRunId: undefined,
+  signalRunAttempt: undefined,
+  signalRepository: undefined,
+  signalRepositoryId: undefined,
+  signalHeadRepository: undefined,
+  signalHeadRepositoryId: undefined,
+  releaseTag: RECOVERY_TAG,
+  triggerSha: RECOVERY_SHA,
 };
 
-test("pins the independent historical recovery fixture byte-for-byte", () => {
-  assert.equal(fixture.normalSignalWorkflowId, "314699971");
-  assert.equal(fixture.normalSignalWorkflowPath, ".github/workflows/publish-tag-created.yml");
-  assert.equal(SIGNAL_WORKFLOW_ID, fixture.normalSignalWorkflowId);
-  assert.equal(SIGNAL_WORKFLOW_PATH, fixture.normalSignalWorkflowPath);
-  assert.deepEqual({
-    repository: fixture.repository,
-    repositoryId: fixture.repositoryId,
-    runId: fixture.runId,
-    attempt: fixture.permittedRunAttempt,
-    workflowId: fixture.workflowId,
-    workflowPath: fixture.workflowPath,
-    event: fixture.event,
-    status: fixture.status,
-    conclusion: fixture.conclusion,
-    tag: fixture.tag,
-    sha: fixture.sha,
-  }, {
-    repository: "bastani-inc/atomic",
-    repositoryId: "1081638046",
-    runId: "29529182569",
-    attempt: "2",
-    workflowId: "224908587",
-    workflowPath: ".github/workflows/publish.yml",
-    event: "create",
-    status: "completed",
-    conclusion: "failure",
-    tag: "0.9.10-alpha.1",
-    sha: "88c11adcdddcf5245b7b04dd3d2912c7531906fe",
-  });
+function rejected(contexts: PublishContext[]): void {
+  for (const context of contexts) assert.throws(() => validatePublishContext(context));
+}
+
+test("pins the completed incident and one-time recovery constants byte-for-byte", () => {
+  assert.equal(fixture.normalSignalWorkflowId, SIGNAL_WORKFLOW_ID);
+  assert.equal(fixture.normalSignalWorkflowPath, SIGNAL_WORKFLOW_PATH);
+  assert.equal(fixture.runId, "29529182569");
+  assert.equal(fixture.permittedRunAttempt, "2");
+  assert.equal(fixture.tag, RECOVERY_TAG);
+  assert.equal(fixture.sha, RECOVERY_SHA);
+  assert.equal(RECOVERY_FAILED_PUBLISHER_RUN_ID, "29694686010");
+  assert.equal(RECOVERY_MARKER_PATH, ".github/recovery/0.9.10-alpha.1.json");
+  assert.equal(RECOVERY_MARKER_CONTENT, `{
+  "tag": "0.9.10-alpha.1",
+  "sha": "88c11adcdddcf5245b7b04dd3d2912c7531906fe",
+  "failedPublisherRunId": "29694686010",
+  "removeAfterPublication": true
+}
+`);
 });
 
 test("accepts only the exact successful tag-signal workflow route", () => {
   assert.equal(validatePublishContext(validSignal), "signal");
-});
-
-test("accepts only attempt 2 of failed run 29529182569 for recovery", () => {
-  assert.equal(validatePublishContext(recoverySignal), "recovery");
-  for (const context of [
-    { ...recoverySignal, signalRunAttempt: "1" },
-    { ...recoverySignal, signalRunAttempt: "3" },
-    { ...recoverySignal, signalRunId: "29529182570" },
-    { ...recoverySignal, signalWorkflowId: SIGNAL_WORKFLOW_ID },
-    { ...recoverySignal, signalPath: SIGNAL_WORKFLOW_PATH },
-    { ...recoverySignal, signalConclusion: "success" },
-    { ...recoverySignal, releaseTag: `${fixture.tag} ` },
-    { ...recoverySignal, triggerSha: protectedSha },
-  ]) assert.throws(() => validatePublishContext(context), /Untrusted workflow_run source/u);
-});
-
-test("rejects arbitrary workflows, recursion, repositories, events, states, and conclusions", () => {
-  for (const context of [
-    { ...validSignal, signalWorkflowId: RECOVERY_WORKFLOW_ID },
-    { ...validSignal, signalPath: LEGACY_WORKFLOW_PATH },
+  rejected([
+    { ...validSignal, signalWorkflowId: fixture.workflowId },
+    { ...validSignal, signalPath: fixture.workflowPath },
     { ...validSignal, signalConclusion: "failure" },
     { ...validSignal, signalEvent: "workflow_run" },
     { ...validSignal, signalStatus: "in_progress" },
     { ...validSignal, eventAction: "requested" },
+  ]);
+});
+
+test("accepts only the first exact protected-main recovery push", () => {
+  assert.equal(validatePublishContext(recoveryPush), "recovery");
+  rejected([
+    { ...recoveryPush, eventBefore: "not-a-sha" },
+    { ...recoveryPush, eventSha: RECOVERY_SHA },
+    { ...recoveryPush, runAttempt: "2" },
+    { ...recoveryPush, gitRef: "refs/heads/recovery" },
+    { ...recoveryPush, defaultBranch: "trunk" },
+    { ...recoveryPush, releaseTag: `${RECOVERY_TAG} ` },
+    { ...recoveryPush, triggerSha: protectedSha },
+  ]);
+});
+
+test("rejects historical attempt 3, arbitrary workflows, repositories, refs, and malformed identities", () => {
+  rejected([
+    { ...validSignal, signalWorkflowId: fixture.workflowId, signalPath: fixture.workflowPath, signalRunId: fixture.runId, signalRunAttempt: "3", signalConclusion: "failure", releaseTag: fixture.tag, triggerSha: fixture.sha },
+    { ...validSignal, eventName: "workflow_dispatch" },
     { ...validSignal, repository: "attacker/atomic" },
     { ...validSignal, repositoryId: "1" },
     { ...validSignal, signalRepository: "attacker/atomic" },
     { ...validSignal, signalRepositoryId: "1" },
     { ...validSignal, signalHeadRepository: "attacker/atomic" },
     { ...validSignal, signalHeadRepositoryId: "1" },
-  ]) assert.throws(() => validatePublishContext(context));
-});
-
-test("rejects tag-sourced or aliased publisher refs and malformed identity fields", () => {
-  for (const context of [
     { ...validSignal, workflowRef: fixture.observedWorkflowRef },
     { ...validSignal, workflowRef: `${EXPECTED_REPOSITORY}/${PROTECTED_PUBLISH_WORKFLOW_PATH}@main` },
     { ...validSignal, workflowSha: "not-a-sha" },
@@ -145,9 +159,49 @@ test("rejects tag-sourced or aliased publisher refs and malformed identity field
     { ...validSignal, signalRunId: "0" },
     { ...validSignal, signalRunAttempt: "02" },
     { ...validSignal, releaseTag: undefined },
-  ]) assert.throws(() => validatePublishContext(context));
+  ]);
 });
 
+
+test("recovery marker must be newly added with exact raw bytes", async () => {
+  const repository = mkdtempSync(join(tmpdir(), "atomic-recovery-marker-"));
+  try {
+    await $`git init -q`.cwd(repository);
+    await $`git config user.name contract-test`.cwd(repository);
+    await $`git config user.email contract@example.com`.cwd(repository);
+    await $`git commit --allow-empty -m parent -q`.cwd(repository);
+    const parent = (await $`git rev-parse HEAD`.cwd(repository).text()).trim();
+    const marker = join(repository, RECOVERY_MARKER_PATH);
+    mkdirSync(join(repository, ".github/recovery"), { recursive: true });
+    writeFileSync(marker, RECOVERY_MARKER_CONTENT);
+    await $`git add ${RECOVERY_MARKER_PATH}`.cwd(repository);
+    await $`git commit -m recovery -q`.cwd(repository);
+    const recovery = (await $`git rev-parse HEAD`.cwd(repository).text()).trim();
+    verifyRecoveryMarker(parent, recovery, repository);
+    assert.throws(
+      () => verifyRecoveryMarker("2222222222222222222222222222222222222222", recovery, repository),
+      /parent commit is unavailable/u,
+    );
+    assert.throws(
+      () => verifyRecoveryMarker(parent, "3333333333333333333333333333333333333333", repository),
+      /event commit is unavailable/u,
+    );
+    const parentTree = (await $`git show -s --format=%T ${parent}`.cwd(repository).text()).trim();
+    const divergent = (await $`printf 'divergent\n' | git commit-tree ${parentTree}`.cwd(repository).text()).trim();
+    assert.throws(() => verifyRecoveryMarker(divergent, recovery, repository), /not an ancestor/u);
+    assert.throws(() => verifyRecoveryMarker(recovery, recovery, repository), /already existed/u);
+
+    await $`git reset --hard ${parent}`.cwd(repository).quiet();
+    mkdirSync(join(repository, ".github/recovery"), { recursive: true });
+    writeFileSync(marker, `${RECOVERY_MARKER_CONTENT} `);
+    await $`git add ${RECOVERY_MARKER_PATH}`.cwd(repository);
+    await $`git commit -m malformed -q`.cwd(repository);
+    const malformed = (await $`git rev-parse HEAD`.cwd(repository).text()).trim();
+    assert.throws(() => verifyRecoveryMarker(parent, malformed, repository), /marker content/u);
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
 test("accepts protected ancestors and rejects workflow SHAs outside protected history", () => {
   const revisions = Bun.spawnSync(["git", "rev-parse", "HEAD~1", "HEAD"], { stdout: "pipe", stderr: "pipe" });
   assert.equal(revisions.exitCode, 0, revisions.stderr.toString());
