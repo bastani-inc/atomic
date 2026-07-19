@@ -55,13 +55,13 @@ function overlayRuntimeApiKey(
 	};
 }
 
-function createProviderCredentialStore(authStorage: AuthStorage, credentials: CredentialStore): CredentialStore {
+function createProviderCredentialStore(credentials: CredentialStore): CredentialStore {
 	return {
 		...credentials,
 		read: async (providerId) => {
 			const credential = await credentials.read(providerId);
 			if (credential?.type !== "oauth" || !getLegacyOAuthProvider(providerId)) return credential;
-			const auth = await authStorage.getModelAuth(providerId, { includeFallback: false });
+			const auth = await oauthCredentialToAuth(providerId, credential);
 			return auth?.apiKey === undefined ? undefined : { type: "api_key", key: auth.apiKey };
 		},
 	};
@@ -104,7 +104,7 @@ export class ModelRegistry {
 			: new InMemoryCodingAgentModelsStore();
 		this.credentialStore = authStorage.asCredentialStore();
 		this.providerModels = createModels({
-			credentials: createProviderCredentialStore(authStorage, this.credentialStore),
+			credentials: createProviderCredentialStore(this.credentialStore),
 			modelsStore: this.modelsStore,
 		});
 		for (const provider of builtinProviders()) {
@@ -160,6 +160,20 @@ export class ModelRegistry {
 					this.publishProviderModels();
 				});
 			await Promise.race([restore, aborted]);
+
+			if (options.allowNetwork !== false && !controller.signal.aborted) {
+				const legacyOAuthProviders = new Set(
+					this.models
+						.map((model) => model.provider)
+						.filter((providerId) => getLegacyOAuthProvider(providerId) !== undefined),
+				);
+				const refreshLegacyOAuth = Promise.all([...legacyOAuthProviders].map(async (providerId) => {
+					const credential = this.authStorage.get(providerId);
+					if (credential?.type !== "oauth" || Date.now() < credential.expires) return;
+					await this.authStorage.getModelAuth(providerId, { includeFallback: false });
+				}));
+				await Promise.race([refreshLegacyOAuth, aborted]);
+			}
 
 			const extensionRefreshes = controller.signal.aborted ? [] : [...this.registeredProviders].map(async ([providerName, config]) => {
 				if (!config.refreshModels) return;

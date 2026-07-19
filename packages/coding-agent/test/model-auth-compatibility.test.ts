@@ -176,6 +176,32 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(storage.get("anthropic")).toMatchObject({ type: "oauth", access: "catalog-access" });
 	});
 
+	test("cache-only catalog restore does not refresh global legacy OAuth", async () => {
+		const storage = AuthStorage.inMemory({
+			anthropic: { type: "oauth", refresh: "cache-refresh", access: "cache-access", expires: 0 },
+		});
+		const refreshToken = vi.fn(async () => ({
+			refresh: "unexpected-refresh",
+			access: "unexpected-access",
+			expires: Date.now() + 60_000,
+		}));
+		registerOAuthProvider({
+			id: "anthropic",
+			name: "Cache-only Anthropic",
+			login: async () => ({ refresh: "r", access: "a", expires: 1 }),
+			refreshToken,
+			getApiKey: (credential) => `cache:${credential.access}`,
+		});
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		const registry = ModelRegistry.inMemory(storage);
+
+		await registry.refresh({ allowNetwork: false });
+
+		expect(refreshToken).not.toHaveBeenCalled();
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(storage.get("anthropic")).toMatchObject({ type: "oauth", access: "cache-access" });
+	});
+
 	test("runtime-only credentials authorize provider-owned catalog refresh", async () => {
 		const storage = AuthStorage.inMemory();
 		storage.setRuntimeApiKey("anthropic", "runtime-only");
