@@ -4,6 +4,9 @@ import { ExpandableText } from "./interactive-mode-helpers.ts";
 import { ONBOARDING_COPY } from "./interactive-onboarding.ts";
 import { onInteractiveEngineRemoteCommandsChanged, waitForInteractiveEngineBound } from "../interactive-engine/extension-ui-bridge.ts";
 import { restoreTerminalTitleAfterPackageCheck } from "./interactive-terminal-title.ts";
+import { isOfflineModeEnabled } from "../../core/package-manager-env.ts";
+
+export const shouldRefreshCopilotCatalogOnStartup = (): boolean => !isOfflineModeEnabled();
 
 function prepareStartupNotices(mode: InteractiveModeBase): void {
     if (mode.startupNoticesPrepared) return;
@@ -220,7 +223,7 @@ InteractiveModeBase.prototype.run = async function(this: InteractiveModeBase): P
     await this.init();
 
 	setTimeout(() => {
-		void this.refreshCopilotModelCatalog();
+		if (shouldRefreshCopilotCatalogOnStartup()) void this.refreshCopilotModelCatalog();
     const startupNoticesContainer = this.startupNoticesContainer;
 		checkForNewPiVersion(this.version).then((newVersion) => {
 			if (newVersion) this.showNewVersionNotification(newVersion, startupNoticesContainer);
