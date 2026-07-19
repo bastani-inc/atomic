@@ -18,6 +18,9 @@ import type { KeybindingsManager } from "../../../core/keybindings.ts";
 import type { Theme } from "../theme/theme.ts";
 import { getEditorTheme } from "../theme/theme.ts";
 
+/** Indent (cells) for a field's control, description, and error rows so they align under the field name. */
+const LABEL_INDENT = 2;
+
 export interface HostInputFormDelegate {
 	onSubmit(values: Record<string, string>): void;
 	onCancel(): void;
@@ -60,7 +63,10 @@ export class HostInputFormComponent implements Component, Focusable {
 		this.editors = this.fields.map((field, index) => {
 			if (!isEditable(field)) return undefined;
 			if (field.type === "text") {
-				const editor = new Editor(tui, getEditorTheme(), { paddingX: 0 });
+				// Quiet the multi-line editor's top/bottom rules to the panel border tone
+				// so the inset text area blends with the form frame instead of shouting.
+				const editorTheme = { ...getEditorTheme(), borderColor: (segment: string) => theme.fg("border", segment) };
+				const editor = new Editor(tui, editorTheme, { paddingX: 0 });
 				editor.setText(field.initialValue);
 				editor.onChange = (text) => { this.values[index] = text; };
 				editor.disableSubmit = true;
@@ -102,28 +108,42 @@ export class HostInputFormComponent implements Component, Focusable {
 	}
 
 	render(width: number): string[] {
-		const safeWidth = Math.max(1, width);
-		const lines = [
-			this.fit(this.theme.fg("accent", this.theme.bold("WORKFLOW INPUTS")) + this.theme.fg("dim", `  ${this.title} · ${this.fields.length} fields`), safeWidth),
-			"",
-		];
+		const boxWidth = Math.max(1, width);
+		const inner = Math.max(2, boxWidth - 2);
+		const cw = Math.max(8, inner - 2);
+		const controlWidth = Math.max(1, cw - LABEL_INDENT);
+		const indent = " ".repeat(LABEL_INDENT);
+		const body: string[] = [];
+
+		const fieldCount = `${this.fields.length} ${this.fields.length === 1 ? "field" : "fields"}`;
+		const nameBudget = Math.max(4, cw - fieldCount.length - 5);
+		body.push(
+			this.theme.bold(this.theme.fg("text", truncateToWidth(this.title, nameBudget, "…"))) +
+				this.theme.fg("dim", `  ·  ${fieldCount}`),
+		);
+		body.push("");
+
 		for (let index = 0; index < this.fields.length; index += 1) {
 			const field = this.fields[index]!;
 			const active = index === this.focusedIndex;
-			const marker = active ? this.theme.fg("accent", "›") : " ";
-			const required = field.required ? this.theme.fg("warning", "required") : this.theme.fg("dim", "optional");
-			lines.push(this.fit(`${marker} ${active ? this.theme.fg("accent", field.name) : field.name}  ${required}`, safeWidth));
-			lines.push(...this.renderField(field, index, Math.max(1, safeWidth - 2)).map((line) => this.fit(`  ${line}`, safeWidth)));
-			if (field.description) lines.push(...wrapTextWithAnsi(this.theme.fg("dim", field.description), Math.max(1, safeWidth - 2)).map((line) => this.fit(`  ${line}`, safeWidth)));
-			if (this.invalid.has(index)) lines.push(this.fit(`  ${this.theme.fg("error", this.invalidReason(field, this.currentValue(index)) ?? "invalid")}`, safeWidth));
-			lines.push("");
+			body.push(this.labelRow(field, active, cw));
+			for (const line of this.renderField(field, index, controlWidth)) body.push(`${indent}${line}`);
+			if (field.description) {
+				for (const line of wrapTextWithAnsi(this.theme.fg("muted", field.description), Math.max(1, cw - LABEL_INDENT))) {
+					body.push(`${indent}${line}`);
+				}
+			}
+			if (this.invalid.has(index)) {
+				body.push(`${indent}${this.theme.fg("error", `✗ ${this.invalidReason(field, this.currentValue(index)) ?? "invalid"}`)}`);
+			}
+			body.push("");
 		}
-		const submit = this.focusedIndex === this.fields.length
-			? this.theme.bg("selectedBg", this.theme.fg("accent", " Run workflow "))
-			: this.theme.fg("dim", " Run workflow ");
-		lines.push(this.fit(submit, safeWidth));
-		lines.push(this.fit(this.theme.fg("dim", "Tab navigate · Enter continue/run · Esc cancel"), safeWidth));
-		return lines;
+
+		body.push(this.submitRow());
+		body.push("");
+		body.push(this.footerRow());
+
+		return this.frame(body, inner, cw);
 	}
 
 	invalidate(): void { for (const editor of this.editors) editor?.invalidate(); }
@@ -224,5 +244,56 @@ export class HostInputFormComponent implements Component, Focusable {
 	}
 	private syncFocus(): void { this.editors.forEach((editor, index) => { if (editor) editor.focused = this._focused && index === this.focusedIndex; }); }
 	private currentValue(index: number): string { const editor = this.editors[index]; return editor instanceof Input ? editor.getValue() : editor instanceof Editor ? editor.getExpandedText() : this.values[index] ?? ""; }
-	private fit(line: string, width: number): string { const clipped = truncateToWidth(line, width, "…"); return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped))); }
+	/** Field header: focus chevron + name (accent when active) with a right-aligned required/optional badge. */
+	private labelRow(field: HostInputFormField, active: boolean, cw: number): string {
+		const badgePlain = field.required ? "required" : "optional";
+		const marker = active ? this.theme.fg("accent", "▸") : " ";
+		const nameBudget = Math.max(4, cw - badgePlain.length - 3);
+		const nameShown = truncateToWidth(field.name, nameBudget, "…");
+		const nameStyled = active
+			? this.theme.fg("accent", this.theme.bold(nameShown))
+			: this.theme.fg("text", nameShown);
+		const badge = field.required
+			? this.theme.fg("warning", badgePlain)
+			: this.theme.fg("dim", badgePlain);
+		const gap = Math.max(1, cw - 2 - visibleWidth(nameShown) - badgePlain.length);
+		return `${marker} ${nameStyled}${" ".repeat(gap)}${badge}`;
+	}
+
+	/** Submit control rendered as a button pill; filled accent when focused, quiet outline otherwise. */
+	private submitRow(): string {
+		const active = this.focusedIndex === this.fields.length;
+		const marker = active ? this.theme.fg("accent", "▸") : " ";
+		const pill = active
+			? this.theme.bg("selectedBg", this.theme.bold(this.theme.fg("accent", "[ Run workflow ]")))
+			: this.theme.fg("dim", "[ Run workflow ]");
+		return `${marker} ${pill}`;
+	}
+
+	/** Key-hint footer with accent key chips and muted verbs. */
+	private footerRow(): string {
+		const key = (k: string): string => this.theme.fg("accent", k);
+		const dim = (t: string): string => this.theme.fg("dim", t);
+		const sep = dim("  ·  ");
+		return `${key("Tab")} ${dim("move")}${sep}${key("Enter")} ${dim("continue / run")}${sep}${key("Esc")} ${dim("cancel")}`;
+	}
+
+	/**
+	 * Wrap the pre-built body rows in a rounded panel. The title rides the top
+	 * border; each row gets one cell of interior padding on both sides. Rows are
+	 * padded (not truncated) unless they overflow, so an embedded editor's inline
+	 * cursor marker is never clipped away.
+	 */
+	private frame(body: readonly string[], inner: number, cw: number): string[] {
+		const border = (glyph: string): string => this.theme.fg("border", glyph);
+		const title = ` ${this.theme.fg("accent", this.theme.bold("WORKFLOW INPUTS"))} `;
+		const top = `${border("╭")}${title}${border("─".repeat(Math.max(0, inner - visibleWidth(title))))}${border("╮")}`;
+		const rows = body.map((line) => {
+			const clipped = visibleWidth(line) > cw ? truncateToWidth(line, cw, "…") : line;
+			const pad = " ".repeat(Math.max(0, cw - visibleWidth(clipped)));
+			return `${border("│")} ${clipped}${pad} ${border("│")}`;
+		});
+		const bottom = `${border("╰")}${border("─".repeat(inner))}${border("╯")}`;
+		return [top, ...rows, bottom];
+	}
 }

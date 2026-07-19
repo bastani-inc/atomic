@@ -206,7 +206,7 @@ describe("host-native input form", () => {
 		const cancelled = navigation.child.open({ title: "demo", fields: fields() });
 		await flush();
 		navigation.mounts[0]!.component.handleInput("\x0e");
-		assert.match(stripAnsi(navigation.mounts[0]!.component.render(100).join("\n")), /› enabled/);
+		assert.match(stripAnsi(navigation.mounts[0]!.component.render(100).join("\n")), /▸ enabled/);
 		navigation.mounts[0]!.component.handleInput("\x18");
 		assert.equal(await cancelled, undefined);
 		navigation.controller.dispose();
