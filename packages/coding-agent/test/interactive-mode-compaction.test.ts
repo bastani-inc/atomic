@@ -48,6 +48,12 @@ const persistedBoundary = createVerbatimCompactionMessage(
 	},
 ) as AgentMessage;
 
+type CompactionStartEvent = {
+	type: "compaction_start";
+	reason: "manual" | "threshold" | "overflow";
+	midTurn?: boolean;
+};
+
 type CompactionEndEvent = {
 	type: "compaction_end";
 	reason: "manual" | "threshold" | "overflow";
@@ -57,6 +63,7 @@ type CompactionEndEvent = {
 	errorMessage?: string;
 	midTurn?: boolean;
 };
+type AgentEndEvent = { type: "agent_end" };
 
 const persistedContextMessages = [
 	persistedBoundary,
@@ -64,6 +71,7 @@ const persistedContextMessages = [
 ];
 
 function makeMode(messages: AgentMessage[] = persistedContextMessages) {
+	const workingLoaders: Array<Text & { stop: ReturnType<typeof vi.fn> }> = [];
 	const chatContainer = new Container();
 	const startupNoticesContainer = new Container();
 	startupNoticesContainer.addChild(new Text("startup notice", 0, 0));
@@ -72,11 +80,14 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		footer: { invalidate: vi.fn() },
 		autoCompactionEscapeHandler: undefined,
 		autoCompactionLoader: undefined,
-		defaultEditor: {},
+		loadingAnimation: undefined,
+		workingVisible: true,
+		defaultEditor: { onEscape: vi.fn() },
 		statusContainer: new Container(),
 		chatContainer,
 		startupNoticesContainer,
 		pendingTools: new Map(),
+		compactionQueuedMessages: [],
 		deferredRenderedUserInputs: [],
 		deferredRenderedUserInputComponents: new Map(),
 		toolOutputExpanded: false,
@@ -87,7 +98,7 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 			getCwd: () => process.cwd(),
 			buildSessionContext: () => ({ messages, thinkingLevel: "off", model: null }),
 		},
-		session: { extensionRunner: { getMessageRenderer: () => undefined } },
+		session: { abortCompaction: vi.fn(), extensionRunner: { getMessageRenderer: () => undefined } },
 		settingsManager: {
 			getShowTerminalProgress: () => false,
 			getShowImages: () => false,
@@ -97,9 +108,17 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		getRegisteredToolDefinition: () => undefined,
 		updateEditorBorderColor: vi.fn(),
 		flushCompactionQueue: vi.fn().mockResolvedValue(undefined),
+		checkShutdownRequested: vi.fn().mockResolvedValue(undefined),
 		showError: vi.fn(),
 		showStatus: vi.fn(),
 		ui: { requestRender: vi.fn(), terminal: { setProgress: vi.fn() } },
+		createWorkingLoader: vi.fn(() => {
+			const loader = Object.assign(new Text("Working...", 0, 0), { stop: vi.fn() });
+			workingLoaders.push(loader);
+			return loader;
+		}),
+		stopWorkingLoader: Reflect.get(InteractiveMode.prototype, "stopWorkingLoader"),
+		showWorkingLoaderNow: Reflect.get(InteractiveMode.prototype, "showWorkingLoaderNow"),
 		attachStartupNoticesContainer: Reflect.get(InteractiveMode.prototype, "attachStartupNoticesContainer"),
 		renderSessionContext: vi.fn(Reflect.get(InteractiveMode.prototype, "renderSessionContext")),
 		addRenderedChatEntry: Reflect.get(InteractiveMode.prototype, "addRenderedChatEntry"),
@@ -108,13 +127,13 @@ function makeMode(messages: AgentMessage[] = persistedContextMessages) {
 		rebuildChatFromMessages: Reflect.get(InteractiveMode.prototype, "rebuildChatFromMessages"),
 		addCompactionBoundaryToChat: vi.fn(Reflect.get(InteractiveMode.prototype, "addCompactionBoundaryToChat")),
 	};
-	return { mode, chatContainer };
+	return { mode, chatContainer, workingLoaders };
 }
 
-async function emit(mode: object, event: CompactionEndEvent): Promise<void> {
+async function emit(mode: object, event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent): Promise<void> {
 	const handleEvent = Reflect.get(InteractiveMode.prototype, "handleEvent") as (
 		this: object,
-		event: CompactionEndEvent,
+		event: CompactionStartEvent | CompactionEndEvent | AgentEndEvent,
 	) => Promise<void>;
 	await handleEvent.call(mode, event);
 }
@@ -174,6 +193,53 @@ describe("InteractiveMode compaction events", () => {
 		expect(mode.flushCompactionQueue).not.toHaveBeenCalled();
 	});
 
+	it("restores the working spinner after successful mid-turn compaction without user input", async () => {
+		const { mode, workingLoaders } = makeMode();
+		mode.showWorkingLoaderNow.call(mode);
+		expect(renderedText(mode.statusContainer)).toContain("Working...");
+
+		await emit(mode, { type: "compaction_start", reason: "threshold", midTurn: true });
+		expect(workingLoaders[0]?.stop).toHaveBeenCalledOnce();
+		expect(renderedText(mode.statusContainer)).toContain("Auto-compacting...");
+
+		await emit(mode, {
+			type: "compaction_end",
+			reason: "threshold",
+			result,
+			aborted: false,
+			willRetry: false,
+			midTurn: true,
+		});
+
+		expect(mode.createWorkingLoader).toHaveBeenCalledTimes(2);
+		expect(renderedText(mode.statusContainer)).toContain("Working...");
+
+		await emit(mode, { type: "agent_end" });
+		expect(workingLoaders[1]?.stop).toHaveBeenCalledOnce();
+		expect(renderedText(mode.statusContainer)).not.toContain("Working...");
+	});
+
+	it("does not restore the working spinner when mid-turn compaction cannot continue", async () => {
+		for (const event of [
+			{ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false, midTurn: true },
+			{
+				type: "compaction_end",
+				reason: "threshold",
+				result,
+				aborted: false,
+				willRetry: false,
+				midTurn: true,
+				errorMessage: "failed",
+			},
+		] satisfies CompactionEndEvent[]) {
+			const { mode } = makeMode([]);
+
+			await emit(mode, event);
+
+			expect(mode.createWorkingLoader).not.toHaveBeenCalled();
+			expect(renderedText(mode.statusContainer)).not.toContain("Working...");
+		}
+	});
 	it("suppresses the synthesized leading boundary without removing a retained same-name custom message", async () => {
 		const retainedAlias = {
 			role: "custom",

@@ -286,7 +286,7 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
         this.defaultEditor.onEscape = () => {
           this.session.abortCompaction();
         };
-        this.statusContainer.clear();
+        this.stopWorkingLoader();
         const cancelHint = `(${keyText("app.interrupt")} Cancel)`;
         const isOverflowAutoCompaction = event.reason === "overflow";
         const label =
@@ -337,6 +337,11 @@ InteractiveModeBase.prototype.handleEvent = async function(this: InteractiveMode
               new Text(theme.fg("error", event.errorMessage), 1, 0),
             );
           }
+        }
+        // Post-tool compaction resumes the same active run, so no new
+        // agent_start event will recreate the working loader.
+        if (event.midTurn && event.result && !event.aborted && !event.errorMessage) {
+          this.showWorkingLoaderNow();
         }
         if (!event.midTurn) void this.flushCompactionQueue({ willRetry: event.willRetry });
         this.ui.requestRender();

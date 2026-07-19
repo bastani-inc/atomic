@@ -819,7 +819,7 @@ ctx.ui.setWorkingIndicator({ frames: [] });
 ctx.ui.setWorkingIndicator();
 ```
 
-This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
+This only affects the normal streaming working indicator. Compaction and retry loaders keep their built-in styling. During successful post-tool autocompaction, Atomic temporarily replaces the working indicator with the compaction loader and restores the working indicator before the same stream continues; no additional user input is required. Custom frames are rendered verbatim, so extensions must add their own colors when needed.
 
 **Examples:** [working-indicator.ts](https://github.com/bastani-inc/atomic/blob/main/packages/coding-agent/examples/extensions/working-indicator.ts)
 
