@@ -428,11 +428,13 @@ jobs:
                   path: packages/natives/native
                   merge-multiple: true
 
-            - name: Prepare Atomic native optional packages
+            - name: Prepare Atomic native packages and root manifest
               run: |
                   bun run --cwd packages/natives create-npm-dirs
                   bun run --cwd packages/natives artifacts
-
+                  # Populate the root package's platform optionalDependencies while
+                  # preventing registry contact; publication stays in the OIDC job.
+                  bun run --cwd packages/natives prepublish:native -- --skip-optional-publish
 
             - name: Validate single publish target and package metadata
               id: package
@@ -652,6 +654,35 @@ jobs:
                     echo "Expected exactly eight prepared npm tarballs" >&2
                     exit 1
                   }
+
+                  native_root_manifest=""
+                  for tarball in "$npm_dir"/*.tgz; do
+                    manifest=$(tar -xOf "$tarball" package/package.json)
+                    if [[ "$(jq -er '.name' <<< "$manifest")" == "@bastani/atomic-natives" ]]; then
+                      [[ -z "$native_root_manifest" ]] || { echo "Duplicate prepared @bastani/atomic-natives tarball" >&2; exit 1; }
+                      native_root_manifest="$manifest"
+                    fi
+                  done
+                  [[ -n "$native_root_manifest" ]] || { echo "Missing prepared @bastani/atomic-natives tarball" >&2; exit 1; }
+                  native_optional_dependencies=(
+                    @bastani/atomic-natives-darwin-arm64
+                    @bastani/atomic-natives-darwin-x64
+                    @bastani/atomic-natives-linux-arm64-gnu
+                    @bastani/atomic-natives-linux-x64-gnu
+                    @bastani/atomic-natives-win32-arm64-msvc
+                    @bastani/atomic-natives-win32-x64-msvc
+                  )
+                  [[ "$(jq -er '.optionalDependencies | length' <<< "$native_root_manifest")" -eq "${#native_optional_dependencies[@]}" ]] || {
+                    echo "Prepared @bastani/atomic-natives manifest must contain exactly six optional dependencies" >&2
+                    exit 1
+                  }
+                  for dependency in "${native_optional_dependencies[@]}"; do
+                    dependency_version=$(jq -er --arg dependency "$dependency" '.optionalDependencies[$dependency]' <<< "$native_root_manifest")
+                    [[ "$dependency_version" == "$VERSION" ]] || {
+                      echo "Prepared @bastani/atomic-natives optional dependency $dependency has version $dependency_version, expected $VERSION" >&2
+                      exit 1
+                    }
+                  done
 
                   cp "$PACKAGE_DIR"/binaries/atomic-*.tar.gz "$assets_dir/"
                   cp "$PACKAGE_DIR"/binaries/atomic-*.zip "$assets_dir/"

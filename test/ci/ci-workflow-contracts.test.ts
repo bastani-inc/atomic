@@ -110,6 +110,8 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
 
   const prepare = publish.slice(publish.indexOf("    prepare-release:"), publish.indexOf("    publish-npm:"));
   assert.doesNotMatch(prepare, /id-token: write|contents: write|npm publish/u);
+  assert.match(prepare, /prepublish:native -- --skip-optional-publish/u);
+  assert.match(prepare, /native_root_manifest=[\s\S]*tar -xOf[\s\S]*\.optionalDependencies \| length[\s\S]*dependency_version/u);
   assert.match(prepare, /npm pack/u);
   assert.match(prepare, /ARTIFACT-SHA256SUMS/u);
   const npmJob = publish.slice(publish.indexOf("    publish-npm:"), publish.indexOf("    create-github-release:"));

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Build @bastani/atomic binaries for all platforms locally.
-# Mirrors .github/workflows/publish.yml binary build.
+# Mirrors .github/workflows/publish-release.yml binary build.
 #
 # Usage:
 #   ./scripts/build-binaries.sh [--skip-deps] [--skip-install] [--skip-package-build] [--platform <platform>]
