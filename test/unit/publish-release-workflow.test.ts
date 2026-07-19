@@ -40,6 +40,24 @@ describe("publish-release request validation", () => {
   });
 });
 
+test("invalid versions return the declared structured failure output", async () => {
+  for (const [release_kind, target_version] of [
+    ["release", "v1.2.3"],
+    ["prerelease", "1.2.3"],
+  ] as const) {
+    const result = await publishRelease.run({
+      inputs: { target_version, release_kind, base_ref: "main" },
+    } as never);
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.target_version, target_version);
+    assert.equal(result.release_kind, release_kind);
+    assert.equal(result.branch, `${release_kind}/${target_version}`);
+    assert.match(result.summary, /validate-release-request/u);
+    assert.match(result.summary, /target_version/u);
+  }
+});
+
 test("invalid base refs return the declared structured failure output", async () => {
   const result = await publishRelease.run({
     inputs: {

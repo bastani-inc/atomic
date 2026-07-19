@@ -74,6 +74,16 @@ function stoppedSummary(release: ValidatedRelease, stage: string, details: strin
   ].join("\n\n");
 }
 
+function failedOutput(release: ValidatedRelease, stage: string, details: string) {
+  return {
+    status: "failed" as const,
+    target_version: release.version,
+    release_kind: release.kind,
+    branch: release.branch,
+    summary: stoppedSummary(release, stage, details),
+  };
+}
+
 export default workflow({
   name: "publish-release",
   description: "Prepare, merge, tag, and verify an Atomic release through a short prompt-led workflow.",
@@ -97,7 +107,21 @@ export default workflow({
     summary: Type.String(),
   },
   run: async (ctx) => {
-    const release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
+    const requestedRelease: ValidatedRelease = {
+      kind: ctx.inputs.release_kind,
+      version: ctx.inputs.target_version,
+      branch: `${ctx.inputs.release_kind}/${ctx.inputs.target_version}`,
+    };
+    let release: ValidatedRelease;
+    try {
+      release = validateReleaseRequest(ctx.inputs.release_kind, ctx.inputs.target_version);
+    } catch (error) {
+      return failedOutput(
+        requestedRelease,
+        "validate-release-request",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     const stop = (stage: string, details: string): never => {
       const summary = stoppedSummary(release, stage, details);
       return ctx.exit({
@@ -113,19 +137,14 @@ export default workflow({
       });
     };
 
-    const fail = (stage: string, details: string) => ({
-      status: "failed" as const,
-      target_version: release.version,
-      release_kind: release.kind,
-      branch: release.branch,
-      summary: stoppedSummary(release, stage, details),
-    });
+
     const requestedBaseRef = ctx.inputs.base_ref.length === 0 ? "main" : ctx.inputs.base_ref;
     let releaseBaseRef: string;
     try {
       releaseBaseRef = canonicalReleaseBaseRef(requestedBaseRef);
     } catch (error) {
-      return fail(
+      return failedOutput(
+        release,
         "validate-release-base-ref",
         error instanceof Error ? error.message : String(error),
       );
