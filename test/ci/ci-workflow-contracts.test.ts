@@ -66,46 +66,71 @@ test("release-base metadata rejects aliases, injection, duplicates, and normaliz
   }
 });
 
-test("publish uses the default-branch create event with least-privilege jobs", async () => {
-  const workflow = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
-  assert.match(workflow, /on:[ \t]*\r?\n(?:[ \t]*#[^\r\n]*\r?\n)*[ \t]*create:/);
-  assert.doesNotMatch(workflow, /workflow_dispatch:|workflow_run:|push:\s*\r?\n\s*tags:/);
-  assert.match(workflow, /permissions:\s*\r?\n\s*contents: read/);
-  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("jobs:")), /id-token: write|contents: write/);
-  assert.doesNotMatch(workflow, /gh workflow run|--paginate|--watch|sleep [0-9]/);
-  assert.match(workflow, /bun run scripts\/verify-release-integrity\.ts[\s\\\r\n]*--base-ref "\$fixed_base_ref"/);
-  assert.doesNotMatch(workflow, /name: (Typecheck|Test)\r?\n/);
-  assert.match(workflow, /npm publish --provenance/g);
-  assert.match(workflow, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/);
-  assert.match(workflow, /needs: release-integrity/);
-  assert.match(workflow, /name: Mintlify docs validation/);
-  const integrityJob = workflow.slice(workflow.indexOf("release-integrity:"), workflow.indexOf("linux-binary-smoke:"));
-  assert.match(integrityJob, /if: github\.ref_type == 'tag'/);
-  assert.match(integrityJob, /RELEASE_TAG.*github\.ref_name/);
-  assert.match(integrityJob, /TRIGGER_SHA.*github\.sha/);
-  assert.match(integrityJob, /WORKFLOW_REF.*github\.workflow_ref/);
-  assert.match(integrityJob, /ref: \$\{\{ github\.workflow_sha \}\}/);
-  assert.match(integrityJob, /expected_workflow_ref=.*refs\/heads/);
-  assert.match(integrityJob, /release_sha.*TRIGGER_SHA/);
-  assert.match(integrityJob, /git ls-remote --exit-code --refs origin/);
-  assert.match(integrityJob, /ALLOWED_RELEASE_BASE_REFS.*vars\.RELEASE_BASE_REFS/);
-  assert.match(integrityJob, /release_base_ref=.*Release-base-ref/);
-  assert.match(integrityJob, /release_base_sha=.*Release-base-sha/);
-  assert.match(integrityJob, /release_base_ref.*refs\/heads/);
-  assert.match(integrityJob, /refs\/heads\/main/);
-  assert.match(integrityJob, /Release base ref is not allowlisted/);
-  assert.match(integrityJob, /fixed_base_ref=refs\/remotes\/atomic-publisher\/release-base/);
-  assert.match(integrityJob, /git fetch --no-tags origin "\$\{release_base_ref\}:\$\{fixed_base_ref\}"/);
-  assert.match(integrityJob, /release_base_sha.*release_parent/);
-  assert.match(integrityJob, /merge-base --is-ancestor "\$release_base_sha" "\$fetched_base_sha"/);
-  assert.match(integrityJob, /--expected-base-ref "\$release_base_ref"/);
-  assert.match(integrityJob, /--expected-base-sha "\$release_base_sha"/);
-  const publishJob = workflow.slice(workflow.indexOf("    publish:"));
-  assert.match(publishJob, /permissions:\s*\r?\n\s*contents: write\s*\r?\n\s*id-token: write/);
-  assert.match(workflow, /atomic_natives\.win32-arm64-msvc\.node/);
-  assert.match(workflow, /atomic-windows-arm64\.zip/);
-  assert.match(workflow, /bun run check:shrinkwrap/);
-  assert.match(workflow, /name: Reconfirm release tag is immutable[\s\S]*current_sha[\s\S]*VERIFIED_SHA/);
+test("signals, inert legacy identity, and protected publisher stay distinct and non-recursive", async () => {
+  const signal = await Bun.file(join(root, ".github/workflows/publish-tag-created.yml")).text();
+  const legacy = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
+  const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
+  const executable = (source: string) => source.split("\n").filter((line) => !/^\s*#/u.test(line)).join("\n");
+
+  assert.match(executable(signal), /on:\n\s+create:/u);
+  assert.match(executable(signal), /permissions: \{\}/u);
+  assert.match(executable(signal), /REF_TYPE.*github\.ref_type/u);
+  assert.doesNotMatch(executable(signal), /uses:|checkout|id-token|contents: write|npm publish|upload-artifact/u);
+  assert.match(signal, /tag-sourced YAML[\s\S]*not a publication security boundary/u);
+
+  assert.match(legacy, /name: Publish\r?\n/u);
+  assert.match(legacy, /workflow_dispatch:/u);
+  assert.match(legacy, /permissions: \{\}/u);
+  assert.doesNotMatch(executable(legacy), /workflow_run:|create:|id-token|contents: write|npm publish|checkout/u);
+
+  assert.match(publish, /name: Publish release/u);
+  assert.match(publish, /workflow_run:\n\s+workflows: \["Publish tag created", "Publish"\]\n\s+types: \[completed\]/u);
+  assert.doesNotMatch(publish, /workflows:.*Publish release/u);
+  assert.match(publish, /permissions:\s*\r?\n\s*contents: read/u);
+  assert.doesNotMatch(publish.slice(0, publish.indexOf("jobs:")), /id-token: write|contents: write/u);
+  assert.match(publish, /ref: \$\{\{ github\.workflow_sha \}\}/u);
+  assert.match(publish, /RELEASE_TAG: \$\{\{ github\.event\.workflow_run\.head_branch \}\}/u);
+  assert.match(publish, /TRIGGER_SHA: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/u);
+  for (const field of [
+    "PUBLISH_ACTION", "REPOSITORY_ID", "SIGNAL_EVENT", "SIGNAL_STATUS", "SIGNAL_CONCLUSION",
+    "SIGNAL_PATH", "SIGNAL_WORKFLOW_ID", "SIGNAL_RUN_ID", "SIGNAL_RUN_ATTEMPT",
+    "SIGNAL_REPOSITORY", "SIGNAL_REPOSITORY_ID", "SIGNAL_HEAD_REPOSITORY", "SIGNAL_HEAD_REPOSITORY_ID",
+  ]) assert.match(publish, new RegExp(`${field}: \\$\\{\\{ github\\.event`));
+  assert.match(publish, /PROTECTED_DEFAULT_REF: refs\/remotes\/atomic-publisher\/protected-default/u);
+  assert.match(publish, /bun scripts\/verify-publish-context\.ts/u);
+  assert.match(publish, /bun run scripts\/verify-release-integrity\.ts[\s\\\r\n]*--base-ref "\$fixed_base_ref"/u);
+  assert.match(publish, /release_sha.*TRIGGER_SHA/u);
+  assert.match(publish, /ALLOWED_RELEASE_BASE_REFS.*vars\.RELEASE_BASE_REFS/u);
+  assert.match(publish, /fixed_base_ref=refs\/remotes\/atomic-publisher\/release-base/u);
+  assert.match(publish, /merge-base --is-ancestor "\$release_base_sha" "\$fetched_base_sha"/u);
+  assert.match(publish, /--expected-base-ref "\$release_base_ref"/u);
+  assert.match(publish, /--expected-base-sha "\$release_base_sha"/u);
+  assert.match(publish, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/u);
+  assert.doesNotMatch(publish, /gh workflow run|--paginate|--watch|sleep [0-9]/u);
+
+  const prepare = publish.slice(publish.indexOf("    prepare-release:"), publish.indexOf("    publish-npm:"));
+  assert.doesNotMatch(prepare, /id-token: write|contents: write|npm publish/u);
+  assert.match(prepare, /npm pack/u);
+  assert.match(prepare, /ARTIFACT-SHA256SUMS/u);
+  const npmJob = publish.slice(publish.indexOf("    publish-npm:"), publish.indexOf("    create-github-release:"));
+  assert.match(npmJob, /contents: read\s*\r?\n\s*id-token: write/u);
+  assert.match(npmJob, /environment: npm-publish/u);
+  assert.doesNotMatch(npmJob, /contents: write|checkout|bun install|mintlify|build-binaries/u);
+  assert.match(npmJob, /actions\/download-artifact@[0-9a-f]{40}/u);
+  assert.match(npmJob, /actions\/setup-node@[0-9a-f]{40}/u);
+  assert.match(npmJob, /allowed=\([\s\S]*@bastani\/atomic-natives[\s\S]*@bastani\/atomic/u);
+  assert.match(npmJob, /reconfirm_tag[\s\S]*npm publish/u);
+  assert.match(npmJob, /npm view "\$name@\$VERSION" dist\.integrity/u);
+  assert.match(npmJob, /local_integrity="sha512-/u);
+  assert.match(npmJob, /registry_integrity.*local_integrity/u);
+
+  const releaseJob = publish.slice(publish.indexOf("    create-github-release:"));
+  assert.match(releaseJob, /permissions:\s*\r?\n\s*contents: write/u);
+  assert.doesNotMatch(releaseJob, /id-token: write|npm publish|bun install|checkout/u);
+  assert.match(releaseJob, /softprops\/action-gh-release@[0-9a-f]{40}/u);
+  assert.match(publish, /atomic_natives\.win32-arm64-msvc\.node/u);
+  assert.match(publish, /atomic-windows-arm64\.zip/u);
+  assert.match(publish, /bun run check:shrinkwrap/u);
 });
 
 test("publish-release preserves the selectable base_ref input", async () => {
@@ -117,7 +142,7 @@ test("publish-release preserves the selectable base_ref input", async () => {
 });
 
 test("release-base workflow contracts are LF and CRLF safe", async () => {
-  const lf = (await Bun.file(join(root, ".github/workflows/publish.yml")).text()).replace(/\r\n/gu, "\n");
+  const lf = (await Bun.file(join(root, ".github/workflows/publish-release.yml")).text()).replace(/\r\n/gu, "\n");
   for (const workflow of [lf, lf.replace(/\n/gu, "\r\n")]) {
     assert.match(workflow, /release_base_ref=.*Release-base-ref[^\r\n]*\r?\n/);
     assert.match(workflow, /release_base_sha=.*Release-base-sha[^\r\n]*\r?\n/);

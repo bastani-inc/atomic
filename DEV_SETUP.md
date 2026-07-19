@@ -92,7 +92,7 @@ The direct source command is the recommended dev loop because it avoids generati
 If you need to exercise the compiled package layout, use the coding-agent watch script in one terminal:
 
 ```bash
-bun --cwd packages/coding-agent run dev
+bun run --cwd packages/coding-agent dev
 ```
 
 After the first emit, run the compiled CLI from another terminal:
@@ -112,7 +112,7 @@ bun /path/to/atomic/packages/coding-agent/src/cli.ts
 For a production-style build, run:
 
 ```bash
-bun --cwd packages/coding-agent run build
+bun run --cwd packages/coding-agent build
 ```
 
 ---
@@ -284,7 +284,7 @@ Examples import the workspace package `@bastani/workflows`.
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) makes CI validate the immutable base metadata, cross-compile binaries, publish to npm with OIDC provenance, and create the GitHub Release with binaries attached. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative security and allowlist details.
+Atomic uses a **versionless release-base** flow: `main` and supported workstreams stay at the `0.0.0` placeholder, while the real version is materialized only on a throwaway `Release <version>` commit whose parent is the selected exact remote branch SHA. Pushing the `<version>` tag (no leading `v`, for example `0.8.24` or `0.8.24-alpha.1`) starts an inert tag signal; a separate protected-main `workflow_run` publisher validates the source identity and immutable release metadata, cross-compiles binaries, publishes to npm with OIDC provenance, and creates the GitHub Release with binaries attached. See [Release Pipeline](./docs/ci.md#release-pipeline) for the authoritative security, recovery, and allowlist details.
 
 ### Workflow
 
@@ -294,7 +294,7 @@ Atomic uses a **versionless release-base** flow: `main` and supported workstream
     bun run scripts/cut-release.ts <version> --base main --push
     ```
     The selected branch is never advanced; the script does the stamp in a detached git worktree and abandons it (the tag keeps the commit alive). Omit `--push` to inspect the tag locally first, then `git push origin <version>`. Non-main bases must be configured as exact canonical refs in `RELEASE_BASE_REFS` as documented in [Release base allowlist](./docs/ci.md#release-base-allowlist).
-3. The tag push triggers `.github/workflows/publish.yml` from the protected default branch. It validates the selected base and tagged real-version commit before publishing `@bastani/atomic` to npm with OIDC provenance—stable `<x.y.z>` → `@latest`, prerelease `<x.y.z>-alpha.N` → `@next`—and creates the GitHub Release with six binary archives attached.
+3. The tag push starts `.github/workflows/publish-tag-created.yml`, whose completed run signals protected-main `.github/workflows/publish-release.yml`. It validates exact source and release invariants, prepares checksummed artifacts read-only, publishes npm tarballs in an OIDC-only job, and creates the GitHub Release in a separate repository-write-only job. npm trusted publishers must name `publish-release.yml` and environment `npm-publish`.
 
 To run the full guarded automation (release-notes PR + cut-release + publish monitoring), use the `publish-release` Atomic workflow instead of the manual steps above.
 

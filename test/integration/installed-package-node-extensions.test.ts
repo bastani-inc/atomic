@@ -58,10 +58,9 @@ const nodeExe = findRealNode();
 
 // Hard-require the smoke only where the pipeline guarantees its
 // prerequisites (test.yml sets this flag on the integration step, which runs
-// after the package build). Other CI contexts — e.g. publish.yml runs
-// `test:all` BEFORE building dist/ — skip gracefully; the same commit's
-// npm-under-Node coverage is enforced by the test.yml gate on branch pushes
-// and PRs.
+// after the package build). Other contexts without a prepared dist skip
+// gracefully; the same commit's npm-under-Node coverage is enforced by the
+// test.yml gate on branch pushes and pull requests.
 const requireSmoke = process.env.ATOMIC_REQUIRE_INSTALLED_NODE_SMOKE === "1";
 if (requireSmoke) {
   assert.ok(distBuilt, "packages/coding-agent/dist/cli.js missing — run the build step before the integration tests");

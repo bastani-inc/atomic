@@ -20,8 +20,9 @@
  *   5. commit `Release <version>` and tag `<version>` inside the worktree
  *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
- * Because publish.yml checks out the *tagged commit* (which now carries the
- * real version) every existing version validation passes unchanged.
+ * The tag-sourced workflow only emits an inert completion signal. Protected
+ * main's publish-release.yml then checks out this tagged commit by verified
+ * SHA, so every release-version validation sees the stamped version.
  *
  * Usage:
  *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]
@@ -199,9 +200,9 @@ async function main(): Promise<void> {
   if (push) {
     console.log(`Pushing tag ${version}...`);
     await $`git -C ${ROOT} push origin ${version}`;
-    console.log("Tag pushed. GitHub Actions will validate the tag event and start protected publishing automatically.");
+    console.log("Tag pushed. GitHub Actions will run the inert tag signal, then the protected-main publisher.");
   } else {
-    console.log("Next: push the tag to trigger protected publishing:");
+    console.log("Next: push the tag to trigger the signal and protected publisher:");
     console.log(`  git push origin ${version}`);
   }
 }

@@ -1,0 +1,32 @@
+name: Publish tag created
+run-name: Publish tag signal ${{ github.ref_name }}
+
+# A create event evaluates this file from the created ref. The tag-sourced YAML
+# is therefore untrusted and is not a publication security boundary. This
+# checked-in definition is deliberately inert: no token permissions, checkout,
+# repository code, artifacts, secrets, OIDC, or publishing. Its completed run
+# is metadata only; protected-main publish-release.yml validates it independently.
+on:
+    create:
+
+permissions: {}
+
+jobs:
+    signal:
+        name: Signal protected publisher
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Record untrusted tag signal
+              shell: bash
+              env:
+                  REF_TYPE: ${{ github.ref_type }}
+                  RELEASE_TAG: ${{ github.ref_name }}
+                  TRIGGER_SHA: ${{ github.sha }}
+              run: |
+                  set -euo pipefail
+                  [[ "$REF_TYPE" == "tag" ]] || { echo "Rejecting non-tag create signal: ref_type=$REF_TYPE" >&2; exit 1; }
+                  release_version_re='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-alpha\.[1-9][0-9]*)?'
+                  [[ "$RELEASE_TAG" =~ ^$release_version_re$ ]] || { echo "Rejecting unexpected tag format: $RELEASE_TAG" >&2; exit 1; }
+                  [[ "$TRIGGER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Rejecting malformed tag SHA: $TRIGGER_SHA" >&2; exit 1; }
+                  printf 'Untrusted tag signal: tag=%s sha=%s\n' "$RELEASE_TAG" "$TRIGGER_SHA"

@@ -121,7 +121,7 @@ atomic:
 
 ## Releasing
 
-Atomic uses a **versionless release-base** flow (modeled on openai/codex): every supported base, including `main`, keeps `packages/*/package.json` at the `0.0.0` placeholder. The real version is materialized only on a throwaway `Release <version>` commit whose sole parent is the exact selected remote branch SHA; that commit is tagged but never merged back. `scripts/cut-release.ts --base <short-branch>` records immutable `Release-base-ref: refs/heads/<short-branch>` and `Release-base-sha: <full SHA>` trailers. Creating the tag triggers `publish.yml` through GitHub's `create` event. GitHub loads this event workflow from the protected default branch, pins `github.workflow_sha`, and binds the event tag/SHA to the remote tag. The publisher allows `refs/heads/main` by default plus exact canonical refs in the comma-separated repository variable `RELEASE_BASE_REFS`, fetches only that branch into a fixed local ref, proves trailer SHA/parent equality and current remote containment, and verifies the deterministic release tree before npm OIDC publication. Repository permissions default to read-only; only the final publish job receives `contents: write` and `id-token: write`. Do not dispatch the workflow manually.
+Atomic uses a **versionless release-base** flow: supported bases keep `packages/*/package.json` at `0.0.0`; `scripts/cut-release.ts` materializes the real version only on a tagged detached `Release <version>` commit with immutable `Release-base-ref`/`Release-base-sha` trailers. Tag creation starts inert `publish-tag-created.yml`; its completion selects protected-main `publish-release.yml` through `workflow_run`. That publisher validates exact upstream repository/workflow/event/run/tag/SHA identity, protected workflow ancestry, allowlisted release-base containment, and the deterministic tree. Read-only jobs build checksummed artifacts. `publish-npm` alone receives `id-token: write` under `npm-publish` and no repository write; `create-github-release` alone receives `contents: write` and no OIDC. Configure npm trusted publishers with filename `publish-release.yml` and environment `npm-publish`. `.github/workflows/publish.yml` is an inert legacy identity used only for the exact 0.9.10-alpha.1 attempt-2 recovery handoff. Never dispatch a publisher.
 
 Cut and publish a release with:
 
@@ -142,8 +142,8 @@ If a user asks to publish a release or prerelease, route the request through the
 5. The workflow creates `[release|prerelease]/<version>` from the selected base, updates relevant changelogs without bumping package versions, validates and commits the changes, pushes the branch, and opens the PR.
 6. It inspects required CI once. Pending or failed checks pause at a human choice to reinspect the same run or stop; the workflow never watches, sleeps, or polls.
 7. After checks pass, it merges the exact verified PR head, switches to the selected base, and fast-forwards from `origin/<base_ref>`.
-8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. The tag automatically starts `publish.yml`; the workflow never dispatches publishing manually.
-9. It inspects the matching `Publish <version>` action once. Pending or failed publishing pauses at the same reinspect-or-stop gate; success returns a concise release summary.
+8. It runs `bun run scripts/cut-release.ts <version> --base <base_ref> --push --yes`, which stamps only the detached release commit and pushes the tag. The inert signal starts protected `publish-release.yml` through `workflow_run`; the workflow never dispatches publishing manually.
+9. It inspects the matching signal and linked protected `Publish <version>` action once. Pending or failed publishing pauses at the same reinspect-or-stop gate; success returns a concise release summary.
 
 ## Docs
 

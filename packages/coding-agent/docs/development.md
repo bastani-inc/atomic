@@ -16,7 +16,7 @@ This monorepo uses Bun for development commands; avoid npm/yarn/pnpm except for 
 
 ```bash
 bun run test:unit
-bun --cwd packages/coding-agent run build
+bun run --cwd packages/coding-agent build
 ```
 
 Atomic keeps the caller's current working directory when launched from development wrappers.
@@ -67,7 +67,7 @@ bun run test:unit                 # Run unit tests
 bun run test:integration          # Run integration tests
 bun run test:all                  # Run all tests
 # Run package Vitest tests
-bun --cwd packages/coding-agent run test -- test/specific.test.ts
+bun run --cwd packages/coding-agent test -- test/specific.test.ts
 ```
 
 The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded.
@@ -79,6 +79,10 @@ The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`,
 ```bash
 bun run scripts/generate-coding-agent-shrinkwrap.mjs --check
 ```
+
+## Release security boundary
+
+Atomic's release bases remain at the `0.0.0` placeholder. `scripts/cut-release.ts` stamps the real version only on a detached tagged release commit. Tag creation runs an inert signal workflow; a separate `workflow_run` publisher loaded from protected `main` validates the exact upstream repository, source workflow/event/run, tag/SHA, immutable release-base trailers, and deterministic release tree. Build and verification jobs are read-only, npm publication has OIDC without repository write, and GitHub Release creation has repository write without OIDC. Never move or recreate a failed release tag or dispatch the privileged publisher. See the repository's [CI/CD pipeline](https://github.com/bastani-inc/atomic/blob/main/docs/ci.md#release-pipeline) for trusted-publisher configuration and recovery.
 
 ## Project Structure
 
