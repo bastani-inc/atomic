@@ -21,8 +21,8 @@
  *   6. remove the worktree — the tag (and its commit) persist in the repo
  *
  * The tag-sourced workflow only emits an inert completion signal. Protected
- * main's publish-release.yml then checks out this tagged commit by verified
- * SHA, so every release-version validation sees the stamped version.
+ * main's publish-release.yml then verifies this tagged tree as data and exports
+ * a checksummed source archive, so builds never checkout a tag-selected ref.
  *
  * Usage:
  *   bun run scripts/cut-release.ts <version> [--base <ref>] [--push] [--yes]

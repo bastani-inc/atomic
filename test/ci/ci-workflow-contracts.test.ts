@@ -70,7 +70,11 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   const signal = await Bun.file(join(root, ".github/workflows/publish-tag-created.yml")).text();
   const legacy = await Bun.file(join(root, ".github/workflows/publish.yml")).text();
   const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
-  const executable = (source: string) => source.split("\n").filter((line) => !/^\s*#/u.test(line)).join("\n");
+  const executable = (source: string) => source.replace(/\r\n/gu, "\n").split("\n").filter((line) => !/^\s*#/u.test(line)).join("\n");
+  for (const source of [signal, legacy, publish]) {
+    const lf = source.replace(/\r\n/gu, "\n");
+    assert.equal(executable(lf.replace(/\n/gu, "\r\n")), executable(lf), "workflow contracts must be CRLF safe");
+  }
 
   assert.match(executable(signal), /on:\n\s+create:/u);
   assert.match(executable(signal), /permissions: \{\}/u);
@@ -84,7 +88,7 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   assert.doesNotMatch(executable(legacy), /workflow_run:|create:|id-token|contents: write|npm publish|checkout/u);
 
   assert.match(publish, /name: Publish release/u);
-  assert.match(publish, /workflow_run:\n\s+workflows: \["Publish tag created", "Publish"\]\n\s+types: \[completed\]/u);
+  assert.match(executable(publish), /workflow_run:\n\s+workflows: \["Publish tag created", "Publish"\]\n\s+types: \[completed\]/u);
   assert.doesNotMatch(publish, /workflows:.*Publish release/u);
   assert.match(publish, /permissions:\s*\r?\n\s*contents: read/u);
   assert.doesNotMatch(publish.slice(0, publish.indexOf("jobs:")), /id-token: write|contents: write/u);
@@ -105,7 +109,13 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   assert.match(publish, /merge-base --is-ancestor "\$release_base_sha" "\$fetched_base_sha"/u);
   assert.match(publish, /--expected-base-ref "\$release_base_ref"/u);
   assert.match(publish, /--expected-base-sha "\$release_base_sha"/u);
-  assert.match(publish, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/u);
+  const checkoutSteps = [...publish.matchAll(/uses: (?:useblacksmith\/checkout|actions\/checkout)@/gu)];
+  assert.equal(checkoutSteps.length, 1, "only the integrity job may checkout source");
+  assert.doesNotMatch(publish, /ref: \$\{\{ needs\.release-integrity\.outputs\.sha \}\}/u);
+  assert.match(publish, /git archive --format=tar\.gz --output="\$source_archive" "\$release_sha"/u);
+  assert.match(publish, /source_checksum=.*sha256sum/u);
+  assert.match(publish, /name: verified-release-source-\$\{\{ steps\.release\.outputs\.sha \}\}/u);
+  assert.match(publish, /actual_checksum=.*Bun\.CryptoHasher\("sha256"\)/u);
   assert.doesNotMatch(publish, /gh workflow run|--paginate|--watch|sleep [0-9]/u);
 
   const prepare = publish.slice(publish.indexOf("    prepare-release:"), publish.indexOf("    publish-npm:"));
@@ -125,6 +135,9 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   assert.match(npmJob, /npm view "\$name@\$VERSION" dist\.integrity/u);
   assert.match(npmJob, /local_integrity="sha512-/u);
   assert.match(npmJob, /registry_integrity.*local_integrity/u);
+  assert.doesNotMatch(npmJob, /(?:source|\.)\s+release\.env|eval\s/u);
+  assert.match(npmJob, /printf 'RELEASE_TAG=%s\\nVERIFIED_SHA=%s\\nVERSION=%s\\nNPM_TAG=%s\\n'/u);
+  assert.match(npmJob, /cmp --silent "\$expected_metadata" release\.env/u);
 
   const releaseJob = publish.slice(publish.indexOf("    create-github-release:"));
   assert.match(releaseJob, /permissions:\s*\r?\n\s*contents: write/u);
@@ -133,6 +146,43 @@ test("signals, inert legacy identity, and protected publisher stay distinct and 
   assert.match(publish, /atomic_natives\.win32-arm64-msvc\.node/u);
   assert.match(publish, /atomic-windows-arm64\.zip/u);
   assert.match(publish, /bun run check:shrinkwrap/u);
+});
+
+test("privileged publisher never executes a tag checkout or cache-derived release tree", async () => {
+  const publish = await Bun.file(join(root, ".github/workflows/publish-release.yml")).text();
+  const integrityStart = publish.indexOf("    release-integrity:");
+  const linuxStart = publish.indexOf("    linux-binary-smoke:");
+  const integrity = publish.slice(integrityStart, linuxStart);
+
+  const contextCheck = integrity.indexOf("bun scripts/verify-publish-context.ts");
+  const treeCheck = integrity.indexOf("bun run scripts/verify-release-integrity.ts");
+  const archive = integrity.indexOf("git archive --format=tar.gz");
+  const upload = integrity.indexOf("name: Upload verified release source");
+  assert.ok(contextCheck >= 0 && contextCheck < treeCheck, "context validation must precede tree validation");
+  assert.ok(treeCheck < archive && archive < upload, "only a verified tree may become source data");
+  assert.doesNotMatch(integrity, /git (?:checkout|switch)|worktree add|ref: \$\{\{ github\.event/u);
+
+  const jobNames = ["linux-binary-smoke", "windows-binary-smoke", "atomic-native-artifacts", "prepare-release"];
+  for (const [index, jobName] of jobNames.entries()) {
+    const start = publish.indexOf(`    ${jobName}:`);
+    const nextName = jobNames[index + 1];
+    const end = nextName ? publish.indexOf(`    ${nextName}:`) : publish.indexOf("    publish-npm:");
+    const job = publish.slice(start, end);
+    const extractStart = job.indexOf("- name: Verify and extract trusted release source");
+    const extractEnd = job.indexOf("\n            - ", extractStart + 1);
+    const extract = job.slice(extractStart, extractEnd);
+    assert.match(job, /name: Download verified release source/u, jobName);
+    assert.match(job, /oven-sh\/setup-bun@[\s\S]*name: Download verified release source/u, jobName);
+    assert.match(extract, /Bun\.CryptoHasher\("sha256"\)[\s\S]*source_checksum/u, jobName);
+    assert.match(extract, /actual_checksum[\s\S]*Verified release source checksum mismatch/u, jobName);
+    assert.doesNotMatch(extract, /sha256sum|shasum/u, jobName);
+    assert.match(extract, /tar -xzf "\$archive" -C "\$RUNNER_TEMP\/verified-release"/u, jobName);
+    assert.doesNotMatch(job, /(?:useblacksmith\/checkout|actions\/checkout)@/u, jobName);
+    assert.doesNotMatch(job, /actions\/cache|setup-[^\s]+[\s\S]*cache:/u, jobName);
+  }
+
+  assert.match(publish, /path: \$\{\{ runner\.temp \}\}\/verified-release\/packages\/natives\/native\/\*\.node/u);
+  assert.match(publish, /working-directory: \$\{\{ runner\.temp \}\}\/verified-release/u);
 });
 
 test("publish-release preserves the selectable base_ref input", async () => {

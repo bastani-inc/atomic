@@ -46,10 +46,11 @@ function sha256(text: string): string {
 }
 
 function releasedSection(text: string): string {
-  const start = text.indexOf(`## [${tag}]`);
+  const lf = text.replace(/\r\n/gu, "\n");
+  const start = lf.indexOf(`## [${tag}]`);
   assert.notEqual(start, -1, `missing ${tag} section`);
-  const next = text.indexOf("\n## [", start + 1);
-  return text.slice(start, next < 0 ? text.length : next + 1);
+  const next = lf.indexOf("\n## [", start + 1);
+  return lf.slice(start, next < 0 ? lf.length : next + 1);
 }
 
 test("historical workflow bytes and graph prove attempt 2 cannot reach privileged jobs", async () => {
@@ -84,6 +85,8 @@ test("every released 0.9.10-alpha.1 changelog section remains byte-for-byte unch
   assert.equal(Object.keys(fixture.changelogSectionSha256).length, 8);
   for (const [path, expectedHash] of Object.entries(fixture.changelogSectionSha256)) {
     const current = await Bun.file(`${root}/${path}`).text();
+    const lf = current.replace(/\r\n/gu, "\n");
+    assert.equal(releasedSection(lf.replace(/\n/gu, "\r\n")), releasedSection(lf), `${path} CRLF parity`);
     assert.equal(sha256(releasedSection(current)), expectedHash, path);
     const base = await $`git show ${`HEAD:${path}`}`.cwd(root).text();
     assert.equal(releasedSection(current), releasedSection(base), path);

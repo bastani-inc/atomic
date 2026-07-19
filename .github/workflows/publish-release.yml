@@ -27,17 +27,18 @@ jobs:
         name: Verify release integrity
         # Do not pre-filter untrusted payload fields here: the tested validator
         # below rejects every non-allowlisted route with an actionable error.
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-latest
         # Finite wall-clock budgets on every job: without them a hang burns the
         # 360-minute GitHub default. Verified integrity checks finish in <1m.
         timeout-minutes: 10
         outputs:
             sha: ${{ steps.release.outputs.sha }}
             tag: ${{ steps.release.outputs.tag }}
+            source_checksum: ${{ steps.release.outputs.source_checksum }}
         steps:
             # Pin trusted verification code to the protected-main workflow SHA,
             # never to the source tag or source workflow run.
-            - uses: useblacksmith/checkout@v1
+            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
               with:
                   ref: ${{ github.workflow_sha }}
                   fetch-depth: 0
@@ -114,8 +115,24 @@ jobs:
                     --release-commit "$release_sha" \
                     --expected-base-ref "$release_base_ref" \
                     --expected-base-sha "$release_base_sha"
+                  source_archive="$RUNNER_TEMP/verified-release-source.tar.gz"
+                  git archive --format=tar.gz --output="$source_archive" "$release_sha"
+                  source_checksum=$(sha256sum "$source_archive" | awk '{ print $1 }')
+                  [[ "$source_checksum" =~ ^[0-9a-f]{64}$ ]] || { echo "Could not checksum verified release source" >&2; exit 1; }
                   echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
                   echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+                  echo "source_checksum=$source_checksum" >> "$GITHUB_OUTPUT"
+
+            # This artifact is created by trusted protected-main code without
+            # executing the tag tree. The verifier above proves that tree is the
+            # deterministic release transform before it is exported as data.
+            - name: Upload verified release source
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              with:
+                  name: verified-release-source-${{ steps.release.outputs.sha }}
+                  path: ${{ runner.temp }}/verified-release-source.tar.gz
+                  if-no-files-found: error
+                  retention-days: 1
 
     linux-binary-smoke:
         needs: release-integrity
@@ -125,14 +142,27 @@ jobs:
         timeout-minutes: 10
 
         steps:
-            - uses: useblacksmith/checkout@v1
-              with:
-                  ref: ${{ needs.release-integrity.outputs.sha }}
-                  persist-credentials: false
-
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+
+            - name: Download verified release source
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
+                  path: ${{ runner.temp }}/verified-release-source
+
+            - name: Verify and extract trusted release source
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  archive="$RUNNER_TEMP/verified-release-source/verified-release-source.tar.gz"
+                  actual_checksum=$(bun --eval 'const hasher = new Bun.CryptoHasher("sha256"); for await (const chunk of Bun.file(process.argv[1]).stream()) hasher.update(chunk); console.log(hasher.digest("hex"));' "$archive")
+                  [[ "$actual_checksum" == "${{ needs.release-integrity.outputs.source_checksum }}" ]] || { echo "Verified release source checksum mismatch" >&2; exit 1; }
+                  rm -rf "$RUNNER_TEMP/verified-release"
+                  mkdir -p "$RUNNER_TEMP/verified-release"
+                  tar -xzf "$archive" -C "$RUNNER_TEMP/verified-release"
+
 
             - uses: actions/setup-node@v6
               with:
@@ -142,9 +172,11 @@ jobs:
 
             - name: Build Linux x64 archive
               run: ./scripts/build-binaries.sh --skip-deps --platform linux-x64
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Smoke test Linux release archive
               shell: bash
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   set -euo pipefail
                   smoke_dir="$RUNNER_TEMP/atomic-linux-binary-smoke"
@@ -208,14 +240,27 @@ jobs:
         timeout-minutes: 15
 
         steps:
-            - uses: useblacksmith/checkout@v1
-              with:
-                  ref: ${{ needs.release-integrity.outputs.sha }}
-                  persist-credentials: false
-
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+
+            - name: Download verified release source
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
+                  path: ${{ runner.temp }}/verified-release-source
+
+            - name: Verify and extract trusted release source
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  archive="$RUNNER_TEMP/verified-release-source/verified-release-source.tar.gz"
+                  actual_checksum=$(bun --eval 'const hasher = new Bun.CryptoHasher("sha256"); for await (const chunk of Bun.file(process.argv[1]).stream()) hasher.update(chunk); console.log(hasher.digest("hex"));' "$archive")
+                  [[ "$actual_checksum" == "${{ needs.release-integrity.outputs.source_checksum }}" ]] || { echo "Verified release source checksum mismatch" >&2; exit 1; }
+                  rm -rf "$RUNNER_TEMP/verified-release"
+                  mkdir -p "$RUNNER_TEMP/verified-release"
+                  tar -xzf "$archive" -C "$RUNNER_TEMP/verified-release"
+
 
             - uses: actions/setup-node@v6
               with:
@@ -226,9 +271,11 @@ jobs:
             - name: Build Windows x64 archive
               shell: bash
               run: ./scripts/build-binaries.sh --skip-deps --platform windows-x64
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Smoke test Windows release archive
               shell: pwsh
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   $ErrorActionPreference = "Stop"
                   $smokeDir = Join-Path $env:RUNNER_TEMP "atomic-windows-binary-smoke"
@@ -309,14 +356,27 @@ jobs:
                     - { runner: blacksmith-4vcpu-ubuntu-2404, platform: windows-arm64, target: aarch64-pc-windows-msvc }
 
         steps:
-            - uses: actions/checkout@v7.0.0
-              with:
-                  ref: ${{ needs.release-integrity.outputs.sha }}
-                  persist-credentials: false
-
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+
+            - name: Download verified release source
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
+                  path: ${{ runner.temp }}/verified-release-source
+
+            - name: Verify and extract trusted release source
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  archive="$RUNNER_TEMP/verified-release-source/verified-release-source.tar.gz"
+                  actual_checksum=$(bun --eval 'const hasher = new Bun.CryptoHasher("sha256"); for await (const chunk of Bun.file(process.argv[1]).stream()) hasher.update(chunk); console.log(hasher.digest("hex"));' "$archive")
+                  [[ "$actual_checksum" == "${{ needs.release-integrity.outputs.source_checksum }}" ]] || { echo "Verified release source checksum mismatch" >&2; exit 1; }
+                  rm -rf "$RUNNER_TEMP/verified-release"
+                  mkdir -p "$RUNNER_TEMP/verified-release"
+                  tar -xzf "$archive" -C "$RUNNER_TEMP/verified-release"
+
 
             - uses: dtolnay/rust-toolchain@stable
               with:
@@ -328,6 +388,7 @@ jobs:
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Setup zig for Linux cross compile
               if: matrix.target != '' && startsWith(matrix.target, 'aarch64-unknown-linux')
@@ -343,6 +404,7 @@ jobs:
 
             - name: Install LLVM tooling for Windows cross compile
               if: endsWith(matrix.target, '-msvc')
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   sudo apt-get update
                   sudo apt-get install -y clang lld llvm
@@ -358,6 +420,7 @@ jobs:
               env:
                   CROSS_TARGET: ${{ matrix.target }}
                   XWIN_ACCEPT_LICENSE: "1"
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   set -euo pipefail
                   bun run --cwd packages/natives build
@@ -367,7 +430,7 @@ jobs:
               uses: actions/upload-artifact@v7
               with:
                   name: atomic-natives-${{ matrix.platform }}
-                  path: packages/natives/native/*.node
+                  path: ${{ runner.temp }}/verified-release/packages/natives/native/*.node
                   if-no-files-found: error
                   retention-days: 14
 
@@ -384,17 +447,27 @@ jobs:
             version: ${{ steps.package.outputs.version }}
             npm_tag: ${{ steps.package.outputs.npm_tag }}
         steps:
-
-            - uses: actions/checkout@v7.0.0
-              with:
-                  ref: ${{ needs.release-integrity.outputs.sha }}
-                  fetch-depth: 0
-                  persist-credentials: false
-
-
             - uses: oven-sh/setup-bun@v2
               with:
                   bun-version: latest
+
+            - name: Download verified release source
+              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              with:
+                  name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
+                  path: ${{ runner.temp }}/verified-release-source
+
+            - name: Verify and extract trusted release source
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  archive="$RUNNER_TEMP/verified-release-source/verified-release-source.tar.gz"
+                  actual_checksum=$(bun --eval 'const hasher = new Bun.CryptoHasher("sha256"); for await (const chunk of Bun.file(process.argv[1]).stream()) hasher.update(chunk); console.log(hasher.digest("hex"));' "$archive")
+                  [[ "$actual_checksum" == "${{ needs.release-integrity.outputs.source_checksum }}" ]] || { echo "Verified release source checksum mismatch" >&2; exit 1; }
+                  rm -rf "$RUNNER_TEMP/verified-release"
+                  mkdir -p "$RUNNER_TEMP/verified-release"
+                  tar -xzf "$archive" -C "$RUNNER_TEMP/verified-release"
+
 
             - uses: actions/setup-node@v6
               with:
@@ -403,13 +476,14 @@ jobs:
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Docs link validation
-              working-directory: ${{ env.PACKAGE_DIR }}
+              working-directory: ${{ runner.temp }}/verified-release/${{ env.PACKAGE_DIR }}
               run: bun run docs:check
 
             - name: Mintlify docs validation
-              working-directory: ${{ env.PACKAGE_DIR }}/docs
+              working-directory: ${{ runner.temp }}/verified-release/${{ env.PACKAGE_DIR }}/docs
               run: |
                   bunx --bun mintlify@latest validate
                   bunx --bun mintlify@latest broken-links
@@ -420,15 +494,17 @@ jobs:
 
             - name: Verify committed npm shrinkwrap
               run: bun run check:shrinkwrap
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Download Atomic native bindings
               uses: actions/download-artifact@v8
               with:
                   pattern: atomic-natives-*
-                  path: packages/natives/native
+                  path: ${{ runner.temp }}/verified-release/packages/natives/native
                   merge-multiple: true
 
             - name: Prepare Atomic native packages and root manifest
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   bun run --cwd packages/natives create-npm-dirs
                   bun run --cwd packages/natives artifacts
@@ -441,6 +517,7 @@ jobs:
               shell: bash
               env:
                   RELEASE_TAG: ${{ needs.release-integrity.outputs.tag }}
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   set -euo pipefail
 
@@ -528,9 +605,10 @@ jobs:
 
             - name: Build @bastani/atomic package and binaries
               run: ./scripts/build-binaries.sh --skip-install
+              working-directory: ${{ runner.temp }}/verified-release
 
             - name: Verify built package metadata
-              working-directory: ${{ env.PACKAGE_DIR }}
+              working-directory: ${{ runner.temp }}/verified-release/${{ env.PACKAGE_DIR }}
               run: |
                   bun --eval '
                     import { existsSync, readdirSync, statSync } from "node:fs";
@@ -612,6 +690,7 @@ jobs:
               shell: bash
               env:
                   VERSION: ${{ steps.package.outputs.version }}
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   set -euo pipefail
                   notes_file="$RUNNER_TEMP/release-notes.md"
@@ -638,6 +717,7 @@ jobs:
                   VERSION: ${{ steps.package.outputs.version }}
                   NPM_TAG: ${{ steps.package.outputs.npm_tag }}
                   NOTES_FILE: ${{ steps.release_notes.outputs.notes_file }}
+              working-directory: ${{ runner.temp }}/verified-release
               run: |
                   set -euo pipefail
                   prepared="$RUNNER_TEMP/prepared-release"
@@ -741,12 +821,15 @@ jobs:
                   prepared="$RUNNER_TEMP/prepared-release"
                   cd "$prepared"
                   sha256sum --check ARTIFACT-SHA256SUMS
-                  # shellcheck disable=SC1091
-                  source release.env
-                  [[ "$RELEASE_TAG" == "${{ needs.release-integrity.outputs.tag }}" ]]
-                  [[ "$VERIFIED_SHA" == "${{ needs.release-integrity.outputs.sha }}" ]]
-                  [[ "$VERSION" == "${{ needs.prepare-release.outputs.version }}" ]]
-                  [[ "$NPM_TAG" == "${{ needs.prepare-release.outputs.npm_tag }}" ]]
+                  expected_metadata="$RUNNER_TEMP/expected-release.env"
+                  printf 'RELEASE_TAG=%s\nVERIFIED_SHA=%s\nVERSION=%s\nNPM_TAG=%s\n' \
+                    "$RELEASE_TAG" "$VERIFIED_SHA" "$VERSION" "$NPM_TAG" > "$expected_metadata"
+                  cmp --silent "$expected_metadata" release.env || {
+                    echo "Prepared release metadata does not exactly match trusted job outputs" >&2
+                    exit 1
+                  }
+                  # release.env is untrusted artifact data. Compare its exact bytes,
+                  # but never source, eval, or otherwise interpret it as shell code.
 
                   declare -A package_tarballs=()
                   allowed=(
