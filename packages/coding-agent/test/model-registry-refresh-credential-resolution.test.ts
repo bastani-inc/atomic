@@ -97,5 +97,21 @@ describeModelRegistry((context) => {
 			expect(observedKey).toBe("runtime-key");
 			expect(context.authStorage.get("credential-precedence")).toEqual({ type: "api_key", key: "stored-key" });
 		});
+
+		test("does not pass unresolved stored API-key expressions literally", async () => {
+			context.authStorage.set("missing-expression", { type: "api_key", key: "$ATOMIC_MISSING_CATALOG_KEY" });
+			delete process.env.ATOMIC_MISSING_CATALOG_KEY;
+			const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+			let observedKey: string | undefined;
+			registry.registerProvider("missing-expression", {
+				refreshModels: async ({ credential }) => {
+					observedKey = credential?.type === "api_key" ? credential.key : undefined;
+					return [];
+				},
+			});
+
+			await registry.refresh();
+			expect(observedKey).toBeUndefined();
+		});
 	});
 });

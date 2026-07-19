@@ -84,6 +84,23 @@ describe("atomic update --models", () => {
 		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
 	});
 
+
+	it("fails when an extension cannot load for model refresh", async () => {
+		await expect(refreshModelCatalogs(agentDir, {
+			extensionFactories: [() => { throw new Error("extension load failed"); }],
+		})).rejects.toThrow("extension load failed");
+	});
+
+	it("bounds extension loading with the model refresh timeout", async () => {
+		vi.useFakeTimers();
+		const refresh = refreshModelCatalogs(agentDir, {
+			extensionFactories: [async () => new Promise<void>(() => {})],
+		});
+		const rejected = expect(refresh).rejects.toThrow("timed out");
+
+		await vi.advanceTimersByTimeAsync(15_000);
+		await rejected;
+	});
 	it("enforces the forced refresh timeout when a provider ignores abort", async () => {
 		writeFileSync(
 			join(agentDir, "auth.json"),

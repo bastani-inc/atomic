@@ -53,6 +53,9 @@ export async function refreshModelCatalogs(
 ): Promise<void> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 15_000);
+	const aborted = new Promise<null>((resolve) => {
+		controller.signal.addEventListener("abort", () => resolve(null), { once: true });
+	});
 	try {
 		const cwd = options.cwd ?? process.cwd();
 		const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir, { projectTrusted: true });
@@ -65,20 +68,21 @@ export async function refreshModelCatalogs(
 			noPromptTemplates: true,
 			noThemes: true,
 		});
-		await resourceLoader.reload();
+		const loaded = await Promise.race([resourceLoader.reload().then(() => true), aborted]);
+		if (!loaded) throw new Error("Model catalog refresh timed out.");
 		const modelRegistry = ModelRegistry.create(
 			AuthStorage.create(join(agentDir, "auth.json")),
 			join(agentDir, "models.json"),
 		);
 		const extensionsResult = resourceLoader.getExtensions();
+		if (extensionsResult.errors.length > 0) {
+			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
+			throw new Error(`Could not load extensions for model catalog refresh: ${details}`);
+		}
 		for (const { name, config } of extensionsResult.runtime.pendingProviderRegistrations) {
 			modelRegistry.registerProvider(name, config);
 		}
 		const refresh = modelRegistry.refresh({ allowNetwork: true, force: true, signal: controller.signal });
-		const aborted = new Promise<null>((resolve) => {
-			if (controller.signal.aborted) resolve(null);
-			else controller.signal.addEventListener("abort", () => resolve(null), { once: true });
-		});
 		const result = await Promise.race([refresh, aborted]);
 		if (!result || result.aborted) throw new Error("Model catalog refresh timed out.");
 		if (result.errors.size > 0) {

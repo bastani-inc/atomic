@@ -190,8 +190,9 @@ export class ModelRegistry {
 					let credential = await this.credentialStore.read(providerName);
 					if (credential?.type === "api_key") {
 						const effectiveApiKey = await this.authStorage.getApiKey(providerName, { includeFallback: false });
-						if (effectiveApiKey !== undefined) credential = { type: "api_key", key: effectiveApiKey };
-					} else if (credential === undefined) {
+						credential = effectiveApiKey === undefined ? undefined : { type: "api_key", key: effectiveApiKey };
+					}
+					if (credential === undefined) {
 						const configuredApiKey = await getApiKeyForProviderFromConfig(
 							providerName,
 							this.authStorage,
