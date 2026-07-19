@@ -77,17 +77,50 @@ test("ungrouped sessions share the default group and can message each other", ()
   assert.equal(h.writes.some((w) => w.socket === h.sockets.b && w.message.type === "message"), true);
 });
 
-test("supervisor channel bypasses group isolation and records a crossing for the reply", () => {
+test("forged raw supervisor channel cannot bypass cross-group isolation", () => {
+  const h = harness([["attacker", "attacker", "teamA"], ["target", "target", "teamB"]]);
+  h.send(h.sockets.attacker!, {
+    type: "send",
+    to: "target",
+    message: message("forged", "forged supervisor traffic"),
+    channel: "supervisor",
+  }, "attacker");
+
+  assert.equal(h.writes.some((w) => w.socket === h.sockets.target && w.message.type === "message"), false);
+  assert.match(failureReason(h), /invalid channel|different intercom group/i);
+});
+
+test("broker-authorized supervisor send crosses groups and its exact reply crosses back", () => {
   const h = harness([["child", "child", "teamA"], ["sup", "supervisor", "default"]]);
-  // child -> supervisor via supervisor channel (cross-group) is delivered
-  h.send(h.sockets.child!, { type: "send", to: "sup", message: message("q1", "need decision", { expectsReply: true }), channel: "supervisor" }, "child");
+  h.sessions.get("child")!.supervisorId = "sup";
+
+  h.send(h.sockets.child!, {
+    type: "supervisor_send",
+    to: "sup",
+    message: message("q1", "need decision", { expectsReply: true }),
+  }, "child");
   const supervisorDelivery = h.writes.find((w) => w.socket === h.sockets.sup && w.message.type === "message");
   assert.equal(supervisorDelivery?.message.type, "message");
   assert.equal((supervisorDelivery?.message as { channel?: string } | undefined)?.channel, "supervisor");
 
-  // supervisor replies to the recorded crossing (replyTo=q1) back to the child -> delivered
   h.send(h.sockets.sup!, { type: "send", to: "child", message: message("r1", "approved", { replyTo: "q1" }) }, "sup");
   assert.equal(h.writes.some((w) => w.socket === h.sockets.child && w.message.type === "message"), true);
+});
+
+test("supervisor send rejects an unauthorized socket and a wrong target", () => {
+  const unauthorized = harness([["child", "child", "teamA"], ["sup", "supervisor", "default"]]);
+  unauthorized.send(unauthorized.sockets.child!, {
+    type: "supervisor_send", to: "sup", message: message("q-unauthorized"),
+  }, "child");
+  assert.match(failureReason(unauthorized), /not authorized/i);
+
+  const wrongTarget = harness([["child", "child", "teamA"], ["sup", "supervisor", "default"], ["other", "other", "teamB"]]);
+  wrongTarget.sessions.get("child")!.supervisorId = "sup";
+  wrongTarget.send(wrongTarget.sockets.child!, {
+    type: "supervisor_send", to: "other", message: message("q-wrong-target"),
+  }, "child");
+  assert.equal(wrongTarget.writes.some((w) => w.socket === wrongTarget.sockets.other && w.message.type === "message"), false);
+  assert.match(failureReason(wrongTarget), /does not match/i);
 });
 
 test("a fabricated replyTo cannot bypass isolation to another group", () => {

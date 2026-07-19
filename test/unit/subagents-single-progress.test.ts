@@ -55,7 +55,13 @@ function makeContext(cwd: string): ExtensionContext {
 	} as unknown as ExtensionContext;
 }
 
-function makeExecutor(cwd: string, runtime: Partial<SubagentExecutorRuntimeDeps>, asyncByDefault = false, defaultProgress?: boolean) {
+function makeExecutor(
+	cwd: string,
+	runtime: Partial<SubagentExecutorRuntimeDeps>,
+	asyncByDefault = false,
+	defaultProgress?: boolean,
+	authorizeSupervisor?: (childName: string) => { capability: string; supervisorSessionId: string; childName: string },
+) {
 	const state: ExecutorDeps["state"] = {
 		baseCwd: "",
 		currentSessionId: null,
@@ -74,7 +80,17 @@ function makeExecutor(cwd: string, runtime: Partial<SubagentExecutorRuntimeDeps>
 		resultFileCoalescer: { schedule: () => false, clear: () => {} },
 	};
 	return createSubagentExecutor({
-		pi: { events: { on: () => () => {}, emit: () => {} }, getSessionName: () => "parent" } as unknown as ExecutorDeps["pi"],
+		pi: {
+			events: {
+				on: () => () => {},
+				emit: (channel: string, payload: unknown) => {
+					if (channel !== "subagent:supervisor-authorization" || !authorizeSupervisor) return;
+					const request = payload as { childName: string; completion?: Promise<object> };
+					request.completion = Promise.resolve(authorizeSupervisor(request.childName));
+				},
+			},
+			getSessionName: () => "parent",
+		} as unknown as ExecutorDeps["pi"],
 		state,
 		config: { asyncByDefault, maxSubagentDepth: 2, parallel: { concurrency: 4, maxTasks: 50 } },
 		asyncByDefault,
@@ -312,6 +328,41 @@ test("resume inherits single-agent defaultProgress", async () => {
 
 		assert.equal(resumed.isError, undefined);
 		assert.equal(resumedProgress, true);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("resume requests and forwards a fresh supervisor authorization", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "atomic-subagent-resume-supervisor-"));
+	try {
+		const sessionFile = join(cwd, "worker.jsonl");
+		writeFileSync(sessionFile, "");
+		const authorizedChildren: string[] = [];
+		let capturedAuthorization: { capability: string; supervisorSessionId: string; childName: string } | undefined;
+		const executor = makeExecutor(cwd, {
+			runSync: async (_cwd, _agents, _agent, task) => ({ ...makeResult(task), sessionFile }),
+			executeAsyncSingle: (_id, params) => {
+				capturedAuthorization = params.supervisorAuthorization;
+				return { content: [{ type: "text", text: "launched" }], details: { mode: "single", results: [], asyncId: "revived" } };
+			},
+		}, false, true, (childName) => {
+			authorizedChildren.push(childName);
+			return { capability: `cap-${childName}`, supervisorSessionId: "supervisor-id", childName };
+		});
+		const context = makeContext(cwd);
+		const initial = await executor.execute("initial", { agent: "worker", task: "implement" }, new AbortController().signal, undefined, context);
+		assert.ok(initial.details?.runId);
+
+		const resumed = await executor.execute("resume", {
+			action: "resume", id: initial.details.runId, message: "continue implementation",
+		}, new AbortController().signal, undefined, context);
+
+		assert.equal(resumed.isError, undefined);
+		assert.equal(authorizedChildren.length, 1);
+		assert.equal(capturedAuthorization?.childName, authorizedChildren[0]);
+		assert.equal(capturedAuthorization?.capability, `cap-${authorizedChildren[0]}`);
+		assert.equal(capturedAuthorization?.supervisorSessionId, "supervisor-id");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

@@ -8,8 +8,6 @@ export function sameGroup(a: SessionInfo, b: SessionInfo): boolean {
 }
 
 export interface VerticalBypassInput {
-  /** Wire `channel` marker; only `contact_supervisor` sets `"supervisor"`. */
-  channel?: string;
   /** Reply correlation id, when this send is a reply. */
   replyTo?: string;
   sender: SessionInfo;
@@ -18,14 +16,11 @@ export interface VerticalBypassInput {
 }
 
 /**
- * Decide whether a send is allowed to cross peer-group isolation. Two coherent
- * cases: (1) the sender explicitly marks the send as a supervisor-channel
- * message (`channel === "supervisor"`), or (2) the send replies to a previously
- * recorded supervisor-channel crossing in the exact opposite direction. Any
- * other cross-group send is rejected.
+ * Only an exact reverse reply to a broker-recorded supervisor crossing may
+ * bypass peer-group isolation. Initial supervisor sends are authorized and
+ * routed separately; no client-authored marker reaches this decision point.
  */
 export function isVerticalBypass(input: VerticalBypassInput): boolean {
-  if (input.channel === "supervisor") return true;
   if (input.replyTo) {
     return input.supervisorCache.matchReply(input.replyTo, input.sender.id, input.target.id);
   }

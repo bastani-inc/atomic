@@ -33,25 +33,41 @@ test("matchReply expires entries past the TTL", () => {
   assert.equal(cache.matchReply("msg-1", "supervisor", "child", 2000), false);
 });
 
-test("isVerticalBypass honors the supervisor marker and recorded-crossing replies only", () => {
+test("broker capabilities bind one exact child to one supervisor and support reconnects", () => {
+  const cache = new SupervisorChannelCache();
+  assert.equal(cache.claim("not-issued", "child"), undefined);
+
+  const capability = cache.authorize("supervisor", "owner-secret", "child");
+  assert.equal(cache.claim(capability, "other-child"), undefined);
+  assert.equal(cache.claim(capability, "child"), "supervisor");
+  cache.authorize("supervisor-reconnected", "owner-secret", "child", capability);
+  assert.equal(cache.claim(capability, "child"), "supervisor-reconnected");
+  assert.throws(
+    () => cache.authorize("other-supervisor", "attacker-secret", "child", capability),
+    /invalid supervisor capability owner/i,
+  );
+});
+
+test("dynamic child slots accept child names but remain fixed to the issuing supervisor", () => {
+  const cache = new SupervisorChannelCache();
+  const capability = cache.authorize("supervisor", "owner-secret", "*");
+  assert.equal(cache.claim(capability, "dynamic-child"), "supervisor");
+  assert.equal(cache.claim(capability, "another-child"), undefined);
+  assert.equal(cache.claim(capability, "dynamic-child"), "supervisor", "the bound dynamic child may reconnect");
+  assert.throws(
+    () => cache.authorize("other-supervisor", "attacker-secret", "*", capability),
+    /invalid supervisor capability owner/i,
+  );
+});
+
+
+test("isVerticalBypass only honors exact recorded-crossing replies", () => {
   const cache = new SupervisorChannelCache();
   const sender = info("child", "teamA");
   const supervisor = info("supervisor", "default");
 
-  // marker path
-  assert.equal(isVerticalBypass({ channel: "supervisor", sender, target: supervisor, supervisorCache: cache }), true);
-
-  // reply path requires a recorded crossing
-  assert.equal(
-    isVerticalBypass({ replyTo: "x", sender: supervisor, target: sender, supervisorCache: cache }),
-    false,
-  );
+  assert.equal(isVerticalBypass({ replyTo: "x", sender: supervisor, target: sender, supervisorCache: cache }), false);
   cache.record("x", "child", "supervisor");
-  assert.equal(
-    isVerticalBypass({ replyTo: "x", sender: supervisor, target: sender, supervisorCache: cache }),
-    true,
-  );
-
-  // ordinary peer send (no channel, no replyTo) is never a bypass
+  assert.equal(isVerticalBypass({ replyTo: "x", sender: supervisor, target: sender, supervisorCache: cache }), true);
   assert.equal(isVerticalBypass({ sender, target: supervisor, supervisorCache: cache }), false);
 });

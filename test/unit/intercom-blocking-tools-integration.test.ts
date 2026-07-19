@@ -17,14 +17,19 @@ type Tool = { execute(id: string, params: Record<string, unknown>, signal: Abort
 
 function fixture(kind: "intercom" | "supervisor") {
   let tool: Tool | undefined;
-  const sent: Array<{ to: string; message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string } }> = [];
+  const sent: Array<{ to: string; supervisor: boolean; message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string } }> = [];
   const waiterCalls: Array<{ from: string; replyTo: string }> = [];
   const slot = new ReplyWaiterSlot();
   const client = {
     sessionId: "child-id",
+    supervisorSessionId: "parent-id",
     async listSessions() { return []; },
     async send(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
-      sent.push({ to, message });
+      sent.push({ to, message, supervisor: false });
+      return { id: message.messageId ?? "sent", delivered: true };
+    },
+    async sendToSupervisor(to: string, message: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+      sent.push({ to, message, supervisor: true });
       return { id: message.messageId ?? "sent", delivered: true };
     },
   };
@@ -47,7 +52,10 @@ function fixture(kind: "intercom" | "supervisor") {
   } else {
     registerContactSupervisorTool(pi as never, {
       ...common,
-      childOrchestratorMetadata: { orchestratorTarget: "parent", runId: "run", agent: "worker", index: 2 },
+      childOrchestratorMetadata: {
+        orchestratorTarget: "parent", runId: "run", agent: "worker", index: 2,
+        supervisor: { capability: "capability", supervisorSessionId: "stale-parent-id" },
+      },
     } as never);
   }
   return {
@@ -107,6 +115,7 @@ describe("registered blocking intercom tools", () => {
     assert.equal(current.sent.length, 1);
     assert.equal(current.sent[0]?.to, "parent-id");
     assert.equal(current.sent[0]?.message.expectsReply, true);
+    assert.equal(current.sent[0]?.supervisor, true);
     assert.deepEqual(current.waiterCalls, [{ from: "parent-id", replyTo: current.sent[0]?.message.messageId }]);
     current.reply("Use option B");
     const result = await execution;
@@ -125,6 +134,7 @@ describe("registered blocking intercom tools", () => {
     const updated = await progress.tool.execute("call", { reason: "progress_update", message: "Halfway" }, undefined, undefined, context);
     assert.equal(updated.isError, false);
     assert.equal(progress.sent[0]?.message.expectsReply, undefined);
+    assert.equal(progress.sent[0]?.supervisor, true);
     assert.equal(progress.waiterCalls.length, 0);
   });
 });
@@ -179,6 +189,9 @@ for (const kind of ["intercom", "supervisor"] as const) {
             onUnclaimed: () => { throw new Error("exact foreground owner was not found"); },
           });
           return { id: message.id, delivered: true };
+        },
+        async sendToSupervisor(_to: string, outgoing: { messageId?: string; text: string; expectsReply?: boolean; replyTo?: string }) {
+          return this.send(_to, outgoing);
         },
       };
       const common = {

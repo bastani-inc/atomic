@@ -3,137 +3,65 @@ import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
-import type { SessionInfo, Message, Attachment } from "../types.js";
+import type { SessionInfo, Message, Attachment, SupervisorRegistration } from "../types.js";
 import { buildSendSignature, PendingSendRegistry } from "./pending-send-registry.js";
 import { readSubagentMessageSource } from "../source-ownership.js";
+import { isMessage, isSessionInfo } from "./client-message-validation.js";
 
 const BROKER_SOCKET = getBrokerSocketPath();
 
-interface SendOptions {
+export interface SendOptions {
   text: string;
   attachments?: Attachment[];
   replyTo?: string;
   expectsReply?: boolean;
   replyError?: string;
   messageId?: string;
-  /** Marks a `contact_supervisor` vertical-channel send that bypasses peer-group isolation. */
-  channel?: "supervisor";
 }
 
-interface SendResult {
+export interface SendResult {
   id: string;
   delivered: boolean;
   reason?: string;
+}
+
+export interface SupervisorAuthorization extends SupervisorRegistration {
+  childName: string;
 }
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-function isAttachment(value: unknown): value is Attachment {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const attachment = value as Record<string, unknown>;
-
-  if (
-    attachment.type !== "file"
-    && attachment.type !== "snippet"
-    && attachment.type !== "context"
-  ) {
-    return false;
-  }
-
-  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") {
-    return false;
-  }
-
-  return attachment.language === undefined || typeof attachment.language === "string";
-}
-
-function isMessage(value: unknown): value is Message {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const message = value as Record<string, unknown>;
-
-  if (typeof message.id !== "string" || typeof message.timestamp !== "number") {
-    return false;
-  }
-
-  if (message.replyTo !== undefined && typeof message.replyTo !== "string") {
-    return false;
-  }
-
-  if (message.expectsReply !== undefined && typeof message.expectsReply !== "boolean") {
-    return false;
-  }
-
-  if (message.replyError !== undefined && typeof message.replyError !== "string") {
-    return false;
-  }
-
-  if (typeof message.content !== "object" || message.content === null) {
-    return false;
-  }
-
-  const content = message.content as Record<string, unknown>;
-  if (typeof content.text !== "string") {
-    return false;
-  }
-
-  return content.attachments === undefined
-    || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
-}
-
-function isSessionInfo(value: unknown): value is SessionInfo {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-
-  const session = value as Record<string, unknown>;
-
-  if (
-    typeof session.id !== "string"
-    || typeof session.cwd !== "string"
-    || typeof session.model !== "string"
-    || typeof session.pid !== "number"
-    || typeof session.startedAt !== "number"
-    || typeof session.lastActivity !== "number"
-  ) {
-    return false;
-  }
-
-  if (session.name !== undefined && typeof session.name !== "string") {
-    return false;
-  }
-
-  if (session.group !== undefined && typeof session.group !== "string") {
-    return false;
-  }
-
-  return session.status === undefined || typeof session.status === "string";
-}
 
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
+  private _supervisorSessionId: string | null = null;
   private pendingSends = new PendingSendRegistry();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
+  private pendingSupervisorAuthorizations = new Map<string, {
+    resolve: (authorization: SupervisorAuthorization) => void;
+    reject: (error: Error) => void;
+  }>();
   private disconnecting = false;
   private disconnectError: Error | null = null;
 
   private failPending(error: Error): void {
     this.pendingSends.rejectAll(error);
     for (const pending of this.pendingLists.values()) pending.reject(error);
+    for (const pending of this.pendingSupervisorAuthorizations.values()) pending.reject(error);
     this.pendingLists.clear();
+    this.pendingSupervisorAuthorizations.clear();
   }
 
   get sessionId(): string | null {
     return this._sessionId;
   }
+  get supervisorSessionId(): string | null {
+    return this._supervisorSessionId;
+  }
+
 
   isConnected(): boolean {
     const socket = this.socket;
@@ -157,7 +85,7 @@ export class IntercomClient extends EventEmitter {
     return socket;
   }
 
-  connect(session: Omit<SessionInfo, "id">): Promise<void> {
+  connect(session: Omit<SessionInfo, "id">, supervisor?: SupervisorRegistration, supervisorOwnerToken?: string): Promise<void> {
     if (this.socket) {
       return Promise.reject(new Error("Already connected"));
     }
@@ -187,6 +115,7 @@ export class IntercomClient extends EventEmitter {
         cleanupConnectionAttempt();
         resolve();
       };
+      const onRegistrationFailed = (error: Error) => onError(error);
       
       const onError = (err: Error) => {
         settled = true;
@@ -211,6 +140,7 @@ export class IntercomClient extends EventEmitter {
           this.socket = null;
         }
         this._sessionId = null;
+        this._supervisorSessionId = null;
         this.disconnectError = null;
         if (connectionEstablished && !wasDisconnecting) {
           this.emit("disconnected", disconnectError);
@@ -244,6 +174,7 @@ export class IntercomClient extends EventEmitter {
       
       const cleanupConnectionAttempt = () => {
         this.off("_registered", onRegistered);
+        this.off("_registration_failed", onRegistrationFailed);
         socket.off("error", onError);
         clearTimeout(timeout);
       };
@@ -260,9 +191,15 @@ export class IntercomClient extends EventEmitter {
       
       socket.on("error", onSocketError);
       this.once("_registered", onRegistered);
+      this.once("_registration_failed", onRegistrationFailed);
       
       try {
-        writeMessage(socket, { type: "register", session });
+        writeMessage(socket, {
+          type: "register",
+          session,
+          ...(supervisor ? { supervisor } : {}),
+          ...(supervisorOwnerToken ? { supervisorOwnerToken } : {}),
+        });
       } catch (error) {
         cleanupConnectionAttempt();
         cleanupSocketListeners();
@@ -282,13 +219,16 @@ export class IntercomClient extends EventEmitter {
 
     const brokerMessage = msg as { type: string } & Record<string, unknown>;
 
-    if (this._sessionId === null && brokerMessage.type !== "registered") {
+    if (this._sessionId === null
+      && brokerMessage.type !== "registered"
+      && brokerMessage.type !== "registration_failed") {
       throw new Error(`Received ${brokerMessage.type} before registered`);
     }
 
     switch (brokerMessage.type) {
       case "registered": {
-        if (typeof brokerMessage.sessionId !== "string") {
+        if (typeof brokerMessage.sessionId !== "string"
+          || (brokerMessage.supervisorSessionId !== undefined && typeof brokerMessage.supervisorSessionId !== "string")) {
           throw new Error("Invalid registered message");
         }
 
@@ -296,7 +236,15 @@ export class IntercomClient extends EventEmitter {
           throw new Error("Received duplicate registered message");
         }
         this._sessionId = brokerMessage.sessionId;
+        this._supervisorSessionId = typeof brokerMessage.supervisorSessionId === "string"
+          ? brokerMessage.supervisorSessionId
+          : null;
         this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
+        break;
+      }
+      case "registration_failed": {
+        if (typeof brokerMessage.reason !== "string") throw new Error("Invalid registration_failed message");
+        this.emit("_registration_failed", new Error(brokerMessage.reason));
         break;
       }
       case "sessions": {
@@ -311,6 +259,18 @@ export class IntercomClient extends EventEmitter {
         }
         this.pendingLists.delete(requestId);
         pending.resolve(sessions);
+        break;
+      }
+      case "supervisor_authorized": {
+        const { requestId, capability, supervisorSessionId, childName } = brokerMessage;
+        if (typeof requestId !== "string" || typeof capability !== "string"
+          || typeof supervisorSessionId !== "string" || typeof childName !== "string") {
+          throw new Error("Invalid supervisor_authorized message");
+        }
+        const pending = this.pendingSupervisorAuthorizations.get(requestId);
+        if (!pending) return;
+        this.pendingSupervisorAuthorizations.delete(requestId);
+        pending.resolve({ capability, supervisorSessionId, childName });
         break;
       }
       case "message": {
@@ -444,7 +404,45 @@ export class IntercomClient extends EventEmitter {
       }
     });
   }
+  authorizeSupervisorChild(childName: string, capability?: string): Promise<SupervisorAuthorization> {
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
+    }
+    const normalizedChildName = childName.trim();
+    if (!normalizedChildName) return Promise.reject(new Error("Child session name is required"));
+    return new Promise((resolve, reject) => {
+      const requestId = randomUUID();
+      const timeout = setTimeout(() => {
+        if (!this.pendingSupervisorAuthorizations.delete(requestId)) return;
+        reject(new Error("Supervisor authorization timeout"));
+      }, 5000);
+      this.pendingSupervisorAuthorizations.set(requestId, {
+        resolve: (authorization) => { clearTimeout(timeout); resolve(authorization); },
+        reject: (error) => { clearTimeout(timeout); reject(error); },
+      });
+      try {
+        writeMessage(socket, capability
+          ? { type: "authorize_supervisor", requestId, childName: normalizedChildName, capability }
+          : { type: "authorize_supervisor", requestId, childName: normalizedChildName });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pendingSupervisorAuthorizations.delete(requestId);
+        reject(toError(error));
+      }
+    });
+  }
   send(to: string, options: SendOptions): Promise<SendResult> {
+    return this.sendFrame("send", to, options);
+  }
+
+  sendToSupervisor(to: string, options: SendOptions): Promise<SendResult> {
+    return this.sendFrame("supervisor_send", to, options);
+  }
+
+  private sendFrame(type: "send" | "supervisor_send", to: string, options: SendOptions): Promise<SendResult> {
     let socket: net.Socket;
     try {
       socket = this.requireActiveSocket();
@@ -459,7 +457,6 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(toError(error));
     }
     if (!acquired.owner) return acquired.attempt.promise;
-
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),
@@ -470,9 +467,7 @@ export class IntercomClient extends EventEmitter {
       content: { text: options.text, attachments: options.attachments },
     };
     try {
-      writeMessage(socket, options.channel === "supervisor"
-        ? { type: "send", to, message, attemptId: acquired.attempt.attemptId, channel: "supervisor" }
-        : { type: "send", to, message, attemptId: acquired.attempt.attemptId });
+      writeMessage(socket, { type, to, message, attemptId: acquired.attempt.attemptId });
     } catch (error) {
       this.pendingSends.reject(acquired.attempt, toError(error));
     }

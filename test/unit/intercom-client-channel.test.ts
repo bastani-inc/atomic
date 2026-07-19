@@ -30,3 +30,15 @@ test("client preserves the supervisor channel on inbound broker messages", () =>
 
   assert.equal(receivedChannel, "supervisor");
 });
+
+test("client uses the broker-confirmed supervisor id after registration", () => {
+  const client = new IntercomClient();
+  const internals = client as unknown as { handleBrokerMessage(message: unknown): void };
+  internals.handleBrokerMessage({
+    type: "registered",
+    sessionId: "child-session",
+    supervisorSessionId: "current-supervisor-session",
+  });
+
+  assert.equal(client.supervisorSessionId, "current-supervisor-session");
+});

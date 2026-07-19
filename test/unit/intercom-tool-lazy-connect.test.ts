@@ -9,8 +9,9 @@ type Handler = (event: Record<string, unknown>, ctx: Record<string, unknown>) =>
 const EmptyParams = Type.Object({});
 type EmptyParams = Static<typeof EmptyParams>;
 
-function fixture(options: { child?: boolean; childSessionName?: string } = {}) {
+function fixture(options: { child?: boolean; childSessionName?: string; authorizationReject?: boolean } = {}) {
 	const handlers = new Map<string, Handler[]>();
+	const eventHandlers = new Map<string, Array<(payload: unknown) => void>>();
 	const tools = new Map<string, ToolDefinition>();
 	const sequence: string[] = [];
 	const sessionNames: string[] = [];
@@ -25,7 +26,13 @@ function fixture(options: { child?: boolean; childSessionName?: string } = {}) {
 		registerCommand() {},
 		registerShortcut() {},
 		setSessionName(name: string) { sessionNames.push(name); },
-		events: { on() {} },
+		events: {
+			on(name: string, handler: (payload: unknown) => void) {
+				const current = eventHandlers.get(name) ?? [];
+				current.push(handler);
+				eventHandlers.set(name, current);
+			},
+		},
 	};
 	const priorOrchestratorTarget = process.env.ATOMIC_SUBAGENT_ORCHESTRATOR_TARGET;
 	const priorSessionName = process.env.ATOMIC_SUBAGENT_INTERCOM_SESSION_NAME;
@@ -40,6 +47,16 @@ function fixture(options: { child?: boolean; childSessionName?: string } = {}) {
 			return {
 				default(heavyPi: ExtensionAPI) {
 					heavyPi.on("session_start", () => { sequence.push("session-start-replayed"); });
+					heavyPi.events.on("subagent:supervisor-authorization", (payload) => {
+						const request = payload as { childName: string; completion?: Promise<object> };
+						request.completion = options.authorizationReject
+							? Promise.reject(new Error("authorization rejected"))
+							: Promise.resolve({
+								capability: "capability-1",
+								supervisorSessionId: "supervisor-id",
+								childName: request.childName,
+							});
+					});
 					for (const name of ["intercom", "contact_supervisor"] as const) {
 						heavyPi.registerTool({
 							name,
@@ -69,7 +86,10 @@ function fixture(options: { child?: boolean; childSessionName?: string } = {}) {
 		assert.ok(tool, `${name} tool should be registered`);
 		await tool.execute("tool-call", {} as EmptyParams, new AbortController().signal, undefined, ctx as never);
 	}
-	return { sequence, sessionNames, get imports() { return imports; }, emit, executeTool };
+	function emitEvent(name: string, payload: unknown): void {
+		for (const handler of eventHandlers.get(name) ?? []) handler(payload);
+	}
+	return { sequence, sessionNames, get imports() { return imports; }, emit, emitEvent, executeTool };
 }
 
 describe("lightweight intercom tool-driven connection", () => {
@@ -103,5 +123,26 @@ describe("lightweight intercom tool-driven connection", () => {
 		await child.executeTool("contact_supervisor");
 		assert.equal(child.imports, 1);
 		assert.deepEqual(child.sequence, ["heavy-loaded", "session-start-replayed", "contact_supervisor-connected"]);
+	});
+
+	test("supervisor authorization synchronously owns the request and lazy-loads its provider", async () => {
+		const current = fixture();
+		await current.emit("session_start", { type: "session_start", reason: "startup" });
+		const request: { childName: string; completion?: Promise<unknown> } = { childName: "child-1" };
+		current.emitEvent("subagent:supervisor-authorization", request);
+		assert.ok(request.completion, "the lightweight listener must claim synchronously");
+		assert.deepEqual(await request.completion, {
+			capability: "capability-1", supervisorSessionId: "supervisor-id", childName: "child-1",
+		});
+		assert.equal(current.imports, 1);
+	});
+
+	test("supervisor authorization propagates provider rejection", async () => {
+		const current = fixture({ authorizationReject: true });
+		await current.emit("session_start", { type: "session_start", reason: "startup" });
+		const request: { childName: string; completion?: Promise<unknown> } = { childName: "child-1" };
+		current.emitEvent("subagent:supervisor-authorization", request);
+		assert.ok(request.completion);
+		await assert.rejects(request.completion, /authorization rejected/);
 	});
 });

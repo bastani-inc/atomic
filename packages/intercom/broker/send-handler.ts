@@ -10,6 +10,10 @@ import { normalizeGroup } from "../group.js";
 export interface BrokerConnectedSession {
   socket: net.Socket;
   info: SessionInfo;
+  /** Broker-bound supervisor relationship established by a capability. */
+  supervisorId?: string;
+  /** Private issuer identity used to restore child capabilities after reconnects. */
+  supervisorOwnerToken?: string;
 }
 
 interface SendClientMessage extends Record<string, unknown> {
@@ -62,12 +66,11 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId, attemptId, reason: "Invalid message format" });
     return;
   }
-  const hasChannel = Object.prototype.hasOwnProperty.call(clientMessage, "channel");
-  if (hasChannel && clientMessage.channel !== "supervisor") {
+  if (Object.prototype.hasOwnProperty.call(clientMessage, "channel")) {
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Invalid channel" });
     return;
   }
-  const channel = clientMessage.channel === "supervisor" ? "supervisor" : undefined;
+  const supervisorSend = clientMessage.type === "supervisor_send";
 
   const signature = buildMessageSendSignature(clientMessage.to, message);
   const deliveredMatch = deliveredMessages.lookup(message.id, signature);
@@ -90,15 +93,23 @@ export function handleBrokerSend(
     write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Sender session not found" });
     return;
   }
+  const trimmedTo = clientMessage.to.trim();
+  if (supervisorSend && !fromSession.supervisorId) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor channel is not authorized" });
+    return;
+  }
+  if (supervisorSend && trimmedTo !== fromSession.supervisorId) {
+    write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Supervisor target does not match the authorized relationship" });
+    return;
+  }
+
 
   // Exact-id targeting always resolves against the full pool so a cross-group id
-  // is caught by the defense-in-depth group check below (rather than silently
-  // "not found"). Name/prefix targeting is scoped to reachable candidates so a
-  // cross-group peer name is unresolvable in the first place.
-  const trimmedTo = clientMessage.to.trim();
+  // is caught by the defense-in-depth group check below. Only a broker-authorized
+  // supervisor frame or an exact recorded reply may resolve across groups.
   const exactIdTarget = sessions.get(trimmedTo);
   const senderGroup = normalizeGroup(fromSession.info.group);
-  const reachableAcrossGroups = channel === "supervisor" || Boolean(message.replyTo);
+  const reachableAcrossGroups = supervisorSend || Boolean(message.replyTo);
   const candidates = reachableAcrossGroups
     ? Array.from(sessions.values(), (session) => session.info)
     : Array.from(sessions.values(), (session) => session.info).filter(
@@ -117,8 +128,7 @@ export function handleBrokerSend(
       write(socket, { type: "delivery_failed", messageId: message.id, attemptId, reason: "Cannot message the current session" });
       return;
     }
-    const bypass = isVerticalBypass({
-      channel,
+    const bypass = supervisorSend || isVerticalBypass({
       replyTo: message.replyTo,
       sender: fromSession.info,
       target: target.info,
@@ -133,13 +143,11 @@ export function handleBrokerSend(
       });
       return;
     }
-    write(target.socket, channel === "supervisor"
-      ? { type: "message", from: fromSession.info, message, channel }
+    write(target.socket, supervisorSend
+      ? { type: "message", from: fromSession.info, message, channel: "supervisor" }
       : { type: "message", from: fromSession.info, message });
     deliveredMessages.record(message.id, signature);
-    if (channel === "supervisor") {
-      supervisorCache.record(message.id, fromSession.info.id, target.info.id);
-    }
+    if (supervisorSend) supervisorCache.record(message.id, fromSession.info.id, target.info.id);
     write(socket, { type: "delivered", messageId: message.id, attemptId });
     return;
   }

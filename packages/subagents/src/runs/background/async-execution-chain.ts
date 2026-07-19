@@ -54,6 +54,8 @@ export function executeAsyncChain(
 		controlConfig,
 		controlIntercomTarget,
 		childIntercomTarget,
+		supervisorAuthorizations,
+		dynamicSupervisorAuthorizations,
 		nestedRoute,
 	} = params;
 	const resultMode = params.resultMode ?? "chain";
@@ -292,6 +294,8 @@ export function executeAsyncChain(
 				controlConfig,
 				controlIntercomTarget,
 				childIntercomTargets,
+				supervisorAuthorizations,
+				dynamicSupervisorAuthorizations,
 				resultMode,
 				dynamicFanoutMaxItems: params.dynamicFanoutMaxItems,
 				workflowGraph,

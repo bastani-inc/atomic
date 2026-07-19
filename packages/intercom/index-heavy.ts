@@ -27,6 +27,7 @@ import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workfl
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
 import { resolveHomeGroup } from "./group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
+import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
 if (process.env.ATOMIC_TEST_LAZY_IMPORT_SENTINEL === "1") {
   process.env.ATOMIC_INTERCOM_HEAVY_IMPORTED = "1";
 }
@@ -43,6 +44,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   };
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
+  const childOrchestratorMetadata = readChildOrchestratorMetadata();
   let runtimeContext: ExtensionContext | null = null;
   let currentSessionId: string | null = null;
   let currentModel = "unknown";
@@ -62,18 +64,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
   const foregroundDetachHandoff = new ForegroundDetachHandoff(pi);
   const pendingIdleMessages = new InboundIdleQueue();
   const inboundDeliveries = new InboundMessageAdmission();
+  const supervisorAuthorizations = new SupervisorAuthorizationRegistry();
   let inboundFlushTimer: NodeJS.Timeout | null = null;
-  function rejectReplyWaiter(error: Error): void {
-    replyWaiters.rejectCurrent(error);
-  }
-  function clearReconnectTimer(): void {
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-  function clearInboundFlushTimer(): void {
-    if (inboundFlushTimer) clearTimeout(inboundFlushTimer);
-    inboundFlushTimer = null;
-  }
+  function rejectReplyWaiter(error: Error): void { replyWaiters.rejectCurrent(error); }
+  function clearReconnectTimer(): void { if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; }
+  function clearInboundFlushTimer(): void { if (inboundFlushTimer) clearTimeout(inboundFlushTimer); inboundFlushTimer = null; }
   function getLiveContext(ctx: ExtensionContext | null = runtimeContext, generation = runtimeGeneration): ExtensionContext | null {
     if (disposed || shuttingDown || generation !== runtimeGeneration || !ctx) {
       return null;
@@ -397,7 +392,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       attachClientHandlers(nextClient);
       try {
         await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
-        await nextClient.connect(buildRegistration());
+        await nextClient.connect(
+          buildRegistration(), childOrchestratorMetadata?.supervisor, supervisorAuthorizations.ownerToken,
+        );
+        await supervisorAuthorizations.restore(nextClient);
         if (!getLiveContext(contextAtStart, generationAtStart)) {
           await nextClient.disconnect();
           throw new Error("Intercom runtime no longer active");
@@ -433,6 +431,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     currentSessionTargetMatches,
     sendIncomingMessage,
     ensureConnected,
+    authorizeSupervisorChild: (childName) => supervisorAuthorizations.authorize(childName, () => ensureConnected("background")),
     resolveSessionTarget: resolveSessionTargetId,
     homeGroup: () => resolveHomeGroup(config, getLiveContext()),
   });
@@ -473,7 +472,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
 
-  const childOrchestratorMetadata = readChildOrchestratorMetadata();
   registerContactSupervisorTool(pi, {
     childOrchestratorMetadata,
     ensureConnected,

@@ -120,13 +120,13 @@ The reply hint (enabled by default) points to `intercom({ action: "reply", ... }
 
 ## How Connection Works
 
-Intercom connections are tool-driven. Sessions keep the lightweight wrapper unloaded until the model or user invokes an Intercom tool, `/intercom`, or the ALT+M overlay. Merely launching a foreground or background delegated child does not connect either session. Concurrent first-use callers share one import and connection attempt, and lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+Intercom connections are normally tool-driven. Ordinary sessions and delegated children keep the lightweight wrapper unloaded until an Intercom tool, `/intercom`, or the ALT+M overlay is invoked. One exception is supervisor authorization: launching an Intercom-enabled subagent connects the parent runtime long enough to request a broker capability for that child; the child's own connection remains lazy until it invokes `contact_supervisor`. The parent restores issued capabilities across reconnects, and the child uses the broker-confirmed current supervisor ID. Concurrent callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 A session becomes intercom-connected when all of these are true:
 
 - the intercom extension is loaded in that session
 - `enabled` is not set to `false` in `~/.atomic/agent/intercom/config.json` (or the legacy `~/.pi/agent/intercom/config.json` fallback)
-- the model or user has invoked an Intercom tool, `/intercom`, or the ALT+M overlay in that session
+- the model or user has invoked an Intercom surface in that session, **or** the parent runtime is authorizing an Intercom-enabled child supervisor relationship
 - the local broker is running or can be auto-started
 
 The session list only shows intercom-connected sessions, not every open Atomic process on the machine.
@@ -169,7 +169,7 @@ Every session belongs to exactly one intercom **group**. Sessions with no group 
 - `list`/`status` show your own group and only same-group peers. Pass `group: "name"` to `list`/`status` for a **read-only** peek at another group's membership. `send`/`ask` are always locked to your own group and error if you pass a different `group`.
 - `session_joined`/`session_left`/`presence_update` are group-scoped, so you never see peers outside your group appear or disappear.
 
-A session's home group is resolved with precedence: workflow/orchestrator-injected per-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > intercom `config.json` `"group"` > `"default"`. In workflow and subagent `group` options, boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated group; those string names are reserved and cannot name literal groups. Groups are the mechanism workflows use to isolate reviewer levels (see [workflows.md](/workflows)). The subagent-only `contact_supervisor` channel bypasses group isolation so a child in an isolated peer group can always still reach its supervisor.
+A session's home group is resolved with precedence: workflow/orchestrator-injected per-session group > env `ATOMIC_INTERCOM_GROUP` (legacy `PI_INTERCOM_GROUP`) > intercom `config.json` `"group"` > `"default"`. In workflow and subagent `group` options, boolean `true` and the trimmed, case-insensitive strings `"true"`/`"auto"` request an automatically generated group; those string names are reserved and cannot name literal groups. Groups are the mechanism workflows use to isolate reviewer levels (see [workflows.md](/workflows)). The subagent-only `contact_supervisor` path can cross groups only after a broker capability binds the registered child socket to the issuing supervisor session. The broker, not the client, marks validated traffic as `supervisor`; ordinary `send` frames remain isolated even if a raw client forges that flag, and replies cross back only through an exact broker-recorded `replyTo` match. Parent-held authorization state is restored after broker reconnects. The lightweight wrapper synchronously claims supervisor-authorization requests and lazy-loads the broker provider; a claimed provider failure aborts launch, while runtimes with no provider omit supervisor metadata and do not expose a broken channel.
 
 ### send vs ask vs reply
 

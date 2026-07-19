@@ -26,19 +26,21 @@ function fixture(options: { send?: SendBehavior; resolveGate?: Promise<void> } =
 	const tools = new Map<string, Tool>();
 	const slot = new ReplyWaiterSlot();
 	const sent: Array<{ to: string; message: { messageId?: string; text: string } }> = [];
+	const send = async (to: string, message: { messageId?: string; text: string }) => {
+		if (options.send?.delayMs) await Bun.sleep(options.send.delayMs);
+		if (options.send?.throwError) throw options.send.throwError;
+		sent.push({ to, message });
+		return {
+			id: message.messageId ?? "sent",
+			delivered: options.send?.delivered ?? true,
+			reason: options.send?.reason,
+		};
+	};
 	const client = {
 		sessionId: "self-id",
 		async listSessions() { return []; },
-		async send(to: string, message: { messageId?: string; text: string }) {
-			if (options.send?.delayMs) await Bun.sleep(options.send.delayMs);
-			if (options.send?.throwError) throw options.send.throwError;
-			sent.push({ to, message });
-			return {
-				id: message.messageId ?? "sent",
-				delivered: options.send?.delivered ?? true,
-				reason: options.send?.reason,
-			};
-		},
+		send,
+		sendToSupervisor: send,
 	};
 	const pi = {
 		registerTool(tool: Tool & { name: string }) { tools.set(tool.name, tool); },

@@ -10,6 +10,8 @@ import {
   SUBAGENT_FANOUT_CHILD_ENV,
   SUBAGENT_PARENT_DEPTH_ENV,
   SUBAGENT_PARENT_MAX_DEPTH,
+  SUBAGENT_SUPERVISOR_CAPABILITY_ENV,
+  SUBAGENT_SUPERVISOR_SESSION_ID_ENV,
 } from "../../packages/subagents/src/runs/shared/pi-args.js";
 import {
   inheritedIntercomGroup,
@@ -277,6 +279,29 @@ describe("subagent child CLI args", () => {
     assert.equal(withPeer.env[INTERCOM_GROUP_ENV], "reviewers");
     assert.equal(withSupervisor.env[INTERCOM_GROUP_ENV], "reviewers");
     assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], undefined);
+  });
+
+  test("passes broker-issued supervisor authorization only through dedicated child env", () => {
+    const result = buildPiArgs({
+      baseArgs: [],
+      task: "hello",
+      sessionEnabled: false,
+      inheritProjectContext: true,
+      inheritSkills: true,
+      intercomSessionName: "child-1",
+      orchestratorIntercomTarget: "parent",
+      supervisorAuthorization: { capability: "capability-1", supervisorSessionId: "supervisor-id" },
+    });
+
+    assert.equal(result.env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV], "capability-1");
+    assert.equal(result.env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV], "supervisor-id");
+
+    const descendantWithoutGrant = buildPiArgs({
+      baseArgs: [], task: "nested", sessionEnabled: false,
+      inheritProjectContext: true, inheritSkills: true,
+    });
+    assert.equal(descendantWithoutGrant.env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV], "");
+    assert.equal(descendantWithoutGrant.env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV], "");
   });
 
   test("resolveChildIntercomGroup: explicit > inherited; auto sentinels use the shared group", () => {

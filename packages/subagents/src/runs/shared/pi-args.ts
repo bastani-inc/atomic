@@ -40,6 +40,8 @@ export const SUBAGENT_PARENT_CAPABILITY_TOKEN_ENV = `${ENV_PREFIX}_SUBAGENT_PARE
 export const SUBAGENT_INHERIT_PROJECT_CONTEXT_ENV = `${ENV_PREFIX}_SUBAGENT_INHERIT_PROJECT_CONTEXT`;
 export const SUBAGENT_INHERIT_SKILLS_ENV = `${ENV_PREFIX}_SUBAGENT_INHERIT_SKILLS`;
 export const SUBAGENT_INTERCOM_SESSION_NAME_ENV = `${ENV_PREFIX}_SUBAGENT_INTERCOM_SESSION_NAME`;
+export const SUBAGENT_SUPERVISOR_CAPABILITY_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_CAPABILITY`;
+export const SUBAGENT_SUPERVISOR_SESSION_ID_ENV = `${ENV_PREFIX}_SUBAGENT_SUPERVISOR_SESSION_ID`;
 /** Intercom home-group env key (not a _SUBAGENT_ key); resolves ATOMIC_/PI_ variants. */
 export const INTERCOM_GROUP_ENV = `${ENV_PREFIX}_INTERCOM_GROUP`;
 const STRUCTURED_OUTPUT_TOOL_NAME = "structured_output";
@@ -64,6 +66,7 @@ interface BuildPiArgsInput {
 	intercomSessionName?: string;
 	orchestratorIntercomTarget?: string;
 	intercomGroup?: string;
+	supervisorAuthorization?: { capability: string; supervisorSessionId: string };
 	runId?: string;
 	childAgentName?: string;
 	childIndex?: number;
@@ -265,6 +268,10 @@ export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {
 	if (input.orchestratorIntercomTarget) {
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorIntercomTarget;
 	}
+	// Always override inherited capability metadata: a child must never pass its
+	// own supervisor authority to a descendant that lacks a freshly issued grant.
+	env[SUBAGENT_SUPERVISOR_CAPABILITY_ENV] = input.supervisorAuthorization?.capability ?? "";
+	env[SUBAGENT_SUPERVISOR_SESSION_ID_ENV] = input.supervisorAuthorization?.supervisorSessionId ?? "";
 	// Only assign an intercom group when the child actually has intercom access
 	// (peer intercom session name OR contact_supervisor orchestrator target).
 	const hasIntercomAccess = Boolean(input.intercomSessionName || input.orchestratorIntercomTarget);

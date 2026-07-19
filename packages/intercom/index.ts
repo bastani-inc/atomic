@@ -36,6 +36,12 @@ interface LightweightIntercomOptions {
 }
 
 const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
+const SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT = "subagent:supervisor-authorization";
+interface SupervisorAuthorizationRequest {
+	childName?: string;
+	completion?: Promise<unknown>;
+}
+
 const WORKFLOW_STAGE_LATE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 
 interface WorkflowStageLateMessageEvent {
@@ -333,6 +339,18 @@ export default function intercom(pi: ExtensionAPI, options: LightweightIntercomO
 			?? [...activeLifecycle.activeTools.values()].at(-1)?.ctx
 			?? activeLifecycle.modelSelect?.ctx;
 	}
+	pi.events.on(SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, (payload) => {
+		if (!payload || typeof payload !== "object" || Array.isArray(payload)) return;
+		const request = payload as SupervisorAuthorizationRequest;
+		if (typeof request.childName !== "string" || !request.childName.trim() || request.completion) return;
+		request.completion = loadHeavy(latestLifecycleContext()).then(async (handle) => {
+			handle.assertCurrent();
+			const forwarded: SupervisorAuthorizationRequest = { childName: request.childName };
+			await dispatchEventHandlers(handle.heavy, SUBAGENT_SUPERVISOR_AUTHORIZATION_EVENT, forwarded);
+			if (!forwarded.completion) throw new Error("Intercom supervisor authorization provider is unavailable");
+			return await forwarded.completion;
+		});
+	});
 	for (const eventName of [SUBAGENT_CONTROL_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_EVENT] as const) {
 		pi.events.on(eventName, (payload) => {
 			void loadHeavy(latestLifecycleContext()).then(async (handle) => {

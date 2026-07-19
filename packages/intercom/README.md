@@ -20,11 +20,11 @@ Sometimes you're running multiple Atomic/pi sessions — one researching, one ex
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), intercom is for targeted 1:1 communication where you pick the recipient.
 
-Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
+Intercom also integrates with delegated subagents: child agents get a child-only `contact_supervisor` tool when subagent bridge metadata is present. Atomic-prefixed bridge environment variables are supported, and legacy `PI_*` bridge metadata remains compatible. Atomic's subagent bridge also obtains a broker capability that binds the child session to the exact supervisor; client-authored channel flags are never trusted as cross-group authority. Use `reason: "need_decision"` for blocking clarification, `reason: "interview_request"` for multiple structured supervisor answers, and `reason: "progress_update"` for meaningful plan-changing updates. Normal sessions only see the regular `intercom` tool.
 
 ## In One Minute
 
-Intercom connections are tool-driven. Parent and delegated child sessions keep the lightweight wrapper unloaded until the model or user invokes an Intercom tool, `/intercom`, or the `ALT+M` overlay. A bridged child receives its deterministic Intercom identity and `contact_supervisor` tool at startup, but invoking that tool establishes its broker connection; merely launching a foreground or background child does not connect either session. Concurrent first-use callers share one import and connection attempt, and lazy broker state is leased to the active session generation and cleaned up on shutdown or replacement.
+Intercom connections are normally tool-driven. A bridged child still keeps its own broker connection lazy until it invokes `contact_supervisor`, but Atomic connects the parent Intercom runtime while launching the child to issue a child-bound supervisor capability. The parent retains and restores that capability across broker reconnects, and the broker confirms the supervisor's current session ID when the child registers. Concurrent first-use callers share one import and connection attempt, and broker state is leased to the active session generation and cleaned up on shutdown or replacement.
 
 ## Install
 
@@ -236,6 +236,8 @@ This workflow requires [`pi-subagents`](https://github.com/nicobailon/pi-subagen
 - `PI_SUBAGENT_CHILD_AGENT` — the agent type
 - `PI_SUBAGENT_CHILD_INDEX` — the child index within the run
 
+Atomic's bundled subagent bridge additionally supplies internal `ATOMIC_SUBAGENT_SUPERVISOR_CAPABILITY` and `ATOMIC_SUBAGENT_SUPERVISOR_SESSION_ID` values issued by the broker. They are not user-configurable authentication flags: the broker accepts the capability only for the child scope and supervisor session that requested it, and the parent restores the same secret if the broker reconnects. Legacy `PI_*` aliases remain readable where applicable.
+
 If any are missing, the session falls back to the regular `intercom` tool.
 
 ### Three Reasons
@@ -247,6 +249,8 @@ If any are missing, the session falls back to the regular `intercom` tool.
 | `progress_update` | Fire-and-forget update to the supervisor | Meaningful progress or unexpected discoveries that change the plan |
 
 Do not use `contact_supervisor` for routine completion handoffs. Return the final subagent result normally through `pi-subagents`.
+
+Cross-group delivery uses a dedicated broker protocol. Ordinary raw `send` frames always remain group-isolated and are rejected if they include a forged `channel: "supervisor"` marker. A child can cross groups only after its broker-issued capability has bound its registered socket to the exact supervisor. The broker adds the `supervisor` channel marker to validated inbound traffic so parent relays can distinguish it. Replies cross back only when `replyTo` matches a recorded supervisor message in the exact reverse direction; fabricated thread IDs do not bypass isolation.
 
 During a foreground subagent run, Atomic probes for an exact live foreground owner before delivery. The matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges the commit before asks, sends, decisions, interviews, and progress updates enter the parent's model-visible steering queue. Blocking calls remain alive until the parent sends the exact threaded reply; fire-and-forget calls create no reply waiter. Background and unmatched messages keep their queued-until-idle behavior, and cancellation/replacement invalidates stale handshakes.
 

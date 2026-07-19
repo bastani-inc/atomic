@@ -35,17 +35,26 @@ export interface Attachment {
   content: string;
   language?: string;
 }
+/** Broker capability metadata binding a child registration to its supervisor. */
+export interface SupervisorRegistration {
+  capability: string;
+  supervisorSessionId: string;
+}
+
 
 export type ClientMessage =
-  | { type: "register"; session: Omit<SessionInfo, "id"> }
+  | { type: "register"; session: Omit<SessionInfo, "id">; supervisor?: SupervisorRegistration; supervisorOwnerToken?: string }
   | { type: "unregister" }
   | { type: "list"; requestId: string; group?: string }
-  | { type: "send"; to: string; message: Message; attemptId?: string; channel?: "supervisor" }
+  | { type: "authorize_supervisor"; requestId: string; childName: string; capability?: string }
+  | { type: "send" | "supervisor_send"; to: string; message: Message; attemptId?: string }
   | { type: "presence"; name?: string; status?: string; model?: string };
 
 export type BrokerMessage =
-  | { type: "registered"; sessionId: string }
+  | { type: "registered"; sessionId: string; supervisorSessionId?: string }
+  | { type: "registration_failed"; reason: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
+  | { type: "supervisor_authorized"; requestId: string; capability: string; supervisorSessionId: string; childName: string }
   | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }

@@ -12,6 +12,7 @@ import {
   taskPrevious,
   taskWithSharedDefaults,
 } from "../../runs/foreground/executor-task-prompts.js";
+import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 
 export function createParallelPrimitive(input: {
   readonly runtime: EngineRuntime;
@@ -19,16 +20,21 @@ export function createParallelPrimitive(input: {
 }): (steps: readonly WorkflowTaskStep[], options?: WorkflowParallelOptions) => Promise<WorkflowTaskResult[]> {
   return async (steps: readonly WorkflowTaskStep[], options: WorkflowParallelOptions = {}): Promise<WorkflowTaskResult[]> => {
     input.runtime.exit.throwIfWorkflowExitSelected();
-    // Auto-group (group: true) mints ONE shared UUID for the whole parallel set so
-    // every item that opted into auto lands in the SAME isolated intercom group.
-    const needsAutoGroup = options.group === true || steps.some((step) => step.group === true);
+    // Normalize both authored and agent-serialized sentinels before deciding
+    // whether this invocation needs one shared auto-group UUID.
+    const normalizeGroup = <T extends { group?: string | true }>(value: T): T =>
+      value.group === undefined ? value : { ...value, group: normalizeAutoGroupSentinel(value.group) };
+    const normalizedOptions = normalizeGroup(options);
+    const normalizedSteps = steps.map(normalizeGroup);
+    const needsAutoGroup = normalizedOptions.group === true
+      || normalizedSteps.some((step) => step.group === true);
     const autoGroup = needsAutoGroup ? randomUUID() : undefined;
     const resolveAutoGroup = <T extends { group?: string | true }>(value: T): T =>
       value.group === true && autoGroup ? { ...value, group: autoGroup } : value;
-    const resolvedOptions = resolveAutoGroup(options);
-    const resolvedSteps = steps.map(resolveAutoGroup);
+    const resolvedOptions = resolveAutoGroup(normalizedOptions);
+    const resolvedSteps = normalizedSteps.map(resolveAutoGroup);
     const fallback = parallelFallbackTask(resolvedSteps, resolvedOptions);
-    const failFastEnabled = options.failFast !== false;
+    const failFastEnabled = resolvedOptions.failFast !== false;
     const parallelScope: ParallelFailFastScope = {
       failed: false,
       activeStages: new Map<string, ParallelFailFastStage>(),

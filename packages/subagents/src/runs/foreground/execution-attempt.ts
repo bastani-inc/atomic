@@ -31,6 +31,7 @@ import { appendRecentOutput, emptyUsage, modelFailureSignalByResult, snapshotPro
 import { createAttemptControlRuntime } from "./execution-attempt-control.ts";
 import { finalizeSingleAttempt } from "./execution-attempt-finalize.ts";
 import type { RunSingleAttemptShared } from "./execution-attempt-types.ts";
+import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 export async function runSingleAttempt(
 	runtimeCwd: string,
 	agent: AgentConfig,
@@ -47,6 +48,9 @@ export async function runSingleAttempt(
 		settings: shared.fastModeSettings,
 		scope: shared.fastModeScope,
 	});
+	const supervisorAuthorization = options.orchestratorIntercomTarget && options.intercomSessionName
+		? await requestSupervisorAuthorization(options.intercomEvents, options.intercomSessionName)
+		: undefined;
 	const { args, env: sharedEnv, tempDir } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
 		task,
@@ -65,8 +69,9 @@ export async function runSingleAttempt(
 		cwd: runCwd,
 		promptFileStem: agent.name,
 		intercomSessionName: options.intercomSessionName,
-		orchestratorIntercomTarget: options.orchestratorIntercomTarget,
+		orchestratorIntercomTarget: supervisorAuthorization ? options.orchestratorIntercomTarget : undefined,
 		intercomGroup: options.intercomGroup,
+		supervisorAuthorization,
 		runId: options.runId,
 		childAgentName: agent.name,
 		childIndex: options.index ?? 0,
