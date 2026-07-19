@@ -507,7 +507,7 @@ Set `ATOMIC_TUI_WRITE_LOG` to capture the raw ANSI stream written to stdout.
 ATOMIC_TUI_WRITE_LOG=/tmp/tui-ansi.log atomic
 ```
 
-Atomic vendors TUI components through the installed `@earendil-works/pi-tui` dependency; this monorepo does not include the upstream TUI test source tree.
+Atomic vendors TUI components through the installed `@earendil-works/pi-tui` dependency.
 
 ## Performance
 

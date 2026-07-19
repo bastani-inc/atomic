@@ -70,13 +70,11 @@ bun run test:all                  # Run all tests
 bun --cwd packages/coding-agent run test -- test/specific.test.ts
 ```
 
-The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded; there is no grandfather/baseline allowlist for authored files.
+The file-length gate scans tracked `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs`, and `.rs` files via `git ls-files`, falls back to a recursive walk outside Git, and counts physical lines with a no-final-newline correction. Only generated/vendored path globs (`node_modules`, `dist`, `target`, `binaries`, `.git`, `vendor`, minified bundles, and the bundled third-party `packages/workflows/skills/impeccable/**` skill) plus first-five-line generated markers are excluded.
 
-## Release shrinkwrap
+## Deterministic installs
 
-`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` for deterministic package-manager installs. Release bases stay versionless at `0.0.0`; `scripts/cut-release.ts` resolves the selected exact remote branch, stamps the real version in a detached worktree, records immutable base-ref/SHA trailers, and regenerates the shrinkwrap there before tagging. Non-main publication bases must be exactly allowlisted as documented in the repository CI guide.
-
-The shrinkwrap generator is hermetic for Atomic-owned packages. It derives `@bastani/atomic-natives` and generated native optional package entries from local package metadata plus deterministic registry tarball URLs, so release publishing does not depend on npm metadata for native packages that were just published.
+`@bastani/atomic` ships `packages/coding-agent/npm-shrinkwrap.json` so package-manager installs resolve the same dependency tree every time. Contributors working from a source checkout can validate that the checked-in shrinkwrap is up to date with:
 
 ```bash
 bun run scripts/generate-coding-agent-shrinkwrap.mjs --check

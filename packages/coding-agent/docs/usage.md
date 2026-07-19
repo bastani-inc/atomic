@@ -122,7 +122,7 @@ Use `/export [file]` to write a session to HTML.
 
 Use `/share` to upload a private GitHub gist with a shareable HTML link.
 
-If you use Atomic for open source work and want to publish sessions for model, prompt, tool, and evaluation research, use an Atomic-owned workflow or your team's dataset process. Upstream Pi session-sharing utilities may still be useful for historical context, but they are not the primary Atomic publication path.
+Treat exported and shared sessions as sensitive: transcripts can contain source code, file paths, credentials, and other private data from your session. Review a session before sharing it, and only upload transcripts you are comfortable making accessible to anyone with the link.
 
 ## CLI Reference
 

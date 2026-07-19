@@ -39,7 +39,6 @@ Default to a workflow for non-trivial work with a verifiable objective — see [
 - [Task and Stage Options](#task-and-stage-options)
 - [StageContext](#stagecontext)
 - [Result Types](#result-types)
-- [Workflow Starter Patterns](#workflow-starter-patterns)
 - [Running Workflows](#running-workflows)
 - [Workflow Commands](#workflow-commands)
 - [Monitor and Control Runs](#monitor-and-control-runs)
@@ -171,7 +170,7 @@ Use direct chat only for tiny, deterministic, low-risk answers or edits where st
 
 Workflow-first does not require builtins, monolithic workflows, or a force-fit builtin: a builtin that matches 60% of the task and fights the other 40% is worse than a small custom graph. Discover named builtin, project, user, and package workflows; use direct `task`, `tasks`, or `chain` calls for simple tracked shapes; or author a task-specific TypeScript `workflow({...})` inline with normal coding tools whenever the task needs richer branching, dynamic fan-out, artifacts, structured outputs, child workflows, human input, gates, retries, or loops.
 
-Rich custom workflows can compose the [starter patterns](#workflow-starter-patterns): classify and branch at runtime, fan out and synthesize artifacts, run worker/verifier/reducer repair cycles, generate and filter or tournament-rank candidates, and loop until explicit evidence says the work is done. Workflow definitions are composable TypeScript modules — see [Workflow Composition](#workflow-composition). Atomic can write the definition, reload workflow resources, and run it for the current task; the workflow tool has no create action.
+Rich custom workflows can compose the [common workflow patterns](#common-workflow-patterns): classify and branch at runtime, fan out and synthesize artifacts, run worker/verifier/reducer repair cycles, generate and filter or tournament-rank candidates, and loop until explicit evidence says the work is done. Workflow definitions are composable TypeScript modules — see [Workflow Composition](#workflow-composition). Atomic can write the definition, reload workflow resources, and run it for the current task; the workflow tool has no create action.
 
 If inline work drifts past roughly ten exploratory tool calls without an artifact, edit, or commit, or repeats a "verify one more thing" loop, save the findings to a context file and hand the task to the best-fit named or custom workflow through `reads`. Sunk research is transferable, not a reason to continue inline.
 
@@ -196,7 +195,7 @@ The shapes, cheapest first:
 | **Inline + subagents** | Bounded specialist delegation (locate/analyze/research/debug passes, noisy command investigation, parallel read-only fanouts) while the parent keeps control and synthesizes. | Context isolation for noisy or parallel evidence-gathering. | No completion gate, no durable stages; the parent is the only reviewer. |
 | **Direct one-off shapes** | `workflow({ task })`, `workflow({ tasks })`, or `workflow({ chain })` without saving a definition. | Stage tracking, artifacts, model fallbacks, monitoring, resume. | Linear/parallel control flow only; no custom branching or loops. |
 | **Named workflows** | Installed builtin, project, user, or package workflows (`goal`, `ralph`, `deep-research-codebase`, `open-claude-design`, ...). | A proven graph: bounded loops, reviewer gates, ledgers, evidence contracts, tuned model chains. | The task must actually match the graph's objective and inputs. |
-| **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the starter patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
+| **Custom workflow** | A task-specific TypeScript `workflow({...})` authored inline, composing the common workflow patterns. | Exactly the control flow the task needs: runtime branching, dynamic fan-out, custom gates, tournaments, bounded loops. | Authoring and reload time; you own the design quality. |
 | **Composed/nested workflows** | A custom parent that imports proven definitions and calls `ctx.workflow(child)`. | Reuse of hardened children (research, review loops) inside custom control flow, within `maxDepth`. | Parent/child input-output contracts must be mapped deliberately. |
 
 #### The self-prompt
@@ -208,7 +207,7 @@ Ask these questions in order and stop at the first shape that satisfies every re
 3. **Is there a loop or gate?** Any "until Y", "fix until passing", review/approval gate, or unknown-length repair cycle requires a workflow that enforces the stop condition, never an improvised inline retry loop or a stretched subagent chain.
 4. **Is it one task or a queue of tasks?** "Address all open issues" or "fix every ticket assigned to me" is a factory request, not one workflow. Enumerate and dependency-classify the items first, then follow [Task queues and software factories](#task-queues-and-software-factories): independent items become separate per-item runs; dependent items share one composed graph.
 5. **Does an installed graph already fit?** If a named workflow's objective and inputs cover essentially the whole task, run it. Do not force-fit a partial match ([When to Use Workflows](#when-to-use-workflows)).
-6. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the starter patterns.
+6. **Does the control flow need shapes builtins don't offer?** Runtime classification, per-item dynamic fan-out, generate-and-filter, tournaments, or domain-specific gates mean authoring a custom workflow from the common workflow patterns.
 7. **Does a proven graph already solve a sub-problem?** Nest it with `ctx.workflow(...)` instead of re-authoring its prompts and gates. Use composition instead of duplication whenever you can cleanly map the child's input/output contract.
 8. **Is it only specialist evidence-gathering?** If the parent keeps control, no completion gate is needed, and the work is bounded (a debug pass, a parallel research fanout, one noisy investigation), inline subagents are enough — and cheaper than a workflow.
 9. **Is it truly tiny?** Deterministic, low-risk, single-file/no-test/no-review — answer or edit inline and stop.
@@ -2140,178 +2139,6 @@ interface StageSnapshot extends WorkflowSerializableObject {
 
 Programmatic `run(...)` returns this type. `exited` identifies `ctx.exit(...)` termination, and `stages` contains the final stage snapshots.
 
-
-## Workflow Starter Patterns
-
-For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. Naming the pattern keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions.
-
-These patterns are composable. For example, a migration workflow might use **fan-out-and-synthesize** to fix many call sites, then **adversarial verification** to review each patch, and finally **loop until done** while tests still fail.
-
-| Pattern | Use it when | Atomic shape |
-|---|---|---|
-| **Classify-and-act** | Inputs arrive in different categories and each category needs a different path, model, tool set, or output format. | `ctx.task("classify")` → deterministic branch → category-specific `ctx.task`, `ctx.chain`, `ctx.parallel`, or child `ctx.workflow(...)`. |
-| **Fan-out-and-synthesize** | The task can be split into many independent slices that benefit from clean context windows. | `ctx.parallel([...])` with separate artifacts → synthesis barrier that reads the artifacts and merges the answer. |
-| **Adversarial verification** | Outputs need independent checking against a rubric, security rule, factual source, or acceptance contract. | Worker stage(s) → fresh-context verifier stage(s) → reducer that accepts, rejects, or asks for repair. |
-| **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
-| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
-| **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
-
-### Pattern diagrams
-
-#### 1. Classify-and-act
-
-```text
-┌─ 1  Classify-and-act ────────────────────────────────────┐
-│                                                          │
-│                             ┌───────┐                    │
-│                         ╭──▸│agent A│                    │
-│                         │   └───────┘                    │
-│  ┌────┐  ┌──────────┐   │   ┌───────┐                    │
-│  │task│─▸│classifier│───┼──▸│agent B│ ◂ chosen           │
-│  └────┘  └──────────┘   │   └───────┘                    │
-│                         │   ┌───────┐                    │
-│                         ╰──▸│agent C│                    │
-│                             └───────┘                    │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Make the classifier return a structured category and confidence, not free-form prose.
-- Keep each action branch isolated with the minimum tools and context it needs.
-- Add a fallback or human-input branch for low-confidence classifications.
-
-#### 2. Fan-out-and-synthesize
-
-```text
-┌─ 2  Fan-out-and-synthesize ──────────────────────────────┐
-│                                                          │
-│            ┌───────┐                                     │
-│          ╭▸│agent 1│──╮                                  │
-│          │ └───────┘  │                                  │
-│          │ ┌───────┐  │                                  │
-│          ├▸│agent 2│──┤                                  │
-│  ┌────┐  │ └───────┘  │ ┌───────┐  ┌──────────┐          │
-│  │task│──┤ ┌───────┐  ├▸│barrier│─▸│synthesize│          │
-│  └────┘  ├▸│agent 3│──┤ └───────┘  └──────────┘          │
-│          │ └───────┘  │                                  │
-│          │ ┌───────┐  │                                  │
-│          ╰▸│agent 4│──╯                                  │
-│            └───────┘                                     │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Partition by files, sources, claims, candidates, or work items that can be evaluated independently.
-- Save each branch to a separate artifact and pass paths with `reads` instead of inlining all branch output.
-- Treat synthesis as a barrier: it waits for every branch, deduplicates, resolves conflicts, and cites evidence.
-
-#### 3. Adversarial verification
-
-```text
-┌─ 3  Adversarial verification ────────────────────────────┐
-│                                                          │
-│                                                          │
-│                                 ┌──────────┐             │
-│               ├────────────────▸│verifier A│             │
-│               │                 └──────────┘             │
-│  ┌──────┐     │                 ┌──────────┐             │
-│  │worker│◂────┼────────────────▸│verifier B│             │
-│  └──────┘     │                 └──────────┘             │
-│               │                 ┌──────────┐             │
-│               ├────────────────▸│verifier C│             │
-│                                 └──────────┘             │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements.
-- Separate implementation or generation from independent judgment to reduce a model's bias toward its own output.
-- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it.
-
-#### 4. Generate-and-filter
-
-```text
-┌─ 4  Generate-and-filter ─────────────────────────────────┐
-│                                                          │
-│                                                          │
-│  ┌─────┐   ┌────┐                      ┌────┐            │
-│  │gen A│──▸│idea│───╮              ╭──▸│best│            │
-│  └─────┘   └────┘   │              │   └────┘            │
-│  ┌─────┐   ┌────┐   │  ┌──────┐    │   ┌────┐            │
-│  │gen B│──▸│idea│───┼─▸│filter│────┼──▸│best│            │
-│  └─────┘   └────┘   │  └──────┘    │   └────┘            │
-│  ┌─────┐   ┌────┐   │              │   ┌╌╌╌╌╌╌╌╌╌┐       │
-│  │gen C│──▸│idea│───╯              ╰──▸╎discarded╎       │
-│  └─────┘   └────┘                      └╌╌╌╌╌╌╌╌╌┘       │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Generate more candidates than you need, then filter hard by an explicit rubric.
-- Dedupe before judging so near-identical candidates do not dominate the shortlist.
-- Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
-
-#### 5. Tournament
-
-```text
-┌─ 5  Tournament ──────────────────────────────────────────┐
-│                                                          │
-│  ┌─────────┐                                             │
-│  │attempt A│──╮  ┌───────┐                               │
-│  └─────────┘  ├─▸│judge 1│───╮                           │
-│  ┌─────────┐  │  └───────┘   │                           │
-│  │attempt B│──╯              │   ┌─────┐  ┌──────┐       │
-│  └─────────┘                 ├──▸│final│─▸│winner│       │
-│  ┌─────────┐                 │   └─────┘  └──────┘       │
-│  │attempt C│──╮  ┌───────┐   │                           │
-│  └─────────┘  ├─▸│judge 2│───╯                           │
-│  ┌─────────┐  │  └───────┘                               │
-│  │attempt D│──╯                                          │
-│  └─────────┘                                             │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Use pairwise comparison when absolute scores are noisy or subjective.
-- Randomize or balance presentation order where possible to reduce order bias.
-- Keep the judge rubric short and require rationale tied to observable criteria.
-
-#### 6. Loop until done
-
-```text
-┌─ 6  Loop until done ─────────────────────────────────────┐
-│                                                          │
-│      yes, spawn another                                  │
-│     ╭────────────────╮                                   │
-│     ▾                │                                   │
-│  ┌─────┐      ┌─────────────┐  no   ┌────┐               │
-│  │agent│─────▸│new findings?│──────▸│done│               │
-│  └─────┘      └─────────────┘       └────┘               │
-│                                                          │
-└──────────────────────────────────────────────────────────┘
-```
-
-Best practices:
-- Define both success and escape conditions before the loop starts.
-- Keep a durable ledger of attempted work, findings, failures, and validation evidence.
-- Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
-
-### Choosing a starter pattern
-
-- Pick **classify-and-act** when routing correctness matters more than breadth.
-- Pick **fan-out-and-synthesize** when the work divides cleanly into independent slices.
-- Pick **adversarial verification** when the main risk is a plausible but wrong answer.
-- Pick **generate-and-filter** when output quality depends on exploring a large option space.
-- Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
-- Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
-
-Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any starter pattern, explain why in the workflow's design notes.
-
 ## Running Workflows
 
 List or inspect unfamiliar workflows before running them. If required inputs are missing and cannot be inferred, ask for the missing values before launch:
@@ -3605,7 +3432,7 @@ Before implementing or shipping a non-trivial workflow, answer these questions:
 
 - **Purpose and fit:** What concrete outcome should the workflow produce? Is the task naturally multi-stage, parallel, resumable, or reusable? What is out of scope?
 - **Inputs:** Which values should be declared as inputs? What is the narrowest schema type? Which defaults are safe?
-- **Starter pattern:** Which [workflow starter pattern](#workflow-starter-patterns) best matches the task, and where does the actual design intentionally diverge?
+- **Common pattern:** Which [common workflow pattern](#common-workflow-patterns) best matches the task, and where does the actual design intentionally diverge?
 - **Stage decomposition:** For each stage, what question does it answer, what context does it need, what output should it return, and what model/tool/MCP requirements does it have?
 - **Local stage contract:** Can this stage prompt stand alone with its current objective, inputs/artifacts, expected outputs, tools/checks, and success criteria, without unexplained workflow internals or future-stage assumptions?
 - **Prompt vocabulary:** Do stage, reviewer, and reducer prompts describe the concrete action, available evidence, and success criteria that the stage can see locally, instead of assuming the model knows the workflow graph's name or surrounding context? Avoid phrasing like "the create-PR workflow stage" or "this Foo workflow" unless that name is explicitly supplied as user-visible context or materially affects behavior.
@@ -3829,118 +3656,176 @@ Summarize root cause, proposed fix, files involved, validation plan, and remaini
 
 ---
 
-### Common workflow patterns
+### Common Workflow Patterns
 
-#### Scoped implementation sprint
+For workflows larger than one tracked task, choose a small control-flow pattern before writing prompts. **Workflow authors should favor these common patterns by default:** naming the pattern up front keeps the stage graph understandable, makes validation gates explicit, and helps reviewers see why work is split across model sessions. Reach for a bespoke structure only when none of these patterns fit.
 
-**Use when:** You have a clear feature, bug fix, or issue to delegate.
+These patterns are composable. For example, a migration workflow might use **fan-out-and-synthesize** to fix many call sites, then **adversarial verification** to review each patch, and finally **loop until done** while tests still fail.
 
-**Prompt shape:**
+| Pattern | Use it when | Atomic shape |
+|---|---|---|
+| **Classify-and-act** | Inputs arrive in different categories and each category needs a different path, model, tool set, or output format. | `ctx.task("classify")` → deterministic branch → category-specific `ctx.task`, `ctx.chain`, `ctx.parallel`, or child `ctx.workflow(...)`. |
+| **Fan-out-and-synthesize** | The task can be split into many independent slices that benefit from clean context windows. | `ctx.parallel([...])` with separate artifacts → synthesis barrier that reads the artifacts and merges the answer. |
+| **Adversarial verification** | Outputs need independent checking against a rubric, security rule, factual source, or acceptance contract. | Worker stage(s) → fresh-context verifier stage(s) → reducer that accepts, rejects, or asks for repair. |
+| **Generate-and-filter** | You need many candidate ideas, plans, names, fixes, or hypotheses before selecting the best few. | Generator fan-out → dedupe/filter stage → optional verifier/judge → final shortlist. |
+| **Tournament** | The whole task is subjective or approach-sensitive, and comparative judgment is more reliable than absolute scoring. | Several agents attempt the same task → pairwise judges compare results → bracket reducer returns winners. |
+| **Loop until done** | The amount of work is unknown up front, such as finding all failures, mining repeated issues, or iterating until checks pass. | Bounded loop with an explicit stop condition, progress ledger, per-iteration artifacts, and a max-iteration escape hatch. |
 
-```text
-Implement `[feature]` in `[component]`. Only touch files directly needed for this behavior. Done means the new behavior works, existing behavior is unchanged, and `[test command]` passes.
-```
+#### Pattern diagrams
 
-**Why it works:** The agent gets autonomy, but the objective and blast radius are bounded.
-
-**Validation:** Run the most relevant targeted check first, then a broader nearby check if the change is risky.
-
----
-
-#### Regression repair loop
-
-**Use when:** CI, tests, typecheck, lint, or smoke validation fails.
-
-**Prompt shape:**
+##### 1. Classify-and-act
 
 ```text
-Fix the failing `[test suite]` regression. Treat the failure output as the source of truth. Do not refactor unrelated code. Done means the failing test passes and no nearby tests regress.
+┌─ 1  Classify-and-act ────────────────────────────────────┐
+│                                                          │
+│                             ┌───────┐                    │
+│                         ╭──▸│agent A│                    │
+│                         │   └───────┘                    │
+│  ┌────┐  ┌──────────┐   │   ┌───────┐                    │
+│  │task│─▸│classifier│───┼──▸│agent B│ ◂ chosen           │
+│  └────┘  └──────────┘   │   └───────┘                    │
+│                         │   ┌───────┐                    │
+│                         ╰──▸│agent C│                    │
+│                             └───────┘                    │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** It keeps the run focused on observable evidence instead of speculation.
+Best practices:
+- Make the classifier return a structured category and confidence, not free-form prose.
+- Keep each action branch isolated with the minimum tools and context it needs.
+- Add a fallback or human-input branch for low-confidence classifications.
 
-**Validation:** Reproduce the failure, fix the root cause, rerun the failing check, then run a nearby or broader check.
-
----
-
-#### Workflow or tooling smoke test
-
-**Use when:** You changed a workflow definition, prompt contract, structured output, CLI behavior, or developer tool.
-
-**Prompt shape:**
+##### 2. Fan-out-and-synthesize
 
 ```text
-Validate `[workflow/tool]` after the change. Run a minimal smoke case, confirm required outputs are present, and report whether it can be invoked with expected inputs.
+┌─ 2  Fan-out-and-synthesize ──────────────────────────────┐
+│                                                          │
+│            ┌───────┐                                     │
+│          ╭▸│agent 1│──╮                                  │
+│          │ └───────┘  │                                  │
+│          │ ┌───────┐  │                                  │
+│          ├▸│agent 2│──┤                                  │
+│  ┌────┐  │ └───────┘  │ ┌───────┐  ┌──────────┐          │
+│  │task│──┤ ┌───────┐  ├▸│barrier│─▸│synthesize│          │
+│  └────┘  ├▸│agent 3│──┤ └───────┘  └──────────┘          │
+│          │ └───────┘  │                                  │
+│          │ ┌───────┐  │                                  │
+│          ╰▸│agent 4│──╯                                  │
+│            └───────┘                                     │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** Workflow and tooling changes often fail at integration boundaries. A small smoke case catches those failures early.
+Best practices:
+- Partition by files, sources, claims, candidates, or work items that can be evaluated independently.
+- Save each branch to a separate artifact and pass paths with `reads` instead of inlining all branch output.
+- Treat synthesis as a barrier: it waits for every branch, deduplicates, resolves conflicts, and cites evidence.
 
-**Validation:** Reload or rerun the tool, check the output shape, and report contract mismatches.
-
----
-
-#### Human-in-the-loop checkpoint
-
-**Use when:** The workflow might need a product decision, API decision, migration choice, or risky approval.
-
-**Prompt shape:**
+##### 3. Adversarial verification
 
 ```text
-If blocked, ask before changing public API behavior. Otherwise proceed with the smallest compatible fix.
+┌─ 3  Adversarial verification ────────────────────────────┐
+│                                                          │
+│                                                          │
+│                                 ┌──────────┐             │
+│               ├────────────────▸│verifier A│             │
+│               │                 └──────────┘             │
+│  ┌──────┐     │                 ┌──────────┐             │
+│  │worker│◂────┼────────────────▸│verifier B│             │
+│  └──────┘     │                 └──────────┘             │
+│               │                 ┌──────────┐             │
+│               ├────────────────▸│verifier C│             │
+│                                 └──────────┘             │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** The agent continues work that does not require the decision but does not guess about high-impact choices.
+Best practices:
+- Give verifiers fresh context and a concrete rubric with pass/fail evidence requirements.
+- Separate implementation or generation from independent judgment to reduce a model's bias toward its own output.
+- Ask verifiers to find blockers and not rewrite the candidate unless you explicitly assign them to repair it.
 
-**Validation:** Confirm the decision is reflected in the final behavior and summary.
-
----
-
-#### Release gate
-
-**Use when:** Preparing a release, version bump, changelog, publish step, migration, or deployment-adjacent task.
-
-**Prompt shape:**
+##### 4. Generate-and-filter
 
 ```text
-Prepare a `[release kind]` release for `[version]`. Do not publish unless validation passes. Report the exact checks performed and any unresolved blockers.
+┌─ 4  Generate-and-filter ─────────────────────────────────┐
+│                                                          │
+│                                                          │
+│  ┌─────┐   ┌────┐                      ┌────┐            │
+│  │gen A│──▸│idea│───╮              ╭──▸│best│            │
+│  └─────┘   └────┘   │              │   └────┘            │
+│  ┌─────┐   ┌────┐   │  ┌──────┐    │   ┌────┐            │
+│  │gen B│──▸│idea│───┼─▸│filter│────┼──▸│best│            │
+│  └─────┘   └────┘   │  └──────┘    │   └────┘            │
+│  ┌─────┐   ┌────┐   │              │   ┌╌╌╌╌╌╌╌╌╌┐       │
+│  │gen C│──▸│idea│───╯              ╰──▸╎discarded╎       │
+│  └─────┘   └────┘                      └╌╌╌╌╌╌╌╌╌┘       │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** Release work needs explicit gates and stop conditions.
+Best practices:
+- Generate more candidates than you need, then filter hard by an explicit rubric.
+- Dedupe before judging so near-identical candidates do not dominate the shortlist.
+- Use this for exploration, naming, design options, hypotheses, and lightweight eval ideas.
 
-**Validation:** Require changelog review, tests, build/package checks, and a clear publish/no-publish decision.
-
-
----
-
-#### Monitor-and-steer long run
-
-**Use when:** A workflow runs asynchronously, has multiple stages, or may need supervision.
-
-**Prompt shape:**
+##### 5. Tournament
 
 ```text
-Show the current stage and blocker. If implementation is complete, summarize validation status and remaining risks.
+┌─ 5  Tournament ──────────────────────────────────────────┐
+│                                                          │
+│  ┌─────────┐                                             │
+│  │attempt A│──╮  ┌───────┐                               │
+│  └─────────┘  ├─▸│judge 1│───╮                           │
+│  ┌─────────┐  │  └───────┘   │                           │
+│  │attempt B│──╯              │   ┌─────┐  ┌──────┐       │
+│  └─────────┘                 ├──▸│final│─▸│winner│       │
+│  ┌─────────┐                 │   └─────┘  └──────┘       │
+│  │attempt C│──╮  ┌───────┐   │                           │
+│  └─────────┘  ├─▸│judge 2│───╯                           │
+│  ┌─────────┐  │  └───────┘                               │
+│  │attempt D│──╯                                          │
+│  └─────────┘                                             │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** It verifies the run without reading unnecessary logs.
+Best practices:
+- Use pairwise comparison when absolute scores are noisy or subjective.
+- Randomize or balance presentation order where possible to reduce order bias.
+- Keep the judge rubric short and require rationale tied to observable criteria.
 
-**Validation:** Inspect status first, then stages, then only the relevant details.
-
----
-
-#### Investigate before implementing
-
-**Use when:** A bug or request is ambiguous.
-
-**Prompt shape:**
+##### 6. Loop until done
 
 ```text
-Investigate `[bug]`, identify root cause, and propose the smallest fix. Do not implement until the cause is clear.
+┌─ 6  Loop until done ─────────────────────────────────────┐
+│                                                          │
+│      yes, spawn another                                  │
+│     ╭────────────────╮                                   │
+│     ▾                │                                   │
+│  ┌─────┐      ┌─────────────┐  no   ┌────┐               │
+│  │agent│─────▸│new findings?│──────▸│done│               │
+│  └─────┘      └─────────────┘       └────┘               │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Why it works:** It prevents the agent from making changes before it understands the failure mode.
+Best practices:
+- Define both success and escape conditions before the loop starts.
+- Keep a durable ledger of attempted work, findings, failures, and validation evidence.
+- Bound loops by iterations, budget, or convergence criteria so exhausting a bound produces an inspectable failure instead of letting the loop continue indefinitely.
 
-**Validation:** Ask for a reproduction, root-cause explanation, proposed fix, and test plan before implementation.
+#### Choosing a common workflow pattern
+
+- Pick **classify-and-act** when routing correctness matters more than breadth.
+- Pick **fan-out-and-synthesize** when the work divides cleanly into independent slices.
+- Pick **adversarial verification** when the main risk is a plausible but wrong answer.
+- Pick **generate-and-filter** when output quality depends on exploring a large option space.
+- Pick **tournament** when multiple whole-solution strategies should compete under one rubric.
+- Pick **loop until done** when the workflow should continue until evidence says it is finished, not until a preselected number of stages completes.
+
+Record the selected pattern in your spec or workflow README, then adapt the diagram to the stage graph. If the final design does not resemble any common pattern, explain why in the workflow's design notes.
 
 ---
 
