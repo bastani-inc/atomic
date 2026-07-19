@@ -24,6 +24,7 @@ interface SubagentRelayDeps {
   sendIncomingMessage(entry: { from: SessionInfo; message: Message; bodyText: string }, delivery: "trigger" | "followUp", generation?: number): unknown;
   ensureConnected(reason: "background"): Promise<IntercomClient>;
   resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null>;
+  homeGroup?(): string;
 }
 
 async function dispatchRelayFallback(
@@ -59,7 +60,7 @@ export function registerSubagentRelay(pi: ExtensionAPI, deps: SubagentRelayDeps)
     const entry = {
       from: {
         id: sender, name: sender, cwd: deps.runtimeContext()?.cwd ?? process.cwd(),
-        model: sender, pid: process.pid, startedAt: now, lastActivity: now, status,
+        model: sender, pid: process.pid, startedAt: now, lastActivity: now, status, group: deps.homeGroup?.(),
       },
       message: { id: randomUUID(), timestamp: now, content: { text: messageText } },
       bodyText: messageText,

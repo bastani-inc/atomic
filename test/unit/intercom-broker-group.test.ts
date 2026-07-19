@@ -81,7 +81,9 @@ test("supervisor channel bypasses group isolation and records a crossing for the
   const h = harness([["child", "child", "teamA"], ["sup", "supervisor", "default"]]);
   // child -> supervisor via supervisor channel (cross-group) is delivered
   h.send(h.sockets.child!, { type: "send", to: "sup", message: message("q1", "need decision", { expectsReply: true }), channel: "supervisor" }, "child");
-  assert.equal(h.writes.some((w) => w.socket === h.sockets.sup && w.message.type === "message"), true);
+  const supervisorDelivery = h.writes.find((w) => w.socket === h.sockets.sup && w.message.type === "message");
+  assert.equal(supervisorDelivery?.message.type, "message");
+  assert.equal((supervisorDelivery?.message as { channel?: string } | undefined)?.channel, "supervisor");
 
   // supervisor replies to the recorded crossing (replyTo=q1) back to the child -> delivered
   h.send(h.sockets.sup!, { type: "send", to: "child", message: message("r1", "approved", { replyTo: "q1" }) }, "sup");

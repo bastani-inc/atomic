@@ -11,6 +11,7 @@ import type {
   WorkflowDirectTaskItem,
   WorkflowMaxOutput,
 } from "../../shared/types.js";
+import { normalizeAutoGroupSentinel } from "../../shared/intercom-group.js";
 
 export function normalizeTaskContexts(
   previous: WorkflowTaskOptions["previous"],
@@ -254,6 +255,11 @@ export function directTaskWithDefaults(
   const taskWithStageDefaults = {
     ...withoutUndefinedProperties(stageDefaults),
     ...withoutUndefinedProperties(item),
+    ...(item.group !== undefined
+      ? { group: normalizeAutoGroupSentinel(item.group) }
+      : stageDefaults.group !== undefined
+        ? { group: normalizeAutoGroupSentinel(stageDefaults.group) }
+        : {}),
     name: item.name,
   } as WorkflowDirectTaskItem;
 
@@ -283,10 +289,12 @@ export function directTaskToStep(
     prompt,
     task,
     previous: itemPrevious,
+    group,
     ...stageOptions
   } = item;
   return {
     ...stageOptions,
+    ...(group !== undefined ? { group: normalizeAutoGroupSentinel(group) } : {}),
     prompt: prompt ?? task ?? fallbackPrompt,
     previous: previous ?? itemPrevious,
   };

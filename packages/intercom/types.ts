@@ -46,7 +46,7 @@ export type ClientMessage =
 export type BrokerMessage =
   | { type: "registered"; sessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
-  | { type: "message"; from: SessionInfo; message: Message }
+  | { type: "message"; from: SessionInfo; message: Message; channel?: "supervisor" }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }
   | { type: "session_left"; sessionId: string }

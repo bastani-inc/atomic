@@ -251,4 +251,43 @@ describe("WorkflowParametersSchema stage options", () => {
     }));
   });
 
+  test("validates group values without coercing true to a string", () => {
+    const tools = [
+      {
+        name: "workflow",
+        description: "Run a workflow",
+        parameters: WorkflowParametersSchema,
+      },
+    ];
+    const validated = validateToolCall(tools, {
+      type: "toolCall",
+      id: "workflow-group-call",
+      name: "workflow",
+      arguments: {
+        group: true,
+        tasks: [
+          { name: "reviewer-a", task: "review", group: true },
+          { name: "reviewer-b", task: "review", group: true },
+        ],
+      },
+    }) as {
+      group?: string | true;
+      tasks?: Array<{ group?: string | true }>;
+    };
+    const validatedNamed = validateToolCall(tools, {
+      type: "toolCall",
+      id: "workflow-group-named-call",
+      name: "workflow",
+      arguments: { group: "reviewers-1" },
+    }) as { group?: string | true };
+
+    // `true` must survive as a boolean so the per-set auto-UUID minting (which
+    // keys off `group === true`) fires; coercion to the string "true" would make
+    // every independent auto group collide into one shared "true" group.
+    assert.equal(validated.group, true);
+    assert.equal(validated.tasks?.[0]?.group, true);
+    assert.equal(validated.tasks?.[1]?.group, true);
+    assert.equal(validatedNamed.group, "reviewers-1");
+  });
+
 });

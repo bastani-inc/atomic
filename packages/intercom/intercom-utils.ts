@@ -29,6 +29,7 @@ export interface ChildOrchestratorMetadata {
 export interface InboundMessageEntry {
   from: SessionInfo;
   message: Message;
+  channel?: "supervisor";
   replyCommand?: string;
   bodyText: string;
 }

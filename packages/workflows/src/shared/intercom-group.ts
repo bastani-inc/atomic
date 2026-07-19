@@ -4,6 +4,13 @@ import type { StageOptions } from "./types.js";
 /** The implicit group shared by every ungrouped session. */
 export const DEFAULT_INTERCOM_GROUP = "default";
 
+/** Normalize agent-serialized auto-group sentinels without changing real group names. */
+export function normalizeAutoGroupSentinel(group: string | true): string | true {
+  if (group === true) return true;
+  const sentinel = group.trim().toLowerCase();
+  return sentinel === "true" || sentinel === "auto" ? true : group;
+}
+
 /** Trim; empty/undefined collapses to the shared default group. */
 export function normalizeGroup(value?: string | null): string {
   if (typeof value !== "string") return DEFAULT_INTERCOM_GROUP;

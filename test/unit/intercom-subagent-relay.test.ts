@@ -14,6 +14,7 @@ interface RelayHarnessOptions {
 	localMatches?: boolean[];
 	localFailures?: number;
 	runtimeStarted?: boolean;
+	ownerGroup?: string;
 }
 
 function createRelayHarness(options: RelayHarnessOptions) {
@@ -26,6 +27,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
 	let localMatchIndex = 0;
 	let liveCheckIndex = 0;
 	const sentMessageIds: Array<string | undefined> = [];
+	const localEntries: Array<{ from: { group?: string } }> = [];
 	const client = {
 		async send(_target: string, input: { messageId?: string }) {
 			sendCalls += 1;
@@ -61,7 +63,8 @@ function createRelayHarness(options: RelayHarnessOptions) {
     runtimeContext: () => context,
     getLiveContext: () => options.liveChecks[liveCheckIndex++] ? context : null,
     currentSessionTargetMatches: () => options.localMatches?.[localMatchIndex++] ?? options.local ?? false,
-    sendIncomingMessage: () => {
+    sendIncomingMessage: (entry: { from: { group?: string } }) => {
+		localEntries.push(entry);
 		localDeliveries += 1;
 		if (localDeliveries <= (options.localFailures ?? 0)) throw new Error("local send failed");
 	},
@@ -70,6 +73,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
       return client;
     },
     resolveSessionTarget: async () => "resolved-target",
+    homeGroup: () => options.ownerGroup ?? "default",
   });
 
   return {
@@ -84,6 +88,7 @@ function createRelayHarness(options: RelayHarnessOptions) {
     },
 		counts: () => ({ ensureConnectedCalls, sendCalls, localDeliveries }),
 		sentMessageIds,
+		localEntries,
   };
 }
 
@@ -156,6 +161,13 @@ describe("subagent result relay lifecycle acknowledgements", () => {
 		await settleRelay();
 		assert.equal(harness.counts().localDeliveries, 1);
 		assert.deepEqual(harness.deliveries.map((entry) => entry.delivered), [true, false]);
+	});
+
+	test("local result handoffs carry the relay owner group", async () => {
+		const harness = createRelayHarness({ liveChecks: [true], local: true, ownerGroup: "reviewers" });
+		harness.emitResult();
+		await settleRelay();
+		assert.equal(harness.localEntries[0]?.from.group, "reviewers");
 	});
 
 	test("local delivered-id caches are isolated per relay session", async () => {

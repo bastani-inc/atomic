@@ -4,6 +4,7 @@ import type {
   WorkflowDirectOptions,
   WorkflowDirectTaskItem,
 } from "../shared/types.js";
+import { normalizeAutoGroupSentinel } from "../shared/intercom-group.js";
 import type { WorkflowToolArgs } from "./index.js";
 
 export function withoutUndefinedProperties<T extends object>(value: T): Partial<T> {
@@ -26,6 +27,7 @@ export function directOptions(args: WorkflowToolArgs): WorkflowDirectOptions {
     failFast,
     async: _async,
     intercom: _intercom,
+    group,
     output,
     outputMode,
     reads,
@@ -40,6 +42,7 @@ export function directOptions(args: WorkflowToolArgs): WorkflowDirectOptions {
 
   return {
     ...withoutUndefinedProperties(stageOptions),
+    ...(group !== undefined ? { group: normalizeAutoGroupSentinel(group) } : {}),
     ...(typeof task === "string" ? { task } : {}),
     ...(typeof chainName === "string" ? { chainName } : {}),
     ...(typeof concurrency === "number" ? { concurrency } : {}),

@@ -314,11 +314,11 @@ export class IntercomClient extends EventEmitter {
         break;
       }
       case "message": {
-        const { from, message } = brokerMessage;
-        if (!isSessionInfo(from) || !isMessage(message)) {
+        const { from, message, channel } = brokerMessage;
+        if (!isSessionInfo(from) || !isMessage(message) || (channel !== undefined && channel !== "supervisor")) {
           throw new Error("Invalid message event");
         }
-        this.emit("message", from, message);
+        this.emit("message", from, message, channel);
         break;
       }
       case "delivered": {

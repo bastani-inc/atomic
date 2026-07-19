@@ -43,8 +43,13 @@ const JsonSchemaObject = Type.Unsafe<Record<string, unknown>>({
   description: "Plain JSON Schema used as final-answer tool arguments for this workflow item.",
 });
 
-const GroupSchema = Type.Optional(Type.Union([Type.String(), Type.Literal(true)], {
-  description: "Intercom home group for this session. A named string joins that group; `true` auto-generates one shared UUID group per parallel set (all items in the set share it) so they can intercom each other but stay isolated from other groups. Only applied when the session has intercom access.",
+// Keep this union opaque to Value.Convert: a plain Union([String, Literal(true)])
+// otherwise coerces boolean `true` to the string "true" (the String branch wins),
+// which bypasses the per-set auto-UUID minting that keys off `group === true`.
+// Mirrors WorkflowOutputSchema's double-negation opacity trick.
+const GroupSchema = Type.Optional(Type.Unsafe<string | true>({
+  not: { not: { anyOf: [{ type: "string" }, { const: true }] } },
+  description: "Intercom home group for this session. A named string joins that group; boolean `true` or the trimmed, case-insensitive string sentinel `true`/`auto` auto-generates one shared UUID group per parallel set (all items in the set share it). The names `true` and `auto` are reserved; use a different name for a literal group. Only applied when the session has intercom access.",
 }));
 
 const StageSessionOptionProperties = {

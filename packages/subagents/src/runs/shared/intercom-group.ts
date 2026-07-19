@@ -4,6 +4,13 @@ interface OrchestrationCarrier {
 	orchestrationContext?: { intercomGroup?: string } | undefined;
 }
 
+/** Normalize agent-serialized auto-group sentinels without changing real group names. */
+export function normalizeAutoGroupSentinel(group: string | true | undefined): string | true | undefined {
+	if (group === undefined || group === true) return group;
+	const sentinel = group.trim().toLowerCase();
+	return sentinel === "true" || sentinel === "auto" ? true : group;
+}
+
 /** Read the inherited stage/session intercom group from the extension context (never from process.env). */
 export function inheritedIntercomGroup(ctx: OrchestrationCarrier | undefined): string | undefined {
 	const group = ctx?.orchestrationContext?.intercomGroup;
@@ -22,8 +29,9 @@ export function resolveChildIntercomGroup(
 	inherited: string | undefined,
 	sharedAutoGroup: string | undefined,
 ): string | undefined {
-	if (explicit === true) return sharedAutoGroup ?? randomUUID();
-	if (typeof explicit === "string" && explicit.trim().length > 0) return explicit.trim();
+	const normalized = normalizeAutoGroupSentinel(explicit);
+	if (normalized === true) return sharedAutoGroup ?? randomUUID();
+	if (typeof normalized === "string" && normalized.trim().length > 0) return normalized.trim();
 	return inherited;
 }
 
@@ -36,6 +44,7 @@ export function sharedAutoGroupForSet(
 	setGroup: string | true | undefined,
 	items: ReadonlyArray<{ group?: string | true }>,
 ): string | undefined {
-	const needsAuto = setGroup === true || items.some((item) => item.group === true);
+	const needsAuto = normalizeAutoGroupSentinel(setGroup) === true
+		|| items.some((item) => normalizeAutoGroupSentinel(item.group) === true);
 	return needsAuto ? randomUUID() : undefined;
 }

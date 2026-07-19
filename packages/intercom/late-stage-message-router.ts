@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@bastani/atomic";
 import type { InboundMessageEntry } from "./intercom-utils.js";
 import type { InboundMessageAdmission, InboundMessageReservation } from "./inbound-message-admission.js";
 import type { IntercomContext, ReplyTracker } from "./reply-tracker.js";
+import { DEFAULT_GROUP, normalizeGroup } from "./group.js";
 
 const LATE_STAGE_MESSAGE_EVENT = "atomic:workflow-stage-late-message";
 type LateStageMessage = Parameters<ExtensionAPI["sendMessage"]>[0];
@@ -21,10 +22,15 @@ interface LateStageReservation {
   context: IntercomContext;
 }
 
+function isSubagentRelayHandoff(entry: InboundMessageEntry): boolean {
+  return entry.from.id === "subagent-control" || entry.from.id === "subagent-result";
+}
+
 export function registerLateStageMessageRouter(
   pi: ExtensionAPI,
   admission: InboundMessageAdmission,
   getReplyTracker: () => ReplyTracker,
+  getOwnerGroup: () => string = () => DEFAULT_GROUP,
 ): void {
   pi.events.on(LATE_STAGE_MESSAGE_EVENT, (data) => {
     if (!data || typeof data !== "object") return;
@@ -43,6 +49,9 @@ export function registerLateStageMessageRouter(
       if (message.customType !== "intercom_message") { accepted.push(message); continue; }
       const entry = message.details as InboundMessageEntry | undefined;
       if (!entry?.from || !entry.message) continue;
+      if (entry.channel !== "supervisor"
+        && !isSubagentRelayHandoff(entry)
+        && normalizeGroup(entry.from.group) !== normalizeGroup(getOwnerGroup())) continue;
       const result = admission.admit(entry.from, entry.message);
       if (result.kind === "pending") { joined.push(result.completion); continue; }
       if (result.kind === "duplicate") continue;

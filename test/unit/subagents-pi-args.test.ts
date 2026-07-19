@@ -279,18 +279,22 @@ describe("subagent child CLI args", () => {
     assert.equal(withoutAccess.env[INTERCOM_GROUP_ENV], undefined);
   });
 
-  test("resolveChildIntercomGroup: explicit > inherited; true → shared auto group", () => {
+  test("resolveChildIntercomGroup: explicit > inherited; auto sentinels use the shared group", () => {
     assert.equal(resolveChildIntercomGroup("teamX", "stage", undefined), "teamX");
     assert.equal(resolveChildIntercomGroup(undefined, "stage", undefined), "stage");
     assert.equal(resolveChildIntercomGroup(undefined, undefined, undefined), undefined);
     assert.equal(resolveChildIntercomGroup(true, "stage", "shared-uuid"), "shared-uuid");
+    assert.equal(resolveChildIntercomGroup(" TrUe ", "stage", "shared-uuid"), "shared-uuid");
+    assert.equal(resolveChildIntercomGroup(" AuTo ", "stage", "shared-uuid"), "shared-uuid");
   });
 
-  test("sharedAutoGroupForSet mints one uuid for the set when any item opts into true", () => {
+  test("sharedAutoGroupForSet mints one uuid when a boolean or string sentinel opts in", () => {
     assert.equal(sharedAutoGroupForSet(undefined, [{ group: "a" }, {}]), undefined);
     const set = sharedAutoGroupForSet(true, [{}, {}]);
     assert.match(set ?? "", /^[0-9a-f-]{36}$/);
-    const perItem = sharedAutoGroupForSet(undefined, [{ group: true }, {}]);
+    const stringSet = sharedAutoGroupForSet(" AUTO ", [{}, {}]);
+    assert.match(stringSet ?? "", /^[0-9a-f-]{36}$/);
+    const perItem = sharedAutoGroupForSet(undefined, [{ group: " true " }, {}]);
     assert.match(perItem ?? "", /^[0-9a-f-]{36}$/);
   });
 

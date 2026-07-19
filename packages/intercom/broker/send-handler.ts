@@ -133,7 +133,9 @@ export function handleBrokerSend(
       });
       return;
     }
-    write(target.socket, { type: "message", from: fromSession.info, message });
+    write(target.socket, channel === "supervisor"
+      ? { type: "message", from: fromSession.info, message, channel }
+      : { type: "message", from: fromSession.info, message });
     deliveredMessages.record(message.id, signature);
     if (channel === "supervisor") {
       supervisorCache.record(message.id, fromSession.info.id, target.info.id);

@@ -157,7 +157,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       details: entry,
     };
   }
-  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker);
+  registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, () => resolveHomeGroup(config, getLiveContext()));
   function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true, turnContext?: ReturnType<ReplyTracker["recordIncomingMessage"]>): Promise<void> {
     if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
       return Promise.resolve();
@@ -225,7 +225,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }).catch(() => {});
   }
   testOverrides.captureInboundHandler?.(handleIncomingMessage);
-  function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message): void {
+  function handleIncomingMessage(ctx: ExtensionContext, from: SessionInfo, message: Message, channel?: "supervisor"): void {
     const messageGeneration = runtimeGeneration;
     const liveContext = getLiveContext(ctx, messageGeneration);
     if (!liveContext) {
@@ -239,7 +239,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     const replyCommand = config.replyHint && message.expectsReply
       ? `intercom({ action: "reply", message: "..." })`
       : undefined;
-    const entry = { from, message, replyCommand, bodyText };
+    const entry = { from, message, replyCommand, bodyText, ...(channel ? { channel } : {}) };
     const stageClosed = liveContext.orchestrationContext?.kind === "workflow-stage"
       && liveContext.orchestrationContext.messageAdmission?.isOpen() === false;
     if (stageClosed) {
@@ -333,12 +333,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     })();
   }
   function attachClientHandlers(nextClient: IntercomClient): void {
-    nextClient.on("message", (from, message) => {
+    nextClient.on("message", (from: SessionInfo, message: Message, channel?: "supervisor") => {
       const liveContext = getLiveContext();
       if (client !== nextClient || !liveContext) {
         return;
       }
-      handleIncomingMessage(liveContext, from, message);
+      handleIncomingMessage(liveContext, from, message, channel);
     });
     nextClient.on("disconnected", (error: Error) => {
       if (client !== nextClient) {
@@ -434,6 +434,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     sendIncomingMessage,
     ensureConnected,
     resolveSessionTarget: resolveSessionTargetId,
+    homeGroup: () => resolveHomeGroup(config, getLiveContext()),
   });
 
   registerIntercomLifecycle(pi, {
