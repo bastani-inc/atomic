@@ -33,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 
 ### Fixed
+- Fixed accepted direct one-off `task`, `tasks`, and `chain` runs disappearing when model validation, task expansion, or worktree preparation failed before the first stage. Direct runs are now registered before startup work, remain visible in status and graph surfaces for their full lifecycle, retain terminal failed snapshots with the concrete startup error, and emit the normal failure notice to the invoking chat. Stage-less named workflow body failures such as a throwing `ctx.tool()` are likewise retained as failed rather than misclassified as killed.
 - Fixed busy workflow stages deadlocking when a foreground subagent waited on Intercom or blocking `contact_supervisor`. Exact foreground-owner detach now completes before the request enters the stage generation boundary, owner loss before commit falls back to normal open-stage admission, and parallel foreground groups release aggregate supervision while retaining every child's lifecycle and result recovery. Native workflow messaging and terminal close semantics remain unchanged.
 - Fixed Ctrl+O (`app.tools.expand`) being consumed without expanding tool and workflow-node detail in attached workflow stage chats under Atomic's isolated interactive engine. Repeated expand/collapse toggles now match main chat across active and completed runs, single/parallel/chain views, and narrow terminals while prompts, custom questions, and unrelated keybindings retain input ownership.
 

@@ -65,23 +65,6 @@ export function directMode(args: WorkflowToolArgs): WorkflowDetails["mode"] {
   return "single";
 }
 
-export function directModelRequests(args: WorkflowToolArgs): Array<{ readonly model?: WorkflowDirectTaskItem["model"]; readonly fallbackModels?: readonly string[] }> {
-  const options = directOptions(args);
-  const withFallbackDefault = (item: WorkflowDirectTaskItem) => ({
-    model: item.model ?? options.model,
-    fallbackModels: item.fallbackModels ?? options.fallbackModels,
-  });
-  if (args.task !== undefined && typeof args.task === "object") return [withFallbackDefault(args.task)];
-  if (Array.isArray(args.tasks)) return args.tasks.map(withFallbackDefault);
-  if (Array.isArray(args.chain)) {
-    return args.chain.flatMap((step) =>
-      "parallel" in step
-        ? step.parallel.map(withFallbackDefault)
-        : [withFallbackDefault(step)],
-    );
-  }
-  return [];
-}
 
 export function directProgressTotal(args: WorkflowToolArgs): number {
   const countTask = (task: WorkflowDirectTaskItem): number => task.count ?? 1;

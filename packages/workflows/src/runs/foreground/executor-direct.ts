@@ -19,7 +19,6 @@ import {
   directModelRequestsFromChain,
   directRunId,
   expandedParallelTasks,
-  failedDirectDetails,
   isRunOpts,
   prepareDirectWorktrees,
   validateDirectModels,
@@ -52,18 +51,15 @@ export async function runTask(
   const options = isRunOpts(optionsOrRunOptions) ? {} : optionsOrRunOptions;
   const runOptions = isRunOpts(optionsOrRunOptions) ? optionsOrRunOptions : maybeRunOptions;
   const runId = directRunId(runOptions);
-  const taskWithDefaults = directTaskWithDefaults(task, options);
-  let validationWarnings: readonly string[] = [];
-  try {
-    validationWarnings = await validateDirectModels([taskWithDefaults], runOptions);
-  } catch (err) {
-    return failedDirectDetails("single", runId, 1, err, options);
-  }
   const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
-  const prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single", workflowInvocationCwd);
-  const preparedTask = prepared.tasks[0]!;
   const gitWorktreeSetupCache = createGitWorktreeSetupCache();
+  let validationWarnings: readonly string[] = [];
+  let prepared: ReturnType<typeof prepareDirectWorktrees> | undefined;
   const direct = defineDirectWorkflow("direct-task", async (ctx) => {
+    const taskWithDefaults = directTaskWithDefaults(task, options);
+    validationWarnings = await validateDirectModels([taskWithDefaults], runOptions);
+    prepared = prepareDirectWorktrees([taskWithDefaults], options, runId, "single", workflowInvocationCwd);
+    const preparedTask = prepared.tasks[0]!;
     const rawResult = await ctx.task(preparedTask.name, directTaskToStep(preparedTask));
     const { result, artifact } = await writeDirectOutput(
       preparedTask, rawResult, workflowInvocationCwd, prepared.outputIsolations?.[0], gitWorktreeSetupCache,
@@ -86,7 +82,7 @@ export async function runTask(
     try {
       gitWorktreeSetupCache.dispose();
     } finally {
-      cleanupPreparedWorktrees(prepared);
+      if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
     }
   }
   const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
@@ -98,19 +94,16 @@ export async function runParallel(
   options: WorkflowDirectOptions = {},
   runOptions: RunOpts = {},
 ): Promise<WorkflowDetails> {
-  const tasksWithDefaults = tasks.map((task) => directTaskWithDefaults(task, options));
-  const expanded = expandedParallelTasks(tasksWithDefaults);
   const runId = directRunId(runOptions);
-  let validationWarnings: readonly string[] = [];
-  try {
-    validationWarnings = await validateDirectModels(expanded, runOptions);
-  } catch (err) {
-    return failedDirectDetails("parallel", runId, expanded.length, err, options);
-  }
   const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
-  const prepared = prepareDirectWorktrees(expanded, options, runId, "parallel", workflowInvocationCwd);
   const gitWorktreeSetupCache = createGitWorktreeSetupCache();
+  let validationWarnings: readonly string[] = [];
+  let prepared: ReturnType<typeof prepareDirectWorktrees> | undefined;
   const direct = defineDirectWorkflow("direct-parallel", async (ctx) => {
+    const tasksWithDefaults = tasks.map((task) => directTaskWithDefaults(task, options));
+    const expanded = expandedParallelTasks(tasksWithDefaults);
+    validationWarnings = await validateDirectModels(expanded, runOptions);
+    prepared = prepareDirectWorktrees(expanded, options, runId, "parallel", workflowInvocationCwd);
     const steps = prepared.tasks.map((task) => directTaskToStep(task));
     const rawResults = await ctx.parallel(steps, {
       task: options.task,
@@ -119,7 +112,7 @@ export async function runParallel(
     });
     const persisted = await Promise.all(
       rawResults.map((result, index) => writeDirectOutput(
-        prepared.tasks[index]!, result, workflowInvocationCwd, prepared.outputIsolations?.[index], gitWorktreeSetupCache,
+        prepared!.tasks[index]!, result, workflowInvocationCwd, prepared!.outputIsolations?.[index], gitWorktreeSetupCache,
       )),
     );
     const results = persisted.map((item) => item.result);
@@ -142,7 +135,7 @@ export async function runParallel(
     try {
       gitWorktreeSetupCache.dispose();
     } finally {
-      cleanupPreparedWorktrees(prepared);
+      if (prepared !== undefined) cleanupPreparedWorktrees(prepared);
     }
   }
   const results = (runResult.result?.["results"] ?? []) as WorkflowTaskResult[];
@@ -240,17 +233,13 @@ export async function runChain(
 ): Promise<WorkflowDetails> {
   const runId = directRunId(runOptions);
   let validationWarnings: readonly string[] = [];
-  try {
+  const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
+  const gitWorktreeSetupCache = createGitWorktreeSetupCache();
+  const direct = defineDirectWorkflow("direct-chain", async (ctx) => {
     validationWarnings = await validateWorkflowModels({
       requests: directModelRequestsFromChain(chain, options),
       catalog: runOptions.models,
     });
-  } catch (err) {
-    return failedDirectDetails("chain", runId, chain.length, err, options);
-  }
-  const workflowInvocationCwd = runOptions.cwd ?? process.cwd();
-  const gitWorktreeSetupCache = createGitWorktreeSetupCache();
-  const direct = defineDirectWorkflow("direct-chain", async (ctx) => {
     const results: WorkflowTaskResult[] = [];
     const artifacts: WorkflowArtifact[] = [];
     let prior: WorkflowTaskResult | readonly WorkflowTaskResult[] | undefined;

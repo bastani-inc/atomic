@@ -230,7 +230,7 @@ describe("runtime.runDirect — workflow intercom", () => {
         }
     });
 
-    test("async direct invalid fallback models fail before background spawn", async () => {
+    test("async direct invalid models are accepted, retained, and fail with the real error", async () => {
         const activeStore = createStore();
         const runtime = createExtensionRuntime({
             store: activeStore,
@@ -246,7 +246,7 @@ describe("runtime.runDirect — workflow intercom", () => {
             },
         });
 
-        const result = await runtime.runDirect({
+        const accepted = await runtime.runDirect({
             async: true,
             task: {
                 name: "solo",
@@ -257,9 +257,46 @@ describe("runtime.runDirect — workflow intercom", () => {
             },
         });
 
-        assert.equal(result.status, "failed");
-        assert.equal(result.error, WORKFLOW_UNKNOWN_MODEL_MESSAGE);
-        assert.equal(activeStore.runs().length, 0);
+        assert.equal(accepted.status, "accepted");
+        assert.ok(accepted.runId);
+        await waitForRunEnded(activeStore, accepted.runId);
+        const failed = activeStore.runs().find((run) => run.id === accepted.runId);
+        assert.equal(failed?.status, "failed");
+        assert.equal(failed.error, WORKFLOW_UNKNOWN_MODEL_MESSAGE);
+        assert.deepEqual(failed.stages, []);
+        assert.notEqual(failed.endedAt, undefined);
+    });
+
+    test("async direct parallel and chain startup failures remain visible", async () => {
+        const activeStore = createStore();
+        const runtime = createExtensionRuntime({
+            store: activeStore,
+            adapters: noopAdapters,
+            models: {
+                listModels: async () => [{ provider: "openai", id: "known", fullId: "openai/known" }],
+            },
+        });
+        const launches = [
+            {
+                expected: /count must be a positive integer/,
+                args: { async: true, tasks: [{ name: "bad-count", task: "inspect", count: 0 }] },
+            },
+            {
+                expected: new RegExp(WORKFLOW_UNKNOWN_MODEL_MESSAGE),
+                args: { async: true, chain: [{ name: "bad-model", task: "inspect", model: "missing-model" }] },
+            },
+        ];
+
+        for (const launch of launches) {
+            const accepted = await runtime.runDirect(launch.args);
+            assert.equal(accepted.status, "accepted");
+            assert.ok(accepted.runId);
+            await waitForRunEnded(activeStore, accepted.runId);
+            const failed = activeStore.runs().find((run) => run.id === accepted.runId);
+            assert.equal(failed?.status, "failed");
+            assert.match(failed?.error ?? "", launch.expected);
+            assert.deepEqual(failed?.stages, []);
+        }
     });
 
     test("non-interactive async direct single task awaits a terminal completed result", async () => {

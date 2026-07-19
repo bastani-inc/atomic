@@ -135,7 +135,7 @@ export function runFailureMetadata(
   };
 }
 
-interface SelectedRunFailureMetadata extends RunFailureMetadata {
+export interface SelectedRunFailureMetadata extends RunFailureMetadata {
   readonly failedStageIds: readonly string[];
 }
 
@@ -335,6 +335,17 @@ export function selectRunFailureDisposition(input: {
   }
 
   return selectedMetadata(runFailureMetadata(input.outerFailure, input.stages), failedStageIds);
+}
+
+/** Stage-less non-cancellation errors are startup failures, not killed runs. */
+export function normalizeStageLessFailureMetadata(
+  metadata: SelectedRunFailureMetadata,
+  stageCount: number,
+): SelectedRunFailureMetadata {
+  if (metadata.failureDisposition !== "terminal_killed" || metadata.failureKind === "cancelled" || stageCount > 0) {
+    return metadata;
+  }
+  return { ...metadata, failureDisposition: "terminal_failed" };
 }
 
 export function stageReplayFields(stage: StageSnapshot): Partial<Pick<StageSnapshot, "replayKey" | "replayedFromStageId" | "replayed">> {

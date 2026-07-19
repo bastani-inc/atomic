@@ -30,6 +30,7 @@ import {
   finalizeKilled,
   finalizeKilledByFailure,
   recordActiveBlockedFailure,
+  normalizeStageLessFailureMetadata,
   reconcileTerminalRunResult,
   selectRunFailureDisposition,
 } from "../runs/foreground/executor-lifecycle.js";
@@ -441,12 +442,12 @@ export async function run<
     }
 
     const failure = classifyExecutorFailure(err);
-    const metadata = selectRunFailureDisposition({
+    const metadata = normalizeStageLessFailureMetadata(selectRunFailureDisposition({
       outerFailure: failure,
       thrownError: err,
       stages: runSnapshot.stages,
       classifyFailure: classifyExecutorFailure,
-    });
+    }), runSnapshot.stages.length);
 
     if (metadata.failureDisposition === "terminal_killed") {
       for (const failedStageId of metadata.failedStageIds) scheduler.blockKnownNonTerminalDescendants(failedStageId);

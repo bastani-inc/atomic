@@ -2574,6 +2574,8 @@ workflow({
 
 Direct mode supports top-level/default options and per-task options such as `context`, `forkFromSessionFile`, `model`, `fallbackModels`, `thinkingLevel`, `contextWindow`, `tools`, `noTools`, `customTools`, `mcp`, `output`, `outputMode`, `reads`, `worktree`, `gitWorktreeDir`, `baseBranch`, `maxOutput`, `artifacts`, `sessionDir`, `cwd`, and `agentDir`. Direct chains also support `chainName`, `chainDir`, and `failFast`.
 
+Every async direct launch that returns `status: "accepted"` is registered in the run store before control returns. The run therefore appears immediately in `workflow({ action: "status" })`, `/workflow status`, and the workflow graph, and remains inspectable through its terminal state. Model validation, task expansion, and temporary-worktree preparation run inside that registered lifecycle; if any of them fails before the first stage starts, Atomic retains a terminal `failed` snapshot with the concrete error and emits the ordinary failed lifecycle notice to the invoking chat. Foreground direct helpers use the same retained lifecycle rather than returning an untracked startup error.
+
 ### Direct-run grouping and Intercom options
 
 ```typescript

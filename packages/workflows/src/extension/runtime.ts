@@ -38,13 +38,12 @@ import {
   type WorkflowIntercomDelivery,
   type WorkflowResultIntercomPort,
 } from "../intercom/result-intercom.js";
-import { validateWorkflowModels } from "../runs/shared/model-fallback.js";
 import { workflowConnectGuidance } from "../runs/background/runner.js";
 import { launchDetachedUntilStartup, workflowStartupFailureMessage } from "../runs/background/startup-admission.js";
 import type { JobTracker } from "../runs/background/job-tracker.js";
 import { classifyWorkflowFailure } from "../shared/workflow-failures.js";
 import { getDurableBackend, initializeDurableBackend } from "../durable/factory.js";
-import { directMode, directModelRequests, directOptions, directProgressTotal } from "./runtime-direct.js";
+import { directMode, directOptions, directProgressTotal } from "./runtime-direct.js";
 import {
   createDurableResumeRuntime,
   type DurableResumeRuntime,
@@ -400,22 +399,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
     const mode = directMode(args);
     const delivery = effectiveIntercomDelivery(args, mode);
     const parentSession = intercomParentSession(args);
-    let warnings: readonly string[] = [];
-    try {
-      warnings = await validateWorkflowModels({
-        requests: directModelRequests(args),
-        catalog: models,
-      });
-    } catch (error: unknown) {
-      return withIntercomSummary({
-        mode,
-        action: "run",
-        runId,
-        status: "failed",
-        progress: { completed: 0, total: directProgressTotal(args) },
-        error: classifyWorkflowFailure(error).userMessage,
-      }, delivery, parentSession);
-    }
     const background = runDirectForeground(args, runId, policy);
     void background.then(
       (details) => {
@@ -440,7 +423,6 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       status: "accepted",
       progress: { completed: 0, total: directProgressTotal(args) },
       message: workflowConnectGuidance(runId),
-      ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
     }, delivery, parentSession);
   }
 

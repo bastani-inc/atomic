@@ -15,7 +15,6 @@ import type {
   WorkflowTaskStep,
 } from "../../shared/types.js";
 import { stampWorkflowDefinition } from "../../authoring/workflow.js";
-import { classifyWorkflowFailure } from "../../shared/workflow-failures.js";
 import { buildModelCandidatesFromCatalog, validateWorkflowModels, workflowModelId } from "../shared/model-fallback.js";
 import {
   cleanupWorktrees,
@@ -376,28 +375,6 @@ export function isRunOpts(value: WorkflowDirectOptions | RunOpts | undefined): v
 }
 
 
-function directFailureMessage(error: unknown): string {
-  return classifyWorkflowFailure(error).userMessage;
-}
-
-export function failedDirectDetails(
-  mode: WorkflowDetails["mode"],
-  runId: string,
-  total: number,
-  error: unknown,
-  options: WorkflowDirectOptions = {},
-): WorkflowDetails {
-  return {
-    mode,
-    action: "run",
-    runId,
-    status: "failed",
-    ...(options.context !== undefined ? { context: options.context } : {}),
-    results: [],
-    progress: { completed: 0, total },
-    error: directFailureMessage(error),
-  };
-}
 
 export function workflowDetailsFromRun(
   mode: WorkflowDetails["mode"],

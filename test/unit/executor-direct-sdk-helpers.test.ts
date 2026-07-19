@@ -212,6 +212,7 @@ describe("direct SDK helpers", () => {
             mkdtempSync(join(tmpdir(), "atomic-workflow-invalid-model-")),
             "out.txt",
         );
+        const store = createStore();
         const details = await runTask(
             {
                 name: "scout",
@@ -238,7 +239,7 @@ describe("direct SDK helpers", () => {
                         },
                     },
                 },
-                store: createStore(),
+                store,
             },
         );
 
@@ -246,6 +247,11 @@ describe("direct SDK helpers", () => {
         assert.equal(details.error, WORKFLOW_UNKNOWN_MODEL_MESSAGE);
         assert.equal(creates, 0);
         assert.throws(() => readFileSync(output, "utf8"));
+        const snapshot = store.runs().find((run) => run.id === details.runId);
+        assert.equal(snapshot?.status, "failed");
+        assert.equal(snapshot?.error, WORKFLOW_UNKNOWN_MODEL_MESSAGE);
+        assert.deepEqual(snapshot?.stages, []);
+        assert.notEqual(snapshot?.endedAt, undefined);
     });
 
     test("runTask direct options expose context and sessionDir", async () => {

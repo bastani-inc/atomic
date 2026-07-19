@@ -76,6 +76,11 @@ export default workflow({
     if (outcome === "exit_blocked") {
       return ctx.exit({ status: "blocked", reason: "approval required" });
     }
+    if (outcome === "tool_failure") {
+      await ctx.tool("failing-tool", {}, async () => {
+        throw new Error("named tool startup exploded");
+      });
+    }
     await ctx.stage("worker").prompt(outcome === "recoverable_auth" ? "throw-auth" : "finish");
     if (outcome === "completed") return {};
     if (outcome === "needs_human_empty") return { status: "needs_human" };
@@ -282,6 +287,71 @@ describe("named background workflow lifecycle notifications", () => {
       assert.equal(store.runs().some((run) => run.id === result.details.runId), false);
       assert.equal(durableBackend.getWorkflow(result.details.runId), undefined);
       assert.equal(harness.entries.some((entry) => entry.type === "workflow.stage.start"), false);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  test.serial("retains direct startup failures and sends the real error to the invoking chat", async () => {
+    const harness = await createHarness();
+    try {
+      const accepted = await harness.tool.execute(
+        "call-direct-startup-failure",
+        {
+          async: true,
+          task: {
+            name: "direct-startup-failure",
+            task: "never starts",
+            worktree: true,
+            gitWorktreeDir: "reused-worktree",
+          },
+        },
+        undefined,
+        undefined,
+        { hasUI: true } as never,
+      );
+
+      assert.equal(accepted.details.status, "accepted");
+      const runId = accepted.details.runId;
+      assert.ok(runId);
+      const deadline = Date.now() + 1000;
+      while (store.runs().find((run) => run.id === runId)?.endedAt === undefined && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      const snapshot = store.runs().find((run) => run.id === runId);
+      assert.equal(snapshot?.status, "failed");
+      assert.match(snapshot?.error ?? "", /worktree and gitWorktreeDir are mutually exclusive/);
+      assert.deepEqual(snapshot?.stages, []);
+      const status = await harness.tool.execute(
+        "call-direct-startup-status",
+        { action: "status" },
+        undefined,
+        undefined,
+        { hasUI: true } as never,
+      );
+      assert.equal(status.details.action, "status");
+      assert.equal(status.details.runs.some((run) => run.runId === runId && run.status === "failed"), true);
+      assert.equal(status.details.snapshots.some((run) => run.id === runId && run.error === snapshot?.error), true);
+      const notices = noticesFor(harness, runId);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.details?.kind, "failed");
+      assert.match(notices[0]?.content ?? "", /worktree and gitWorktreeDir are mutually exclusive/);
+    } finally {
+      await harness.cleanup();
+    }
+  });
+
+  test.serial("records a named ctx.tool startup throw as failed with a lifecycle notice", async () => {
+    const harness = await createHarness();
+    try {
+      const snapshot = await runNamed(harness, "tool_failure");
+      assert.equal(snapshot.status, "failed");
+      assert.match(snapshot.error ?? "", /named tool startup exploded/);
+      assert.deepEqual(snapshot.stages, []);
+      const notices = noticesFor(harness, snapshot.id);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.details?.kind, "failed");
+      assert.match(notices[0]?.content ?? "", /named tool startup exploded/);
     } finally {
       await harness.cleanup();
     }

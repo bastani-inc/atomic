@@ -369,7 +369,7 @@ describe("tool run-control actions", () => {
         assert.equal(r.runId, runId);
     });
 
-    test.serial("runtime runDirect classifies direct pre-run model auth failures", async () => {
+    test.serial("runtime runDirect retains direct startup model auth failures", async () => {
         const runtime = createExtensionRuntime({
             registry: createRegistry([]),
             models: {
@@ -379,13 +379,17 @@ describe("tool run-control actions", () => {
             },
         });
 
-        const result = await runtime.runDirect({
+        const accepted = await runtime.runDirect({
             task: { name: "scout", task: "inspect repo", model: "openai/gpt" },
             async: true,
         });
 
-        assert.equal(result.status, "failed");
-        assert.equal(result.error, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
+        assert.equal(accepted.status, "accepted");
+        assert.ok(accepted.runId);
+        await waitForToolRunEnded(accepted.runId);
+        const failed = store.runs().find((run) => run.id === accepted.runId);
+        assert.equal(failed?.status, "failed");
+        assert.equal(failed?.error, WORKFLOW_INVALID_PROVIDER_CREDENTIALS_MESSAGE);
     });
 
     test.serial("makeExecuteWorkflowTool resume rejects ambiguous stage prefixes", async () => {
