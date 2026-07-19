@@ -37,3 +37,18 @@ test("offline model candidate startup restores caches without catalog network re
 	expect(refreshCopilotModelCatalog).not.toHaveBeenCalled();
 	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
 });
+
+test("offline scoped-model selector refresh stays cache-only", async () => {
+	setEnvValue(ENV_OFFLINE, "1");
+	const refresh = vi.fn(async () => ({ aborted: false, errors: new Map() }));
+	const showStatus = vi.fn();
+	const mode = {
+		session: { modelRegistry: { refresh, getAvailable: () => [] } },
+		showStatus,
+	};
+
+	await InteractiveModeBase.prototype.showModelsSelector.call(mode as never);
+
+	expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
+	expect(showStatus).toHaveBeenCalledWith("No models available");
+});

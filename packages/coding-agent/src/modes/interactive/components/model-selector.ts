@@ -10,6 +10,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 import type { ModelRegistry } from "../../../core/model-registry.ts";
+import { isOfflineModeEnabled } from "../../../core/package-manager-env.ts";
 import type { SettingsManager } from "../../../core/settings-manager.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
@@ -188,7 +189,11 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
-		const result = await this.modelRegistry.refresh({ signal: this.refreshAbortController.signal, timeoutMs: 15_000 });
+		const result = await this.modelRegistry.refresh({
+			allowNetwork: !isOfflineModeEnabled(),
+			signal: this.refreshAbortController.signal,
+			timeoutMs: 15_000,
+		});
 		if (this.closed) return;
 		this.refreshStatusSuccess = false;
 		if (result.aborted) {

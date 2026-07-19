@@ -341,7 +341,9 @@ export async function createAgentSession(
       if (!auth.ok) {
         throw new Error(auth.error);
       }
-      const requestModel = auth.baseUrl && auth.baseUrl !== model.baseUrl ? { ...model, baseUrl: auth.baseUrl } : model;
+      const requestModel = auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
+        ? { ...model, baseUrl: auth.baseUrl }
+        : model;
       const providerRetrySettings = settingsManager.getProviderRetrySettings();
       const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
       // SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".

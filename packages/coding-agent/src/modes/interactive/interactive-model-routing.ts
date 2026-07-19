@@ -197,7 +197,7 @@ InteractiveModeBase.prototype.showContextWindowSelector = function(this: Interac
 
 InteractiveModeBase.prototype.showModelsSelector = async function(this: InteractiveModeBase): Promise<void> {
     // Get all available models
-    await this.session.modelRegistry.refresh();
+	await this.session.modelRegistry.refresh({ allowNetwork: !isOfflineModeEnabled() });
     const allModels = this.session.modelRegistry.getAvailable();
 
     if (allModels.length === 0) {

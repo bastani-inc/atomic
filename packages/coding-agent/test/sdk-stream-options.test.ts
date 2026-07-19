@@ -281,6 +281,38 @@ describe("createAgentSession stream options", () => {
 		}
 	});
 
+	it("preserves an empty credential baseUrl during SDK dispatch", async () => {
+		const authStorage = AuthStorage.inMemory();
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const model = modelRegistry.getAll()[0]!;
+		let dispatchedBaseUrl: string | undefined;
+		modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "key", baseUrl: "" });
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			streamSimple: (requestModel) => {
+				dispatchedBaseUrl = requestModel.baseUrl;
+				return createDoneStream(model.api);
+			},
+		});
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager: SettingsManager.inMemory(),
+			sessionManager: SessionManager.inMemory(cwd),
+		});
+
+		try {
+			await session.agent.streamFn(model, { messages: [] });
+			expect(dispatchedBaseUrl).toBe("");
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
+	});
+
 	it("resolves provider-owned null headers from a runtime API key through stream dispatch", async () => {
 		const previousAccount = process.env.CLOUDFLARE_ACCOUNT_ID;
 		const previousGateway = process.env.CLOUDFLARE_GATEWAY_ID;

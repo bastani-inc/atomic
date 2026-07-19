@@ -14,7 +14,8 @@ export class InMemoryCodingAgentModelsStore implements CodingAgentModelsStore {
 	private readonly entries = new Map<string, ModelsStoreEntry>();
 
 	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
-		return this.entries.get(providerId);
+		const entry = this.entries.get(providerId);
+		return entry === undefined ? undefined : structuredClone(entry);
 	}
 
 	async write(providerId: string, entry: ModelsStoreEntry): Promise<void> {

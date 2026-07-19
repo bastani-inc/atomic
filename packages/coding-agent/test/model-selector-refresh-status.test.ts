@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai/compat";
 import type { TUI } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
+import { ENV_OFFLINE } from "../src/config.ts";
 import type { ModelRegistry } from "../src/core/model-registry.ts";
 import type { SettingsManager } from "../src/core/settings-manager.ts";
 import { ModelSelectorComponent } from "../src/modes/interactive/components/model-selector.ts";
@@ -26,7 +27,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 	return { promise: new Promise<T>((done) => (resolve = done)), resolve };
 }
 
-function createSelector(refresh: () => Promise<RefreshResult>): ModelSelectorComponent {
+function createSelector(refresh: ModelRegistry["refresh"]): ModelSelectorComponent {
 	initTheme("dark");
 	const registry = {
 		refresh,
@@ -90,5 +91,22 @@ describe("model selector catalog refresh status", () => {
 		const rendered = await renderedAfterWork(selector);
 		expect(rendered).toContain("cached-model");
 		expect(rendered).toContain("Model refresh timed out; showing cached models.");
+	});
+
+	it("keeps selector refreshes cache-only in offline mode", async () => {
+		const previous = process.env[ENV_OFFLINE];
+		process.env[ENV_OFFLINE] = "1";
+		let observed: Parameters<ModelRegistry["refresh"]>[0];
+		try {
+			const selector = createSelector(async (options) => {
+				observed = options;
+				return { aborted: false, errors: new Map() };
+			});
+			await renderedAfterWork(selector);
+			expect(observed).toMatchObject({ allowNetwork: false, timeoutMs: 15_000 });
+		} finally {
+			if (previous === undefined) delete process.env[ENV_OFFLINE];
+			else process.env[ENV_OFFLINE] = previous;
+		}
 	});
 });
