@@ -22,6 +22,7 @@ function writeConsumerFixture(tempDir: string): string {
 	writeFileSync(
 		consumerPath,
 		`import type { Api, Model } from "@earendil-works/pi-ai/compat";
+import { getOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { Type, type Static } from "typebox";
 import {
 	formatContextWindow,
@@ -77,8 +78,11 @@ if ("error" in selected) {
 const selection: ContextWindowSelection = selected;
 const formatted: string = formatContextWindow(selection.contextWindow);
 const modelDefault: number = getModelDefaultContextWindow(selection.model);
+const oauthResult = getOAuthApiKey("provider", {
+	provider: { refresh: "refresh", access: "access", expires: Date.now() + 60_000 },
+});
 
-void [options, defaultWindow, validation, supported, formatted, modelDefault, toolInput];
+void [options, defaultWindow, validation, supported, formatted, modelDefault, toolInput, oauthResult];
 `,
 	);
 	return consumerPath;

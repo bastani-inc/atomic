@@ -102,7 +102,7 @@ export interface AgentSessionMethodSurface {
 	readonly extensionRunner: ExtensionRunner;
 
 	_handleAgentEvent(event: AgentEvent): void;
-	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders }>;
+	_getRequiredRequestAuth(model: Model<Api>): Promise<{ apiKey: string; headers?: ProviderHeaders; baseUrl?: string }>;
 	_installAgentToolHooks(): void;
 	_installAgentNextTurnRefresh(): void;
 	_emit(event: AgentSessionEvent): void;

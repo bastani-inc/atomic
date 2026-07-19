@@ -202,9 +202,16 @@ export async function getOAuthApiKey(
 	const selected = credentials[providerId];
 	if (!selected) return null;
 	const credential: OAuthCredential = { type: "oauth", ...selected };
-	const resolved = Date.now() >= credential.expires
-		? await refreshOAuthProvider(providerId, credential)
-		: { credential, auth: await oauthCredentialToAuth(providerId, credential) };
+	let resolved: { credential: OAuthCredential; auth: ModelAuth | undefined } | undefined;
+	if (Date.now() >= credential.expires) {
+		try {
+			resolved = await refreshOAuthProvider(providerId, credential);
+		} catch {
+			throw new Error(`Failed to refresh OAuth token for ${providerId}`);
+		}
+	} else {
+		resolved = { credential, auth: await oauthCredentialToAuth(providerId, credential) };
+	}
 	const apiKey = resolved?.auth?.apiKey;
 	if (!resolved || !apiKey) return null;
 	const { type: _type, ...newCredentials } = resolved.credential;

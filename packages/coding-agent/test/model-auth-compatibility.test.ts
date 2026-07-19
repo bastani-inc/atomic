@@ -78,6 +78,10 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(refreshToken).toHaveBeenCalledWith(original);
 		expect(await getOAuthApiKey("legacy-probe", {})).toBeNull();
 		await expect(getOAuthApiKey("missing-provider", {})).rejects.toThrow("Unknown OAuth provider");
+		refreshToken.mockRejectedValueOnce(new Error("sensitive upstream detail"));
+		await expect(getOAuthApiKey("legacy-probe", { "legacy-probe": original })).rejects.toThrow(
+			"Failed to refresh OAuth token for legacy-probe",
+		);
 	});
 
 	test("runtime API-key overrides bypass expired stored OAuth", async () => {
