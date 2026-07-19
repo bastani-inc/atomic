@@ -193,6 +193,7 @@ function getAliases(): Record<string, string> {
   // upstream layout change moves these files, this join needs updating to
   // match the package's real dist paths.
   const piAiEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai");
+  const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@earendil-works/pi-ai");
   const piAiOauthEntry = path.resolve(__dirname, "../oauth-compat.js");
 
   _aliases = {
@@ -200,14 +201,16 @@ function getAliases(): Record<string, string> {
     "@earendil-works/pi-coding-agent": piCodingAgentEntry,
     "@earendil-works/pi-agent-core": piAgentCoreEntry,
     "@earendil-works/pi-tui": piTuiEntry,
-    "@earendil-works/pi-ai": piAiEntry,
-    "@earendil-works/pi-ai/compat": piAiEntry,
     "@earendil-works/pi-ai/oauth": piAiOauthEntry,
+    "@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
+    "@earendil-works/pi-ai/compat": piAiEntry,
+    "@earendil-works/pi-ai": piAiEntry,
     "@mariozechner/pi-agent-core": piAgentCoreEntry,
     "@mariozechner/pi-tui": piTuiEntry,
-    "@mariozechner/pi-ai": piAiEntry,
-    "@mariozechner/pi-ai/compat": piAiEntry,
     "@mariozechner/pi-ai/oauth": piAiOauthEntry,
+    "@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
+    "@mariozechner/pi-ai/compat": piAiEntry,
+    "@mariozechner/pi-ai": piAiEntry,
     typebox: typeboxEntry,
     "typebox/compile": typeboxCompileEntry,
     "typebox/value": typeboxValueEntry,

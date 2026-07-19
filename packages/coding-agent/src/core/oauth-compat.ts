@@ -1,7 +1,15 @@
 import type { OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import type { LegacyOAuthProvider, OAuthProviderDescriptor } from "./oauth-provider-bridge.ts";
 
-export * from "@earendil-works/pi-ai/oauth";
+export type {
+	OAuthAuthInfo,
+	OAuthCredentials,
+	OAuthDeviceCodeInfo,
+	OAuthLoginCallbacks,
+	OAuthPrompt,
+	OAuthSelectOption,
+	OAuthSelectPrompt,
+} from "@earendil-works/pi-ai/oauth";
 export {
 	getOAuthApiKey,
 	getOAuthProvider,

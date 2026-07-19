@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
-import { extensionLoaderTestHooks } from "../src/core/extensions/loader-virtual-modules.ts";
+import { extensionLoaderTestHooks, loadExtensionModule } from "../src/core/extensions/loader-virtual-modules.ts";
 
 type PiAiExports = {
 	complete?: object;
@@ -61,6 +61,21 @@ describe("extension loader pi-ai compat aliases", () => {
 		const aliases = extensionLoaderTestHooks.getAliases();
 		expect(aliases["@mariozechner/pi-ai/oauth"]).toBe(aliases["@earendil-works/pi-ai/oauth"]);
 		expect(aliases["@earendil-works/pi-ai/oauth"]).toMatch(/oauth-compat\.js$/);
+	});
+
+	it("loads the populated OAuth bridge through the real Jiti extension path", async () => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atomic-oauth-extension-"));
+		const extensionPath = path.join(tmp, "extension.ts");
+		fs.writeFileSync(
+			extensionPath,
+			`import { getOAuthProviders } from "@earendil-works/pi-ai/oauth";\nexport default () => typeof getOAuthProviders;\n`,
+		);
+		try {
+			const factory = await loadExtensionModule(extensionPath);
+			expect((factory as (() => string) | undefined)?.()).toBe("function");
+		} finally {
+			fs.rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 
 	it("confirms compat is the legacy API surface while root stays core-only", async () => {
