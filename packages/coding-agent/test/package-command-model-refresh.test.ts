@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.ts";
+import { ENV_AGENT_DIR, getAgentDir, getEnvNames, getLegacyAgentDir } from "../src/config.ts";
 import { handlePackageCommand, refreshModelCatalogs } from "../src/package-manager-cli.ts";
 import { parsePackageCommand } from "../src/package-manager-cli-parser.ts";
 
@@ -82,6 +82,46 @@ describe("atomic update --models", () => {
 		expect(refreshCalls).toBe(1);
 		expect(observedOptions).toEqual({ allowNetwork: true, force: true });
 		expect(log.mock.calls.flat().join("\n")).toContain("Model catalogs refreshed");
+	});
+
+	it("preserves legacy auth fallback when refreshing extension catalogs", async () => {
+		const isolatedEnvNames = [...getEnvNames(ENV_AGENT_DIR), "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"];
+		const previousEnvironment = new Map(isolatedEnvNames.map((name) => [name, process.env[name]]));
+		const home = join(tmpdir(), `atomic-model-refresh-home-${process.pid}-${Math.random().toString(36).slice(2)}`);
+		for (const name of getEnvNames(ENV_AGENT_DIR)) delete process.env[name];
+		process.env.HOME = home;
+		process.env.USERPROFILE = home;
+		delete process.env.HOMEDRIVE;
+		delete process.env.HOMEPATH;
+		try {
+			const primaryDir = getAgentDir();
+			const legacyDir = getLegacyAgentDir();
+			mkdirSync(legacyDir, { recursive: true });
+			writeFileSync(join(legacyDir, "auth.json"), JSON.stringify({
+				"legacy-catalog": { type: "api_key", key: "legacy-secret" },
+			}));
+			let observedKey: string | undefined;
+
+			await refreshModelCatalogs(primaryDir, {
+				cwd: home,
+				extensionFactories: [(pi) => {
+					pi.registerProvider("legacy-catalog", {
+						refreshModels: async ({ credential }) => {
+							observedKey = credential?.type === "api_key" ? credential.key : undefined;
+							return [];
+						},
+					});
+				}],
+			});
+
+			expect(observedKey).toBe("legacy-secret");
+		} finally {
+			for (const [name, value] of previousEnvironment) {
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 
 

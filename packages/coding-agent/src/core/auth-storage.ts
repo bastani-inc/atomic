@@ -67,13 +67,11 @@ export class AuthStorage {
 		this.reload();
 	}
 
-	static create(authPath?: string): AuthStorage {
-		return new AuthStorage(
-			new FileAuthStorageBackend(
-				authPath ?? join(getAgentDir(), "auth.json"),
-				authPath ? [authPath] : getAgentConfigPaths("auth.json"),
-			),
-		);
+	static create(authPath?: string | string[]): AuthStorage {
+		const paths = authPath === undefined
+			? getAgentConfigPaths("auth.json")
+			: Array.isArray(authPath) ? authPath : [authPath];
+		return new AuthStorage(new FileAuthStorageBackend(paths[0] ?? join(getAgentDir(), "auth.json"), paths));
 	}
 
 	static fromStorage(storage: AuthStorageBackend): AuthStorage {

@@ -70,7 +70,16 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 				const escalation = inflightRefresh.promise.then(startEscalation, startEscalation);
 				return settleOnAbort(escalation, context.signal, () => !persistenceInProgress);
 			}
-			return settleOnAbort(inflightRefresh.promise, context.signal, () => true);
+			const owner = inflightRefresh;
+			const retryAfterAbortedOwner = () => {
+				if (owner.signal?.aborted && !context.signal?.aborted) return refreshModels(context);
+			};
+			const joined = owner.promise.then(retryAfterAbortedOwner, (error) => {
+				const retry = retryAfterAbortedOwner();
+				if (retry) return retry;
+				throw error;
+			});
+			return settleOnAbort(joined, context.signal, () => !persistenceInProgress);
 		}
 		const epoch = ++refreshEpoch;
 		const isCurrent = () => epoch === refreshEpoch && !context.signal?.aborted;

@@ -147,6 +147,81 @@ describe("remote catalog provider", () => {
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
 	});
 
+	it("retries a surviving same-strength caller when the refresh owner later aborts", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch")
+			.mockImplementationOnce(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+			}))
+			.mockResolvedValueOnce(new Response(JSON.stringify([model("fresh")]), { status: 200 }));
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}), "https://catalog.example.test");
+		const store = providerStore(new InMemoryModelsStore());
+		const ownerController = new AbortController();
+		const context = { credential: { type: "api_key" as const }, store, allowNetwork: true, force: true };
+		const owner = provider.refreshModels?.({ ...context, signal: ownerController.signal });
+		await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+		const survivor = provider.refreshModels?.(context);
+
+		ownerController.abort();
+		await expect(owner).resolves.toBeUndefined();
+		await expect(survivor).resolves.toBeUndefined();
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
+
+	it("retries surviving callers when an aborted owner's delayed write rejects", async () => {
+		let releaseFirstWrite!: () => void;
+		const firstWriteGate = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+		let writeCount = 0;
+		let persisted: string[] = [];
+		const store = {
+			read: async () => undefined,
+			write: async (entry: { models: readonly Model<"openai-completions">[] }) => {
+				writeCount += 1;
+				if (writeCount === 1) {
+					await firstWriteGate;
+					throw new Error("transient write");
+				}
+				persisted = entry.models.map((candidate) => candidate.id);
+			},
+			delete: async () => {},
+		};
+		const fetchSpy = vi.spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(new Response(JSON.stringify([model("stale")]), { status: 200 }))
+			.mockResolvedValueOnce(new Response(JSON.stringify([model("fresh")]), { status: 200 }));
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}));
+		const ownerController = new AbortController();
+		const context = { credential: { type: "api_key" as const }, store, allowNetwork: true, force: true };
+		const owner = provider.refreshModels?.({ ...context, signal: ownerController.signal });
+		const ownerFailure = expect(owner).rejects.toThrow("transient write");
+		await vi.waitFor(() => expect(writeCount).toBe(1));
+		const survivors = [provider.refreshModels?.(context), provider.refreshModels?.(context)];
+
+		ownerController.abort();
+		releaseFirstWrite();
+		await ownerFailure;
+		await Promise.all(survivors);
+		expect(fetchSpy).toHaveBeenCalledTimes(2);
+		expect(writeCount).toBe(2);
+		expect(persisted).toEqual(["fresh"]);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
+
 	it("prevents an aborted stale read from overwriting a newer catalog", async () => {
 		type StoredEntry = Awaited<ReturnType<InMemoryModelsStore["read"]>>;
 		let resolveOldRead!: (entry: StoredEntry) => void;

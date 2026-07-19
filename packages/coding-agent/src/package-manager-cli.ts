@@ -5,6 +5,7 @@ import { createProjectTrustContext } from "./cli/project-trust.ts";
 import {
 	APP_NAME,
 	detectInstallMethod,
+	getAgentConfigPaths,
 	getAgentDir,
 	getPackageDir,
 	getSelfUpdateCommand,
@@ -70,10 +71,11 @@ export async function refreshModelCatalogs(
 		});
 		const loaded = await Promise.race([resourceLoader.reload().then(() => true), aborted]);
 		if (!loaded) throw new Error("Model catalog refresh timed out.");
-		const modelRegistry = ModelRegistry.create(
-			AuthStorage.create(join(agentDir, "auth.json")),
-			join(agentDir, "models.json"),
-		);
+		const authPaths = [join(agentDir, "auth.json"), ...getAgentConfigPaths("auth.json")]
+			.filter((path, index, paths) => paths.indexOf(path) === index);
+		const modelPaths = [join(agentDir, "models.json"), ...getAgentConfigPaths("models.json")]
+			.filter((path, index, paths) => paths.indexOf(path) === index);
+		const modelRegistry = ModelRegistry.create(AuthStorage.create(authPaths), modelPaths);
 		const extensionsResult = resourceLoader.getExtensions();
 		if (extensionsResult.errors.length > 0) {
 			const details = extensionsResult.errors.map(({ path, error }) => `${path}: ${error}`).join("; ");
