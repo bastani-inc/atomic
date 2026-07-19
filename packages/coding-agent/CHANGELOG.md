@@ -31,6 +31,7 @@
 
 
 ### Fixed
+- Fixed bundled workflow stages freezing when an active foreground subagent used Intercom or blocking `contact_supervisor`. Busy stages now give the exact child owner's acknowledged detach handshake first refusal before stage-session admission; owner loss between probe/commit falls back instead of dropping the broker message. In parallel foreground groups, one accepted commit releases aggregate supervision for all active siblings while their child processes and eventual result/status recovery remain owned; run-owned worktrees are retained until every detached child closes and their diffs are captured.
 
 - Fixed `/workflow <name>` input forms becoming non-responsive under interactive-engine isolation. The RPC extension surface advertised `setEditorComponent` as a callable compatibility stub even though it could not install a host editor, so the workflow command waited on an editor that was never mounted while Tab and Escape stayed routed to the ordinary prompt. Named workflow forms now prefer the host-native input-form channel, keeping Tab/Shift+Tab, arrows, editing, configured keybindings, Enter, Escape, and Ctrl+C local and responsive in both interactive modes; cancellation does not dispatch the workflow, inline bottom-editor geometry is preserved, and legacy custom-editor/`ctx.ui.custom()` fallbacks remain available for older hosts.
 

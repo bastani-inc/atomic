@@ -2,10 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Message } from "@earendil-works/pi-ai/compat";
 import type { AgentConfig } from "../../agents/agents.ts";
-import {
-	type AgentProgress, type RunSyncOptions, type SingleResult,
-	INTERCOM_DETACH_REQUEST_EVENT, INTERCOM_DETACH_RESPONSE_EVENT, getSubagentDepthEnv,
-} from "../../shared/types.ts";
+import { type AgentProgress, type RunSyncOptions, type SingleResult, getSubagentDepthEnv } from "../../shared/types.ts";
 import { extractTextFromContent, extractToolArgsPreview, getFinalOutput } from "../../shared/utils.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
@@ -14,8 +11,6 @@ import { formatPiSpawnError, getPiSpawnCommand, validatePiSpawnCwd } from "../sh
 import { assistantStopReason, isAssistantFailureStopReason, shouldStartSubagentFinalDrain } from "../shared/final-drain.ts";
 import { modelFailureMessage } from "../shared/model-fallback.ts";
 import { createAttemptWatchdog } from "../shared/attempt-watchdog.ts";
-import { matchesIntercomDetachRoute, type IntercomDetachRoute } from "./execution-detach-route.ts";
-import { IntercomDetachReservations } from "./execution-detach-reservations.ts";
 import {
 	createMutatingFailureState,
 	didMutatingToolFail,
@@ -30,6 +25,7 @@ import { resolveSubagentModelFastMode } from "../../shared/fast-mode.ts";
 import { appendRecentOutput, emptyUsage, modelFailureSignalByResult, snapshotProgress, snapshotResult } from "./execution-utils.ts";
 import { createAttemptControlRuntime } from "./execution-attempt-control.ts";
 import { finalizeSingleAttempt } from "./execution-attempt-finalize.ts";
+import { registerExecutionIntercomDetach } from "./execution-intercom-detach.ts";
 import type { RunSingleAttemptShared } from "./execution-attempt-types.ts";
 import { requestSupervisorAuthorization } from "../../intercom/supervisor-authorization.ts";
 export async function runSingleAttempt(
@@ -154,13 +150,14 @@ export async function runSingleAttempt(
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
 		const detachForIntercom = () => {
+			if (detached || processClosed) return;
 			detached = true;
 			result.detached = true;
 			result.detachedReason = "intercom coordination";
 			progress.status = "detached";
 			progress.durationMs = Date.now() - startTime;
 			result.progressSummary = { toolCount: progress.toolCount, tokens: progress.tokens, durationMs: progress.durationMs };
-			// Settle the foreground tool call, but retain process lifecycle ownership.
+			// Settle foreground supervision while retaining process lifecycle ownership.
 			finish(-2, true);
 		};
 		const FINAL_STOP_GRACE_MS = 1000;
@@ -198,24 +195,6 @@ export async function runSingleAttempt(
 			}, FINAL_STOP_GRACE_MS);
 			finalDrainTimer.unref?.();
 		};
-		const detachReservations = new IntercomDetachReservations();
-		const unsubscribeIntercomDetach = options.intercomEvents?.on?.(INTERCOM_DETACH_REQUEST_EVENT, (payload) => {
-			if (!options.allowIntercomDetach || processClosed || options.signal?.aborted) return;
-			if (!payload || typeof payload !== "object") return;
-			const event = payload as IntercomDetachRoute;
-			const reservationKeyValid = typeof event.requestId === "string";
-			if (!reservationKeyValid || !matchesIntercomDetachRoute(event, {
-				childIntercomTarget: options.intercomSessionName,
-			})) return;
-			if (event.phase === "probe") {
-				if (detached || !detachReservations.reserve(event)) return;
-				options.intercomEvents?.emit?.(INTERCOM_DETACH_RESPONSE_EVENT, { ...event, accepted: true });
-				return;
-			}
-			if (event.phase !== "commit" || detached || !detachReservations.commit(event)) return;
-			detachForIntercom();
-			options.intercomEvents?.emit?.(INTERCOM_DETACH_RESPONSE_EVENT, { ...event, accepted: true });
-		});
 		const finish = (code: number, retainLifecycleOwner = false) => {
 			if (settled) return;
 			settled = true;
@@ -224,8 +203,7 @@ export async function runSingleAttempt(
 				clearStdioGuard();
 				attemptWatchdog.clear();
 				removeAbortListener?.();
-				detachReservations.clear();
-				unsubscribeIntercomDetach?.();
+				cleanupIntercomDetach();
 			}
 			if (activityTimer) {
 				clearInterval(activityTimer);
@@ -234,6 +212,11 @@ export async function runSingleAttempt(
 			removeInterruptListener?.();
 			resolve(code);
 		};
+		const cleanupIntercomDetach = registerExecutionIntercomDetach(options, {
+			isUnavailable: () => processClosed || options.signal?.aborted === true,
+			isDetached: () => detached,
+			detach: detachForIntercom,
+		});
 		let pendingToolResult: { tool: string; path?: string; mutates: boolean; startedAt?: number } | undefined;
 		const mutatingFailures = createMutatingFailureState();
 		const mutatingFailureWindowMs = 5 * 60_000;
@@ -415,8 +398,7 @@ export async function runSingleAttempt(
 			attemptWatchdog.clear();
 			removeAbortListener?.(); removeAbortListener = undefined;
 			removeInterruptListener?.(); removeInterruptListener = undefined;
-			detachReservations.clear();
-			unsubscribeIntercomDetach?.();
+			cleanupIntercomDetach();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
 			if (buf.trim()) processLine(buf);
@@ -444,6 +426,7 @@ export async function runSingleAttempt(
 			clearFinalDrainTimers();
 			clearStdioGuard();
 			attemptWatchdog.clear();
+			cleanupIntercomDetach();
 			void jsonlWriter.close().catch(() => undefined);
 			cleanupTempDir(tempDir);
 			if (!result.error) result.error = formatPiSpawnError(error, spawnSpec, runCwd);

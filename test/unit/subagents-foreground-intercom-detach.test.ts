@@ -141,6 +141,50 @@ const timer = setInterval(() => {
     }, DETACH_TIMEOUTS);
   });
 
+
+  test("a parallel detach commit releases active sibling supervision while retaining both children", async () => {
+    const gateName = "release-parallel-detached-children";
+    const fakeScript = `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const gate = join(process.cwd(), ${JSON.stringify(gateName)});
+const timer = setInterval(() => {
+  if (!existsSync(gate)) return;
+  clearInterval(timer);
+  console.log(${JSON.stringify(successEvent("parallel child recovered"))});
+}, 5);`;
+    await withFakeCli(fakeScript, async (dir) => {
+      const emitter = new EventEmitter();
+      const bus = eventBus(emitter);
+      const groupDetach = new AbortController();
+      const recovered: Array<{ exitCode: number }> = [];
+      const recoveredBoth = Promise.withResolvers<void>();
+      const launch = (index: number, target: string) => runSync(dir, [bridgedAgent()], "fake-worker", target, {
+        cwd: dir,
+        runId: "parallel-detach",
+        index,
+        intercomSessionName: target,
+        allowIntercomDetach: true,
+        intercomEvents: bus,
+        intercomDetachSignal: groupDetach.signal,
+        onIntercomDetachCommit: () => groupDetach.abort(),
+        onDetachedExit: (result) => {
+          recovered.push(result);
+          if (recovered.length === 2) recoveredBoth.resolve();
+        },
+      });
+      const first = launch(0, "child-a");
+      const sibling = launch(1, "child-b");
+      await Bun.sleep(25);
+      await handoff(bus, { requestId: "parallel-question", childIntercomTarget: "child-a" });
+
+      const placeholders = await Promise.all([first, sibling]);
+      assert.ok(placeholders.every((result) => result.detached === true));
+      fs.writeFileSync(join(dir, gateName), "release", "utf8");
+      await recoveredBoth.promise;
+      assert.equal(recovered.length, 2);
+      assert.ok(recovered.every((result) => result.exitCode === 0));
+    }, { idleMs: 4_000, wallMs: 4_000 });
+  });
   test("background-style execution ignores targeted detach requests", async () => {
     await withFakeCliEvent(successEvent("background result"), 80, async (dir) => {
       const emitter = new EventEmitter();

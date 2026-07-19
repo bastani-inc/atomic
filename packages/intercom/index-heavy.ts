@@ -260,10 +260,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
       inboundDeliveries.release(reservation, failure);
       replyTracker.forgetIncomingMessage(replyContext);
     };
-    const stageDelivery = admitWorkflowStageInbound(liveContext, () => {
-      replyTracker.queueTurnContext(replyContext);
-      return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) });
-    });
+    const stageDelivery = admitWorkflowStageInbound(
+      liveContext,
+      () => { replyTracker.queueTurnContext(replyContext); return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) }); },
+      () => foregroundDetachHandoff.claim(from, message, messageGeneration, () => Boolean(getLiveContext(liveContext, messageGeneration))),
+    );
     if (stageDelivery !== false) {
       void stageDelivery.then(commit, release);
       return;

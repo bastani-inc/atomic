@@ -355,7 +355,7 @@ workflow({
 
 When neither `enabled` nor `delivery` is set, async direct `parallel`/`chain` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from async direct runs as user-visible workflow output.
 
-While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue; late messages surface once through the main-chat notification path.
+While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. If that stage is busy running a foreground subagent, Atomic first gives the exact child owner the normal probe/commit detach handshake; only after the child acknowledges detach does the message cross the stage generation boundary. If no foreground owner claims it, the same message falls back to ordinary stage admission rather than waiting in Intercom's idle queue.
 
 ### Subagent Control Notices
 
@@ -370,7 +370,7 @@ If live child-to-parent coordination is needed, invoke `intercom({ action: "stat
 
 ### Delivery Ordering
 
-During a foreground subagent run, Atomic probes for the exact live foreground owner before delivery: the matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before messages enter the parent's model-visible steering queue. Blocking calls stay alive until the exact threaded reply; cancellation or replacement invalidates stale handshakes.
+During a foreground subagent run, Atomic probes for the exact live foreground owner before delivery: the matching child reserves the request, accepts a generation-scoped detach commit, and acknowledges it before messages enter the parent's model-visible steering queue. A commit accepted by one member of a foreground parallel group releases supervision for all active siblings while retaining their process/result ownership, allowing the aggregate tool call to return. If the owner disappears between probe and commit, a still-current receiver uses its ordinary fallback route rather than dropping the broker-delivered message. Blocking calls stay alive until the exact threaded reply; generation cancellation or replacement invalidates stale handshakes.
 
 For delegated background children, queued messages and terminal lifecycle notices are ordered per child: pre-terminal messages are admitted FIFO and atomically together with the paused, completed, or failed notice, exact terminal-identity deduplication prevents double admission, failed dispatches remain retryable, and correlated ask replies bypass unrelated queued sends. See [Subagents](/subagents) for the full coordination contract.
 

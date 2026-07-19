@@ -62,6 +62,10 @@ export interface RunSyncOptions {
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onDetachedExit?: (result: SingleResult) => void;
+	/** Shared foreground-group signal used to release sibling supervision after one exact child commits Intercom detach. */
+	intercomDetachSignal?: AbortSignal;
+	/** Releases every active foreground sibling only after this exact child accepts a detach commit. */
+	onIntercomDetachCommit?: () => void;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
 	onControlEvent?: (event: ControlEvent) => void;
 	controlConfig?: ResolvedControlConfig;

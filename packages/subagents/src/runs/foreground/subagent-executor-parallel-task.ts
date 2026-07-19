@@ -61,7 +61,18 @@ interface ForegroundParallelRunInput {
 }
 
 export async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Promise<SingleResult[]> {
+	const intercomDetachController = new AbortController();
 	return mapConcurrent(input.tasks, input.concurrencyLimit, async (task, index) => {
+		if (intercomDetachController.signal.aborted) {
+			return {
+				agent: task.agent,
+				task: input.taskTexts[index] ?? task.task,
+				exitCode: -1,
+				messages: [],
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+				error: "Skipped after foreground group detached for intercom coordination",
+			};
+		}
 		const behavior = input.behaviors[index];
 		const effectiveSkills = behavior?.skills;
 		const taskCwd = resolveParallelTaskCwd(task, input.paramsCwd, input.worktreeSetup, index);
@@ -120,6 +131,8 @@ export async function runForegroundParallelTasks(input: ForegroundParallelRunInp
 				input.sharedAutoIntercomGroup,
 			),
 			onDetachedExit: (result) => input.onDetachedExit?.(index, result),
+			intercomDetachSignal: intercomDetachController.signal,
+			onIntercomDetachCommit: () => intercomDetachController.abort(),
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
