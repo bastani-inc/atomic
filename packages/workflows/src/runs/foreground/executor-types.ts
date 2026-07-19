@@ -58,10 +58,9 @@ export interface RunOpts extends Omit<AuthoringContract.RunOpts, "adapters" | "s
   /** Yield to the next event-loop turn before invoking user workflow code. */
   deferWorkflowStart?: boolean;
   /**
-   * Invoked once the run has recorded and persisted its start (run.start) and
-   * is about to begin executing its workflow body. Signals successful startup
-   * to callers gating a durable source claim, so an async startup failure
-   * (run.start persistence throwing) is caught before the source is finalized.
+   * Invoked once the run has persisted `run.start`, registered its durable
+   * invocation metadata, and is about to execute the workflow body. Callers
+   * can finalize a source claim only after this startup-admission signal.
    */
   onWorkflowStartReady?: () => void;
   /** Resolved runtime configuration. */

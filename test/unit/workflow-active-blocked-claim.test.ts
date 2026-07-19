@@ -34,6 +34,20 @@ function registerBlockedDurable(backend: InMemoryDurableBackend, completedCheckp
   });
 }
 
+class FailingInvocationMetadataBackend extends InMemoryDurableBackend {
+  private continuationRegistrations = 0;
+
+  override registerWorkflow(handle: Parameters<InMemoryDurableBackend["registerWorkflow"]>[0]): void {
+    if (handle.workflowId !== runId) {
+      this.continuationRegistrations += 1;
+      if (this.continuationRegistrations === 2) {
+        throw new Error("invocation metadata persistence failed");
+      }
+    }
+    super.registerWorkflow(handle);
+  }
+}
+
 function claimFlow() {
   return workflow({
     name: "claim-flow", description: "", inputs: {}, outputs: {},
@@ -112,6 +126,36 @@ describe("active-blocked resume claim", () => {
     assert.equal(source!.endedAt, undefined);
     assert.equal(backend.getWorkflow(runId)?.status, "blocked");
     assert.equal(backend.getWorkflow(runId)?.resumable, true);
+  });
+
+  test("leaves the source resumable when durable invocation metadata registration fails", async () => {
+    const backend = new FailingInvocationMetadataBackend();
+    registerBlockedDurable(backend);
+    setDurableBackend(backend);
+    const store = seedBlockedRun();
+    const jobs = createJobTracker();
+    let callbacks = 0;
+    const def = workflow({
+      name: "claim-flow", description: "", inputs: {}, outputs: {},
+      run: async () => { callbacks += 1; return {}; },
+    });
+    const runtime = createExtensionRuntime({
+      registry: createRegistry([def]), store, jobs,
+      adapters: { prompt: { prompt: async () => "done" } },
+    });
+
+    const result = await runtime.resumeFailedRun(runId);
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok ? "" : result.message, /failed to start; source left resumable/u);
+    assert.equal(callbacks, 0);
+    assert.equal(store.runs().filter((run) => run.id !== runId).length, 0);
+    const source = store.runs().find((run) => run.id === runId);
+    assert.ok(source);
+    assert.equal(source.endedAt, undefined);
+    assert.equal(backend.getWorkflow(runId)?.status, "blocked");
+    assert.equal(backend.getWorkflow(runId)?.resumable, true);
+    assert.deepEqual(backend.listResumableWorkflows().map((run) => run.workflowId), [runId]);
   });
 
   test("refuses a concurrent second resume (one winner)", async () => {

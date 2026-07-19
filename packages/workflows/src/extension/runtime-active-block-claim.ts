@@ -30,6 +30,19 @@ export function claimActiveBlockedResume(_backend: DurableWorkflowBackend, sourc
 export function releaseActiveBlockedClaim(sourceId: string): void {
   inFlightActiveBlockResumes.delete(sourceId);
 }
+
+/** Remove a continuation that settled before startup admission completed. */
+export async function discardFailedActiveBlockedContinuation(
+  backend: DurableWorkflowBackend,
+  runId: string,
+  store: Store,
+): Promise<void> {
+  store.removeRun(runId);
+  const deleted = await backend.deleteWorkflowIfInactive(runId);
+  if (!deleted.ok && deleted.reason !== "not_found") {
+    throw new Error(`continuation ${runId} remained ${deleted.reason}`);
+  }
+}
 /**
  * Mark the resumed source killed locally so the same session will not re-resume
  * it. The durable source is intentionally left `blocked`/resumable for

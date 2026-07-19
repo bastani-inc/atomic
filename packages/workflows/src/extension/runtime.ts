@@ -48,7 +48,7 @@ import {
   createDurableResumeRuntime,
   type DurableResumeRuntime,
 } from "./runtime-durable-resume.js";
-import { claimActiveBlockedResume, finalizeResumedActiveBlockedSourceRun, releaseActiveBlockedClaim } from "./runtime-active-block-claim.js";
+import { claimActiveBlockedResume, discardFailedActiveBlockedContinuation, finalizeResumedActiveBlockedSourceRun, releaseActiveBlockedClaim } from "./runtime-active-block-claim.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -358,7 +358,7 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       let accepted: ReturnType<typeof runDetached>;
       const startup = Promise.withResolvers<boolean>();
       const onWorkflowStartReady = (): void => startup.resolve(true);
-      const onRawSettled = (ok: boolean): void => { if (!ok) startup.resolve(false); };
+      const onRawSettled = (): void => startup.resolve(false);
       try {
         accepted = runDetached(def, sourceInputs, {
           ...runOptions({ workflow: def.name, inputs: sourceInputs }, options?.policy),
@@ -373,7 +373,12 @@ export function createExtensionRuntime(opts: ExtensionRuntimeOpts = {}): Extensi
       }
       const started = await startup.promise;
       if (!started) {
-        activeStore.removeRun(accepted.runId);
+        try {
+          await discardFailedActiveBlockedContinuation(getDurableBackend(), accepted.runId, activeStore);
+        } catch (error) {
+          releaseActiveBlockedClaim(source.id);
+          return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start and cleanup failed: ${error instanceof Error ? error.message : String(error)}; source left resumable` };
+        }
         releaseActiveBlockedClaim(source.id);
         return { ok: false, reason: "insufficient_state", message: `continuation for run ${source.id} failed to start; source left resumable` };
       }
