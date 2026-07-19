@@ -139,7 +139,7 @@ test("the inert tag signal and protected publisher stay distinct and non-recursi
   assert.match(npmJob, /contents: read\s*\r?\n\s*id-token: write/u);
   assert.match(npmJob, /environment: npm-publish/u);
   assert.doesNotMatch(npmJob, /contents: write|checkout|bun install|mintlify|build-binaries/u);
-  assert.match(npmJob, /actions\/download-artifact@[0-9a-f]{40}/u);
+  assert.match(npmJob, /actions\/download-artifact@v8/u);
   const docsValidation = prepare.indexOf("name: Mintlify docs validation");
   const sourceRestore = prepare.indexOf("name: Restore trusted release source after docs validation");
   const dependencyInstall = prepare.indexOf("name: Install dependencies");
@@ -148,7 +148,7 @@ test("the inert tag signal and protected publisher stay distinct and non-recursi
   assert.ok(sourceRestore < dependencyInstall && dependencyInstall < packageBuild, "artifacts must use the restored digest-bound source");
   const restore = stepRunScript(prepare, "Restore trusted release source after docs validation");
   assert.match(restore, /CryptoHasher\("sha256"\)[\s\S]*checksum mismatch after docs validation[\s\S]*tar -xzf -/u);
-  assert.match(npmJob, /actions\/setup-node@[0-9a-f]{40}/u);
+  assert.match(npmJob, /actions\/setup-node@v6/u);
   assert.match(npmJob, /allowed=\([\s\S]*@bastani\/atomic-natives[\s\S]*@bastani\/atomic/u);
   assert.match(npmJob, /reconfirm_tag[\s\S]*npm publish/u);
   assert.match(npmJob, /npm view "\$name@\$VERSION" dist\.integrity/u);
@@ -161,7 +161,8 @@ test("the inert tag signal and protected publisher stay distinct and non-recursi
   const releaseJob = publish.slice(publish.indexOf("    create-github-release:"));
   assert.match(releaseJob, /permissions:\s*\r?\n\s*contents: write/u);
   assert.doesNotMatch(releaseJob, /id-token: write|npm publish|bun install|checkout/u);
-  assert.match(releaseJob, /softprops\/action-gh-release@[0-9a-f]{40}/u);
+  assert.match(releaseJob, /softprops\/action-gh-release@v3/u);
+  assert.doesNotMatch(publish, /uses:\s+[^\s]+@[0-9a-f]{40}/u);
   assert.match(publish, /atomic_natives\.win32-arm64-msvc\.node/u);
   assert.match(publish, /atomic-windows-arm64\.zip/u);
   assert.match(publish, /bun run check:shrinkwrap/u);
@@ -199,7 +200,7 @@ test("privileged publisher never executes a tag checkout or cache-derived releas
     assert.ok(firstDownload >= 0 && firstDownload < partialCleanup, `${jobName}: first failure must precede cleanup`);
     assert.ok(partialCleanup < retry && retry < finalCleanup, `${jobName}: cleanup must precede the only retry`);
     assert.ok(finalCleanup < explicitFailure && explicitFailure < extractStart, `${jobName}: final cleanup/failure must precede verification`);
-    assert.equal([...sourcePrefix.matchAll(/uses: actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/gu)].length, 2, `${jobName}: exactly two source download attempts`);
+    assert.equal([...sourcePrefix.matchAll(/uses: actions\/download-artifact@v8/gu)].length, 2, `${jobName}: exactly two source download attempts`);
     assert.equal([...sourcePrefix.matchAll(/continue-on-error: true/gu)].length, 2, `${jobName}: both attempts expose outcomes for cleanup`);
     assert.match(sourcePrefix, /if: steps\.download_verified_source\.outcome == 'failure'[\s\S]*id: retry_download_verified_source/u, jobName);
     assert.match(sourcePrefix, /if: steps\.retry_download_verified_source\.outcome == 'failure'[\s\S]*failed after two attempts/u, jobName);

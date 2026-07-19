@@ -38,7 +38,7 @@ jobs:
         steps:
             # Pin trusted verification code to the protected-main workflow SHA,
             # never to the source tag or source workflow run.
-            - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+            - uses: actions/checkout@v7.0.0
               with:
                   ref: ${{ github.workflow_sha }}
                   fetch-depth: 0
@@ -127,7 +127,7 @@ jobs:
             # executing the tag tree. The verifier above proves that tree is the
             # deterministic release transform before it is exported as data.
             - name: Upload verified release source
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              uses: actions/upload-artifact@v7
               with:
                   name: verified-release-source-${{ steps.release.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source.tar.gz
@@ -153,7 +153,7 @@ jobs:
             - name: Download verified release source
               id: download_verified_source
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -167,7 +167,7 @@ jobs:
               id: retry_download_verified_source
               if: steps.download_verified_source.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -287,7 +287,7 @@ jobs:
             - name: Download verified release source
               id: download_verified_source
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -301,7 +301,7 @@ jobs:
               id: retry_download_verified_source
               if: steps.download_verified_source.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -439,7 +439,7 @@ jobs:
             - name: Download verified release source
               id: download_verified_source
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -453,7 +453,7 @@ jobs:
               id: retry_download_verified_source
               if: steps.download_verified_source.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -565,7 +565,7 @@ jobs:
             - name: Download verified release source
               id: download_verified_source
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -579,7 +579,7 @@ jobs:
               id: retry_download_verified_source
               if: steps.download_verified_source.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: verified-release-source-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/verified-release-source
@@ -976,7 +976,7 @@ jobs:
                   )
 
             - name: Upload verified release artifacts
-              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+              uses: actions/upload-artifact@v7
               with:
                   name: prepared-release-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/prepared-release
@@ -1002,7 +1002,7 @@ jobs:
             - name: Download verified release artifacts
               id: download_prepared_release
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: prepared-release-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/prepared-release
@@ -1016,7 +1016,7 @@ jobs:
               id: retry_download_prepared_release
               if: steps.download_prepared_release.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: prepared-release-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/prepared-release
@@ -1032,7 +1032,7 @@ jobs:
               run: |
                   echo "Prepared release artifact download failed after two attempts." >&2
                   exit 1
-            - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+            - uses: actions/setup-node@v6
               with:
                   node-version: 24
                   registry-url: https://registry.npmjs.org
@@ -1120,7 +1120,7 @@ jobs:
             - name: Download verified release artifacts
               id: download_prepared_release
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: prepared-release-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/prepared-release
@@ -1134,7 +1134,7 @@ jobs:
               id: retry_download_prepared_release
               if: steps.download_prepared_release.outcome == 'failure'
               continue-on-error: true
-              uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+              uses: actions/download-artifact@v8
               with:
                   name: prepared-release-${{ needs.release-integrity.outputs.sha }}
                   path: ${{ runner.temp }}/prepared-release
@@ -1163,7 +1163,7 @@ jobs:
                   [[ "$current" == "$VERIFIED_SHA" ]] || { echo "Release tag moved from $VERIFIED_SHA to ${current:-missing}" >&2; exit 1; }
 
             - name: Create GitHub Release with binaries
-              uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+              uses: softprops/action-gh-release@v3
               with:
                   tag_name: ${{ needs.release-integrity.outputs.tag }}
                   name: ${{ needs.release-integrity.outputs.tag }}
