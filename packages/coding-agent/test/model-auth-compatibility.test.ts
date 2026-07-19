@@ -6,7 +6,12 @@ import { AuthStorage } from "../src/core/auth-storage.ts";
 import { getModelRequestAuth } from "../src/core/model-registry-auth.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { FileModelsStore } from "../src/core/models-store.ts";
-import { getOAuthProvider, resetLegacyOAuthProviders } from "../src/core/oauth-provider-bridge.ts";
+import {
+	getOAuthApiKey,
+	getOAuthProvider,
+	registerOAuthProvider,
+	resetLegacyOAuthProviders,
+} from "../src/core/oauth-provider-bridge.ts";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -52,6 +57,27 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 		expect(typeof anthropic.refreshToken).toBe("function");
 		expect(anthropic.getApiKey({ refresh: "r", access: "a", expires: 1 })).toBe("a");
 		expect(getOAuthProvider("anthropic")?.name).toBe(anthropic.name);
+	});
+
+	test("preserves the legacy credentials-map OAuth API-key helper", async () => {
+		const original = { refresh: "old-refresh", access: "old-access", expires: 0 };
+		const refreshed = { refresh: "new-refresh", access: "new-access", expires: Date.now() + 60_000 };
+		const refreshToken = vi.fn(async () => refreshed);
+		registerOAuthProvider({
+			id: "legacy-probe",
+			name: "Legacy Probe",
+			login: async () => original,
+			refreshToken,
+			getApiKey: (credentials) => `key:${credentials.access}`,
+		});
+
+		expect(await getOAuthApiKey("legacy-probe", {
+			decoy: { refresh: "decoy", access: "decoy", expires: 1 },
+			"legacy-probe": original,
+		})).toEqual({ newCredentials: refreshed, apiKey: "key:new-access" });
+		expect(refreshToken).toHaveBeenCalledWith(original);
+		expect(await getOAuthApiKey("legacy-probe", {})).toBeNull();
+		await expect(getOAuthApiKey("missing-provider", {})).rejects.toThrow("Unknown OAuth provider");
 	});
 
 	test("runtime API-key overrides bypass expired stored OAuth", async () => {
@@ -144,6 +170,48 @@ describe("Pi 0.80.10 model auth compatibility", () => {
 			apiKey: token,
 			baseUrl: "https://api.enterprise.example.com",
 			headers: { "X-GitHub-Api-Version": "2026-06-01" },
+		});
+	});
+
+	test("keeps the stored Copilot enterprise endpoint when a runtime key overrides only apiKey", async () => {
+		const storage = AuthStorage.inMemory({
+			"github-copilot": {
+				type: "oauth",
+				refresh: "github-token",
+				access: "tid=stored;proxy-ep=proxy.stored.example.com;",
+				expires: Date.now() + 60_000,
+			},
+		});
+		storage.setRuntimeApiKey("github-copilot", "runtime-key");
+		const registry = ModelRegistry.inMemory(storage);
+		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
+
+		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
+			ok: true,
+			apiKey: "runtime-key",
+			baseUrl: "https://api.stored.example.com",
+			headers: { "X-GitHub-Api-Version": "2026-06-01" },
+		});
+	});
+
+	test("prefers a runtime Copilot proxy endpoint over the stored OAuth endpoint", async () => {
+		const storage = AuthStorage.inMemory({
+			"github-copilot": {
+				type: "oauth",
+				refresh: "github-token",
+				access: "tid=stored;proxy-ep=proxy.stored.example.com;",
+				expires: Date.now() + 60_000,
+			},
+		});
+		const runtimeToken = "tid=runtime;proxy-ep=proxy.runtime.example.com;";
+		storage.setRuntimeApiKey("github-copilot", runtimeToken);
+		const registry = ModelRegistry.inMemory(storage);
+		const model = registry.getAll().find((candidate) => candidate.provider === "github-copilot")!;
+
+		expect(await registry.getApiKeyAndHeaders(model)).toMatchObject({
+			ok: true,
+			apiKey: runtimeToken,
+			baseUrl: "https://api.runtime.example.com",
 		});
 	});
 

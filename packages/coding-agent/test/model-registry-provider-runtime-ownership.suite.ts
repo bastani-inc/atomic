@@ -1,3 +1,4 @@
+import type { Credential } from "@earendil-works/pi-ai";
 import { type Api, getApiProvider, registerApiProvider, unregisterApiProviders } from "@earendil-works/pi-ai/compat";
 import { getOAuthProvider } from "../src/core/oauth-provider-bridge.ts";
 import { describe, expect, test } from "vitest";
@@ -5,7 +6,7 @@ import { ModelRegistry } from "../src/core/model-registry.ts";
 import { describeModelRegistry } from "./model-registry-fixtures.ts";
 
 describeModelRegistry((context) => {
-	const { openAiModel, emptyContext } = context;
+	const { providerConfig, getModelsForProvider, openAiModel, emptyContext } = context;
 
 	describe("dynamic provider lifecycle", () => {
 		describe("dynamic provider override persistence", () => {
@@ -79,6 +80,53 @@ describeModelRegistry((context) => {
 				expect(() => getApiProvider(api)?.streamSimple({ ...openAiModel, api }, emptyContext)).toThrow("external-owner");
 				unregisterApiProviders(`atomic:restored-api:${api}`);
 				unregisterApiProviders("external-owner");
+			});
+
+			test("passes runtime-only credentials to extension catalog refresh", async () => {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				let observedCredential: Credential | undefined;
+				context.authStorage.setRuntimeApiKey("dynamic-probe", "runtime-secret");
+				registry.registerProvider("dynamic-probe", {
+					refreshModels: async ({ credential }) => {
+						observedCredential = credential;
+						return [];
+					},
+				});
+
+				const result = await registry.refresh({ allowNetwork: false });
+
+				expect(result.errors.size).toBe(0);
+				expect(observedCredential).toEqual({ type: "api_key", key: "runtime-secret" });
+				expect(context.authStorage.get("dynamic-probe")).toBeUndefined();
+			});
+
+			test("ignores undefined fields in partial provider updates", async () => {
+				const registry = ModelRegistry.create(context.authStorage, context.modelsJsonPath);
+				registry.registerProvider(
+					"partial-provider",
+					providerConfig("https://partial.test/v1", [{ id: "kept-model" }], "openai-completions"),
+				);
+				registry.registerProvider("partial-provider", {
+					baseUrl: undefined,
+					apiKey: undefined,
+					api: undefined,
+					models: undefined,
+					headers: { "X-Later": "yes" },
+				});
+				const expectPreservedProvider = async () => {
+					const models = getModelsForProvider(registry, "partial-provider");
+					expect(models.map((model) => model.id)).toEqual(["kept-model"]);
+					expect(models[0]?.baseUrl).toBe("https://partial.test/v1");
+					expect(await registry.getApiKeyAndHeaders(models[0]!)).toMatchObject({
+						ok: true,
+						apiKey: "test-key",
+						headers: { "X-Later": "yes" },
+					});
+				};
+
+				await expectPreservedProvider();
+				await registry.refresh({ allowNetwork: false });
+				await expectPreservedProvider();
 			});
 		});
 	});

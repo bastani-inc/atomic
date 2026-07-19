@@ -13,8 +13,8 @@ export {
 declare module "@earendil-works/pi-ai/oauth" {
 	export function getOAuthApiKey(
 		providerId: string,
-		credentials: OAuthCredentials,
-	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | undefined>;
+		credentials: Record<string, OAuthCredentials>,
+	): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null>;
 	export function getOAuthProvider(providerId: string): OAuthProviderDescriptor | undefined;
 	export function getOAuthProviders(): OAuthProviderDescriptor[];
 	export function registerOAuthProvider(provider: LegacyOAuthProvider & { id: string }): void;

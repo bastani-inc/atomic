@@ -175,7 +175,8 @@ export async function refreshOAuthProvider(
 ): Promise<{ credential: OAuthCredential; auth: ModelAuth } | undefined> {
 	const legacy = latestLegacyProvider(providerId);
 	if (legacy) {
-		const refreshed = { type: "oauth" as const, ...(await legacy.refreshToken(credential)) };
+		const { type: _type, ...credentials } = credential;
+		const refreshed = { type: "oauth" as const, ...(await legacy.refreshToken(credentials)) };
 		return { credential: refreshed, auth: { apiKey: legacy.getApiKey(refreshed) } };
 	}
 	const oauth = builtinOAuth(providerId);
@@ -195,14 +196,17 @@ export async function oauthCredentialToAuth(
 
 export async function getOAuthApiKey(
 	providerId: string,
-	credentials: OAuthCredentials,
-): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | undefined> {
-	const credential: OAuthCredential = { type: "oauth", ...credentials };
+	credentials: Record<string, OAuthCredentials>,
+): Promise<{ newCredentials: OAuthCredentials; apiKey: string } | null> {
+	if (!getOAuthProvider(providerId)) throw new Error(`Unknown OAuth provider: ${providerId}`);
+	const selected = credentials[providerId];
+	if (!selected) return null;
+	const credential: OAuthCredential = { type: "oauth", ...selected };
 	const resolved = Date.now() >= credential.expires
 		? await refreshOAuthProvider(providerId, credential)
 		: { credential, auth: await oauthCredentialToAuth(providerId, credential) };
 	const apiKey = resolved?.auth?.apiKey;
-	if (!resolved || !apiKey) return undefined;
+	if (!resolved || !apiKey) return null;
 	const { type: _type, ...newCredentials } = resolved.credential;
 	return { newCredentials, apiKey };
 }

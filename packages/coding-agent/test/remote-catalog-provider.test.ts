@@ -146,4 +146,43 @@ describe("remote catalog provider", () => {
 		await expect(provider.refreshModels?.({ ...context, force: true })).resolves.toBeUndefined();
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
 	});
+
+	it("prevents an aborted stale read from overwriting a newer catalog", async () => {
+		type StoredEntry = Awaited<ReturnType<InMemoryModelsStore["read"]>>;
+		let resolveOldRead!: (entry: StoredEntry) => void;
+		const oldRead = new Promise<StoredEntry>((resolve) => { resolveOldRead = resolve; });
+		let readCount = 0;
+		const store = {
+			read: async () => {
+				readCount += 1;
+				return readCount === 1
+					? oldRead
+					: { models: [model("fresh")], checkedAt: Date.now() };
+			},
+			write: async () => {},
+			delete: async () => {},
+		};
+		const provider = withRemoteCatalog(createProvider({
+			id: "test-provider",
+			auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+			models: [model("static")],
+			api: {
+				stream: () => { throw new Error("not used"); },
+				streamSimple: () => { throw new Error("not used"); },
+			},
+		}));
+		const controller = new AbortController();
+		const context = { credential: { type: "api_key" as const }, store, allowNetwork: false };
+		const staleRefresh = provider.refreshModels?.({ ...context, signal: controller.signal });
+		await vi.waitFor(() => expect(readCount).toBe(1));
+
+		controller.abort();
+		await expect(staleRefresh).resolves.toBeUndefined();
+		await provider.refreshModels?.(context);
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+
+		resolveOldRead({ models: [model("stale")], checkedAt: 0 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(provider.getModels().map((entry) => entry.id)).toEqual(["static", "fresh"]);
+	});
 });

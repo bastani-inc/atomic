@@ -2,7 +2,15 @@
  * Model registry - manages built-in and custom models, provides API key resolution.
  */
 
-import { createModels, type Credential, type ModelsRefreshResult, type ModelsStore, type MutableModels } from "@earendil-works/pi-ai";
+import {
+	createModels,
+	type Credential,
+	type CredentialStore,
+	type ModelAuth,
+	type ModelsRefreshResult,
+	type ModelsStore,
+	type MutableModels,
+} from "@earendil-works/pi-ai";
 import { builtinProviders } from "@earendil-works/pi-ai/providers/all";
 import { type Api, type Model } from "@earendil-works/pi-ai/compat";
 import { dirname, join } from "node:path";
@@ -17,12 +25,35 @@ import type { ProviderConfigInput, ProviderRequestConfig, ResolvedRequestAuth } 
 import type { ModelOverride } from "./model-registry-schemas.ts";
 import { BUILT_IN_PROVIDER_DISPLAY_NAMES } from "./provider-display-names.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
+import { oauthCredentialToAuth } from "./oauth-provider-bridge.ts";
 import { withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { clearConfigValueCache, isConfigValueConfigured } from "./resolve-config-value.ts";
 
 const REMOTE_CATALOG_PROVIDERS = new Set(["cursor", "github-copilot", "openrouter", "vercel-ai-gateway"]);
 const OPENAI_COMPATIBLE_APIS = new Set<Api>(["openai-completions", "openai-responses"]);
 let nextRegistryRegistrationId = 0;
+
+function copilotBaseUrlFromRuntimeToken(apiKey: string): string | undefined {
+	return /(?:^|;)proxy-ep=[^;]+/.test(apiKey) ? copilotApiBaseUrlFromToken(apiKey) : undefined;
+}
+
+function overlayRuntimeApiKey(
+	runtimeApiKey: string,
+	resolvedAuth: ModelAuth | undefined,
+	storedOAuthAuth: ModelAuth | undefined,
+	runtimeBaseUrl: string | undefined,
+): ModelAuth {
+	const headers = storedOAuthAuth?.headers || resolvedAuth?.headers
+		? { ...storedOAuthAuth?.headers, ...resolvedAuth?.headers }
+		: undefined;
+	return {
+		...storedOAuthAuth,
+		...resolvedAuth,
+		apiKey: runtimeApiKey,
+		headers,
+		baseUrl: runtimeBaseUrl ?? storedOAuthAuth?.baseUrl ?? resolvedAuth?.baseUrl,
+	};
+}
 
 export type { ProviderConfigInput, ResolvedRequestAuth } from "./model-registry-types.ts";
 
@@ -44,6 +75,7 @@ export class ModelRegistry {
 	private refreshGeneration = 0;
 	private readonly registrationSource = `atomic:model-registry:${++nextRegistryRegistrationId}`;
 	declare private readonly modelsStore: ModelsStore;
+	declare private readonly credentialStore: CredentialStore;
 	declare private readonly providerModels: MutableModels;
 
 	declare readonly authStorage: AuthStorage;
@@ -58,7 +90,8 @@ export class ModelRegistry {
 		this.modelsStore = this.modelsJsonPaths.length > 0
 			? new FileModelsStore(join(dirname(this.modelsJsonPaths[0]), "models-store.json"))
 			: new InMemoryCodingAgentModelsStore();
-		this.providerModels = createModels({ credentials: authStorage.asCredentialStore(), modelsStore: this.modelsStore });
+		this.credentialStore = authStorage.asCredentialStore();
+		this.providerModels = createModels({ credentials: this.credentialStore, modelsStore: this.modelsStore });
 		for (const provider of builtinProviders()) {
 			this.providerModels.setProvider(provider.id === "radius" ? provider : withRemoteCatalog(provider));
 		}
@@ -121,8 +154,14 @@ export class ModelRegistry {
 					delete: () => this.modelsStore.delete(providerName),
 				};
 				try {
+					const credential = await this.credentialStore.read(providerName);
+					if (
+						controller.signal.aborted ||
+						generation !== this.refreshGeneration ||
+						this.registeredProviders.get(providerName) !== config
+					) return;
 					const models = await config.refreshModels({
-						credential: this.authStorage.get(providerName),
+						credential,
 						store,
 						allowNetwork: options.allowNetwork ?? true,
 						force: options.force,
@@ -299,9 +338,16 @@ export class ModelRegistry {
 					runtimeApiKey === undefined ? undefined : { apiKey: runtimeApiKey },
 				))?.auth
 				: undefined;
-			const providerAuth = runtimeApiKey !== undefined && model.provider === "github-copilot" && resolvedProviderAuth
-				? { ...resolvedProviderAuth, baseUrl: copilotApiBaseUrlFromToken(runtimeApiKey) }
-				: resolvedProviderAuth;
+			const storedCredential = this.authStorage.get(model.provider);
+			const storedOAuthAuth = runtimeApiKey !== undefined && !extensionReplacesOAuth && storedCredential?.type === "oauth"
+				? await oauthCredentialToAuth(model.provider, storedCredential)
+				: undefined;
+			const runtimeBaseUrl = runtimeApiKey !== undefined && model.provider === "github-copilot"
+				? copilotBaseUrlFromRuntimeToken(runtimeApiKey)
+				: undefined;
+			const providerAuth = runtimeApiKey === undefined
+				? resolvedProviderAuth
+				: overlayRuntimeApiKey(runtimeApiKey, resolvedProviderAuth, storedOAuthAuth, runtimeBaseUrl);
 			return getModelRequestAuth(
 				model,
 				this.authStorage,
@@ -388,7 +434,10 @@ export class ModelRegistry {
 	}
 
 	private upsertRegisteredProvider(providerName: string, config: ProviderConfigInput): ProviderConfigInput {
-		const merged = { ...this.registeredProviders.get(providerName), ...config };
+		const definedConfig = Object.fromEntries(
+			Object.entries(config).filter(([, value]) => value !== undefined),
+		) as ProviderConfigInput;
+		const merged = { ...this.registeredProviders.get(providerName), ...definedConfig };
 		this.registeredProviders.set(providerName, merged);
 		return merged;
 	}

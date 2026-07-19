@@ -40,16 +40,20 @@ function settleOnAbort(operation: Promise<void>, signal: AbortSignal | undefined
 export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = DEFAULT_CATALOG_BASE_URL): Provider {
 	let dynamicModels: readonly Model<Api>[] = [];
 	let inflightRefresh: Promise<void> | undefined;
+	let refreshEpoch = 0;
 
 	return {
 		...provider,
 		getModels: () => mergeModels(provider.getModels(), dynamicModels),
 		refreshModels: (context) => {
 			if (inflightRefresh) return inflightRefresh;
+			const epoch = ++refreshEpoch;
+			const isCurrent = () => epoch === refreshEpoch && !context.signal?.aborted;
 			const operation = (async () => {
 				const stored = await context.store.read();
+				if (!isCurrent()) return;
 				if (stored) dynamicModels = stored.models.filter((model) => model.provider === provider.id);
-				if (!context.allowNetwork || context.signal?.aborted) return;
+				if (!context.allowNetwork) return;
 				if (
 					!context.force &&
 					stored?.checkedAt !== undefined &&
@@ -61,7 +65,7 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 					headers: { accept: "application/json", "User-Agent": getPiUserAgent(VERSION) },
 					signal: context.signal,
 				});
-				if (context.signal?.aborted) return;
+				if (!isCurrent()) return;
 				const checkedAt = Date.now();
 				if (response.status === 404 || response.status === 501) {
 					await context.store.write({ models: dynamicModels, checkedAt });
@@ -71,10 +75,10 @@ export function withRemoteCatalog(provider: Provider, catalogBaseUrl: string = D
 					throw new Error(`Model catalog request failed for ${provider.id}: ${response.status}`);
 				}
 				const body: object = await response.json();
+				if (!isCurrent()) return;
 				const refreshed = parseCatalog(provider.id, body);
-				if (context.signal?.aborted) return;
 				await context.store.write({ models: refreshed, checkedAt });
-				dynamicModels = refreshed;
+				if (isCurrent()) dynamicModels = refreshed;
 			})();
 			const refresh = settleOnAbort(operation, context.signal);
 			const published = refresh.finally(() => {
