@@ -355,8 +355,7 @@ workflow({
 
 When neither `enabled` nor `delivery` is set, async direct `parallel`/`chain` runs default to `control-and-result` when Intercom is available; otherwise delivery is off. Treat Intercom payloads from async direct runs as user-visible workflow output.
 
-While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. If that stage is busy running a foreground subagent, Atomic first gives the exact child owner the normal probe/commit detach handshake; only after the child acknowledges detach does the message cross the stage generation boundary. If no foreground owner claims it, the same message falls back to ordinary stage admission rather than waiting in Intercom's idle queue.
-
+While a workflow stage generation is open, incoming Intercom messages are admitted through the stage session's native steering/follow-up queue. If that stage is busy running a foreground subagent, Atomic synchronously reserves the message in the stage generation before starting the exact child's probe/commit detach handshake. Model-visible queue insertion waits inside that reservation until detach is acknowledged or the owner is unclaimed/disappears, so terminal stage close cannot overtake and silently drop the message. The stage drains the admitted delivery before publishing its terminal snapshot. A destination-side admission failure returns a correlated actionable error to a blocking asker instead of waiting for the 10-minute reply timeout.
 ### Subagent Control Notices
 
 The `subagent` tool's `control` options select which control events notify the parent and over which channels:

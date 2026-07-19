@@ -5,6 +5,7 @@ import { routeIncomingReply } from "./reply-routing.js";
 import type { ReplyTracker } from "./reply-tracker.js";
 import type { ReplyWaiterRecord } from "./reply-waiter.js";
 import { retryStableDelivery } from "./stable-delivery-retry.js";
+import { sendWorkflowStageDeliveryFailure } from "./workflow-stage-delivery-failure.js";
 
 /**
  * Owns late ingress after a workflow stage seals its active generation.
@@ -40,7 +41,14 @@ export function routeClosedWorkflowStageMessage(
       const failure = error instanceof Error ? error : new Error(String(error));
       tracker.forgetIncomingMessage(replyContext);
       if (entry.message.expectsReply === true
-        && await sendCorrelatedFailure(entry, failure, tracker, currentClient, isCurrent)) {
+        && await sendWorkflowStageDeliveryFailure(
+          entry,
+          failure,
+          tracker,
+          currentClient,
+          isCurrent,
+          "Completed workflow stage could not process intercom ask",
+        )) {
         admission.commit(admitted.reservation);
         return;
       }
@@ -54,29 +62,5 @@ function invoke(deliver: () => Promise<void>): Promise<void> {
     return Promise.resolve(deliver());
   } catch (error) {
     return Promise.reject(error);
-  }
-}
-
-async function sendCorrelatedFailure(
-  entry: InboundMessageEntry,
-  failure: Error,
-  tracker: ReplyTracker,
-  currentClient: () => IntercomClient | null,
-  isCurrent: () => boolean,
-): Promise<boolean> {
-  const client = currentClient();
-  if (!client?.isConnected() || !isCurrent()) return false;
-  const actionable = `Completed workflow stage could not process intercom ask: ${failure.message}`;
-  try {
-    const result = await client.send(entry.from.id, {
-      text: actionable,
-      replyTo: entry.message.id,
-      replyError: actionable,
-    });
-    if (!result.delivered) return false;
-    tracker.markReplied(entry.message.id);
-    return true;
-  } catch {
-    return false;
   }
 }

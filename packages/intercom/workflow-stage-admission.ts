@@ -1,17 +1,19 @@
 import type { ExtensionContext } from "@bastani/atomic";
 
 export type WorkflowStageFirstRefusalDisposition = "delivered" | "unclaimed" | "abandoned";
+export type WorkflowStageAdmissionBarrier = () => Promise<void>;
 
 /**
- * Workflow-stage traffic is owned by the AgentSession's shared generation
- * boundary rather than Intercom's idle queue. While that session is busy, the
- * exact foreground subagent owner must first be allowed to detach; otherwise a
- * blocking child request would queue behind the tool call that is awaiting it.
+ * boundary rather than Intercom's idle queue. A busy-stage delivery enters that
+ * boundary synchronously, then waits inside it while the exact foreground
+ * subagent owner receives first refusal. This prevents terminal close from
+ * sealing the generation during the detach handshake and dropping the message.
  */
 export function admitWorkflowStageInbound(
 	ctx: Pick<ExtensionContext, "orchestrationContext"> & Partial<Pick<ExtensionContext, "isIdle">>,
-	deliver: () => void | Promise<void>,
+	deliver: (admissionBarrier?: WorkflowStageAdmissionBarrier) => void | Promise<void>,
 	firstRefusal?: () => Promise<WorkflowStageFirstRefusalDisposition>,
+	onAdmissionFailure?: (error: Error) => Promise<void>,
 ): false | Promise<void> {
 	if (ctx.orchestrationContext?.kind !== "workflow-stage") return false;
 	try {
@@ -22,12 +24,19 @@ export function admitWorkflowStageInbound(
 			// A retiring context is handled by the generation check in delivery.
 		}
 		if (!busy || !firstRefusal) return Promise.resolve(deliver());
-		return firstRefusal().then((disposition) => {
-			if (disposition === "abandoned") {
-				throw new Error("Workflow stage retired during foreground-owner admission");
-			}
-			return deliver();
-		});
+		let firstRefusalPromise: Promise<void> | undefined;
+		const admissionBarrier: WorkflowStageAdmissionBarrier = () => {
+			firstRefusalPromise ??= (async () => {
+				const disposition = await firstRefusal();
+				if (disposition === "abandoned") {
+					const failure = new Error("Workflow stage retired during foreground-owner admission");
+					await onAdmissionFailure?.(failure);
+					throw failure;
+				}
+			})();
+			return firstRefusalPromise;
+		};
+		return Promise.resolve(deliver(admissionBarrier));
 	} catch (error) {
 		return Promise.reject(error);
 	}

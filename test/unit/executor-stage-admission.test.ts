@@ -133,3 +133,41 @@ test("Intercom received inside structured_output crosses AgentSession admission 
 	assert.equal((await execution).status, "completed");
 	assert.equal(store.runs()[0]?.stages[0]?.result, "processed Intercom continuation");
 });
+
+test("stage close waits for a busy Intercom admission barrier before draining its queued message", async () => {
+	const firstRefusal = Promise.withResolvers<void>();
+	const queued: string[] = [];
+	const boundary = new WorkflowStageAdmissionBoundary();
+	const surface = {
+		_workflowStageAdmission: boundary,
+		_orchestrationContext: undefined,
+		isStreaming: true,
+		_pendingNextTurnMessages: [],
+		_queueAgentMessage(message: { content: string | object[] }) {
+			if (typeof message.content === "string") queued.push(message.content);
+		},
+		_appendCustomMessage() {},
+		async _enqueueInterruptCustomMessage() {},
+		async _runAgentPrompt() {},
+		agent: { async waitForIdle() {} },
+		_agentEventQueue: Promise.resolve(),
+	};
+	const delivery = sendCustomMessage.call(surface as never,
+		{ customType: "intercom_message", content: "mid-turn ask", display: true, details: undefined },
+		{
+			triggerTurn: true,
+			stageAdmissionKey: "intercom:mid-turn-ask",
+			stageAdmissionBarrier: () => firstRefusal.promise,
+		},
+	);
+	let closed = false;
+	const close = closeWorkflowStageGeneration.call(surface as never).then(() => { closed = true; });
+
+	await Bun.sleep(0);
+	assert.equal(closed, false, "terminal close must wait for the admitted handoff");
+	assert.deepEqual(queued, []);
+	firstRefusal.resolve();
+	await delivery;
+	await close;
+	assert.deepEqual(queued, ["mid-turn ask"]);
+});

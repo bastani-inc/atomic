@@ -90,6 +90,7 @@ export async function sendCustomMessage<T = unknown>(this: AgentSession,
 	} satisfies CustomMessage<T>;
 	const boundary = this._workflowStageAdmission;
 	const deliver = async (): Promise<void> => {
+		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (options?.deliverAs === "interrupt" && options.triggerTurn) {
@@ -153,6 +154,7 @@ export async function sendCustomMessages<T = unknown>(this: AgentSession,
 	if (appMessages.length === 0) return;
 	const boundary = this._workflowStageAdmission;
 	const deliver = async (): Promise<void> => {
+		if (boundary && options?.stageAdmissionBarrier) await options.stageAdmissionBarrier();
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(...appMessages);
 		} else if (this.isStreaming && options?.excludeFromContext === true && options.triggerTurn !== true && options.deliverAs === undefined) {

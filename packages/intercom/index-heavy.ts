@@ -14,7 +14,8 @@ import { registerIntercomLifecycle } from "./lifecycle.js";
 import { registerSubagentRelay } from "./subagent-relay.js";
 import { ForegroundDetachHandoff, handleForegroundInboundDelivery } from "./foreground-detach-handoff.js";
 import { routeIncomingReply } from "./reply-routing.js";
-import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, type InboundMessageEntry, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { INBOUND_FLUSH_DELAY_MS, INBOUND_IDLE_RETRY_MS, buildPresenceIdentity, formatAttachments, readChildOrchestratorMetadata, toError } from "./intercom-utils.js";
+import { buildIncomingCustomMessage, createIncomingMessageSender } from "./incoming-message-delivery.js";
 import { InboundIdleQueue } from "./inbound-idle-queue.js";
 import { registerTerminalOrderingBarrier } from "./terminal-ordering-barrier.js";
 import { resolveSessionTargetId } from "./session-target.js";
@@ -25,6 +26,7 @@ import type { IntercomExtensionTestOverrides } from "./intercom-test-seams.js";
 import { admitWorkflowStageInbound } from "./workflow-stage-admission.js";
 import { bindWorkflowReplyTracker, preserveWorkflowReplyTracker } from "./workflow-reply-tracker.js";
 import { routeClosedWorkflowStageMessage } from "./closed-workflow-stage-message.js";
+import { createWorkflowStageDeliveryFailureHandler } from "./workflow-stage-delivery-failure.js";
 import { resolveHomeGroup } from "./group.js";
 import { reconnectDelayMs } from "./reconnect-backoff.js";
 import { SupervisorAuthorizationRegistry } from "./supervisor-authorization-registry.js";
@@ -142,30 +144,13 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     return Boolean(resolvedTo && activeClient?.sessionId && resolvedTo === activeClient.sessionId)
       || targets.has(to.trim().toLowerCase());
   }
-  function buildIncomingCustomMessage(entry: InboundMessageEntry) {
-    const senderDisplay = entry.from.name || entry.from.id.slice(0, 8);
-    const replyInstruction = entry.replyCommand ? `\n\nTo reply, use the intercom tool: ${entry.replyCommand}` : "";
-    return {
-      customType: "intercom_message" as const,
-      content: `**📨 From ${senderDisplay}** (${entry.from.cwd})${replyInstruction}\n\n${entry.bodyText}`,
-      display: true as const,
-      details: entry,
-    };
-  }
   registerLateStageMessageRouter(pi, inboundDeliveries, () => replyTracker, () => resolveHomeGroup(config, getLiveContext()));
-  function sendIncomingMessage(entry: InboundMessageEntry, delivery: "trigger" | "followUp" | "prelude", generation = runtimeGeneration, trackReplyContext = true, turnContext?: ReturnType<ReplyTracker["recordIncomingMessage"]>): Promise<void> {
-    if (runtimeStarted && !getLiveContext(runtimeContext, generation)) {
-      return Promise.resolve();
-    }
-    if (delivery === "trigger" && trackReplyContext) {
-      replyTracker.queueTurnContext(turnContext ?? { from: entry.from, message: entry.message, receivedAt: Date.now() });
-    }
-    const baseOptions = { stageAdmissionKey: `intercom:${entry.message.id}` } as const;
-    const options = delivery === "trigger"
-      ? { ...baseOptions, triggerTurn: true } as const
-      : delivery === "followUp" ? { ...baseOptions, deliverAs: "followUp" } as const : baseOptions;
-    return Promise.resolve(pi.sendMessage(buildIncomingCustomMessage(entry), options));
-  }
+  const sendIncomingMessage = createIncomingMessageSender({
+    pi,
+    currentGeneration: () => runtimeGeneration,
+    canDeliver: (generation) => !runtimeStarted || Boolean(getLiveContext(runtimeContext, generation)),
+    queueTurnContext: (context) => replyTracker.queueTurnContext(context),
+  });
   const unregisterTerminalOrderingBarrier = registerTerminalOrderingBarrier(pi, {
     queue: pendingIdleMessages,
     toMessage: buildIncomingCustomMessage,
@@ -255,15 +240,26 @@ export default function piIntercomExtension(pi: ExtensionAPI, testOverrides: Int
     }
     const replyContext = replyTracker.recordIncomingMessage(from, message);
     const commit = (): void => { inboundDeliveries.commit(reservation); };
-    const release = (error: unknown): void => {
-      const failure = error instanceof Error ? error : new Error(String(error));
-      inboundDeliveries.release(reservation, failure);
-      replyTracker.forgetIncomingMessage(replyContext);
-    };
+    const release = createWorkflowStageDeliveryFailureHandler({
+      entry,
+      admission: inboundDeliveries,
+      reservation,
+      tracker: replyTracker,
+      replyContext,
+      currentClient: () => client,
+      commit,
+    });
     const stageDelivery = admitWorkflowStageInbound(
       liveContext,
-      () => { replyTracker.queueTurnContext(replyContext); return retryStableDelivery({ deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false), isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)) }); },
+      (admissionBarrier) => {
+        replyTracker.queueTurnContext(replyContext);
+        return retryStableDelivery({
+          deliver: () => sendIncomingMessage(entry, "trigger", messageGeneration, false, undefined, admissionBarrier),
+          isCurrent: () => Boolean(getLiveContext(liveContext, messageGeneration)),
+        });
+      },
       () => foregroundDetachHandoff.claim(from, message, messageGeneration, () => Boolean(getLiveContext(liveContext, messageGeneration))),
+      release,
     );
     if (stageDelivery !== false) {
       void stageDelivery.then(commit, release);

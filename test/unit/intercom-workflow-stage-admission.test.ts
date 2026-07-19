@@ -30,32 +30,63 @@ describe("Intercom workflow-stage admission", () => {
 		]);
 	});
 
-	test("a busy workflow stage gives its exact foreground owner first refusal before generation admission", async () => {
+	test("a busy workflow stage admits before waiting for exact foreground-owner first refusal", async () => {
 		const events: string[] = [];
+		const firstRefusal = Promise.withResolvers<void>();
 		const admitted = admitWorkflowStageInbound(
 			{ ...stageContext, isIdle: () => false },
-			() => { events.push("agent-session:generation-admission"); },
+			async (admissionBarrier) => {
+				events.push("agent-session:generation-admission");
+				await admissionBarrier?.();
+				events.push("agent-session:queue-delivery");
+			},
 			async () => {
 				events.push("foreground-owner:probe");
+				await firstRefusal.promise;
 				events.push("foreground-owner:commit");
 				return "delivered";
 			},
 		);
 
 		assert.ok(admitted);
+		assert.deepEqual(events, [
+			"agent-session:generation-admission",
+			"foreground-owner:probe",
+		]);
+		firstRefusal.resolve();
 		await admitted;
 		assert.deepEqual(events, [
+			"agent-session:generation-admission",
 			"foreground-owner:probe",
 			"foreground-owner:commit",
-			"agent-session:generation-admission",
+			"agent-session:queue-delivery",
 		]);
 	});
 
-	test("unclaimed busy workflow traffic falls back to generation admission", async () => {
+	test("a retried stage delivery executes foreground first refusal exactly once", async () => {
+		let claims = 0;
+		const admitted = admitWorkflowStageInbound(
+			{ ...stageContext, isIdle: () => false },
+			async (admissionBarrier) => {
+				await admissionBarrier?.();
+				await admissionBarrier?.();
+			},
+			async () => { claims += 1; return "unclaimed"; },
+		);
+
+		assert.ok(admitted);
+		await admitted;
+		assert.equal(claims, 1);
+	});
+	test("unclaimed busy workflow traffic falls back inside the admitted generation", async () => {
 		const events: string[] = [];
 		const admitted = admitWorkflowStageInbound(
 			{ ...stageContext, isIdle: () => false },
-			() => { events.push("agent-session:generation-admission"); },
+			async (admissionBarrier) => {
+				events.push("agent-session:generation-admission");
+				await admissionBarrier?.();
+				events.push("agent-session:queue-delivery");
+			},
 			async () => {
 				events.push("foreground-owner:unclaimed");
 				return "unclaimed";
@@ -65,19 +96,30 @@ describe("Intercom workflow-stage admission", () => {
 		assert.ok(admitted);
 		await admitted;
 		assert.deepEqual(events, [
-			"foreground-owner:unclaimed",
 			"agent-session:generation-admission",
+			"foreground-owner:unclaimed",
+			"agent-session:queue-delivery",
 		]);
 	});
-	test("a retired workflow generation cannot admit after foreground-owner cancellation", async () => {
+	test("a retired generation reports failure before its admitted delivery settles", async () => {
 		let delivered = false;
+		let settled = false;
+		const failureReported = Promise.withResolvers<void>();
 		const admitted = admitWorkflowStageInbound(
 			{ ...stageContext, isIdle: () => false },
-			() => { delivered = true; },
+			async (admissionBarrier) => {
+				await Promise.all([admissionBarrier?.(), admissionBarrier?.()]);
+				delivered = true;
+			},
 			async () => "abandoned",
+			async () => { await failureReported.promise; },
 		);
 
 		assert.ok(admitted);
+		void admitted.finally(() => { settled = true; }).catch(() => {});
+		await Bun.sleep(0);
+		assert.equal(settled, false, "correlated failure reporting remains inside admitted work");
+		failureReported.resolve();
 		await assert.rejects(admitted, /retired during foreground-owner admission/);
 		assert.equal(delivered, false);
 	});
