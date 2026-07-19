@@ -18,7 +18,7 @@
 import { describe, test } from "bun:test";
 import assert from "node:assert/strict";
 import { NON_INTERACTIVE_WORKFLOW_POLICY } from "../../packages/workflows/src/shared/types.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkflowDefinition, WorkflowPersistencePort } from "../../packages/workflows/src/shared/types.js";
@@ -177,30 +177,36 @@ describe("dispatch run (always background)", () => {
         return {};
       },
     }) as never as WorkflowDefinition;
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "workflow-launch-repo-"));
+    const repo = join(fixtureRoot, "repo");
+    const correctedWorktree = join(fixtureRoot, "worktree");
+    mkdirSync(join(repo, "packages"), { recursive: true });
+    writeFileSync(join(repo, "packages", "tracked.txt"), "primary\n");
+    runGitChecked(repo, ["init", "-b", "main"]);
+    runGitChecked(repo, ["add", "."]);
+    runGitChecked(repo, ["-c", "user.name=Atomic Tests", "-c", "user.email=atomic@example.com", "commit", "-m", "initial"]);
 
-    const result = await dispatch(
-      { action: "run", workflow: "invalid-worktree-launch", inputs: { git_worktree_dir: "packages" } },
-      { registry: createRegistry([wf]), cwd: process.cwd(), ...deps },
-    );
-
-    assert.equal(result.action, "run");
-    if (result.action === "run") {
-      assert.equal(result.status, "failed");
-      assert.ok(result.runId, "the rejected launch retains its allocated run identity");
-      assert.match(result.error ?? "", /gitWorktreeDir must be outside the invoking checkout/);
-      assert.equal(result.message, undefined);
-      assert.equal(deps.jobs.has(result.runId), false);
-      assert.equal(deps.cancellation.abort(result.runId), false);
-      assert.equal(deps.store.runs().some((run) => run.id === result.runId), false);
-    }
-    assert.equal(bodyStarted, false);
-
-    const retryRoot = mkdtempSync(join(tmpdir(), "workflow-launch-retry-"));
-    const correctedWorktree = join(retryRoot, "worktree");
     try {
+      const result = await dispatch(
+        { action: "run", workflow: "invalid-worktree-launch", inputs: { git_worktree_dir: join(repo, "packages") } },
+        { registry: createRegistry([wf]), cwd: repo, ...deps },
+      );
+
+      assert.equal(result.action, "run");
+      if (result.action === "run") {
+        assert.equal(result.status, "failed");
+        assert.ok(result.runId, "the rejected launch retains its allocated run identity");
+        assert.match(result.error ?? "", /gitWorktreeDir must be outside the invoking checkout/);
+        assert.equal(result.message, undefined);
+        assert.equal(deps.jobs.has(result.runId), false);
+        assert.equal(deps.cancellation.abort(result.runId), false);
+        assert.equal(deps.store.runs().some((run) => run.id === result.runId), false);
+      }
+      assert.equal(bodyStarted, false);
+
       const retry = await dispatch(
         { action: "run", workflow: "invalid-worktree-launch", inputs: { git_worktree_dir: correctedWorktree } },
-        { registry: createRegistry([wf]), cwd: process.cwd(), ...deps },
+        { registry: createRegistry([wf]), cwd: repo, ...deps },
       );
       assert.equal(retry.action, "run");
       if (retry.action === "run") {
@@ -213,11 +219,11 @@ describe("dispatch run (always background)", () => {
         await Promise.all(deps.jobs.runIds().map(async (id) => deps.jobs.get(id)?.promise));
       }
       try {
-        runGitChecked(process.cwd(), ["worktree", "remove", "--force", correctedWorktree]);
+        runGitChecked(repo, ["worktree", "remove", "--force", correctedWorktree]);
       } catch {
         // The setup may have failed before creating a worktree.
       }
-      rmSync(retryRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
     }
   });
 

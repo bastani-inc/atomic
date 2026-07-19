@@ -55,6 +55,7 @@ export function normalizeSessionEntries(entries: readonly SessionEntry[]): reado
 
 /** Structural type for pi's sessionManager (optional — degrades gracefully). */
 export interface SessionManager {
+  getCwd?: () => string;
   getEntries?: () => SessionEntry[] | readonly SessionEntry[];
   getSessionDir?: () => string;
   usesDefaultSessionDir?: () => boolean;

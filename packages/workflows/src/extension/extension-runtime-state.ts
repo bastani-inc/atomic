@@ -67,6 +67,7 @@ export interface WorkflowExtensionRuntimeState {
 export function createWorkflowExtensionRuntimeState(
   pi: ExtensionAPI,
   adapters: StageAdapters,
+  resolveCwd: () => string = () => pi.sessionManager?.getCwd?.() ?? process.cwd(),
 ): WorkflowExtensionRuntimeState {
   const persistenceRef = { current: makePersistencePort(pi, WORKFLOW_CONFIG_DEFAULTS.persistRuns) };
   const mcpPort = makeMcpPort(pi);
@@ -134,7 +135,7 @@ export function createWorkflowExtensionRuntimeState(
   const runtimeRef: { current: ExtensionRuntime } = {
     current: createExtensionRuntime({
       registry: startupDiscovery.registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
@@ -197,7 +198,7 @@ export function createWorkflowExtensionRuntimeState(
     if (models === undefined) return runtimeProxy;
     return createExtensionRuntime({
       registry: runtimeRef.current.registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,
@@ -236,7 +237,7 @@ export function createWorkflowExtensionRuntimeState(
   function rebuildRuntime(registry = runtimeRef.current.registry): void {
     runtimeRef.current = createExtensionRuntime({
       registry,
-      cwd: process.cwd(),
+      cwd: resolveCwd(),
       adapters,
       cancellation: cancellationRegistry,
       persistence: persistenceRef.current,

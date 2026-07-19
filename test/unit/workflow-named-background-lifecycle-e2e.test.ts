@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { afterEach, beforeEach, describe, test } from "bun:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import factory from "../../packages/workflows/src/extension/index.js";
@@ -24,6 +24,7 @@ import { InMemoryDurableBackend } from "../../packages/workflows/src/durable/bac
 import { setDurableBackend } from "../../packages/workflows/src/durable/factory.js";
 import { store } from "../../packages/workflows/src/shared/store.js";
 import { fakeAgentSession } from "./slash-dispatch-utils.js";
+import { runGitChecked } from "../../packages/workflows/src/runs/shared/worktree-git.js";
 
 interface SentMessage {
   readonly customType?: string;
@@ -107,7 +108,13 @@ async function createHarness(
   const previousGuard = process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
   delete process.env[WORKFLOW_STAGE_SUBAGENT_GUARD_ENV];
   const dir = await mkdtemp(join(tmpdir(), "atomic-named-lifecycle-e2e-"));
+  const repo = join(dir, "repo");
   const workflowPath = join(dir, "named-lifecycle-e2e.ts");
+  await mkdir(join(repo, "packages"), { recursive: true });
+  await writeFile(join(repo, "packages", "tracked.txt"), "primary\n", "utf8");
+  runGitChecked(repo, ["init", "-b", "main"]);
+  runGitChecked(repo, ["add", "."]);
+  runGitChecked(repo, ["-c", "user.name=Atomic Tests", "-c", "user.email=atomic@example.com", "commit", "-m", "initial"]);
   await writeFile(workflowPath, workflowSource, "utf8");
 
   const sent: SentMessage[] = [];
@@ -158,6 +165,7 @@ async function createHarness(
   let tool: PiToolOpts<WorkflowToolArgs, WorkflowToolResult> | undefined;
   const pi: ExtensionAPI = {
     disableAsyncDiscovery: false,
+    sessionManager: { getCwd: () => repo },
     getWorkflowResources: () => [{ path: workflowPath, enabled: true }],
     registerTool(options) {
       tool = options as PiToolOpts<WorkflowToolArgs, WorkflowToolResult>;
