@@ -1,4 +1,4 @@
-import type { Component, OverlayHandle, OverlayOptions, Terminal } from "@earendil-works/pi-tui";
+import { isKeyRelease, type Component, type OverlayHandle, type OverlayOptions, type Terminal } from "@earendil-works/pi-tui";
 import { TUI } from "@earendil-works/pi-tui";
 import { runCallback } from "../../core/callback-activity.ts";
 import type { KeybindingsManager } from "../../core/keybindings.ts";
@@ -257,7 +257,10 @@ export class EngineCustomUiService {
 			case "engine_custom_input":
 				void runCallback(
 					{ kind: "renderer", name: command.componentId },
-					() => record.component.handleInput?.(command.data),
+					() => {
+						if (isKeyRelease(command.data) && record.component.wantsKeyRelease !== true) return;
+						record.component.handleInput?.(command.data);
+					},
 				).catch(() => undefined);
 				break;
 			case "engine_custom_dispose":

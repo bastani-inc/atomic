@@ -27,6 +27,13 @@ import {
 	type InteractiveEngineMessage,
 } from "../../packages/coding-agent/src/modes/interactive-engine/protocol.ts";
 import { RemoteComponentController } from "../../packages/coding-agent/src/modes/interactive-engine/remote-component.ts";
+import {
+	createStore,
+	deriveGraphTheme,
+	makeHandle,
+	setupRun,
+	StageChatView,
+} from "./stage-chat-view-helpers.ts";
 
 type HostComponent = Component & { handleInput?: (data: string) => void };
 
@@ -110,4 +117,62 @@ test("a forwarded keypress pipelines a fresh frame request behind the input", as
 	const renderRequestsAfter = bridge.childCommands.filter((command) => command.type === "engine_custom_render").length;
 	assert.ok(renderRequestsAfter > renderRequestsBefore, "keypress did not schedule a fresh remote frame request");
 	assert.deepEqual(host.render(80), ["selected:1"], "frame does not reflect the post-input state");
+});
+
+test("one Kitty Ctrl+O press/release cycle toggles an isolated stage chat once", async () => {
+	const bridge = makeBridge();
+	const store = createStore();
+	setupRun(store, "run-1", "stage-a");
+	const { handle } = makeHandle();
+	let toolsExpanded = false;
+	void bridge.child.custom((_tui, _theme, keybindings) => new StageChatView({
+		store,
+		graphTheme: deriveGraphTheme({}),
+		runId: "run-1",
+		stageId: "stage-a",
+		workflowName: "test-wf",
+		handle,
+		onDetach: () => {},
+		onClose: () => {},
+		piKeybindings: keybindings,
+		getToolsExpanded: () => toolsExpanded,
+		setToolsExpanded: (expanded) => { toolsExpanded = expanded; },
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	assert.ok(host, "remote component did not mount on the host");
+
+	// The host proxy accepts releases so it can support release-aware child
+	// components. The child bridge must still honor StageChatView's default
+	// release opt-out, exactly as a non-isolated pi-tui focus path does.
+	host.handleInput?.("\x1b[111;5:1u");
+	host.handleInput?.("\x1b[111;5:3u");
+	await flush();
+	assert.equal(toolsExpanded, true);
+
+	// A second physical key cycle collapses it once, rather than toggling once
+	// for the press and immediately back again for the release.
+	host.handleInput?.("\x1b[111;5:1u");
+	host.handleInput?.("\x1b[111;5:3u");
+	await flush();
+	assert.equal(toolsExpanded, false);
+});
+
+test("isolated custom UI forwards Kitty releases to an opted-in child component", async () => {
+	const bridge = makeBridge();
+	const inputs: string[] = [];
+	void bridge.child.custom(() => ({
+		wantsKeyRelease: true,
+		render: () => [],
+		handleInput: (data: string) => inputs.push(data),
+		invalidate: () => {},
+	}));
+	await flush();
+	const host = bridge.hostComponent;
+	assert.ok(host, "remote component did not mount on the host");
+
+	host.handleInput?.("\x1b[111;5:1u");
+	host.handleInput?.("\x1b[111;5:3u");
+	await flush();
+	assert.deepEqual(inputs, ["\x1b[111;5:1u", "\x1b[111;5:3u"]);
 });
